@@ -32,4 +32,20 @@ parent: wayfinder:map
 
 ## Resolution
 
-（未解决）
+### 决策日志（grilling 进行中，2026-08-10，zed-main；Q5 待答，答完关闭）
+
+**Q1 持久化模型（已定）**：双轨 — `order_event` 语义事件流（§18 的 12 种事件 + payload + operator + created_at，Timeline 数据源）+ `order_version` 每次状态/数据变更追加完整快照（五维状态 + 订单头 + 行摘要 + 变更原因，支撑 Version Validation 与 §19 数据修改追责）；所有写操作单事务。
+
+**Q2 主线「创建即跑完全程」（已定）**：创建请求内同步跑完（无定时器/手动推进）；事件只记 §18 语义事件（ORDER_RECEIVED → SKU_MAPPED → JD_STOCK_CHECKED → JD_OUTBOUND_SUBMITTED → JD_OUTBOUND_ACCEPTED → JD_SHIPPED → SHIPMENT_CREATED → TRACKING_RECEIVED → SOURCE_SYNCED），VALIDATED 等中间态由 status 列 + order_version 承载，不为每个转移硬造事件；最终态 = SYNCED；CLOSED 不自动进入（保留合法状态，种子数据历史单用）；ORDER_UPDATED 保留备用（demo 无编辑订单入口）。
+
+**Q3 人工介入与采购回执（已定）**：demo 只实现一个 H 动作——采购回执；缺货单停 PROCUREMENT_PENDING 等待外部消息；外部 mock = 前端「采购操作台」页面扮演（调真实回执接口 `POST /internal/v1/procurement/tickets/{id}/receipt`，body 对齐 PRD §13：result / available_quantity / expected_ship_time / remark / idempotency_key）；业务系统内部零 mock 捷径，未来真实采购系统调同一接口，只换发送方。回执校验：工单必须 PENDING；PARTIAL 需 available_quantity < required_quantity。PARTIAL → 按 available 部分发货，剩余回 OUT_OF_STOCK 可再建工单；FAILED → FULFILLMENT_EXCEPTION（可再采购或取消）；回执接口幂等（idempotency_key，重复拒绝）。
+
+**Q4 五维状态集（已定）**：
+- OrderStatus：主线 RECEIVED → VALIDATED → SKU_MAPPED → FULFILLING → SHIPPED → SYNCED → CLOSED；异常分支 NEED_REVIEW / OUT_OF_STOCK / PROCUREMENT_PENDING / FULFILLMENT_EXCEPTION / SYNC_FAILED / CANCELLED；异常不占主线位，处理完回主线继续。
+- FulfillmentStatus（type=JD_WAREHOUSE / PROCUREMENT）：PENDING → STOCK_CHECKED →（JD）JD_SUBMITTED → JD_ACCEPTED → SHIPPED（终）；缺货分支 OUT_OF_STOCK → PROCUREMENT_PENDING →（回执成功）ARRIVED → SHIPPED；回执 FAILED → EXCEPTION；京东拒收/出库失败 → EXCEPTION（H 重试 → STOCK_CHECKED / H 取消）。
+- ShipmentStatus：CREATED → SHIPPED → DELIVERED（终；新单 mock 直达 SHIPPED，DELIVERED 种子历史单）。
+- SyncStatus：PENDING → SYNCED；失败分支 SYNC_FAILED →（H 重试）→ SYNCED。
+- ProcurementStatus：PENDING → SUCCESS / PARTIAL / FAILED；订单取消时工单 → CANCELLED。
+- 人工干预规则：demo 统一演示账号 demo-ops；H 动作只作用于对应维度可操作态（回执只对 PENDING 工单、重试只对 SYNC_FAILED / EXCEPTION / NEED_REVIEW、取消只对未终态订单）；每个人工动作产生 Audit Log + OrderEvent；除采购回执外，其余 H 动作 demo 不做按钮，规则留口（种子数据展示）。
+
+**Q5 多行订单聚合（待答）**：A 行级独立推进 + 订单级最差聚合（推荐）/ B 全单等待。
