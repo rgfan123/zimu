@@ -2,7 +2,7 @@
 label: wayfinder:grilling
 title: 订单状态机精化
 status: open
-claimed_by: 
+claimed_by: zed-main
 blocked_by: []
 parent: wayfinder:map
 ---
