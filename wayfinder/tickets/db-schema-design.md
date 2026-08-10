@@ -51,3 +51,5 @@ parent: wayfinder:map
 - 待 B3 回看：jd_skus 两列（jd_goods_no / erp_goods_no）哪列是主路径（京东认我方编码 vs 我方存京东编码），真实封装时定
 
 **Q2 枚举存储形态（已定）**：PG 原生 enum，**统一应用于全部枚举列**——五维状态（order_status / fulfillment_status / shipment_status / sync_status / procurement_status）+ source_channel + settlement_method（MONTHLY / CASH / CREDIT）+ fulfillment.type（JD_WAREHOUSE / PROCUREMENT）+ order_event.type（§18 十二事件）。实现成本已知：Hibernate 6 需 @JdbcTypeCode(SqlTypes.NAMED_ENUM) 映射；ALTER TYPE ADD VALUE 在 Flyway 事务脚本受限（状态集已定死，风险可控）。
+
+**Q3 幂等机制（已定）**：统一幂等注册表 `idempotency_registry(id, scope, idempotency_key, target_id, payload_hash, response_snapshot jsonb, created_at)`，UNIQUE(scope, idempotency_key)；scope ∈ order_create / fulfillment_outbound / shipment_create / shipment_sync / procurement_create / procurement_receipt；重放语义：同 scope+key → 返回缓存 response_snapshot，同 key 不同 payload_hash → 409 冲突；无 TTL；业务表不带 idempotency_key 列。
