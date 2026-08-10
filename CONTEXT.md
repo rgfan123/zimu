@@ -21,16 +21,18 @@
 | **审计日志 AuditLog** | 接口调用与人工操作的审计记录（operator、request/response、trace_id），用于排错与追责。 |
 | **异常 Exception** | 需要人工介入的订单状态分支（NEED_REVIEW、FULFILLMENT_EXCEPTION、SYNC_FAILED 等）。 |
 | **模拟下单 DemoOrder** | 演示入口：前端「模拟下单」页通过 `POST /internal/v1/orders` 创建订单，等价于未来 LangBot 的输入路径。 |
+| **采购回执 ProcurementReceipt** | 外部采购部门对采购工单的处理结果回传（SUCCESS / PARTIAL / FAILED + available_quantity / expected_ship_time）；demo 由前端「采购操作台」模拟发送方，业务系统只认真实回执接口（`POST /internal/v1/procurement/tickets/{id}/receipt`）。 |
 
 ## 状态维度
 
-状态按维度分离维护，不合并进单一 `order.status`：
+状态按维度分离维护，不合并进单一 `order.status`（完整转移矩阵见 `docs/state-machine.md`）：
 
-- **OrderStatus**：RECEIVED → VALIDATED → SKU_MAPPED → FULFILLING → SHIPPED → SYNCED → CLOSED（+ 异常分支）
-- **FulfillmentStatus**：履约单元的状态
-- **ShipmentStatus**：发货状态
-- **SyncStatus**：回传状态
-- **ProcurementStatus**：采购工单状态
+- **OrderStatus**：主线 RECEIVED → VALIDATED → SKU_MAPPED → FULFILLING → SHIPPED → SYNCED → CLOSED；异常分支 NEED_REVIEW / OUT_OF_STOCK / PROCUREMENT_PENDING / FULFILLMENT_EXCEPTION / SYNC_FAILED / CANCELLED；demo 自动最终态 = SYNCED（CLOSED 不自动进入）
+- **FulfillmentStatus**（type ∈ JD_WAREHOUSE / PROCUREMENT）：PENDING → STOCK_CHECKED → JD_SUBMITTED → JD_ACCEPTED → SHIPPED（终）；分支 OUT_OF_STOCK → PROCUREMENT_PENDING → ARRIVED → SHIPPED；EXCEPTION（回执 FAILED / 京东拒收）
+- **ShipmentStatus**：CREATED → SHIPPED → DELIVERED（终）
+- **SyncStatus**：PENDING → SYNCED；SYNC_FAILED →（重试）→ SYNCED
+- **ProcurementStatus**：PENDING → SUCCESS / PARTIAL / FAILED；订单取消 → CANCELLED
+- 多行订单：行级独立推进 + 订单级最差聚合
 
 ## 边界
 

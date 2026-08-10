@@ -44,6 +44,7 @@ tracker: local-markdown
 <!-- 每张已关闭票一行：标题（链接）+ 一句话结论。 -->
 
 - [京东 ISC SDK 接口面提取](tickets/jd-isc-api-surface.md) — 7/7 能力从两个 jar 中提取到真实 LOP 服务名（含 `SoCreateOrderRequest`/`StockQueryRequest` 等 DTO 与 9 条封装坑），见 `docs/research/jd-isc-api.md`；真实 Client 封装的前置已就绪。
+- [订单状态机精化](tickets/order-state-machine.md) — 五维状态集/转移矩阵/事件清单定稿：双轨持久化（order_event + order_version）、主线最终态 SYNCED、缺货走外部回执（前端采购操作台 mock，真实回执接口）、行级独立推进 + 订单级最差聚合；见 `docs/state-machine.md`。
 
 ## Not yet specified
 

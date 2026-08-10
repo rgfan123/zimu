@@ -1,7 +1,7 @@
 ---
 label: wayfinder:grilling
 title: 订单状态机精化
-status: open
+status: closed
 claimed_by: zed-main
 blocked_by: []
 parent: wayfinder:map
@@ -32,7 +32,7 @@ parent: wayfinder:map
 
 ## Resolution
 
-### 决策日志（grilling 进行中，2026-08-10，zed-main；Q5 待答，答完关闭）
+### 决策日志（grilling 完成，2026-08-10，zed-main）
 
 **Q1 持久化模型（已定）**：双轨 — `order_event` 语义事件流（§18 的 12 种事件 + payload + operator + created_at，Timeline 数据源）+ `order_version` 每次状态/数据变更追加完整快照（五维状态 + 订单头 + 行摘要 + 变更原因，支撑 Version Validation 与 §19 数据修改追责）；所有写操作单事务。
 
@@ -48,4 +48,6 @@ parent: wayfinder:map
 - ProcurementStatus：PENDING → SUCCESS / PARTIAL / FAILED；订单取消时工单 → CANCELLED。
 - 人工干预规则：demo 统一演示账号 demo-ops；H 动作只作用于对应维度可操作态（回执只对 PENDING 工单、重试只对 SYNC_FAILED / EXCEPTION / NEED_REVIEW、取消只对未终态订单）；每个人工动作产生 Audit Log + OrderEvent；除采购回执外，其余 H 动作 demo 不做按钮，规则留口（种子数据展示）。
 
-**Q5 多行订单聚合（待答）**：A 行级独立推进 + 订单级最差聚合（推荐）/ B 全单等待。
+**Q5 多行订单聚合（已定）**：A 行级独立推进 + 订单级最差聚合——每行独立拆 Fulfillment 独立跑，有货行立即出库发货不等缺货行；订单级 OrderStatus 取所有行最差/最晚进度（任一待采购 → PROCUREMENT_PENDING；任一异常 → FULFILLMENT_EXCEPTION；全部 SHIPPED → SHIPPED；全部回传成功 → SYNCED）；回传按 shipment 独立；order_event 带可选关联 id（order_line_id / fulfillment_id / shipment_id / procurement_ticket_id）。
+
+**2026-08-10 已关闭**：产出见 `docs/state-machine.md`。无新票浮现，未从 Not yet specified 毕业新雾区；回执接口细节归入 API 契约票。
