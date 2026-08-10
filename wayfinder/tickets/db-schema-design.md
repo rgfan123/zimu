@@ -49,3 +49,5 @@ parent: wayfinder:map
 - 分析视图：`v_analytics_channel_daily`（渠道×日期：订单数/行数/实发量/shipment 数/异常/缺货/回传失败）、`v_analytics_product_daily`（渠道×商品×日期：实发量/订单数）、`v_analytics_fulfillment_daily`（履约状态计数：京东履约量/缺货/采购/待出库/已出库/待运单/回传失败）
 - customer 接收语义：§7 payload 的 customer 自由文本，**按 phone upsert**（匹配不到即建），与 SKU 映射 create-or-match 对称；receiver 三字段内嵌 orders
 - 待 B3 回看：jd_skus 两列（jd_goods_no / erp_goods_no）哪列是主路径（京东认我方编码 vs 我方存京东编码），真实封装时定
+
+**Q2 枚举存储形态（已定）**：PG 原生 enum，**统一应用于全部枚举列**——五维状态（order_status / fulfillment_status / shipment_status / sync_status / procurement_status）+ source_channel + settlement_method（MONTHLY / CASH / CREDIT）+ fulfillment.type（JD_WAREHOUSE / PROCUREMENT）+ order_event.type（§18 十二事件）。实现成本已知：Hibernate 6 需 @JdbcTypeCode(SqlTypes.NAMED_ENUM) 映射；ALTER TYPE ADD VALUE 在 Flyway 事务脚本受限（状态集已定死，风险可控）。
