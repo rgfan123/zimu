@@ -2,7 +2,7 @@
 label: wayfinder:grilling
 title: 数据库 Schema 设计
 status: open
-claimed_by: 
+claimed_by: zed-main
 blocked_by: []
 parent: wayfinder:map
 ---
