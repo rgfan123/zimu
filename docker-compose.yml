@@ -1,0 +1,184 @@
+name: zimu-fulfillment
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fulfillment_hub
+      POSTGRES_USER: ${POSTGRES_USER:-fulfillment}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fulfillment}
+      TZ: Asia/Shanghai
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/fulfillment_hub
+      DB_USERNAME: ${POSTGRES_USER:-fulfillment}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-fulfillment}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      APP_FILE_STORE_ROOT: /var/lib/zimu-fulfillment/files
+      DEMO_SEED_ENABLED: "true"
+      DEMO_SEED_REFERENCE_DATE: ${DEMO_SEED_REFERENCE_DATE:-}
+      JD_INITIAL_SKU_LIBRARY_ENABLED: "false"
+      JD_LOP_CLIENT_MODE: ${JD_LOP_CLIENT_MODE:-MOCK}
+      JD_LOP_SERVER_URL: ${JD_LOP_SERVER_URL:-}
+      JD_LOP_APP_KEY: ${JD_LOP_APP_KEY:-}
+      JD_LOP_APP_SECRET: ${JD_LOP_APP_SECRET:-}
+      JD_LOP_ACCESS_TOKEN: ${JD_LOP_ACCESS_TOKEN:-}
+      JD_LOP_PIN: ${JD_LOP_PIN:-}
+      JD_LOP_OWNER_NO: ${JD_LOP_OWNER_NO:-}
+      WECOM_BUSINESS_RELAY_ENABLED: ${WECOM_BUSINESS_RELAY_ENABLED:-false}
+      WECOM_CORP_ID: ${WECOM_CORP_ID:-}
+      WECOM_BOT_ID: ${WECOM_BOT_ID:-}
+      WECOM_CALLBACK_TOKEN: ${WECOM_CALLBACK_TOKEN:-}
+      WECOM_ENCODING_AES_KEY: ${WECOM_ENCODING_AES_KEY:-}
+      WECOM_ALLOWED_GROUP_IDS: ${WECOM_ALLOWED_GROUP_IDS:-}
+      TZ: Asia/Shanghai
+    volumes:
+      - fulfillment-files:/var/lib/zimu-fulfillment/files
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  order-assistant:
+    build:
+      context: .
+      dockerfile: prototype/customer-order-assistant/Dockerfile
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8765
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LLM_CHAT_PATH: ${LLM_CHAT_PATH:-/chat/completions}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_TRANSPORT: ${LLM_TRANSPORT:-urllib}
+      ORDER_API_BASE_URL: http://backend:8080
+      ORDER_API_PATH: /demo/v1/extracted-orders
+      BUILTIN_ORDER_API_ENABLED: "false"
+      TZ: Asia/Shanghai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  metabase:
+    image: metabase/metabase:v0.52.13
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: 5432
+      MB_DB_USER: ${POSTGRES_USER:-fulfillment}
+      MB_DB_PASS: ${POSTGRES_PASSWORD:-fulfillment}
+      MB_DB_HOST: postgres
+      MB_SITE_URL: http://localhost:${APP_PORT:-8088}/metabase
+      JAVA_TIMEZONE: Asia/Shanghai
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  metabase-init:
+    build:
+      context: .
+      dockerfile: docker/metabase-init/Dockerfile
+    environment:
+      METABASE_INTERNAL_URL: http://metabase:3000
+      METABASE_ADMIN_EMAIL: ${METABASE_ADMIN_EMAIL:?set METABASE_ADMIN_EMAIL in the deployment environment}
+      METABASE_ADMIN_PASSWORD: ${METABASE_ADMIN_PASSWORD:?set METABASE_ADMIN_PASSWORD in the deployment environment}
+      POSTGRES_USER: ${POSTGRES_USER:-fulfillment}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fulfillment}
+    depends_on:
+      metabase:
+        condition: service_started
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/metabase-provisioned"]
+      interval: 2s
+      timeout: 2s
+      retries: 900
+      start_period: 5s
+    restart: "no"
+
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/nginx/Dockerfile
+    environment:
+      APP_ADMIN_USER: ${APP_ADMIN_USER:?set APP_ADMIN_USER in the deployment environment}
+      APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:?set APP_ADMIN_PASSWORD in the deployment environment}
+    ports:
+      - "${APP_PORT:-8088}:80"
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+      order-assistant:
+        condition: service_healthy
+      metabase:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  fulfillment-files:

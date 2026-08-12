@@ -1,0 +1,55 @@
+spring:
+  application:
+    name: fulfillment-hub
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/fulfillment_hub}
+    username: ${DB_USERNAME:fulfillment}
+    password: ${DB_PASSWORD:fulfillment}
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        default_schema: app
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      connect-timeout: 250ms
+      timeout: 250ms
+
+server:
+  port: ${SERVER_PORT:8080}
+
+app:
+  wecom:
+    connections:
+      business-relay:
+        enabled: ${WECOM_BUSINESS_RELAY_ENABLED:false}
+        corp-id: ${WECOM_CORP_ID:}
+        bot-id: ${WECOM_BOT_ID:}
+        token: ${WECOM_CALLBACK_TOKEN:}
+        encoding-aes-key: ${WECOM_ENCODING_AES_KEY:}
+        allowed-group-ids: ${WECOM_ALLOWED_GROUP_IDS:}
+  jd:
+    client-mode: ${JD_LOP_CLIENT_MODE:MOCK}
+    server-url: ${JD_LOP_SERVER_URL:}
+    app-key: ${JD_LOP_APP_KEY:}
+    app-secret: ${JD_LOP_APP_SECRET:}
+    access-token: ${JD_LOP_ACCESS_TOKEN:}
+    pin: ${JD_LOP_PIN:}
+    owner-no: ${JD_LOP_OWNER_NO:}
+  seed:
+    demo-enabled: ${DEMO_SEED_ENABLED:false}
+    reference-date: ${DEMO_SEED_REFERENCE_DATE:}
+    jd-initial-sku-library:
+      enabled: ${JD_INITIAL_SKU_LIBRARY_ENABLED:false}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

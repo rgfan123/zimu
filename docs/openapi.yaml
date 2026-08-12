@@ -1,0 +1,2941 @@
+openapi: 3.0.3
+info:
+  title: Order Fulfillment and Logistics Hub API
+  version: 0.1.0
+  description: >-
+    Contract for BUSINESS administration, trusted internal intake, and isolated
+    DemoScenario operations. JSON field names use snake_case; identifiers and
+    NUMERIC(18,3) quantities are strings.
+servers:
+  - url: http://localhost:8080
+    description: Local Docker Compose
+tags:
+  - name: Dashboard
+  - name: Orders
+  - name: Imports
+  - name: Fulfillments
+  - name: Exports
+  - name: Shipments
+  - name: Reviews
+  - name: Procurement
+  - name: MasterData
+  - name: Connectors
+  - name: Messages
+  - name: WeCom
+  - name: Audit
+  - name: Analytics
+  - name: Internal
+  - name: Demo
+security:
+  - basicAuth: []
+paths:
+  /wecom/callbacks/{connection_id}:
+    parameters:
+      - $ref: '#/components/parameters/WecomConnectionId'
+    get:
+      tags: [WeCom]
+      operationId: verifyWecomCallbackUrl
+      description: >-
+        Public enterprise WeChat intelligent-bot URL verification. The
+        msg_signature authenticates the encrypted challenge; Nginx Basic Auth
+        is intentionally disabled for this callback only.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/WecomMessageSignature'
+        - $ref: '#/components/parameters/WecomTimestamp'
+        - $ref: '#/components/parameters/WecomNonce'
+        - name: echostr
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Decrypted challenge returned as unquoted text without a trailing newline
+          content:
+            text/plain:
+              schema: { type: string }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [WeCom]
+      operationId: receiveWecomCallback
+      description: >-
+        Public encrypted JSON callback. Only configured bot and business-group
+        text messages are persisted. Every accepted retry receives an encrypted
+        fixed stream receipt after durable idempotent storage; ignored groups or
+        message types receive an empty 200 response.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/WecomMessageSignature'
+        - $ref: '#/components/parameters/WecomTimestamp'
+        - $ref: '#/components/parameters/WecomNonce'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WecomEncryptedEnvelope' }
+      responses:
+        '200':
+          description: Encrypted fixed receipt JSON for an accepted message, or an empty body for a callback outside the configured boundary.
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/channel-messages:
+    get:
+      tags: [Messages]
+      operationId: listChannelMessages
+      description: Authorized immutable enterprise WeChat text evidence; raw callback payloads are not returned.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Newest received message evidence first
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelMessagePage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/channel-messages/{channel_message_id}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelMessageId'
+    get:
+      tags: [Messages]
+      operationId: getChannelMessage
+      description: Authorized whitelisted message evidence and a controlled raw-payload reference.
+      responses:
+        '200':
+          description: Message evidence detail without callback secrets or response_url
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelMessageDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/dashboard/summary:
+    get:
+      tags: [Dashboard]
+      operationId: getDashboardSummary
+      parameters:
+        - $ref: '#/components/parameters/BusinessDate'
+      responses:
+        '200':
+          description: Dashboard KPIs, trend, and manual-attention summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardSummary'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/orders:
+    get:
+      tags: [Orders]
+      operationId: listOrders
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - name: source_channel
+          in: query
+          schema: { $ref: '#/components/schemas/SourceChannel' }
+        - name: order_status
+          in: query
+          schema: { $ref: '#/components/schemas/OrderStatus' }
+        - name: processing_stage
+          in: query
+          schema: { $ref: '#/components/schemas/ProcessingStage' }
+        - name: processing_health
+          in: query
+          schema: { $ref: '#/components/schemas/ProcessingHealth' }
+        - name: query
+          in: query
+          description: Order number, source reference, or customer name
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: BUSINESS orders only
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/orders/{order_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    get:
+      tags: [Orders]
+      operationId: getOrder
+      responses:
+        '200':
+          description: Aggregated BUSINESS order detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/orders/{order_id}/timeline:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    get:
+      tags: [Orders]
+      operationId: getOrderTimeline
+      responses:
+        '200':
+          description: Events ordered by the order-scoped sequence_no
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/OrderEvent' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/orders/{order_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    get:
+      tags: [Orders]
+      operationId: listOrderVersions
+      responses:
+        '200':
+          description: Append-only order versions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/OrderVersion' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/orders/{order_id}/shipments:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    get:
+      tags: [Orders, Shipments]
+      operationId: listOrderShipments
+      responses:
+        '200':
+          description: Every shipment and tracking for manual follow-up
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Shipment' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/orders/{order_id}/corrections:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    post:
+      tags: [Orders]
+      operationId: createCorrectionOrder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CorrectionOrderCommand' }
+      responses:
+        '201':
+          description: Explicit correction order created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/import-batches/source-orders:
+    post:
+      tags: [Imports]
+      operationId: uploadSourceOrderFile
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, import_mode]
+              properties:
+                file: { type: string, format: binary }
+                import_mode: { $ref: '#/components/schemas/ImportMode' }
+                parent_import_batch_id:
+                  $ref: '#/components/schemas/Identifier'
+      responses:
+        '201':
+          description: File retained and rows processed; duplicate content returns the existing batch
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportBatch' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/provider-sku-mapping-references/preview:
+    post:
+      tags: [Imports, MasterData]
+      operationId: previewProviderSkuMappingReference
+      description: >-
+        Read-only exact-name comparison between a SKU mapping reference workbook and a
+        source-order file. It never writes products, SKUs, provider mappings, or source mappings.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [reference_file, source_file]
+              properties:
+                reference_file:
+                  type: string
+                  format: binary
+                  description: SKU mapping reference only; never interpreted as an order or export template
+                source_file:
+                  type: string
+                  format: binary
+                  description: CAISHIXIAN, JUFUBAO, or FEIXIANG source-order file
+      responses:
+        '200':
+          description: Mapping candidates and review reasons; no master data was written
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderSkuMappingReferencePreview' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/import-batches/{batch_id}:
+    parameters:
+      - $ref: '#/components/parameters/BatchId'
+    get:
+      tags: [Imports]
+      operationId: getImportBatch
+      responses:
+        '200':
+          description: Import batch summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportBatch' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/import-batches/{batch_id}/rows:
+    parameters:
+      - $ref: '#/components/parameters/BatchId'
+    get:
+      tags: [Imports]
+      operationId: listImportRows
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RawRowStatus' }
+      responses:
+        '200':
+          description: Raw-row lineage and validation results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RawImportRowPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/import-batches/{batch_id}/source-return-exports:
+    parameters:
+      - $ref: '#/components/parameters/BatchId'
+    get:
+      tags: [Imports, Exports]
+      operationId: listSourceReturnExports
+      responses:
+        '200':
+          description: Versioned source-format return files
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SourceReturnExport' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/source-return-exports/{export_id}/file:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    get:
+      tags: [Exports]
+      operationId: downloadSourceReturnFile
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: Original-channel workbook or CSV
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/RequestId' }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillments:
+    get:
+      tags: [Fulfillments]
+      operationId: listFulfillments
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - name: provider_id
+          in: query
+          schema: { $ref: '#/components/schemas/Identifier' }
+        - name: shipping_progress
+          in: query
+          schema: { $ref: '#/components/schemas/ShippingProgress' }
+        - name: outcome
+          in: query
+          schema: { $ref: '#/components/schemas/FulfillmentOutcome' }
+      responses:
+        '200':
+          description: Fulfillment task page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FulfillmentPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillments/{fulfillment_id}:
+    parameters:
+      - $ref: '#/components/parameters/FulfillmentId'
+    get:
+      tags: [Fulfillments]
+      operationId: getFulfillment
+      responses:
+        '200':
+          description: Quantity conservation, shipment, procurement, and exception detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FulfillmentDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillments/{fulfillment_id}/continuation-exports:
+    parameters:
+      - $ref: '#/components/parameters/FulfillmentId'
+    post:
+      tags: [Fulfillments, Exports]
+      operationId: createContinuationExport
+      description: >-
+        Creates the next Shipment and an independent third-party export for a BUSINESS
+        Fulfillment that is already PARTIALLY_SHIPPED. The command locks and version-checks
+        the Fulfillment and rejects quantities above the unallocated remainder.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContinuationExportCommand' }
+      responses:
+        '201':
+          description: Continuation Shipment and provider export created; an idempotent replay returns the same result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContinuationExport' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-exports:
+    get:
+      tags: [Exports]
+      operationId: listFulfillmentExports
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - name: provider_id
+          in: query
+          schema: { $ref: '#/components/schemas/Identifier' }
+        - name: usage_status
+          in: query
+          schema: { $ref: '#/components/schemas/ExportUsageStatus' }
+      responses:
+        '200':
+          description: Automatically generated provider files
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FulfillmentExportPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-exports/{export_id}:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    get:
+      tags: [Exports]
+      operationId: getFulfillmentExport
+      responses:
+        '200':
+          description: Export lines, download audit, and tracking-return linkage
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FulfillmentExportDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-exports/{export_id}/file:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    get:
+      tags: [Exports]
+      operationId: downloadFulfillmentExportFile
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: JD official workbook or system-defined third-party workbook
+          headers:
+            X-Request-Id: { $ref: '#/components/headers/RequestId' }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-exports/{export_id}/tracking-imports:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    post:
+      tags: [Exports, Imports]
+      operationId: uploadProviderTrackingFile
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                import_mode: { $ref: '#/components/schemas/ImportMode' }
+                parent_import_batch_id: { $ref: '#/components/schemas/Identifier' }
+      responses:
+        '201':
+          description: >-
+            Whole provider batch accepted atomically and linked to this export. Replaying
+            identical bytes for the same export returns the first complete result, including
+            business_results and generated_source_return_export_ids, without a new source return.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrackingImportBatch' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/tracking-imports/{batch_id}:
+    parameters:
+      - $ref: '#/components/parameters/BatchId'
+    get:
+      tags: [Imports]
+      operationId: getTrackingImport
+      responses:
+        '200':
+          description: Provider result rows and source-return generation result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrackingImportBatch' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/shipments:
+    get:
+      tags: [Shipments]
+      operationId: listShipments
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - name: provider_id
+          in: query
+          schema: { $ref: '#/components/schemas/Identifier' }
+        - name: shipment_status
+          in: query
+          schema: { $ref: '#/components/schemas/ShipmentStatus' }
+      responses:
+        '200':
+          description: Shipment page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShipmentPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/shipments/{shipment_id}:
+    parameters:
+      - $ref: '#/components/parameters/ShipmentId'
+    get:
+      tags: [Shipments]
+      operationId: getShipment
+      responses:
+        '200':
+          description: Shipment items and tracking
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Shipment' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/review-cases:
+    get:
+      tags: [Reviews]
+      operationId: listReviewCases
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: status
+          in: query
+          schema: { type: string, enum: [OPEN, RESOLVED, DISMISSED] }
+        - name: reason_code
+          in: query
+          schema: { type: string, maxLength: 64 }
+        - name: responsible_team
+          in: query
+          schema: { type: string, maxLength: 128 }
+        - name: source_channel
+          in: query
+          description: Limits the queue to BUSINESS orders from this source channel.
+          schema: { $ref: '#/components/schemas/SourceChannel' }
+      responses:
+        '200':
+          description: BUSINESS manual-review queue
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewCasePage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/review-cases/{case_id}:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [Reviews]
+      operationId: getReviewCase
+      responses:
+        '200':
+          description: Review subject, evidence, suggestions, and allowed actions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewCase' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/review-cases/{case_id}/resolve-customer:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [Reviews]
+      operationId: resolveCustomerReview
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolveCustomerReviewCommand' }
+      responses:
+        '200':
+          description: Existing active BUSINESS customer linked and review resolved atomically; no customer is created by this command
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewCase' }
+        '409':
+          description: expected_version is stale, the review is no longer OPEN, or evidence/mapping conflicts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/review-cases/{case_id}/resolve-sku:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [Reviews]
+      operationId: resolveSkuReview
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolveSkuReviewCommand' }
+      responses:
+        '200':
+          description: Existing active SKU and explicit source mapping saved atomically; no SKU is created by this command
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewCase' }
+        '409':
+          description: expected_version is stale, the review is no longer OPEN, or evidence/mapping conflicts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/review-cases/{case_id}/resolve-carrier:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [Reviews]
+      operationId: resolveCarrierReview
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolveCarrierReviewCommand' }
+      responses:
+        '200':
+          description: Channel carrier mapping saved and review resolved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewCase' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/review-cases/{case_id}/resolve-import-data:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [Reviews]
+      operationId: resolveImportDataReview
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolveImportDataCommand' }
+      responses:
+        '200':
+          description: Pre-commit import data corrected and review resolved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewCase' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/review-cases/{case_id}/complete-source-followup:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [Reviews]
+      operationId: completeSourceFollowup
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompleteSourceFollowupCommand' }
+      responses:
+        '200':
+          description: Review, processing stage, event, version, and audit committed atomically
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReviewCase' }
+        '409':
+          description: expected_version is stale or terminal-fulfillment/all-real-shipment-tracking gates are not satisfied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/operational-alerts:
+    get:
+      tags: [Reviews]
+      operationId: listOperationalAlerts
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: status
+          in: query
+          schema: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED] }
+        - name: severity
+          in: query
+          schema: { type: string, enum: [YELLOW, RED] }
+      responses:
+        '200':
+          description: Non-blocking operational alerts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperationalAlertPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/operational-alerts/{alert_id}/acknowledge:
+    parameters:
+      - $ref: '#/components/parameters/AlertId'
+    post:
+      tags: [Reviews]
+      operationId: acknowledgeOperationalAlert
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VersionedNoteCommand' }
+      responses:
+        '200':
+          description: Alert acknowledged without changing business state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperationalAlert' }
+        '409':
+          description: expected_version is stale or the alert is no longer OPEN
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/procurement-tickets:
+    get:
+      tags: [Procurement]
+      operationId: listProcurementTickets
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ProcurementStatus' }
+      responses:
+        '200':
+          description: Procurement workbench
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementTicketPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/procurement-tickets/{ticket_id}:
+    parameters:
+      - $ref: '#/components/parameters/TicketId'
+    get:
+      tags: [Procurement]
+      operationId: getProcurementTicket
+      responses:
+        '200':
+          description: Ticket items and append-only receipts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementTicket' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/procurement-tickets/{ticket_id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/TicketId'
+    post:
+      tags: [Procurement]
+      operationId: retryProcurement
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VersionedNoteCommand' }
+      responses:
+        '201':
+          description: Linked retry ticket created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementTicket' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/procurement-tickets/{ticket_id}/cancel-remaining:
+    parameters:
+      - $ref: '#/components/parameters/TicketId'
+    post:
+      tags: [Procurement]
+      operationId: cancelProcurementRemaining
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelRemainingCommand' }
+      responses:
+        '200':
+          description: Remaining quantity cancelled without rolling back shipped facts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementTicket' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/customers:
+    get:
+      tags: [MasterData]
+      operationId: listCustomers
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: query
+          in: query
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: Customer master data
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MasterDataPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [MasterData]
+      operationId: createCustomer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomerWrite' }
+      responses:
+        '201':
+          description: Customer created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MasterDataRecord' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/customers/{customer_id}:
+    parameters:
+      - $ref: '#/components/parameters/CustomerId'
+    get:
+      tags: [MasterData]
+      operationId: getCustomer
+      responses:
+        '200':
+          description: Customer and source identities
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MasterDataRecord' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [MasterData]
+      operationId: updateCustomer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomerPatch' }
+      responses:
+        '200':
+          description: Customer updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MasterDataRecord' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/categories:
+    get:
+      tags: [MasterData]
+      operationId: listCategories
+      parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/Size' }]
+      responses:
+        '200':
+          description: Product categories
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataPage' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [MasterData]
+      operationId: createCategory
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/NamedCodeWrite' } } }
+      responses:
+        '201':
+          description: Category created
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/categories/{category_id}:
+    parameters:
+      - $ref: '#/components/parameters/CategoryId'
+    get:
+      tags: [MasterData]
+      operationId: getCategory
+      responses:
+        '200':
+          description: Category detail
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [MasterData]
+      operationId: updateCategory
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/NamedCodePatch' } } }
+      responses:
+        '200':
+          description: Category updated
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/products:
+    get:
+      tags: [MasterData]
+      operationId: listProducts
+      parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/Size' }]
+      responses:
+        '200':
+          description: Products
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataPage' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [MasterData]
+      operationId: createProduct
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProductWrite' } } }
+      responses:
+        '201':
+          description: Product created
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/products/{product_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [MasterData]
+      operationId: getProduct
+      responses:
+        '200':
+          description: Product detail
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [MasterData]
+      operationId: updateProduct
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProductPatch' } } }
+      responses:
+        '200':
+          description: Product updated
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/skus:
+    get:
+      tags: [MasterData]
+      operationId: listSkus
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: provider_id
+          in: query
+          schema: { $ref: '#/components/schemas/Identifier' }
+      responses:
+        '200':
+          description: Internal SKUs
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataPage' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [MasterData]
+      operationId: createSku
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SkuWrite' } } }
+      responses:
+        '201':
+          description: Provider-scoped internal SKU created
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/skus/{sku_id}:
+    parameters:
+      - $ref: '#/components/parameters/SkuId'
+    get:
+      tags: [MasterData]
+      operationId: getSku
+      responses:
+        '200':
+          description: SKU detail
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [MasterData]
+      operationId: updateSku
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SkuPatch' } } }
+      responses:
+        '200':
+          description: Non-historical SKU fields updated
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/source-sku-mappings:
+    get:
+      tags: [MasterData]
+      operationId: listSourceSkuMappings
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: source_channel
+          in: query
+          schema: { $ref: '#/components/schemas/SourceChannel' }
+      responses:
+        '200':
+          description: Explicit source-to-internal SKU mappings
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataPage' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [MasterData]
+      operationId: createSourceSkuMapping
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SourceSkuMappingWrite' } } }
+      responses:
+        '201':
+          description: Mapping created
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/source-sku-mappings/{mapping_id}:
+    parameters:
+      - $ref: '#/components/parameters/MappingId'
+    get:
+      tags: [MasterData]
+      operationId: getSourceSkuMapping
+      responses:
+        '200':
+          description: Mapping detail
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [MasterData]
+      operationId: updateSourceSkuMapping
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/SourceSkuMappingPatch' } } }
+      responses:
+        '200':
+          description: Mapping updated for future orders; existing snapshots are unchanged
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/provider-sku-mappings:
+    get:
+      tags: [MasterData]
+      operationId: listProviderSkuMappings
+      parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/Size' }]
+      responses:
+        '200':
+          description: Provider SKU mappings
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataPage' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [MasterData]
+      operationId: createProviderSkuMapping
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProviderSkuMappingWrite' } } }
+      responses:
+        '201':
+          description: Provider SKU mapping created
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/provider-sku-mappings/{mapping_id}:
+    parameters:
+      - $ref: '#/components/parameters/MappingId'
+    get:
+      tags: [MasterData]
+      operationId: getProviderSkuMapping
+      responses:
+        '200':
+          description: Provider mapping detail
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [MasterData]
+      operationId: updateProviderSkuMapping
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProviderSkuMappingPatch' } } }
+      responses:
+        '200':
+          description: Provider mapping updated for future exports
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-providers:
+    get:
+      tags: [MasterData]
+      operationId: listFulfillmentProviders
+      responses:
+        '200':
+          description: Fulfillment providers
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FulfillmentProvider' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-providers/{provider_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProviderId'
+    get:
+      tags: [MasterData]
+      operationId: getFulfillmentProvider
+      responses:
+        '200':
+          description: Provider detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FulfillmentProvider' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [MasterData]
+      operationId: updateFulfillmentProvider
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FulfillmentProviderPatch' }
+      responses:
+        '200':
+          description: Provider SLA or display fields updated; existing SLA snapshots unchanged
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FulfillmentProvider' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/connectors:
+    get:
+      tags: [Connectors]
+      operationId: listConnectors
+      responses:
+        '200':
+          description: Four source-channel connector configurations
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ConnectorConfig' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/connectors/{source_channel}:
+    parameters:
+      - $ref: '#/components/parameters/SourceChannelPath'
+    get:
+      tags: [Connectors]
+      operationId: getConnector
+      responses:
+        '200':
+          description: Connector mode and non-secret configuration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectorConfig' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [Connectors]
+      operationId: updateConnector
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectorPatch' }
+      responses:
+        '200':
+          description: Non-secret connector configuration updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectorConfig' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/connectors/{source_channel}/test-connection:
+    parameters:
+      - $ref: '#/components/parameters/SourceChannelPath'
+    post:
+      tags: [Connectors]
+      operationId: testConnectorConnection
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: Mock or real adapter connection result; does not advance orders
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConnectionTestResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/jd-warehouse/owners:
+    get:
+      summary: Discover authorized JD business units
+      tags: [Fulfillment]
+      operationId: queryJdOwners
+      description: Read-only JD Logistics SDK query using the authorized PIN. Contact names, phone numbers, email addresses and physical addresses are removed from the response.
+      responses:
+        '200':
+          description: Normalized and privacy-filtered JD SDK result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JdQueryResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/jd-warehouse/warehouses:
+    get:
+      summary: Check JD warehouse query permission
+      tags: [Fulfillment]
+      operationId: queryJdWarehouses
+      description: Read-only JD Logistics SDK permission and warehouse query.
+      parameters:
+        - name: warehouse_no
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Normalized JD SDK result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JdQueryResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/jd-warehouse/status:
+    get:
+      summary: Inspect JD SDK readiness without exposing credentials
+      tags: [Fulfillment]
+      operationId: getJdClientStatus
+      responses:
+        '200':
+          description: Non-secret SDK mode and readiness flags
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JdClientStatus' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/jd-warehouse/outbound-orders/{erp_delivery_no}:
+    get:
+      summary: Query JD outbound shipment facts
+      tags: [Fulfillment]
+      operationId: queryJdOutboundOrder
+      description: Read-only shipment fact query. Receiver and customer personal data are removed from the response.
+      parameters:
+        - name: erp_delivery_no
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Normalized and privacy-filtered JD SDK result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JdQueryResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/jd-warehouse/tracking:
+    get:
+      summary: Query JD tracking events
+      tags: [Fulfillment]
+      operationId: queryJdTracking
+      description: Read-only tracking query for an already known waybill or warehouse order.
+      parameters:
+        - name: waybill_no
+          in: query
+          schema: { type: string }
+        - name: warehouse_order_no
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Normalized JD SDK result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JdQueryResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/audit-logs:
+    get:
+      tags: [Audit]
+      operationId: listAuditLogs
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - name: request_id
+          in: query
+          schema: { type: string }
+        - name: trace_id
+          in: query
+          schema: { type: string }
+        - name: operator
+          in: query
+          schema: { type: string }
+        - name: service
+          in: query
+          schema: { type: string }
+        - name: operation
+          in: query
+          schema: { type: string }
+        - name: business_code
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: BUSINESS audit logs; large request/response bodies omitted from list
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditLogPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/audit-logs/{audit_id}:
+    parameters:
+      - $ref: '#/components/parameters/AuditId'
+    get:
+      tags: [Audit]
+      operationId: getAuditLog
+      responses:
+        '200':
+          description: Audit request/response snapshot with secret redaction
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditLog' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/analytics/channels:
+    get:
+      tags: [Analytics]
+      operationId: getChannelAnalytics
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - name: source_channel
+          in: query
+          schema: { $ref: '#/components/schemas/SourceChannel' }
+      responses:
+        '200':
+          description: Channel by natural day metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ChannelMetric' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/analytics/products:
+    get:
+      tags: [Analytics]
+      operationId: getProductAnalytics
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - name: source_channel
+          in: query
+          schema: { $ref: '#/components/schemas/SourceChannel' }
+        - name: product_id
+          in: query
+          schema: { $ref: '#/components/schemas/Identifier' }
+        - name: sku_id
+          in: query
+          schema: { $ref: '#/components/schemas/Identifier' }
+        - name: category_id
+          in: query
+          schema: { $ref: '#/components/schemas/Identifier' }
+      responses:
+        '200':
+          description: Canonical SKU units; bundles expanded to components
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProductMetric' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/analytics/fulfillments:
+    get:
+      tags: [Analytics]
+      operationId: getFulfillmentAnalytics
+      parameters:
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - name: source_channel
+          in: query
+          description: Limits fulfillment, backlog, funnel, and tracking metrics to one source channel.
+          schema: { $ref: '#/components/schemas/SourceChannel' }
+        - name: provider_id
+          in: query
+          schema: { $ref: '#/components/schemas/Identifier' }
+      responses:
+        '200':
+          description: Fulfillment, stock-out, procurement, waiting, and sync metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FulfillmentMetric' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /internal/v1/orders:
+    post:
+      tags: [Internal]
+      operationId: createInternalOrder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InternalOrderInput' }
+      responses:
+        '201':
+          description: BUSINESS order created; review cases may also be created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /internal/v1/orders/{order_id}/revisions:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    post:
+      tags: [Internal]
+      operationId: reviseInternalOrder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderRevisionInput' }
+      responses:
+        '200':
+          description: Revision applied, or review created if fulfillment is committed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /internal/v1/procurement/tickets/{ticket_id}/receipts:
+    parameters:
+      - $ref: '#/components/parameters/TicketId'
+    post:
+      tags: [Internal, Procurement]
+      operationId: recordProcurementReceipt
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProcurementReceiptInput' }
+      responses:
+        '201':
+          description: Append-only procurement receipt recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementReceipt' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /demo/v1/scenarios:
+    get:
+      tags: [Demo]
+      operationId: listDemoScenarios
+      responses:
+        '200':
+          description: Fixed demo scenario definitions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DemoScenario' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [Demo]
+      operationId: runDemoScenario
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scenario_code]
+              properties:
+                scenario_code: { type: string, maxLength: 64 }
+      responses:
+        '201':
+          description: Isolated DemoRun completed through mock timeline
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DemoRun' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /demo/v1/runs/{run_id}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      tags: [Demo]
+      operationId: getDemoRun
+      responses:
+        '200':
+          description: Isolated demo run and order summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DemoRun' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /demo/v1/extracted-orders:
+    post:
+      tags: [Demo]
+      operationId: runExtractedDemoOrder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DemoExtractedOrderInput' }
+      responses:
+        '201':
+          description: Human-confirmed AI draft stored and completed as an isolated DemoRun
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DemoRun' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: Nginx authenticates management, internal, and demo operations; explicitly public connector callbacks use their own signatures.
+  headers:
+    RequestId:
+      description: Request correlation identifier
+      schema: { type: string }
+  responses:
+    ErrorResponse:
+      description: Unified business or technical error
+      headers:
+        X-Request-Id: { $ref: '#/components/headers/RequestId' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+    Size:
+      name: size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+    Sort:
+      name: sort
+      in: query
+      description: Repeatable field,asc or field,desc using an operation allow-list
+      schema:
+        type: array
+        items: { type: string }
+      style: form
+      explode: true
+    DateFrom:
+      name: date_from
+      in: query
+      schema: { type: string, format: date }
+    DateTo:
+      name: date_to
+      in: query
+      schema: { type: string, format: date }
+    BusinessDate:
+      name: business_date
+      in: query
+      description: Asia/Shanghai natural day; defaults to today
+      schema: { type: string, format: date }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 255 }
+    Operator:
+      name: X-Operator
+      in: header
+      required: true
+      description: Required at the backend seam; the public gateway overwrites this value with the authenticated principal.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    OrderId: { name: order_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    BatchId: { name: batch_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    ExportId: { name: export_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    FulfillmentId: { name: fulfillment_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    ShipmentId: { name: shipment_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    CaseId: { name: case_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    AlertId: { name: alert_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    TicketId: { name: ticket_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    CustomerId: { name: customer_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    CategoryId: { name: category_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    ProductId: { name: product_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    SkuId: { name: sku_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    MappingId: { name: mapping_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    ProviderId: { name: provider_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    AuditId: { name: audit_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    ChannelMessageId: { name: channel_message_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    WecomConnectionId:
+      name: connection_id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,63}$' }
+    WecomMessageSignature:
+      name: msg_signature
+      in: query
+      required: true
+      schema: { type: string, pattern: '^[a-f0-9]{40}$' }
+    WecomTimestamp:
+      name: timestamp
+      in: query
+      required: true
+      schema: { type: string, pattern: '^[0-9]+$' }
+    WecomNonce:
+      name: nonce
+      in: query
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    RunId: { name: run_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    SourceChannelPath:
+      name: source_channel
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/SourceChannel' }
+  schemas:
+    Identifier:
+      type: string
+      pattern: '^[1-9][0-9]*$'
+      example: '42'
+    DecimalQuantity:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+      example: '6.000'
+    PositiveDecimalQuantity:
+      type: string
+      pattern: '^(?!0(?:\.0{1,3})?$)(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+      example: '6.000'
+    SourceChannel:
+      type: string
+      enum: [CAISHIXIAN, JUFUBAO, FEIXIANG, WECOM]
+    ImportMode:
+      type: string
+      enum: [NEW, REVISION]
+      default: NEW
+    ImportBatchStatus:
+      type: string
+      enum: [RECEIVED, PROCESSING, COMPLETED, COMPLETED_WITH_REVIEW, FAILED]
+    RawRowStatus:
+      type: string
+      enum: [RECEIVED, ACCEPTED, NEED_REVIEW, REJECTED]
+    OrderStatus:
+      type: string
+      enum: [RECEIVED, VALIDATED, SKU_MAPPED, FULFILLING, SHIPPED, SYNCED, CLOSED, NEED_REVIEW, OUT_OF_STOCK, PROCUREMENT_PENDING, FULFILLMENT_EXCEPTION, SYNC_FAILED, CANCELLED]
+    ProcessingStage:
+      type: string
+      enum: [NEED_REVIEW, READY_TO_EXPORT, PROCUREMENT_IN_PROGRESS, WAITING_PROVIDER, TRACKING_RECEIVED, RETURN_FILE_READY, COMPLETED, EXCEPTION]
+    ProcessingHealth:
+      type: string
+      enum: [BLUE, YELLOW, RED, GREEN]
+      description: Derived display projection; never accepted by a write command.
+    ShippingProgress:
+      type: string
+      enum: [NOT_SHIPPED, PARTIALLY_SHIPPED, SHIPPED]
+    FulfillmentOutcome:
+      type: string
+      enum: [IN_PROGRESS, FULLY_FULFILLED, PARTIALLY_FULFILLED, CANCELLED]
+    ShipmentStatus:
+      type: string
+      enum: [CREATED, SHIPPED, FAILED, DELIVERED]
+    ProcurementStatus:
+      type: string
+      enum: [PENDING, SUCCESS, PARTIAL, FAILED, CANCELLED]
+    ExportUsageStatus:
+      type: string
+      enum: [GENERATED_NOT_DOWNLOADED, DOWNLOADED_WAITING_RETURN, RETURNED, RETURN_OVERDUE]
+    PageMeta:
+      type: object
+      required: [page, size, total_elements, total_pages]
+      properties:
+        page: { type: integer, minimum: 0 }
+        size: { type: integer, minimum: 1 }
+        total_elements: { type: integer, format: int64, minimum: 0 }
+        total_pages: { type: integer, minimum: 0 }
+    FieldError:
+      type: object
+      required: [field, code, message]
+      properties:
+        field: { type: string }
+        code: { type: string }
+        message: { type: string }
+    ApiError:
+      type: object
+      required: [business_code, message, http_status, request_id, trace_id]
+      properties:
+        business_code: { type: string, maxLength: 64 }
+        message: { type: string }
+        http_status: { type: integer, minimum: 400, maximum: 599 }
+        request_id: { type: string }
+        trace_id: { type: string }
+        field_errors:
+          type: array
+          items: { $ref: '#/components/schemas/FieldError' }
+        details:
+          type: object
+          additionalProperties: true
+    WecomEncryptedEnvelope:
+      type: object
+      additionalProperties: false
+      required: [encrypt]
+      properties:
+        encrypt: { type: string, minLength: 1, description: Base64 AES-256-CBC ciphertext }
+    WecomEncryptedResponse:
+      type: object
+      additionalProperties: false
+      required: [encrypt, msgsignature, timestamp, nonce]
+      properties:
+        encrypt: { type: string, minLength: 1 }
+        msgsignature: { type: string, pattern: '^[a-f0-9]{40}$' }
+        timestamp: { type: string, pattern: '^[0-9]+$' }
+        nonce: { type: string, minLength: 1 }
+    ChannelMessageSummary:
+      type: object
+      additionalProperties: false
+      required: [id, corp_id, connection_id, bot_id, message_id, chat_id, chat_type, sender_user_id, message_type, content_preview, received_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        corp_id: { type: string }
+        connection_id: { type: string }
+        bot_id: { type: string }
+        message_id: { type: string }
+        chat_id: { type: string }
+        chat_type: { type: string, enum: [group, single] }
+        sender_user_id: { type: string }
+        message_type: { type: string, enum: [text] }
+        content_preview: { type: string }
+        received_at: { type: string, format: date-time }
+    ChannelMessageDetail:
+      type: object
+      additionalProperties: false
+      required: [id, corp_id, connection_id, bot_id, message_id, chat_id, chat_type, sender_user_id, message_type, content, raw_payload_ref, received_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        corp_id: { type: string }
+        connection_id: { type: string }
+        bot_id: { type: string }
+        message_id: { type: string }
+        chat_id: { type: string }
+        chat_type: { type: string, enum: [group, single] }
+        sender_user_id: { type: string }
+        message_type: { type: string, enum: [text] }
+        content: { type: string }
+        quote_type:
+          type: string
+          nullable: true
+          description: Quoted message type when the callback carries quote evidence; the bot protocol does not provide a stable parent message id.
+        quote_content: { type: string, nullable: true }
+        raw_payload_ref: { type: string, pattern: '^channel-message-payload:[1-9][0-9]*$' }
+        received_at: { type: string, format: date-time }
+    ChannelMessagePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/ChannelMessageSummary' }
+    Receiver:
+      type: object
+      required: [name, phone, address]
+      properties:
+        name: { type: string, maxLength: 128 }
+        phone: { type: string, maxLength: 64 }
+        province: { type: string, maxLength: 64 }
+        city: { type: string, maxLength: 64 }
+        district: { type: string, maxLength: 64 }
+        town: { type: string, maxLength: 64 }
+        address: { type: string, maxLength: 1000 }
+    Settlement:
+      type: object
+      required: [method, settlement_time]
+      properties:
+        method: { type: string, enum: [MONTHLY, IMMEDIATE, CREDIT_TERM, PREPAID, COD, OTHER] }
+        settlement_time: { type: string, format: date-time }
+    BundleComponentInput:
+      type: object
+      required: [product_name, specification, unit, quantity_per_bundle]
+      properties:
+        sku_code: { type: string, maxLength: 64 }
+        source_sku_ref: { type: string, maxLength: 128 }
+        product_name: { type: string, maxLength: 255 }
+        specification: { type: string, maxLength: 255 }
+        unit: { type: string, maxLength: 32 }
+        quantity_per_bundle: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+    OrderItemInput:
+      type: object
+      required: [line_type, product_name, specification, unit, quantity]
+      properties:
+        source_line_ref: { type: string, maxLength: 128 }
+        line_type: { type: string, enum: [SINGLE, CUSTOM_BUNDLE] }
+        sku_code: { type: string, maxLength: 64 }
+        source_sku_ref: { type: string, maxLength: 128 }
+        product_name: { type: string, maxLength: 255 }
+        specification: { type: string, maxLength: 255 }
+        unit: { type: string, maxLength: 32 }
+        quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        components:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/BundleComponentInput' }
+      description: components is required only for CUSTOM_BUNDLE and forbidden for SINGLE.
+    CanonicalOrderInput:
+      type: object
+      required: [source, source_ref, customer, receiver, items, settlement]
+      properties:
+        source: { $ref: '#/components/schemas/SourceChannel' }
+        source_ref: { type: string, maxLength: 255 }
+        source_version: { type: string, maxLength: 64 }
+        customer:
+          type: object
+          required: [source_customer_ref, name]
+          properties:
+            customer_code: { type: string, maxLength: 64 }
+            source_customer_ref: { type: string, maxLength: 128 }
+            name: { type: string, maxLength: 255 }
+        receiver: { $ref: '#/components/schemas/Receiver' }
+        items:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/OrderItemInput' }
+        settlement: { $ref: '#/components/schemas/Settlement' }
+        remark: { type: string, maxLength: 2000 }
+        evidence_refs:
+          type: array
+          items: { type: string, maxLength: 1000 }
+    InternalOrderInput:
+      allOf:
+        - $ref: '#/components/schemas/CanonicalOrderInput'
+        - type: object
+          properties:
+            source: { type: string, enum: [WECOM] }
+    OrderRevisionInput:
+      allOf:
+        - $ref: '#/components/schemas/InternalOrderInput'
+        - type: object
+          required: [source_version, expected_version]
+          properties:
+            expected_version: { type: integer, format: int64, minimum: 0 }
+            change_reason: { type: string, minLength: 1, maxLength: 255 }
+    OrderLine:
+      type: object
+      required: [id, line_no, line_type, product_name, specification, unit, requested_quantity, processing_stage]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        line_no: { type: integer, minimum: 1 }
+        line_type: { type: string, enum: [SINGLE, CUSTOM_BUNDLE] }
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        sku_code: { type: string }
+        provider_id: { $ref: '#/components/schemas/Identifier' }
+        product_name: { type: string }
+        specification: { type: string }
+        unit: { type: string }
+        source_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        mapping_multiplier: { $ref: '#/components/schemas/DecimalQuantity' }
+        requested_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        processing_stage: { $ref: '#/components/schemas/ProcessingStage' }
+        exception_code: { type: string }
+        components:
+          type: array
+          items: { $ref: '#/components/schemas/OrderLineComponent' }
+    OrderLineComponent:
+      type: object
+      required: [id, sku_id, product_name, specification, unit, quantity_per_bundle, total_quantity]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        product_name: { type: string }
+        specification: { type: string }
+        unit: { type: string }
+        quantity_per_bundle: { $ref: '#/components/schemas/DecimalQuantity' }
+        total_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+    OrderSummary:
+      type: object
+      required: [id, order_no, source_channel, order_status, processing_stage, processing_health, completed_count, total_count, created_at, version]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        order_no: { type: string }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        source_ref: { type: string }
+        customer_id: { $ref: '#/components/schemas/Identifier' }
+        customer_name: { type: string }
+        receiver_name: { type: string }
+        order_status: { $ref: '#/components/schemas/OrderStatus' }
+        processing_stage: { $ref: '#/components/schemas/ProcessingStage' }
+        processing_health: { $ref: '#/components/schemas/ProcessingHealth' }
+        completed_count: { type: integer, minimum: 0 }
+        total_count: { type: integer, minimum: 1 }
+        attention_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, format: int64, minimum: 0 }
+    OrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/OrderSummary'
+        - type: object
+          required: [receiver, settlement, lines, review_cases]
+          properties:
+            receiver: { $ref: '#/components/schemas/Receiver' }
+            settlement: { $ref: '#/components/schemas/Settlement' }
+            remark: { type: string }
+            lines:
+              type: array
+              items: { $ref: '#/components/schemas/OrderLine' }
+            review_cases:
+              type: array
+              items: { $ref: '#/components/schemas/ReviewCase' }
+    OrderPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/OrderSummary' }
+    OrderEvent:
+      type: object
+      required: [id, sequence_no, event_type_code, operator, payload, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        sequence_no: { type: integer, format: int64, minimum: 1 }
+        event_type_code: { type: string }
+        order_line_id: { $ref: '#/components/schemas/Identifier' }
+        fulfillment_id: { $ref: '#/components/schemas/Identifier' }
+        shipment_id: { $ref: '#/components/schemas/Identifier' }
+        procurement_ticket_id: { $ref: '#/components/schemas/Identifier' }
+        operator: { type: string }
+        payload: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+    OrderVersion:
+      type: object
+      required: [version_no, change_reason, triggered_by, snapshot, created_at]
+      properties:
+        version_no: { type: integer, format: int64, minimum: 1 }
+        source_version: { type: string }
+        change_reason: { type: string }
+        triggered_by: { type: string }
+        snapshot: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+    CorrectionOrderCommand:
+      type: object
+      required: [expected_version, reason, corrected_order]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 0 }
+        reason: { type: string, minLength: 1, maxLength: 255 }
+        corrected_order: { $ref: '#/components/schemas/CanonicalOrderInput' }
+    ProviderSkuMappingReferencePreview:
+      type: object
+      required: [reference_sha256, source_sha256, source_channel, summary, reference_quality, rows]
+      properties:
+        reference_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        source_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        summary:
+          type: object
+          required: [total, matched, need_review, conflict]
+          properties:
+            total: { type: integer, minimum: 0 }
+            matched: { type: integer, minimum: 0 }
+            need_review: { type: integer, minimum: 0 }
+            conflict: { type: integer, minimum: 0 }
+        reference_quality:
+          type: object
+          required: [provider_sku_count, blank_provider_codes, duplicate_provider_codes, conflicting_source_names, bundle_count, ambiguous_bundle_rows]
+          properties:
+            provider_sku_count: { type: integer, minimum: 0 }
+            blank_provider_codes: { type: integer, minimum: 0 }
+            duplicate_provider_codes: { type: integer, minimum: 0 }
+            conflicting_source_names: { type: integer, minimum: 0 }
+            bundle_count: { type: integer, minimum: 0 }
+            ambiguous_bundle_rows:
+              type: integer
+              minimum: 0
+              description: Rows with component-like fields but no attributable bundle name; never auto-imported
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderSkuMappingReferenceRow' }
+    ProviderSkuMappingReferenceRow:
+      type: object
+      required: [sheet_name, sheet_index, row_index, source_sku_ref, source_product_name, source_quantity, match_status, reason_code, reason, bundle_components]
+      properties:
+        sheet_name: { type: string }
+        sheet_index: { type: integer, minimum: 0 }
+        row_index: { type: integer, minimum: 1 }
+        source_sku_ref: { type: string }
+        source_product_name: { type: string }
+        source_quantity: { type: string }
+        match_status: { type: string, enum: [MATCHED, NEED_REVIEW, CONFLICT] }
+        reason_code:
+          type: string
+          enum: [EXACT_NAME_MATCH, NO_EXACT_NAME_MATCH, SOURCE_SKU_NAME_CONFLICT, REFERENCE_MAPPING_CONFLICT]
+        reason: { type: string }
+        quantity_multiplier: { type: string, pattern: '^\\d+(\\.\\d{3})$' }
+        provider_sku_code: { type: string }
+        provider_sku_name: { type: string }
+        bundle_components:
+          type: array
+          items:
+            type: object
+            required: [provider_sku_code, quantity_per_bundle]
+            properties:
+              provider_sku_code: { type: string }
+              provider_sku_name: { type: string }
+              quantity_per_bundle: { type: string, pattern: '^\\d+(\\.\\d{3})$' }
+    ImportBatch:
+      type: object
+      required: [id, batch_no, batch_type, import_mode, template_family, template_version, original_file_name, content_sha256, status, row_counts, received_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        batch_no: { type: string }
+        batch_type: { type: string, enum: [SOURCE_ORDER, PROVIDER_TRACKING] }
+        import_mode: { $ref: '#/components/schemas/ImportMode' }
+        parent_import_batch_id: { $ref: '#/components/schemas/Identifier' }
+        revision_no: { type: integer, minimum: 1 }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        fulfillment_provider_id: { $ref: '#/components/schemas/Identifier' }
+        source_fulfillment_export_id: { $ref: '#/components/schemas/Identifier' }
+        template_family: { type: string }
+        template_version: { type: string }
+        template_fingerprint: { type: string }
+        original_file_name: { type: string }
+        content_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        status: { $ref: '#/components/schemas/ImportBatchStatus' }
+        row_counts:
+          type: object
+          required: [total, accepted, need_review, rejected]
+          properties:
+            total: { type: integer, minimum: 0 }
+            accepted: { type: integer, minimum: 0 }
+            need_review: { type: integer, minimum: 0 }
+            rejected: { type: integer, minimum: 0 }
+        generated_fulfillment_export_ids:
+          type: array
+          items: { $ref: '#/components/schemas/Identifier' }
+        generated_source_return_export_ids:
+          type: array
+          items: { $ref: '#/components/schemas/Identifier' }
+        error_detail: { type: object, additionalProperties: true }
+        received_at: { type: string, format: date-time }
+        processed_at: { type: string, format: date-time }
+    RawImportRow:
+      type: object
+      required: [id, sheet_name, sheet_index, row_index, raw_cells, status]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        sheet_name: { type: string }
+        sheet_index: { type: integer, minimum: 0 }
+        row_index: { type: integer, minimum: 1 }
+        raw_cells:
+          oneOf:
+            - { type: object, additionalProperties: true }
+            - { type: array, items: {} }
+        source_order_ref: { type: string }
+        status: { $ref: '#/components/schemas/RawRowStatus' }
+        error_code: { type: string }
+        error_detail: { type: object, additionalProperties: true }
+        order_id: { $ref: '#/components/schemas/Identifier' }
+        order_line_id: { $ref: '#/components/schemas/Identifier' }
+    RawImportRowPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/RawImportRow' }
+    Tracking:
+      type: object
+      required: [id, logistics_company_code, logistics_company_name, tracking_number, received_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        logistics_company_code: { type: string }
+        logistics_company_name: { type: string }
+        tracking_number: { type: string }
+        provider_tracking_batch_id: { $ref: '#/components/schemas/Identifier' }
+        received_at: { type: string, format: date-time }
+    ShipmentItem:
+      type: object
+      required: [fulfillment_id, order_line_id, instructed_quantity]
+      properties:
+        fulfillment_id: { $ref: '#/components/schemas/Identifier' }
+        order_line_id: { $ref: '#/components/schemas/Identifier' }
+        product_name: { type: string }
+        instructed_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        unit: { type: string }
+    Shipment:
+      type: object
+      required: [id, shipment_no, order_id, provider_id, outbound_order_no, shipment_sequence, shipment_status, receiver, items, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        shipment_no: { type: string }
+        order_id: { $ref: '#/components/schemas/Identifier' }
+        provider_id: { $ref: '#/components/schemas/Identifier' }
+        outbound_order_no:
+          type: string
+          pattern: '^[0-9]{12}$'
+          description: System-generated Shanghai yyyyMMdd plus four-digit daily atomic sequence.
+        shipment_sequence: { type: integer, minimum: 1 }
+        shipment_status: { $ref: '#/components/schemas/ShipmentStatus' }
+        receiver: { $ref: '#/components/schemas/Receiver' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ShipmentItem' }
+        tracking: { $ref: '#/components/schemas/Tracking' }
+        shipped_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Actual shipment time when supplied; null means the provider did not provide one and is never replaced by receipt or confirmation time.
+        created_at: { type: string, format: date-time }
+    ShipmentPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Shipment' }
+    Fulfillment:
+      type: object
+      required: [id, fulfillment_no, order_line_id, provider_id, requested_quantity, cumulative_shipped_quantity, cancelled_quantity, shipping_progress, outcome, version]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        fulfillment_no: { type: string }
+        order_line_id: { $ref: '#/components/schemas/Identifier' }
+        provider_id: { $ref: '#/components/schemas/Identifier' }
+        requested_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        cumulative_shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        cancelled_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        shipping_progress: { $ref: '#/components/schemas/ShippingProgress' }
+        outcome: { $ref: '#/components/schemas/FulfillmentOutcome' }
+        exception_code: { type: string }
+        exception_reason: { type: string }
+        version: { type: integer, format: int64, minimum: 0 }
+    FulfillmentDetail:
+      allOf:
+        - $ref: '#/components/schemas/Fulfillment'
+        - type: object
+          required: [shipments, procurement_tickets]
+          properties:
+            shipments:
+              type: array
+              items: { $ref: '#/components/schemas/Shipment' }
+            procurement_tickets:
+              type: array
+              items: { $ref: '#/components/schemas/ProcurementTicket' }
+    ContinuationExportCommand:
+      type: object
+      required: [expected_version, instructed_quantity, remark]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 0 }
+        instructed_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        remark: { type: string, minLength: 1, maxLength: 1000 }
+    ContinuationExport:
+      type: object
+      required: [fulfillment_id, shipment_id, shipment_sequence, fulfillment_export_id, instructed_quantity, fulfillment_version]
+      properties:
+        fulfillment_id: { $ref: '#/components/schemas/Identifier' }
+        shipment_id: { $ref: '#/components/schemas/Identifier' }
+        shipment_sequence: { type: integer, minimum: 2 }
+        fulfillment_export_id: { $ref: '#/components/schemas/Identifier' }
+        instructed_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        fulfillment_version: { type: integer, format: int64, minimum: 1 }
+    FulfillmentPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Fulfillment' }
+    FulfillmentExportLine:
+      type: object
+      required: [export_line_no, shipment_id, fulfillment_id, order_line_id, outbound_order_no, provider_sku_code, instructed_quantity, unit]
+      properties:
+        export_line_no: { type: integer, minimum: 1 }
+        shipment_id: { $ref: '#/components/schemas/Identifier' }
+        fulfillment_id: { $ref: '#/components/schemas/Identifier' }
+        order_line_id: { $ref: '#/components/schemas/Identifier' }
+        order_line_component_id: { $ref: '#/components/schemas/Identifier' }
+        raw_import_row_id: { $ref: '#/components/schemas/Identifier' }
+        outbound_order_no: { type: string }
+        provider_sku_code: { type: string }
+        instructed_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        unit: { type: string }
+        item_amount: { type: string, enum: ['0.00'] }
+    DownloadAudit:
+      type: object
+      required: [download_count]
+      properties:
+        download_count: { type: integer, minimum: 0 }
+        first_downloaded_at: { type: string, format: date-time }
+        last_downloaded_at: { type: string, format: date-time }
+        last_downloaded_by: { type: string }
+    FulfillmentExport:
+      type: object
+      required: [id, export_batch_no, provider_id, export_kind, template_version, file_sha256, tracking_due_at, generated_at, usage_status, download_audit]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        export_batch_no: { type: string }
+        provider_id: { $ref: '#/components/schemas/Identifier' }
+        export_kind: { type: string, enum: [JD_WAREHOUSE, THIRD_PARTY] }
+        template_version: { type: string }
+        file_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        tracking_due_at: { type: string, format: date-time }
+        generated_at: { type: string, format: date-time }
+        usage_status: { $ref: '#/components/schemas/ExportUsageStatus' }
+        download_audit: { $ref: '#/components/schemas/DownloadAudit' }
+        tracking_import_batch_id: { $ref: '#/components/schemas/Identifier' }
+    FulfillmentExportDetail:
+      allOf:
+        - $ref: '#/components/schemas/FulfillmentExport'
+        - type: object
+          required: [lines]
+          properties:
+            lines:
+              type: array
+              items: { $ref: '#/components/schemas/FulfillmentExportLine' }
+    FulfillmentExportPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/FulfillmentExport' }
+    TrackingImportBatch:
+      allOf:
+        - $ref: '#/components/schemas/ImportBatch'
+        - type: object
+          required: [source_fulfillment_export_id]
+          properties:
+            source_fulfillment_export_id: { $ref: '#/components/schemas/Identifier' }
+            business_results:
+              type: object
+              properties:
+                shipped: { type: integer, minimum: 0 }
+                partial: { type: integer, minimum: 0 }
+                failed: { type: integer, minimum: 0 }
+            rows:
+              type: array
+              items: { $ref: '#/components/schemas/RawImportRow' }
+    SourceReturnExport:
+      type: object
+      required: [id, import_batch_id, version_no, is_final, template_version, tracking_cutoff_at, file_sha256, generated_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        import_batch_id: { $ref: '#/components/schemas/Identifier' }
+        version_no: { type: integer, minimum: 1 }
+        is_final: { type: boolean }
+        template_version: { type: string }
+        tracking_cutoff_at: { type: string, format: date-time }
+        file_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        generated_at: { type: string, format: date-time }
+    ReviewCase:
+      type: object
+      required: [id, case_no, case_type, responsible_team, reason_code, status, detail, allowed_actions, version, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        case_no: { type: string }
+        case_type: { type: string, minLength: 1, maxLength: 64 }
+        responsible_team: { type: string }
+        reason_code: { type: string }
+        status: { type: string, enum: [OPEN, RESOLVED, DISMISSED] }
+        order_id: { $ref: '#/components/schemas/Identifier' }
+        order_line_id: { $ref: '#/components/schemas/Identifier' }
+        subject_type: { type: string }
+        subject_id: { $ref: '#/components/schemas/Identifier' }
+        detail: { type: object, additionalProperties: true }
+        suggestions:
+          type: array
+          items: { type: object, additionalProperties: true }
+        allowed_actions:
+          type: array
+          items:
+            type: string
+            enum: [RESOLVE_CUSTOMER, RESOLVE_SKU, RESOLVE_CARRIER, RESOLVE_IMPORT_DATA, COMPLETE_SOURCE_FOLLOWUP]
+        resolution: { type: object, additionalProperties: true, nullable: true }
+        resolved_by: { type: string, nullable: true }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        version: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+    ReviewCasePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/ReviewCase' }
+    ResolveCustomerReviewCommand:
+      type: object
+      required: [expected_version, customer_id, source_channel, source_customer_ref, remark]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        customer_id: { $ref: '#/components/schemas/Identifier' }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        source_customer_ref: { type: string, minLength: 1 }
+        remark: { type: string, minLength: 1, maxLength: 1000 }
+    ResolveSkuReviewCommand:
+      type: object
+      required: [expected_version, sku_id, source_channel, source_sku_ref, quantity_multiplier, remark]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        source_sku_ref: { type: string, minLength: 1 }
+        quantity_multiplier: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        remark: { type: string, minLength: 1, maxLength: 1000 }
+    ResolveCarrierReviewCommand:
+      type: object
+      required: [expected_version, source_channel, internal_carrier_code, source_output_value, remark]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        internal_carrier_code: { type: string, minLength: 1 }
+        source_output_value: { type: string, minLength: 1 }
+        remark: { type: string, minLength: 1, maxLength: 1000 }
+    ResolveImportDataCommand:
+      type: object
+      required: [expected_version, corrected_fields, remark]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        corrected_fields:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+        remark: { type: string, minLength: 1, maxLength: 1000 }
+    CompleteSourceFollowupCommand:
+      type: object
+      required: [expected_version, note]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        note: { type: string, minLength: 1, maxLength: 1000 }
+    VersionedNoteCommand:
+      type: object
+      required: [expected_version, note]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        note: { type: string, minLength: 1, maxLength: 1000 }
+    OperationalAlert:
+      type: object
+      required: [id, alert_no, alert_type, severity, status, message, detail, version, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        alert_no: { type: string }
+        alert_type: { type: string }
+        severity: { type: string, enum: [YELLOW, RED] }
+        status: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED] }
+        order_id: { $ref: '#/components/schemas/Identifier' }
+        order_line_id: { $ref: '#/components/schemas/Identifier' }
+        fulfillment_id: { $ref: '#/components/schemas/Identifier' }
+        shipment_id: { $ref: '#/components/schemas/Identifier' }
+        message: { type: string }
+        detail: { type: object, additionalProperties: true }
+        acknowledged_by: { type: string, nullable: true }
+        acknowledged_at: { type: string, format: date-time, nullable: true }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        version: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+    OperationalAlertPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/OperationalAlert' }
+    JdQueryResult:
+      type: object
+      required: [success, business_code]
+      properties:
+        success: { type: boolean }
+        business_code: { type: string }
+        message: { type: string, nullable: true }
+        request_id: { type: string, nullable: true }
+        data:
+          description: SDK response data normalized to JSON; outbound-order responses exclude receiver/customer personal data.
+    JdClientStatus:
+      type: object
+      required: [client_mode, credentials_configured, tenant_configured, live_ready]
+      properties:
+        client_mode: { type: string, enum: [MOCK, REAL] }
+        credentials_configured: { type: boolean }
+        tenant_configured: { type: boolean }
+        live_ready: { type: boolean }
+    ProcurementReceipt:
+      type: object
+      required: [id, receipt_no, ticket_id, result, received_by, received_at, items]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        receipt_no: { type: string }
+        ticket_id: { $ref: '#/components/schemas/Identifier' }
+        result: { type: string, enum: [SUCCESS, PARTIAL, FAILED] }
+        expected_ship_time: { type: string, format: date-time, nullable: true }
+        source_ref: { type: string, nullable: true }
+        remark: { type: string, nullable: true }
+        received_by: { type: string }
+        received_at: { type: string, format: date-time }
+        items:
+          type: array
+          items:
+            type: object
+            required: [ticket_item_id, available_quantity]
+            properties:
+              ticket_item_id: { $ref: '#/components/schemas/Identifier' }
+              available_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+    ProcurementReceiptInput:
+      type: object
+      required: [result, items]
+      properties:
+        result: { type: string, enum: [SUCCESS, PARTIAL, FAILED] }
+        expected_ship_time: { type: string, format: date-time }
+        source_ref: { type: string, minLength: 1 }
+        remark: { type: string, maxLength: 2000 }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [ticket_item_id, available_quantity]
+            properties:
+              ticket_item_id: { $ref: '#/components/schemas/Identifier' }
+              available_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+    ProcurementTicket:
+      type: object
+      required: [id, ticket_no, fulfillment_id, status, requested_quantity, fulfilled_quantity, remaining_quantity, items, receipts, version, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        ticket_no: { type: string }
+        fulfillment_id: { $ref: '#/components/schemas/Identifier' }
+        retry_of_ticket_id: { $ref: '#/components/schemas/Identifier' }
+        status: { $ref: '#/components/schemas/ProcurementStatus' }
+        requested_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        fulfilled_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        remaining_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, sku_id, requested_quantity, fulfilled_quantity, remaining_quantity]
+            properties:
+              id: { $ref: '#/components/schemas/Identifier' }
+              sku_id: { $ref: '#/components/schemas/Identifier' }
+              component_sku_id: { $ref: '#/components/schemas/Identifier' }
+              requested_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+              fulfilled_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+              remaining_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        receipts:
+          type: array
+          items: { $ref: '#/components/schemas/ProcurementReceipt' }
+        version: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+    ProcurementTicketPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/ProcurementTicket' }
+    CancelRemainingCommand:
+      type: object
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+    MasterDataRecord:
+      type: object
+      required: [id, code, name, active, version]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        code: { type: string }
+        name: { type: string }
+        active: { type: boolean }
+        version: { type: integer, minimum: 0 }
+        attributes: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MasterDataPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/MasterDataRecord' }
+    NamedCodeWrite:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, minLength: 1, maxLength: 64 }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        active: { type: boolean, default: true }
+    NamedCodePatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        active: { type: boolean }
+      minProperties: 2
+    CustomerWrite:
+      type: object
+      required: [customer_code, customer_name]
+      properties:
+        customer_code: { type: string, minLength: 1, maxLength: 64 }
+        customer_name: { type: string, minLength: 1, maxLength: 128 }
+        department_code: { type: string, maxLength: 64 }
+        contact_name: { type: string, maxLength: 128 }
+        contact_phone: { type: string, maxLength: 32 }
+        active: { type: boolean, default: true }
+    CustomerPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        customer_name: { type: string, minLength: 1, maxLength: 128 }
+        department_code: { type: string, maxLength: 64 }
+        contact_name: { type: string, maxLength: 128 }
+        contact_phone: { type: string, maxLength: 32 }
+        active: { type: boolean }
+      minProperties: 2
+    ProductWrite:
+      type: object
+      required: [product_code, product_name, category_id]
+      properties:
+        product_code: { type: string, minLength: 1, maxLength: 64 }
+        product_name: { type: string, minLength: 1, maxLength: 128 }
+        category_id: { $ref: '#/components/schemas/Identifier' }
+        active: { type: boolean, default: true }
+    ProductPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        product_name: { type: string, minLength: 1, maxLength: 128 }
+        category_id: { $ref: '#/components/schemas/Identifier' }
+        active: { type: boolean }
+      minProperties: 2
+    SkuWrite:
+      type: object
+      required: [provider_id, product_id, specification, unit]
+      properties:
+        provider_id: { $ref: '#/components/schemas/Identifier' }
+        product_id: { $ref: '#/components/schemas/Identifier' }
+        specification: { type: string, minLength: 1, maxLength: 200 }
+        unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
+        barcode: { type: string, minLength: 1, maxLength: 64 }
+        active: { type: boolean, default: true }
+    SkuPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        specification: { type: string, minLength: 1, maxLength: 200 }
+        barcode: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        active: { type: boolean }
+      minProperties: 2
+    SourceSkuMappingWrite:
+      type: object
+      required: [source_channel, source_sku_ref, sku_id, quantity_multiplier]
+      properties:
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        source_sku_ref: { type: string, minLength: 1 }
+        source_sku_name: { type: string }
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        quantity_multiplier: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        active: { type: boolean, default: true }
+    SourceSkuMappingPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        quantity_multiplier: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        active: { type: boolean }
+      minProperties: 2
+    ProviderSkuMappingWrite:
+      type: object
+      required: [provider_id, sku_id, provider_sku_code]
+      properties:
+        provider_id: { $ref: '#/components/schemas/Identifier' }
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        provider_sku_code: { type: string, minLength: 1 }
+        provider_sku_name: { type: string }
+        active: { type: boolean, default: true }
+    ProviderSkuMappingPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        provider_sku_code: { type: string, minLength: 1 }
+        provider_sku_name: { type: string }
+        active: { type: boolean }
+      minProperties: 2
+    FulfillmentProvider:
+      type: object
+      required: [id, provider_code, provider_name, provider_type, tracking_sla_minutes, active, version]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        provider_code: { type: string }
+        provider_name: { type: string }
+        provider_type: { type: string, enum: [JD_WAREHOUSE, THIRD_PARTY] }
+        tracking_sla_minutes: { type: integer, minimum: 1 }
+        active: { type: boolean }
+        version: { type: integer, minimum: 0 }
+    FulfillmentProviderPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        provider_name: { type: string, minLength: 1 }
+        tracking_sla_minutes: { type: integer, minimum: 1 }
+        active: { type: boolean }
+      minProperties: 2
+    ConnectorConfig:
+      type: object
+      required: [source_channel, client_mode, transport_mode, enabled, version]
+      properties:
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        client_mode: { type: string, enum: [MOCK, REAL], description: Maps to connector_configs.mode. }
+        transport_mode: { type: string, enum: [EXCEL, API] }
+        enabled: { type: boolean }
+        endpoint: { type: string, format: uri, nullable: true }
+        credential_configured: { type: boolean }
+        version: { type: integer, minimum: 0 }
+    ConnectorPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        client_mode: { type: string, enum: [MOCK, REAL] }
+        transport_mode: { type: string, enum: [EXCEL, API] }
+        enabled: { type: boolean }
+        endpoint: { type: string, format: uri }
+        credential_secret_ref: { type: string, description: Secret manager reference; never return its value. }
+      minProperties: 2
+    ConnectionTestResult:
+      type: object
+      required: [success, checked_at]
+      properties:
+        success: { type: boolean }
+        checked_at: { type: string, format: date-time }
+        latency_ms: { type: integer, minimum: 0 }
+        business_code: { type: string, nullable: true }
+        message: { type: string, nullable: true }
+    AuditLog:
+      type: object
+      required: [id, data_scope, operator, actor_type, service, operation, created_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        data_scope: { type: string, enum: [BUSINESS, DEMO] }
+        operator: { type: string }
+        actor_type: { type: string, enum: [HUMAN, AGENT, SYSTEM, EXTERNAL] }
+        service: { type: string }
+        operation: { type: string }
+        order_id: { $ref: '#/components/schemas/Identifier' }
+        request_id: { type: string, nullable: true }
+        trace_id: { type: string, nullable: true }
+        request_payload: { type: object, additionalProperties: true, nullable: true }
+        response_payload: { type: object, additionalProperties: true, nullable: true }
+        http_status: { type: integer, minimum: 100, maximum: 599, nullable: true }
+        business_code: { type: string, nullable: true }
+        latency_ms: { type: integer, minimum: 0, nullable: true }
+        created_at: { type: string, format: date-time }
+    AuditLogPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/AuditLog' }
+    DashboardSummary:
+      type: object
+      required: [business_date, order_count, shipped_order_count, pending_review_count, trend, attention]
+      properties:
+        business_date: { type: string, format: date }
+        order_count: { type: integer, minimum: 0 }
+        shipped_order_count: { type: integer, minimum: 0 }
+        pending_review_count: { type: integer, minimum: 0 }
+        trend:
+          type: array
+          items:
+            type: object
+            required: [business_date, order_count, shipped_order_count]
+            properties:
+              business_date: { type: string, format: date }
+              order_count: { type: integer, minimum: 0 }
+              shipped_order_count: { type: integer, minimum: 0 }
+        attention:
+          type: array
+          items:
+            type: object
+            required: [reason_code, count, severity]
+            properties:
+              reason_code: { type: string }
+              count: { type: integer, minimum: 0 }
+              severity: { type: string, enum: [YELLOW, RED] }
+    ChannelMetric:
+      type: object
+      required: [metric_date, source_channel, order_count, order_line_count, actual_shipped_quantity, canonical_quantity, shipped_quantity, shipment_count, exception_order_count, out_of_stock_order_count, sync_failed_count]
+      properties:
+        metric_date: { type: string, format: date }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        order_count: { type: integer, minimum: 0 }
+        order_line_count: { type: integer, minimum: 0 }
+        actual_shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        canonical_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        shipment_count: { type: integer, minimum: 0 }
+        exception_order_count: { type: integer, minimum: 0 }
+        out_of_stock_order_count: { type: integer, minimum: 0 }
+        sync_failed_count: { type: integer, minimum: 0 }
+    ProductMetric:
+      type: object
+      required: [metric_date, source_channel, product_id, product_code, product_name, sku_id, sku_code, sku_name, order_count, shipment_count, actual_shipped_quantity, canonical_quantity, shipped_quantity]
+      properties:
+        metric_date: { type: string, format: date }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        category_id: { $ref: '#/components/schemas/Identifier' }
+        category_code: { type: string }
+        category_name: { type: string }
+        product_id: { $ref: '#/components/schemas/Identifier' }
+        product_code: { type: string }
+        product_name: { type: string }
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        sku_code: { type: string }
+        sku_name: { type: string }
+        order_count: { type: integer, minimum: 0 }
+        shipment_count: { type: integer, minimum: 0 }
+        actual_shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        canonical_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        source_mappings:
+          type: array
+          description: Active source SKU and package multipliers for this channel and Canonical SKU.
+          items:
+            type: object
+            required: [source_sku_ref]
+            properties:
+              source_sku_ref: { type: string }
+              source_product_name: { type: string }
+              source_specification: { type: string }
+              quantity_multiplier: { $ref: '#/components/schemas/DecimalQuantity' }
+        jd_sku_codes:
+          type: array
+          items: { type: string }
+    FulfillmentMetric:
+      type: object
+      required: [metric_date, source_channel, provider_id, provider_code, provider_name, provider_type, fulfillment_count, fulfilled_quantity, not_shipped_count, partially_shipped_count, fully_shipped_count, procurement_ticket_count, out_of_stock_fulfillment_count, awaiting_shipment_count, shipped_shipment_count, awaiting_tracking_count, tracking_received_count, awaiting_sync_count, sync_failed_count, synced_count, shipment_count, shipped_quantity, average_tracking_hours]
+      properties:
+        metric_date: { type: string, format: date }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        provider_id: { $ref: '#/components/schemas/Identifier' }
+        provider_code: { type: string }
+        provider_name: { type: string }
+        provider_type: { type: string, enum: [JD_WAREHOUSE, THIRD_PARTY] }
+        fulfillment_count: { type: integer, minimum: 0 }
+        fulfilled_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        not_shipped_count: { type: integer, minimum: 0 }
+        partially_shipped_count: { type: integer, minimum: 0 }
+        fully_shipped_count: { type: integer, minimum: 0 }
+        procurement_ticket_count: { type: integer, minimum: 0 }
+        out_of_stock_fulfillment_count: { type: integer, minimum: 0 }
+        awaiting_shipment_count: { type: integer, minimum: 0 }
+        shipped_shipment_count: { type: integer, minimum: 0 }
+        awaiting_tracking_count: { type: integer, minimum: 0 }
+        tracking_received_count: { type: integer, minimum: 0 }
+        awaiting_sync_count: { type: integer, minimum: 0 }
+        sync_failed_count: { type: integer, minimum: 0 }
+        synced_count: { type: integer, minimum: 0 }
+        shipment_count: { type: integer, minimum: 0 }
+        shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        average_tracking_hours: { type: number, format: double, minimum: 0 }
+    DemoScenario:
+      type: object
+      required: [scenario_code, scenario_name, description]
+      properties:
+        scenario_code: { type: string }
+        scenario_name: { type: string }
+        description: { type: string }
+    DemoExtractedOrderInput:
+      type: object
+      required: [confirmed, source, source_ref, customer, receiver, required_delivery_time, items, settlement]
+      properties:
+        confirmed:
+          type: boolean
+          enum: [true]
+          description: Set only by the explicit human confirmation command in the order assistant.
+        source: { type: string, enum: [WECOM] }
+        source_ref: { type: string, minLength: 1, maxLength: 128 }
+        customer:
+          type: object
+          required: [customer_name]
+          properties:
+            customer_name: { type: string, minLength: 1, maxLength: 255 }
+            customer_code: { type: string, maxLength: 64, nullable: true }
+        receiver:
+          type: object
+          required: [receiver_name, receiver_phone, address]
+          properties:
+            receiver_name: { type: string, minLength: 1, maxLength: 128 }
+            receiver_phone: { type: string, minLength: 1, maxLength: 64 }
+            address: { type: string, minLength: 1, maxLength: 1000 }
+        required_delivery_time: { type: string, format: date-time }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            required: [product_name, specification, quantity, unit]
+            properties:
+              product_name: { type: string, minLength: 1, maxLength: 255 }
+              sku_code: { type: string, maxLength: 64, nullable: true }
+              specification: { type: string, minLength: 1, maxLength: 255 }
+              quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+              unit: { type: string, minLength: 1, maxLength: 32 }
+        settlement:
+          type: object
+          required: [settlement_method, settlement_time]
+          properties:
+            settlement_method: { type: string, minLength: 1, maxLength: 64 }
+            settlement_time: { type: string, format: date-time }
+        remark: { type: string, maxLength: 2000, nullable: true }
+    DemoRun:
+      type: object
+      required: [id, run_no, scenario_code, status, data_scope, order_id, started_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        run_no: { type: string }
+        scenario_code: { type: string }
+        status: { type: string, enum: [RUNNING, SUCCEEDED, FAILED] }
+        data_scope: { type: string, enum: [DEMO] }
+        order_id: { $ref: '#/components/schemas/Identifier' }
+        order: { $ref: '#/components/schemas/DemoOrderSummary' }
+        timeline:
+          type: array
+          description: DEMO-only order events ordered by sequence_no
+          items: { $ref: '#/components/schemas/OrderEvent' }
+        extracted_order: { $ref: '#/components/schemas/DemoExtractedOrderInput' }
+        error: { $ref: '#/components/schemas/ApiError' }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+    DemoOrderSummary:
+      allOf:
+        - $ref: '#/components/schemas/OrderSummary'
+        - type: object
+          properties:
+            receiver_phone: { type: string }
+            receiver_address: { type: string }
+            lines:
+              type: array
+              items:
+                type: object
+                required: [line_no, product_name, specification, quantity, unit, processing_stage]
+                properties:
+                  line_no: { type: integer, minimum: 1 }
+                  product_name: { type: string }
+                  sku_code: { type: string, nullable: true }
+                  specification: { type: string }
+                  quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+                  unit: { type: string }
+                  processing_stage: { type: string, enum: [COMPLETED] }
