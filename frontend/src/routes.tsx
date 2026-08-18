@@ -1,7 +1,6 @@
 /**
- * 单一路由配置 —— 同时驱动侧边栏菜单与 <Routes>。
- * 后续票新增页面时：在此数组追加条目（并补对应 pages/ 目录组件），
- * 菜单与路由自动生效，无需改动 AppLayout / App。
+ * 路由装配：navigation.ts 提供无 React 的生产导航树；本文件只按 path 绑定页面与图标，
+ * 供侧边栏和 <Routes> 共同消费。
  *
  * PRD §22 导航结构 + 地图 Notes「模拟下单」演示页 + 「BI」外链。
  */
@@ -23,112 +22,100 @@ import OrderDetailPage from '@/pages/orders/OrderDetailPage';
 import ExceptionOrdersPage from '@/pages/orders/ExceptionOrdersPage';
 import OrdersPage from '@/pages/orders/OrdersPage';
 import PendingOrdersPage from '@/pages/orders/PendingOrdersPage';
+import InventoryOverviewPage from '@/pages/inventory/InventoryOverviewPage';
+import InventoryDetailsPage from '@/pages/inventory/InventoryDetailsPage';
 import { AuditLogsPage } from '@/pages/system';
 import AnalyticsPage from '@/pages/analytics/AnalyticsPage';
 import DemoOrderPage from '@/pages/demo/DemoOrderPage';
 import DashboardPage from '@/pages/dashboard/DashboardPage';
 import { CategoriesPage, ProductsPage, SkuMappingsPage, SkusPage } from '@/pages/product';
-import { FulfillmentTasksPage, JdWarehousePage, SalesOutboundPage, ShipmentsPage } from '@/pages/fulfillment';
+import {
+  FulfillmentTasksPage,
+  JdBasicInfoQueryPage,
+  JdOrderQueryPage,
+  JdReturnQueryPage,
+  JdSerialQueryPage,
+  JdStockQueryPage,
+  JdWarehousePage,
+  SalesOutboundPage,
+  ShipmentsPage,
+} from '@/pages/fulfillment';
 import ProcurementTicketsPage from '@/pages/procurement';
 import ManualReviewPage from '@/pages/workbench';
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
-import { ConnectorsPage, SystemConfigPage } from '@/pages/system';
+import { ConnectorsPage, FulfillmentProvidersPage, SystemConfigPage } from '@/pages/system';
+import { appNavigation, routeMatchScore, type NavigationNode } from '@/navigation';
 
-export interface AppRoute {
-  /** 绝对路径；含子路由的父级不渲染自身页面 */
-  path: string;
-  label: string;
+export interface AppRoute extends Omit<NavigationNode, 'children'> {
   icon?: ReactNode;
-  /** 叶子路由渲染的组件 */
   element?: ReactNode;
   children?: AppRoute[];
-  /** 外链（新标签打开），不注册为路由 */
-  external?: string;
-  /** 不在菜单展示（仍可路由） */
-  hideInMenu?: boolean;
 }
 
 const iconFontSize = 16;
 
-export const routeConfig: AppRoute[] = [
-  {
-    path: '/dashboard',
-    label: '工作台',
-    icon: <DashboardOutlined style={{ fontSize: iconFontSize }} />,
-    element: <DashboardPage />,
-  },
-  {
-    path: '/workbench',
-    label: '作业中心',
-    icon: <CheckSquareOutlined style={{ fontSize: iconFontSize }} />,
-    children: [
-      { path: '/workbench/reviews', label: '人工复核', element: <ManualReviewPage /> },
-      { path: '/workbench/channel-messages', label: '企微消息', element: <ChannelMessagesPage /> },
-      { path: '/fulfillment/tasks', label: '履约任务', element: <FulfillmentTasksPage /> },
-      { path: '/procurement/tickets', label: '采购协同', element: <ProcurementTicketsPage /> },
-      { path: '/fulfillment/sales-outbound', label: '文件作业', element: <SalesOutboundPage /> },
-      { path: '/fulfillment/shipments', label: '发货记录', element: <ShipmentsPage /> },
-      { path: '/fulfillment/jd-warehouse', label: '京东仓配', element: <JdWarehousePage /> },
-    ],
-  },
-  {
-    path: '/orders',
-    label: '订单中心',
-    icon: <UnorderedListOutlined style={{ fontSize: iconFontSize }} />,
-    children: [
-      { path: '/orders', label: '全部订单', element: <OrdersPage /> },
-      { path: '/orders/pending', label: '待处理', element: <PendingOrdersPage /> },
-      { path: '/orders/exceptions', label: '异常订单', element: <ExceptionOrdersPage /> },
-      { path: '/orders/tracking', label: '订单追踪', element: <OrderTrackingPage /> },
-      { path: '/orders/:orderId', label: '订单详情', hideInMenu: true, element: <OrderDetailPage /> },
-    ],
-  },
-  {
-    path: '/product',
-    label: '主数据',
-    icon: <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
-    children: [
-      { path: '/product/products', label: '商品档案', element: <ProductsPage /> },
-      { path: '/product/categories', label: '品类档案', element: <CategoriesPage /> },
-      { path: '/product/skus', label: '内部 SKU', element: <SkusPage /> },
-      { path: '/product/sku-mappings', label: 'SKU 映射', element: <SkuMappingsPage /> },
-    ],
-  },
-  {
-    path: '/analytics',
-    label: '经营分析',
-    icon: <BarChartOutlined style={{ fontSize: iconFontSize }} />,
-    // 原型决策 D：数据中台为单屏 bento（全局筛选条 / 图↔文字双形态 / 下钻抽屉），不再拆四个页面
-    element: <AnalyticsPage />,
-  },
-  {
-    path: '/system',
-    label: '系统管理',
-    icon: <SettingOutlined style={{ fontSize: iconFontSize }} />,
-    children: [
-      { path: '/system/connectors', label: '渠道接入', element: <ConnectorsPage /> },
-      { path: '/system/audit-logs', label: '操作审计', element: <AuditLogsPage /> },
-      { path: '/system/config', label: '系统配置', element: <SystemConfigPage /> },
-    ],
-  },
-  {
-    path: '/demo/order',
-    label: '模拟下单',
-    icon: <RocketOutlined style={{ fontSize: iconFontSize }} />,
-    element: <DemoOrderPage />,
-  },
-  {
-    path: '/bi',
-    label: '管理驾驶舱',
-    icon: <GlobalOutlined style={{ fontSize: iconFontSize }} />,
-    external: '/metabase',
-  },
-];
+const routeElements: Readonly<Record<string, ReactNode>> = {
+  '/dashboard': <DashboardPage />,
+  '/workbench/reviews': <ManualReviewPage />,
+  '/workbench/channel-messages': <ChannelMessagesPage />,
+  '/fulfillment/tasks': <FulfillmentTasksPage />,
+  '/procurement/tickets': <ProcurementTicketsPage />,
+  '/fulfillment/sales-outbound': <SalesOutboundPage />,
+  '/fulfillment/shipments': <ShipmentsPage />,
+  '/orders': <OrdersPage />,
+  '/orders/pending': <PendingOrdersPage />,
+  '/orders/exceptions': <ExceptionOrdersPage />,
+  '/orders/tracking': <OrderTrackingPage />,
+  '/orders/:orderId': <OrderDetailPage />,
+  '/inventory/overview': <InventoryOverviewPage />,
+  '/inventory/details': <InventoryDetailsPage />,
+  '/product/products': <ProductsPage />,
+  '/product/categories': <CategoriesPage />,
+  '/product/skus': <SkusPage />,
+  '/product/sku-mappings': <SkuMappingsPage />,
+  '/analytics': <AnalyticsPage />,
+  '/system/connectors': <ConnectorsPage />,
+  '/system/audit-logs': <AuditLogsPage />,
+  '/system/config': <SystemConfigPage />,
+  '/system/fulfillment-providers': <FulfillmentProvidersPage />,
+  '/fulfillment/jd-warehouse': <JdWarehousePage />,
+  '/fulfillment/jd-basicinfo': <JdBasicInfoQueryPage />,
+  '/fulfillment/jd-stock': <JdStockQueryPage />,
+  '/fulfillment/jd-serial': <JdSerialQueryPage />,
+  '/fulfillment/jd-order': <JdOrderQueryPage />,
+  '/fulfillment/jd-return': <JdReturnQueryPage />,
+  '/demo/order': <DemoOrderPage />,
+};
+
+const routeIcons: Readonly<Record<string, ReactNode>> = {
+  '/dashboard': <DashboardOutlined style={{ fontSize: iconFontSize }} />,
+  '/workbench': <CheckSquareOutlined style={{ fontSize: iconFontSize }} />,
+  '/orders': <UnorderedListOutlined style={{ fontSize: iconFontSize }} />,
+  '/inventory': <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
+  '/product': <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
+  '/analytics': <BarChartOutlined style={{ fontSize: iconFontSize }} />,
+  '/system': <SettingOutlined style={{ fontSize: iconFontSize }} />,
+  '/demo/order': <RocketOutlined style={{ fontSize: iconFontSize }} />,
+  '/bi': <GlobalOutlined style={{ fontSize: iconFontSize }} />,
+};
+
+function bindNavigationRoutes(routes: readonly NavigationNode[], depth = 0): AppRoute[] {
+  return routes.map((route) => {
+    const children = route.children?.length ? bindNavigationRoutes(route.children, depth + 1) : undefined;
+    const element = children ? undefined : routeElements[route.path];
+    if (!children && !route.external && element === undefined) {
+      throw new Error(`Missing route element for ${route.path}`);
+    }
+    return { ...route, icon: depth === 0 ? routeIcons[route.path] : undefined, element, children };
+  });
+}
+
+export const routeConfig: AppRoute[] = bindNavigationRoutes(appNavigation);
 
 /** 摊平为叶子路由列表（绝对路径）。 */
-export function flattenRoutes(routes: AppRoute[]): AppRoute[] {
+export function flattenRoutes(routes: readonly AppRoute[]): AppRoute[] {
   const result: AppRoute[] = [];
-  const walk = (items: AppRoute[]) => {
+  const walk = (items: readonly AppRoute[]) => {
     for (const r of items) {
       if (r.children?.length) walk(r.children);
       else if (!r.external) result.push(r);
@@ -138,26 +125,12 @@ export function flattenRoutes(routes: AppRoute[]): AppRoute[] {
   return result;
 }
 
-/** 段级模式匹配：':xxx' 视为通配，静态段越多越具体。 */
-function matchRoutePattern(pattern: string, pathname: string): number {
-  const pSegs = pattern.split('/').filter(Boolean);
-  const sSegs = pathname.split('/').filter(Boolean);
-  if (pSegs.length !== sSegs.length) return -1;
-  let staticCount = 0;
-  for (let i = 0; i < pSegs.length; i++) {
-    if (pSegs[i].startsWith(':')) continue;
-    if (pSegs[i] !== sSegs[i]) return -1;
-    staticCount++;
-  }
-  return staticCount;
-}
-
 /** 当前路径命中的路由（静态段最多的模式优先），供顶栏标题 / 占位页使用。 */
 export function useCurrentRoute(): AppRoute | undefined {
   const { pathname } = useLocation();
   const all = flattenRoutes(routeConfig);
   return all
-    .map((r) => ({ route: r, score: matchRoutePattern(r.path, pathname) }))
+    .map((r) => ({ route: r, score: routeMatchScore(r.path, pathname) }))
     .filter((m) => m.score >= 0)
     .sort((a, b) => b.score - a.score || b.route.path.length - a.route.path.length)[0]
     ?.route;

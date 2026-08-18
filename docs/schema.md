@@ -4,12 +4,12 @@
 依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
-和 `V2`–`V7` 增量迁移；两条路径必须得到等价的当前结构。
+和 `V2`–`V17` 增量迁移；两条路径必须得到等价的当前结构。
 
 ## 1. 设计结论
 
 - PostgreSQL 使用 `app` 业务 schema 与 `analytics` 分析 schema。
-- 当前基线共 39 张业务表、4 个分析视图和 1 个操作视图。
+- 当前权威快照共 53 张业务表、4 个分析视图和 1 个操作视图。
 - 有限且仍可能演进的状态值使用 `VARCHAR + CHECK`；可扩展的 OrderEvent 类型使用目录表。
 - 所有业务时间使用 `TIMESTAMPTZ`；Java 使用 `Instant`。来源 Excel 的无时区时间按 `Asia/Shanghai` 解释，分析视图也按上海自然日分桶。
 - 所有数量使用 `NUMERIC(18,3)`；应用写入前必须拒绝超过三位小数的输入，不能依赖数据库隐式舍入。
@@ -35,6 +35,7 @@ erDiagram
     FULFILLMENT ||--o{ SHIPMENT_ITEM : allocated
     SHIPMENT ||--|{ SHIPMENT_ITEM : contains
     SHIPMENT ||--o| TRACKING : uses
+    SHIPMENT ||--o| SHIPMENT_JD_OUTBOUND : integrates
     FULFILLMENT ||--o{ PROCUREMENT_TICKET : replenishes
     PROCUREMENT_TICKET ||--|{ PROCUREMENT_TICKET_ITEM : requests
     PROCUREMENT_TICKET ||--o{ PROCUREMENT_RECEIPT : receives
@@ -62,9 +63,9 @@ erDiagram
 | `sku_aliases` | 人工检索候选别名 | 只用于建议，不自动建立业务映射 |
 | `source_channel_skus` | 来源平台商品到内部 SKU 的显式映射 | `(source_channel, source_sku_ref)` 唯一；`quantity_multiplier` 缺失时只能进入人工复核，正值时参与来源数量换算 |
 | `provider_skus` | 内部 SKU 到履约方商品编码的映射 | provider 必须与 SKU 归属一致 |
-| `provider_stock_snapshots` | 我方负责管理库存的观测快照 | 只允许 `inventory_managed_by_us=true` 的履约方；只追加 |
+| `provider_stock_snapshots` | 标准化库存观测快照 | 我方库存允许标准快照；外部京东云仓只允许分类为 `JD_PIECE/JD_ISC_QUERY_STOCK` 的只读观测；只追加，历史单位不明时保持 `UNKNOWN` |
 
-第三方自有库存不进入 `provider_stock_snapshots`。系统维护第三方专属 SKU、生成发货指令并接收实发结果，但不采集、判断、预占或改写第三方库存。
+普通第三方自有库存不进入 `provider_stock_snapshots`。京东云仓是受控例外：系统可追加实时只读观测用于出库门禁，但不预占或改写京东库存，也不会因此获得公司自营采购资格。系统维护第三方专属 SKU、生成发货指令并接收实发结果，但不采集、判断、预占或改写其他第三方库存。
 
 ### 3.2 Excel 接入与 CanonicalOrder（6）
 
@@ -81,13 +82,14 @@ erDiagram
 
 订单来源主/子单号存在时直接使用；缺失时，Adapter 只能在同一 import batch、同一 Sheet 内把连续且 Receiver 姓名/电话/地址规范化后完全相同的行归为一个 CanonicalOrder。禁止跨 Sheet 或跨文件猜测合并。
 
-### 3.3 履约、发货与采购（9）
+### 3.3 履约、发货与采购（10）
 
 | 表 | 职责 | 关键约束 |
 |---|---|---|
 | `fulfillments` | 一条 OrderLine 的履约单元 | OrderLine 1:1；provider 固定；累计实发和取消量守恒 |
 | `shipments` | 一个出库/发货批次 | `outbound_order_no` 是系统生成的 12 位上海业务日流水且同 provider 唯一；同订单/provider 的 `shipment_sequence` 唯一且不可变；Receiver 快照不可变 |
 | `shipment_items` | Shipment 与 Fulfillment 的数量分配 | 支持“一批多行”和“一行多批”；已实发量、取消量和所有 CREATED 批次的待出库量共同守恒；礼包只能按完整份数 |
+| `shipment_jd_outbounds` | Shipment 级京东出库集成记录 | `shipment_id` / `erp_delivery_no` 唯一；独立持久同步状态、请求指纹、外部引用、失败/对账事实和当次 `client_mode`，旧记录为 `UNKNOWN` |
 | `trackings` | Shipment 的物流公司与运单号 | P0 一个 Shipment 最多一个 Tracking；运单只追加，不覆盖冲突值 |
 | `shipment_syncs` | Shipment 向来源渠道回传的状态 | `(shipment_id, source_channel)` 唯一 |
 | `procurement_tickets` | 我方库存缺口协同工单头 | 仅允许 `inventory_managed_by_us=true` 的履约方；第三方短发不能创建该工单 |
@@ -135,6 +137,26 @@ erDiagram
 | `order_events` | Order Timeline | `(order_id, sequence_no)` 唯一；可关联行、Fulfillment、Shipment、采购工单；只追加 |
 
 Timeline 按订单内 `sequence_no`/`created_at` 排序，不按事件类型字典序或定义顺序排序。
+
+### 3.7 渠道消息、草稿复核与后台任务（13）
+
+| 表 | 职责 | 关键约束 |
+|---|---|---|
+| `channel_identities` | 渠道侧客户/群身份标识 | `corp_id`/`channel_identity`/`access_type` 非空 |
+| `message_submissions` | 一条渠道消息的解析提交入口 | `submission_no` 唯一；`status ∈ RECEIVED/INTERPRETED/FAILED/DRAFTED/CONFIRMED/REJECTED`；`source_message_id → channel_messages` ON DELETE RESTRICT |
+| `message_interpretations` | 提交的 AI 解释结果（版本化） | `version >= 1`；`intent ∈ CUSTOMER_ORDER/SUPPLIER_TRACKING/ORDER_CHANGE/ORDER_CANCEL/NON_BUSINESS/NEED_REVIEW`；`structured_output` 必须为 object；`provider/model/prompt_version` 非空 |
+| `message_media` | 消息媒体证据（图片/文件/语音/视频） | 必须关联 `submission_id` 或 `channel_message_id` 至少其一（`num_nonnulls > 0`）；`media_type ∈ image/file/voice/video`；`download_status ∈ PENDING/DOWNLOADING/AVAILABLE/FAILED`；`attempts >= 0` |
+| `wecom_events` | 企微平台事件回调 | `event_type`/`msgid` 非空 |
+| `order_drafts` | 客户订单草稿（复核对象） | `draft_no` 唯一；OPEN ⟺ `confirmed_by`/`confirmed_at` 均为空，CONFIRMED/REJECTED ⟺ 两者均非空；`revision >= 0`；`customer_candidates`/`missing_fields` 为 array |
+| `order_draft_lines` | 订单草稿明细行 | `(order_draft_id, line_no)` 唯一；`line_no >= 1`；`quantity > 0`；`fulfilled_quantity >= 0`；`sku_candidates` 为 array |
+| `provider_tracking_drafts` | 运单草稿（含批量确认） | `draft_no` 唯一；status 约束同 `order_drafts`；`shipment_judgment ∈ FULL/PARTIAL/SHORTAGE/EXCEPTION`；`carrier_candidates`/`task_candidates`/`validation_issues` 为 array |
+| `async_tasks` | Worker 后台任务队列 | `idempotency_key` 唯一（幂等收敛）；`task_type`/`payload_ref` 非空；`attempts >= 0`、`max_attempts >= 1`；status ∈ PENDING/RUNNING/FINALIZING/SUCCEEDED/FAILED |
+| `agent_runs` | Agent 运行记录 | `run_id` 形如 `run_[0-9a-f]{32}`；RUNNING ⟺ `finished_at IS NULL`；FAILED ⟺ `error_type IS NOT NULL`；`input_digest` 为 64 位 hex |
+| `agent_tool_calls` | Agent 工具调用轨迹 | `sequence_no > 0`；status ∈ SUCCESS/FAILED |
+| `carrier_prefix_mapping_sets` | 运单前缀映射单例集 | `singleton_id = 1` 唯一单例；`lock_version` 乐观锁；`updated_by` 非空 |
+| `carrier_prefix_mappings` | 运单号前缀 → 承运商代码映射 | `prefix` 匹配 `^[A-Z]{1,16}$`；`carrier_code` 匹配 `^[A-Z][A-Z0-9_]{0,63}$` |
+
+消息链路血缘为 `channel_messages`（§3.5 原始证据）→ `message_submissions` → `message_interpretations`（同一提交多版本）→ 草稿（`order_drafts`/`provider_tracking_drafts`）。`message_media` 只保存证据，不参与解释；`async_tasks` 由 `InterpretationWorker` 以 `SKIP LOCKED` 租约轮询领取，`ApplicationFence.SUPERSEDED` 让被取代版本的任务成为幂等 no-op。
 
 ## 4. 状态维度
 
@@ -225,7 +247,7 @@ P0 不等待客户签收或妥投，Shipment 可以停留在 SHIPPED，且履约
 DDL 必须通过以下门槛：
 
 1. PostgreSQL 16 空库先执行 `docs/schema.sql`；应用启动时由 Flyway 按版本顺序执行全部增量 migration。
-2. `information_schema` 实测 39 张 `app` 基础表、1 个 `app` 操作视图和 4 个 `analytics` 分析视图。
+2. `information_schema` 实测 53 张 `app` 基础表、1 个 `app` 操作视图和 4 个 `analytics` 分析视图。
 3. 执行 `docs/schema-smoke.sql`，覆盖：上海业务日出库单号原子流水、运单回传与原 FulfillmentExport/provider 关联、已发货但未提供实际发货时间、非已发货状态的不一致时间拒绝、第三方库存写入拒绝、错误修订链拒绝、跨 provider/非整份礼包拒绝、重复待出库批次拒绝、跨订单导出/回填拒绝、Demo 业务隔离、京东金额非 0 拒绝、Shipment 超发拒绝、Tracking 冲突拒绝、最终回填含等待项拒绝、已导出订单字段冻结、分析视图排除 Demo 和未知实际发货日数据，以及渠道/商品实发量的乘数换算与礼包组件展开。
 4. `git diff --check` 无空白错误。
 

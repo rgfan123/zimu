@@ -1,0 +1,562 @@
+package cn.zimu.fulfillment.connector.wecom;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.WebSocket;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.UUID;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * 企业微信智能机器人长连接客户端（基于 JDK 内置 {@code java.net.http.WebSocket}，零新依赖）。
+ *
+ * <p>协议基线（官方文档 path/101463）：连接建立后发送一次 {@code aibot_subscribe}
+ * （携带 bot_id / secret，errcode=0 视为成功，连接存活期内不重复）；心跳为业务 JSON 帧
+ * {@code ping}（默认 30s，非 WS 控制帧）；入站看门狗在超过阈值无入站帧时判定僵死并主动重连；
+ * 断线指数退避重连（1s 起步、翻倍、30s 封顶 + 抖动）；收到 {@code disconnected_event} 被踢后
+ * 停止自动重连并标记 KICKED；订阅失败连续 3 次停止并标记 FAILED；应用关闭时优雅断开。
+ *
+ * <p>凭据纪律：secret 只出现在订阅帧体内，绝不进入日志、错误摘要或 readiness 投影。
+ */
+public final class WecomLongConnectionClient implements AutoCloseable {
+
+    private static final Logger log = LoggerFactory.getLogger(WecomLongConnectionClient.class);
+
+    static final long DEFAULT_INITIAL_BACKOFF_MILLIS = 1_000L;
+    static final long DEFAULT_MAX_BACKOFF_MILLIS = 30_000L;
+    static final long DEFAULT_WATCHDOG_MIN_MILLIS = 60_000L;
+    static final long DEFAULT_WATCHDOG_MAX_MILLIS = 75_000L;
+    static final int SUBSCRIBE_FAILURE_LIMIT = 3;
+    private static final long CONNECT_TIMEOUT_MILLIS = 10_000L;
+    private static final long SEND_TIMEOUT_MILLIS = 3_000L;
+
+    private final WecomProperties properties;
+    private final ObjectMapper objectMapper;
+    private final WecomConnectionStateHolder stateHolder;
+    private final HttpClient httpClient;
+    private final ScheduledExecutorService scheduler;
+    private final long initialBackoffMillis;
+    private final long maxBackoffMillis;
+    private final boolean jitterEnabled;
+    private final long watchdogMillis;
+    private final long heartbeatMillis;
+
+    private final AtomicReference<WebSocket> socket = new AtomicReference<>();
+    private final AtomicLong attemptCounter = new AtomicLong();
+    private final AtomicBoolean reconnectScheduled = new AtomicBoolean();
+    private final AtomicInteger subscribeFailures = new AtomicInteger();
+    private final AtomicInteger backoffAttempt = new AtomicInteger();
+
+    private volatile WecomFrameHandler frameHandler = WecomFrameHandler.EMPTY;
+    private volatile boolean running;
+    private volatile boolean closeHandled;
+    private volatile Instant attemptStartedAt;
+    private ScheduledFuture<?> heartbeatTask;
+    private ScheduledFuture<?> watchdogTask;
+
+    /** 生产入口：自建 HttpClient 与调度线程（daemon）。 */
+    public WecomLongConnectionClient(
+            WecomProperties properties, ObjectMapper objectMapper, WecomConnectionStateHolder stateHolder) {
+        this(
+                properties,
+                objectMapper,
+                stateHolder,
+                HttpClient.newBuilder().connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MILLIS)).build(),
+                Executors.newSingleThreadScheduledExecutor(runnable -> {
+                    Thread thread = new Thread(runnable, "wecom-long-connection");
+                    thread.setDaemon(true);
+                    return thread;
+                }),
+                DEFAULT_INITIAL_BACKOFF_MILLIS,
+                DEFAULT_MAX_BACKOFF_MILLIS,
+                true,
+                -1L);
+    }
+
+    /**
+     * 测试入口：注入 HttpClient / 调度器 / 退避与看门狗参数。watchdogMillisOverride 为 -1 时
+     * 按心跳间隔推导（2.5 倍，夹在 60–75s）。
+     */
+    WecomLongConnectionClient(
+            WecomProperties properties,
+            ObjectMapper objectMapper,
+            WecomConnectionStateHolder stateHolder,
+            HttpClient httpClient,
+            ScheduledExecutorService scheduler,
+            long initialBackoffMillis,
+            long maxBackoffMillis,
+            boolean jitterEnabled,
+            long watchdogMillisOverride) {
+        this.properties = properties;
+        this.objectMapper = objectMapper;
+        this.stateHolder = stateHolder;
+        this.httpClient = httpClient;
+        this.scheduler = scheduler;
+        this.initialBackoffMillis = Math.max(1, initialBackoffMillis);
+        this.maxBackoffMillis = Math.max(this.initialBackoffMillis, maxBackoffMillis);
+        this.jitterEnabled = jitterEnabled;
+        this.heartbeatMillis = properties.heartbeatInterval().toMillis();
+        long derivedWatchdog = Math.min(
+                DEFAULT_WATCHDOG_MAX_MILLIS, Math.max(DEFAULT_WATCHDOG_MIN_MILLIS, heartbeatMillis * 5 / 2));
+        // 看门狗阈值必须大于心跳间隔，保证 pong 应答能刷新入站基准；超长心跳时同步放大。
+        this.watchdogMillis = watchdogMillisOverride > 0
+                ? watchdogMillisOverride
+                : Math.max(derivedWatchdog, heartbeatMillis * 3 / 2);
+    }
+
+    /** 启动连接（幂等）。配置不完整时不建连，状态保持 DISCONNECTED，由 readiness 标记不可用。 */
+    public synchronized void start() {
+        if (running) {
+            return;
+        }
+        running = true;
+        stateHolder.transitionTo(WecomConnectionState.DISCONNECTED);
+        if (!properties.isConfigured()) {
+            log.info("企业微信长连接未启用或配置不完整，不建立连接（请查看 readiness 诊断）");
+            return;
+        }
+        log.info("企业微信长连接启动，心跳间隔 {}ms，看门狗阈值 {}ms", heartbeatMillis, watchdogMillis);
+        watchdogTask = scheduler.scheduleWithFixedDelay(
+                this::watchdogCheck, watchdogMillis / 3, watchdogMillis / 3, TimeUnit.MILLISECONDS);
+        connect();
+    }
+
+    /**
+     * 被动回复：透传回调 req_id 发送 {@code aibot_respond_msg}（供后续接收链路回执「已接收」）。
+     *
+     * @return 帧是否已提交发送；未订阅或发送失败返回 false
+     */
+    public boolean respond(String reqId, JsonNode body) {
+        ObjectNode frame = objectMapper.createObjectNode();
+        frame.put("cmd", "aibot_respond_msg");
+        frame.put("req_id", reqId);
+        frame.set("body", body == null ? objectMapper.createObjectNode() : body);
+        return sendRaw(frame);
+    }
+
+    /** 发送任意业务帧（内部/扩展用）：req_id 由客户端自生成。 */
+    public boolean sendFrame(String cmd, JsonNode body) {
+        ObjectNode frame = objectMapper.createObjectNode();
+        frame.put("cmd", cmd);
+        frame.put("req_id", newReqId());
+        frame.set("body", body == null ? objectMapper.createObjectNode() : body);
+        return sendRaw(frame);
+    }
+
+    /** 注入业务帧分发钩子（接收链路实现）；可随时替换。 */
+    public void setFrameHandler(WecomFrameHandler handler) {
+        this.frameHandler = handler == null ? WecomFrameHandler.EMPTY : handler;
+    }
+
+    public WecomConnectionStateHolder stateHolder() {
+        return stateHolder;
+    }
+
+    /** 应用关闭时优雅断开：不触发重连，也不构成服务端踢线告警。 */
+    public synchronized void shutdown() {
+        if (!running) {
+            return;
+        }
+        running = false;
+        cancelHeartbeatTask();
+        cancelWatchdogTask();
+        scheduler.shutdownNow();
+        WebSocket ws = socket.getAndSet(null);
+        if (ws != null && !ws.isOutputClosed()) {
+            try {
+                ws.sendClose(WebSocket.NORMAL_CLOSURE, "app shutdown");
+            } catch (RuntimeException ignored) {
+                ws.abort();
+            }
+        }
+        stateHolder.transitionTo(WecomConnectionState.DISCONNECTED);
+        log.info("企业微信长连接已优雅关闭");
+    }
+
+    @Override
+    public void close() {
+        shutdown();
+    }
+
+    private synchronized void connect() {
+        if (!running) {
+            return;
+        }
+        WecomConnectionState state = stateHolder.state();
+        if (state == WecomConnectionState.KICKED || state == WecomConnectionState.FAILED) {
+            return;
+        }
+        long id = attemptCounter.incrementAndGet();
+        closeHandled = false;
+        reconnectScheduled.set(false);
+        attemptStartedAt = Instant.now();
+        stateHolder.transitionTo(WecomConnectionState.CONNECTING);
+        URI uri;
+        try {
+            uri = URI.create(properties.getWsUrl().trim());
+        } catch (RuntimeException ex) {
+            stateHolder.recordError("连接失败: 无效的 WS 地址");
+            log.warn("企业微信长连接 WS 地址无效，等待重试");
+            scheduleReconnect();
+            return;
+        }
+        log.info("企业微信长连接建立中 (attempt {})", backoffAttempt.get() + 1);
+        httpClient
+                .newWebSocketBuilder()
+                .connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MILLIS))
+                .buildAsync(uri, new FrameListener(id))
+                .whenComplete((ws, error) -> {
+                    if (id != attemptCounter.get()) {
+                        // 已被更新的连接尝试取代
+                        if (ws != null) {
+                            ws.abort();
+                        }
+                        return;
+                    }
+                    if (error != null) {
+                        if (!running) {
+                            return;
+                        }
+                        stateHolder.recordError("连接失败: " + rootCauseSimpleName(error));
+                        log.warn("企业微信长连接建立失败: {}", rootCauseSimpleName(error));
+                        scheduleReconnect();
+                        return;
+                    }
+                    if (!running) {
+                        ws.abort();
+                        return;
+                    }
+                    socket.set(ws);
+                    sendSubscribe(ws);
+                });
+    }
+
+    private void sendSubscribe(WebSocket ws) {
+        ObjectNode frame = objectMapper.createObjectNode();
+        frame.put("cmd", "aibot_subscribe");
+        frame.put("req_id", newReqId());
+        ObjectNode body = frame.putObject("body");
+        body.put("bot_id", properties.getBotId());
+        body.put("secret", properties.getSecret());
+        // 订阅帧含 secret，绝不打印帧内容；只以 req_id 关联日志。
+        log.info("企业微信长连接发送订阅帧 req_id={}", frame.path("req_id").asText());
+        ws.sendText(frame.toString(), true)
+                .exceptionally(ex -> {
+                    log.warn("企业微信长连接订阅帧发送失败: {}", rootCauseSimpleName(ex));
+                    return null;
+                });
+    }
+
+    private void handleSubscribeResponse(JsonNode frame) {
+        int errcode = errcode(frame);
+        if (errcode == 0) {
+            subscribeFailures.set(0);
+            backoffAttempt.set(0);
+            stateHolder.transitionTo(WecomConnectionState.SUBSCRIBED);
+            stateHolder.resetHeartbeatCount();
+            stateHolder.recordError(null);
+            log.info("企业微信长连接订阅成功");
+            startHeartbeatTask();
+            return;
+        }
+        int failures = subscribeFailures.incrementAndGet();
+        stateHolder.recordError("订阅失败: errcode=" + errcode);
+        log.warn(
+                "企业微信长连接订阅失败: errcode={}（第 {}/{} 次）",
+                errcode,
+                failures,
+                SUBSCRIBE_FAILURE_LIMIT);
+        if (failures >= SUBSCRIBE_FAILURE_LIMIT) {
+            closeHandled = true;
+            cancelHeartbeatTask();
+            stateHolder.recordError("订阅连续失败 " + failures + " 次，已停止重试");
+            stateHolder.transitionTo(WecomConnectionState.FAILED);
+            WebSocket ws = socket.getAndSet(null);
+            if (ws != null) {
+                ws.abort();
+            }
+            log.error("企业微信长连接订阅连续失败 {} 次，已停止重试，请检查凭据配置", failures);
+        } else {
+            closeAndReconnect();
+        }
+    }
+
+    private void handleKicked(WebSocket ws) {
+        closeHandled = true;
+        cancelHeartbeatTask();
+        stateHolder.recordError("被新连接抢占（disconnected_event），停止自动重连");
+        stateHolder.transitionTo(WecomConnectionState.KICKED);
+        log.error("企业微信长连接被新连接抢占，已停止自动重连，需人工介入");
+        ws.abort();
+    }
+
+    private void handleText(WebSocket ws, String text) {
+        stateHolder.recordInbound();
+        JsonNode frame;
+        try {
+            frame = objectMapper.readTree(text);
+        } catch (Exception ex) {
+            log.warn("企业微信长连接收到非 JSON 帧，忽略");
+            return;
+        }
+        String cmd = text(frame, "cmd");
+        if (cmd == null || cmd.isBlank()) {
+            // 企微响应帧（订阅应答 / 心跳 pong 应答）不带 cmd，只含 errcode/headers：按当前状态路由。
+            if (stateHolder.state() == WecomConnectionState.CONNECTING) {
+                handleSubscribeResponse(frame);
+            }
+            // SUBSCRIBED 后的无 cmd 帧视为心跳应答，入站时间已在 recordInbound 刷新。
+            return;
+        }
+        switch (cmd) {
+            case "aibot_subscribe" -> handleSubscribeResponse(frame);
+            case "pong" -> {
+                // 入站已刷新看门狗；心跳应答无需额外处理
+            }
+            case "aibot_msg_callback" -> {
+                stateHolder.recordEvent("aibot_msg_callback");
+                dispatchToHandler("aibot_msg_callback", frame);
+            }
+            case "aibot_event_callback" -> {
+                String eventType = eventType(frame);
+                stateHolder.recordEvent(eventType == null ? "aibot_event_callback" : eventType);
+                dispatchToHandler("aibot_event_callback", frame);
+                if ("disconnected_event".equals(eventType)) {
+                    handleKicked(ws);
+                }
+            }
+            default -> log.debug("企业微信长连接收到未知帧类型: {}", cmd);
+        }
+    }
+
+    private void dispatchToHandler(String cmd, JsonNode frame) {
+        try {
+            frameHandler.onFrame(cmd, frame);
+        } catch (Exception ex) {
+            // 业务分发异常不得拖垮连接
+            log.warn("企业微信长连接帧分发异常: cmd={}", cmd, ex);
+        }
+    }
+
+    private void watchdogCheck() {
+        if (!running) {
+            return;
+        }
+        WecomConnectionState state = stateHolder.state();
+        if (state == WecomConnectionState.SUBSCRIBED) {
+            Instant lastInbound = stateHolder.lastInboundAt();
+            if (lastInbound != null && elapsedMillis(lastInbound) > watchdogMillis) {
+                log.warn("企业微信长连接超过 {}ms 无入站帧，判定僵死，主动重连", watchdogMillis);
+                stateHolder.recordError("连接僵死（无入站帧），主动重连");
+                closeAndReconnect();
+            }
+        } else if (state == WecomConnectionState.CONNECTING) {
+            Instant started = attemptStartedAt;
+            if (started != null && elapsedMillis(started) > watchdogMillis) {
+                log.warn("企业微信长连接连接/订阅超过 {}ms 无响应，主动重连", watchdogMillis);
+                stateHolder.recordError("连接超时（无订阅响应），主动重连");
+                closeAndReconnect();
+            }
+        }
+    }
+
+    private void startHeartbeatTask() {
+        cancelHeartbeatTask();
+        heartbeatTask = scheduler.scheduleWithFixedDelay(
+                this::sendPing, heartbeatMillis, heartbeatMillis, TimeUnit.MILLISECONDS);
+    }
+
+    private void sendPing() {
+        if (!running || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
+            return;
+        }
+        if (sendFrame("ping", null)) {
+            stateHolder.recordHeartbeat();
+        }
+    }
+
+    private void cancelHeartbeatTask() {
+        ScheduledFuture<?> task = heartbeatTask;
+        heartbeatTask = null;
+        if (task != null) {
+            task.cancel(false);
+        }
+    }
+
+    private void cancelWatchdogTask() {
+        ScheduledFuture<?> task = watchdogTask;
+        watchdogTask = null;
+        if (task != null) {
+            task.cancel(false);
+        }
+    }
+
+    /** 主动关闭当前连接并进入退避重连；被踢/封顶路径不经过这里。 */
+    private void closeAndReconnect() {
+        closeHandled = true;
+        cancelHeartbeatTask();
+        WebSocket ws = socket.getAndSet(null);
+        if (ws != null && !ws.isOutputClosed()) {
+            ws.abort();
+        }
+        scheduleReconnect();
+    }
+
+    private void scheduleReconnect() {
+        if (!running) {
+            return;
+        }
+        WecomConnectionState state = stateHolder.state();
+        if (state == WecomConnectionState.KICKED || state == WecomConnectionState.FAILED) {
+            return;
+        }
+        if (!reconnectScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        long delay = nextBackoffMillis();
+        log.info("企业微信长连接将于 {}ms 后重连", delay);
+        scheduler.schedule(this::connect, delay, TimeUnit.MILLISECONDS);
+    }
+
+    /** 指数退避（1s 起步、翻倍、封顶）+ 可选全抖动。attempt 在订阅成功后清零。 */
+    private long nextBackoffMillis() {
+        int steps = Math.min(backoffAttempt.getAndIncrement(), 20);
+        long exponential = initialBackoffMillis;
+        for (int i = 0; i < steps && exponential < maxBackoffMillis; i++) {
+            exponential = Math.min(maxBackoffMillis, exponential * 2);
+        }
+        if (!jitterEnabled) {
+            return exponential;
+        }
+        return ThreadLocalRandom.current().nextLong(exponential + 1);
+    }
+
+    private boolean sendRaw(ObjectNode frame) {
+        WebSocket ws = socket.get();
+        if (ws == null || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
+            return false;
+        }
+        try {
+            ws.sendText(frame.toString(), true).get(SEND_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+            return true;
+        } catch (Exception ex) {
+            log.warn("企业微信长连接发送帧失败: {}", rootCauseSimpleName(ex));
+            return false;
+        }
+    }
+
+    private static String newReqId() {
+        return UUID.randomUUID().toString();
+    }
+
+    /** errcode 判定：优先 body.errcode，其次顶层 errcode；缺失视为失败（fail closed）。 */
+    private static int errcode(JsonNode frame) {
+        JsonNode body = frame.path("body");
+        JsonNode value = body.isObject() && !body.path("errcode").isMissingNode()
+                ? body.path("errcode")
+                : frame.path("errcode");
+        return value.isMissingNode() || value.isNull() || !value.isNumber()
+                ? Integer.MIN_VALUE
+                : value.asInt(Integer.MIN_VALUE);
+    }
+
+    /** 事件类型判定：兼容 body.event_type / body.event / body.type 三种形状。 */
+    private static String eventType(JsonNode frame) {
+        JsonNode body = frame.path("body");
+        String type = text(body, "event_type");
+        if (type == null) {
+            type = text(body, "event");
+        }
+        if (type == null) {
+            type = text(body, "type");
+        }
+        return type;
+    }
+
+    private static String text(JsonNode node, String field) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        JsonNode value = node.get(field);
+        return value == null || value.isNull() || !value.isValueNode() ? null : value.asText();
+    }
+
+    /** 异常根因类名（稳定、不泄密）。 */
+    private static String rootCauseSimpleName(Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause.getClass().getSimpleName();
+    }
+
+    private static long elapsedMillis(Instant since) {
+        return Duration.between(since, Instant.now()).toMillis();
+    }
+
+    /** 单连接监听器：以代际 id（每次 connect 递增）判定过期，防止旧连接事件干扰新连接。 */
+    private final class FrameListener implements WebSocket.Listener {
+
+        private final long id;
+
+        FrameListener(long id) {
+            this.id = id;
+        }
+
+        private boolean isStale() {
+            return id != attemptCounter.get();
+        }
+
+        @Override
+        public CompletionStage<?> onText(WebSocket ws, CharSequence data, boolean last) {
+            if (isStale()) {
+                return null;
+            }
+            if (last) {
+                handleText(ws, data.toString());
+                // 覆盖 onText 后默认实现的 request(1) 不再生效：显式续订下一条消息，否则投递会停在第一条。
+                ws.request(1);
+            }
+            return null;
+        }
+
+        @Override
+        public CompletionStage<?> onClose(WebSocket ws, int statusCode, String reason) {
+            if (isStale() || closeHandled || !running) {
+                return null;
+            }
+            socket.compareAndSet(ws, null);
+            cancelHeartbeatTask();
+            log.info("企业微信长连接关闭: code={}", statusCode);
+            scheduleReconnect();
+            return null;
+        }
+
+        @Override
+        public void onError(WebSocket ws, Throwable error) {
+            if (isStale() || closeHandled || !running) {
+                return;
+            }
+            socket.compareAndSet(ws, null);
+            cancelHeartbeatTask();
+            stateHolder.recordError("连接异常: " + rootCauseSimpleName(error));
+            log.warn("企业微信长连接异常: {}", rootCauseSimpleName(error));
+            scheduleReconnect();
+        }
+    }
+}

@@ -1,0 +1,202 @@
+.sku-mappings-page {
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.sku-mappings-page__heading {
+  margin-bottom: 18px;
+}
+
+.sku-mappings-page__heading .ant-typography-secondary {
+  display: block;
+  margin-top: 5px;
+}
+
+.sku-mappings-page .ant-card {
+  box-shadow: none !important;
+}
+
+.sku-mappings-page .ant-card,
+.sku-mappings-page__reference,
+.sku-mappings-page .ant-btn,
+.sku-mappings-page .ant-select-selector {
+  transition-duration: 160ms !important;
+}
+
+.sku-mappings-page__reference {
+  margin-top: 18px;
+  overflow: hidden;
+}
+
+.sku-mappings-page__reference .ant-collapse-header {
+  padding: 14px 16px !important;
+}
+
+.sku-mappings-page__reference-copy {
+  display: inline-block;
+  margin-inline-start: 12px;
+  font-size: 13px;
+}
+
+.sku-mapping-reference-panel {
+  padding: 0 4px 6px;
+}
+
+.sku-matrix {
+  min-width: 0;
+}
+
+.sku-matrix__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 64px;
+  padding: 10px 16px;
+  border: 1px solid var(--ant-color-border-secondary, #e4e8ee);
+  border-radius: 10px;
+  background: var(--ant-color-bg-container, #fff);
+}
+
+.sku-matrix__filter {
+  display: grid;
+  grid-template-columns: max-content minmax(260px, 460px);
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.sku-matrix__table {
+  margin-top: 16px;
+}
+
+.sku-matrix__table .ant-table-container {
+  overflow: hidden;
+  border: 1px solid var(--ant-color-border-secondary, #e4e8ee);
+  border-radius: 10px;
+}
+
+.sku-matrix__table .ant-table-cell {
+  vertical-align: top;
+}
+
+.sku-matrix__table .ant-table-thead > tr > th {
+  background: var(--ant-color-fill-alter, #f7f9fc);
+}
+
+.sku-matrix__sku,
+.sku-matrix__provider-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sku-matrix__provider-heading .ant-typography-secondary,
+.sku-matrix__mapping-meta {
+  font-size: 12px;
+}
+
+.sku-matrix__empty-cell {
+  width: 100%;
+  min-height: 68px;
+  justify-content: flex-start;
+  color: var(--ant-color-text-tertiary, #8c94a3);
+  border: 1px dashed var(--ant-color-border, #d7dce5);
+  background: transparent;
+}
+
+.sku-matrix__empty-cell:hover {
+  color: var(--ant-color-primary, #2563eb) !important;
+  border-color: var(--ant-color-primary-border, #91b5ff);
+  background: var(--ant-color-primary-bg, #eef4ff) !important;
+}
+
+.sku-matrix__mapped-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-height: 68px;
+  padding: 8px 10px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.sku-matrix__mapped-cell:hover,
+.sku-matrix__mapped-cell:focus-visible {
+  border-color: var(--ant-color-primary-border, #91b5ff);
+  outline: none;
+  background: var(--ant-color-primary-bg, #eef4ff);
+}
+
+.sku-matrix__mapping-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sku-matrix__mapping-stack .sku-matrix__mapped-cell + .sku-matrix__mapped-cell {
+  border-top-color: var(--ant-color-border-secondary, #e4e8ee);
+}
+
+.sku-matrix__mapping-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sku-matrix__mapping-identity {
+  flex: 1;
+  min-width: 0;
+}
+
+.sku-matrix__mapping-meta {
+  color: var(--ant-color-text-secondary, #697386);
+}
+
+.sku-matrix__modal-context {
+  margin-bottom: 18px;
+}
+
+.sku-mappings-page__footnote {
+  display: block;
+  margin-top: 12px;
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .sku-matrix__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sku-matrix__filter {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .sku-mappings-page__reference-copy {
+    display: block;
+    margin-top: 3px;
+    margin-inline-start: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sku-mappings-page *,
+  .sku-mappings-page *::before,
+  .sku-mappings-page *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

@@ -3,8 +3,8 @@ spring:
     name: fulfillment-hub
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/fulfillment_hub}
-    username: ${DB_USERNAME:fulfillment}
-    password: ${DB_PASSWORD:fulfillment}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
   flyway:
     enabled: true
   jpa:
@@ -25,26 +25,104 @@ server:
   port: ${SERVER_PORT:8080}
 
 app:
+  gateway:
+    basic-auth:
+      # 全部 /api 请求都会在后端复验 Nginx 提供的 Basic Auth；缺失时默认拒绝。
+      username: ${APP_ADMIN_USER:}
+      password: ${APP_ADMIN_PASSWORD:}
+  internal-auth:
+    # 全部 /internal 请求使用独立服务身份；任一项缺失都会拒绝，而不是退回 X-Operator 自报身份。
+    service-name: ${APP_INTERNAL_SERVICE_NAME:}
+    bearer-token: ${APP_INTERNAL_SERVICE_TOKEN:}
+  inventory:
+    # 这是运营视图的 freshness 标签阈值，不是库存预占；提交京东前仍必须实时复查。
+    freshness-threshold: ${INVENTORY_FRESHNESS_THRESHOLD:PT15M}
   wecom:
-    connections:
-      business-relay:
-        enabled: ${WECOM_BUSINESS_RELAY_ENABLED:false}
-        corp-id: ${WECOM_CORP_ID:}
-        bot-id: ${WECOM_BOT_ID:}
-        token: ${WECOM_CALLBACK_TOKEN:}
-        encoding-aes-key: ${WECOM_ENCODING_AES_KEY:}
-        allowed-group-ids: ${WECOM_ALLOWED_GROUP_IDS:}
+    # 企业微信智能机器人长连接（替换旧 HTTP 回调）：缺配置时应用正常启动、连接不建立、readiness 标记不可用。
+    # 凭据只写入 git-ignored 的 backend/.env.wecom.local（0600），绝不在日志/readiness 中出现。
+    enabled: ${WECOM_ENABLED:false}
+    bot-id: ${WECOM_BOT_ID:}
+    secret: ${WECOM_SECRET:}
+    ws-url: ${WECOM_WS_URL:wss://openws.work.weixin.qq.com}
+    heartbeat-interval-seconds: ${WECOM_HEARTBEAT_INTERVAL_SECONDS:30}
+  message-worker:
+    enabled: ${MESSAGE_WORKER_ENABLED:true}
+    poll-ms: ${MESSAGE_WORKER_POLL_MS:500}
+    lease-seconds: ${MESSAGE_WORKER_LEASE_SECONDS:30}
+    backoff-seconds: ${MESSAGE_WORKER_BACKOFF_SECONDS:5}
+  message-interpreter:
+    provider: ${MESSAGE_INTERPRETER_PROVIDER:}
+    model: ${MESSAGE_INTERPRETER_MODEL:}
+    prompt-version: ${MESSAGE_INTERPRETER_PROMPT_VERSION:}
+    # DeepSeek 解释器传输配置（仅经环境变量注入，绝不在 yml/日志/DTO 中出现明文密钥）。
+    base-url: ${MESSAGE_INTERPRETER_BASE_URL:}
+    api-key: ${MESSAGE_INTERPRETER_API_KEY:}
+    request-timeout-ms: ${MESSAGE_INTERPRETER_REQUEST_TIMEOUT_MS:30000}
+    # Only these server-owned public aliases may be persisted/exposed; blank means deny all model triples.
+    public-metadata-aliases:
+      - provider: ${MESSAGE_INTERPRETER_PUBLIC_PROVIDER_ALIAS:}
+        model: ${MESSAGE_INTERPRETER_PUBLIC_MODEL_ALIAS:}
+        prompt-version: ${MESSAGE_INTERPRETER_PUBLIC_PROMPT_VERSION_ALIAS:}
+  agent:
+    # Agent 运行时模型传输配置（仅经环境变量注入，绝不在 yml/日志/DTO 中出现明文密钥）。
+    # 未配置 base-url 时注册 fail-closed 的 DefaultAgentRuntime（不连接任何模型），
+    # 与 app.message-interpreter.* 相互独立。
+    provider: ${AGENT_PROVIDER:}
+    model: ${AGENT_MODEL:}
+    base-url: ${AGENT_BASE_URL:}
+    api-key: ${AGENT_API_KEY:}
+    request-timeout-ms: ${AGENT_REQUEST_TIMEOUT_MS:30000}
+    # 服务端 allowlist：仅登记的三元组可对外暴露真实 provider/model/prompt-version，未命中一律投影为 none。
+    public-metadata-aliases:
+      - provider: ${AGENT_PUBLIC_PROVIDER_ALIAS:}
+        model: ${AGENT_PUBLIC_MODEL_ALIAS:}
+        prompt-version: ${AGENT_PUBLIC_PROMPT_VERSION_ALIAS:}
+    observability:
+      # Agent 结构化运行记录开关（08 票）：关闭时业务与审计完全不受影响（Noop provider）。
+      enabled: ${AGENT_OBSERVABILITY_ENABLED:true}
+  mcp:
+    # 轻量 MCP Server（JSON-RPC 2.0 over stdio）：启用时 stdout 专用于协议帧，应用日志必须重定向到文件。
+    enabled: ${MCP_ENABLED:false}
+    # 写工具的操作人身份，由启动方注入（环境变量 MCP_AGENT_IDENTITY）；工具参数无法伪造。
+    agent-identity: ${MCP_AGENT_IDENTITY:}
+  message-retention:
+    # NON_BUSINESS 消息默认保留 30 天；非正数表示禁用清理。清理任务可重复运行并记录审计摘要。
+    non-business-days: ${MESSAGE_RETENTION_NON_BUSINESS_DAYS:30}
+    # 每日定时清理时间（Spring cron，服务器时区）。
+    cron: ${MESSAGE_RETENTION_CRON:0 30 3 * * *}
+  carrier-prefixes:
+    carriers:
+      SF_EXPRESS:
+        name: 顺丰速运
+        enabled: true
+      JD:
+        name: 京东物流
+        enabled: true
   jd:
     client-mode: ${JD_LOP_CLIENT_MODE:MOCK}
+    # 写接口总闸：ON 才放行 /api/v1/jd-write 写端点；生产默认保持 OFF（未配置时 HTTP 403 + WRITE_MODE_DISABLED 拒绝）
+    write-mode: ${JD_LOP_WRITE_MODE:OFF}
+    # 旧通用 JD 写 HTTP 面独立锁死；仅供显式 Mock 验证，REAL 模式始终拒绝。
+    generic-http-write-mode: ${JD_GENERIC_HTTP_WRITE_MODE:OFF}
+    # Shipment 建单还要求操作人进入显式授权名单；默认空名单（拒绝），逗号分隔。
+    outbound-authorized-operators: ${JD_OUTBOUND_AUTHORIZED_OPERATORS:}
     server-url: ${JD_LOP_SERVER_URL:}
     app-key: ${JD_LOP_APP_KEY:}
     app-secret: ${JD_LOP_APP_SECRET:}
     access-token: ${JD_LOP_ACCESS_TOKEN:}
     pin: ${JD_LOP_PIN:}
     owner-no: ${JD_LOP_OWNER_NO:}
+    tracking-backfill:
+      # 默认关闭，避免未经验收的运行环境自动访问 JD；手工入口不受此开关影响。
+      enabled: ${JD_TRACKING_BACKFILL_ENABLED:false}
+      poll-ms: ${JD_TRACKING_BACKFILL_POLL_MS:60000}
+      batch-size: ${JD_TRACKING_BACKFILL_BATCH_SIZE:20}
+      min-interval: ${JD_TRACKING_BACKFILL_MIN_INTERVAL:PT1M}
   seed:
     demo-enabled: ${DEMO_SEED_ENABLED:false}
     reference-date: ${DEMO_SEED_REFERENCE_DATE:}
+    # 仅测试/开发夹具使用；正式运行环境关闭，避免重启后重建示例商品与 SKU。
+    sample-master-data-enabled: ${SAMPLE_MASTER_DATA_ENABLED:true}
     jd-initial-sku-library:
       enabled: ${JD_INITIAL_SKU_LIBRARY_ENABLED:false}
 

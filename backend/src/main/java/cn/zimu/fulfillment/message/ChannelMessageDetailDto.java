@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.message;
 
 import java.time.Instant;
+import java.util.List;
 
 /** Whitelisted evidence projection. The raw JSON stays behind its controlled reference. */
 public record ChannelMessageDetailDto(
@@ -17,4 +18,6 @@ public record ChannelMessageDetailDto(
         String quoteType,
         String quoteContent,
         String rawPayloadRef,
-        Instant receivedAt) {}
+        String submissionId,
+        Instant receivedAt,
+        List<ChannelMediaEvidenceDto> mediaRefs) {}

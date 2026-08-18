@@ -1,8 +1,8 @@
 ---
 label: wayfinder:grilling
 title: 组合品（礼包）与渠道包装换算
-status: open
-claimed_by: 
+status: closed
+claimed_by: zed-main
 blocked_by: []
 parent: wayfinder:map
 ---
@@ -39,12 +39,24 @@ parent: wayfinder:map
 - `京东商品编号.xlsx`（Sheet1 渠道别名映射 / Sheet2 礼包 BOM / Sheet3 供应商目录「易和天下」/ Sheet4 聚福宝目录）
 - 已在原型里做过呈现层验证：[frontend/prototype/dashboard-prototype.html](../../frontend/prototype/dashboard-prototype.html)
 
-## 与其他票的关系
+## 与其他票的关系（建票时判断）
 
 - `db-schema-design`（zed-main 认领中）Q1 表清单需要据此增补——本票结论出来前，商品域 schema 不宜定稿；
 - `order-state-machine`（已关闭）的行级推进与最差聚合，在礼包炸开后需要复核；
 - B2 后端构建、B5 数据中台都依赖本票。
 
+上述是建票时的历史前提。当前 Schema 与状态机已按当单定制礼包完成建模；本票最终只补齐分析口径，不再新增商品域表。
+
 ## Resolution
 
-（未解决）
+本票早期前提已被真实业务边界修正：礼包是其他部门按客户需求随订单明确传入的定制组合，不是 `京东商品编号.xlsx` 中需要长期维护的静态 BOM。每个礼包 OrderLine 保留一个 Fulfillment，清单作为当单不可变组件快照；导出时展开组件，可发完整份数按所有组件的库存短板计算。
+
+渠道包装换算使用 `source_channel_skus.quantity_multiplier`，普通 OrderLine 保存来源数量与当次乘数快照；缺失、0 或冲突不默认为 1，统一进入 NEED_REVIEW。飞象、企业微信沿用同一映射结构，未维护映射只表示待复核，不表示该渠道不做商品映射。
+
+数据中台的「实际发货数量」定义为乘算后的 Canonical SKU 实发件数：来源数量 `1` 且渠道乘数 `6` 时计 `6`；定制礼包按实发完整份数展开各组件数量，不把整份礼包只计为 `1`。重量口径不在当前 effort 内，不增加商品净重模型。
+
+### Validation
+
+- `analytics.v_channel_daily` 与 `analytics.v_product_daily` 已统一为 Canonical SKU 件数口径。
+- PostgreSQL smoke 使用「普通商品实发 10 + 2 份礼包 × 每份 2 件」断言渠道/商品实际发货数量均为 14，同时保持履约数量为 12（普通件数 10 + 礼包份数 2），防止分析口径再次混淆。
+- PostgreSQL 16 隔离临时库完整执行 `docs/schema.sql` 成功 COMMIT，`docs/schema-smoke.sql` 两个 `DO` 均通过并按设计 ROLLBACK；对象计数保持 37 表 / 4 视图 / 67 触发器，临时库已删除。

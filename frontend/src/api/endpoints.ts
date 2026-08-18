@@ -13,6 +13,7 @@ import type {
   AuditLogPage,
   ChannelMessageDetail,
   ChannelMessagePage,
+  MessageSubmissionDetail,
   ChannelMetric,
   ConnectionTestResult,
   ConnectorConfig,
@@ -28,11 +29,17 @@ import type {
   FulfillmentPage,
   FulfillmentProvider,
   ImportBatch,
+  InventoryDetailsResponse,
+  InventoryOverviewResponse,
   JdQueryResult,
   JdClientStatus,
+  JdPiecesCandidate,
+  JdPiecesImportResult,
+  JdReceiverAddressCandidate,
   MasterDataPage,
   MasterDataRecord,
   OrderDetail,
+  OrderShipment,
   OrderAssistantConfig,
   OrderAssistantSession,
   OrderEvent,
@@ -52,16 +59,26 @@ import type {
   ResolveSkuReviewCommand,
   VersionedNoteCommand,
   Shipment,
+  ShipmentJdOutboundPreview,
+  ShipmentJdOutboundSubmitResult,
+  ShipmentJdSkuMappingGateResult,
+  ShipmentJdStockCheckResult,
   ShipmentPage,
+  SkuPage,
+  SkuRecord,
   SourceReturnExport,
   TrackingImportBatch,
 } from './types';
-import { trustedWriteHeaders } from './writeHeaders';
+import { trustedWriteHeaders, type TrustedWriteHeaderOptions } from './writeHeaders';
 import { continuationExportRequest } from './continuationExport';
+import {
+  shipmentJdOutboundIdempotencyKey,
+  shipmentJdOutboundSubmitRequest,
+} from './shipmentJdOutbound';
 
 /** 写操作只由浏览器生成幂等键；操作人由受信网关认证后注入。 */
-export function writeHeaders(extra?: Record<string, string>): Record<string, string> {
-  return trustedWriteHeaders(extra);
+export function writeHeaders(options?: TrustedWriteHeaderOptions): Record<string, string> {
+  return trustedWriteHeaders(options);
 }
 
 /** 通用分页查询参数（契约 §3.3）。 */
@@ -94,6 +111,20 @@ export interface AnalyticsQuery {
   category_id?: string;
 }
 
+export interface InventoryOverviewQuery {
+  page?: number;
+  size?: number;
+  provider_id?: string;
+  sku_id?: string;
+  warehouse_code?: string;
+}
+
+export interface InventoryDetailsQuery {
+  provider_id: string;
+  sku_id: string;
+  warehouse_code?: string;
+}
+
 /** GET /api/v1/orders 的查询参数（契约 §4.1 / openapi listOrders）。 */
 export interface OrderListQuery {
   page?: number;
@@ -105,6 +136,7 @@ export interface OrderListQuery {
   order_status?: string;
   processing_stage?: string;
   processing_health?: string;
+  provider_id?: string;
   query?: string;
 }
 
@@ -128,8 +160,8 @@ export const ordersApi = {
   /** GET /api/v1/orders/{order_id}/versions —— 不可变版本列表。 */
   versions: (orderId: string) => apiRequest<OrderVersion[]>(`/api/v1/orders/${orderId}/versions`),
 
-  /** GET /api/v1/orders/{order_id}/shipments —— 分批、实发量、运单。 */
-  shipments: (orderId: string) => apiRequest<Shipment[]>(`/api/v1/orders/${orderId}/shipments`),
+  /** GET /api/v1/orders/{order_id}/shipments —— 分批、实发量、运单（不含收件人快照）。 */
+  shipments: (orderId: string) => apiRequest<OrderShipment[]>(`/api/v1/orders/${orderId}/shipments`),
 };
 
 export const demoApi = {
@@ -169,7 +201,7 @@ export const orderAssistantApi = {
     }),
 };
 
-// ---------- 商品中心（主数据，openapi MasterData 组） ----------
+// ---------- 主数据（openapi MasterData 组） ----------
 
 /** GET /api/v1/customers —— 只返回 BUSINESS 客户，供人工复核选择既有主数据。 */
 export const customersApi = {
@@ -197,11 +229,27 @@ export const productsApi = {
 
 /** GET/POST /api/v1/skus，GET/PATCH /api/v1/skus/{id}。 */
 export const skusApi = {
-  list: (query: MasterDataListQuery = {}) => apiRequest<MasterDataPage>('/api/v1/skus', { params: query as Record<string, QueryValue> }),
-  create: (body: { provider_id: string; product_id: string; specification: string; unit: string; barcode?: string; active?: boolean }) =>
-    apiRequest<MasterDataRecord>('/api/v1/skus', { method: 'POST', body, headers: writeHeaders() }),
-  update: (id: string, body: { expected_version: number; specification?: string; barcode?: string | null; active?: boolean }) =>
-    apiRequest<MasterDataRecord>(`/api/v1/skus/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
+  list: (query: MasterDataListQuery = {}) => apiRequest<SkuPage>('/api/v1/skus', { params: query as Record<string, QueryValue> }),
+  create: (body: {
+    provider_id: string;
+    product_id: string;
+    specification: string;
+    unit: string;
+    barcode?: string;
+    purchase_price?: string;
+    retail_price?: string;
+    active?: boolean;
+  }) =>
+    apiRequest<SkuRecord>('/api/v1/skus', { method: 'POST', body, headers: writeHeaders() }),
+  update: (id: string, body: {
+    expected_version: number;
+    specification?: string;
+    barcode?: string | null;
+    purchase_price?: string | null;
+    retail_price?: string | null;
+    active?: boolean;
+  }) =>
+    apiRequest<SkuRecord>(`/api/v1/skus/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
 
 /** GET/POST /api/v1/source-sku-mappings，GET/PATCH /api/v1/source-sku-mappings/{id}。 */
@@ -224,10 +272,33 @@ export const sourceSkuMappingsApi = {
 export const providerSkuMappingsApi = {
   list: (query: PageQuery = {}) =>
     apiRequest<MasterDataPage>('/api/v1/provider-sku-mappings', { params: query as Record<string, QueryValue> }),
-  create: (body: { provider_id: string; sku_id: string; provider_sku_code: string; provider_sku_name?: string; active?: boolean }) =>
+  create: (body: {
+    provider_id: string;
+    sku_id: string;
+    provider_sku_code: string;
+    provider_sku_name?: string;
+    merchant_sku_code?: string;
+    jd_pieces_per_unit?: string;
+    active?: boolean;
+  }) =>
     apiRequest<MasterDataRecord>('/api/v1/provider-sku-mappings', { method: 'POST', body, headers: writeHeaders() }),
-  update: (id: string, body: { expected_version: number; provider_sku_code?: string; provider_sku_name?: string; active?: boolean }) =>
+  update: (id: string, body: {
+    expected_version: number;
+    provider_sku_code?: string;
+    provider_sku_name?: string;
+    merchant_sku_code?: string;
+    jd_pieces_per_unit?: string;
+    active?: boolean;
+  }) =>
     apiRequest<MasterDataRecord>(`/api/v1/provider-sku-mappings/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
+  jdPiecesCandidates: () =>
+    apiRequest<JdPiecesCandidate[]>('/api/v1/provider-sku-mappings/jd-pieces-candidates'),
+  importJdPiecesPerUnit: (body: { rows: Array<{ provider_sku_code: string; jd_pieces_per_unit: string }> }) =>
+    apiRequest<JdPiecesImportResult>('/api/v1/provider-sku-mappings/jd-pieces-per-unit-imports', {
+      method: 'POST',
+      body,
+      headers: writeHeaders(),
+    }),
 };
 
 export const providerSkuMappingReferencesApi = {
@@ -242,7 +313,14 @@ export const providerSkuMappingReferencesApi = {
 /** GET /api/v1/fulfillment-providers —— 履约方目录（京东仓 + 第三方）。 */
 export const providersApi = {
   list: () => apiRequest<FulfillmentProvider[]>('/api/v1/fulfillment-providers'),
-  update: (id: string, body: { expected_version: number; provider_name?: string; tracking_sla_minutes?: number; active?: boolean }) =>
+  update: (id: string, body: {
+    expected_version: number;
+    provider_name?: string;
+    tracking_sla_minutes?: number;
+    active?: boolean;
+    /** 京东标识：字符串键必须非空，townRequired 只接受布尔；null 值清除该键。 */
+    config?: Record<string, string | boolean | null>;
+  }) =>
     apiRequest<FulfillmentProvider>(`/api/v1/fulfillment-providers/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
 
@@ -280,6 +358,59 @@ export const shipmentsApi = {
   list: (query: ShipmentListQuery) =>
     apiRequest<ShipmentPage>('/api/v1/shipments', { params: query as Record<string, QueryValue> }),
   detail: (id: string) => apiRequest<Shipment>(`/api/v1/shipments/${id}`),
+  previewJdOutbound: (id: string) =>
+    apiRequest<ShipmentJdOutboundPreview>(`/api/v1/shipments/${id}/jd-so-order-preview`),
+  submitJdOutbound: (id: string) => {
+    const request = shipmentJdOutboundSubmitRequest(id, writeHeaders({
+      idempotencyKey: shipmentJdOutboundIdempotencyKey(id),
+    }));
+    return apiRequest<ShipmentJdOutboundSubmitResult>(request.path, request.options);
+  },
+  checkJdSkuMapping: (id: string) =>
+    apiRequest<ShipmentJdSkuMappingGateResult>(`/api/v1/shipments/${id}/jd-sku-mapping-check`, {
+      method: 'POST',
+      headers: writeHeaders(),
+    }),
+  checkJdStock: (id: string) =>
+    apiRequest<ShipmentJdStockCheckResult>(`/api/v1/shipments/${id}/jd-stock-check`, {
+      method: 'POST',
+      headers: writeHeaders(),
+    }),
+  jdReceiverAddressCandidates: (params: { import_batch_id?: string; only_missing?: boolean } = {}) =>
+    apiRequest<JdReceiverAddressCandidate[]>('/api/v1/shipments/jd-receiver-address-candidates', {
+      params: params as Record<string, QueryValue>,
+    }),
+  confirmJdReceiverAddresses: (body: {
+    items: Array<{
+      shipment_id: string;
+      expected_version: number;
+      province: string;
+      city: string;
+      county: string;
+      town?: string | null;
+      detail_address: string;
+    }>;
+  }, options?: { idempotencyKey?: string }) =>
+    apiRequest<{ confirmed_count: number; items: Array<Record<string, unknown>> }>(
+      '/api/v1/shipments/jd-receiver-address-batch',
+      { method: 'POST', body, headers: writeHeaders({ idempotencyKey: options?.idempotencyKey }) },
+    ),
+};
+
+/** 已落库的跨履约方库存事实；无观测与显式零严格区分。 */
+export const inventoryApi = {
+  overview: (query: InventoryOverviewQuery = {}) =>
+    apiRequest<InventoryOverviewResponse>('/api/v1/inventory/overview', {
+      params: query as Record<string, QueryValue>,
+    }),
+  details: (query: InventoryDetailsQuery) =>
+    apiRequest<InventoryDetailsResponse>('/api/v1/inventory/details', {
+      params: {
+        provider_id: query.provider_id,
+        sku_id: query.sku_id,
+        warehouse_code: query.warehouse_code,
+      },
+    }),
 };
 
 /** GET /api/v1/fulfillment-exports + 详情 + 文件下载。 */
@@ -361,6 +492,22 @@ export const fileOperationsApi = {
     return multipartRequest<ImportBatch>('/api/v1/import-batches/source-orders', form);
   },
   getSourceBatch: (id: string) => apiRequest<ImportBatch>(`/api/v1/import-batches/${id}`),
+  confirmSourceBatch: (id: string) => apiRequest<ImportBatch>(`/api/v1/import-batches/${id}/confirm`, {
+    method: 'POST',
+    body: {},
+    headers: writeHeaders({ idempotencyKey: `import-batch-confirm-${id}` }),
+  }),
+  /** 05：对批次内京东发货批次批量触发 SDK 建单；已提交跳过，失败项可安全重试。 */
+  submitJdOutboundsForBatch: (id: string) =>
+    apiRequest<{
+      submitted_count: number;
+      skipped_count: number;
+      items: Array<Record<string, unknown>>;
+    }>(`/api/v1/import-batches/${id}/jd-outbound-submit`, {
+      method: 'POST',
+      body: {},
+      headers: writeHeaders(),
+    }),
   getSourceRows: (
     id: string,
     query: { page?: number; size?: number; status?: RawRowStatus } = {},
@@ -423,6 +570,21 @@ export const reviewCasesApi = {
     }),
   completeSourceFollowup: (id: string, body: VersionedNoteCommand) =>
     apiRequest<ReviewCase>(`/api/v1/review-cases/${id}/complete-source-followup`, {
+      method: 'POST', body, headers: writeHeaders(),
+    }),
+  /** POST /api/v1/review-cases/{id}/resolve —— 无专用动作的事项人工显式闭环。 */
+  resolve: (id: string, body: VersionedNoteCommand) =>
+    apiRequest<ReviewCase>(`/api/v1/review-cases/${id}/resolve`, {
+      method: 'POST', body, headers: writeHeaders(),
+    }),
+  /** POST /api/v1/review-cases/{id}/dismiss —— 关闭误建或不再需要的事项。 */
+  dismiss: (id: string, body: VersionedNoteCommand) =>
+    apiRequest<ReviewCase>(`/api/v1/review-cases/${id}/dismiss`, {
+      method: 'POST', body, headers: writeHeaders(),
+    }),
+  /** POST /api/v1/review-cases/{id}/resolve-jd-tracking-conflict —— 确认京东运单冲突已人工处理。 */
+  resolveJdTrackingConflict: (id: string, body: VersionedNoteCommand) =>
+    apiRequest<ReviewCase>(`/api/v1/review-cases/${id}/resolve-jd-tracking-conflict`, {
       method: 'POST', body, headers: writeHeaders(),
     }),
 };
@@ -492,6 +654,27 @@ export const channelMessagesApi = {
     }),
   /** GET /api/v1/channel-messages/{id} —— 只返回审核过的白名单字段。 */
   detail: (id: string) => apiRequest<ChannelMessageDetail>(`/api/v1/channel-messages/${id}`),
+};
+
+/**
+ * 复核页原图受权 URL（GET /api/v1/message-media/{id}/content）。
+ * 只返回受权字节（Basic Auth 校验通过即可，浏览器 <img> 无法携带 X-Operator 头），
+ * 不暴露磁盘路径、下载凭据或 aeskey。
+ */
+export function messageMediaContentUrl(mediaId: string): string {
+  return `/api/v1/message-media/${mediaId}/content`;
+}
+
+export const messageSubmissionsApi = {
+  /** GET /api/v1/message-submissions/{id} —— 提交详情、解释历史与最近任务状态。 */
+  detail: (id: string) => apiRequest<MessageSubmissionDetail>(`/api/v1/message-submissions/${id}`),
+  /** POST /api/v1/message-submissions/{id}/reinterpret —— 追加一次解释版本（新任务）。 */
+  reinterpret: (id: string) =>
+    apiRequest<MessageSubmissionDetail>(`/api/v1/message-submissions/${id}/reinterpret`, {
+      method: 'POST',
+      body: {},
+      headers: writeHeaders(),
+    }),
 };
 
 // ---------- 数据中台（Analytics） ----------

@@ -11,14 +11,15 @@ import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { ApiError, errorMessage } from '@/api/client';
-import { ordersApi } from '@/api/endpoints';
-import type { OrderLine, OrderStatus, Shipment } from '@/api/types';
+import { ordersApi, providersApi } from '@/api/endpoints';
+import type { OrderLine, OrderShipment, OrderStatus } from '@/api/types';
 import { reasonLabel } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import OrderTimeline from '@/components/OrderTimeline';
 import StatusTag from '@/components/StatusTag';
 import { reviewCaseSummary } from '@/presentation/publicReady';
-import { shipmentTimeLabel } from '@/presentation/shipment';
+import { ProductIdentity } from '@/pages/shared/ProductIdentity';
+import { jdFulfillmentPresentation, orderShipmentPublicFields } from './orderJdFulfillment';
 
 /** 主线状态（CONTEXT.md OrderStatus 主线），异常分支不在此列。 */
 const MAINLINE: OrderStatus[] = ['RECEIVED', 'VALIDATED', 'SKU_MAPPED', 'FULFILLING', 'SHIPPED', 'SYNCED'];
@@ -38,8 +39,8 @@ const lineColumns: ColumnsType<OrderLine> = [
     dataIndex: 'product_name',
     ellipsis: true,
     render: (v: string, r) => (
-      <Space size={4}>
-        {v}
+      <Space size={6} align="start">
+        <ProductIdentity name={v} code={r.sku_code} />
         {r.line_type === 'CUSTOM_BUNDLE' ? <Tag color="purple" style={{ borderRadius: 6 }}>礼包</Tag> : null}
       </Space>
     ),
@@ -64,39 +65,6 @@ const lineColumns: ColumnsType<OrderLine> = [
   },
 ];
 
-const shipmentColumns: ColumnsType<Shipment> = [
-  { title: '发货单号', dataIndex: 'shipment_no', width: 180 },
-  { title: '批次', dataIndex: 'shipment_sequence', width: 72, align: 'right' },
-  {
-    title: '状态',
-    dataIndex: 'shipment_status',
-    width: 100,
-    render: (value: Shipment['shipment_status']) => <StatusTag kind="shipmentStatus" value={value} />,
-  },
-  {
-    title: '实发量',
-    width: 90,
-    align: 'right',
-    render: (_, record) => record.items.reduce((total, item) => total + Number(item.shipped_quantity || 0), 0),
-  },
-  {
-    title: '物流公司',
-    width: 120,
-    render: (_, record) => record.tracking?.logistics_company_name ?? '—',
-  },
-  {
-    title: '运单号',
-    width: 180,
-    render: (_, record) => record.tracking?.tracking_number ?? '—',
-  },
-  {
-    title: '发货时间',
-    dataIndex: 'shipped_at',
-    width: 160,
-    render: (value?: string) => shipmentTimeLabel(value),
-  },
-];
-
 export default function OrderDetailPage() {
   const { orderId = '' } = useParams();
   const navigate = useNavigate();
@@ -104,6 +72,77 @@ export default function OrderDetailPage() {
   const detailQuery = useAsync(() => ordersApi.detail(orderId), [orderId]);
   const timelineQuery = useAsync(() => ordersApi.timeline(orderId), [orderId]);
   const shipmentsQuery = useAsync(() => ordersApi.shipments(orderId), [orderId]);
+  const providersQuery = useAsync(() => providersApi.list(), []);
+
+  const providerById = useMemo(
+    () => new Map((providersQuery.data ?? []).map((provider) => [provider.id, provider])),
+    [providersQuery.data],
+  );
+  const shipmentColumns = useMemo<ColumnsType<OrderShipment>>(() => [
+    { title: '发货单号', dataIndex: 'shipment_no', width: 150 },
+    { title: '批次', dataIndex: 'shipment_sequence', width: 64, align: 'right' },
+    {
+      title: '履约方',
+      width: 130,
+      render: (_, shipment) => providerById.get(shipment.provider_id ?? '')?.provider_name ?? shipment.provider_id ?? '—',
+    },
+    {
+      title: '发货状态',
+      dataIndex: 'shipment_status',
+      width: 100,
+      render: (value: OrderShipment['shipment_status']) => <StatusTag kind="shipmentStatus" value={value} />,
+    },
+    {
+      title: '商户出库号',
+      width: 130,
+      render: (_, shipment) => orderShipmentPublicFields(
+        shipment,
+        providerById.get(shipment.provider_id ?? '')?.provider_name ?? shipment.provider_id ?? '—',
+      ).erpDeliveryNo,
+    },
+    {
+      title: '京东出库号',
+      width: 130,
+      render: (_, shipment) => orderShipmentPublicFields(
+        shipment,
+        providerById.get(shipment.provider_id ?? '')?.provider_name ?? shipment.provider_id ?? '—',
+      ).jdDeliveryNo,
+    },
+    {
+      title: '京东同步',
+      width: 100,
+      render: (_, shipment) => {
+        const provider = providerById.get(shipment.provider_id ?? '');
+        if (provider?.provider_type !== 'JD_WAREHOUSE' && !shipment.jd_outbound) return '—';
+        const state = jdFulfillmentPresentation(shipment);
+        return <Tag color={state.tone}>{state.stateLabel}</Tag>;
+      },
+    },
+    {
+      title: '最近失败阶段',
+      width: 120,
+      render: (_, shipment) => orderShipmentPublicFields(
+        shipment,
+        providerById.get(shipment.provider_id ?? '')?.provider_name ?? shipment.provider_id ?? '—',
+      ).failurePhase,
+    },
+    {
+      title: '运单',
+      width: 190,
+      render: (_, shipment) => orderShipmentPublicFields(
+        shipment,
+        providerById.get(shipment.provider_id ?? '')?.provider_name ?? shipment.provider_id ?? '—',
+      ).tracking,
+    },
+    {
+      title: '最近更新',
+      width: 160,
+      render: (_, shipment) => dayjs(orderShipmentPublicFields(
+        shipment,
+        providerById.get(shipment.provider_id ?? '')?.provider_name ?? shipment.provider_id ?? '—',
+      ).updatedAt).format('YYYY-MM-DD HH:mm'),
+    },
+  ], [providerById]);
 
   const detail = detailQuery.data;
   const notFound = detailQuery.error instanceof ApiError && detailQuery.error.status === 404;
@@ -279,6 +318,16 @@ export default function OrderDetailPage() {
               style={{ borderRadius: 10, boxShadow: '0 1px 2px rgba(16,24,40,.05), 0 2px 8px rgba(16,24,40,.06)' }}
               styles={{ body: { padding: '4px 8px' } }}
             >
+              {providersQuery.error ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="履约方信息加载失败"
+                  description={`${errorMessage(providersQuery.error)}；已有的京东出库与运单事实仍按 Shipment 记录展示。`}
+                  action={<Button size="small" icon={<ReloadOutlined />} onClick={providersQuery.reload}>重试</Button>}
+                  style={{ margin: '8px 0' }}
+                />
+              ) : null}
               {shipmentsQuery.error ? (
                 <Alert
                   type="error"
@@ -288,14 +337,14 @@ export default function OrderDetailPage() {
                   action={<Button size="small" icon={<ReloadOutlined />} onClick={shipmentsQuery.reload}>重试</Button>}
                 />
               ) : (
-                <Table<Shipment>
+                <Table<OrderShipment>
                   rowKey="id"
                   size="small"
                   columns={shipmentColumns}
                   dataSource={shipmentsQuery.data ?? []}
                   loading={shipmentsQuery.loading}
                   pagination={false}
-                  scroll={{ x: 920 }}
+                  scroll={{ x: 1270 }}
                   locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无发货记录" /> }}
                   expandable={{
                     expandedRowRender: (shipment) => (

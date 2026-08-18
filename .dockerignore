@@ -1,0 +1,14 @@
+.git
+.codegraph
+.scratch
+.playwright-cli
+**/.env*
+backend/target
+frontend/node_modules
+frontend/dist
+prototype/*
+!prototype/customer-order-assistant/
+!prototype/customer-order-assistant/app.py
+!prototype/customer-order-assistant/static/
+!prototype/customer-order-assistant/static/**
+docs/research

@@ -5,8 +5,8 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: fulfillment_hub
-      POSTGRES_USER: ${POSTGRES_USER:-fulfillment}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fulfillment}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in the deployment environment}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the deployment environment}
       TZ: Asia/Shanghai
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -34,32 +34,57 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    env_file:
+      - ./backend/.env.jd.uat.local
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/fulfillment_hub
-      DB_USERNAME: ${POSTGRES_USER:-fulfillment}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-fulfillment}
+      DB_USERNAME: ${POSTGRES_USER:?set POSTGRES_USER in the deployment environment}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the deployment environment}
+      APP_ADMIN_USER: ${APP_ADMIN_USER:?set APP_ADMIN_USER in the deployment environment}
+      APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:?set APP_ADMIN_PASSWORD in the deployment environment}
+      APP_INTERNAL_SERVICE_NAME: ${APP_INTERNAL_SERVICE_NAME:-}
+      APP_INTERNAL_SERVICE_TOKEN: ${APP_INTERNAL_SERVICE_TOKEN:-}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       APP_FILE_STORE_ROOT: /var/lib/zimu-fulfillment/files
-      DEMO_SEED_ENABLED: "true"
+      # 媒体受控存储目录必须持久化（wecom-message-intake 12）：服务重启后原图仍能从受权接口读取。
+      APP_MEDIA_DIR: /var/lib/zimu-fulfillment/media
+      DEMO_SEED_ENABLED: "${DEMO_SEED_ENABLED:-false}"
       DEMO_SEED_REFERENCE_DATE: ${DEMO_SEED_REFERENCE_DATE:-}
+      SAMPLE_MASTER_DATA_ENABLED: "false"
       JD_INITIAL_SKU_LIBRARY_ENABLED: "false"
       JD_LOP_CLIENT_MODE: ${JD_LOP_CLIENT_MODE:-MOCK}
-      JD_LOP_SERVER_URL: ${JD_LOP_SERVER_URL:-}
-      JD_LOP_APP_KEY: ${JD_LOP_APP_KEY:-}
-      JD_LOP_APP_SECRET: ${JD_LOP_APP_SECRET:-}
-      JD_LOP_ACCESS_TOKEN: ${JD_LOP_ACCESS_TOKEN:-}
-      JD_LOP_PIN: ${JD_LOP_PIN:-}
-      JD_LOP_OWNER_NO: ${JD_LOP_OWNER_NO:-}
+      JD_LOP_WRITE_MODE: ${JD_LOP_WRITE_MODE:-OFF}
+      JD_GENERIC_HTTP_WRITE_MODE: "OFF"
+      JD_OUTBOUND_AUTHORIZED_OPERATORS: ${JD_OUTBOUND_AUTHORIZED_OPERATORS:-}
+      JD_TRACKING_BACKFILL_ENABLED: "${JD_TRACKING_BACKFILL_ENABLED:-false}"
+      JD_TRACKING_BACKFILL_POLL_MS: "${JD_TRACKING_BACKFILL_POLL_MS:-60000}"
+      JD_TRACKING_BACKFILL_BATCH_SIZE: "${JD_TRACKING_BACKFILL_BATCH_SIZE:-20}"
+      JD_TRACKING_BACKFILL_MIN_INTERVAL: "${JD_TRACKING_BACKFILL_MIN_INTERVAL:-PT1M}"
       WECOM_BUSINESS_RELAY_ENABLED: ${WECOM_BUSINESS_RELAY_ENABLED:-false}
+      WECOM_ENABLED: ${WECOM_ENABLED:-false}
+      WECOM_WS_URL: ${WECOM_WS_URL:-wss://openws.work.weixin.qq.com}
+      WECOM_SECRET: ${WECOM_SECRET:-}
+      WECOM_HEARTBEAT_INTERVAL_SECONDS: ${WECOM_HEARTBEAT_INTERVAL_SECONDS:-30}
       WECOM_CORP_ID: ${WECOM_CORP_ID:-}
       WECOM_BOT_ID: ${WECOM_BOT_ID:-}
       WECOM_CALLBACK_TOKEN: ${WECOM_CALLBACK_TOKEN:-}
       WECOM_ENCODING_AES_KEY: ${WECOM_ENCODING_AES_KEY:-}
       WECOM_ALLOWED_GROUP_IDS: ${WECOM_ALLOWED_GROUP_IDS:-}
+      WECOM_PUBLIC_CALLBACK_BASE_URL: ${WECOM_PUBLIC_CALLBACK_BASE_URL:-}
+      MESSAGE_INTERPRETER_PROVIDER: ${MESSAGE_INTERPRETER_PROVIDER:-}
+      MESSAGE_INTERPRETER_MODEL: ${MESSAGE_INTERPRETER_MODEL:-}
+      MESSAGE_INTERPRETER_PROMPT_VERSION: ${MESSAGE_INTERPRETER_PROMPT_VERSION:-}
+      MESSAGE_INTERPRETER_BASE_URL: ${MESSAGE_INTERPRETER_BASE_URL:-}
+      MESSAGE_INTERPRETER_API_KEY: ${MESSAGE_INTERPRETER_API_KEY:-}
+      MESSAGE_INTERPRETER_PUBLIC_PROVIDER_ALIAS: ${MESSAGE_INTERPRETER_PUBLIC_PROVIDER_ALIAS:-}
+      MESSAGE_INTERPRETER_PUBLIC_MODEL_ALIAS: ${MESSAGE_INTERPRETER_PUBLIC_MODEL_ALIAS:-}
+      MESSAGE_INTERPRETER_PUBLIC_PROMPT_VERSION_ALIAS: ${MESSAGE_INTERPRETER_PUBLIC_PROMPT_VERSION_ALIAS:-}
       TZ: Asia/Shanghai
     volumes:
       - fulfillment-files:/var/lib/zimu-fulfillment/files
+      # wecom-message-intake 12：内容寻址媒体存储挂载持久化命名卷，重启不丢原图。
+      - app-media-data:/var/lib/zimu-fulfillment/media
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,8 +143,8 @@ services:
       MB_DB_TYPE: postgres
       MB_DB_DBNAME: metabase
       MB_DB_PORT: 5432
-      MB_DB_USER: ${POSTGRES_USER:-fulfillment}
-      MB_DB_PASS: ${POSTGRES_PASSWORD:-fulfillment}
+      MB_DB_USER: ${POSTGRES_USER:?set POSTGRES_USER in the deployment environment}
+      MB_DB_PASS: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the deployment environment}
       MB_DB_HOST: postgres
       MB_SITE_URL: http://localhost:${APP_PORT:-8088}/metabase
       JAVA_TIMEZONE: Asia/Shanghai
@@ -136,8 +161,8 @@ services:
       METABASE_INTERNAL_URL: http://metabase:3000
       METABASE_ADMIN_EMAIL: ${METABASE_ADMIN_EMAIL:?set METABASE_ADMIN_EMAIL in the deployment environment}
       METABASE_ADMIN_PASSWORD: ${METABASE_ADMIN_PASSWORD:?set METABASE_ADMIN_PASSWORD in the deployment environment}
-      POSTGRES_USER: ${POSTGRES_USER:-fulfillment}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fulfillment}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in the deployment environment}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the deployment environment}
     depends_on:
       metabase:
         condition: service_started
@@ -159,7 +184,8 @@ services:
       APP_ADMIN_USER: ${APP_ADMIN_USER:?set APP_ADMIN_USER in the deployment environment}
       APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:?set APP_ADMIN_PASSWORD in the deployment environment}
     ports:
-      - "${APP_PORT:-8088}:80"
+      # This passwordless gateway is local-only. Remote deployments require real user auth and HTTPS first.
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8088}:80"
     volumes:
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
@@ -182,3 +208,5 @@ volumes:
   postgres-data:
   redis-data:
   fulfillment-files:
+  # wecom-message-intake 12：媒体受控存储持久化卷（backend APP_MEDIA_DIR）。
+  app-media-data:

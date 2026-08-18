@@ -139,6 +139,28 @@ class ExcelClosedLoopApiTest {
             assertThat(rawRow.get("raw_cells")).isNotNull();
             assertThat(rawRow.get("source_order_ref")).isNotNull();
         });
+        // 确认明细解析投影：白名单字段按渠道模板从原始单元格提取，供核对解析是否正确
+        assertThat(rawRows).allSatisfy(item -> {
+            Map<?, ?> rawRow = (Map<?, ?>) item;
+            Map<?, ?> parsed = (Map<?, ?>) rawRow.get("parsed");
+            java.util.Set<String> parsedKeys = parsed.keySet().stream()
+                    .map(String::valueOf)
+                    .collect(java.util.stream.Collectors.toSet());
+            assertThat(parsedKeys).contains("receiver_name", "receiver_phone", "receiver_address", "product_name");
+            assertThat(parsedKeys).isSubsetOf(java.util.Set.of(
+                    "receiver_name", "receiver_phone", "receiver_address",
+                    "product_name", "quantity", "specification", "source_sku_ref"));
+            // SKU 履约方归属：无映射为 null，有映射必须是白名单结构
+            Object skuFulfillment = rawRow.get("sku_fulfillment");
+            if (skuFulfillment != null) {
+                Map<?, ?> fulfillment = (Map<?, ?>) skuFulfillment;
+                assertThat(String.valueOf(fulfillment.get("provider_type")))
+                        .isIn("JD_WAREHOUSE", "THIRD_PARTY");
+                assertThat(fulfillment.keySet().stream().map(String::valueOf)
+                        .collect(java.util.stream.Collectors.toSet()))
+                        .containsExactlyInAnyOrder("provider_type", "provider_name", "sku_specification");
+            }
+        });
 
         Map<String, Object> orders = get("/api/v1/orders?query=FX-ORDER-001&page=0&size=20");
         assertThat(orders.get("total_elements")).isEqualTo(1);
@@ -150,6 +172,63 @@ class ExcelClosedLoopApiTest {
                         .toList())
                 .contains("3.000");
         assertThat((List<?>) order.get("review_cases")).hasSize(1);
+    }
+
+    @Test
+    void uploadAutoCreatesCustomerByNameAndPhoneAndOneBatchConfirmationGeneratesExportsOnce() {
+        byte[] firstFile = new String(
+                        feixiangSingleCsv("FX-BATCH-CONFIRM-001"), StandardCharsets.UTF_8)
+                .replace("FX-MEMBER-001", "LEGACY-MEMBER-A")
+                .replace("张三", "批次客户")
+                .replace("13800000000", "13911112222")
+                .getBytes(StandardCharsets.UTF_8);
+        ResponseEntity<Map> uploadResponse = uploadRaw(
+                "batch-confirm.csv", firstFile, "source-import-batch-confirm-001");
+        assertThat(uploadResponse.getStatusCode())
+                .as(String.valueOf(uploadResponse.getBody()))
+                .isEqualTo(HttpStatus.CREATED);
+        Map<String, Object> imported = uploadResponse.getBody();
+
+        assertThat((List<?>) imported.get("generated_fulfillment_export_ids")).isEmpty();
+        assertThat(imported.get("confirmed_at")).isNull();
+        String orderId = ((Map<?, ?>) ((List<?>) get(
+                "/api/v1/orders?query=FX-BATCH-CONFIRM-001&page=0&size=20").get("items")).getFirst())
+                .get("id").toString();
+        Map<String, Object> order = get("/api/v1/orders/" + orderId);
+        assertThat(order.get("customer_id")).isNotNull();
+        assertThat((List<?>) order.get("review_cases")).isEmpty();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.customers WHERE customer_name='批次客户' AND profile->>'identity_phone'='13911112222'",
+                Integer.class)).isEqualTo(1);
+
+        ResponseEntity<Map> confirmed = confirmBatch(imported.get("id").toString(), "confirm-batch-001");
+        ResponseEntity<Map> replay = confirmBatch(imported.get("id").toString(), "confirm-batch-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(replay.getBody()).isEqualTo(confirmed.getBody());
+        assertThat(confirmed.getBody().get("confirmed_at")).isNotNull();
+        assertThat((List<?>) confirmed.getBody().get("generated_fulfillment_export_ids")).hasSize(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.fulfillment_exports fe JOIN app.fulfillment_export_items fei ON fei.fulfillment_export_id=fe.id JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id WHERE rir.import_batch_id=?",
+                Integer.class,
+                Long.valueOf(imported.get("id").toString()))).isEqualTo(1);
+
+        byte[] secondFile = new String(
+                        feixiangSingleCsv("FX-BATCH-CONFIRM-002"), StandardCharsets.UTF_8)
+                .replace("FX-MEMBER-001", "LEGACY-MEMBER-B")
+                .replace("张三", "批次客户")
+                .replace("13800000000", "13911112222")
+                .getBytes(StandardCharsets.UTF_8);
+        Map<String, Object> second = uploadRaw(
+                "batch-confirm-2.csv", secondFile, "source-import-batch-confirm-002").getBody();
+        String secondOrderId = ((Map<?, ?>) ((List<?>) get(
+                "/api/v1/orders?query=FX-BATCH-CONFIRM-002&page=0&size=20").get("items")).getFirst())
+                .get("id").toString();
+        assertThat(get("/api/v1/orders/" + secondOrderId).get("customer_id")).isEqualTo(order.get("customer_id"));
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.customers WHERE customer_name='批次客户' AND profile->>'identity_phone'='13911112222'",
+                Integer.class)).isEqualTo(1);
+        assertThat(second.get("confirmed_at")).isNull();
     }
 
     @Test
@@ -170,27 +249,9 @@ class ExcelClosedLoopApiTest {
         Map<String, Map<String, Object>> cases = ((List<Map<String, Object>>) order.get("review_cases")).stream()
                 .collect(java.util.stream.Collectors.toMap(
                         item -> item.get("reason_code").toString(), item -> item));
-        String customerId = jdbc.queryForObject(
-                "SELECT customer_id::text FROM app.customer_source_refs WHERE source_channel='WECOM' LIMIT 1",
-                String.class);
         String skuId = jdbc.queryForObject(
                 "SELECT sku_id::text FROM app.source_channel_skus WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-TP-001'",
                 String.class);
-
-        Map<String, Object> customerCase = cases.get("CUSTOMER_MATCH_REQUIRED");
-        ResponseEntity<Map> customerResolved = resolveReview(
-                customerCase.get("id").toString(),
-                "resolve-customer",
-                Map.of(
-                        "expected_version", customerCase.get("version"),
-                        "customer_id", customerId,
-                        "source_channel", "FEIXIANG",
-                        "source_customer_ref", "FX-MEMBER-REVIEW-001",
-                        "remark", "核对合同后确认客户"),
-                "resolve-import-customer-001");
-        assertThat(customerResolved.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat((List<?>) get("/api/v1/import-batches/" + imported.get("id"))
-                .get("generated_fulfillment_export_ids")).isEmpty();
 
         Map<String, Object> skuCase = cases.get("SKU_MAPPING_REQUIRED");
         ResponseEntity<Map> skuResolved = resolveReview(
@@ -218,8 +279,12 @@ class ExcelClosedLoopApiTest {
         assertThat(skuResolved.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(skuResolvedReplay.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(skuResolvedReplay.getBody()).isEqualTo(skuResolved.getBody());
+        Map<String, Object> ready = get("/api/v1/import-batches/" + imported.get("id"));
+        assertThat((List<?>) ready.get("generated_fulfillment_export_ids")).isEmpty();
+        assertThat(ready.get("confirmed_at")).isNull();
 
-        Map<String, Object> resumed = get("/api/v1/import-batches/" + imported.get("id"));
+        Map<String, Object> resumed = confirmBatch(
+                imported.get("id").toString(), "confirm-reviewed-import-001").getBody();
         assertThat((List<?>) resumed.get("generated_fulfillment_export_ids")).hasSize(1);
         assertThat(resumed.get("status")).isEqualTo("COMPLETED");
         assertThat((Map<String, Object>) resumed.get("row_counts"))
@@ -337,7 +402,7 @@ class ExcelClosedLoopApiTest {
     }
 
     @Test
-    void partialTrackingCreatesOneOpenMultiShipmentFollowupAndOnlyAStageReturn() throws Exception {
+    void partialTrackingCreatesOneOpenMultiShipmentFollowupAndNoPrematureReturnFile() throws Exception {
         Map<String, Object> imported = upload(
                 "multi-partial.csv",
                 feixiangSingleCsv("FX-MULTI-PARTIAL-001"),
@@ -377,13 +442,7 @@ class ExcelClosedLoopApiTest {
 
         List<?> returns = http.getForObject(
                 "/api/v1/import-batches/" + imported.get("id") + "/source-return-exports", List.class);
-        assertThat(returns).singleElement().satisfies(item -> {
-            Map<?, ?> sourceReturn = (Map<?, ?>) item;
-            assertThat(sourceReturn.get("is_final")).isEqualTo(false);
-        });
-        String returnId = ((Map<?, ?>) returns.getFirst()).get("id").toString();
-        String returnedText = new String(downloadSourceReturn(returnId), StandardCharsets.UTF_8);
-        assertThat(returnedText).contains("JDVA-FIRST-PARCEL");
+        assertThat(returns).isEmpty();
     }
 
     @Test
@@ -504,7 +563,7 @@ class ExcelClosedLoopApiTest {
         assertThat((Map<String, Object>) secondTracking.getBody().get("business_results"))
                 .containsEntry("shipped", 1)
                 .containsEntry("partial", 0);
-        assertThat((List<?>) secondTracking.getBody().get("generated_source_return_export_ids")).hasSize(1);
+        assertThat((List<?>) secondTracking.getBody().get("generated_source_return_export_ids")).isEmpty();
 
         Map<String, Object> terminal = get("/api/v1/fulfillments/" + fulfillmentId);
         assertThat(terminal)
@@ -521,11 +580,7 @@ class ExcelClosedLoopApiTest {
 
         List<?> sourceReturns = http.getForObject(
                 "/api/v1/import-batches/" + imported.get("id") + "/source-return-exports", List.class);
-        assertThat(sourceReturns).hasSize(2).allSatisfy(item ->
-                assertThat(((Map<?, ?>) item).get("is_final")).isEqualTo(false));
-        String latestReturnId = ((Map<?, ?>) sourceReturns.getLast()).get("id").toString();
-        String latestText = new String(downloadSourceReturn(latestReturnId), StandardCharsets.UTF_8);
-        assertThat(latestText).contains("JDVA-FIRST-ONLY").doesNotContain("JDVA-SECOND-INTERNAL");
+        assertThat(sourceReturns).isEmpty();
 
         ResponseEntity<Map> completed = completeSourceFollowup(
                 openCase.get("id").toString(),
@@ -675,10 +730,19 @@ class ExcelClosedLoopApiTest {
     void jdNonIntegerQuantityCreatesAnActionableReviewCaseInsteadOfAnExport() {
         addExplicitJdFeixiangMapping();
 
-        Map<String, Object> imported = upload(
+        ResponseEntity<Map> uploadResponse = uploadRaw(
                 "jd-decimal-source.csv",
                 feixiangSingleCsv("FX-JD-DECIMAL-001", "FX-PRODUCT-JD-001", "1.5"),
                 "source-import-jd-decimal-001");
+        assertThat(uploadResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String batchId = uploadResponse.getBody().get("id").toString();
+
+        ResponseEntity<Map> confirmation = confirmBatch(
+                batchId, "confirm-after-source-import-jd-decimal-001");
+        assertThat(confirmation.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(confirmation.getBody()).containsEntry("business_code", "IMPORT_BATCH_EXPORT_INCOMPLETE");
+
+        Map<String, Object> imported = get("/api/v1/import-batches/" + batchId);
 
         assertThat((List<?>) imported.get("generated_fulfillment_export_ids")).isEmpty();
         Map<String, Object> orders = get("/api/v1/orders?query=FX-JD-DECIMAL-001&page=0&size=20");
@@ -784,7 +848,17 @@ class ExcelClosedLoopApiTest {
     private Map<String, Object> upload(String filename, byte[] bytes, String idempotencyKey) {
         ResponseEntity<Map> response = uploadRaw(filename, bytes, idempotencyKey);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        return response.getBody();
+        Map<String, Object> batch = response.getBody();
+        Map<?, ?> counts = (Map<?, ?>) batch.get("row_counts");
+        if (((Number) counts.get("need_review")).intValue() == 0
+                && ((Number) counts.get("rejected")).intValue() == 0
+                && batch.get("confirmed_at") == null) {
+            ResponseEntity<Map> confirmed = confirmBatch(
+                    batch.get("id").toString(), "confirm-after-" + idempotencyKey);
+            assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+            return confirmed.getBody();
+        }
+        return batch;
     }
 
     private ResponseEntity<Map> uploadRaw(String filename, byte[] bytes, String idempotencyKey) {
@@ -802,6 +876,18 @@ class ExcelClosedLoopApiTest {
                 "/api/v1/import-batches/source-orders",
                 HttpMethod.POST,
                 new HttpEntity<>(body, headers),
+                Map.class);
+    }
+
+    private ResponseEntity<Map> confirmBatch(String batchId, String idempotencyKey) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", idempotencyKey);
+        headers.set("X-Operator", "excel-test");
+        headers.set("X-Request-Id", "req-" + idempotencyKey);
+        return http.exchange(
+                "/api/v1/import-batches/" + batchId + "/confirm",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), headers),
                 Map.class);
     }
 

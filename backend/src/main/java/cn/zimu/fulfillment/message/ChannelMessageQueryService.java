@@ -42,20 +42,38 @@ public class ChannelMessageQueryService {
 
     @Transactional(readOnly = true)
     public ChannelMessageDetailDto detail(long id) {
+        List<ChannelMediaEvidenceDto> mediaRefs = availableMedia(id);
         List<ChannelMessageDetailDto> matches = jdbcTemplate.query(
                 """
-                SELECT id, corp_id, connection_id, bot_id, message_id, chat_id, chat_type,
-                       sender_user_id, message_type, content, quote_type, quote_content,
-                       received_at
-                FROM app.channel_messages
-                WHERE id = ?
+                SELECT cm.id, cm.corp_id, cm.connection_id, cm.bot_id, cm.message_id, cm.chat_id,
+                       cm.chat_type, cm.sender_user_id, cm.message_type, cm.content,
+                       cm.quote_type, cm.quote_content, cm.received_at, ms.id AS submission_id
+                FROM app.channel_messages cm
+                LEFT JOIN app.message_submissions ms ON ms.source_message_id = cm.id
+                WHERE cm.id = ?
                 """,
-                ChannelMessageQueryService::detail,
+                (rs, rowNumber) -> detail(rs, rowNumber, mediaRefs),
                 id);
         if (matches.isEmpty()) {
             throw BusinessException.notFound("消息记录不存在: " + id);
         }
         return matches.getFirst();
+    }
+
+    private List<ChannelMediaEvidenceDto> availableMedia(long channelMessageId) {
+        return jdbcTemplate.query(
+                """
+                SELECT id, media_type, content_type, size_bytes
+                FROM app.message_media
+                WHERE channel_message_id = ? AND download_status = 'AVAILABLE'
+                ORDER BY id
+                """,
+                (rs, rowNumber) -> new ChannelMediaEvidenceDto(
+                        rs.getLong("id"),
+                        rs.getString("media_type"),
+                        rs.getString("content_type"),
+                        rs.getObject("size_bytes") == null ? null : rs.getLong("size_bytes")),
+                channelMessageId);
     }
 
     private static ChannelMessageSummaryDto summary(ResultSet rs, int rowNumber) throws SQLException {
@@ -75,8 +93,10 @@ public class ChannelMessageQueryService {
                 instant(rs, "received_at"));
     }
 
-    private static ChannelMessageDetailDto detail(ResultSet rs, int rowNumber) throws SQLException {
+    private static ChannelMessageDetailDto detail(
+            ResultSet rs, int rowNumber, List<ChannelMediaEvidenceDto> mediaRefs) throws SQLException {
         String id = String.valueOf(rs.getLong("id"));
+        Long submissionId = rs.getObject("submission_id") == null ? null : rs.getLong("submission_id");
         return new ChannelMessageDetailDto(
                 id,
                 rs.getString("corp_id"),
@@ -91,7 +111,9 @@ public class ChannelMessageQueryService {
                 rs.getString("quote_type"),
                 rs.getString("quote_content"),
                 "channel-message-payload:" + id,
-                instant(rs, "received_at"));
+                submissionId == null ? null : String.valueOf(submissionId),
+                instant(rs, "received_at"),
+                mediaRefs);
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {

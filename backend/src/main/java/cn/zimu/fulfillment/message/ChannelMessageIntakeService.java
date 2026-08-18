@@ -22,8 +22,8 @@ public class ChannelMessageIntakeService {
                 INSERT INTO app.channel_messages (
                     corp_id, connection_id, bot_id, message_id, chat_id, chat_type,
                     sender_user_id, message_type, content, quote_type, quote_content,
-                    raw_payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                    raw_payload, sender_identity_type, sender_access_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, COALESCE(?, 'EMPLOYEE'), ?)
                 ON CONFLICT (corp_id, connection_id, message_id) DO NOTHING
                 RETURNING id
                 """,
@@ -39,7 +39,9 @@ public class ChannelMessageIntakeService {
                 command.content(),
                 command.quoteType(),
                 command.quoteContent(),
-                command.rawPayload().toString());
+                command.rawPayload().toString(),
+                command.senderIdentityType(),
+                command.senderAccessType());
         if (!inserted.isEmpty()) {
             return inserted.getFirst();
         }

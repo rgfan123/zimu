@@ -1,104 +1,84 @@
 package cn.zimu.fulfillment.connector.wecom;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
-/** Secrets and routing boundaries for enterprise WeChat intelligent-bot callbacks. */
+/**
+ * 企业微信智能机器人长连接（单机器人）配置。凭据只在此持有，绝不进入 readiness 投影或日志。
+ * 缺配置时应用正常启动、连接不建立、readiness 标记不可用。
+ */
 @Component
 @ConfigurationProperties(prefix = "app.wecom")
 public class WecomProperties {
 
-    private Map<String, Connection> connections = new LinkedHashMap<>();
+    public static final String DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com";
+    public static final long DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30;
 
-    public Map<String, Connection> getConnections() {
-        return connections;
+    private boolean enabled;
+    private String botId;
+    private String secret;
+    private String wsUrl = DEFAULT_WS_URL;
+    private long heartbeatIntervalSeconds = DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
+
+    public boolean isEnabled() {
+        return enabled;
     }
 
-    public void setConnections(Map<String, Connection> connections) {
-        this.connections = connections == null ? new LinkedHashMap<>() : connections;
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
     }
 
-    public Connection requireEnabled(String connectionId) {
-        Connection connection = connections.get(connectionId);
-        if (connection == null || !connection.isEnabled()) {
-            throw BusinessException.notFound("企业微信回调连接不存在");
-        }
-        if (isBlank(connection.getCorpId())
-                || isBlank(connection.getBotId())
-                || isBlank(connection.getToken())
-                || isBlank(connection.getEncodingAesKey())) {
-            throw new BusinessException(503, "WECOM_CONNECTION_NOT_READY", "企业微信回调连接未完成配置");
-        }
-        return connection;
+    public String getBotId() {
+        return botId;
     }
 
-    private static boolean isBlank(String value) {
-        return value == null || value.isBlank();
+    public void setBotId(String botId) {
+        this.botId = botId;
     }
 
-    public static class Connection {
-        private boolean enabled;
-        private String corpId;
-        private String botId;
-        private String token;
-        private String encodingAesKey;
-        private List<String> allowedGroupIds = new ArrayList<>();
+    public String getSecret() {
+        return secret;
+    }
 
-        public boolean isEnabled() {
-            return enabled;
-        }
+    public void setSecret(String secret) {
+        this.secret = secret;
+    }
 
-        public void setEnabled(boolean enabled) {
-            this.enabled = enabled;
-        }
+    public String getWsUrl() {
+        return wsUrl;
+    }
 
-        public String getCorpId() {
-            return corpId;
-        }
+    public void setWsUrl(String wsUrl) {
+        this.wsUrl = wsUrl;
+    }
 
-        public void setCorpId(String corpId) {
-            this.corpId = corpId;
-        }
+    public long getHeartbeatIntervalSeconds() {
+        return heartbeatIntervalSeconds;
+    }
 
-        public String getBotId() {
-            return botId;
-        }
+    public void setHeartbeatIntervalSeconds(long heartbeatIntervalSeconds) {
+        this.heartbeatIntervalSeconds = heartbeatIntervalSeconds;
+    }
 
-        public void setBotId(String botId) {
-            this.botId = botId;
-        }
+    public Duration heartbeatInterval() {
+        return Duration.ofSeconds(Math.max(1, heartbeatIntervalSeconds));
+    }
 
-        public String getToken() {
-            return token;
-        }
+    /** 全部必需项齐备（含 enabled）才算可建连；缺配不抛错，由 readiness 与连接入口各自处理。 */
+    public boolean isConfigured() {
+        return enabled && hasText(botId) && hasText(secret) && hasText(wsUrl);
+    }
 
-        public void setToken(String token) {
-            this.token = token;
+    /** 需要真实连接的操作（如发送回执）在未配置/未启用时抛出稳定错误码。 */
+    public void requireConfigured() {
+        if (!isConfigured()) {
+            throw new BusinessException(503, "WECOM_CONNECTION_NOT_READY", "企业微信长连接配置不完整");
         }
+    }
 
-        public String getEncodingAesKey() {
-            return encodingAesKey;
-        }
-
-        public void setEncodingAesKey(String encodingAesKey) {
-            this.encodingAesKey = encodingAesKey;
-        }
-
-        public List<String> getAllowedGroupIds() {
-            return allowedGroupIds;
-        }
-
-        public void setAllowedGroupIds(List<String> allowedGroupIds) {
-            this.allowedGroupIds = allowedGroupIds == null ? new ArrayList<>() : allowedGroupIds;
-        }
-
-        public boolean acceptsGroup(String groupId) {
-            return groupId != null && allowedGroupIds.stream().anyMatch(groupId::equals);
-        }
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

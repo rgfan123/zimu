@@ -1,0 +1,7 @@
+/**
+ * 系统：Connector / Audit Log / 系统配置。
+ */
+export { default as ConnectorsPage } from './ConnectorsPage';
+export { default as AuditLogsPage } from './AuditLogsPage';
+export { default as FulfillmentProvidersPage } from './FulfillmentProvidersPage';
+export { default as SystemConfigPage } from './SystemConfigPage';

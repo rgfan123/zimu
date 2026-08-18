@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 FROM maven:3.9.11-eclipse-temurin-21 AS build
 
 WORKDIR /workspace
@@ -6,7 +5,11 @@ COPY backend/pom.xml backend/pom.xml
 COPY backend/libs backend/libs
 COPY backend/src backend/src
 RUN --mount=type=cache,target=/root/.m2 \
-    mvn -f backend/pom.xml -Dmaven.test.skip=true package
+    mvn -f backend/pom.xml -Dmaven.test.skip=true package \
+    && jar tf backend/target/fulfillment-hub-0.1.0-SNAPSHOT.jar \
+        | grep -q 'BOOT-INF/lib/lop-opensdk-support-1.0.30.jar' \
+    && jar tf backend/target/fulfillment-hub-0.1.0-SNAPSHOT.jar \
+        | grep -q 'BOOT-INF/lib/integrated-supply-chain-isc-6.1-20260707185402.jar'
 
 FROM eclipse-temurin:21-jre-alpine
 

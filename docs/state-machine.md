@@ -1,139 +1,175 @@
-# 订单状态机：五维转移矩阵 + 事件清单
+# 订单履约状态机：业务 Excel 闭环与隔离 Demo
 
-> 来源：`wayfinder/tickets/order-state-machine.md` grilling 结论（2026-08-10，zed-main）。
-> 固定输入：PRD §17/§18；领域词汇见 `CONTEXT.md`。
+> 初始决策来自「订单状态机精化」；数据库 Schema 设计 Q7、Q25–Q50 对履约、部分发货、Excel 回填和 Demo 隔离作了后续细化。本文件已同步到当前权威模型。
 
-## 0. 设计原则
+## 1. 原则
 
-1. **五维状态分离**：OrderStatus / FulfillmentStatus / ShipmentStatus / SyncStatus / ProcurementStatus 各归各表各列，不合并进单一 `order.status`。
-2. **创建即跑完全程**：新订单在创建请求内同步执行整条流水线到最终态；无定时器、无手动推进按钮（地图已定）。
-3. **Timeline 只记语义事件**：中间态由状态列 + `order_version` 快照承载，不为每个转移硬造事件。
-4. **外部回执原则**：采购结果必须从外部接口进入，业务系统内部零 mock 捷径（未来接真实采购系统只换发送方）。
-5. **多行订单**：行级独立推进 + 订单级最差聚合。
+1. Order、OrderLine、Fulfillment、Shipment、ProcurementTicket 和 Sync 各自保存所属事实，不压成一个巨型状态。
+2. `order_lines.processing_stage` 是 P0 Excel 闭环当前位置的唯一可写权威值；Order 只展示聚合摘要。
+3. `fulfillments.shipping_progress` 只表达实际发了多少；`fulfillments.outcome` 只表达最终全部/部分/取消结论。
+4. 业务 CanonicalOrder 按真实异步回执推进，不使用 Mock 捷径。只有 `data_scope=DEMO` 的 DemoScenario 可同步跑完演示 Timeline。
+5. Timeline 使用只追加 OrderEvent；每次业务变化另追加 OrderVersion 完整快照和 AuditLog。
+6. 关键变化必须在一个数据库事务中写业务事实、状态、事件、版本和审计。
 
-## 1. 五维状态集
+## 2. 状态维度
 
-### 1.1 OrderStatus（订单级聚合态）
+### 2.1 OrderStatus
 
-主线：`RECEIVED → VALIDATED → SKU_MAPPED → FULFILLING → SHIPPED → SYNCED → CLOSED`
-异常分支：`NEED_REVIEW / OUT_OF_STOCK / PROCUREMENT_PENDING / FULFILLMENT_EXCEPTION / SYNC_FAILED / CANCELLED`
+主线：
 
-- 异常不占主线位：处理完回主线继续；
-- **demo 自动最终态 = SYNCED**；CLOSED 不自动进入（无 CLOSED 事件），种子数据历史单使用；
-- 多行聚合：取所有行最差/最晚进度（任一待采购 → PROCUREMENT_PENDING；任一异常 → FULFILLMENT_EXCEPTION；**全部** SHIPPED → SHIPPED；**全部**回传成功 → SYNCED）。
+`RECEIVED → VALIDATED → SKU_MAPPED → FULFILLING → SHIPPED → SYNCED → CLOSED`
 
-```mermaid
-flowchart LR
-    R[RECEIVED] --> V[VALIDATED] --> S[SKU_MAPPED] --> F[FULFILLING] --> SH[SHIPPED] --> SY[SYNCED] --> C[CLOSED]
-    R -- 校验失败/需人工 --> NR[NEED_REVIEW]
-    NR -- 修正重试 --> V
-    NR -- 取消 --> CA[CANCELLED]
-    F -- 缺货 --> OOS[OUT_OF_STOCK]
-    OOS -- 建采购工单 --> PP[PROCUREMENT_PENDING]
-    PP -- 回执 SUCCESS --> F
-    PP -- 回执 FAILED --> FE[FULFILLMENT_EXCEPTION]
-    F -- 京东拒收/出库失败 --> FE
-    FE -- 重试 --> F
-    FE -- 取消 --> CA
-    SH -- 回传失败 --> SF[SYNC_FAILED]
-    SF -- 重试回传 --> SY
-    CA -- 终态
+异常/等待分支：
+
+`NEED_REVIEW / OUT_OF_STOCK / PROCUREMENT_PENDING / FULFILLMENT_EXCEPTION / SYNC_FAILED / CANCELLED`
+
+OrderStatus 是订单生命周期结论，不替代行级 ProcessingStage。多行订单的操作界面读取 `v_order_progress_summary`，不按 OrderStatus 猜测具体哪行在等待。
+
+### 2.2 ProcessingStage（OrderLine）
+
+主路径：
+
+```text
+NEED_REVIEW
+  → READY_TO_EXPORT
+  → WAITING_PROVIDER
+  → TRACKING_RECEIVED
+  → RETURN_FILE_READY
+  → COMPLETED
 ```
 
-### 1.2 FulfillmentStatus（履约单元，type ∈ JD_WAREHOUSE / PROCUREMENT）
+特殊分支：
 
+- `PROCUREMENT_IN_PROGRESS`：我方库存缺口已创建采购工单；已有部分 Shipment 仍保留真实发货进度。
+- `EXCEPTION`：明确失败或无法自动继续，必须进入 ReviewCase。
+
+每条 OrderLine 独立推进。有货行不等待缺货行；订单列表显示最慢未完成阶段和 `completed_count/total_count`。
+
+### 2.3 ShippingProgress（Fulfillment）
+
+按 ShipmentItem 累计实发量计算：
+
+- `NOT_SHIPPED`：累计实发为 0；
+- `PARTIALLY_SHIPPED`：累计实发大于 0 且小于请求量；
+- `SHIPPED`：累计实发等于请求量。
+
+累计实发不得超过请求量。采购成功后继续由原 FulfillmentProvider 发货，provider 不改变。
+
+### 2.4 FulfillmentOutcome
+
+- `IN_PROGRESS`：尚未形成数量终局；
+- `FULLY_FULFILLED`：累计实发等于请求量；
+- `PARTIALLY_FULFILLED`：已有实发且其余数量已明确取消；
+- `CANCELLED`：未发货且请求量全部取消。
+
+最终数量必须满足：
+
+`requested_quantity = cumulative_shipped_quantity + cancelled_quantity`
+
+### 2.5 ShipmentStatus
+
+P0：
+
+```text
+CREATED → SHIPPED
+       ↘ FAILED
 ```
-PENDING → STOCK_CHECKED → [JD] JD_SUBMITTED → JD_ACCEPTED → SHIPPED（终）
-              │ 缺货
-              ▼
-        OUT_OF_STOCK → PROCUREMENT_PENDING →（回执 SUCCESS）ARRIVED → SHIPPED（终）
-              │ 回执 FAILED                          （回执 FAILED）
-              ▼
-        EXCEPTION ←──────────────────────────────────┘
-              │ H 重试 → STOCK_CHECKED ；H 取消 → CANCELLED
-```
 
-### 1.3 ShipmentStatus
+未来物流回调：`SHIPPED → DELIVERED`。
 
-`CREATED → SHIPPED → DELIVERED`（终态 DELIVERED；新单 mock 直达 SHIPPED，DELIVERED 种子历史单）。
+当前未接入京东 SDK 回调，P0 完成不等待签收或 DELIVERED。
 
-### 1.4 SyncStatus
+### 2.6 SyncStatus
 
-`PENDING → SYNCED`；失败分支 `SYNC_FAILED →（H 重试）→ SYNCED`。按 shipment 独立回传。
+`PENDING → SYNCED`；失败分支：`SYNC_FAILED → SYNCED`（人工/系统重试）。
 
-### 1.5 ProcurementStatus
+### 2.7 ProcurementStatus
 
-`PENDING → SUCCESS / PARTIAL / FAILED`；订单取消时 PENDING 工单 → `CANCELLED`。
+`PENDING → SUCCESS / PARTIAL / FAILED`；人工取消未完成工单时进入 `CANCELLED`。
 
-## 2. 主线路径（创建即跑完全程）
+一张 ProcurementTicket 可接收多次不可变回执。普通 SKU 有一条工单明细；CustomBundle 按缺货组件建立明细。
 
-| 步骤 | OrderEvent（§18） | OrderStatus |
-|---|---|---|
-| 创建 + 四层校验通过（Schema / Business / SKU / Duplicate-Version） | `ORDER_RECEIVED` | RECEIVED |
-| 业务校验完成 | —（中间态） | VALIDATED |
-| SKU 映射完成 | `SKU_MAPPED` | SKU_MAPPED |
-| Fulfillment 拆行 + 京东库存查询 | `JD_STOCK_CHECKED` | FULFILLING |
-| 京东出库提交 → 受理 | `JD_OUTBOUND_SUBMITTED` → `JD_OUTBOUND_ACCEPTED` | FULFILLING |
-| 发货完成 | `JD_SHIPPED` | SHIPPED |
-| Shipment + Tracking 落库 | `SHIPMENT_CREATED` + `TRACKING_RECEIVED` | SHIPPED |
-| 回传来源渠道成功 | `SOURCE_SYNCED` | **SYNCED（最终态）** |
+## 3. 业务 Excel 主线
 
-## 3. 异常路径
+| 步骤 | 权威事实 | ProcessingStage | 典型事件 |
+|---|---|---|---|
+| 来源 Excel 接收并逐行解析 | ImportBatch / RawImportRow / CanonicalOrder | NEED_REVIEW 或 READY_TO_EXPORT | ORDER_RECEIVED |
+| 客户与 SKU 显式映射确认 | Customer / SourceChannelSku | READY_TO_EXPORT | CUSTOMER_MATCH_CONFIRMED / SKU_MATCH_CONFIRMED |
+| 按 provider 与收货地址生成出库批次 | Shipment(CREATED) / FulfillmentExport | WAITING_PROVIDER | SHIPMENT_CREATED / FULFILLMENT_EXPORT_GENERATED |
+| 履约方整批返回结果 | ShipmentItem 实发量 / Tracking / 异常 | TRACKING_RECEIVED、PROCUREMENT_IN_PROGRESS 或 EXCEPTION | TRACKING_RECEIVED / MANUAL_INTERVENTION_REQUIRED |
+| 生成阶段性或最终来源回填文件 | SourceReturnExport / Items | RETURN_FILE_READY | — |
+| 最终来源回填 Excel 就绪；或多 Shipment 人工完成来源平台后续回传并关闭 ReviewCase | ShipmentSync / 最终文件版本；或人工处理记录 | COMPLETED | SOURCE_SYNCED / MANUAL_SOURCE_FOLLOWUP_COMPLETED |
 
-### 3.1 缺货 / 采购（demo 唯一 live 可交互路径）
+`COMPLETED` 表示运单与最终回填文件闭环，不表示客户已经签收。
 
-`FULFILLING` → 库存不足 → `OUT_OF_STOCK` → 创建采购工单（`PROCUREMENT_REQUESTED`）→ `PROCUREMENT_PENDING`（订单等待外部回执）。
+## 4. 默认合箱与部分发货
 
-- **外部回执接口**：`POST /internal/v1/procurement/tickets/{id}/receipt`，body 对齐 PRD §13：`result`（SUCCESS/PARTIAL/FAILED）/ `available_quantity` / `expected_ship_time` / `remark` / `idempotency_key`；
-- **校验**：工单必须 PENDING；PARTIAL 需 `available_quantity < required_quantity`；幂等（`idempotency_key` 重复拒绝，返回原结果）；
-- SUCCESS → `PROCUREMENT_COMPLETED` → 履约继续（ARRIVED → 发货 → 回传）；
-- PARTIAL → 按 `available_quantity` 部分发货，剩余数量回 `OUT_OF_STOCK`（可再次发起采购工单）；
-- FAILED → `FULFILLMENT_EXCEPTION`（可再发起采购或取消）。
+默认按以下范围生成一个 Shipment：
 
-### 3.2 业务校验失败
+`同一 CanonicalOrder + 同一 FulfillmentProvider + 同一 Receiver 地址 + 同一发货批次`
 
-→ `NEED_REVIEW`；人工修正重试 → 重新跑 Business Validation → `VALIDATED`；或取消 → `CANCELLED`。
+该 Shipment 内可有多个 ShipmentItem，因此普通多商品或礼包组件可以共享一个出库单号和运单号。不同 provider 必须拆开。
 
-### 3.3 京东异常
+我方库存请求 100、可用 80 时：
 
-出库提交被拒 / 出库失败 → `FULFILLMENT_EXCEPTION`；H 重试 → 重新走 `STOCK_CHECKED`；或取消。
+1. 第一批 Shipment/出库单发 80；
+2. 自动为缺口 20 创建 ProcurementTicket，并生成黄色提醒；
+3. 采购回执取得可用量后，重新检查当批库存；
+4. 第二批使用新的 Shipment、出库单号和运单；
+5. 所有真实 Shipment 均有 Tracking 且数量达到终局后，才允许最终来源回填。
 
-### 3.4 回传失败
+系统不预占库存、不锁单。每个批次是独立原子操作，下一批必须重新判断我方库存。
 
-回传失败 → `SYNC_FAILED`；H 重试回传 → `SYNCED`。
+## 5. CustomBundle
 
-### 3.5 取消
+CustomBundle 只是若干普通商品按清单完整配齐并同盒发货，不涉及加工或额外组装。
 
-任意未终态订单可 H 取消 → `CANCELLED`；若已提交京东出库，取消前先调 `cancelOutboundOrder()`（mock 成功）；不回传；该单 PENDING 采购工单同步 → `CANCELLED`。
+- 请求量、ShipmentItem 实发量和 Fulfillment 进度使用“完整礼包份数”；
+- 我方库存可发份数为所有组件可组成的最小完整份数；
+- FulfillmentExport 再按礼包份数×组件单份用量展开组件行；
+- 散件、缺件或拆开的组件不得计作已发礼包；
+- 第三方库存不由系统预判，但第三方回传仍必须以完整礼包份数表达实际结果。
 
-## 4. 事件清单（§18 + 使用点）
+## 6. 第三方结果
 
-| 事件 | 使用路径 |
-|---|---|
-| `ORDER_RECEIVED` | 主线 1 |
-| `ORDER_UPDATED` | 保留备用（demo 无编辑订单入口） |
-| `SKU_MAPPED` | 主线 3 |
-| `JD_STOCK_CHECKED` | 主线 4 |
-| `JD_OUTBOUND_SUBMITTED` | 主线 5 |
-| `JD_OUTBOUND_ACCEPTED` | 主线 5 |
-| `JD_SHIPPED` | 主线 6 |
-| `PROCUREMENT_REQUESTED` | 3.1 缺货 |
-| `PROCUREMENT_COMPLETED` | 3.1 回执 SUCCESS |
-| `SHIPMENT_CREATED` | 主线 7 |
-| `TRACKING_RECEIVED` | 主线 7 |
-| `SOURCE_SYNCED` | 主线 8 |
+第三方库存不归本系统管理。系统按待履约请求生成第三方 Excel，只接收实发量、物流公司、运单号和异常。
 
-事件记录带可选关联 id：`order_line_id` / `fulfillment_id` / `shipment_id` / `procurement_ticket_id`（Timeline 展示按订单聚合、可下钻到行/履约）。
+- 第三方 SHIPPED：创建/完成 Shipment 与 Tracking；
+- 第三方 PARTIAL：保存真实实发量和剩余量，进入人工复核；
+- 第三方 FAILED：保存失败结果，进入人工复核；
+- PARTIAL/FAILED 不创建我方采购工单，不修改我方库存。
 
-## 5. 持久化模型（双轨）
+同一 ProviderTrackingBatch 可以混合 SHIPPED/PARTIAL/FAILED。整批先校验模板、provider、关联和数量；结构合法后全部结果在一个事务中提交。合法的业务失败不是文件校验失败。
 
-- `order_event`：语义事件流（Timeline 数据源）——事件类型 + payload(JSONB) + operator + created_at + 可选关联 id；
-- `order_version`：每次订单状态/数据变更追加**完整快照**（五维状态 + 订单头 + 行摘要 + 变更原因 + 触发者），支撑 §7 Version Validation 与 §19 数据修改追责；
-- 关键写操作（Order+Lines+Event、Shipment+Tracking+Event 等）单事务（PRD §25）。
+## 7. 来源回填
 
-## 6. 人工干预规则
+- 京东和每个第三方独立返回，不混文件；
+- 某 provider 的一批结果接收完成后可生成一版阶段性来源回填；
+- 未取得运单的原始行保持空白，不写占位符；
+- 首个 Shipment 不能覆盖来源行全部请求量或后来出现第二个 Shipment 时，只自动回填该 OrderLine/Fulfillment 关联的最早 Shipment；禁止复制来源行、拼接或覆盖运单，并创建 `MULTI_SHIPMENT_SOURCE_FOLLOWUP` ReviewCase；
+- 采购仍进行时保持 `PROCUREMENT_IN_PROGRESS`，ReviewCase 单独表达人工责任；全部真实 Shipment 有 Tracking 且履约终局后转 NEED_REVIEW，人工完成来源平台后续处理后写 `MANUAL_SOURCE_FOLLOWUP_COMPLETED` 并进入 COMPLETED；
+- 最终少发只有在来源格式能明确表达未发量/取消原因时自动生成，否则创建 `SOURCE_FORMAT_CANNOT_EXPRESS_PARTIAL` ReviewCase。
 
-- demo 无权限体系，统一演示账号 `demo-ops`（Audit Log 记录）；
-- H 动作只作用于对应维度的可操作态：**回执**只对 PENDING 工单；**重试**只对 SYNC_FAILED / EXCEPTION / NEED_REVIEW；**取消**只对未终态订单；
-- 每个人工动作产生 Audit Log + OrderEvent；
-- demo 只实现**采购回执**一个 H 动作（前端「采购操作台」扮演外部发送方），其余 H 规则留口（未来人工操作台/真实系统接入），异常态由种子数据展示。
+## 8. OrderEvent
+
+事件类型由 `order_event_types` 目录表管理，初始包含：
+
+`ORDER_RECEIVED`、`ORDER_UPDATED`、`SKU_MAPPED`、`JD_STOCK_CHECKED`、`JD_SKU_MAPPING_CHECKED`、`JD_OUTBOUND_SUBMITTED`、`JD_OUTBOUND_FAILED`、`JD_OUTBOUND_ACCEPTED`、`JD_SHIPPED`、`PROCUREMENT_REQUESTED`、`PROCUREMENT_RECEIPT_RECORDED`、`PROCUREMENT_COMPLETED`、`SHIPMENT_CREATED`、`TRACKING_RECEIVED`、`SOURCE_SYNCED`、`CUSTOMER_MATCH_CONFIRMED`、`SKU_MATCH_CONFIRMED`、`MANUAL_INTERVENTION_REQUIRED`、`FULFILLMENT_EXPORT_GENERATED`、`MANUAL_SOURCE_FOLLOWUP_COMPLETED`。
+
+Timeline 按订单内 sequence/created_at 排序。事件可关联 OrderLine、Fulfillment、Shipment 或 ProcurementTicket，但关联对象必须属于同一 Order。
+
+## 9. DemoScenario 隔离
+
+- Demo 订单使用 `data_scope=DEMO`，只从 `/demo/v1/scenarios` 创建；
+- 业务 CanonicalOrder 使用 `data_scope=BUSINESS`，按真实文件与回执推进；
+- Demo 不进入业务查询、ReviewCase、OperationalAlert、履约/来源 Excel、analytics 或 Metabase；
+- Demo 可以复用领域服务和事件代码，但不能调用真实履约方或证明 P0 Excel 闭环完成。
+
+## 10. 处理健康度
+
+- BLUE：系统内部自动处理中；
+- YELLOW：等待履约方或人工动作，包括 WAITING_PROVIDER、NEED_REVIEW、PROCUREMENT_IN_PROGRESS；
+- RED：明确异常、失败或超时；
+- GREEN：全部 OrderLine COMPLETED。
+
+颜色是查询/UI 投影，不是业务状态，不能被人工写入或作为状态转移条件。

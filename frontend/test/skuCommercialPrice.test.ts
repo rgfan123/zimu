@@ -1,0 +1,104 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import {
+  COMMERCIAL_PRICE_PATTERN,
+  buildSkuCreateBody,
+  buildSkuUpdateBody,
+  commercialPriceLabel,
+  optionalCommercialPrice,
+  patchCommercialPrice,
+} from '../src/pages/product/skuCommercialPrice.ts';
+
+function openApiSchemaBlock(source: string, schemaName: string): string {
+  const marker = `    ${schemaName}:\n`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `OpenAPI schema ${schemaName} must exist`);
+  const tail = source.slice(start + marker.length);
+  const nextSchema = tail.search(/\n    [A-Za-z][A-Za-z0-9]+:\n/);
+  return nextSchema === -1 ? tail : tail.slice(0, nextSchema);
+}
+
+test('OpenAPI 3.0.3 用显式 typed nullable schema 表达 SKU 未定价', () => {
+  const openApi = readFileSync(
+    fileURLToPath(new URL('../../docs/openapi.yaml', import.meta.url)),
+    'utf8',
+  );
+  const nullablePrice = openApiSchemaBlock(openApi, 'NullableCommercialPrice');
+
+  assert.match(nullablePrice, /^      type: string$/m);
+  assert.match(nullablePrice, /^      nullable: true$/m);
+  assert.match(nullablePrice, /\^\(0\|\[1-9\]\[0-9\]\{0,11\}\)/);
+  for (const schemaName of ['SkuAttributes', 'SkuWrite', 'SkuPatch']) {
+    const schema = openApiSchemaBlock(openApi, schemaName);
+    assert.equal(
+      schema.match(/#\/components\/schemas\/NullableCommercialPrice/g)?.length,
+      2,
+      `${schemaName} 的进货价/零售价应共用同一 nullable schema`,
+    );
+  }
+});
+
+test('商业价格只接受非负且最多两位小数的 decimal string', () => {
+  for (const value of ['0', '0.00', '12', '12.3', '12.30', '999999999999.99']) {
+    assert.equal(COMMERCIAL_PRICE_PATTERN.test(value), true, value);
+    assert.equal(optionalCommercialPrice(` ${value} `), value);
+  }
+
+  for (const value of ['-0.01', '1.234', '.50', '01.00', '1000000000000.00']) {
+    assert.equal(COMMERCIAL_PRICE_PATTERN.test(value), false, value);
+    assert.throws(() => optionalCommercialPrice(value), /价格/);
+  }
+  assert.throws(() => optionalCommercialPrice(12.3), /decimal string/);
+});
+
+test('未定价与零元在输入和展示上严格分开', () => {
+  assert.equal(optionalCommercialPrice(undefined), undefined);
+  assert.equal(optionalCommercialPrice('  '), undefined);
+  assert.equal(patchCommercialPrice(undefined), undefined);
+  assert.equal(patchCommercialPrice('  '), null);
+  assert.equal(patchCommercialPrice(null), null);
+
+  assert.equal(commercialPriceLabel(null), '未定价');
+  assert.equal(commercialPriceLabel('0.00'), '¥0.00');
+  assert.equal(commercialPriceLabel('12.3'), '¥12.30');
+});
+
+test('SKU 新建和编辑把两个价格投影到公开 API 载荷', () => {
+  assert.deepEqual(buildSkuCreateBody({
+    provider_id: '11',
+    product_id: '22',
+    specification: '500g',
+    unit: '袋',
+    barcode: ' 690000000001 ',
+    purchase_price: ' 12.30 ',
+    retail_price: '',
+    active: true,
+  }), {
+    provider_id: '11',
+    product_id: '22',
+    specification: '500g',
+    unit: '袋',
+    barcode: '690000000001',
+    purchase_price: '12.30',
+    retail_price: undefined,
+    active: true,
+  });
+
+  assert.deepEqual(buildSkuUpdateBody({
+    expected_version: 3,
+    specification: '400g',
+    barcode: '',
+    purchase_price: '13',
+    retail_price: '',
+    active: false,
+  }), {
+    expected_version: 3,
+    specification: '400g',
+    barcode: null,
+    purchase_price: '13',
+    retail_price: null,
+    active: false,
+  });
+});

@@ -150,7 +150,24 @@ export interface ReviewCase {
   subject_id: string;
   detail: Record<string, unknown>;
   suggestions: Array<Record<string, unknown>>;
-  allowed_actions: Array<'RESOLVE_CUSTOMER' | 'RESOLVE_SKU' | 'COMPLETE_SOURCE_FOLLOWUP'>;
+  allowed_actions: Array<
+    | 'RESOLVE_CUSTOMER'
+    | 'RESOLVE_SKU'
+    | 'RESOLVE_CARRIER'
+    | 'RESOLVE_IMPORT_DATA'
+    | 'COMPLETE_SOURCE_FOLLOWUP'
+    | 'CONFIRM_ORDER_DRAFT'
+    | 'REJECT_ORDER_DRAFT'
+    | 'CONFIRM_TRACKING_DRAFT'
+    | 'OPEN_SKU_MAPPING'
+    | 'RERUN_JD_SKU_MAPPING_CHECK'
+    | 'RERUN_JD_STOCK_CHECK'
+    | 'REINTERPRET'
+    | 'REJECT'
+    | 'RESOLVE_MANUALLY'
+    | 'RESOLVE_JD_TRACKING_CONFLICT'
+    | 'DISMISS'
+  >;
   resolution?: Record<string, unknown>;
   resolved_by?: string;
   resolved_at?: string;
@@ -208,6 +225,65 @@ export interface ShipmentItem {
   unit: string;
 }
 
+export type JdOutboundSyncStatus = 'SUBMITTING' | 'SUBMITTED' | 'SYNC_FAILED';
+export type JdClientMode = 'MOCK' | 'REAL';
+export type JdOutboundAttemptMode = JdClientMode | 'UNKNOWN';
+
+export interface ShipmentJdOutbound {
+  erp_delivery_no: string;
+  jd_delivery_no?: string | null;
+  sync_status: JdOutboundSyncStatus;
+  failure_phase?: 'VALIDATION' | 'SUBMIT' | null;
+  retry_count: number;
+  retryable: boolean;
+  client_mode: JdOutboundAttemptMode;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  submitted_at?: string | null;
+  tracking_query_status?: 'NOT_QUERIED' | 'PENDING' | 'PARTIAL' | 'TRACKED' | 'CONFLICT' | 'QUERY_FAILED' | 'TERMINAL_REVIEWED';
+  tracking_query_attempt_count?: number;
+  tracking_last_query_at?: string | null;
+  tracking_last_error_code?: string | null;
+  tracking_last_error_message?: string | null;
+  updated_at?: string;
+}
+
+export interface ShipmentJdOutboundPreviewBlocker {
+  code: string;
+  path: string;
+  source: string;
+  correction_target: string;
+  message: string;
+}
+
+export interface ShipmentJdOutboundPreview {
+  shipment_id: string;
+  shipment_version: number;
+  erp_delivery_no: string;
+  request_hash: string;
+  submittable: boolean;
+  request: Record<string, unknown>;
+  validations: Array<{
+    path: string;
+    status: 'PASS' | 'BLOCKED' | 'OMITTED';
+    source: string;
+    message?: string | null;
+  }>;
+  blockers: ShipmentJdOutboundPreviewBlocker[];
+  manual_correction_source?: string | null;
+}
+
+export interface ShipmentJdOutboundSubmitResult {
+  shipment_id: string;
+  erp_delivery_no: string;
+  jd_delivery_no?: string;
+  outbound_order_no: string;
+  sync_status: 'SUBMITTED';
+  retry_count: number;
+  plan_quantity: number;
+  goods_count: number;
+}
+
 export interface Shipment {
   id: string;
   shipment_no: string;
@@ -219,9 +295,33 @@ export interface Shipment {
   receiver: Receiver;
   items: ShipmentItem[];
   tracking?: Tracking;
+  jd_outbound?: ShipmentJdOutbound | null;
   shipped_at?: string | null;
   created_at: string;
+  updated_at: string;
 }
+
+/** 订单详情中的京东履约白名单：不含重试、错误消息或请求诊断。 */
+export interface OrderShipmentJdOutbound {
+  erp_delivery_no: string;
+  jd_delivery_no: string | null;
+  sync_status: JdOutboundSyncStatus;
+  failure_phase: 'VALIDATION' | 'SUBMIT' | null;
+  tracking_query_status: 'NOT_QUERIED' | 'PENDING' | 'PARTIAL' | 'TRACKED' | 'CONFLICT' | 'QUERY_FAILED' | 'TERMINAL_REVIEWED';
+  updated_at: string;
+}
+
+/** 订单详情中的 Shipment 白名单：不下发收件人快照。 */
+export type OrderShipment = Omit<
+  Shipment,
+  'receiver' | 'provider_id' | 'outbound_order_no' | 'tracking' | 'jd_outbound' | 'shipped_at'
+> & {
+  provider_id: string;
+  outbound_order_no: string;
+  tracking: Tracking | null;
+  jd_outbound: OrderShipmentJdOutbound | null;
+  shipped_at: string | null;
+};
 
 // ---------- 工作台 ----------
 
@@ -329,7 +429,7 @@ export interface FulfillmentMetric {
   synced_count?: number;
 }
 
-// ---------- 主数据（商品中心 / 系统配置） ----------
+// ---------- 主数据 / 系统配置 ----------
 
 /** 主数据通用行：商品/品类/SKU/两类 SKU 映射共用（openapi MasterDataRecord）。
  *  特定字段（规格、单位、乘数等）按 openapi 落在 attributes 附加属性。 */
@@ -348,6 +448,76 @@ export interface MasterDataPage extends PageMeta {
   items: MasterDataRecord[];
 }
 
+/** SKU 响应属性：价格字段始终存在，null 仅表示未定价。 */
+export interface SkuAttributes {
+  [key: string]: unknown;
+  product_id: string;
+  provider_id: string;
+  specification: string;
+  unit: string;
+  barcode?: string | null;
+  purchase_price: string | null;
+  retail_price: string | null;
+}
+
+export interface SkuRecord extends Omit<MasterDataRecord, 'attributes'> {
+  attributes: SkuAttributes;
+}
+
+export interface SkuPage extends Omit<MasterDataPage, 'items'> {
+  items: SkuRecord[];
+}
+
+export interface JdPiecesCandidate {
+  provider_sku_code: string;
+  sku_id: string;
+  unit?: string | null;
+  specification?: string | null;
+  source_specification?: string | null;
+  source_product_name?: string | null;
+  candidate?: string | null;
+  configured?: string | null;
+}
+
+export interface JdPiecesImportRow {
+  provider_sku_code: string;
+  jd_pieces_per_unit: string;
+  status: string;
+}
+
+export interface JdPiecesImportResult {
+  accepted_count: number;
+  skipped_count: number;
+  rows: JdPiecesImportRow[];
+}
+
+export interface JdReceiverAddressCandidate {
+  shipment_id: string;
+  expected_version: number;
+  receiver_address_snapshot: string;
+  source_channel: string;
+  confirmed: boolean;
+  confirmed_by?: string | null;
+  province?: string | null;
+  city?: string | null;
+  county?: string | null;
+  town?: string | null;
+  detail_address?: string | null;
+  candidate?: {
+    province?: string | null;
+    city?: string | null;
+    county?: string | null;
+    town?: string | null;
+    detail_address?: string | null;
+  } | null;
+  candidate_incomplete: boolean;
+}
+
+export interface JdProviderConfigEntry {
+  present: boolean;
+  value?: string | boolean;
+}
+
 export interface FulfillmentProvider {
   id: string;
   provider_code: string;
@@ -356,6 +526,8 @@ export interface FulfillmentProvider {
   tracking_sla_minutes: number;
   active: boolean;
   version: number;
+  /** 京东标识状态投影（非京东履约方为空 map；pin 只含 present，永不回显明文）。 */
+  jd_config: Record<string, JdProviderConfigEntry>;
 }
 
 export interface ConnectorConfig {
@@ -529,15 +701,35 @@ export interface ImportBatch {
   original_file_name: string;
   content_sha256: string;
   status: string;
+  confirmed_at?: string | null;
+  confirmed_by?: string | null;
   row_counts: ImportRowCounts;
   generated_fulfillment_export_ids?: string[];
   generated_source_return_export_ids?: string[];
+  /** 仅确认响应携带：京东 SDK 直连路由的建单发货批次（05）。 */
+  outbound_routing?: {
+    jd_sdk_shipment_ids?: string[];
+  };
   received_at: string;
   processed_at?: string;
 }
 
 export interface TrackingImportBatch extends ImportBatch {
   business_results?: { shipped?: number; partial?: number; failed?: number };
+  rows?: TrackingBatchRow[];
+}
+
+/** 回传批次逐行结果视图；raw_cells 仅由展示层白名单取值（结果/实际发货数量/快递公司/物流单号/异常原因）。 */
+export interface TrackingBatchRow {
+  id: string;
+  sheet_name: string;
+  sheet_index: number;
+  row_index: number;
+  raw_cells: Record<string, unknown>;
+  source_order_ref?: string | null;
+  status: RawRowStatus;
+  order_id?: string | null;
+  order_line_id?: string | null;
 }
 
 export type RawRowStatus = 'RECEIVED' | 'ACCEPTED' | 'NEED_REVIEW' | 'REJECTED';
@@ -555,6 +747,14 @@ export interface RawImportRow {
   error_detail?: Record<string, unknown> | null;
   order_id?: string | null;
   order_line_id?: string | null;
+  /** 渠道模板解析投影（白名单：receiver_name/receiver_phone/receiver_address/product_name/quantity/specification/source_sku_ref），供确认明细核对解析是否正确。 */
+  parsed?: Record<string, string>;
+  /** 来源 SKU 归属的履约方（白名单：provider_type JD_WAREHOUSE/THIRD_PARTY + provider_name + 内部 SKU 规格默认值）；无映射为 null。 */
+  sku_fulfillment?: {
+    provider_type: 'JD_WAREHOUSE' | 'THIRD_PARTY';
+    provider_name: string;
+    sku_specification?: string | null;
+  } | null;
 }
 
 export interface RawImportRowPage extends PageMeta {
@@ -574,6 +774,142 @@ export interface SourceReturnExport {
 
 export interface ShipmentPage extends PageMeta {
   items: Shipment[];
+}
+
+export interface ShipmentJdSkuMappingGateResult {
+  shipment_id: string;
+  check_run_no: string;
+  gate_status: 'PASSED' | 'BLOCKED';
+  checked_mapping_count: number;
+  blocking_issue_count: number;
+  warning_count: number;
+}
+
+// ---------- 库存中心 / 京东实时库存判定 ----------
+
+export type InventoryObservationStatus = 'OBSERVED' | 'NOT_OBSERVED';
+export type InventoryFreshnessStatus = 'CURRENT' | 'STALE' | 'NOT_OBSERVED';
+export type InventorySourceType = 'JD_ISC_QUERY_STOCK' | 'NORMALIZED_PROVIDER_SNAPSHOT' | 'UNKNOWN';
+export type InventoryQuantityUnit = 'JD_PIECE' | 'INTERNAL_UNIT' | 'UNKNOWN';
+
+export interface InventoryOverviewItem {
+  provider_id: string;
+  provider_code: string;
+  provider_name: string;
+  provider_type: 'JD_WAREHOUSE' | 'THIRD_PARTY';
+  sku_id: string;
+  sku_code: string;
+  product_name: string;
+  specification: string;
+  unit: string;
+  quantity_unit: InventoryQuantityUnit | null;
+  warehouse_code: string | null;
+  observation_status: InventoryObservationStatus;
+  total_quantity: string | null;
+  available_quantity: string | null;
+  unavailable_quantity: string | null;
+  observed_at: string | null;
+  observation_age_seconds: number | null;
+  freshness_status: InventoryFreshnessStatus;
+  source_type: InventorySourceType | null;
+}
+
+export interface InventoryCoverage {
+  provider_count: number;
+  observed_provider_count: number;
+  sku_count: number;
+  observed_sku_count: number;
+  warehouse_count: number;
+  latest_observed_at: string | null;
+  stale_count: number;
+  oldest_observed_at: string | null;
+  partial: boolean;
+  freshness_policy: string;
+}
+
+export interface InventoryOverviewResponse {
+  items: InventoryOverviewItem[];
+  page: number;
+  size: number;
+  total_elements: number;
+  total_pages: number;
+  coverage: InventoryCoverage;
+}
+
+export type InventoryDetailCapabilityGroup =
+  | 'BATCH_AND_SHELF_LIFE'
+  | 'INVENTORY_FLOW'
+  | 'SERIAL_NUMBER';
+
+export interface InventoryDetailContext {
+  provider_id: string;
+  provider_code: string;
+  provider_name: string;
+  provider_type: 'JD_WAREHOUSE' | 'THIRD_PARTY';
+  sku_id: string;
+  sku_code: string;
+  product_name: string;
+  specification: string;
+  unit: string;
+  provider_sku_code: string | null;
+  warehouse_code: string | null;
+}
+
+export interface InventoryDetailObservation {
+  observation_status: InventoryObservationStatus;
+  total_quantity: string | null;
+  available_quantity: string | null;
+  unavailable_quantity: string | null;
+  quantity_unit: InventoryQuantityUnit | null;
+  observed_at: string | null;
+  observation_age_seconds: number | null;
+  expires_at: string | null;
+  freshness_status: InventoryFreshnessStatus;
+  source_type: InventorySourceType | null;
+  data_mode: 'CACHED_SNAPSHOT' | 'NO_OBSERVATION';
+}
+
+export interface InventoryDetailCapability {
+  group: InventoryDetailCapabilityGroup;
+  label: string;
+  integration_status: 'INTEGRATED' | 'NOT_INTEGRATED' | 'CONTEXT_MISSING';
+  runtime_mode: 'REAL' | 'MOCK' | 'UNKNOWN' | 'NOT_APPLICABLE';
+  source_type: 'JD_ISC_READ_ONLY' | null;
+  explanation: string;
+  tools: Array<{ code: string; label: string }>;
+}
+
+export interface InventoryDetailsResponse {
+  context: InventoryDetailContext;
+  observation: InventoryDetailObservation;
+  query_time: string;
+  freshness_policy: string;
+  capabilities: InventoryDetailCapability[];
+}
+
+export interface ShipmentJdStockObservation {
+  sku_id: string;
+  goods_no: string;
+  warehouse_code: string;
+  required_quantity: string;
+  quantity_unit: 'JD_PIECE';
+  observation_status: 'OBSERVED' | 'OBSERVED_ZERO' | 'NOT_OBSERVED';
+  stock_quantity?: string;
+  usable_quantity?: string;
+}
+
+export interface ShipmentJdStockCheckResult {
+  shipment_id: string;
+  shipment_version: number;
+  preview_hash: string;
+  target_warehouse_code: string;
+  stock_status: 'PASSED' | 'BLOCKED';
+  observation_status: 'OBSERVED' | 'OBSERVED_ZERO' | 'NOT_OBSERVED';
+  observed_at: string;
+  not_reserved: true;
+  blockers: Array<{ code: string; message: string }>;
+  items: ShipmentJdStockObservation[];
+  review_case?: { id: string; reason_code: 'JD_STOCK_BLOCKED'; status: 'OPEN' };
 }
 
 // ---------- 采购工单 ----------
@@ -734,10 +1070,63 @@ export interface ChannelMessageDetail extends Omit<ChannelMessageSummary, 'conte
   quote_type?: string | null;
   quote_content?: string | null;
   raw_payload_ref: string;
+  submission_id?: string | null;
+  media_refs?: Array<{
+    id: string;
+    media_type: string;
+    content_type?: string | null;
+    size_bytes?: number | null;
+  }>;
 }
 
 export interface ChannelMessagePage extends PageMeta {
   items: ChannelMessageSummary[];
+}
+
+// ---------- 消息提交与解释历史 ----------
+
+export type MessageFailureCode =
+  | 'MODEL_NOT_CONFIGURED'
+  | 'MODEL_CALL_FAILED'
+  | 'MODEL_OUTPUT_INVALID';
+
+export interface MessageInterpretation {
+  version: number;
+  intent: string;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  error?: MessageFailureCode | null;
+  created_at: string;
+}
+
+export type MessageTaskStatusCode =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'FINALIZING'
+  | 'SUCCEEDED'
+  | 'FAILED';
+
+export interface MessageTaskStatus {
+  id: string;
+  task_type: string;
+  status: MessageTaskStatusCode;
+  attempts: number;
+  max_attempts: number;
+  last_error?: MessageFailureCode | null;
+  created_at: string;
+}
+
+export interface MessageSubmissionDetail {
+  id: string;
+  submission_no: string;
+  status: string;
+  source_message_id: string;
+  current_intent?: string | null;
+  latest_error?: MessageFailureCode | null;
+  interpretations: MessageInterpretation[];
+  latest_task?: MessageTaskStatus | null;
+  created_at: string;
 }
 
 // ---------- Demo ----------

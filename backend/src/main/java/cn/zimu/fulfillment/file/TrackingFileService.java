@@ -37,7 +37,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** 履约方返回整批先校验、后在单事务内接收，不部分落账。 */
 @Service
-class TrackingFileService {
+public class TrackingFileService {
 
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter SOURCE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -153,7 +153,10 @@ class TrackingFileService {
                 (resultSet, rowNum) -> resultSet.getLong(1), exportId);
         List<Long> sourceReturnIds = new ArrayList<>();
         for (long sourceBatchId : sourceBatches) {
-            sourceReturnIds.add(generateSourceReturn(sourceBatchId, batchId, context.operator()));
+            Long sourceReturnId = generateSourceReturn(sourceBatchId, batchId, context.operator());
+            if (sourceReturnId != null) {
+                sourceReturnIds.add(sourceReturnId);
+            }
         }
         jdbc.update(
                 "UPDATE app.import_batches SET status='COMPLETED', processed_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -260,10 +263,39 @@ class TrackingFileService {
         }
     }
 
-    private long generateSourceReturn(long sourceBatchId, long trackingBatchId, String operator) {
+    private Long generateSourceReturn(long sourceBatchId, Long trackingBatchId, String operator) {
+        jdbc.queryForObject(
+                "SELECT id FROM app.import_batches WHERE id=? AND batch_type='SOURCE_ORDER' FOR UPDATE",
+                Long.class,
+                sourceBatchId);
+        List<Long> existingFinal = jdbc.queryForList(
+                "SELECT id FROM app.source_return_exports WHERE import_batch_id=? AND is_final ORDER BY id",
+                Long.class,
+                sourceBatchId);
+        if (!existingFinal.isEmpty()) {
+            return existingFinal.getFirst();
+        }
+        List<ReturnRow> returns = returnRows(sourceBatchId);
+        int acceptedRows = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM app.raw_import_rows WHERE import_batch_id=? AND status='ACCEPTED'",
+                Integer.class,
+                sourceBatchId);
+        boolean hasMultiShipmentFollowup = Boolean.TRUE.equals(jdbc.queryForObject(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM app.review_cases rc
+                    JOIN app.raw_import_rows rir ON rir.order_line_id=rc.order_line_id
+                    WHERE rir.import_batch_id=?
+                      AND rc.reason_code='MULTI_SHIPMENT_SOURCE_FOLLOWUP'
+                      AND rc.status='OPEN')
+                """,
+                Boolean.class,
+                sourceBatchId));
+        if (hasMultiShipmentFollowup || acceptedRows == 0 || returns.size() != acceptedRows) {
+            return null;
+        }
         SourceBatch source = sourceBatch(sourceBatchId);
         ParsedSourceFile original = sourceFileParser.parse(fileStore.read(source.fileRef()));
-        List<ReturnRow> returns = returnRows(sourceBatchId);
         Map<String, ReturnRow> byCoordinate = returns.stream().collect(java.util.stream.Collectors.toMap(
                 row -> row.sheetIndex() + ":" + row.rowIndex(), row -> row));
         List<ParsedSourceRow> rendered = original.rows().stream().map(row -> {
@@ -304,19 +336,6 @@ class TrackingFileService {
         Integer version = jdbc.queryForObject(
                 "SELECT COALESCE(MAX(version_no), 0)+1 FROM app.source_return_exports WHERE import_batch_id=?",
                 Integer.class, sourceBatchId);
-        boolean hasMultiShipmentFollowup = Boolean.TRUE.equals(jdbc.queryForObject(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM app.review_cases rc
-                    JOIN app.raw_import_rows rir ON rir.order_line_id=rc.order_line_id
-                    WHERE rir.import_batch_id=?
-                      AND rc.reason_code='MULTI_SHIPMENT_SOURCE_FOLLOWUP')
-                """,
-                Boolean.class,
-                sourceBatchId));
-        boolean isFinal = !hasMultiShipmentFollowup && returns.size() == jdbc.queryForObject(
-                "SELECT COUNT(*) FROM app.raw_import_rows WHERE import_batch_id=? AND status='ACCEPTED'",
-                Integer.class, sourceBatchId);
         long returnId = jdbc.queryForObject(
                 """
                 INSERT INTO app.source_return_exports
@@ -328,7 +347,7 @@ class TrackingFileService {
                 sourceBatchId,
                 trackingBatchId,
                 version,
-                isFinal,
+                true,
                 source.templateVersion(),
                 stored.fileRef(),
                 stored.sha256(),
@@ -374,6 +393,39 @@ class TrackingFileService {
                     row.orderLineId());
         }
         return returnId;
+    }
+
+    /** 京东运单回填后，尝试为 Shipment 所属来源批次生成唯一最终原格式文件。 */
+    @Transactional
+    public List<Long> finalizeReadySourceReturnsForShipment(long shipmentId, String operator) {
+        // jd-real-sdk-switch 06：SDK 直连路由（05）的 shipment 没有 fulfillment_export_items，
+        // 通过 shipment_items → fulfillments → raw_import_rows 反查来源批次；文件路由保持原路径。
+        List<Long> sourceBatchIds = jdbc.query(
+                """
+                SELECT DISTINCT import_batch_id FROM (
+                    SELECT rir.import_batch_id
+                    FROM app.raw_import_rows rir
+                    JOIN app.order_lines ol ON ol.id=rir.order_line_id
+                    JOIN app.fulfillments f ON f.order_line_id=ol.id
+                    JOIN app.shipment_items si ON si.fulfillment_id=f.id
+                    WHERE si.shipment_id=?
+                    UNION
+                    SELECT rir.import_batch_id
+                    FROM app.fulfillment_export_items fei
+                    JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id
+                    WHERE fei.shipment_id=?
+                ) batches
+                ORDER BY import_batch_id
+                """,
+                (resultSet, rowNum) -> resultSet.getLong(1),
+                shipmentId,
+                shipmentId);
+        List<Long> result = new ArrayList<>();
+        for (long sourceBatchId : sourceBatchIds) {
+            Long returnId = generateSourceReturn(sourceBatchId, null, operator);
+            if (returnId != null) result.add(returnId);
+        }
+        return List.copyOf(result);
     }
 
     private byte[] trueCsv(SourceBatch source, List<ParsedSourceRow> rows) {

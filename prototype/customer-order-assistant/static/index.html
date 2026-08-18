@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>客户订单助手 · 内部验证版</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f5f2;
+      --paper: #fffef9;
+      --ink: #18201b;
+      --muted: #68736b;
+      --line: #dce2dc;
+      --brand: #176b45;
+      --brand-soft: #e4f2e9;
+      --warning: #9b5b08;
+      --danger: #a63d35;
+      --shadow: 0 12px 36px rgba(33, 54, 41, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(100, 157, 119, .14), transparent 34rem),
+        var(--bg);
+      color: var(--ink);
+      font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    }
+    header {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 14px 28px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 254, 249, .86);
+      backdrop-filter: blur(12px);
+    }
+    h1 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+    .subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .badge {
+      padding: 5px 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: #fff;
+      font-size: 12px;
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .badge.ok { color: var(--brand); border-color: #b9d9c4; background: var(--brand-soft); }
+    .badge.warn { color: var(--warning); border-color: #ead4b3; background: #fff8e8; }
+    main {
+      height: calc(100vh - 72px);
+      display: grid;
+      grid-template-columns: minmax(360px, .9fr) minmax(420px, 1.1fr);
+      gap: 18px;
+      padding: 18px;
+      max-width: 1500px;
+      margin: 0 auto;
+    }
+    .panel {
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .chat-panel { display: grid; grid-template-rows: auto 1fr auto; }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    .panel-title { font-weight: 700; }
+    .state { color: var(--muted); font-size: 12px; }
+    button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 13px;
+      color: var(--ink);
+      background: #fff;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) { border-color: #a8b8ad; transform: translateY(-1px); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.primary { color: white; background: var(--brand); border-color: var(--brand); }
+    .messages { overflow: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+    .message { max-width: 86%; padding: 11px 13px; border-radius: 14px; white-space: pre-wrap; }
+    .message.assistant { align-self: flex-start; background: #edf1ed; border-bottom-left-radius: 4px; }
+    .message.user { align-self: flex-end; color: white; background: var(--brand); border-bottom-right-radius: 4px; }
+    .composer { padding: 14px; border-top: 1px solid var(--line); background: #fbfcf9; }
+    textarea {
+      width: 100%;
+      min-height: 86px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      color: var(--ink);
+      background: white;
+      font: inherit;
+      outline: none;
+    }
+    textarea:focus { border-color: #70a884; box-shadow: 0 0 0 3px rgba(23, 107, 69, .1); }
+    .composer-actions { margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .hint { color: var(--muted); font-size: 12px; }
+    .preview-panel { display: grid; grid-template-rows: auto auto auto minmax(160px, 1fr) auto; }
+    .missing-wrap { padding: 12px 18px; border-bottom: 1px solid var(--line); }
+    .missing-label { color: var(--muted); font-size: 12px; margin-bottom: 7px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { padding: 3px 7px; border-radius: 7px; color: var(--warning); background: #fff3d9; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .chip.done { color: var(--brand); background: var(--brand-soft); font-family: inherit; }
+    .insight-wrap { padding: 14px 18px; border-bottom: 1px solid var(--line); background: #f5f9f5; }
+    .insight-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+    .insight-copy { color: var(--muted); font-size: 12px; margin: 3px 0; }
+    .insight-tags { margin-top: 8px; }
+    .insight-tags .chip { color: var(--brand); background: var(--brand-soft); }
+    .recommendations { display: grid; gap: 5px; margin-top: 9px; }
+    .recommendation { padding: 7px 9px; border-left: 3px solid #91b79d; background: rgba(255, 255, 255, .7); font-size: 12px; }
+    .insight-error { color: var(--danger); font-size: 12px; margin-top: 7px; }
+    .order-preview { padding: 16px 18px; overflow: auto; background: #f7f8f4; }
+    .order-section + .order-section { margin-top: 16px; }
+    .order-section h3 { margin: 0 0 8px; font-size: 13px; }
+    .order-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .order-field { padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: white; }
+    .field-label { display: block; color: var(--muted); font-size: 11px; }
+    .field-value { display: block; margin-top: 2px; overflow-wrap: anywhere; }
+    .item-card { padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: white; }
+    .item-card + .item-card { margin-top: 7px; }
+    .item-name { font-weight: 700; }
+    .item-detail { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .empty-copy { color: var(--muted); font-size: 12px; }
+    .submit-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 18px;
+      border-top: 1px solid var(--line);
+    }
+    .order-result { color: var(--brand); font-weight: 700; }
+    .error {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      z-index: 5;
+      max-width: min(620px, calc(100vw - 32px));
+      transform: translateX(-50%);
+      padding: 11px 14px;
+      border: 1px solid #e2b4b0;
+      border-radius: 12px;
+      color: var(--danger);
+      background: #fff4f3;
+      box-shadow: var(--shadow);
+      display: none;
+      white-space: pre-wrap;
+    }
+    @media (max-width: 850px) {
+      header { align-items: flex-start; padding: 14px 16px; }
+      main { height: auto; min-height: calc(100vh - 72px); grid-template-columns: 1fr; padding: 10px; }
+      .panel { min-height: 620px; }
+      .preview-panel { min-height: 680px; }
+      .order-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>客户订单助手 <span class="badge">内部验证版</span></h1>
+      <div class="subtitle">描述客户需求，补齐订单信息，核对后再提交</div>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel chat-panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">需求对话</div>
+          <div id="sessionState" class="state">正在创建会话…</div>
+        </div>
+        <button id="newButton" type="button">新订单</button>
+      </div>
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <div class="composer">
+        <textarea id="messageInput" placeholder="例如：子牧公司要 10 箱 500g 羊小腿，送到郑州市金水区……"></textarea>
+        <div class="composer-actions">
+          <span class="hint">⌘ / Ctrl + Enter 发送</span>
+          <button id="sendButton" class="primary" type="button">发送</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel preview-panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">订单信息预览</div>
+          <div class="state">内容会先核对，确认后才会创建订单</div>
+        </div>
+        <span id="readyState" class="badge warn">待补充</span>
+      </div>
+      <div class="missing-wrap">
+        <div class="missing-label">还需补充</div>
+        <div id="missingFields" class="chips"></div>
+      </div>
+      <div class="insight-wrap">
+        <div class="insight-head">
+          <strong>客户洞察与品类建议</strong>
+          <span id="insightState" class="state">等待首次提取</span>
+        </div>
+        <div class="insight-copy">由 AI 根据当前对话生成，仅供参考，不会写入订单。</div>
+        <div id="profileSummary" class="insight-copy">画像：—</div>
+        <div id="preferenceSummary" class="insight-copy">偏好：—</div>
+        <div id="profileTags" class="chips insight-tags"></div>
+        <div id="categoryRecommendations" class="recommendations"></div>
+        <div id="insightError" class="insight-error"></div>
+      </div>
+      <div id="orderPreview" class="order-preview"></div>
+      <div class="submit-bar">
+        <div id="orderResult" class="order-result"></div>
+        <button id="confirmButton" class="primary" type="button" disabled>确认并创建订单</button>
+      </div>
+    </section>
+  </main>
+  <div id="error" class="error" role="alert"></div>
+
+  <script>
+    let session = null;
+    let busy = false;
+    let appConfig = { demo_mode: true, service_ready: false };
+    const $ = (id) => document.getElementById(id);
+
+    const STATUS_LABELS = {
+      COLLECTING: "正在补充订单信息",
+      READY_TO_CONFIRM: "等待确认",
+      CONFIRMED: "已经提交",
+    };
+    const FIELD_LABELS = {
+      "customer.customer_name": "客户名称",
+      "receiver.receiver_name": "收货人",
+      "receiver.receiver_phone": "联系电话",
+      "receiver.address": "收货地址",
+      required_delivery_time: "期望送达时间",
+      "settlement.settlement_method": "结账方式",
+      "settlement.settlement_time": "结账时间",
+      items: "商品清单",
+      product_name: "商品名称",
+      specification: "商品规格",
+      quantity: "商品数量",
+      unit: "数量单位",
+    };
+    const PROFILE_LABELS = {
+      BULK_PURCHASER: "批量采购",
+      QUALITY_ORIENTED: "关注品质",
+      PRICE_SENSITIVE: "关注价格",
+      DELIVERY_SENSITIVE: "关注交付",
+      GIFTING_SCENARIO: "礼赠场景",
+      BUSINESS_WELFARE: "企业福利",
+      REPEAT_PURCHASE_POTENTIAL: "可能持续采购",
+      INSUFFICIENT_EVIDENCE: "信息仍待积累",
+    };
+    const PREFERENCE_LABELS = {
+      BULK_PACKAGING: "偏好大包装",
+      SMALL_PACKAGING: "偏好小包装",
+      PREMIUM_QUALITY: "品质优先",
+      VALUE_FOR_MONEY: "关注性价比",
+      FAST_DELIVERY: "希望尽快送达",
+      SCHEDULED_DELIVERY: "偏好预约送达",
+      COLD_CHAIN: "需要冷链",
+      GIFT_READY: "偏好礼赠包装",
+    };
+    const CATEGORY_LABELS = {
+      MEAT_POULTRY: "肉禽类",
+      GRAIN_OIL: "粮油类",
+      DAIRY: "乳制品",
+      FRESH_PRODUCE: "生鲜果蔬",
+      FROZEN_PREPARED: "冷冻及预制食品",
+      GIFT_BUNDLE: "礼包组合",
+    };
+
+    function friendlyError(errorPayload) {
+      const code = errorPayload?.code || "UNKNOWN";
+      const safeMessages = {
+        EMPTY_MESSAGE: "请先输入订单需求。",
+        MESSAGE_TOO_LONG: "内容较长，请拆成多条发送。",
+        SESSION_NOT_FOUND: "当前订单草稿已失效，请点击“新订单”重新录入。",
+        SESSION_BUSY: "上一条内容还在处理中，请稍等。",
+        SESSION_CONFIRMED: "这张订单已经提交，请点击“新订单”继续。",
+        ORDER_DRAFT_INCOMPLETE: "订单信息还不完整，请先补齐右侧提示的内容。",
+      };
+      if (safeMessages[code]) return safeMessages[code];
+      if (code.startsWith("LLM_") || code === "INVALID_CONFIG") {
+        return "智能提取服务暂时不可用，请稍后重试；若持续失败，请联系管理员。";
+      }
+      if (code.startsWith("ORDER_API_")) {
+        return "订单暂时无法提交，请核对信息后重试；若持续失败，请联系管理员。";
+      }
+      return errorPayload?.message || "操作没有完成，请重试；若持续失败，请联系管理员。";
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        method: options.method || "GET",
+        headers: { "Content-Type": "application/json" },
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+      let payload;
+      try { payload = await response.json(); }
+      catch { payload = { error: { code: "UNEXPECTED_RESPONSE" } }; }
+      if (!response.ok) {
+        throw new Error(friendlyError(payload.error));
+      }
+      return payload;
+    }
+
+    function showError(error) {
+      $("error").textContent = error.message;
+      $("error").style.display = "block";
+      window.clearTimeout(showError.timer);
+      showError.timer = window.setTimeout(() => $("error").style.display = "none", 7000);
+    }
+
+    function setBusy(value) {
+      busy = value;
+      $("sendButton").disabled = value || !session || session.status === "CONFIRMED";
+      $("newButton").disabled = value;
+      $("messageInput").disabled = value || !session || session.status === "CONFIRMED";
+      $("confirmButton").disabled = value || !session || session.status !== "READY_TO_CONFIRM";
+      $("sendButton").textContent = value ? "处理中…" : "发送";
+    }
+
+    function missingFieldLabel(field) {
+      if (FIELD_LABELS[field]) return FIELD_LABELS[field];
+      const itemMatch = field.match(/^items\[(\d+)]\.(.+)$/);
+      if (itemMatch) {
+        const itemNumber = Number(itemMatch[1]) + 1;
+        return `第 ${itemNumber} 项商品：${FIELD_LABELS[itemMatch[2]] || "信息"}`;
+      }
+      return "订单信息";
+    }
+
+    function orderField(label, value) {
+      const field = document.createElement("div");
+      field.className = "order-field";
+      const labelNode = document.createElement("span");
+      labelNode.className = "field-label";
+      labelNode.textContent = label;
+      const valueNode = document.createElement("span");
+      valueNode.className = "field-value";
+      valueNode.textContent = value || "—";
+      field.append(labelNode, valueNode);
+      return field;
+    }
+
+    function orderSection(title, fields) {
+      const section = document.createElement("section");
+      section.className = "order-section";
+      const heading = document.createElement("h3");
+      heading.textContent = title;
+      const grid = document.createElement("div");
+      grid.className = "order-grid";
+      grid.append(...fields);
+      section.append(heading, grid);
+      return section;
+    }
+
+    function renderOrderPreview(draft) {
+      const customer = draft.customer || {};
+      const receiver = draft.receiver || {};
+      const settlement = draft.settlement || {};
+      const sections = [
+        orderSection("客户与收货", [
+          orderField("客户名称", customer.customer_name),
+          orderField("收货人", receiver.receiver_name),
+          orderField("联系电话", receiver.receiver_phone),
+          orderField("收货地址", receiver.address),
+        ]),
+        orderSection("交付与结算", [
+          orderField("期望送达时间", draft.required_delivery_time),
+          orderField("结账方式", settlement.settlement_method),
+          orderField("结账时间", settlement.settlement_time),
+          orderField("订单备注", draft.remark),
+        ]),
+      ];
+
+      const itemSection = document.createElement("section");
+      itemSection.className = "order-section";
+      const itemHeading = document.createElement("h3");
+      itemHeading.textContent = "商品清单";
+      itemSection.appendChild(itemHeading);
+      if (!draft.items?.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty-copy";
+        empty.textContent = "还没有识别出商品，请继续描述需求。";
+        itemSection.appendChild(empty);
+      } else {
+        draft.items.forEach((item, index) => {
+          const card = document.createElement("div");
+          card.className = "item-card";
+          const name = document.createElement("div");
+          name.className = "item-name";
+          name.textContent = `${index + 1}. ${item.product_name || "待补充商品名称"}`;
+          const detail = document.createElement("div");
+          detail.className = "item-detail";
+          detail.textContent = `${item.specification || "规格待补充"} · ${item.quantity || "数量待补充"} ${item.unit || ""}`;
+          card.append(name, detail);
+          itemSection.appendChild(card);
+        });
+      }
+      sections.push(itemSection);
+      $("orderPreview").replaceChildren(...sections);
+    }
+
+    function render() {
+      if (!session) return;
+      $("sessionState").textContent = STATUS_LABELS[session.status] || "正在处理";
+      renderOrderPreview(session.draft);
+      $("messages").replaceChildren(...session.messages.map((message) => {
+        const item = document.createElement("div");
+        item.className = `message ${message.role}`;
+        const content = document.createElement("div");
+        content.textContent = message.content;
+        item.appendChild(content);
+        return item;
+      }));
+      $("messages").scrollTop = $("messages").scrollHeight;
+
+      const missing = session.missing_fields || [];
+      if (missing.length) {
+        $("missingFields").replaceChildren(...missing.map((field) => {
+          const chip = document.createElement("span");
+          chip.className = "chip";
+          chip.textContent = missingFieldLabel(field);
+          return chip;
+        }));
+      } else {
+        const done = document.createElement("span");
+        done.className = "chip done";
+        done.textContent = "订单信息已补齐";
+        $("missingFields").replaceChildren(done);
+      }
+
+      const insight = session.latest_insight;
+      const insightError = session.insight_error;
+      $("insightState").textContent = insightError
+        ? "本轮建议暂不可用（不影响订单）"
+        : insight
+          ? `已更新 · ${session.insight_history.length} 轮`
+          : "等待首次提取";
+      $("profileSummary").textContent = `画像：${insight?.profile_summary || "—"}`;
+      $("preferenceSummary").textContent = `偏好：${insight?.preference_summary || "—"}`;
+      $("insightError").textContent = insightError
+        ? "客户洞察暂时不可用，可以继续核对和提交订单。"
+        : "";
+      $("profileTags").replaceChildren(...(insight?.profile_tags || []).map((value) => {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.textContent = PROFILE_LABELS[value] || "其他客户特征";
+        return chip;
+      }), ...(insight?.preference_tags || []).map((value) => {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.textContent = PREFERENCE_LABELS[value] || "其他采购偏好";
+        return chip;
+      }));
+      $("categoryRecommendations").replaceChildren(...(insight?.recommended_categories || []).map((recommendation) => {
+        const item = document.createElement("div");
+        item.className = "recommendation";
+        const category = CATEGORY_LABELS[recommendation.category_tag] || "其他品类";
+        item.textContent = `${category} · 匹配度 ${Math.round(recommendation.confidence * 100)}% · ${recommendation.reason}`;
+        return item;
+      }));
+
+      const ready = session.status === "READY_TO_CONFIRM";
+      const completedText = session.order_result?.mock ? "演示完成" : "已创建";
+      $("readyState").textContent = session.status === "CONFIRMED" ? completedText : ready ? "待确认" : "待补充";
+      $("readyState").className = `badge ${ready || session.status === "CONFIRMED" ? "ok" : "warn"}`;
+      const resultLabel = session.order_result?.mock ? "演示编号" : "订单号";
+      $("orderResult").textContent = session.order_result?.order_id
+        ? `${resultLabel}：${session.order_result.order_id}`
+        : "";
+      setBusy(busy);
+    }
+
+    async function loadConfig() {
+      try {
+        appConfig = await api("/config");
+        $("confirmButton").textContent = appConfig.demo_mode
+          ? "生成演示订单"
+          : "确认并创建订单";
+        if (!appConfig.service_ready) {
+          showError(new Error("智能提取服务尚未就绪，请联系管理员。"));
+        }
+      } catch (error) { showError(error); }
+    }
+
+    async function newSession() {
+      setBusy(true);
+      try {
+        session = await api("/customer/v1/order-assistant/sessions", { method: "POST", body: {} });
+        $("messageInput").value = "";
+        render();
+        $("messageInput").focus();
+      } catch (error) { showError(error); }
+      finally { setBusy(false); }
+    }
+
+    async function sendMessage() {
+      const message = $("messageInput").value.trim();
+      if (!message || busy || !session) return;
+      setBusy(true);
+      try {
+        session = await api(`/customer/v1/order-assistant/sessions/${session.session_id}/messages`, {
+          method: "POST",
+          body: { message },
+        });
+        $("messageInput").value = "";
+        render();
+        $("messageInput").focus();
+      } catch (error) { showError(error); }
+      finally { setBusy(false); }
+    }
+
+    async function confirmOrder() {
+      if (!session || busy || session.status !== "READY_TO_CONFIRM") return;
+      const confirmation = appConfig.demo_mode
+        ? "确认按右侧信息生成演示订单？它不会进入正式订单系统。"
+        : "确认按右侧信息创建订单？";
+      if (!window.confirm(confirmation)) return;
+      setBusy(true);
+      try {
+        session = await api(`/customer/v1/order-assistant/sessions/${session.session_id}/confirm`, {
+          method: "POST",
+          body: {},
+        });
+        render();
+      } catch (error) { showError(error); }
+      finally { setBusy(false); }
+    }
+
+    $("newButton").addEventListener("click", newSession);
+    $("sendButton").addEventListener("click", sendMessage);
+    $("confirmButton").addEventListener("click", confirmOrder);
+    $("messageInput").addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+
+    loadConfig();
+    newSession();
+  </script>
+</body>
+</html>

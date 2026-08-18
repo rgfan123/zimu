@@ -128,6 +128,8 @@ CREATE TABLE app.skus (
     specification       VARCHAR(200) NOT NULL,
     unit                VARCHAR(32) NOT NULL,
     barcode             VARCHAR(64),
+    purchase_price      NUMERIC(14, 2),
+    retail_price        NUMERIC(14, 2),
     active              BOOLEAN NOT NULL DEFAULT TRUE,
     lock_version        BIGINT NOT NULL DEFAULT 0 CHECK (lock_version >= 0),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -135,7 +137,9 @@ CREATE TABLE app.skus (
     CHECK (sku_code ~ '^SKU-[A-Z0-9]+-[0-9]{6}$'),
     CHECK (btrim(specification) <> ''),
     CHECK (btrim(unit) <> ''),
-    CHECK (barcode IS NULL OR btrim(barcode) <> '')
+    CHECK (barcode IS NULL OR btrim(barcode) <> ''),
+    CHECK (purchase_price IS NULL OR purchase_price >= 0),
+    CHECK (retail_price IS NULL OR retail_price >= 0)
 );
 
 CREATE TABLE app.sku_aliases (
@@ -191,11 +195,15 @@ CREATE TABLE app.provider_stock_snapshots (
     warehouse_code      VARCHAR(128) NOT NULL,
     stock_num           NUMERIC(18,3) NOT NULL CHECK (stock_num >= 0),
     usable_num          NUMERIC(18,3) NOT NULL CHECK (usable_num >= 0 AND usable_num <= stock_num),
+    quantity_unit       VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN',
+    source_type         VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
     synced_at           TIMESTAMPTZ NOT NULL,
     source_ref          VARCHAR(255),
     raw_payload         JSONB NOT NULL DEFAULT '{}'::JSONB,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (btrim(warehouse_code) <> '')
+    CHECK (btrim(warehouse_code) <> ''),
+    CHECK (btrim(quantity_unit) <> ''),
+    CHECK (btrim(source_type) <> '')
 );
 
 -- ---------------------------------------------------------------------------
@@ -227,6 +235,8 @@ CREATE TABLE app.import_batches (
     uploaded_by         VARCHAR(128) NOT NULL,
     received_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     processed_at        TIMESTAMPTZ,
+    confirmed_at        TIMESTAMPTZ,
+    confirmed_by        VARCHAR(128),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (content_sha256 ~ '^[0-9a-f]{64}$'),
     CHECK (
@@ -248,7 +258,11 @@ CREATE TABLE app.import_batches (
     CHECK (btrim(template_fingerprint) <> ''),
     CHECK (btrim(original_file_name) <> ''),
     CHECK (btrim(file_ref) <> ''),
-    CHECK (btrim(uploaded_by) <> '')
+    CHECK (btrim(uploaded_by) <> ''),
+    CHECK (
+        (confirmed_at IS NULL AND confirmed_by IS NULL)
+        OR (batch_type='SOURCE_ORDER' AND confirmed_at IS NOT NULL AND btrim(confirmed_by) <> '')
+    )
 );
 
 CREATE TABLE app.orders (
@@ -442,6 +456,14 @@ CREATE TABLE app.shipments (
     receiver_name_snapshot VARCHAR(200) NOT NULL,
     receiver_phone_snapshot VARCHAR(64) NOT NULL,
     receiver_address_snapshot TEXT NOT NULL,
+    lock_version BIGINT NOT NULL DEFAULT 0 CHECK (lock_version >= 0),
+    jd_receiver_province VARCHAR(64),
+    jd_receiver_city VARCHAR(64),
+    jd_receiver_county VARCHAR(64),
+    jd_receiver_town VARCHAR(64),
+    jd_receiver_detail_address VARCHAR(255),
+    jd_receiver_confirmed_by VARCHAR(128),
+    jd_receiver_confirmed_at TIMESTAMPTZ,
     shipment_status     VARCHAR(32) NOT NULL DEFAULT 'CREATED'
                         CHECK (shipment_status IN ('CREATED', 'SHIPPED', 'FAILED', 'DELIVERED')),
     failure_reason      TEXT,
@@ -455,6 +477,23 @@ CREATE TABLE app.shipments (
     CHECK (btrim(receiver_name_snapshot) <> ''),
     CHECK (btrim(receiver_phone_snapshot) <> ''),
     CHECK (btrim(receiver_address_snapshot) <> ''),
+    CONSTRAINT shipments_jd_receiver_confirmation_consistency CHECK (
+        (
+            jd_receiver_confirmed_at IS NULL
+            AND num_nonnulls(
+                jd_receiver_province, jd_receiver_city, jd_receiver_county, jd_receiver_town,
+                jd_receiver_detail_address, jd_receiver_confirmed_by) = 0
+        )
+        OR (
+            jd_receiver_confirmed_at IS NOT NULL
+            AND jd_receiver_confirmed_by IS NOT NULL AND btrim(jd_receiver_confirmed_by) <> ''
+            AND jd_receiver_province IS NOT NULL AND btrim(jd_receiver_province) <> ''
+            AND jd_receiver_city IS NOT NULL AND btrim(jd_receiver_city) <> ''
+            AND jd_receiver_county IS NOT NULL AND btrim(jd_receiver_county) <> ''
+            AND jd_receiver_detail_address IS NOT NULL AND btrim(jd_receiver_detail_address) <> ''
+            AND (jd_receiver_town IS NULL OR btrim(jd_receiver_town) <> '')
+        )
+    ),
     CONSTRAINT shipments_shipped_at_consistency
         CHECK (shipment_status IN ('SHIPPED', 'DELIVERED') OR shipped_at IS NULL),
     CHECK ((shipment_status = 'FAILED') = (failure_reason IS NOT NULL))
@@ -471,6 +510,57 @@ CREATE TABLE app.shipment_items (
     UNIQUE (shipment_id, fulfillment_id),
     CHECK (shipped_quantity IS NULL OR shipped_quantity <= instructed_quantity)
 );
+
+CREATE TABLE app.shipment_jd_outbounds (
+    id                  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    shipment_id         BIGINT NOT NULL UNIQUE REFERENCES app.shipments(id) ON DELETE RESTRICT,
+    erp_delivery_no     VARCHAR(64) NOT NULL UNIQUE,
+    jd_delivery_no      VARCHAR(64),
+    sync_status         VARCHAR(32) NOT NULL DEFAULT 'NONE'
+                        CHECK (sync_status IN ('NONE', 'SUBMITTING', 'SUBMITTED', 'SYNC_FAILED')),
+    failure_phase       VARCHAR(32)
+                        CHECK (failure_phase IS NULL OR failure_phase IN ('VALIDATION', 'SUBMIT')),
+    retry_count         INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    last_error_code     VARCHAR(64),
+    last_error_message  TEXT,
+    request_hash        CHAR(64),
+    client_mode         VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN'
+                        CHECK (client_mode IN ('UNKNOWN', 'MOCK', 'REAL')),
+    submitted_cargo_snapshot JSONB CHECK (
+                        submitted_cargo_snapshot IS NULL OR jsonb_typeof(submitted_cargo_snapshot) = 'array'),
+    submitted_warehouse_no VARCHAR(128),
+    submitted_owner_no  VARCHAR(128),
+    tracking_query_status VARCHAR(32) NOT NULL DEFAULT 'NOT_QUERIED'
+                        CHECK (tracking_query_status IN (
+                            'NOT_QUERIED', 'PENDING', 'PARTIAL', 'TRACKED', 'CONFLICT', 'QUERY_FAILED',
+                            'TERMINAL_REVIEWED')),
+    tracking_query_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (tracking_query_attempt_count >= 0),
+    tracking_last_query_at TIMESTAMPTZ,
+    tracking_last_error_code VARCHAR(64),
+    tracking_last_error_message TEXT,
+    tracking_last_request_id VARCHAR(128),
+    submitted_at        TIMESTAMPTZ,
+    last_query_at       TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (btrim(erp_delivery_no) <> ''),
+    CHECK (request_hash IS NULL OR request_hash ~ '^[0-9a-f]{64}$'),
+    CHECK (submitted_owner_no IS NULL OR btrim(submitted_owner_no) <> ''),
+    CHECK ((last_error_code IS NULL) = (last_error_message IS NULL)),
+    CHECK ((tracking_last_error_code IS NULL) = (tracking_last_error_message IS NULL)),
+    CHECK (sync_status <> 'SUBMITTED' OR submitted_at IS NOT NULL),
+    CHECK (sync_status <> 'SYNC_FAILED' OR (failure_phase IS NOT NULL AND last_error_code IS NOT NULL)),
+    CHECK (sync_status <> 'SUBMITTING' OR (request_hash IS NOT NULL AND retry_count > 0))
+);
+
+CREATE INDEX idx_shipment_jd_outbounds_sync
+    ON app.shipment_jd_outbounds (sync_status)
+    WHERE sync_status <> 'NONE';
+
+CREATE INDEX idx_shipment_jd_outbounds_tracking_poll
+    ON app.shipment_jd_outbounds (client_mode, tracking_last_query_at, shipment_id)
+    WHERE sync_status = 'SUBMITTED'
+      AND tracking_query_status NOT IN ('TRACKED', 'TERMINAL_REVIEWED');
 
 CREATE TABLE app.trackings (
     id                  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -698,6 +788,9 @@ CREATE TABLE app.review_cases (
     shipment_id         BIGINT REFERENCES app.shipments(id) ON DELETE RESTRICT,
     import_batch_id     BIGINT REFERENCES app.import_batches(id) ON DELETE RESTRICT,
     raw_import_row_id   BIGINT REFERENCES app.raw_import_rows(id) ON DELETE RESTRICT,
+    message_submission_id BIGINT REFERENCES app.message_submissions(id) ON DELETE RESTRICT,
+    order_draft_id      BIGINT REFERENCES app.order_drafts(id) ON DELETE RESTRICT,
+    provider_tracking_draft_id BIGINT REFERENCES app.provider_tracking_drafts(id) ON DELETE RESTRICT,
     detail              JSONB NOT NULL DEFAULT '{}'::JSONB CHECK (jsonb_typeof(detail) = 'object'),
     resolution          JSONB,
     resolution_version  BIGINT NOT NULL DEFAULT 0 CHECK (resolution_version >= 0),
@@ -709,7 +802,13 @@ CREATE TABLE app.review_cases (
     CHECK (btrim(case_type) <> ''),
     CHECK (btrim(responsible_team) <> ''),
     CHECK (btrim(reason_code) <> ''),
-    CHECK (num_nonnulls(order_id, order_line_id, fulfillment_id, shipment_id, import_batch_id, raw_import_row_id) > 0),
+    CHECK (
+        (num_nonnulls(order_id, order_line_id, fulfillment_id, shipment_id, import_batch_id, raw_import_row_id) > 0
+         AND num_nonnulls(message_submission_id, order_draft_id, provider_tracking_draft_id) = 0)
+        OR
+        (num_nonnulls(order_id, order_line_id, fulfillment_id, shipment_id, import_batch_id, raw_import_row_id) = 0
+         AND num_nonnulls(message_submission_id, order_draft_id, provider_tracking_draft_id) = 1)
+    ),
     CHECK (
         (status = 'OPEN' AND resolved_by IS NULL AND resolved_at IS NULL)
         OR (status IN ('RESOLVED', 'DISMISSED') AND resolved_by IS NOT NULL AND resolved_at IS NOT NULL)
@@ -766,6 +865,30 @@ INSERT INTO app.connector_configs (source_channel, config) VALUES
     ('FEIXIANG', '{"carrier_mappings":{"JD":"京东物流"}}'::JSONB),
     ('WECOM', '{"carrier_mappings":{}}'::JSONB);
 
+-- 运单前缀权威映射（V21）：运行时全量维护、全局版本化；env 不再是执行时旁路。
+CREATE TABLE app.carrier_prefix_mapping_sets (
+    singleton_id       SMALLINT PRIMARY KEY CHECK (singleton_id = 1),
+    lock_version       BIGINT NOT NULL DEFAULT 0 CHECK (lock_version >= 0),
+    updated_by         VARCHAR(128) NOT NULL CHECK (btrim(updated_by) <> ''),
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE app.carrier_prefix_mappings (
+    prefix             VARCHAR(16) PRIMARY KEY,
+    carrier_code       VARCHAR(64) NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (prefix ~ '^[A-Z]{1,16}$'),
+    CHECK (carrier_code ~ '^[A-Z][A-Z0-9_]{0,63}$')
+);
+
+INSERT INTO app.carrier_prefix_mapping_sets (singleton_id, lock_version, updated_by)
+VALUES (1, 0, 'migration-v21');
+
+INSERT INTO app.carrier_prefix_mappings (prefix, carrier_code) VALUES
+    ('JD', 'JD'),
+    ('SF', 'SF_EXPRESS');
+
 CREATE TABLE app.channel_messages (
     id                  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
     channel             VARCHAR(32) NOT NULL DEFAULT 'WECOM' CHECK (channel = 'WECOM'),
@@ -795,6 +918,189 @@ CREATE TABLE app.channel_messages (
 
 CREATE INDEX idx_channel_messages_received
     ON app.channel_messages (received_at DESC, id DESC);
+
+-- ---------------------------------------------------------------------------
+-- 企业微信消息管线（V8）：异步任务、提交、解释、媒体、草稿与渠道身份
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE app.async_tasks (
+    id                  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    task_type           VARCHAR(64) NOT NULL CHECK (btrim(task_type) <> ''),
+    payload_ref         VARCHAR(512) NOT NULL CHECK (btrim(payload_ref) <> ''),
+    status              VARCHAR(16) NOT NULL DEFAULT 'PENDING'
+                        CHECK (status IN ('PENDING', 'RUNNING', 'FINALIZING', 'SUCCEEDED', 'FAILED')),
+    attempts            INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    max_attempts        INT NOT NULL DEFAULT 3 CHECK (max_attempts >= 1),
+    next_run_at         TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_until         TIMESTAMPTZ,
+    lease_owner         VARCHAR(128),
+    last_error          TEXT,
+    idempotency_key     VARCHAR(255) NOT NULL UNIQUE CHECK (btrim(idempotency_key) <> ''),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_async_tasks_due
+    ON app.async_tasks (status, next_run_at, id)
+    WHERE status IN ('PENDING', 'RUNNING', 'FINALIZING');
+
+COMMENT ON COLUMN app.async_tasks.last_error IS
+    'INTERPRET_MESSAGE rows use stable public failure codes; V20 normalizes older free-form values.';
+
+CREATE TABLE app.message_submissions (
+    id                  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    submission_no       VARCHAR(64) NOT NULL UNIQUE CHECK (btrim(submission_no) <> ''),
+    source_message_id   BIGINT NOT NULL REFERENCES app.channel_messages(id) ON DELETE RESTRICT,
+    status              VARCHAR(16) NOT NULL DEFAULT 'RECEIVED'
+                        CHECK (status IN ('RECEIVED', 'INTERPRETED', 'FAILED', 'DRAFTED', 'CONFIRMED', 'REJECTED')),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_message_submissions_message
+    ON app.message_submissions (source_message_id);
+
+CREATE TABLE app.message_media (
+    id                  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    submission_id       BIGINT REFERENCES app.message_submissions(id) ON DELETE RESTRICT,
+    channel_message_id  BIGINT REFERENCES app.channel_messages(id) ON DELETE RESTRICT,
+    channel_media_id    VARCHAR(255) NOT NULL CHECK (btrim(channel_media_id) <> ''),
+    media_type          VARCHAR(32) NOT NULL CHECK (media_type IN ('image', 'file', 'voice', 'video')),
+    download_status     VARCHAR(16) NOT NULL DEFAULT 'PENDING'
+                        CHECK (download_status IN ('PENDING', 'DOWNLOADING', 'AVAILABLE', 'FAILED')),
+    content_ref         VARCHAR(512),
+    content_hash        VARCHAR(128),
+    content_type        VARCHAR(128),
+    size_bytes          BIGINT CHECK (size_bytes IS NULL OR size_bytes >= 0),
+    decrypt_info        JSONB,
+    failure_reason      TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (channel_message_id, channel_media_id),
+    CHECK (num_nonnulls(submission_id, channel_message_id) > 0)
+);
+
+CREATE INDEX idx_message_media_submission ON app.message_media (submission_id);
+CREATE INDEX idx_message_media_download ON app.message_media (download_status, id);
+
+CREATE TABLE app.message_interpretations (
+    id                  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    submission_id       BIGINT NOT NULL REFERENCES app.message_submissions(id) ON DELETE RESTRICT,
+    version             INT NOT NULL CHECK (version >= 1),
+    provider            VARCHAR(128) NOT NULL CHECK (btrim(provider) <> ''),
+    model               VARCHAR(128) NOT NULL CHECK (btrim(model) <> ''),
+    prompt_version      VARCHAR(64) NOT NULL CHECK (btrim(prompt_version) <> ''),
+    intent              VARCHAR(32) NOT NULL
+                        CHECK (intent IN ('CUSTOMER_ORDER', 'SUPPLIER_TRACKING', 'ORDER_CHANGE',
+                                          'ORDER_CANCEL', 'NON_BUSINESS', 'NEED_REVIEW')),
+    structured_output   JSONB NOT NULL DEFAULT '{}'::JSONB CHECK (jsonb_typeof(structured_output) = 'object'),
+    error               TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (submission_id, version)
+);
+
+CREATE INDEX idx_message_interpretations_submission
+    ON app.message_interpretations (submission_id, version DESC);
+
+COMMENT ON COLUMN app.message_interpretations.error IS
+    'Stable message interpretation failure code; provider and SDK exception text is never public data.';
+
+CREATE TABLE app.order_drafts (
+    id                   BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    draft_no             VARCHAR(64) NOT NULL UNIQUE CHECK (btrim(draft_no) <> ''),
+    submission_id        BIGINT NOT NULL REFERENCES app.message_submissions(id) ON DELETE RESTRICT,
+    source_order_no      VARCHAR(128) NOT NULL CHECK (btrim(source_order_no) <> ''),
+    customer_id          BIGINT REFERENCES app.customers(id) ON DELETE RESTRICT,
+    customer_candidates  JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(customer_candidates) = 'array'),
+    customer_name_raw    TEXT,
+    receiver_name        TEXT,
+    receiver_phone       TEXT,
+    receiver_address     TEXT,
+    settlement_method    VARCHAR(32),
+    missing_fields       JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(missing_fields) = 'array'),
+    status               VARCHAR(16) NOT NULL DEFAULT 'OPEN'
+                         CHECK (status IN ('OPEN', 'CONFIRMED', 'REJECTED')),
+    revision             BIGINT NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    confirmed_by         VARCHAR(128),
+    confirmed_at         TIMESTAMPTZ,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (
+        (status = 'OPEN' AND confirmed_by IS NULL AND confirmed_at IS NULL)
+        OR (status IN ('CONFIRMED', 'REJECTED') AND confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX idx_order_drafts_submission ON app.order_drafts (submission_id);
+CREATE INDEX idx_order_drafts_status ON app.order_drafts (status, created_at DESC);
+
+CREATE TABLE app.order_draft_lines (
+    id                   BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    order_draft_id       BIGINT NOT NULL REFERENCES app.order_drafts(id) ON DELETE RESTRICT,
+    line_no              INT NOT NULL CHECK (line_no >= 1),
+    sku_id               BIGINT REFERENCES app.skus(id) ON DELETE RESTRICT,
+    sku_candidates       JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(sku_candidates) = 'array'),
+    product_name_raw     TEXT,
+    spec_raw             TEXT,
+    unit_raw             TEXT,
+    quantity             NUMERIC(18, 3) CHECK (quantity IS NULL OR quantity > 0),
+    fulfilled_quantity   NUMERIC(18, 3) NOT NULL DEFAULT 0 CHECK (fulfilled_quantity >= 0),
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (order_draft_id, line_no)
+);
+
+CREATE INDEX idx_order_draft_lines_draft ON app.order_draft_lines (order_draft_id);
+
+CREATE TABLE app.provider_tracking_drafts (
+    id                    BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    draft_no              VARCHAR(64) NOT NULL UNIQUE CHECK (btrim(draft_no) <> ''),
+    submission_id         BIGINT NOT NULL REFERENCES app.message_submissions(id) ON DELETE RESTRICT,
+    line_no               INT NOT NULL CHECK (line_no >= 1),
+    raw_receiver_name     TEXT,
+    masked_receiver_name  TEXT,
+    tracking_no           VARCHAR(128),
+    carrier_code          VARCHAR(64),
+    carrier_candidates    JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(carrier_candidates) = 'array'),
+    task_id               BIGINT REFERENCES app.fulfillments(id) ON DELETE RESTRICT,
+    task_candidates       JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(task_candidates) = 'array'),
+    shipment_judgment     VARCHAR(32) NOT NULL DEFAULT 'FULL'
+                          CHECK (shipment_judgment IN ('FULL', 'PARTIAL', 'SHORTAGE', 'EXCEPTION')),
+    actual_quantity       NUMERIC(18, 3) CHECK (actual_quantity IS NULL OR actual_quantity >= 0),
+    validation_issues     JSONB NOT NULL DEFAULT '[]'::JSONB CHECK (jsonb_typeof(validation_issues) = 'array'),
+    status                VARCHAR(16) NOT NULL DEFAULT 'OPEN'
+                          CHECK (status IN ('OPEN', 'CONFIRMED', 'REJECTED')),
+    revision              BIGINT NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    confirmed_by          VARCHAR(128),
+    confirmed_at          TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (
+        (status = 'OPEN' AND confirmed_by IS NULL AND confirmed_at IS NULL)
+        OR (status IN ('CONFIRMED', 'REJECTED') AND confirmed_by IS NOT NULL AND confirmed_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX idx_tracking_drafts_submission ON app.provider_tracking_drafts (submission_id);
+CREATE INDEX idx_tracking_drafts_status ON app.provider_tracking_drafts (status, created_at DESC);
+CREATE INDEX idx_tracking_drafts_task ON app.provider_tracking_drafts (task_id) WHERE task_id IS NOT NULL;
+
+CREATE TABLE app.channel_identities (
+    id                  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    corp_id             VARCHAR(128) NOT NULL CHECK (btrim(corp_id) <> ''),
+    access_type         VARCHAR(64) NOT NULL CHECK (btrim(access_type) <> ''),
+    channel_identity    VARCHAR(255) NOT NULL CHECK (btrim(channel_identity) <> ''),
+    customer_id         BIGINT REFERENCES app.customers(id) ON DELETE RESTRICT,
+    display_name        VARCHAR(255),
+    remark              TEXT,
+    description         TEXT,
+    avatar_url          VARCHAR(512),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (corp_id, access_type, channel_identity)
+);
+
+CREATE INDEX idx_channel_identities_customer ON app.channel_identities (customer_id);
 
 CREATE TABLE app.audit_logs (
     id                  BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -892,9 +1198,11 @@ INSERT INTO app.order_event_types (code, display_name) VALUES
     ('ORDER_RECEIVED', '订单已接收'),
     ('ORDER_UPDATED', '订单已更新'),
     ('SKU_MAPPED', 'SKU 映射完成'),
+    ('JD_SKU_MAPPING_CHECKED', '京东 SKU 映射已检查'),
     ('JD_STOCK_CHECKED', '京东库存已检查'),
     ('JD_OUTBOUND_SUBMITTED', '京东出库已提交'),
     ('JD_OUTBOUND_ACCEPTED', '京东出库已受理'),
+    ('JD_OUTBOUND_FAILED', '京东出库提交失败'),
     ('JD_SHIPPED', '京东已发货'),
     ('PROCUREMENT_REQUESTED', '已创建采购工单'),
     ('PROCUREMENT_RECEIPT_RECORDED', '采购回执已记录'),
@@ -904,6 +1212,7 @@ INSERT INTO app.order_event_types (code, display_name) VALUES
     ('SOURCE_SYNCED', '来源回填已完成'),
     ('CUSTOMER_MATCH_CONFIRMED', '客户匹配已确认'),
     ('SKU_MATCH_CONFIRMED', 'SKU 匹配已确认'),
+    ('ORDER_DRAFT_CONFIRMED', '企微订单草稿已确认'),
     ('MANUAL_INTERVENTION_REQUIRED', '需要人工介入'),
     ('FULFILLMENT_EXPORT_GENERATED', '履约文件已生成'),
     ('MANUAL_SOURCE_FOLLOWUP_COMPLETED', '人工完成来源平台后续回传');
@@ -970,11 +1279,16 @@ CREATE FUNCTION app.validate_stock_snapshot() RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 DECLARE
     managed BOOLEAN;
+    provider_kind VARCHAR(32);
     sku_provider_id BIGINT;
 BEGIN
-    SELECT inventory_managed_by_us INTO STRICT managed
+    SELECT inventory_managed_by_us, provider_type INTO STRICT managed, provider_kind
     FROM app.fulfillment_providers WHERE id = NEW.fulfillment_provider_id;
-    IF NOT managed THEN
+    IF NOT managed AND NOT (
+        provider_kind = 'JD_WAREHOUSE'
+        AND NEW.quantity_unit = 'JD_PIECE'
+        AND NEW.source_type = 'JD_ISC_QUERY_STOCK'
+    ) THEN
         RAISE EXCEPTION 'third-party inventory is outside this system';
     END IF;
 
@@ -2291,6 +2605,8 @@ CREATE INDEX idx_fulfillment_export_items_line ON app.fulfillment_export_items(o
 CREATE INDEX idx_fulfillment_export_items_component ON app.fulfillment_export_items(order_line_component_id);
 CREATE INDEX idx_fulfillment_export_items_raw_row ON app.fulfillment_export_items(raw_import_row_id);
 CREATE INDEX idx_source_return_exports_batch ON app.source_return_exports(import_batch_id, version_no DESC);
+CREATE UNIQUE INDEX uq_source_return_final_per_batch
+ON app.source_return_exports(import_batch_id) WHERE is_final;
 CREATE INDEX idx_source_return_items_raw_row ON app.source_return_export_items(raw_import_row_id);
 CREATE INDEX idx_source_return_items_order_line ON app.source_return_export_items(order_line_id);
 CREATE INDEX idx_source_return_items_shipment ON app.source_return_export_items(shipment_id);
@@ -2310,8 +2626,14 @@ CREATE UNIQUE INDEX uq_review_case_open_subject_reason ON app.review_cases(
     (COALESCE(fulfillment_id, 0)),
     (COALESCE(shipment_id, 0)),
     (COALESCE(import_batch_id, 0)),
-    (COALESCE(raw_import_row_id, 0))
+    (COALESCE(raw_import_row_id, 0)),
+    (COALESCE(message_submission_id, 0)),
+    (COALESCE(order_draft_id, 0)),
+    (COALESCE(provider_tracking_draft_id, 0))
 ) WHERE status = 'OPEN';
+CREATE INDEX idx_review_cases_submission ON app.review_cases (message_submission_id);
+CREATE INDEX idx_review_cases_order_draft ON app.review_cases (order_draft_id);
+CREATE INDEX idx_review_cases_tracking_draft ON app.review_cases (provider_tracking_draft_id);
 CREATE INDEX idx_review_cases_queue ON app.review_cases(status, responsible_team, created_at);
 CREATE INDEX idx_review_cases_order ON app.review_cases(order_id);
 CREATE INDEX idx_review_cases_order_line ON app.review_cases(order_line_id);

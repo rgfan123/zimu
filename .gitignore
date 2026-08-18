@@ -5,6 +5,7 @@ backend/target/
 # Node / Vite
 frontend/node_modules/
 frontend/dist/
+scripts/node_modules/
 
 # IDE
 .idea/
@@ -17,5 +18,32 @@ frontend/dist/
 # Logs
 *.log
 
+# Local credentials and environment overrides
+**/.env*
+!**/.env.example
+
 # Docker / runtime data
 docker-data/
+
+# Local master-data extracts (may carry commercial pricing; never commit)
+data-local/
+.ace-tool/
+
+# Playwright CLI cache
+.playwright-cli/
+frontend/.playwright-cli/
+
+# Generated exports, playwright artifacts and temp files
+output/
+tmp/
+
+# Session captures (may contain live auth material)
+*.har
+
+# Business order / product extracts (never commit)
+待发货订单-测试/
+京东商品编号.xlsx
+
+# Python
+__pycache__/
+*.pyc
