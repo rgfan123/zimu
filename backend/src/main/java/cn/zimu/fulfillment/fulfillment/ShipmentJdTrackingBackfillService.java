@@ -307,7 +307,17 @@ public class ShipmentJdTrackingBackfillService {
                 result,
                 200,
                 "JD_TRACKING_TERMINAL_ABSORBED");
-        return response(current, "TRACKED", trackingNumber, false, null);
+        Map<String, Object> response = response(current, "TRACKED", trackingNumber, false, null);
+        // 已 TRACKED 的人工复查也尝试收口批次回填表（轮询器跳过 TRACKED，只有人工入口
+        // 走本路径；批次未就绪时产出非最终版本，就绪时返回既有最终版，不重复生成）。
+        response.put(
+                "generated_source_return_export_ids",
+                trackingFiles.finalizeReadySourceReturnsForShipment(
+                                current.shipmentId(), context.operator())
+                        .stream()
+                        .map(String::valueOf)
+                        .toList());
+        return response;
     }
 
     private Map<String, Object> completeTrackedFailure(
@@ -584,7 +594,10 @@ public class ShipmentJdTrackingBackfillService {
                 return new QuantityCheck(false, true);
             }
             if (real == null) {
-                complete = false;
+                // 京东在 100130 预分拣-获取运单即返回 waybillNo，但 realQuantity 要到拣货完成
+                // 才填写（真实探测 2026-08-18：10015/10016 realQuantity=null）。运单号已是最终
+                // 物流承诺，数量未报不等同于部分发货，按指令量回填；真实少发（real<plan）
+                // 仍保持 PARTIAL 等待。
             } else if (real < 0 || real > plan) {
                 return new QuantityCheck(false, true);
             } else if (real != plan) {
