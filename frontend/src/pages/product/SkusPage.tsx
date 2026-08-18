@@ -7,6 +7,7 @@ import { Button, Select, Space, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import MasterDataCrud, { attr, type CrudField } from '@/pages/shared/MasterDataCrud';
+import { MainImageThumb } from '@/pages/shared/MainImage';
 import { skusApi } from '@/api/endpoints';
 import type { MasterDataRecord } from '@/api/types';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
@@ -18,6 +19,7 @@ import {
   buildSkuUpdateBody,
   commercialPriceLabel,
 } from './skuCommercialPrice';
+import { leadTimeLabel, listingPeriodLabel, marginLabel } from './productArchiveFields';
 
 export default function SkusPage() {
   const [providerId, setProviderId] = useState<string | undefined>();
@@ -29,16 +31,52 @@ export default function SkusPage() {
 
   const columns: ColumnsType<MasterDataRecord> = [
     { title: '商品 / SKU', key: 'identity', width: 210, render: (_, r) => <ProductIdentity name={r.name} code={r.code} /> },
-    { title: '品类', key: 'category', width: 160, render: (_, r) => categoryLabels.get(String(attr(r, 'category_id'))) ?? '—' },
+    {
+      title: '主图',
+      key: 'main_image',
+      width: 70,
+      render: (_, r) => <MainImageThumb ref={attr(r, 'product_main_image_ref') as string | null | undefined} />,
+    },
+    { title: '品类', key: 'category', width: 150, render: (_, r) => categoryLabels.get(String(attr(r, 'category_id'))) ?? '—' },
     { title: '规格', key: 'spec', width: 110, render: (_, r) => displaySkuSpecification(attr(r, 'specification')) },
     { title: '单位', key: 'unit', width: 70, render: (_, r) => String(attr(r, 'unit') ?? '—') },
-    { title: '履约方', key: 'provider', width: 180, render: (_, r) => providerLabels.get(String(attr(r, 'provider_id'))) ?? '—' },
+    { title: '履约方', key: 'provider', width: 170, render: (_, r) => providerLabels.get(String(attr(r, 'provider_id'))) ?? '—' },
     {
-      title: '进货价', key: 'purchase_price', width: 100, align: 'right',
+      title: '毛利', key: 'margin', width: 100, align: 'right',
+      render: (_, r) => marginLabel(attr(r, 'margin')),
+    },
+    {
+      title: '标签', key: 'tags', width: 200,
+      render: (_, r) => {
+        const tags = attr(r, 'product_tags');
+        if (!Array.isArray(tags) || tags.length === 0) return '—';
+        return (
+          <span>
+            {tags.map((tag) => (
+              <Tag key={String(tag)} style={{ marginInlineEnd: 4 }}>{String(tag)}</Tag>
+            ))}
+          </span>
+        );
+      },
+    },
+    {
+      title: '原料', key: 'ingredients', width: 160, ellipsis: true,
+      render: (_, r) => String(attr(r, 'product_ingredients') ?? '—'),
+    },
+    {
+      title: '上市周期', key: 'listing_period', width: 180,
+      render: (_, r) => listingPeriodLabel(attr(r, 'product_listed_from'), attr(r, 'product_listed_until')),
+    },
+    {
+      title: '发货时效', key: 'lead_time', width: 110,
+      render: (_, r) => leadTimeLabel(attr(r, 'product_lead_time_hours')),
+    },
+    {
+      title: '进货价', key: 'purchase_price', width: 90, align: 'right',
       render: (_, r) => commercialPriceLabel(attr(r, 'purchase_price')),
     },
     {
-      title: '零售价', key: 'retail_price', width: 100, align: 'right',
+      title: '零售价', key: 'retail_price', width: 90, align: 'right',
       render: (_, r) => commercialPriceLabel(attr(r, 'retail_price')),
     },
     {

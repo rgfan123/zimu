@@ -27,6 +27,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,13 +44,14 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /** 来源文件编排：先留存原文件/原始行，再通过共用订单应用用例产生 CanonicalOrder。 */
 @Service
-class SourceImportService {
+public class SourceImportService {
 
     private static final Logger log = LoggerFactory.getLogger(SourceImportService.class);
 
@@ -88,7 +90,7 @@ class SourceImportService {
     }
 
     @Transactional
-    Map<String, Object> upload(
+    public Map<String, Object> upload(
             byte[] bytes,
             String originalFilename,
             String importMode,
@@ -190,6 +192,24 @@ class SourceImportService {
             }
         }
 
+        return finalizeBatch(batchId, started, context, AuditActorType.HUMAN,
+                "source-file-import", "source-orders.upload",
+                Map.of(
+                        "idempotency_key", idempotencyKey,
+                        "original_file_name", safeFilename,
+                        "content_sha256", sha256,
+                        "import_mode", mode));
+    }
+
+    /** 批次收尾共享：counts → 状态（NEED_REVIEW 阻断 confirm 语义不变）→ SYSTEM/HUMAN 审计。 */
+    private Map<String, Object> finalizeBatch(
+            long batchId,
+            long started,
+            CommandContext context,
+            AuditActorType actor,
+            String auditService,
+            String auditOperation,
+            Map<String, Object> auditPayload) {
         Map<String, Integer> counts = counts(batchId);
         String status = counts.get("need_review") > 0 || counts.get("rejected") > 0
                 ? "COMPLETED_WITH_REVIEW"
@@ -204,20 +224,233 @@ class SourceImportService {
                 .requestId(context.requestId())
                 .traceId(context.traceId())
                 .operator(context.operator())
-                .actorType(AuditActorType.HUMAN)
-                .service("source-file-import")
-                .operation("source-orders.upload")
-                .requestPayload(Map.of(
-                        "idempotency_key", idempotencyKey,
-                        "original_file_name", safeFilename,
-                        "content_sha256", sha256,
-                        "import_mode", mode))
+                .actorType(actor)
+                .service(auditService)
+                .operation(auditOperation)
+                .requestPayload(auditPayload)
                 .responsePayload(result)
                 .httpStatus(201)
                 .businessCode(status)
                 .latencyMs((int) ((System.nanoTime() - started) / 1_000_000)));
         return result;
     }
+
+    /**
+     * 结构化订单导入（ticket 02）：在线 Connector 的 transform 产物直接建
+     * SOURCE_ORDER 批次 + raw_import_rows 血缘 + 订单，confirm / 履约导出 / 来源回填
+     * 管线与文件导入完全复用。
+     *
+     * <p>语义：每条 StructuredOrderRow 是一个来源订单（canonicalInput 可含多行 items）；
+     * 内部按 items 展开写 raw 行（一行 = 一个来源行 = 一个 order line，与文件导入的
+     * 行语义一致）。重复订单（DUPLICATE_ORDER）整单跳过：不写 raw 行、记审计，
+     * 不整批回滚——confirm 的 uncovered 检查只统计 ACCEPTED 且有导出/发货关联的行，
+     * 跳过行不落库即不产生阻断。内容哈希幂等——并发相同内容撞
+     * uq_import_content_scope 时重查返回既有批次。</p>
+     */
+    @Transactional
+    public Map<String, Object> importStructured(
+            SourceChannel channel,
+            List<StructuredOrderRow> orders,
+            String batchNo,
+            CommandContext context) {
+        long started = System.nanoTime();
+        if (orders == null || orders.isEmpty()) {
+            throw BusinessException.badRequest("EMPTY_IMPORT", "结构化导入订单为空");
+        }
+        byte[] content = structuredContentBytes(orders);
+        String contentSha = sha256(content);
+        Long existingId = existingStructured(channel, contentSha);
+        if (existingId != null) {
+            return get(existingId);
+        }
+        try {
+            return doImportStructured(channel, orders, batchNo, contentSha, context, started);
+        } catch (DataIntegrityViolationException duplicate) {
+            Long existing = existingStructured(channel, contentSha);
+            if (existing != null) {
+                return get(existing);
+            }
+            throw duplicate;
+        }
+    }
+
+    private Map<String, Object> doImportStructured(
+            SourceChannel channel,
+            List<StructuredOrderRow> orders,
+            String batchNo,
+            String contentSha,
+            CommandContext context,
+            long started) {
+        // 1) 建批次：import_mode 只能用 DDL 白名单 NEW/REVISION；template_*/file_ref 为 NOT NULL 用结构化占位
+        Long batchId = jdbc.queryForObject(
+                """
+                INSERT INTO app.import_batches
+                    (batch_no, batch_type, import_mode, parent_import_batch_id, revision_no,
+                     source_channel, template_family, template_version, template_fingerprint,
+                     original_file_name, content_sha256, file_ref, status, uploaded_by)
+                VALUES (?, 'SOURCE_ORDER', 'NEW', NULL, 1, ?, 'STRUCTURED', '1',
+                        'structured-json-v1', ?, ?, ?, 'PROCESSING', ?)
+                RETURNING id
+                """,
+                Long.class,
+                batchNo,
+                channel.name(),
+                batchNo + ".json",
+                contentSha,
+                "structured://" + batchNo,
+                context.operator());
+
+        // 2) 逐订单创建（同一事务）。重复订单在调用前预检测跳过（不写 raw 行、记审计）：
+        //    doCreate 的 DUPLICATE_ORDER 一旦抛出会经 createImported 事务代理标记
+        //    rollback-only，外部无法 catch 挽救——因此重复检测必须前置（同事务内可读）。
+        //    并发跨批同单的极小竞态窗口由调度防重入 + 幂等键兜底（真撞则整批回滚，
+        //    与文件导入的批次原子性一致）。
+        int rowIndex = 0;
+        for (int orderIndex = 0; orderIndex < orders.size(); orderIndex++) {
+            StructuredOrderRow order = orders.get(orderIndex);
+            Objects.requireNonNull(order.canonicalInput(), "结构化订单缺少 canonical 输入: " + order.sourceRef());
+            List<OrderItemInput> items = order.canonicalInput().items();
+            if (items.isEmpty()) {
+                throw BusinessException.badRequest("EMPTY_ORDER", "订单无商品行: " + order.sourceRef());
+            }
+            if (orderExists(channel, order.sourceRef())) {
+                auditLogService.record(new AuditLogService.AuditCommand()
+                        .dataScope(DataScope.BUSINESS)
+                        .requestId(context.requestId())
+                        .traceId(context.traceId())
+                        .operator(context.operator())
+                        .actorType(AuditActorType.SYSTEM)
+                        .service("source-order-structured-import")
+                        .operation("source-orders.importStructured")
+                        .requestPayload(Map.of("batch_no", batchNo, "source_ref", order.sourceRef()))
+                        .businessCode("ORDER_ALREADY_EXISTS")
+                        .httpStatus(200));
+                continue;
+            }
+            OrderDetailDto created = orderCreateService.createImported(
+                            order.canonicalInput(),
+                            batchId,
+                            "pull-" + batchNo + "-" + orderIndex,
+                            context,
+                            AuditActorType.SYSTEM)
+                    .result();
+            List<OrderLineDto> lines = created.lines();
+            for (int itemIndex = 0; itemIndex < lines.size(); itemIndex++) {
+                rowIndex++;
+                OrderLineDto line = lines.get(itemIndex);
+                insertStructuredRow(batchId, rowIndex, order, itemIndex, "ACCEPTED",
+                        Long.valueOf(created.id()), Long.valueOf(line.id()), null, null);
+            }
+        }
+
+        // 3) 批次收尾：状态与审计口径与文件导入一致
+        return finalizeBatch(batchId, started, context, AuditActorType.SYSTEM,
+                "source-order-structured-import", "source-orders.importStructured",
+                Map.of("batch_no", batchNo, "content_sha256", contentSha));
+    }
+
+    /** 预检测：同渠道同来源单号的订单已存在（同事务内可读自身写入）。 */
+    private boolean orderExists(SourceChannel channel, String sourceRef) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM app.orders
+                    WHERE data_scope='BUSINESS' AND source_channel=? AND source_ref=?
+                )
+                """,
+                Boolean.class,
+                channel.name(),
+                sourceRef));
+    }
+
+    /** 结构化 raw 行写入（一行 = 一个来源行 = 一个 order line）。 */
+    private void insertStructuredRow(
+            long batchId,
+            int rowIndex,
+            StructuredOrderRow order,
+            int itemIndex,
+            String status,
+            Long orderId,
+            Long orderLineId,
+            String errorCode,
+            String errorDetail) {
+        jdbc.update(
+                """
+                INSERT INTO app.raw_import_rows
+                    (import_batch_id, sheet_name, sheet_index, row_index, raw_cells,
+                     source_order_ref, status, error_code, error_detail, order_id, order_line_id)
+                VALUES (?, 'STRUCTURED', 0, ?, ?::jsonb, ?, ?, ?, ?::jsonb, ?, ?)
+                """,
+                batchId,
+                rowIndex,
+                json(rowCells(order, itemIndex)),
+                order.sourceRef(),
+                status,
+                errorCode,
+                errorDetail,
+                orderId,
+                orderLineId);
+    }
+
+    /** 结构化导入的内容哈希幂等查询；与 uq_import_content_scope（batch_type+sha+channel+provider+export）语义对齐。 */
+    private Long existingStructured(SourceChannel channel, String contentSha) {
+        List<Long> ids = jdbc.query(
+                """
+                SELECT id FROM app.import_batches
+                WHERE batch_type='SOURCE_ORDER' AND content_sha256=?
+                  AND source_channel=?
+                  AND fulfillment_provider_id IS NULL AND source_fulfillment_export_id IS NULL
+                ORDER BY id LIMIT 1
+                """,
+                (resultSet, rowNum) -> resultSet.getLong(1),
+                contentSha,
+                channel.name());
+        return ids.isEmpty() ? null : ids.getFirst();
+    }
+
+    /** 内容哈希的确定性序列化：LinkedHashMap 按插入序输出，跨运行稳定。 */
+    private byte[] structuredContentBytes(List<StructuredOrderRow> orders) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (StructuredOrderRow order : orders) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("source_ref", order.sourceRef());
+            entry.put("source_line_ref", order.sourceLineRef());
+            entry.put("canonical", order.canonicalInput());
+            entry.put("raw", order.rawSnapshot());
+            list.add(entry);
+        }
+        return json(list).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** raw_import_rows.raw_cells 快照：脱敏后的订单原始快照 + 行内商品序号（血缘证据）。 */
+    private Map<String, Object> rowCells(StructuredOrderRow order, int itemIndex) {
+        Map<String, Object> cells = new LinkedHashMap<>();
+        cells.put("source_ref", order.sourceRef());
+        cells.put("source_line_ref", order.sourceLineRef());
+        cells.put("item_index", itemIndex);
+        cells.put("snapshot", sanitizeSnapshot(order.rawSnapshot()));
+        return cells;
+    }
+
+    /** 敏感字段掩码（姓名/电话/地址类键，浅层处理；深层嵌套由 Connector 在 transform 前自行脱敏）。 */
+    private Map<String, Object> sanitizeSnapshot(Map<String, Object> raw) {
+        if (raw == null) {
+            return Map.of();
+        }
+        Map<String, Object> out = new LinkedHashMap<>(raw);
+        for (String key : SENSITIVE_KEYS) {
+            Object value = out.get(key);
+            if (value instanceof String text && !text.isBlank()) {
+                out.put(key, text.length() <= 3 ? "***" : text.substring(0, 3) + "***");
+            }
+        }
+        return out;
+    }
+
+    private static final List<String> SENSITIVE_KEYS = List.of(
+            "receiverName", "receiverTelephone", "receiver_name", "receiver_phone",
+            "receipt_username", "receipt_phone_number", "address_detail",
+            "telephone", "phone", "contactName", "contactPhone");
 
     Map<String, Object> get(long batchId) {
         List<Map<String, Object>> rows = jdbc.query(

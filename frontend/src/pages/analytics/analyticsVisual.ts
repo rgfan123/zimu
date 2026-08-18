@@ -48,7 +48,8 @@ export function createAnalyticsVisualSystem(
         CAISHIXIAN: dataPalette[0],
         JUFUBAO: dataPalette[1],
         FEIXIANG: dataPalette[2],
-        WECOM: dataPalette[3],
+        ZHONGHUI: dataPalette[3],
+        WECOM: dataPalette[4],
       } satisfies Record<SourceChannel, string>,
       categories: [...dataPalette],
       status: {

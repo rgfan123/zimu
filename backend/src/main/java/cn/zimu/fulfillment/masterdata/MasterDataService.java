@@ -9,6 +9,7 @@ import cn.zimu.fulfillment.common.dto.MasterDataRecord;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.dto.Patterns;
 import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.common.error.FieldErrorItem;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.CommandContext;
@@ -53,9 +54,12 @@ import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
 import cn.zimu.fulfillment.sku.SourceSkuMappingPatch;
 import cn.zimu.fulfillment.sku.SourceSkuMappingWrite;
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -453,12 +457,24 @@ public class MasterDataService {
     }
 
     @Transactional(readOnly = true)
+    public List<String> productTags() {
+        return products.distinctTags();
+    }
+
+    @Transactional(readOnly = true)
     public MasterDataRecord product(long id) {
         return product(products.findById(id).orElseThrow(() -> BusinessException.notFound("商品不存在")));
     }
 
     @Transactional
     public IdempotentResult<MasterDataRecord> createProduct(ProductWrite input, String key, CommandContext ctx) {
+        BigDecimal purchasePrice = SkuCommercialPrice.parse(input.purchasePrice(), "purchase_price");
+        BigDecimal retailPrice = SkuCommercialPrice.parse(input.retailPrice(), "retail_price");
+        BigDecimal otherCost = SkuCommercialPrice.parse(input.otherCost(), "other_cost");
+        LocalDate listedFrom = parseListedDate(input.listedFrom(), "listed_from");
+        LocalDate listedUntil = parseListedDate(input.listedUntil(), "listed_until");
+        requireListingOrder(listedFrom, listedUntil);
+        List<String> tags = normalizeTags(input.tags(), "tags");
         return writeCatalogMasterData("product.create", key, input, CREATED, ctx, () -> {
             if (products.existsByProductCode(input.productCode())) {
                 throw BusinessException.conflict("PRODUCT_CODE_EXISTS", "商品编码已存在");
@@ -469,6 +485,15 @@ public class MasterDataService {
             value.setProductCode(input.productCode());
             value.setProductName(input.productName());
             value.setCategoryId(categoryId);
+            value.setIngredients(blankToNull(input.ingredients()));
+            value.setTags(tags);
+            value.setListedFrom(listedFrom);
+            value.setListedUntil(listedUntil);
+            value.setLeadTimeHours(input.leadTimeHours());
+            value.setPurchasePrice(purchasePrice);
+            value.setRetailPrice(retailPrice);
+            value.setOtherCost(otherCost);
+            value.setMainImageRef(blankToNull(input.mainImageRef()));
             value.setActive(!Boolean.FALSE.equals(input.active()));
             return product(refresh(products.saveAndFlush(value)));
         });
@@ -476,8 +501,10 @@ public class MasterDataService {
 
     @Transactional
     public IdempotentResult<MasterDataRecord> patchProduct(long id, ProductPatch input, String key, CommandContext ctx) {
-        requireAny(input.productName(), input.categoryId(), input.active());
-        return writeCatalogMasterData("product.update", key, Map.of("id", id, "body", input), OK, ctx, () -> {
+        if (!input.anyArchiveFieldPresent()) {
+            requireAny(input.productName(), input.categoryId(), input.active());
+        }
+        return writeCatalogMasterData("product.update", key, productPatchPayload(id, input), OK, ctx, () -> {
             Product value = products.findById(id).orElseThrow(() -> BusinessException.notFound("商品不存在"));
             version(value.getLockVersion(), input.expectedVersion());
             if (input.productName() != null) value.setProductName(input.productName());
@@ -487,6 +514,22 @@ public class MasterDataService {
                 value.setCategoryId(categoryId);
             }
             if (input.active() != null) value.setActive(input.active());
+            if (input.ingredientsPresent()) value.setIngredients(blankToNull(input.ingredients()));
+            if (input.tagsPresent()) value.setTags(normalizeTags(input.tags(), "tags"));
+            if (input.listedFromPresent()) value.setListedFrom(parseListedDate(input.listedFrom(), "listed_from"));
+            if (input.listedUntilPresent()) value.setListedUntil(parseListedDate(input.listedUntil(), "listed_until"));
+            if (input.leadTimeHoursPresent()) value.setLeadTimeHours(input.leadTimeHours());
+            if (input.purchasePricePresent()) {
+                value.setPurchasePrice(SkuCommercialPrice.parse(input.purchasePrice(), "purchase_price"));
+            }
+            if (input.retailPricePresent()) {
+                value.setRetailPrice(SkuCommercialPrice.parse(input.retailPrice(), "retail_price"));
+            }
+            if (input.otherCostPresent()) {
+                value.setOtherCost(SkuCommercialPrice.parse(input.otherCost(), "other_cost"));
+            }
+            if (input.mainImageRefPresent()) value.setMainImageRef(blankToNull(input.mainImageRef()));
+            requireListingOrder(value.getListedFrom(), value.getListedUntil());
             return product(refresh(products.saveAndFlush(value)));
         });
     }
@@ -791,8 +834,21 @@ public class MasterDataService {
     }
 
     private MasterDataRecord product(Product value) {
+        Map<String, Object> attributes = map(
+                "category_id", id(value.getCategoryId()),
+                "description", value.getDescription());
+        attributes.put("ingredients", value.getIngredients());
+        attributes.put("tags", value.getTags());
+        attributes.put("listed_from", value.getListedFrom() == null ? null : value.getListedFrom().toString());
+        attributes.put("listed_until", value.getListedUntil() == null ? null : value.getListedUntil().toString());
+        attributes.put("lead_time_hours", value.getLeadTimeHours());
+        attributes.put("main_image_ref", value.getMainImageRef());
+        attributes.put("purchase_price", SkuCommercialPrice.text(value.getPurchasePrice()));
+        attributes.put("retail_price", SkuCommercialPrice.text(value.getRetailPrice()));
+        attributes.put("other_cost", SkuCommercialPrice.text(value.getOtherCost()));
+        attributes.put("margin", marginText(value.getRetailPrice(), value.getPurchasePrice(), value.getOtherCost()));
         return record(value.getId(), value.getProductCode(), value.getProductName(), value.isActive(),
-                value.getLockVersion(), map("category_id", id(value.getCategoryId()), "description", value.getDescription()), value);
+                value.getLockVersion(), attributes, value);
     }
 
     private MasterDataRecord sku(Sku value) {
@@ -806,6 +862,17 @@ public class MasterDataService {
                 "barcode", value.getBarcode());
         attributes.put("purchase_price", SkuCommercialPrice.text(value.getPurchasePrice()));
         attributes.put("retail_price", SkuCommercialPrice.text(value.getRetailPrice()));
+        if (product != null) {
+            attributes.put("product_tags", product.getTags());
+            attributes.put("product_ingredients", product.getIngredients());
+            attributes.put("product_listed_from",
+                    product.getListedFrom() == null ? null : product.getListedFrom().toString());
+            attributes.put("product_listed_until",
+                    product.getListedUntil() == null ? null : product.getListedUntil().toString());
+            attributes.put("product_lead_time_hours", product.getLeadTimeHours());
+            attributes.put("product_main_image_ref", product.getMainImageRef());
+            attributes.put("margin", marginText(product.getRetailPrice(), product.getPurchasePrice(), product.getOtherCost()));
+        }
         return record(value.getId(), value.getSkuCode(), product == null ? value.getSkuCode() : product.getProductName(),
                 value.isActive(), value.getLockVersion(), attributes, value);
     }
@@ -922,6 +989,51 @@ public class MasterDataService {
         return value == null || value.isBlank() ? null : value;
     }
 
+    /** 毛利 = 零售价 - 进货价 - 其他成本；任一输入缺失则视为未定价（null）。 */
+    private static String marginText(BigDecimal retailPrice, BigDecimal purchasePrice, BigDecimal otherCost) {
+        if (retailPrice == null || purchasePrice == null || otherCost == null) return null;
+        return SkuCommercialPrice.text(retailPrice.subtract(purchasePrice).subtract(otherCost));
+    }
+
+    /** 上市周期日期：YYYY-MM-DD，非法格式报字段错误。 */
+    private static LocalDate parseListedDate(String raw, String field) {
+        if (raw == null) return null;
+        try {
+            return LocalDate.parse(raw);
+        } catch (DateTimeParseException exception) {
+            throw invalidArchiveField(field, "日期格式必须为 YYYY-MM-DD");
+        }
+    }
+
+    private static void requireListingOrder(LocalDate listedFrom, LocalDate listedUntil) {
+        if (listedFrom != null && listedUntil != null && listedFrom.isAfter(listedUntil)) {
+            throw invalidArchiveField("listed_from", "上市周期起始日期不能晚于结束日期");
+        }
+    }
+
+    /** 标签归一化：去首尾空白、去重、空列表视为未填写（null）。 */
+    private static List<String> normalizeTags(List<String> tags, String field) {
+        if (tags == null) return null;
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        for (String tag : tags) {
+            if (tag == null) {
+                throw invalidArchiveField(field, "商品标签不能为 null");
+            }
+            String trimmed = tag.trim();
+            if (!trimmed.isEmpty()) normalized.add(trimmed);
+        }
+        return normalized.isEmpty() ? null : List.copyOf(normalized);
+    }
+
+    private static BusinessException invalidArchiveField(String field, String message) {
+        return new BusinessException(
+                400,
+                "INVALID_PRODUCT_ARCHIVE_FIELD",
+                "商品档案字段无效",
+                List.of(new FieldErrorItem(field, "Pattern", message)),
+                Map.of());
+    }
+
     private static Map<String, Object> customerProfile(String departmentCode, String contactName, String contactPhone) {
         return map("department_code", departmentCode, "contact_name", contactName, "contact_phone", contactPhone);
     }
@@ -940,6 +1052,25 @@ public class MasterDataService {
         putNullable(body, "active", input.active());
         if (input.purchasePricePresent()) body.put("purchase_price", input.purchasePrice());
         if (input.retailPricePresent()) body.put("retail_price", input.retailPrice());
+        return Map.of("id", id, "body", body);
+    }
+
+    /** 商品更新审计载荷：只记录显式出现的字段（含显式 null 清空）。 */
+    private static Map<String, Object> productPatchPayload(long id, ProductPatch input) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("expected_version", input.expectedVersion());
+        putNullable(body, "product_name", input.productName());
+        putNullable(body, "category_id", input.categoryId());
+        putNullable(body, "active", input.active());
+        if (input.ingredientsPresent()) body.put("ingredients", input.ingredients());
+        if (input.tagsPresent()) body.put("tags", input.tags());
+        if (input.listedFromPresent()) body.put("listed_from", input.listedFrom());
+        if (input.listedUntilPresent()) body.put("listed_until", input.listedUntil());
+        if (input.leadTimeHoursPresent()) body.put("lead_time_hours", input.leadTimeHours());
+        if (input.purchasePricePresent()) body.put("purchase_price", input.purchasePrice());
+        if (input.retailPricePresent()) body.put("retail_price", input.retailPrice());
+        if (input.otherCostPresent()) body.put("other_cost", input.otherCost());
+        if (input.mainImageRefPresent()) body.put("main_image_ref", input.mainImageRef());
         return Map.of("id", id, "body", body);
     }
 

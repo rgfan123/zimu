@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" agent="dsh-drawio-client" version="24.7.8" type="device">
+  <diagram id="zimu-dept-architecture" name="分部门模块架构图">
+    <mxGraphModel dx="1680" dy="1280" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1680" pageHeight="1280" math="0" shadow="0">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+
+    <!-- ===================== L1 销售部（B端客户）· 待建设 ===================== -->
+    <mxCell id="L1" value="① 销售部（B 端客户）【待建设 · 线下流程数字化】" style="swimlane;html=1;startSize=34;horizontal=1;fillColor=#fafafa;strokeColor=#aaaaaa;swimlaneFillColor=#f7f7f7;fontStyle=1;fontSize=13;fontColor=#555555;" vertex="1" parent="1">
+      <mxGeometry x="20" y="20" width="1640" height="150" as="geometry"/>
+    </mxCell>
+    <mxCell id="s1" value="B 端线索 / 客户档案" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;" vertex="1" parent="L1"><mxGeometry x="20" y="44" width="240" height="64" as="geometry"/></mxCell>
+    <mxCell id="s2" value="面谈 / 需求" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;" vertex="1" parent="L1"><mxGeometry x="290" y="44" width="200" height="64" as="geometry"/></mxCell>
+    <mxCell id="s3" value="打样" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;" vertex="1" parent="L1"><mxGeometry x="520" y="44" width="180" height="64" as="geometry"/></mxCell>
+    <mxCell id="s4" value="报价 / 议价" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;" vertex="1" parent="L1"><mxGeometry x="730" y="44" width="200" height="64" as="geometry"/></mxCell>
+    <mxCell id="s5" value="合同" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;" vertex="1" parent="L1"><mxGeometry x="960" y="44" width="180" height="64" as="geometry"/></mxCell>
+    <mxCell id="s6" value="B 端下单" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=11;fontStyle=1;" vertex="1" parent="L1"><mxGeometry x="1170" y="44" width="200" height="64" as="geometry"/></mxCell>
+
+    <!-- ===================== L2 订单运营部 ===================== -->
+    <mxCell id="L2" value="② 订单运营部（接单 → 标准化 → 确认）" style="swimlane;html=1;startSize=34;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="190" width="1640" height="230" as="geometry"/>
+    </mxCell>
+    <mxCell id="i1" value="C 端平台下单&#10;彩食鲜 / 聚福宝 / 飞象（Excel 导入）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="20" y="40" width="300" height="56" as="geometry"/></mxCell>
+    <mxCell id="i2" value="企微消息&#10;@机器人 → 意图识别 → 草稿" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="340" y="40" width="300" height="56" as="geometry"/></mxCell>
+    <mxCell id="o1" value="导入批次 / 逐行解析" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="20" y="120" width="220" height="70" as="geometry"/></mxCell>
+    <mxCell id="o2" value="客户匹配&#10;（C 端平台 / B 端档案）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="260" y="120" width="220" height="70" as="geometry"/></mxCell>
+    <mxCell id="o3" value="SKU 显式映射 + 乘数" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="500" y="120" width="220" height="70" as="geometry"/></mxCell>
+    <mxCell id="o4" value="批次整体确认" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="740" y="120" width="200" height="70" as="geometry"/></mxCell>
+    <mxCell id="o5" value="生成履约指令&#10;（Fulfillment）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="L2"><mxGeometry x="960" y="120" width="220" height="70" as="geometry"/></mxCell>
+    <mxCell id="review" value="人工复核 ReviewCase&#10;缺客户 / 缺 SKU / 草稿复核 / 异常" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="1300" y="120" width="300" height="70" as="geometry"/></mxCell>
+
+    <!-- ===================== L3 仓储物流部 ===================== -->
+    <mxCell id="L3" value="③ 仓储物流部（履约执行 → 发货 → 回填）" style="swimlane;html=1;startSize=34;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="440" width="1640" height="150" as="geometry"/>
+    </mxCell>
+    <mxCell id="f1" value="生成 Shipment + 履约导出&#10;（履约字段冻结）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L3"><mxGeometry x="20" y="44" width="260" height="70" as="geometry"/></mxCell>
+    <mxCell id="f2" value="京东云仓（SDK）&#10;建单 addSoOrder → 取运单" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="L3"><mxGeometry x="310" y="44" width="250" height="70" as="geometry"/></mxCell>
+    <mxCell id="f3" value="第三方供应商&#10;发货清单 → 回传文件" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="L3"><mxGeometry x="590" y="44" width="250" height="70" as="geometry"/></mxCell>
+    <mxCell id="f4" value="运单整批接收&#10;（TRACKING_RECEIVED）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L3"><mxGeometry x="870" y="44" width="220" height="70" as="geometry"/></mxCell>
+    <mxCell id="f5" value="来源回填表&#10;（平台原格式）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="L3"><mxGeometry x="1120" y="44" width="220" height="70" as="geometry"/></mxCell>
+    <mxCell id="f6" value="行级 COMPLETED&#10;订单聚合 SYNCED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#a9d18e;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="L3"><mxGeometry x="1370" y="44" width="240" height="70" as="geometry"/></mxCell>
+
+    <!-- ===================== L4 采购部 ===================== -->
+    <mxCell id="L4" value="④ 采购部（缺货协同）" style="swimlane;html=1;startSize=34;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="610" width="1640" height="110" as="geometry"/>
+    </mxCell>
+    <mxCell id="p1" value="缺货 → 采购工单" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L4"><mxGeometry x="20" y="40" width="280" height="52" as="geometry"/></mxCell>
+    <mxCell id="p2" value="采购回执（只追加 SUCCESS / PARTIAL / FAILED）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L4"><mxGeometry x="330" y="40" width="320" height="52" as="geometry"/></mxCell>
+    <mxCell id="p3" value="补齐 → 续发（新 Shipment）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L4"><mxGeometry x="680" y="40" width="260" height="52" as="geometry"/></mxCell>
+
+    <!-- ===================== L5 财务部 · 待建设 ===================== -->
+    <mxCell id="L5" value="⑤ 财务部（应收 / 应付 / 账期）【待建设】" style="swimlane;html=1;startSize=34;horizontal=1;fillColor=#fafafa;strokeColor=#aaaaaa;swimlaneFillColor=#f7f7f7;fontStyle=1;fontSize=13;fontColor=#555555;" vertex="1" parent="1">
+      <mxGeometry x="20" y="740" width="1640" height="220" as="geometry"/>
+    </mxCell>
+    <mxCell id="ar1" value="发货完成 → 生成应收账款&#10;（金额 = 数量 × 单价）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;dashed=1;fontSize=11;" vertex="1" parent="L5"><mxGeometry x="20" y="44" width="300" height="48" as="geometry"/></mxCell>
+    <mxCell id="ar2" value="账期到期日 = 发货日 + 账期" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;dashed=1;fontSize=11;" vertex="1" parent="L5"><mxGeometry x="20" y="100" width="300" height="44" as="geometry"/></mxCell>
+    <mxCell id="ar3" value="回款冲销 / 逾期预警（黄·红）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;dashed=1;fontSize=11;fontStyle=1;" vertex="1" parent="L5"><mxGeometry x="20" y="152" width="300" height="44" as="geometry"/></mxCell>
+    <mxCell id="ap1" value="采购完成 → 应付账款&#10;（金额 = 数量 × 采购单价）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;dashed=1;fontSize=11;" vertex="1" parent="L5"><mxGeometry x="360" y="44" width="300" height="48" as="geometry"/></mxCell>
+    <mxCell id="ap2" value="到期付款 → 冲销应付" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;dashed=1;fontSize=11;" vertex="1" parent="L5"><mxGeometry x="360" y="100" width="300" height="44" as="geometry"/></mxCell>
+    <mxCell id="rec1" value="应收 ↔ 应付 对应&#10;毛利 = 应收 − 进货成本" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;dashed=1;fontSize=11;" vertex="1" parent="L5"><mxGeometry x="700" y="44" width="340" height="48" as="geometry"/></mxCell>
+    <mxCell id="rec2" value="资金缺口 = 应收 − 应付&#10;→ 企业财务健康度看板" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;dashed=1;fontSize=11;fontStyle=1;" vertex="1" parent="L5"><mxGeometry x="700" y="100" width="340" height="44" as="geometry"/></mxCell>
+
+    <!-- ===================== L6 技术数据部 ===================== -->
+    <mxCell id="L6" value="⑥ 技术数据部（Agent 决策 + 数据中台 + 基础支撑）" style="swimlane;html=1;startSize=34;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="980" width="1640" height="230" as="geometry"/>
+    </mxCell>
+    <mxCell id="ag1" value="Agent 决策层【已完成】&#10;采购比价 Agent · 数据查询 Agent&#10;意图识别 Agent · MCP 只读工具" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="20" y="44" width="400" height="120" as="geometry"/></mxCell>
+    <mxCell id="ag2" value="Agent 平台化【进行中】&#10;Meta-Agent（自然语言创建/改 Agent）&#10;评测门禁 · MCP 权限隔离 · 定义数据化" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=1;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="440" y="44" width="440" height="120" as="geometry"/></mxCell>
+    <mxCell id="ag3" value="数据中台&#10;analytics 分析视图&#10;+ Metabase BI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="900" y="44" width="340" height="120" as="geometry"/></mxCell>
+    <mxCell id="ag4" value="基础支撑&#10;PostgreSQL · Redis · 文件存储&#10;审计 · 幂等 · 乐观锁 · Flyway" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="1260" y="44" width="340" height="120" as="geometry"/></mxCell>
+
+    <!-- ===================== 底部 ===================== -->
+    <mxCell id="note1" value="贯穿机制：Idempotency-Key 幂等 · expected_version 乐观锁 · 业务事实/事件/版本/审计同事务 · BUSINESS 与 DEMO 强隔离 · Connector/Agent/MCP 禁止直写业务表 · 京东写操作默认门闩 OFF" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;fontColor=#555555;" vertex="1" parent="1">
+      <mxGeometry x="20" y="1230" width="1640" height="40" as="geometry"/>
+    </mxCell>
+
+    <!-- ===================== 连线 ===================== -->
+    <!-- 销售部 -->
+    <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#999999;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="s1" target="s2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#999999;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="s2" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#999999;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="s3" target="s4"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#999999;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="s4" target="s5"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#999999;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="s5" target="s6"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e6" value="B 端订单" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#999999;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s6" target="o2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <!-- 订单运营 -->
+    <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="i1" target="o1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="i2" target="o1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="o1" target="o2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="o2" target="o3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="o3" target="o4"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="o4" target="o5"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e13" value="缺失 / 异常" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#b85450;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="o2" target="review"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e14" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#b85450;dashed=1;exitX=0.5;exitY=1;entryX=0;entryY=0.5;" edge="1" parent="1" source="o3" target="review"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e15" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#b85450;dashed=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="o4" target="review"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <!-- 订单运营 → 仓储 -->
+    <mxCell id="e16" value="履约指令" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;fontSize=11;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="o5" target="f1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <!-- 仓储 -->
+    <mxCell id="e17" value="京东" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;fontSize=11;labelBackgroundColor=#FFFFFF;exitX=0.3;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="f1" target="f2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e18" value="第三方" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;fontSize=11;labelBackgroundColor=#FFFFFF;exitX=0.7;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="f1" target="f3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="f2" target="f4"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e20" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="f3" target="f4"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e21" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="f4" target="f5"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e22" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="f5" target="f6"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <!-- 缺货 → 采购 -->
+    <mxCell id="e23" value="缺货 / 部分发货" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d6b656;fontSize=11;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="f4" target="p1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e24" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d6b656;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="p1" target="p2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e25" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d6b656;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="p2" target="p3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e26" value="补齐续发" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d6b656;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=0;entryX=0;entryY=0.5;" edge="1" parent="1" source="p3" target="f4"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <!-- 发货 → 财务应收；采购 → 财务应付 -->
+    <mxCell id="e27" value="发货 → 应收" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6c8ebf;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="f6" target="ar1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e28" value="采购 → 应付" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="p1" target="ap1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <!-- 财务内部 -->
+    <mxCell id="e29" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6c8ebf;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="ar1" target="ar2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e30" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6c8ebf;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="ar2" target="ar3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e31" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="ap1" target="ap2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e32" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673a6;dashed=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="rec1" target="rec2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <!-- Agent 支撑（虚线向上） -->
+    <mxCell id="e33" value="意图识别" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673a6;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.2;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="ag1" target="i2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e34" value="采购比价 Agent" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673a6;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="ag1" target="p2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e35" value="数据查询 Agent" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673a6;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.8;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="ag1" target="ag3"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root>
+</mxGraphModel>
+  </diagram>
+</mxfile>

@@ -176,15 +176,16 @@ class McpProtocolAcceptanceTest {
                 "list_products",
                 "list_categories",
                 "list_fulfillment_providers",
-                // 写：仅非终局
+                // 写：仅非终局 + 业务决策票放行的终局写（confirm_order_draft / submit_jd_outbound）
                 "reinterpret_submission",
                 "submit_order_draft_suggestion",
                 "submit_supplementary_material",
-                "submit_review_request");
+                "submit_review_request",
+                "confirm_order_draft",
+                "submit_jd_outbound");
 
         Set<String> forbidden = Set.of(
                 "confirm_order",
-                "confirm_order_draft",
                 "confirm_tracking_draft",
                 "confirm_tracking_drafts",
                 "batch_confirm_tracking_drafts",

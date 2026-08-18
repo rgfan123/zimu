@@ -391,14 +391,17 @@ JufubaoAuthClient
 
 ### 4.4 彩食鲜 —— 实现要点
 
-- 定位：**Excel 导出任务链路 Java 重放 + orderList JSON 仅做统计**（明细缺口不阻塞，见 §8 决策点 D9）。
-- `pullOrders` 实现链：
-  1. 登录（§4.2）→ `POST /scc/bbc/order/exportDeliverExcl`（`orderStatus=3`）→ taskId；
-  2. 轮询 `GET /task/task/my`（完成判定同脚本；轮询间隔 5s、上限 20 轮，失败依据 `taskResult/taskMessage`）；
-  3. `GET /task/file/download?name&url` → `byte[]` → **直接复用 `SourceFileParser.parse(byte[])`**（已核实：Parser 接收 byte[]，零改动）→ `ParsedSourceFile` → 逐行构 `CanonicalOrderInput`（复用 `SourceImportService` 中现有 canonical 映射逻辑，建议抽成共享方法）；
-  4. `orderList` JSON：`POST /scc/bbc/order/orderList` 拉主订单级数据，**只用于**：状态计数（`data.number`）、增量比对信号、`testConnection` 真实探测；不产生业务订单（明细缺失）。
-- `pullOrderChanges`：orderList `number` 差分（deliveryNum/canceledNum 变化）→ 触发人工关注信号；精确行级变更依赖导出差分。
-- `pullCancellations`：orderList `canceledNum` 变化 → 信号；具体取消单需导出/详情接口（契约未确认）。
+> **2026-08-18 14:16 更新**：新抓包确认 `GET /scc/bbc/order/detail?id=`（收货地址/商品明细 `supplierOrderGoodsVo`/已发货运单 `goodsPackageList`），**JSON 直连已覆盖 Excel 22 列中的 19 列**（仅缺站点编码、错误原因、未发货单物流）。`orderList + orderDetail` 可作 `pullOrders` 主链路；Excel 导出保留为兜底/核对源（见 §8 D9 已更新）。
+
+- 定位：**JSON 直连（orderList + orderDetail）为主 + Excel 导出任务链路兜底**。
+- `pullOrders` 实现链（JSON 主链路）：
+  1. 登录（§4.2）→ `POST /scc/bbc/order/orderList`（`orderStatus=3`，分页 `pageNum/pageSize`，`totalNum` 终止）；
+  2. 逐单 `GET /scc/bbc/order/detail?id=<id>` → 拼 `supplierOrderGoodsVo[]` 为 OrderLine、`receiver*` 为 Receiver、`orderKey`（SPLIT_ORDER 子单后缀）为 line reference；
+  3. 补抓 `站点编码` 或接受缺失（缺站点编码进 NEED_REVIEW 的代价评估后再定）。
+- `pullOrders` 兜底链路（Excel）：`exportDeliverExcl` → 轮询 `task/task/my` → `task/file/download` → `byte[]` → **直接复用 `SourceFileParser.parse(byte[])`**（已核实：Parser 接收 byte[]，零改动）→ `ParsedSourceFile` → 逐行构 `CanonicalOrderInput`。
+- `orderList` 的 `number` 状态计数用于：仪表盘、增量比对信号、`testConnection` 真实探测。
+- `pullOrderChanges`：orderList `number` 差分（deliveryNum/canceledNum 变化）→ 触发人工关注信号；精确行级变更依赖 detail 比对。
+- `pullCancellations`：orderList `canceledNum` 变化 → 信号；具体取消单需 detail/导出确认（契约未穷尽）。
 
 ### 4.5 飞象 —— 实现要点
 
@@ -622,7 +625,7 @@ Phase 1 起 `OperationalAlert` 实体（`OperationalAlertService` 已有）承�
 | D6 | 游标粒度 | 单 `last_pull_at` vs 每 tab 独立水位 | 决定 pullOrderChanges 实现复杂度 | 一期单水位 + 全量差分；多水位后续再说 |
 | D7 | 状态变化 ReviewCase 原因码 | 原因码白名单（excel-closed-loop-spec §11）无「来源状态变化」 | pullOrderChanges 的信号去向 | 确认新增 `SOURCE_STATUS_CHANGE` 原因码（属规范修订，需走评审） |
 | D8 | 聚福宝取消态枚举 | 契约仅确认 `NO_DELIVERY` | pullCancellations 依赖取消态枚举值 | 补抓/文档确认订单状态枚举全集 |
-| D9 | 彩食鲜明细缺口 | orderList 无明细；orderDetail 未抓包 | 是否支持纯 JSON 拉单 | 短期维持 Excel 导出模式；中期补抓 orderDetail 后再评估（评估稿决策点 2） |
+| D9 | 彩食鲜明细缺口 | ~~orderList 无明细~~ → **2026-08-18 已解决**：`GET /scc/bbc/order/detail?id=` 确认，JSON 覆盖 Excel 22 列中的 19 列（缺站点编码/错误原因/未发货单物流） | 纯 JSON 拉单可行 | **已确认**：JSON 直连（orderList+orderDetail）为 pullOrders 主链路，Excel 导出降级为兜底/核对源（见 §4.4） |
 | D10 | AuditLog actorType | 现有枚举（HUMAN 等）需确认 | 系统拉取任务的操作人类型 | 确认新增服务/系统 actor 类型或复用现有 |
 | D11 | Phase 2 回传范围 | 聚福宝 multi-send 契约已确认；彩食鲜/飞象未抓包 | 决定回传实现范围 | 聚福宝先行；彩食鲜/飞象回传接口补抓后实施 |
 | D12 | 飞象长期形态 | 无 JSON 接口 | 在线 pull 意义有限 | 确认飞象长期维持「自动拉取文件模式」（Connector 只做文件化 pullOrders） |

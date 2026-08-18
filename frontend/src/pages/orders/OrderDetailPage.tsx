@@ -148,6 +148,11 @@ export default function OrderDetailPage() {
   const notFound = detailQuery.error instanceof ApiError && detailQuery.error.status === 404;
 
   const mainlineIndex = useMemo(() => (detail ? MAINLINE.indexOf(detail.order_status) : -1), [detail]);
+  // 只提示未关闭的复核事项：已 RESOLVED / DISMISSED 的仍展示会让人误以为处理未生效。
+  const openReviewCases = useMemo(
+    () => (detail?.review_cases ?? []).filter((reviewCase) => reviewCase.status === 'OPEN'),
+    [detail],
+  );
   const isException = detail ? mainlineIndex < 0 && detail.order_status !== 'CLOSED' : false;
 
   if (notFound) {
@@ -253,12 +258,12 @@ export default function OrderDetailPage() {
                 { key: 'remark', label: '备注', span: 3, children: detail.remark ?? '—' },
               ]}
             />
-            {detail.review_cases.length ? (
+            {openReviewCases.length ? (
               <Alert
                 type="warning"
                 showIcon
-                message={`存在 ${detail.review_cases.length} 条复核事项`}
-                description={detail.review_cases
+                message={`存在 ${openReviewCases.length} 条待处理复核事项`}
+                description={openReviewCases
                   .map((reviewCase) => `${reviewCase.case_no}（${reasonLabel(reviewCase.reason_code)}）：${reviewCaseSummary(reviewCase)}`)
                   .join('；')}
                 action={

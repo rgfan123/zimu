@@ -237,7 +237,7 @@ class CaishixianJdBatchClosedLoopApiTest {
             }
             assertThat(formatter.formatCellValue(row.getCell(columns.get("物流公司代码")))).isEqualTo("JD");
             assertThat(formatter.formatCellValue(row.getCell(columns.get("物流单号")))).isEqualTo("JD-CSX-E2E-001");
-            assertThat(formatter.formatCellValue(row.getCell(columns.get("发货数量")))).isEqualTo("1.000");
+            assertThat(formatter.formatCellValue(row.getCell(columns.get("发货数量")))).isEqualTo("1");
         }
 
         ResponseEntity<Map> replayBackfill = http.exchange(

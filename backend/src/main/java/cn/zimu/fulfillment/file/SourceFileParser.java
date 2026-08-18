@@ -146,6 +146,7 @@ class SourceFileParser {
             case CAISHIXIAN -> caishixian(sheetName, sheetIndex, rowIndex, cells);
             case JUFUBAO -> jufubao(sheetName, sheetIndex, rowIndex, cells);
             case FEIXIANG -> feixiang(sheetName, sheetIndex, rowIndex, cells);
+            case ZHONGHUI -> zhonghui(sheetName, sheetIndex, rowIndex, cells);
             case WECOM -> throw new IllegalArgumentException("WECOM is not a file source adapter");
         };
     }
@@ -214,6 +215,19 @@ class SourceFileParser {
                 first(cells, "规格", "商品规格"), value(cells, "单位"),
                 first(cells, "可发货数量", "商品数量"), parseTime(value(cells, "下单时间")), "OTHER",
                 value(cells, "备注"), true);
+    }
+
+    private ParsedSourceRow zhonghui(String sheet, int sheetIndex, int row, Map<String, String> cells) {
+        return row(
+                sheet, sheetIndex, row, cells,
+                value(cells, "订单号"), value(cells, "商品编号"),
+                "", "",
+                value(cells, "收件人"), value(cells, "收件电话"), value(cells, "收件地址"),
+                "", "", "",
+                value(cells, "商品编号"), value(cells, "商品名称"),
+                value(cells, "包装规格"), value(cells, "单位"),
+                value(cells, "件数"), parseTime(value(cells, "下单时间")), "OTHER",
+                value(cells, "用户留言"), true);
     }
 
     private ParsedSourceRow row(
@@ -313,6 +327,7 @@ class SourceFileParser {
             case CAISHIXIAN -> index == 0;
             case JUFUBAO -> "sheet1".equals(name);
             case FEIXIANG -> index == 0;
+            case ZHONGHUI -> index == 0;
             case WECOM -> false;
         };
     }
@@ -423,6 +438,8 @@ class SourceFileParser {
         map.put(SourceChannel.CAISHIXIAN, Set.of("主订单编号", "子订单编号", "供应商编码", "站点编码", "商品编号", "下单数量"));
         map.put(SourceChannel.JUFUBAO, Set.of("主单号", "拆单号", "供货商", "渠道订单号", "结算方式", "需结算总额"));
         map.put(SourceChannel.FEIXIANG, Set.of("订单号", "订单商品ID", "可发货数量", "物流状态", "物流公司", "物流单号"));
+        map.put(SourceChannel.ZHONGHUI, Set.of(
+                "订单号", "商品编号", "商品名称", "件数", "收件人", "收件电话", "收件地址", "包装规格", "单位"));
         return map;
     }
 

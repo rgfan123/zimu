@@ -72,6 +72,7 @@ class CsxConfig:
     pay_end: str = ""
     order_status: str = "3"
     mode: str = "export"               # export=任务导出Excel（默认）| json=JSON直连
+    with_detail: bool = True           # json 模式：逐单补拉 order/detail（地址+商品明细+运单）
     out_dir: Path = Path("data-local")
     force: bool = False
     dry_run: bool = False
@@ -179,6 +180,8 @@ def query_order_list(cfg: CsxConfig) -> dict[str, Any]:
     """JSON 直连：分页拉取订单列表（POST /scc/bbc/order/orderList，2026-08-18 抓包确认）。
 
     与 exportDeliverExcl 同款筛选参数；响应 data 含 pageNum/pageSize/totalNum/data/number（状态计数）。
+    with_detail=True 时对每单补拉 GET /scc/bbc/order/detail（2026-08-18 14:16 抓包确认：
+    含收货地址 receiverProvince/City/District/Address、商品明细 supplierOrderGoodsVo[]、运单 goodsPackageList[]）。
     """
     orders: list[dict[str, Any]] = []
     page = 1
@@ -202,7 +205,31 @@ def query_order_list(cfg: CsxConfig) -> dict[str, Any]:
         if not batch or len(orders) >= (total or 0) or len(batch) < page_size:
             break
         page += 1
+    if cfg.with_detail:
+        for i, o in enumerate(orders, 1):
+            detail = order_detail(cfg, o.get("id"))
+            if detail:
+                o["detail"] = detail
+                log.info("补详情 [%d/%d]: %s", i, len(orders), detail.get("orderCode"))
+            else:
+                log.warning("补详情失败 [%d/%d]: id=%s", i, len(orders), o.get("id"))
     return {"total": total or len(orders), "orders": orders, "number": (data or {}).get("number")}
+
+
+def order_detail(cfg: CsxConfig, order_id: Any) -> dict[str, Any] | None:
+    """GET /scc/bbc/order/detail?id=：订单全量详情（地址/商品明细/运单）。
+
+    单单失败（网络/非 JSON/业务错误码）返回 None 由调用方记警告继续，
+    不让一单的抖动废掉整批抓取；调用方的失败分支依赖这一点。
+    """
+    try:
+        resp = cfg.session().get(
+            f"{BASE_URL}/scc/bbc/order/detail", params={"id": order_id}, timeout=cfg.timeout)
+        resp.raise_for_status()
+        return _unwrap(resp.json())
+    except (requests.RequestException, ValueError, CsxError) as exc:
+        log.warning("order/detail 失败: id=%s err=%s", order_id, exc)
+        return None
 
 
 # ---------------------------------------------------------------- 轮询与主流程
@@ -335,6 +362,8 @@ def main() -> int:
     parser.add_argument("--order-status", default="3", help="订单状态筛选（3=待发货）")
     parser.add_argument("--mode", default="export", choices=["export", "json"],
                         help="export=任务导出Excel（默认）| json=orderList JSON直连")
+    parser.add_argument("--no-detail", action="store_true",
+                        help="json 模式关闭逐单补拉 order/detail（默认开启，补齐地址/明细/运单）")
     parser.add_argument("--supplier-code", default=DEFAULT_SUPPLIER_CODE,
                         help=f"供应商代码（默认 {DEFAULT_SUPPLIER_CODE} 主供应商）")
     parser.add_argument("--out-dir", default="data-local", help="输出目录（默认 data-local/）")
@@ -359,6 +388,7 @@ def main() -> int:
         pay_end=args.pay_end or "",
         order_status=args.order_status,
         mode=args.mode,
+        with_detail=not args.no_detail,
         out_dir=Path(args.out_dir),
         force=args.force,
         dry_run=args.dry_run,

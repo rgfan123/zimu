@@ -15,6 +15,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -306,14 +307,14 @@ public class TrackingFileService {
             Map<String, String> cells = new LinkedHashMap<>(row.rawCells());
             switch (source.channel()) {
                 case "CAISHIXIAN" -> {
-                    cells.put("发货数量", fill.shippedQuantity().toPlainString());
+                    cells.put("发货数量", sourceQuantityCell(fill));
                     cells.put("物流公司代码", fill.sourceCarrier());
                     cells.put("物流单号", fill.trackingNo());
                     cells.put("错误原因", "");
                 }
                 case "JUFUBAO" -> {
                     cells.put("是否发完", "是");
-                    cells.put("发货数量", fill.shippedQuantity().toPlainString());
+                    cells.put("发货数量", sourceQuantityCell(fill));
                     cells.put("快递公司", fill.sourceCarrier());
                     cells.put("快递单号", fill.trackingNo());
                 }
@@ -322,6 +323,11 @@ public class TrackingFileService {
                     if (cells.containsKey("物流公司")) {
                         cells.put("物流公司", fill.sourceCarrier());
                     }
+                    cells.put("物流单号", fill.trackingNo());
+                }
+                case "ZHONGHUI" -> {
+                    // 中汇回填模板：原表最后新增一列「物流单号」，回填京东物流单号；
+                    // 平台模板未提供承运商列，不新增「物流公司」列。
                     cells.put("物流单号", fill.trackingNo());
                 }
                 default -> throw new IllegalStateException("unsupported source return channel");
@@ -455,10 +461,29 @@ public class TrackingFileService {
     private byte[] sourceWorkbook(SourceBatch source, List<ParsedSourceRow> rows) {
         try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(fileStore.read(source.fileRef())));
                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            // 渠道回填需要新增的列（如中汇「物流单号」）不在原表头中：
+            // 按首个出现顺序在表头末尾追加列，同一来源行的数据写入对应新列。
+            Map<Integer, Map<String, Integer>> appendedBySheet = new java.util.HashMap<>();
             for (ParsedSourceRow parsed : rows) {
                 var sheet = workbook.getSheetAt(parsed.sheetIndex());
                 var header = sheet.getRow(0);
                 var data = sheet.getRow(parsed.rowIndex() - 1);
+                java.util.Set<String> known = new java.util.HashSet<>();
+                for (int column = 0; column < header.getLastCellNum(); column++) {
+                    known.add(formatter.formatCellValue(header.getCell(column)).strip());
+                }
+                Map<String, Integer> appended = appendedBySheet.computeIfAbsent(
+                        parsed.sheetIndex(), ignored -> new LinkedHashMap<>());
+                for (Map.Entry<String, String> cell : parsed.rawCells().entrySet()) {
+                    if (!known.contains(cell.getKey())) {
+                        int column = appended.computeIfAbsent(
+                                cell.getKey(), ignored -> Integer.valueOf(header.getLastCellNum()));
+                        if (header.getCell(column) == null) header.createCell(column);
+                        header.getCell(column).setCellValue(cell.getKey());
+                        if (data.getCell(column) == null) data.createCell(column);
+                        data.getCell(column).setCellValue(cell.getValue());
+                    }
+                }
                 for (int column = 0; column < header.getLastCellNum(); column++) {
                     String name = formatter.formatCellValue(header.getCell(column)).strip();
                     if (parsed.rawCells().containsKey(name)) {
@@ -587,9 +612,11 @@ public class TrackingFileService {
                 """
                 SELECT rir.id raw_row_id, rir.sheet_index, rir.row_index, rir.order_line_id,
                        s.id shipment_id, s.shipment_sequence, si.shipped_quantity,
+                       ol.mapping_multiplier_snapshot,
                        t.tracking_number, f.outcome, f.cancelled_quantity,
                        cc.config #>> ARRAY['carrier_mappings', t.logistics_company_code] source_carrier
                 FROM app.raw_import_rows rir
+                JOIN app.order_lines ol ON ol.id=rir.order_line_id
                 JOIN app.fulfillments f ON f.order_line_id=rir.order_line_id
                 JOIN app.shipment_items si ON si.fulfillment_id=f.id AND si.shipped_quantity>0
                 JOIN app.shipments s ON s.id=si.shipment_id
@@ -611,7 +638,8 @@ public class TrackingFileService {
                             resultSet.getLong("raw_row_id"), resultSet.getInt("sheet_index"),
                             resultSet.getInt("row_index"), resultSet.getLong("order_line_id"),
                             resultSet.getLong("shipment_id"), resultSet.getInt("shipment_sequence"),
-                            resultSet.getBigDecimal("shipped_quantity"), carrier,
+                            resultSet.getBigDecimal("shipped_quantity"),
+                            resultSet.getBigDecimal("mapping_multiplier_snapshot"), carrier,
                             resultSet.getString("tracking_number"), resultSet.getString("outcome"),
                             resultSet.getBigDecimal("cancelled_quantity"));
                 }, sourceBatchId);
@@ -723,8 +751,36 @@ public class TrackingFileService {
         String outboundOrderNo() { return line.outboundOrderNo(); }
     }
     private record SourceBatch(String channel, String templateVersion, String fileRef) {}
+    /**
+     * 来源平台数量列的取值：内部数量按建单时冻结的渠道乘数还原为来源份数，且必须是整数。
+     *
+     * <p>规格换算（{@code source_channel_skus.quantity_multiplier}）只用于把来源份数折成京东计数件，
+     * 属于京东侧事实——来源平台按自己的销售份数记账，看到的数量必须与其下单口径一致。
+     * 仅在真正写该列的渠道（彩食鲜/聚福宝）换算；不写该列的渠道不受影响。
+     *
+     * <p>除不尽意味着实发件数不足整份来源销售单位，来源表格无法表达该状态。
+     * 此时失败关闭：向合作平台少报或多报发货量都是实质错误，不做四舍五入。
+     */
+    private static String sourceQuantityCell(ReturnRow row) {
+        BigDecimal internal = row.shippedQuantity();
+        if (internal == null) {
+            return "";
+        }
+        BigDecimal factor = row.mappingMultiplier() == null || row.mappingMultiplier().signum() <= 0
+                ? BigDecimal.ONE
+                : row.mappingMultiplier();
+        try {
+            return internal.divide(factor, 0, RoundingMode.UNNECESSARY).stripTrailingZeros().toPlainString();
+        } catch (ArithmeticException exception) {
+            throw BusinessException.unprocessable(
+                    "SOURCE_RETURN_QUANTITY_NOT_SOURCE_UNIT",
+                    "实发 " + internal.toPlainString() + " 件无法按渠道乘数 " + factor.toPlainString()
+                            + " 还原为来源整数份数，来源回传表格无法表达该部分发货状态");
+        }
+    }
+
     private record ReturnRow(
             long rawRowId, int sheetIndex, int rowIndex, long orderLineId, long shipmentId, int shipmentSequence,
-            BigDecimal shippedQuantity, String sourceCarrier, String trackingNo, String fulfillmentOutcome,
-            BigDecimal cancelledQuantity) {}
+            BigDecimal shippedQuantity, BigDecimal mappingMultiplier, String sourceCarrier, String trackingNo,
+            String fulfillmentOutcome, BigDecimal cancelledQuantity) {}
 }

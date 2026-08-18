@@ -7,6 +7,10 @@ spring:
     password: ${DB_PASSWORD}
   flyway:
     enabled: true
+  servlet:
+    multipart:
+      max-file-size: 12MB
+      max-request-size: 12MB
   jpa:
     hibernate:
       ddl-auto: validate

@@ -162,9 +162,22 @@ content-type: application/json   (仅 POST)
 
 订单对象（实测样例）：`orderCode`（主订单编号）/`orderKey`/`orderStatus`(3=待发货)/`orderStatusEnumName`/`supplierCode`/`receiverName`/`receiverTelephone`/`payTime`/`orderTime`/`purchaseCode`/`vip`/`snCode`
 
-⚠️ **与导出 Excel 的差异**：orderList 只有**主订单级**字段（无商品明细/子订单行）；商品行（商品编号/下单数量等）在导出 Excel 里。若需 JSON 全量（含商品明细），需补抓订单详情接口（如 orderDetail，未在现有 HAR 中）。
+### 4.5 订单详情 `GET /scc/bbc/order/detail?id=<orderList.id>`（2026-08-18 14:16 抓包 + 实测）
 
-脚本：`scripts/caishixian_fetch_orders.py --mode json`（默认仍为 export 导出模式）。
+补齐 JSON 全量信息，响应 `data` 字段：
+
+| 字段 | 语义 |
+|---|---|
+| `orderCode` / `orderKey` / `orderKind` | 主订单编号 / 订单键（SPLIT_ORDER 带子单后缀=子订单编号）/ MAIN_ORDER=主单、SPLIT_ORDER=拆单 |
+| `receiverProvince/City/District/Address` | 收货地址（省/市/区/详细地址） |
+| `expressRequirementCode/Name` | 物流要求 |
+| `supplierOrderGoodsVo[]` | 商品明细：`goodsCode`（商品编号）/`goodsName`/`count`（数量）/`outCount`（已发数量）/`price`/`totalPrice`（进价）/`salePrice`/`totalSalePrice`（售价）/`spec`（规格）/`unit`（单位）/`productBarCode`/`deliveryTag`/`remark` |
+| `goodsPackageList[]` | 已发货单运单：`packageCode`/`shipperCode`（如 JD）/`logisticCode`（运单号）/`goodsCode`/`deliverTime` |
+| `purchaseCode` / `remark` / `isReplenish` | 采购单号 / 订单备注 / 补货标识 |
+
+**JSON 全量覆盖度（orderList + orderDetail，2026-08-18 实测）**：Excel 22 列中 **19 列有对应物**；仅缺 `站点编码`、`错误原因`（回填列）与未发货单的物流信息（已发货单 `goodsPackageList` 有）。→ **JSON 直连已基本可替代 Excel 导出**；Excel 保留为官方导出兜底/核对源。
+
+脚本：`scripts/caishixian_fetch_orders.py --mode json`（默认自动补 detail；`--no-detail` 关闭；`--force` 覆盖）。
 
 ### 4.3 可复用线索（顺手发现）
 
@@ -183,3 +196,31 @@ content-type: application/json   (仅 POST)
 | 供应商维度 | 登录后默认选中「基地」供应商，业务要切回主供应商 | 脚本显式带 `supplier-code: 20075684` |
 | 敏感信息 | Excel 含客户信息 | 文件落库走既有审计路径 |
 | 合规 | 属供应商后台官方导出功能的接口化 | 保持低频（每日 1-2 次），不绕过限流 |
+
+## 6. 发货回传 `POST /scc/bbc/order/importDeliverExcl`（2026-08-18 14:55 抓包确认）
+
+彩食鲜「发货结果回填」的提交入口，与 `excel-closed-loop-spec.md` 的 SourceReturnExport（来源回填文件）概念**完全对齐**：
+系统把发货结果（实发数量/快递公司/运单号）填回导出模板 → 上传本接口。
+
+**请求**：`multipart/form-data`，字段 `file`（xlsx 二进制）。认证头同业务接口（`login-token` + `supplier-code`，OPTIONS 预检已确认）。
+
+**文件格式**（22 列 = 导出模板原样，样例存 `data-local/csx-return-upload-sample-20260818.xlsx`）：
+
+| 列 | 填法 |
+|---|---|
+| 0-16（主订单编号…订单备注） | 原样保留导出内容 |
+| 17 `发货数量` | 实际发货数量 |
+| 18 `物流公司代码` | 见下方字典（如 `JD`） |
+| 19 `物流单号` | 运单号 |
+| 20 `vip订单标识` | 原样保留 |
+| 21 `错误原因` | 平台校验失败时回填（本次失败样例未回填） |
+
+**物流公司代码字典**（`POST /scc/bbc/basicData/getExpress`，27 个，2026-08-18 实测）：
+`YTO` 圆通 / `JD` 京东 / `SF` 顺丰 / `HTKY` 百世 / `ZTO` 中通 / `STO` 申通 / `YD` 韵达 / `YZPY` 邮政 / `EMS` / `HHTT` 天天 / `UC` 优速 / `DBL` 德邦 / `ZJS` 宅急送 / `TNT` / `UPS` / `DHL` / `FEDEX` / `FEDEX_GJ` / `JTSD` 极兔 / `ZYE` 众邮 / `ANE` 安能 / `ANNTO` 安得 / `OTHER` 其他 / `FWX` 丰网 / `KYSY` 跨越 / `DNWL` 丹鸟 / `YMDD` 壹米滴答
+
+**响应**：
+- 失败（本次实测）：`{"code":110511000,"message":"导入数据存在异常，请修改后重试","data":null}` —— 回填列全空导致；平台不返回行级错误详情
+- 成功形态未实测（需要填好回填列再上传一次确认）
+
+**与项目映射**：`物流公司代码` ↔ `excel-closed-loop-spec.md` §3.4 承运商映射（彩食鲜 `JD` = 京东物流）；回填文件生成逻辑即现有 SourceReturnExport 用例的输出。
+

@@ -114,7 +114,29 @@ export default function OrderListView({ defaultFilters = {}, tip }: OrderListVie
     [navigate],
   );
 
-  const handleSearch = () => {
+  /** 快捷区间：均以「创建日」为口径，闭区间且含今日。 */
+  const datePresets = useMemo(() => {
+    const today = dayjs();
+    return [
+      { label: '今日', value: [today.startOf('day'), today.endOf('day')] as [Dayjs, Dayjs] },
+      {
+        label: '昨日',
+        value: [today.subtract(1, 'day').startOf('day'), today.subtract(1, 'day').endOf('day')] as [Dayjs, Dayjs],
+      },
+      { label: '近一周', value: [today.subtract(6, 'day').startOf('day'), today.endOf('day')] as [Dayjs, Dayjs] },
+      { label: '近一月', value: [today.subtract(29, 'day').startOf('day'), today.endOf('day')] as [Dayjs, Dayjs] },
+      {
+        label: '近半年',
+        value: [today.subtract(6, 'month').add(1, 'day').startOf('day'), today.endOf('day')] as [Dayjs, Dayjs],
+      },
+      {
+        label: '近一年',
+        value: [today.subtract(1, 'year').add(1, 'day').startOf('day'), today.endOf('day')] as [Dayjs, Dayjs],
+      },
+    ];
+  }, []);
+
+  const searchWithRange = (range: [Dayjs | null, Dayjs | null] | null) => {
     const patch: Partial<OrderListQuery> = {
       source_channel: channel,
       order_status: status,
@@ -123,14 +145,22 @@ export default function OrderListView({ defaultFilters = {}, tip }: OrderListVie
       provider_id: providerId,
       query: keyword.trim() || undefined,
     };
-    if (dateRange?.[0] && dateRange[1]) {
-      patch.date_from = dateRange[0].format('YYYY-MM-DD');
-      patch.date_to = dateRange[1].format('YYYY-MM-DD');
+    if (range?.[0] && range[1]) {
+      patch.date_from = range[0].format('YYYY-MM-DD');
+      patch.date_to = range[1].format('YYYY-MM-DD');
     } else {
       patch.date_from = undefined;
       patch.date_to = undefined;
     }
     applyFilters(patch);
+  };
+
+  const handleSearch = () => searchWithRange(dateRange);
+
+  /** 选定区间即查询：快捷项与手选都不必再点一次查询。传入新值而非读 state，避开这一轮的过期闭包。 */
+  const handleDateChange = (range: [Dayjs | null, Dayjs | null] | null) => {
+    setDateRange(range);
+    searchWithRange(range);
   };
 
   const handleReset = () => {
@@ -235,7 +265,8 @@ export default function OrderListView({ defaultFilters = {}, tip }: OrderListVie
           <Col>
             <RangePicker
               value={dateRange}
-              onChange={(range) => setDateRange(range as [Dayjs | null, Dayjs | null] | null)}
+              presets={datePresets}
+              onChange={(range) => handleDateChange(range as [Dayjs | null, Dayjs | null] | null)}
               placeholder={['创建起始日', '创建结束日']}
             />
           </Col>

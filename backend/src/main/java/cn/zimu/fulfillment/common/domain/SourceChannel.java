@@ -5,5 +5,6 @@ public enum SourceChannel {
     CAISHIXIAN,
     JUFUBAO,
     FEIXIANG,
+    ZHONGHUI,
     WECOM
 }

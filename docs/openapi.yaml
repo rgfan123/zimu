@@ -1789,6 +1789,59 @@ paths:
           description: Product created
           content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/products/tags:
+    get:
+      tags: [MasterData]
+      operationId: listProductTags
+      summary: 全部已用商品标签去重候选
+      responses:
+        '200':
+          description: Distinct tags in lexicographic order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string, maxLength: 32 }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/product-images:
+    post:
+      tags: [MasterData]
+      operationId: uploadProductImage
+      summary: 上传商品主图（内容寻址存储），返回引用与可访问 URL
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PNG / JPEG / WebP，最大 10MB
+      responses:
+        '201':
+          description: Image stored
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProductImageUploadResult' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    get:
+      tags: [MasterData]
+      operationId: readProductImage
+      summary: 按受控引用读取主图
+      parameters:
+        - name: ref
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/products/{product_id}:
     parameters:
       - $ref: '#/components/parameters/ProductId'
@@ -4491,6 +4544,18 @@ components:
         product_code: { type: string, minLength: 1, maxLength: 64 }
         product_name: { type: string, minLength: 1, maxLength: 128 }
         category_id: { $ref: '#/components/schemas/Identifier' }
+        ingredients: { type: string, minLength: 1, maxLength: 1000 }
+        tags:
+          type: array
+          maxItems: 10
+          items: { type: string, minLength: 1, maxLength: 32 }
+        listed_from: { type: string, format: date, example: '2026-09-01' }
+        listed_until: { type: string, format: date, example: '2026-11-30' }
+        lead_time_hours: { type: integer, minimum: 1, description: 发货时效（小时） }
+        purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        other_cost: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        main_image_ref: { type: string, maxLength: 512, description: 主图上传返回的受控引用 }
         active: { type: boolean, default: true }
     ProductPatch:
       type: object
@@ -4499,8 +4564,55 @@ components:
         expected_version: { type: integer, minimum: 0 }
         product_name: { type: string, minLength: 1, maxLength: 128 }
         category_id: { $ref: '#/components/schemas/Identifier' }
+        ingredients:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          nullable: true
+          description: Explicit null clears the ingredients; omission leaves them unchanged.
+        tags:
+          type: array
+          maxItems: 10
+          items: { type: string, minLength: 1, maxLength: 32 }
+          nullable: true
+          description: Explicit null clears all tags; omission leaves them unchanged.
+        listed_from:
+          type: string
+          format: date
+          nullable: true
+          description: Explicit null clears the listing start; omission leaves it unchanged.
+        listed_until:
+          type: string
+          format: date
+          nullable: true
+          description: Explicit null clears the listing end; omission leaves it unchanged.
+        lead_time_hours:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: 发货时效（小时）；显式 null 清空，缺省不修改。
+        purchase_price:
+          allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
+          description: Explicit null clears the purchase price to unknown; omission leaves it unchanged.
+        retail_price:
+          allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
+          description: Explicit null clears the retail price to unknown; omission leaves it unchanged.
+        other_cost:
+          allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
+          description: Explicit null clears the other cost to unknown; omission leaves it unchanged.
+        main_image_ref:
+          type: string
+          maxLength: 512
+          nullable: true
+          description: Explicit null clears the main image; omission leaves it unchanged.
         active: { type: boolean }
       minProperties: 2
+    ProductImageUploadResult:
+      type: object
+      required: [file_ref, url]
+      properties:
+        file_ref: { type: string, description: 受控引用，写入 products.main_image_ref }
+        url: { type: string, description: 可访问 URL（/api/v1/product-images?ref=...） }
     SkuWrite:
       type: object
       required: [provider_id, product_id, specification, unit]

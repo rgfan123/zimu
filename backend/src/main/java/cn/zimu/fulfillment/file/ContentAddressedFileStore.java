@@ -10,16 +10,16 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
-class ContentAddressedFileStore {
+public class ContentAddressedFileStore {
 
     private final Path root;
 
-    ContentAddressedFileStore(
+    public ContentAddressedFileStore(
             @Value("${app.file-store.root:${java.io.tmpdir}/zimu-fulfillment-files}") String root) {
         this.root = Path.of(root).toAbsolutePath().normalize();
     }
 
-    StoredFile put(String namespace, byte[] bytes, String suffix) {
+    public StoredFile put(String namespace, byte[] bytes, String suffix) {
         String sha256 = sha256(bytes);
         try {
             Path directory = root.resolve(namespace).normalize();
@@ -41,9 +41,14 @@ class ContentAddressedFileStore {
         }
     }
 
-    byte[] read(String fileRef) {
+    /**
+     * 按受控引用读取文件；绝对引用须位于根目录内，相对引用按根目录解析。
+     * 两种形态均拒绝越界（含 .. 穿越）。
+     */
+    public byte[] read(String fileRef) {
         try {
-            Path file = Path.of(fileRef).toAbsolutePath().normalize();
+            Path raw = Path.of(fileRef);
+            Path file = raw.isAbsolute() ? raw.normalize() : root.resolve(raw).normalize();
             if (!file.startsWith(root)) {
                 throw new IllegalArgumentException("文件引用超出受控目录");
             }
@@ -61,5 +66,5 @@ class ContentAddressedFileStore {
         }
     }
 
-    record StoredFile(String fileRef, String sha256) {}
+    public record StoredFile(String fileRef, String sha256) {}
 }

@@ -12,18 +12,22 @@ import { errorMessage } from '@/api/client';
 import type { MasterDataPage, MasterDataRecord } from '@/api/types';
 import { AdminEmpty, AdminFailureAlert, AdminLoading, AdminStatusTag } from './AdminVisualComponents';
 import { adminPageState } from './adminVisual';
+import { MainImageUpload } from './MainImage';
+import { ListingPeriodPicker } from './ListingPeriodPicker';
 import './adminSurface.css';
 
 export interface CrudField {
   name: string;
   label: string;
   required?: boolean;
-  /** text | select | switch；数量类字段（乘数等）用 text + pattern 校验 */
-  type?: 'text' | 'select' | 'switch';
+  /** text | select | switch | upload | textarea | tags | date-range；数量类字段（乘数等）用 text + pattern 校验 */
+  type?: 'text' | 'select' | 'switch' | 'upload' | 'textarea' | 'tags' | 'date-range';
   options?: { value: string | number | boolean; label: string }[];
   placeholder?: string;
   pattern?: RegExp;
   patternMessage?: string;
+  /** 编辑弹窗打开时，从记录装载表单值的自定义读取器（默认 attr(record, name)）。 */
+  loadValue?: (record: MasterDataRecord) => unknown;
 }
 
 export interface MasterDataCrudProps {
@@ -57,6 +61,21 @@ function fieldControl(field: CrudField) {
     );
   }
   if (field.type === 'switch') return <Switch />;
+  if (field.type === 'upload') return <MainImageUpload />;
+  if (field.type === 'textarea') {
+    return <Input.TextArea rows={2} placeholder={field.placeholder ?? `请输入${field.label}`} />;
+  }
+  if (field.type === 'tags') {
+    return (
+      <Select
+        mode="tags"
+        placeholder={field.placeholder ?? `请输入${field.label}，回车确认`}
+        options={field.options}
+        tokenSeparators={[',', '，']}
+      />
+    );
+  }
+  if (field.type === 'date-range') return <ListingPeriodPicker />;
   return <Input placeholder={field.placeholder ?? `请输入${field.label}`} />;
 }
 
@@ -129,7 +148,7 @@ export default function MasterDataCrud({
   const openEdit = (record: MasterDataRecord) => {
     const values: Record<string, unknown> = {};
     for (const f of updateFields) {
-      values[f.name] = f.name === 'active' ? record.active : attr(record, f.name);
+      values[f.name] = f.loadValue ? f.loadValue(record) : attr(record, f.name);
     }
     form.setFieldsValue(values);
     setEditing(record);

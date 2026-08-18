@@ -202,6 +202,9 @@ test('real product route presents the category name and code instead of an inter
         attributes: { category_id: '9' },
       }]));
     }
+    if (url === '/api/v1/products/tags') {
+      return jsonResponse(['fresh']);
+    }
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -211,10 +214,12 @@ test('real product route presents the category name and code instead of an inter
   const row = [...document.querySelectorAll<HTMLTableRowElement>('.ant-table-tbody .ant-table-row')]
     .find((candidate) => candidate.textContent?.includes('P-BEEF-001'));
   assert.ok(row, 'the product must be visible through the production route');
+  // 商品之后是品类列；档案字段（主图/标签/毛利）不应破坏品类展示。
   const categoryCell = row.querySelectorAll<HTMLTableCellElement>('td')[1];
   assert.equal(categoryCell?.textContent?.trim(), '牛肉（MEAT/BEEF）');
   assert.deepEqual(new Set(requestedUrls), new Set([
     '/api/v1/categories?page=0&size=200',
     '/api/v1/products?page=0&size=10',
+    '/api/v1/products/tags',
   ]));
 });

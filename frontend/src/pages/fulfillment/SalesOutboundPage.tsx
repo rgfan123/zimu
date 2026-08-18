@@ -44,7 +44,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const [uploading, setUploading] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [jdSubmitting, setJdSubmitting] = useState(false);
-  const [returnExportLoading, setReturnExportLoading] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportBatch | null>(null);
   const [confirmRows, setConfirmRows] = useState<ImportRowView[]>([]);
@@ -144,25 +143,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     }
   };
 
-  /** 下载批次已生成的来源回填表（SDK 直连与文件路由共用；未生成时提示而非报错）。 */
-  const downloadSourceReturns = async (batchId: string) => {
-    setReturnExportLoading(true);
-    try {
-      const exports = await fileOperationsApi.sourceReturns(batchId);
-      if (exports.length === 0) {
-        message.info('当前批次尚未生成来源回填文件');
-        return;
-      }
-      for (const item of exports) {
-        await fileOperationsApi.downloadSourceReturn(item.id);
-      }
-    } catch (error) {
-      message.error(errorMessage(error));
-    } finally {
-      setReturnExportLoading(false);
-    }
-  };
-
   const confirmable = result && result.row_counts.need_review === 0 && result.row_counts.rejected === 0;
   const confirmLabel = result ? `确认本批次（已接收 ${result.row_counts.accepted} 行）` : '确认本批次';
   const confirmDisabledReason = result && result.row_counts.need_review + result.row_counts.rejected > 0
@@ -222,22 +202,13 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
               ? `${summarizeImportBatch(result.row_counts)}；批次已确认，生成履约文件 ${result.generated_fulfillment_export_ids?.length ?? 0} 份，已形成履约承诺。`
               : `${summarizeImportBatch(result.row_counts)}；确认后已接收行将写入系统订单，并生成履约文件，形成履约承诺。请核对整个批次后统一确认。`}
             action={result.confirmed_at ? (
-              <Space wrap>
-                <Button
-                  icon={<ReloadOutlined />}
-                  loading={jdSubmitting}
-                  onClick={submitJdOutbounds}
-                >
-                  重试京东建单
-                </Button>
-                <Button
-                  icon={<DownloadOutlined />}
-                  loading={returnExportLoading}
-                  onClick={() => downloadSourceReturns(result.id)}
-                >
-                  下载回填表
-                </Button>
-              </Space>
+              <Button
+                icon={<ReloadOutlined />}
+                loading={jdSubmitting}
+                onClick={submitJdOutbounds}
+              >
+                重试京东建单
+              </Button>
             ) : (
               <Tooltip title={confirmDisabledReason || undefined}>
                 <span>
@@ -573,16 +544,33 @@ export default function SalesOutboundPage() {
   };
 
   const handleSourceReturnDownload = async (record: FulfillmentExport) => {
-    if (!record.tracking_import_batch_id) return;
     setReturnDownloading(record.id);
     try {
-      const tracking = await fileOperationsApi.getTrackingBatch(record.tracking_import_batch_id);
-      if ((tracking.generated_source_return_export_ids?.length ?? 0) === 0) {
+      // 文件路由：回传导入批次带 generated_source_return_export_ids；
+      // SDK 直连路由：履约导出行无 tracking_import_batch_id，按导出来源批次直接取回填表。
+      if (record.tracking_import_batch_id) {
+        const tracking = await fileOperationsApi.getTrackingBatch(record.tracking_import_batch_id);
+        if ((tracking.generated_source_return_export_ids?.length ?? 0) === 0) {
+          message.info('当前批次尚未生成来源回填文件');
+          return;
+        }
+        for (const returnId of tracking.generated_source_return_export_ids ?? []) {
+          await fileOperationsApi.downloadSourceReturn(returnId);
+        }
+      } else if (record.import_batch_id) {
+        // 一个批次可能有多版回填表（分批回运单会追加版本）；只下终版，
+        // 避免运营拿到已作废版本回传给来源平台——文件名是 SHA-256，肉眼分不出新旧。
+        const exports = await fileOperationsApi.sourceReturns(record.import_batch_id);
+        const finals = exports.filter((item) => item.is_final);
+        if (finals.length === 0) {
+          message.info('当前批次尚未生成来源回填文件');
+          return;
+        }
+        for (const item of finals) {
+          await fileOperationsApi.downloadSourceReturn(item.id);
+        }
+      } else {
         message.info('当前批次尚未生成来源回填文件');
-        return;
-      }
-      for (const returnId of tracking.generated_source_return_export_ids ?? []) {
-        await fileOperationsApi.downloadSourceReturn(returnId);
       }
     } catch (error) {
       message.error(errorMessage(error));
@@ -635,7 +623,7 @@ export default function SalesOutboundPage() {
           >
             回传
           </Button>
-          {r.tracking_import_batch_id ? (
+          {r.tracking_import_batch_id || r.import_batch_id ? (
             <Button
               size="small"
               type="link"

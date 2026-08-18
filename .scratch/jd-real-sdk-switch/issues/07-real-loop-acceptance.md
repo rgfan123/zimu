@@ -37,3 +37,8 @@
   - **裁决 5（4000 根因定位，commit 458df18）**：销售平台来源=6 时 `channelInfo.salesPlatformDeliveryNo` 必须留空——此前传彩食鲜单号导致京东 4000 通用系统异常；去掉后其余 4 单全部成功。
   - **结果：5/5 真实出库单全部创建成功**：shipment 4=ESL00000025349498176、5=ESL00000025466792725、6=ESL00000025526927686、7=ESL00000025395286915、8=ESL00000025526928470。运单自动回填轮询进行中（PENDING，仓未发货）。
   - 待办：等仓发货 → 运单自动回填 → 彩食鲜格式回填表生成（TRACKED 终态验证）；sourceNo/carrierNo/customerCode 三处配置修正已由真实建单裁决确认。
+  - **裁决 6（运单号丢失根因，commit b4ce0a4）**：querySoOrder 在 10015/10016 即返回 carrierInfo.waybillNo，10054 分拣中心发货；原 SHIPPED_STATUS={10020,10034} 过窄把发货中状态全判 PENDING。修复后：
+  - **运单自动回填成功（14:15:11）**：shipment 5=JDVA46541389064、6=JDVA46541394490、7=JDVA46541368239、8=JDVA46541415363（京东物流/JD）；shipment 4 拣货中（10015，PARTIAL 等待）。
+  - **回填表**：批次 IMP-3EDC... 5 行接受 / 4 行已回填，按批次整体生成设计，shipment 4 TRACKED 后自动产出彩食鲜格式回填表。
+  - **裁决 7（shipment 4 运单延迟根因，commit 待补）**：京东 100130 起即有运单号但 realQuantity 拣货后才填；原解析把 real==null 判为 PARTIAL 丢弃运单。修正后 shipment 4=JDVA46540739849 回填，批次 5/5 TRACKED。
+  - **回填表已生成（is_final=true）**：source_return_exports id=2（batch 2），彩食鲜原格式 5 行，物流公司 JD + 5 张运单号 + 发货数量按指令量。下载：GET /api/v1/source-return-exports/2/file。

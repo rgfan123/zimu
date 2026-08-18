@@ -257,7 +257,7 @@ class SourceBatchJdAutoBackfillE2EApiTest {
             }
             assertThat(formatter.formatCellValue(row.getCell(columns.get("物流公司代码")))).isEqualTo("JD");
             assertThat(formatter.formatCellValue(row.getCell(columns.get("物流单号")))).isEqualTo(waybillNo);
-            assertThat(formatter.formatCellValue(row.getCell(columns.get("发货数量")))).isEqualTo("1.000");
+            assertThat(formatter.formatCellValue(row.getCell(columns.get("发货数量")))).isEqualTo("1");
         }
 
         // 回填完成后轮询器不再反复外调（TRACKED 终态）

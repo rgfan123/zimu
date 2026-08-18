@@ -88,6 +88,7 @@ public class MasterDataController {
 
     @GetMapping("/products") public PageResponse<MasterDataRecord> products(@RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(200) int size) { return service.products(page, size); }
+    @GetMapping("/products/tags") public List<String> productTags() { return service.productTags(); }
     @GetMapping("/products/{id}") public MasterDataRecord product(@PathVariable String id) { return service.product(id(id)); }
     @PostMapping("/products") public ResponseEntity<?> createProduct(@Valid @RequestBody ProductWrite body,
             @RequestHeader("Idempotency-Key") String key, @RequestHeader("X-Operator") String operator) {

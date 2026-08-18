@@ -8,15 +8,20 @@ import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.WriteCommands;
+import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundCommand;
+import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundService;
 import cn.zimu.fulfillment.message.MessageSubmissionQueryService;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
 import cn.zimu.fulfillment.order.OrderDraftService;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
+import cn.zimu.fulfillment.order.dto.ConfirmOrderDraftCommand;
 import cn.zimu.fulfillment.order.dto.OrderDraftSupplementCommand;
 import cn.zimu.fulfillment.order.dto.Receiver;
+import cn.zimu.fulfillment.order.dto.Settlement;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +46,7 @@ public class McpWriteTools {
     private final MessageSubmissionQueryService submissionQuery;
     private final OrderDraftService orderDraftService;
     private final McpReviewRequestService reviewRequestService;
+    private final ShipmentJdOutboundService jdOutboundService;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate requiresNew;
     private final jakarta.persistence.EntityManager entityManager;
@@ -52,6 +58,7 @@ public class McpWriteTools {
             MessageSubmissionQueryService submissionQuery,
             OrderDraftService orderDraftService,
             McpReviewRequestService reviewRequestService,
+            ShipmentJdOutboundService jdOutboundService,
             ObjectMapper objectMapper,
             PlatformTransactionManager transactionManager,
             jakarta.persistence.EntityManager entityManager) {
@@ -61,6 +68,7 @@ public class McpWriteTools {
         this.submissionQuery = submissionQuery;
         this.orderDraftService = orderDraftService;
         this.reviewRequestService = reviewRequestService;
+        this.jdOutboundService = jdOutboundService;
         this.objectMapper = objectMapper;
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -89,6 +97,42 @@ public class McpWriteTools {
                                                         lineSupplementSchema())),
                                 List.of("draft_id", "expected_revision", "idempotency_key")),
                         this::submitOrderDraftSuggestion),
+                new McpToolRegistry.SimpleTool(
+                        "confirm_order_draft",
+                        "确认订单草稿成单：将已复核通过的草稿转成内部标准订单（生成 CanonicalOrder 与初始履约单元）。幂等，重复调用返回首次结果。要求草稿与复核事项期望版本、客户选择（二选一）、收货与结账信息、逐行 SKU 与数量。",
+                        schema(
+                                Map.of(
+                                        "draft_id", stringProperty("订单草稿 ID"),
+                                        "expected_revision", stringProperty("草稿期望版本（乐观锁）"),
+                                        "expected_case_version", stringProperty("复核事项期望版本（乐观锁）"),
+                                        "customer", customerChoiceSchema(),
+                                        "receiver", receiverSchema(),
+                                        "settlement", settlementSchema(),
+                                        "items",
+                                                arrayProperty(
+                                                        "逐行人工确认，每项 {line_no, sku_id, quantity}",
+                                                        confirmItemSchema()),
+                                        "remark", stringProperty("备注，仅随审计留存"),
+                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
+                                List.of(
+                                        "draft_id",
+                                        "expected_revision",
+                                        "expected_case_version",
+                                        "customer",
+                                        "receiver",
+                                        "settlement",
+                                        "items",
+                                        "idempotency_key")),
+                        this::confirmOrderDraft),
+                new McpToolRegistry.SimpleTool(
+                        "submit_jd_outbound",
+                        "触发京东云仓建出库单（addSoOrder）：对一个已就绪的 Shipment 提交京东建单，请求由 Shipment 及其全部行派生。幂等，重复调用返回首次结果；写门闩关闭或操作人未授权时拒绝，不触网。",
+                        schema(
+                                Map.of(
+                                        "shipment_id", stringProperty("Shipment ID"),
+                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
+                                List.of("shipment_id", "idempotency_key")),
+                        this::submitJdOutbound),
                 new McpToolRegistry.SimpleTool(
                         "submit_supplementary_material",
                         "提交订单草稿补充材料：补充或覆盖收货资料与结账方式；草稿保持 OPEN，由人工最终确认。要求草稿期望版本。",
@@ -164,6 +208,58 @@ public class McpWriteTools {
                 () -> orderDraftService.supplement(
                         draftId,
                         new OrderDraftSupplementCommand(expectedRevision, null, null, items),
+                        idempotencyKey,
+                        context.requireCommandContext()));
+    }
+
+    private JsonNode confirmOrderDraft(McpRequestContext context, Map<String, Object> args) {
+        long draftId = identifier(args, "draft_id");
+        long expectedRevision = revision(args, "expected_revision");
+        long expectedCaseVersion = revision(args, "expected_case_version");
+        String idempotencyKey = requireIdempotencyKey(args);
+        Receiver receiver = receiver(args);
+        if (receiver == null) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 receiver 不能为空");
+        }
+        ConfirmOrderDraftCommand command = new ConfirmOrderDraftCommand(
+                expectedRevision,
+                expectedCaseVersion,
+                customerChoice(args),
+                receiver,
+                settlement(args),
+                confirmItems(args),
+                optionalString(args, "remark"));
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("draft_id", draftId);
+        payload.put("expected_revision", expectedRevision);
+        payload.put("expected_case_version", expectedCaseVersion);
+        // 幂等与审计由 OrderDraftService.confirm 内层注册表负责（与 REST 共用同一 scope），这里只审计摘要。
+        return executeWrite(
+                "confirm_order_draft",
+                payload,
+                idempotencyKey,
+                200,
+                "ORDER_DRAFT_CONFIRMED",
+                context,
+                () -> orderDraftService.confirm(draftId, command, idempotencyKey, context.requireCommandContext()));
+    }
+
+    private JsonNode submitJdOutbound(McpRequestContext context, Map<String, Object> args) {
+        long shipmentId = identifier(args, "shipment_id");
+        String idempotencyKey = requireIdempotencyKey(args);
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("shipment_id", shipmentId);
+        // 幂等与请求哈希由 ShipmentJdOutboundService.submit 负责（与 REST 共用同一 scope），这里只审计摘要。
+        return executeWrite(
+                "submit_jd_outbound",
+                payload,
+                idempotencyKey,
+                201,
+                "JD_SHIPMENT_OUTBOUND_SUBMITTED",
+                context,
+                () -> jdOutboundService.submit(
+                        shipmentId,
+                        new ShipmentJdOutboundCommand(),
                         idempotencyKey,
                         context.requireCommandContext()));
     }
@@ -301,9 +397,13 @@ public class McpWriteTools {
     }
 
     private static long revision(Map<String, Object> args) {
-        Object value = args.get("expected_revision");
+        return revision(args, "expected_revision");
+    }
+
+    private static long revision(Map<String, Object> args, String key) {
+        Object value = args.get(key);
         if (!(value instanceof String text) || !text.matches("^[0-9]+$")) {
-            throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 expected_revision 必须是非负整数");
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 " + key + " 必须是非负整数");
         }
         return Long.parseLong(text);
     }
@@ -320,10 +420,7 @@ public class McpWriteTools {
                 throw BusinessException.badRequest("INVALID_PARAMETERS", "items 每项必须是对象");
             }
             Map<String, Object> entry = (Map<String, Object>) map;
-            Object lineNo = entry.get("line_no");
-            if (!(lineNo instanceof Number number) || number.intValue() < 1) {
-                throw BusinessException.badRequest("INVALID_PARAMETERS", "line_no 必须是正整数");
-            }
+            int lineNo = positiveLineNo(entry.get("line_no"));
             String quantity = optionalString(entry, "quantity");
             if (quantity != null && !quantity.matches(Patterns.POSITIVE_DECIMAL_QUANTITY)) {
                 throw BusinessException.badRequest("INVALID_PARAMETERS", "quantity 必须为正数且最多三位小数");
@@ -335,7 +432,7 @@ public class McpWriteTools {
             if (quantity == null && skuId == null) {
                 throw BusinessException.badRequest("INVALID_PARAMETERS", "每行建议必须提供 quantity 或 sku_id");
             }
-            result.add(new OrderDraftSupplementCommand.LineSupplement(number.intValue(), quantity, skuId));
+            result.add(new OrderDraftSupplementCommand.LineSupplement(lineNo, quantity, skuId));
         }
         return result;
     }
@@ -350,9 +447,9 @@ public class McpWriteTools {
             throw BusinessException.badRequest("INVALID_PARAMETERS", "receiver 必须是对象");
         }
         Map<String, Object> entry = (Map<String, Object>) map;
-        String name = requiredString(entry, "name", 128);
-        String phone = requiredString(entry, "phone", 64);
-        String address = requiredString(entry, "address", 1000);
+        String name = requiredString(entry, "name", 128, "receiver");
+        String phone = requiredString(entry, "phone", 64, "receiver");
+        String address = requiredString(entry, "address", 1000, "receiver");
         return new Receiver(
                 name,
                 phone,
@@ -363,28 +460,116 @@ public class McpWriteTools {
                 address);
     }
 
+    @SuppressWarnings("unchecked")
+    private static ConfirmOrderDraftCommand.CustomerChoice customerChoice(Map<String, Object> args) {
+        Object value = args.get("customer");
+        if (!(value instanceof Map<?, ?> map)) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "customer 必须是对象");
+        }
+        Map<String, Object> entry = (Map<String, Object>) map;
+        String customerId = optionalString(entry, "customer_id");
+        String newCustomerName = optionalString(entry, "new_customer_name");
+        if (customerId != null && !customerId.matches(Patterns.IDENTIFIER)) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "customer.customer_id 必须是正整数标识符");
+        }
+        if (newCustomerName != null && newCustomerName.length() > 128) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "customer.new_customer_name 超长");
+        }
+        if ((customerId == null) == (newCustomerName == null)) {
+            throw BusinessException.badRequest(
+                    "INVALID_PARAMETERS", "customer 必须且只能填写 customer_id 或 new_customer_name 之一");
+        }
+        return new ConfirmOrderDraftCommand.CustomerChoice(customerId, newCustomerName);
+    }
+
+    private static Settlement settlement(Map<String, Object> args) {
+        Object value = args.get("settlement");
+        if (!(value instanceof Map<?, ?> map)) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "settlement 必须是对象");
+        }
+        Map<String, Object> entry = (Map<String, Object>) map;
+        String method = requiredString(entry, "method", 32, "settlement");
+        SettlementMethod parsed = parseSettlementMethod(
+                method, "settlement.method 必须是 MONTHLY/IMMEDIATE/CREDIT_TERM/PREPAID/COD/OTHER");
+        String time = optionalString(entry, "settlement_time");
+        if (time == null) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "settlement.settlement_time 不能为空");
+        }
+        Instant instant;
+        try {
+            instant = Instant.parse(time);
+        } catch (java.time.format.DateTimeParseException ex) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "settlement.settlement_time 必须是 ISO-8601 时间");
+        }
+        return new Settlement(parsed, instant);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<ConfirmOrderDraftCommand.ConfirmItem> confirmItems(Map<String, Object> args) {
+        Object value = args.get("items");
+        if (!(value instanceof List<?> items) || items.isEmpty()) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 items 必须提供至少一行确认");
+        }
+        List<ConfirmOrderDraftCommand.ConfirmItem> result = new ArrayList<>();
+        for (Object item : items) {
+            if (!(item instanceof Map<?, ?> map)) {
+                throw BusinessException.badRequest("INVALID_PARAMETERS", "items 每项必须是对象");
+            }
+            Map<String, Object> entry = (Map<String, Object>) map;
+            int lineNo = positiveLineNo(entry.get("line_no"));
+            String skuId = optionalString(entry, "sku_id");
+            if (skuId == null || !skuId.matches(Patterns.IDENTIFIER)) {
+                throw BusinessException.badRequest("INVALID_PARAMETERS", "sku_id 必须是正整数标识符");
+            }
+            String quantity = optionalString(entry, "quantity");
+            if (quantity == null || !quantity.matches(Patterns.POSITIVE_DECIMAL_QUANTITY)) {
+                throw BusinessException.badRequest("INVALID_PARAMETERS", "quantity 必须为正数且最多三位小数");
+            }
+            result.add(new ConfirmOrderDraftCommand.ConfirmItem(lineNo, skuId, quantity));
+        }
+        return result;
+    }
+
     private static SettlementMethod settlementMethod(Map<String, Object> args) {
         String value = optionalString(args, "settlement_method");
         if (value == null) {
             return null;
         }
-        try {
-            return SettlementMethod.valueOf(value);
-        } catch (IllegalArgumentException ex) {
-            throw BusinessException.badRequest(
-                    "INVALID_PARAMETERS", "settlement_method 必须是 MONTHLY/IMMEDIATE/CREDIT_TERM/PREPAID/COD/OTHER");
-        }
+        return parseSettlementMethod(
+                value, "settlement_method 必须是 MONTHLY/IMMEDIATE/CREDIT_TERM/PREPAID/COD/OTHER");
     }
 
     private static String requiredString(Map<String, Object> entry, String key, int maxLength) {
+        return requiredString(entry, key, maxLength, "参数");
+    }
+
+    private static String requiredString(Map<String, Object> entry, String key, int maxLength, String label) {
         String value = optionalString(entry, key);
         if (value == null) {
-            throw BusinessException.badRequest("INVALID_PARAMETERS", "receiver." + key + " 不能为空");
+            throw BusinessException.badRequest("INVALID_PARAMETERS", label + "." + key + " 不能为空");
         }
         if (value.length() > maxLength) {
-            throw BusinessException.badRequest("INVALID_PARAMETERS", "receiver." + key + " 超长");
+            throw BusinessException.badRequest("INVALID_PARAMETERS", label + "." + key + " 超长");
         }
         return value;
+    }
+
+    /** 行号必须是正整数；拒绝 1.5 这类会被 intValue 静默截断的值。 */
+    private static int positiveLineNo(Object lineNo) {
+        if (!(lineNo instanceof Number number)
+                || number.doubleValue() != Math.floor(number.doubleValue())
+                || number.intValue() < 1) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "line_no 必须是正整数");
+        }
+        return number.intValue();
+    }
+
+    private static SettlementMethod parseSettlementMethod(String method, String errorMessage) {
+        try {
+            return SettlementMethod.valueOf(method);
+        } catch (IllegalArgumentException ex) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", errorMessage);
+        }
     }
 
     private static String optionalLimitedString(Map<String, Object> entry, String key, int maxLength) {
@@ -435,5 +620,30 @@ public class McpWriteTools {
         props.set("town", stringProperty("乡镇"));
         props.set("address", stringProperty("详细地址"));
         return receiver;
+    }
+
+    private static ObjectNode customerChoiceSchema() {
+        ObjectNode customer = McpToolRegistry.objectProperty("客户选择：二选一");
+        ObjectNode props = customer.putObject("properties");
+        props.set("customer_id", stringProperty("选择已有客户 ID"));
+        props.set("new_customer_name", stringProperty("新建客户名称（人工确认）"));
+        return customer;
+    }
+
+    private static ObjectNode settlementSchema() {
+        ObjectNode settlement = McpToolRegistry.objectProperty("结账信息");
+        ObjectNode props = settlement.putObject("properties");
+        props.set("method", stringProperty("结账方式：MONTHLY/IMMEDIATE/CREDIT_TERM/PREPAID/COD/OTHER"));
+        props.set("settlement_time", stringProperty("结账时间，ISO-8601 格式，如 2026-08-18T10:00:00Z"));
+        return settlement;
+    }
+
+    private static ObjectNode confirmItemSchema() {
+        ObjectNode item = McpToolRegistry.objectProperty("逐行人工确认");
+        ObjectNode props = item.putObject("properties");
+        props.set("line_no", stringProperty("正整数行号"));
+        props.set("sku_id", stringProperty("SKU 标识符"));
+        props.set("quantity", stringProperty("正数数量字符串，最多三位小数"));
+        return item;
     }
 }

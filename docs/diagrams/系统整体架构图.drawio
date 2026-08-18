@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" agent="dsh-drawio-client" version="24.7.8" type="device">
+  <diagram id="zimu-architecture" name="系统整体架构图">
+    <mxGraphModel dx="1680" dy="1160" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1680" pageHeight="1160" math="0" shadow="0">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+
+    <!-- ===================== L1 客户端与网关 ===================== -->
+    <mxCell id="L1" value="① 客户端与网关" style="swimlane;html=1;startSize=30;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="20" width="1640" height="110" as="geometry"/>
+    </mxCell>
+    <mxCell id="c1" value="业务人员（浏览器）&#10;运营 / 仓储 / 采购 / 财务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="L1">
+      <mxGeometry x="20" y="42" width="250" height="52" as="geometry"/>
+    </mxCell>
+    <mxCell id="c2" value="Nginx 网关（本地 passwordless）&#10;注入服务端身份 X-Operator · 路由 /api → 后端、/metabase → BI、静态托管前端" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="L1">
+      <mxGeometry x="300" y="42" width="620" height="52" as="geometry"/>
+    </mxCell>
+
+    <!-- ===================== L2 前端 ===================== -->
+    <mxCell id="L2" value="② 前端应用（React 18 + TypeScript + Vite + Ant Design 5 + ECharts）" style="swimlane;html=1;startSize=30;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="150" width="1640" height="160" as="geometry"/>
+    </mxCell>
+    <mxCell id="p1" value="工作台&#10;Dashboard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="20" y="44" width="182" height="88" as="geometry"/></mxCell>
+    <mxCell id="p2" value="作业中心&#10;复核 / 渠道消息 / 履约 / 采购 / 文件 / 发货" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="220" y="44" width="182" height="88" as="geometry"/></mxCell>
+    <mxCell id="p3" value="订单中心&#10;全部 / 待处理 / 异常 / 追踪" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="420" y="44" width="182" height="88" as="geometry"/></mxCell>
+    <mxCell id="p4" value="库存中心&#10;总库存 / 明细" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="620" y="44" width="182" height="88" as="geometry"/></mxCell>
+    <mxCell id="p5" value="主数据&#10;商品 / 品类 / SKU 映射" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="820" y="44" width="182" height="88" as="geometry"/></mxCell>
+    <mxCell id="p6" value="经营分析&#10;渠道 / 商品 / 履约" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="1020" y="44" width="182" height="88" as="geometry"/></mxCell>
+    <mxCell id="p7" value="系统管理&#10;接入 / 审计 / 履约方 / 京东工具" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="1220" y="44" width="182" height="88" as="geometry"/></mxCell>
+    <mxCell id="p8" value="模拟下单&#10;Demo（隔离）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="L2"><mxGeometry x="1420" y="44" width="182" height="88" as="geometry"/></mxCell>
+
+    <!-- ===================== L3 API 接口面 ===================== -->
+    <mxCell id="L3" value="③ API 接口面（命名空间隔离）" style="swimlane;html=1;startSize=30;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="330" width="1640" height="110" as="geometry"/>
+    </mxCell>
+    <mxCell id="a1" value="/api/v1&#10;管理后台 · BUSINESS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="L3"><mxGeometry x="20" y="44" width="280" height="54" as="geometry"/></mxCell>
+    <mxCell id="a2" value="/internal/v1&#10;内部服务 · Bearer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="L3"><mxGeometry x="314" y="44" width="280" height="54" as="geometry"/></mxCell>
+    <mxCell id="a3" value="/demo/v1&#10;演示 · DEMO 隔离" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" vertex="1" parent="L3"><mxGeometry x="608" y="44" width="240" height="54" as="geometry"/></mxCell>
+    <mxCell id="a4" value="MCP Server&#10;只读工具 + 受限写" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="L3"><mxGeometry x="862" y="44" width="260" height="54" as="geometry"/></mxCell>
+    <mxCell id="a5" value="/actuator/health&#10;健康检查" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=12;" vertex="1" parent="L3"><mxGeometry x="1136" y="44" width="220" height="54" as="geometry"/></mxCell>
+
+    <!-- ===================== L4 后端应用 ===================== -->
+    <mxCell id="L4" value="④ 后端应用（Java 21 + Spring Boot 3 · 模块化单体）" style="swimlane;html=1;startSize=30;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="460" width="1640" height="330" as="geometry"/>
+    </mxCell>
+    <mxCell id="g1" value="核心业务域" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fafafa;strokeColor=#c0c0c0;verticalAlign=top;fontStyle=1;fontSize=12;" vertex="1" parent="L4"><mxGeometry x="20" y="44" width="380" height="272" as="geometry"/></mxCell>
+    <mxCell id="g2" value="文件与接入" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fafafa;strokeColor=#c0c0c0;verticalAlign=top;fontStyle=1;fontSize=12;" vertex="1" parent="L4"><mxGeometry x="414" y="44" width="380" height="272" as="geometry"/></mxCell>
+    <mxCell id="g3" value="智能决策" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fafafa;strokeColor=#c0c0c0;verticalAlign=top;fontStyle=1;fontSize=12;" vertex="1" parent="L4"><mxGeometry x="808" y="44" width="360" height="272" as="geometry"/></mxCell>
+    <mxCell id="g4" value="支撑与数据" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fafafa;strokeColor=#c0c0c0;verticalAlign=top;fontStyle=1;fontSize=12;" vertex="1" parent="L4"><mxGeometry x="1182" y="44" width="400" height="272" as="geometry"/></mxCell>
+
+    <!-- g1 核心业务域 -->
+    <mxCell id="m1" value="order · 订单域（订单 / 草稿 / 复核 / 提醒 / 内部订单）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="g1"><mxGeometry x="14" y="36" width="352" height="34" as="geometry"/></mxCell>
+    <mxCell id="m2" value="customer · 客户（档案 / 来源身份映射）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="g1"><mxGeometry x="14" y="78" width="352" height="34" as="geometry"/></mxCell>
+    <mxCell id="m3" value="product · 商品与品类" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="g1"><mxGeometry x="14" y="120" width="352" height="34" as="geometry"/></mxCell>
+    <mxCell id="m4" value="sku · SKU（来源映射 / 履约方映射 / 京东 SKU）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="g1"><mxGeometry x="14" y="162" width="352" height="34" as="geometry"/></mxCell>
+    <mxCell id="m5" value="fulfillment · 履约状态机 / Shipment / 运单" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="g1"><mxGeometry x="14" y="204" width="352" height="34" as="geometry"/></mxCell>
+    <mxCell id="m6" value="procurement · 采购工单与回执" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="g1"><mxGeometry x="14" y="246" width="352" height="26" as="geometry"/></mxCell>
+
+    <!-- g2 文件与接入 -->
+    <mxCell id="m7" value="file · 来源导入 / 履约导出 / 回传文件" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="g2"><mxGeometry x="14" y="36" width="352" height="34" as="geometry"/></mxCell>
+    <mxCell id="m8" value="connector.jd · 京东 ISC SDK 防腐层（只读 + 受控写）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="g2"><mxGeometry x="14" y="78" width="352" height="34" as="geometry"/></mxCell>
+    <mxCell id="m9" value="connector.wecom · 企业微信长连接" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="g2"><mxGeometry x="14" y="120" width="352" height="34" as="geometry"/></mxCell>
+    <mxCell id="m10" value="connector.platform · 三平台 Connector（彩食鲜 / 聚福宝 / 飞象）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="g2"><mxGeometry x="14" y="162" width="352" height="34" as="geometry"/></mxCell>
+    <mxCell id="m11" value="message · 渠道消息 / 意图识别 / 媒体证据" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="g2"><mxGeometry x="14" y="204" width="352" height="34" as="geometry"/></mxCell>
+
+    <!-- g3 智能决策 -->
+    <mxCell id="m12" value="agent · LangChain4j 运行时 / 工具绑定 / 数据查询 Agent" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="g3"><mxGeometry x="14" y="36" width="332" height="44" as="geometry"/></mxCell>
+    <mxCell id="m13" value="mcp · MCP Server（只读 + 受限写）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="g3"><mxGeometry x="14" y="88" width="332" height="34" as="geometry"/></mxCell>
+    <mxCell id="m14" value="analytics · 数据中台（渠道 / 商品 / 履约分析）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="g3"><mxGeometry x="14" y="130" width="332" height="34" as="geometry"/></mxCell>
+    <mxCell id="m15" value="inventory · 库存观测（总览 / 明细）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="g3"><mxGeometry x="14" y="172" width="332" height="34" as="geometry"/></mxCell>
+
+    <!-- g4 支撑与数据 -->
+    <mxCell id="m16" value="audit · 审计日志（接口调用 / 人工操作）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="g4"><mxGeometry x="14" y="36" width="372" height="34" as="geometry"/></mxCell>
+    <mxCell id="m17" value="common · 幂等 / 乐观版本 / 错误模型 / 认证" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="g4"><mxGeometry x="14" y="78" width="372" height="34" as="geometry"/></mxCell>
+    <mxCell id="m18" value="seed · 演示种子数据（30 天 · 四渠道）" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="g4"><mxGeometry x="14" y="120" width="372" height="34" as="geometry"/></mxCell>
+    <mxCell id="m19" value="demo · DemoScenario 隔离演示" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="g4"><mxGeometry x="14" y="162" width="372" height="34" as="geometry"/></mxCell>
+    <mxCell id="m20" value="catalog / masterdata · 权威目录 · 主数据维护" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="g4"><mxGeometry x="14" y="204" width="372" height="34" as="geometry"/></mxCell>
+
+    <!-- ===================== L5 数据与中间件 ===================== -->
+    <mxCell id="L5" value="⑤ 数据与中间件" style="swimlane;html=1;startSize=30;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="810" width="1640" height="120" as="geometry"/>
+    </mxCell>
+    <mxCell id="db1" value="PostgreSQL 16&#10;app 业务 schema（53 表）+ analytics 分析视图 · Flyway V1–V17" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="L5"><mxGeometry x="20" y="44" width="440" height="56" as="geometry"/></mxCell>
+    <mxCell id="db2" value="Redis 7&#10;幂等 / 缓存（非权威）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="L5"><mxGeometry x="474" y="44" width="280" height="56" as="geometry"/></mxCell>
+    <mxCell id="db3" value="文件存储&#10;内容寻址 · 持久化卷（可换 MinIO/S3）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="L5"><mxGeometry x="768" y="44" width="340" height="56" as="geometry"/></mxCell>
+
+    <!-- ===================== L6 外部系统 ===================== -->
+    <mxCell id="L6" value="⑥ 外部系统（一律经接口接入 · Connector 禁止直写业务表）" style="swimlane;html=1;startSize=30;horizontal=1;fillColor=#f5f7fa;strokeColor=#999999;swimlaneFillColor=#fafbfd;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="20" y="950" width="1640" height="150" as="geometry"/>
+    </mxCell>
+    <mxCell id="x1" value="京东 ISC SDK&#10;只读查询 + 受控写 addSoOrder（写门闩 OFF）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="20" y="44" width="250" height="70" as="geometry"/></mxCell>
+    <mxCell id="x2" value="三平台 API&#10;彩食鲜 / 聚福宝 / 飞象（EXCEL 模式，API 待接）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="284" y="44" width="300" height="70" as="geometry"/></mxCell>
+    <mxCell id="x3" value="企业微信&#10;WebSocket 长连接" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="598" y="44" width="230" height="70" as="geometry"/></mxCell>
+    <mxCell id="x4" value="LLM 模型&#10;OpenAI 兼容协议（意图识别 / Agent）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="842" y="44" width="230" height="70" as="geometry"/></mxCell>
+    <mxCell id="x5" value="采购部门&#10;跨部门协同（工单 / 回执）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="1086" y="44" width="190" height="70" as="geometry"/></mxCell>
+    <mxCell id="x6" value="Metabase BI&#10;只读分析视图" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="L6"><mxGeometry x="1290" y="44" width="200" height="70" as="geometry"/></mxCell>
+
+    <!-- ===================== 底部贯穿机制 ===================== -->
+    <mxCell id="note1" value="贯穿机制：Idempotency-Key 幂等 · expected_version 乐观锁 · 业务事实 / 事件 / 版本 / 审计同事务 · Timeline 只追加 · BUSINESS 与 DEMO 强隔离 · 京东写操作默认门闩 OFF（受控入口 + 授权名单）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=12;fontColor=#555555;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="20" y="1120" width="1640" height="36" as="geometry"/>
+    </mxCell>
+
+    <!-- ===================== 层间连线 ===================== -->
+    <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="c1" target="c2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e2" value="静态托管" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;fontSize=11;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="c2" target="L2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e3" value="REST /api" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;fontSize=11;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L2" target="L3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L3" target="L4"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e5" value="JPA / Redis" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;fontSize=11;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L4" target="L5"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e6" value="SDK 只读 / 受控写" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.15;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L4" target="x1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e7" value="EXCEL / API" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.3;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L4" target="x2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e8" value="长连接" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.42;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L4" target="x3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e9" value="意图识别 / Agent" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.55;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L4" target="x4"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e10" value="工单协同" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.72;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L4" target="x5"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e11" value="只读分析视图" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#b85450;fontSize=11;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="x6" target="db1"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root>
+</mxGraphModel>
+  </diagram>
+</mxfile>

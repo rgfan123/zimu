@@ -106,12 +106,13 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     'X-Request-Id': crypto.randomUUID(),
     ...headers,
   };
-  if (body !== undefined) requestHeaders['Content-Type'] = 'application/json';
+  // FormData 由浏览器生成 multipart 边界，不得设置 JSON Content-Type。
+  if (body !== undefined && !(body instanceof FormData)) requestHeaders['Content-Type'] = 'application/json';
 
   const res = await fetch(buildUrl(path, params), {
     method,
     headers: requestHeaders,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
     signal,
   });
 

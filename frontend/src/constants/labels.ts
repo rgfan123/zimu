@@ -15,6 +15,7 @@ export const CHANNEL_LABELS: Record<SourceChannel, string> = {
   CAISHIXIAN: '彩食鲜',
   JUFUBAO: '聚福宝',
   FEIXIANG: '飞象',
+  ZHONGHUI: '中汇',
   WECOM: '企业微信',
 };
 
@@ -93,10 +94,19 @@ export const REASON_LABELS: Record<string, string> = {
   SYNC_FAILED: '回传失败',
   TRACKING_OVERDUE: '运单超时未回',
   RETURN_OVERDUE: '回填超时',
+  JD_SHIPMENT_OUTBOUND_PREVIEW_BLOCKED: '京东建单预检未通过',
+  JD_SKU_MAPPING_BLOCKED: '京东商品映射未通过',
+  JD_STOCK_BLOCKED: '京东库存判定未通过',
+  JD_TRACKING_CONFLICT: '京东运单冲突',
+  MULTI_SHIPMENT_FOLLOWUP: '多批次发货待跟进',
 };
 
+/**
+ * 未登记的原因码回退为「未分类原因」而非状态类措辞——
+ * 曾用「待人工复核」，与复核状态混淆：已 RESOLVED 的事项也会显示成待处理。
+ */
 export function reasonLabel(code: string): string {
-  return REASON_LABELS[code] ?? '待人工复核';
+  return REASON_LABELS[code] ?? '未分类原因';
 }
 
 // ---------- 订单事件（PRD §18） ----------

@@ -1,0 +1,27 @@
+{
+  "meta": {
+    "platform": "JUFUBAO",
+    "endpoint": "orders/query tab=no_delivery",
+    "fetched_at": "2026-08-18",
+    "note": "脱敏样例：收件人已替换，结构保持原样"
+  },
+  "query_response": {
+    "tab": "no_delivery",
+    "total_size": 1,
+    "order": {
+      "sub_order_id": "s947785003889885546",
+      "main_order_id": "m947785003453677929",
+      "order_status": "NO_DELIVERY",
+      "order_status_name": "待发货",
+      "delivery_method": "logistics",
+      "supplier_name": "京诚乾元",
+      "created_time": 1786929554,
+      "product": {
+        "product_id": 66662134,
+        "product_num": 1,
+        "purchase_price": 6900,
+        "market_price": 9800
+      }
+    }
+  }
+}

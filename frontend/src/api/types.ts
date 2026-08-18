@@ -5,7 +5,7 @@
 
 // ---------- 枚举 ----------
 
-export type SourceChannel = 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG' | 'WECOM';
+export type SourceChannel = 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG' | 'ZHONGHUI' | 'WECOM';
 
 export type OrderStatus =
   | 'RECEIVED'
@@ -468,6 +468,12 @@ export interface SkuPage extends Omit<MasterDataPage, 'items'> {
   items: SkuRecord[];
 }
 
+/** 主图上传结果：内容寻址引用与可访问 URL（openapi ProductImageUploadResult）。 */
+export interface ProductImageUploadResult {
+  file_ref: string;
+  url: string;
+}
+
 export interface JdPiecesCandidate {
   provider_sku_code: string;
   sku_id: string;
@@ -668,6 +674,7 @@ export interface FulfillmentExport {
   usage_status: ExportUsageStatus;
   download_audit?: DownloadAudit;
   tracking_import_batch_id?: string;
+  import_batch_id?: string;
 }
 
 export interface FulfillmentExportPage extends PageMeta {

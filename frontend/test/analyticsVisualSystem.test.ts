@@ -22,7 +22,7 @@ test('non-semantic chart series use the clear blue teal violet data palette and 
   const semanticColors = new Set(Object.values(saasVisualTokens.semantic));
   const channelColors = Object.values(visualSystem.chartColors.channels);
 
-  assert.deepEqual(channelColors, saasChartPalette.categorical.slice(0, 4));
+  assert.deepEqual(channelColors, saasChartPalette.categorical.slice(0, 5));
   assert.ok(channelColors.every((color) => !semanticColors.has(color)));
   assert.deepEqual(visualSystem.chartColors.categories, [...saasChartPalette.categorical]);
   assert.equal(visualSystem.chartColors.funnel.length, 6);

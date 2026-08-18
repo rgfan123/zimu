@@ -1503,7 +1503,7 @@ CREATE TABLE app.orders (
     CONSTRAINT orders_receiver_name_check CHECK ((btrim((receiver_name)::text) <> ''::text)),
     CONSTRAINT orders_receiver_phone_check CHECK ((btrim((receiver_phone)::text) <> ''::text)),
     CONSTRAINT orders_settlement_method_check CHECK (((settlement_method)::text = ANY ((ARRAY['MONTHLY'::character varying, 'IMMEDIATE'::character varying, 'CREDIT_TERM'::character varying, 'PREPAID'::character varying, 'COD'::character varying, 'OTHER'::character varying])::text[]))),
-    CONSTRAINT orders_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'WECOM'::character varying])::text[]))),
+    CONSTRAINT orders_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'ZHONGHUI'::character varying, 'WECOM'::character varying])::text[]))),
     CONSTRAINT orders_source_ref_check CHECK ((btrim((source_ref)::text) <> ''::text)),
     CONSTRAINT orders_source_ref_kind_check CHECK (((source_ref_kind)::text = ANY ((ARRAY['PROVIDED'::character varying, 'SYNTHETIC'::character varying])::text[])))
 );
@@ -1573,7 +1573,7 @@ CREATE TABLE app.shipment_syncs (
     CONSTRAINT shipment_syncs_attempt_count_check CHECK ((attempt_count >= 0)),
     CONSTRAINT shipment_syncs_check CHECK ((((sync_status)::text = 'SYNCED'::text) = (synced_at IS NOT NULL))),
     CONSTRAINT shipment_syncs_check1 CHECK (((last_error_code IS NULL) = (last_error_message IS NULL))),
-    CONSTRAINT shipment_syncs_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'WECOM'::character varying])::text[]))),
+    CONSTRAINT shipment_syncs_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'ZHONGHUI'::character varying, 'WECOM'::character varying])::text[]))),
     CONSTRAINT shipment_syncs_sync_status_check CHECK (((sync_status)::text = ANY ((ARRAY['PENDING'::character varying, 'SYNCED'::character varying, 'SYNC_FAILED'::character varying])::text[])))
 );
 
@@ -2048,7 +2048,7 @@ CREATE TABLE app.connector_configs (
     CONSTRAINT connector_configs_config_check CHECK ((jsonb_typeof(config) = 'object'::text)),
     CONSTRAINT connector_configs_lock_version_check CHECK ((lock_version >= 0)),
     CONSTRAINT connector_configs_mode_check CHECK (((mode)::text = ANY ((ARRAY['MOCK'::character varying, 'REAL'::character varying])::text[]))),
-    CONSTRAINT connector_configs_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'WECOM'::character varying])::text[]))),
+    CONSTRAINT connector_configs_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'ZHONGHUI'::character varying, 'WECOM'::character varying])::text[]))),
     CONSTRAINT connector_configs_transport_mode_check CHECK (((transport_mode)::text = ANY ((ARRAY['EXCEL'::character varying, 'API'::character varying])::text[])))
 );
 
@@ -2064,7 +2064,7 @@ CREATE TABLE app.customer_source_refs (
     source_customer_ref character varying(128) NOT NULL,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT customer_source_refs_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'WECOM'::character varying])::text[]))),
+    CONSTRAINT customer_source_refs_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'ZHONGHUI'::character varying, 'WECOM'::character varying])::text[]))),
     CONSTRAINT customer_source_refs_source_customer_ref_check CHECK ((btrim((source_customer_ref)::text) <> ''::text))
 );
 
@@ -2336,7 +2336,7 @@ CREATE TABLE app.import_batches (
     CONSTRAINT import_batches_import_mode_check CHECK (((import_mode)::text = ANY ((ARRAY['NEW'::character varying, 'REVISION'::character varying])::text[]))),
     CONSTRAINT import_batches_original_file_name_check CHECK ((btrim((original_file_name)::text) <> ''::text)),
     CONSTRAINT import_batches_revision_no_check CHECK ((revision_no > 0)),
-    CONSTRAINT import_batches_source_channel_check CHECK (((source_channel IS NULL) OR ((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'WECOM'::character varying])::text[])))),
+    CONSTRAINT import_batches_source_channel_check CHECK (((source_channel IS NULL) OR ((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'ZHONGHUI'::character varying, 'WECOM'::character varying])::text[])))),
     CONSTRAINT import_batches_status_check CHECK (((status)::text = ANY ((ARRAY['RECEIVED'::character varying, 'PROCESSING'::character varying, 'COMPLETED'::character varying, 'COMPLETED_WITH_REVIEW'::character varying, 'FAILED'::character varying])::text[]))),
     CONSTRAINT import_batches_template_family_check CHECK ((btrim((template_family)::text) <> ''::text)),
     CONSTRAINT import_batches_template_fingerprint_check CHECK ((btrim((template_fingerprint)::text) <> ''::text)),
@@ -3258,7 +3258,7 @@ CREATE TABLE app.source_channel_skus (
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT source_channel_skus_lock_version_check CHECK ((lock_version >= 0)),
     CONSTRAINT source_channel_skus_quantity_multiplier_check CHECK ((quantity_multiplier > (0)::numeric)),
-    CONSTRAINT source_channel_skus_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'WECOM'::character varying])::text[]))),
+    CONSTRAINT source_channel_skus_source_channel_check CHECK (((source_channel)::text = ANY ((ARRAY['CAISHIXIAN'::character varying, 'JUFUBAO'::character varying, 'FEIXIANG'::character varying, 'ZHONGHUI'::character varying, 'WECOM'::character varying])::text[]))),
     CONSTRAINT source_channel_skus_source_sku_ref_check CHECK ((btrim((source_sku_ref)::text) <> ''::text))
 );
 

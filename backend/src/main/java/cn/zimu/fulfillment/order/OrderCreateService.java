@@ -116,7 +116,7 @@ public class OrderCreateService {
             CanonicalOrderInput input, String idempotencyKey, CommandContext context) {
         return idempotencyService.execute(
                 IDEMPOTENCY_SCOPE, idempotencyKey, input, CREATED,
-                () -> doCreate(input, null, null, context, "order.create", "ORDER_CREATED"));
+                () -> doCreate(input, null, null, context, "order.create", "ORDER_CREATED", AuditActorType.AGENT));
     }
 
     /**
@@ -129,6 +129,17 @@ public class OrderCreateService {
             long sourceImportBatchId,
             String idempotencyKey,
             CommandContext context) {
+        return createImported(input, sourceImportBatchId, idempotencyKey, context, AuditActorType.AGENT);
+    }
+
+    /** 结构化导入（ticket 02）以 SYSTEM 主体落审计的重载。 */
+    @Transactional
+    public IdempotentResult<OrderDetailDto> createImported(
+            CanonicalOrderInput input,
+            long sourceImportBatchId,
+            String idempotencyKey,
+            CommandContext context,
+            AuditActorType actor) {
         Map<String, Object> payload = Map.of(
                 "source_import_batch_id", sourceImportBatchId,
                 "canonical_order", input);
@@ -137,7 +148,7 @@ public class OrderCreateService {
                 idempotencyKey,
                 payload,
                 CREATED,
-                () -> doCreate(input, sourceImportBatchId, null, context, "order.import", "ORDER_IMPORTED"));
+                () -> doCreate(input, sourceImportBatchId, null, context, "order.import", "ORDER_IMPORTED", actor));
     }
 
     @Transactional
@@ -155,7 +166,7 @@ public class OrderCreateService {
                 throw BusinessException.conflict("VERSION_CONFLICT", "原订单已更新，请刷新后重试");
             }
             return doCreate(command.correctedOrder(), null, originalOrderId, context,
-                    "order.correction.create", "CORRECTION_ORDER_CREATED");
+                    "order.correction.create", "CORRECTION_ORDER_CREATED", AuditActorType.AGENT);
         });
     }
 
@@ -307,7 +318,8 @@ public class OrderCreateService {
             Long correctionOfOrderId,
             CommandContext context,
             String auditOperation,
-            String businessCode) {
+            String businessCode,
+            AuditActorType actor) {
         long startedNanos = System.nanoTime();
         SourceChannel channel = input.source();
         boolean imported = sourceImportBatchId != null;
@@ -454,7 +466,7 @@ public class OrderCreateService {
                 .requestId(context.requestId())
                 .traceId(context.traceId())
                 .operator(context.operator())
-                .actorType(AuditActorType.AGENT)
+                .actorType(actor)
                 .service("order")
                 .operation(auditOperation)
                 .requestPayload(input)

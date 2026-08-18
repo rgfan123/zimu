@@ -7,6 +7,7 @@ export interface AdminVisualTokenInput {
     cyan: string;
     violet: string;
     blueSoft: string;
+    cyanSoft: string;
     violetSoft: string;
   };
   neutral: { 500: string };
@@ -45,6 +46,7 @@ export function createAdminVisualSystem(tokens: AdminVisualTokenInput) {
     CAISHIXIAN: tokens.data.blue,
     JUFUBAO: tokens.data.cyan,
     FEIXIANG: tokens.data.violet,
+    ZHONGHUI: tokens.data.cyanSoft,
     WECOM: tokens.data.blueSoft,
     JD_WAREHOUSE: tokens.data.blue,
     THIRD_PARTY: tokens.data.cyan,

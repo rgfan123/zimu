@@ -38,6 +38,7 @@ import type {
   JdReceiverAddressCandidate,
   MasterDataPage,
   MasterDataRecord,
+  ProductImageUploadResult,
   OrderDetail,
   OrderShipment,
   OrderAssistantConfig,
@@ -218,14 +219,57 @@ export const categoriesApi = {
     apiRequest<MasterDataRecord>(`/api/v1/categories/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
 
-/** GET/POST /api/v1/products，GET/PATCH /api/v1/products/{id}。 */
+/** GET/POST /api/v1/products，GET/PATCH /api/v1/products/{id}，GET /api/v1/products/tags。 */
 export const productsApi = {
   list: (query: PageQuery = {}) => apiRequest<MasterDataPage>('/api/v1/products', { params: query as Record<string, QueryValue> }),
-  create: (body: { product_code: string; product_name: string; category_id: string; active?: boolean }) =>
+  create: (body: {
+    product_code: string;
+    product_name: string;
+    category_id: string;
+    ingredients?: string;
+    tags?: string[];
+    listed_from?: string;
+    listed_until?: string;
+    lead_time_hours?: number;
+    purchase_price?: string;
+    retail_price?: string;
+    other_cost?: string;
+    main_image_ref?: string;
+    active?: boolean;
+  }) =>
     apiRequest<MasterDataRecord>('/api/v1/products', { method: 'POST', body, headers: writeHeaders() }),
-  update: (id: string, body: { expected_version: number; product_name?: string; category_id?: string; active?: boolean }) =>
+  update: (id: string, body: {
+    expected_version: number;
+    product_name?: string;
+    category_id?: string;
+    ingredients?: string | null;
+    tags?: string[] | null;
+    listed_from?: string | null;
+    listed_until?: string | null;
+    lead_time_hours?: number | null;
+    purchase_price?: string | null;
+    retail_price?: string | null;
+    other_cost?: string | null;
+    main_image_ref?: string | null;
+    active?: boolean;
+  }) =>
     apiRequest<MasterDataRecord>(`/api/v1/products/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
+  tags: () => apiRequest<string[]>('/api/v1/products/tags'),
 };
+
+/** POST /api/v1/product-images（multipart），GET /api/v1/product-images?ref=...。 */
+export const productImagesApi = {
+  upload: (file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return apiRequest<ProductImageUploadResult>('/api/v1/product-images', { method: 'POST', body });
+  },
+};
+
+/** 主图读取 URL（内容寻址引用，可长期缓存）。 */
+export function productImageUrl(ref: string): string {
+  return `/api/v1/product-images?ref=${encodeURIComponent(ref)}`;
+}
 
 /** GET/POST /api/v1/skus，GET/PATCH /api/v1/skus/{id}。 */
 export const skusApi = {

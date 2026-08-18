@@ -710,7 +710,14 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 SELECT fe.id, fe.export_batch_no, fe.fulfillment_provider_id, fe.export_kind, fe.template_version,
                        fe.file_sha256, fe.tracking_due_at, fe.generated_at,
                        (SELECT id FROM app.import_batches ib WHERE ib.source_fulfillment_export_id=fe.id
-                        ORDER BY id DESC LIMIT 1) tracking_import_batch_id
+                        ORDER BY id DESC LIMIT 1) tracking_import_batch_id,
+                       -- 恰好来自一个导入批次时才给出，跨批次一律返回 NULL：
+                       -- 取其一会让前端按错误批次下载回填表，宁可显示「尚未生成」也不给错答案。
+                       (SELECT CASE WHEN COUNT(DISTINCT rir.import_batch_id) = 1
+                                    THEN MIN(rir.import_batch_id) END
+                        FROM app.fulfillment_export_items fei
+                        JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id
+                        WHERE fei.fulfillment_export_id=fe.id) import_batch_id
                 FROM app.fulfillment_exports fe WHERE fe.id=?
                 """,
                 (resultSet, rowNum) -> {
@@ -725,6 +732,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     result.put("tracking_due_at", due);
                     result.put("generated_at", resultSet.getTimestamp("generated_at").toInstant());
                     result.put("tracking_import_batch_id", nullableId(resultSet.getObject("tracking_import_batch_id")));
+                    result.put("import_batch_id", nullableId(resultSet.getObject("import_batch_id")));
                     return result;
                 },
                 exportId);
