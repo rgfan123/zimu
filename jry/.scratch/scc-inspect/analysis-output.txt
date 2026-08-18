@@ -1,0 +1,1704 @@
+== OVERVIEW ==
+entries=92
+first=2026-08-14T07:12:01.554Z  last=2026-08-14T07:13:41.545Z
+host wapi.freshfood.cn: 92
+
+== ENDPOINTS (host+method+path, deduped) ==
+  44  GET     wapi.freshfood.cn/task/task/my  [cat=task/export] status={'200': 44} ct={'application/json': 44}
+  44  OPTIONS wapi.freshfood.cn/task/task/my  [cat=task/export] status={'200': 44} ct={'text/plain': 44}
+   1  POST    wapi.freshfood.cn/scc/bbc/order/exportDeliverExcl  [cat=order] status={'200': 1} ct={'application/json': 1}
+   1  OPTIONS wapi.freshfood.cn/scc/bbc/order/exportDeliverExcl  [cat=order] status={'204': 1} ct={}
+   1  GET     wapi.freshfood.cn/task/file/download  [cat=task/export] status={'200': 1} ct={'application/vnd.ms-excel': 1}
+   1  OPTIONS wapi.freshfood.cn/task/file/download  [cat=task/export] status={'200': 1} ct={'text/plain': 1}
+
+== AUTH / HEADER MECHANISM (names only, no values) ==
+request header names (all):
+    92  Accept-Encoding
+    92  Accept-Language
+    92  Connection
+    92  Host
+    92  Origin
+    92  Referer
+    92  Sec-Fetch-Dest
+    92  Sec-Fetch-Mode
+    92  Sec-Fetch-Site
+    92  User-Agent
+    46  accept
+    46  login-token <-- AUTH
+    46  sec-ch-ua
+    46  sec-ch-ua-mobile
+    46  sec-ch-ua-platform
+    46  supplier-code
+    46  Accept
+    46  Access-Control-Request-Headers
+    46  Access-Control-Request-Method
+     1  Content-Length
+     1  content-type
+
+auth-ish headers present on:
+  login-token: 46 requests, paths=['/scc/bbc/order/exportDeliverExcl', '/task/file/download', '/task/task/my']
+authorization scheme(s) seen (values stripped): []
+
+== QUERY PARAMS PER ENDPOINT (names + sanitized values) ==
+GET /task/task/my:
+    sysCode = <string>  (in 44/44 reqs)
+    taskType = <token>  (in 44/44 reqs)
+OPTIONS /task/task/my:
+    sysCode = <string>  (in 44/44 reqs)
+    taskType = <token>  (in 44/44 reqs)
+GET /task/file/download:
+    name = <string>  (in 1/1 reqs)
+    url = <string>  (in 1/1 reqs)
+OPTIONS /task/file/download:
+    name = <string>  (in 1/1 reqs)
+    url = <string>  (in 1/1 reqs)
+
+== POST BODIES (keys + sanitized values) ==
+POST /scc/bbc/order/exportDeliverExcl mimeType=application/json
+    json: {"payTimeBegin": "<date>", "payTimeEnd": "<date>", "pageNum": "<number>", "pageSize": "<number>", "orderStatus": "<number>"}
+
+== RESPONSE JSON SHAPE (key endpoints, depth<=3, values sanitized) ==
+
+-- GET /task/task/my  status=200 ct=application/json size=6977B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 3
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- POST /scc/bbc/order/exportDeliverExcl  status=200 ct=application/json size=50B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<number>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- GET /task/file/download  status=200 ct=application/vnd.ms-excel size=4035B --
+    <binary download, 4035 bytes>
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=9288B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   },
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 4
+ }
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=45B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": "<list[0]>"
+}
+
+-- GET /task/task/my  status=200 ct=application/json size=2326B --
+{
+ "code": "<number>",
+ "message": "<string>",
+ "data": {
+  "[list]": [
+   {
+    "id": "<number>",
+    "sysCode": "<string>",
+    "taskName": "<string>",
+    "taskCode": "<phone>",
+    "taskType": "<token>",
+    "taskTimeout": "<number>",
+    "taskStatus": "<number>",
+    "totalProgress": "<number>",
+    "currProgress": "<number>",
+    "resultCode": "<number>",
+    "taskResult": "<number>",
+    "taskMessage": "<string>",
+    "processStatus": "<number>",
+    "processTime": "<null>",
+    "taskParam": "<phone>",
+    "taskData": "<string>",
+    "taskAttach": "<string>",
+    "userId": "<number>",
+    "createBy": "<string>",
+    "createTime": "<date>",
+    "updateBy": "<string>",
+    "updateTime": "<date>",
+    "taskRedirect": "<null>",
+    "progressPercent": "<number>"
+   }
+  ],
+  "count": 1
+ }
+}
+
+== TIMELINE (time, method, path, status, latency) ==
+2026-08-14T07:12:01.554  GET     /task/task/my  200  193ms
+2026-08-14T07:12:01.555  GET     /task/task/my  200  515ms
+2026-08-14T07:12:01.555  GET     /task/task/my  200  192ms
+2026-08-14T07:12:01.555  GET     /task/task/my  200  150ms
+2026-08-14T07:12:01.556  OPTIONS /task/task/my  200  92ms
+2026-08-14T07:12:01.557  OPTIONS /task/task/my  200  104ms
+2026-08-14T07:12:01.558  OPTIONS /task/task/my  200  93ms
+2026-08-14T07:12:01.559  OPTIONS /task/task/my  200  75ms
+2026-08-14T07:12:01.873  POST    /scc/bbc/order/exportDeliverExcl  200  211ms
+2026-08-14T07:12:01.876  OPTIONS /scc/bbc/order/exportDeliverExcl  204  94ms
+2026-08-14T07:12:11.532  GET     /task/task/my  200  461ms
+2026-08-14T07:12:11.533  GET     /task/task/my  200  168ms
+2026-08-14T07:12:11.533  GET     /task/task/my  200  484ms
+2026-08-14T07:12:11.534  GET     /task/task/my  200  412ms
+2026-08-14T07:12:11.535  OPTIONS /task/task/my  200  375ms
+2026-08-14T07:12:11.536  OPTIONS /task/task/my  200  79ms
+2026-08-14T07:12:11.536  OPTIONS /task/task/my  200  392ms
+2026-08-14T07:12:11.537  OPTIONS /task/task/my  200  336ms
+2026-08-14T07:12:16.788  GET     /task/file/download  200  459ms
+2026-08-14T07:12:16.790  OPTIONS /task/file/download  200  81ms
+2026-08-14T07:12:21.532  GET     /task/task/my  200  349ms
+2026-08-14T07:12:21.533  GET     /task/task/my  200  526ms
+2026-08-14T07:12:21.534  GET     /task/task/my  200  140ms
+2026-08-14T07:12:21.535  GET     /task/task/my  200  224ms
+2026-08-14T07:12:21.537  OPTIONS /task/task/my  200  114ms
+2026-08-14T07:12:21.538  OPTIONS /task/task/my  200  372ms
+2026-08-14T07:12:21.538  OPTIONS /task/task/my  200  64ms
+2026-08-14T07:12:21.539  OPTIONS /task/task/my  200  112ms
+2026-08-14T07:12:31.530  GET     /task/task/my  200  202ms
+2026-08-14T07:12:31.531  GET     /task/task/my  200  198ms
+2026-08-14T07:12:31.531  GET     /task/task/my  200  193ms
+2026-08-14T07:12:31.532  GET     /task/task/my  200  148ms
+2026-08-14T07:12:31.537  OPTIONS /task/task/my  200  90ms
+2026-08-14T07:12:31.539  OPTIONS /task/task/my  200  89ms
+2026-08-14T07:12:31.539  OPTIONS /task/task/my  200  90ms
+2026-08-14T07:12:31.540  OPTIONS /task/task/my  200  66ms
+2026-08-14T07:12:41.528  GET     /task/task/my  200  176ms
+2026-08-14T07:12:41.529  GET     /task/task/my  200  174ms
+2026-08-14T07:12:41.530  GET     /task/task/my  200  173ms
+2026-08-14T07:12:41.531  GET     /task/task/my  200  531ms
+2026-08-14T07:12:41.533  OPTIONS /task/task/my  200  81ms
+2026-08-14T07:12:41.534  OPTIONS /task/task/my  200  83ms
+2026-08-14T07:12:41.534  OPTIONS /task/task/my  200  79ms
+2026-08-14T07:12:41.535  OPTIONS /task/task/my  200  73ms
+2026-08-14T07:12:51.527  GET     /task/task/my  200  149ms
+2026-08-14T07:12:51.528  GET     /task/task/my  200  174ms
+2026-08-14T07:12:51.529  GET     /task/task/my  200  173ms
+2026-08-14T07:12:51.530  GET     /task/task/my  200  178ms
+2026-08-14T07:12:51.532  OPTIONS /task/task/my  200  71ms
+2026-08-14T07:12:51.533  OPTIONS /task/task/my  200  86ms
+2026-08-14T07:12:51.534  OPTIONS /task/task/my  200  83ms
+2026-08-14T07:12:51.534  OPTIONS /task/task/my  200  89ms
+2026-08-14T07:13:01.534  GET     /task/task/my  200  186ms
+2026-08-14T07:13:01.535  GET     /task/task/my  200  178ms
+2026-08-14T07:13:01.536  GET     /task/task/my  200  177ms
+2026-08-14T07:13:01.536  GET     /task/task/my  200  235ms
+2026-08-14T07:13:01.539  OPTIONS /task/task/my  200  87ms
+2026-08-14T07:13:01.540  OPTIONS /task/task/my  200  85ms
+2026-08-14T07:13:01.540  OPTIONS /task/task/my  200  85ms
+2026-08-14T07:13:01.541  OPTIONS /task/task/my  200  77ms
+2026-08-14T07:13:11.540  GET     /task/task/my  200  154ms
+2026-08-14T07:13:11.541  GET     /task/task/my  200  203ms
+2026-08-14T07:13:11.542  GET     /task/task/my  200  519ms
+2026-08-14T07:13:11.542  GET     /task/task/my  200  225ms
+2026-08-14T07:13:11.543  OPTIONS /task/task/my  200  77ms
+2026-08-14T07:13:11.544  OPTIONS /task/task/my  200  116ms
+2026-08-14T07:13:11.545  OPTIONS /task/task/my  200  114ms
+2026-08-14T07:13:11.546  OPTIONS /task/task/my  200  133ms
+2026-08-14T07:13:21.532  GET     /task/task/my  200  164ms
+2026-08-14T07:13:21.533  GET     /task/task/my  200  171ms
+2026-08-14T07:13:21.534  GET     /task/task/my  200  170ms
+2026-08-14T07:13:21.534  GET     /task/task/my  200  136ms
+2026-08-14T07:13:21.534  OPTIONS /task/task/my  200  79ms
+2026-08-14T07:13:21.537  OPTIONS /task/task/my  200  81ms
+2026-08-14T07:13:21.538  OPTIONS /task/task/my  200  79ms
+2026-08-14T07:13:21.539  OPTIONS /task/task/my  200  66ms
+2026-08-14T07:13:31.540  GET     /task/task/my  200  482ms
+2026-08-14T07:13:31.541  GET     /task/task/my  200  178ms
+2026-08-14T07:13:31.541  GET     /task/task/my  200  179ms
+2026-08-14T07:13:31.541  GET     /task/task/my  200  689ms
+2026-08-14T07:13:31.543  OPTIONS /task/task/my  200  392ms
+2026-08-14T07:13:31.544  OPTIONS /task/task/my  200  87ms
+2026-08-14T07:13:31.545  OPTIONS /task/task/my  200  86ms
+2026-08-14T07:13:31.545  OPTIONS /task/task/my  200  609ms
+2026-08-14T07:13:41.538  GET     /task/task/my  200  167ms
+2026-08-14T07:13:41.539  GET     /task/task/my  200  213ms
+2026-08-14T07:13:41.540  GET     /task/task/my  200  213ms
+2026-08-14T07:13:41.541  GET     /task/task/my  200  212ms
+2026-08-14T07:13:41.543  OPTIONS /task/task/my  200  72ms
+2026-08-14T07:13:41.544  OPTIONS /task/task/my  200  84ms
+2026-08-14T07:13:41.544  OPTIONS /task/task/my  200  84ms
+2026-08-14T07:13:41.545  OPTIONS /task/task/my  200  83ms

@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "platform": "FEIXIANG",
+    "endpoint": "deliveryExport",
+    "fetched_at": "2026-08-18",
+    "note": "样例仅表头无数据行；真实数据行列名待票 08/16 验证",
+    "content_disposition": "attachment;filename=批量发货<ts>.csv (实为 XLSX)"
+  },
+  "headers_21": [],
+  "v1_fingerprint_match": false
+}

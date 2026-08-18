@@ -1,0 +1,639 @@
+package cn.zimu.fulfillment.agent.eval;
+
+import cn.zimu.fulfillment.agent.AgentModelMetadataRegistry;
+import cn.zimu.fulfillment.agent.AgentModelProperties;
+import cn.zimu.fulfillment.agent.AgentRegistry;
+import cn.zimu.fulfillment.agent.AgentRunContext;
+import cn.zimu.fulfillment.agent.AgentTaskRequest;
+import cn.zimu.fulfillment.agent.AgentToolBinding;
+import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
+import cn.zimu.fulfillment.agent.DataQueryAgentDefinitionConfiguration;
+import cn.zimu.fulfillment.agent.DataQueryAgentEvalFixture;
+import cn.zimu.fulfillment.agent.DataQueryAgentService;
+import cn.zimu.fulfillment.agent.DataQueryRunResult;
+import cn.zimu.fulfillment.agent.McpToolTestSupport;
+import cn.zimu.fulfillment.agent.procurement.ProcurementPriceAgentRuntime;
+import cn.zimu.fulfillment.agent.procurement.ProcurementPriceEvalFixture;
+import cn.zimu.fulfillment.agent.procurement.ProcurementPriceRunResult;
+import cn.zimu.fulfillment.common.audit.AuditLogService;
+import cn.zimu.fulfillment.mcp.McpAgentIdentity;
+import cn.zimu.fulfillment.mcp.McpTool;
+import cn.zimu.fulfillment.mcp.McpToolRegistry;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import org.mockito.Mockito;
+
+/**
+ * Agent 评测跑分器（09 票基线，agent-decision-layer 09）：对版本化评测集
+ * （{@link ProcurementPriceEvalFixture#VERSION} 与 {@link DataQueryAgentEvalFixture#VERSION}）
+ * 运行确定性评测并计算指标，结果按版本归档（不覆盖历史）。
+ *
+ * <p>确定性来源：模型为本地 JDK HttpServer stub（脚本化工具调用 / 固定最终输出，usage
+ * 固定 1/1/2），数据查询的注册表为迷你只读注册表（canned 事实，与 06 票集成测试的数据库
+ * 种子数字一致：7 天缺货 3 行、SKU-EVAL-000001 进/零售价 12.34/25.60、工单 9005 缺口
+ * 23.500）。数据库事实核对由 {@code DataQueryAgentServiceIntegrationTest}（Testcontainers）
+ * 承担，本跑分器负责可重复的指标计算；latency 为实际测量（信息性指标，不做确定性断言），
+ * token 由 stub 固定注入（每帧 total_tokens=2，确定性）。
+ *
+ * <p>指标：schema 通过率、工具选择准确率、答案数字正确率、requires_human 召回
+ * （低置信度/字段缺失/歧义/PII 必须转人工）、写工具零调用不变式、avg latency / total tokens。
+ * 归档位置 {@value #ARCHIVE_DIR}（相对工作目录 backend/，target/ 下、gitignored，与测试和
+ * 文档解耦；文件名含时间戳，每次运行独立文件，绝不覆盖旧结果）。
+ *
+ * <p>本类只计算与归档，不断言；基线数字断言见 {@code AgentEvalBaselineTest}。
+ */
+public final class AgentEvalScorer {
+
+    /** 归档目录（相对 backend/ 工作目录；target/ 已被 gitignore）。 */
+    public static final String ARCHIVE_DIR = "target/agent-eval-results";
+
+    private static final String API_KEY = "sk-agent-eval-secret";
+    private static final String RUN_ID = "run_" + "0".repeat(32);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** 04 票已知写工具（对照：写工具零调用不变式的反面）。 */
+    private static final List<String> KNOWN_WRITE_TOOLS = List.of(
+            "reinterpret_submission",
+            "submit_order_draft_suggestion",
+            "submit_supplementary_material",
+            "submit_review_request");
+
+    private AgentEvalScorer() {}
+
+    // ------------------------------------------------------------------
+    // 指标结构
+    // ------------------------------------------------------------------
+
+    public record ProcurementMetrics(
+            String evalSetVersion,
+            int totalCases,
+            int schemaValid,
+            int schemaRejected,
+            int requiresHumanExpected,
+            int requiresHumanCaught,
+            int happyPathWronglyRequiresHuman,
+            int writeToolCalls,
+            long totalTokens,
+            long avgLatencyMs) {
+
+        public double schemaPassRate() {
+            return schemaValid == 0 ? 0 : 1.0 * schemaValid / (totalCases - schemaRejected);
+        }
+
+        public double requiresHumanRecall() {
+            return requiresHumanExpected == 0 ? 0 : 1.0 * requiresHumanCaught / requiresHumanExpected;
+        }
+    }
+
+    public record DataQueryMetrics(
+            String evalSetVersion,
+            int totalQueries,
+            int gatePaths,
+            int gateRequiresHumanCaught,
+            int answerableQueries,
+            int toolSelectionCorrect,
+            int answerNumbersCorrect,
+            int writeToolCalls,
+            long totalTokens,
+            long avgModelLatencyMs) {
+
+        public double toolSelectionAccuracy() {
+            return answerableQueries == 0 ? 0 : 1.0 * toolSelectionCorrect / answerableQueries;
+        }
+
+        public double answerNumberAccuracy() {
+            return answerableQueries == 0 ? 0 : 1.0 * answerNumbersCorrect / answerableQueries;
+        }
+
+        public double gateRequiresHumanRecall() {
+            return gatePaths == 0 ? 0 : 1.0 * gateRequiresHumanCaught / gatePaths;
+        }
+    }
+
+    public record Metrics(ProcurementMetrics procurement, DataQueryMetrics dataQuery) {}
+
+    // ------------------------------------------------------------------
+    // 入口
+    // ------------------------------------------------------------------
+
+    /** 运行全部评测并计算指标（确定性：正确性指标可重复；latency 信息性）。 */
+    public static Metrics compute() {
+        try {
+            return new Metrics(procurementMetrics(), dataQueryMetrics());
+        } catch (IOException ex) {
+            throw new IllegalStateException("评测跑分失败", ex);
+        }
+    }
+
+    /** 按版本归档本次结果：时间戳文件名，绝不覆盖历史结果。 */
+    public static Path archive(Metrics metrics) {
+        try {
+            Path dir = Path.of(ARCHIVE_DIR);
+            Files.createDirectories(dir);
+            String stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS").format(LocalDateTime.now());
+            Path file = dir.resolve("agent-eval-baseline-" + stamp + ".json");
+            MAPPER.writerWithDefaultPrettyPrinter().writeValue(file.toFile(), toJson(metrics));
+            return file;
+        } catch (IOException ex) {
+            throw new IllegalStateException("评测结果归档失败", ex);
+        }
+    }
+
+    /** 人类可读的指标摘要（测试 stdout 输出，进 surefire 报告）。 */
+    public static String render(Metrics metrics) {
+        ProcurementMetrics p = metrics.procurement();
+        DataQueryMetrics d = metrics.dataQuery();
+        StringBuilder out = new StringBuilder();
+        out.append("== Agent 评测基线（").append(LocalDateTime.now()).append("）==\n");
+        out.append("采购比价 ").append(p.evalSetVersion()).append("（").append(p.totalCases()).append(" 例）\n")
+                .append("  schema 通过率      ").append(percent(p.schemaPassRate()))
+                .append("（合法解析 ").append(p.schemaValid()).append("/")
+                .append(p.totalCases() - p.schemaRejected()).append("，负例拒绝 ").append(p.schemaRejected()).append("）\n")
+                .append("  requires_human 召回 ").append(percent(p.requiresHumanRecall()))
+                .append("（").append(p.requiresHumanCaught()).append("/").append(p.requiresHumanExpected()).append("）\n")
+                .append("  happy 路径误转人工  ").append(p.happyPathWronglyRequiresHuman()).append("\n")
+                .append("  写工具零调用       ").append(p.writeToolCalls()).append("\n")
+                .append("  avg latency        ").append(p.avgLatencyMs()).append(" ms；tokens ")
+                .append(p.totalTokens()).append("（stub 固定注入）\n");
+        out.append("数据查询 ").append(d.evalSetVersion()).append("（").append(d.totalQueries()).append(" 条）\n")
+                .append("  工具选择准确率     ").append(percent(d.toolSelectionAccuracy()))
+                .append("（").append(d.toolSelectionCorrect()).append("/").append(d.answerableQueries()).append("）\n")
+                .append("  答案数字正确率     ").append(percent(d.answerNumberAccuracy()))
+                .append("（").append(d.answerNumbersCorrect()).append("/").append(d.answerableQueries()).append("）\n")
+                .append("  门禁路径 requires_human 召回 ").append(percent(d.gateRequiresHumanRecall()))
+                .append("（").append(d.gateRequiresHumanCaught()).append("/").append(d.gatePaths()).append("）\n")
+                .append("  写工具零调用       ").append(d.writeToolCalls()).append("\n")
+                .append("  avg 模型路径 latency ").append(d.avgModelLatencyMs()).append(" ms；tokens ")
+                .append(d.totalTokens()).append("（stub 固定注入）\n");
+        return out.toString();
+    }
+
+    private static String percent(double rate) {
+        return String.format("%.0f%%", rate * 100);
+    }
+
+    // ------------------------------------------------------------------
+    // 采购比价（procurement-eval-v1，7 例，单帧 stub 模型）
+    // ------------------------------------------------------------------
+
+    private static ProcurementMetrics procurementMetrics() throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicInteger hits = new AtomicInteger();
+        AtomicReference<String> currentFinalAnswer = new AtomicReference<>();
+        server.createContext("/chat/completions", exchange -> {
+            hits.incrementAndGet();
+            exchange.getRequestBody().readAllBytes();
+            byte[] bytes = finalResponse(currentFinalAnswer.get()).getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        try {
+            ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties(server.getAddress().getPort()));
+            int schemaValid = 0;
+            int schemaRejected = 0;
+            int requiresHumanExpected = 0;
+            int requiresHumanCaught = 0;
+            int happyWrong = 0;
+            long latencySum = 0;
+            long frames = 0;
+            for (ProcurementPriceEvalFixture.EvalCase evalCase : ProcurementPriceEvalFixture.CASES) {
+                hits.set(0);
+                currentFinalAnswer.set(evalCase.modelOutput());
+                long start = System.nanoTime();
+                ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
+                        "你是采购比价 Agent。", evalCase.inputJson(), AgentToolBinding.empty(RUN_ID)));
+                latencySum += (System.nanoTime() - start) / 1_000_000;
+                frames += hits.get();
+                if ("schema-invalid-output".equals(evalCase.id())) {
+                    if ("AGENT_OUTPUT_INVALID".equals(result.error())) {
+                        schemaRejected++;
+                    }
+                    continue;
+                }
+                if (result.error() == null && result.recommendation() != null) {
+                    schemaValid++;
+                }
+                if (evalCase.expectRequiresHuman()) {
+                    requiresHumanExpected++;
+                    if (result.recommendation() != null && result.recommendation().requiresHuman()) {
+                        requiresHumanCaught++;
+                    }
+                } else if (result.recommendation() != null && result.recommendation().requiresHuman()) {
+                    happyWrong++;
+                }
+            }
+            return new ProcurementMetrics(
+                    ProcurementPriceEvalFixture.VERSION,
+                    ProcurementPriceEvalFixture.CASES.size(),
+                    schemaValid,
+                    schemaRejected,
+                    requiresHumanExpected,
+                    requiresHumanCaught,
+                    happyWrong,
+                    0,
+                    2 * frames,
+                    latencySum / ProcurementPriceEvalFixture.CASES.size());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 数据查询（data-query-eval-v1，7 条：4 门禁 + 3 可答）
+    // ------------------------------------------------------------------
+
+    private static DataQueryMetrics dataQueryMetrics() throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        AtomicInteger hits = new AtomicInteger();
+        AtomicReference<String> round1Question = new AtomicReference<>();
+        server.createContext("/chat/completions", exchange -> {
+            hits.incrementAndGet();
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            try {
+                JsonNode request = MAPPER.readTree(body);
+                String response;
+                if (containsToolMessage(request)) {
+                    response = finalResponse(composeAnswer(round1Question.get(), lastToolResult(request)));
+                } else {
+                    round1Question.set(userQuestion(request));
+                    response = toolCallsResponse(scriptedToolCalls(round1Question.get()));
+                }
+                byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+            } catch (Throwable t) {
+                t.printStackTrace(System.err);
+                byte[] bytes = ("stub error: " + t).getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(500, bytes.length);
+                exchange.getResponseBody().write(bytes);
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            DataQueryAgentService service = new DataQueryAgentService(
+                    new AgentRegistry(List.of(dataQueryDefinition())),
+                    properties(server.getAddress().getPort()),
+                    new AgentToolBindingFactory(
+                            miniRegistry(), new McpAgentIdentity("eval-agent"), MAPPER),
+                    Mockito.mock(AuditLogService.class),
+                    new AgentModelMetadataRegistry(),
+                    MAPPER);
+
+            int gatePaths = 0;
+            int gateCaught = 0;
+            int answerable = 0;
+            int toolCorrect = 0;
+            int numbersCorrect = 0;
+            int writeCalls = 0;
+            long latencySum = 0;
+            for (String question : DataQueryAgentEvalFixture.EXPECT_CLARIFICATION) {
+                DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-clarify"));
+                gatePaths++;
+                if (result.output() != null && result.output().requires_human()) {
+                    gateCaught++;
+                }
+                writeCalls += writeToolCallCount(result);
+            }
+            for (String question : DataQueryAgentEvalFixture.EXPECT_PII_TRANSFER) {
+                DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-pii"));
+                gatePaths++;
+                if (result.output() != null && result.output().requires_human()) {
+                    gateCaught++;
+                }
+                writeCalls += writeToolCallCount(result);
+            }
+            for (String question : DataQueryAgentEvalFixture.EXPECT_ANSWER) {
+                DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-answer"));
+                answerable++;
+                latencySum += result.latencyMs();
+                if (result.toolCalls().size() == 1
+                        && DataQueryAgentEvalFixture.expectedTool(question).equals(result.toolCalls().get(0).tool())) {
+                    toolCorrect++;
+                }
+                if (answerNumbersMatch(question, result.output() == null ? null : result.output().answer())) {
+                    numbersCorrect++;
+                }
+                writeCalls += writeToolCallCount(result);
+            }
+            // 每帧 stub 注入 total_tokens=2：可答查询 3 × 2 帧；门禁路径零模型调用
+            return new DataQueryMetrics(
+                    DataQueryAgentEvalFixture.VERSION,
+                    DataQueryAgentEvalFixture.ALL_QUERIES.size(),
+                    gatePaths,
+                    gateCaught,
+                    answerable,
+                    toolCorrect,
+                    numbersCorrect,
+                    writeCalls,
+                    2 * hits.get(),
+                    answerable == 0 ? 0 : latencySum / answerable);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /** 答案数字正确率：stub 最终答案取自真实工具结果（canned 事实），核对关键数字。 */
+    private static boolean answerNumbersMatch(String question, String answer) {
+        if (answer == null) {
+            return false;
+        }
+        return switch (question) {
+            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> answer.contains("3");
+            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> answer.contains("12.34") && answer.contains("25.60");
+            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> answer.contains("23.500");
+            default -> throw new IllegalStateException("未知可答评测用例: " + question);
+        };
+    }
+
+    private static int writeToolCallCount(DataQueryRunResult result) {
+        return (int) result.toolCalls().stream()
+                .filter(call -> KNOWN_WRITE_TOOLS.contains(call.tool()))
+                .count();
+    }
+
+    // ------------------------------------------------------------------
+    // stub 模型：请求/响应组装
+    // ------------------------------------------------------------------
+
+    private static AgentModelProperties properties(int port) {
+        AgentModelProperties properties = new AgentModelProperties();
+        properties.setBaseUrl("http://127.0.0.1:" + port);
+        properties.setApiKey(API_KEY);
+        properties.setProvider("deepseek");
+        properties.setModel("deepseek-chat");
+        properties.setRequestTimeoutMs(5_000);
+        return properties;
+    }
+
+    private static String finalResponse(String content) {
+        ObjectNode message = MAPPER.createObjectNode();
+        message.put("role", "assistant");
+        message.put("content", content);
+        return completion(message, "stop");
+    }
+
+    private static String toolCallsResponse(Map<String, Object> call) {
+        ObjectNode message = MAPPER.createObjectNode();
+        message.put("role", "assistant");
+        message.putNull("content");
+        ObjectNode function = message.putArray("tool_calls").addObject();
+        function.put("id", "call_eval_1");
+        function.put("type", "function");
+        function.putObject("function")
+                .put("name", (String) call.get("name"))
+                .put("arguments", MAPPER.valueToTree(call.get("args")).toString());
+        return completion(message, "tool_calls");
+    }
+
+    private static String completion(ObjectNode message, String finishReason) {
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put("id", "chatcmpl-agent-eval");
+        body.put("object", "chat.completion");
+        body.put("created", 1);
+        body.put("model", "deepseek-chat");
+        ObjectNode choice = body.putArray("choices").addObject();
+        choice.put("index", 0);
+        choice.set("message", message);
+        choice.put("finish_reason", finishReason);
+        ObjectNode usage = body.putObject("usage");
+        usage.put("prompt_tokens", 1);
+        usage.put("completion_tokens", 1);
+        usage.put("total_tokens", 2);
+        return body.toString();
+    }
+
+    private static boolean containsToolMessage(JsonNode request) {
+        JsonNode messages = request.get("messages");
+        if (messages == null || !messages.isArray()) {
+            return false;
+        }
+        for (JsonNode message : messages) {
+            if ("tool".equals(message.path("role").asText())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String userQuestion(JsonNode request) {
+        JsonNode messages = request.get("messages");
+        for (JsonNode message : messages) {
+            if ("user".equals(message.path("role").asText())) {
+                String content = message.path("content").asText();
+                int marker = content.indexOf("\nYou must answer strictly");
+                return marker < 0 ? content : content.substring(0, marker);
+            }
+        }
+        throw new IllegalStateException("请求中缺少用户问题: " + request);
+    }
+
+    private static JsonNode lastToolResult(JsonNode request) throws IOException {
+        JsonNode messages = request.get("messages");
+        JsonNode result = null;
+        for (JsonNode message : messages) {
+            if ("tool".equals(message.path("role").asText())) {
+                result = MAPPER.readTree(message.path("content").asText());
+            }
+        }
+        if (result == null) {
+            throw new IllegalStateException("请求中缺少工具结果消息: " + request);
+        }
+        return result;
+    }
+
+    /** 第一轮按评测问题返回脚本化工具调用（固定日期，确定性）。 */
+    private static Map<String, Object> scriptedToolCalls(String question) {
+        Map<String, Object> call = new LinkedHashMap<>();
+        switch (question) {
+            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> {
+                call.put("name", "list_procurement_tickets");
+                call.put("args", Map.of(
+                        "status", "PENDING",
+                        "date_from", "2026-08-01",
+                        "date_to", "2026-08-09"));
+            }
+            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> {
+                call.put("name", "search_skus");
+                call.put("args", Map.of("query", "SKU-EVAL-000001"));
+            }
+            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> {
+                call.put("name", "get_procurement_ticket");
+                call.put("args", Map.of("ticket_id", "9005"));
+            }
+            default -> throw new IllegalStateException("stub 未注册评测问题: " + question);
+        }
+        return call;
+    }
+
+    /** 第二轮：依据真实工具结果组装最终结构化答案（数字来自工具返回值 = canned 事实）。 */
+    private static String composeAnswer(String question, JsonNode toolResult) {
+        return switch (question) {
+            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> {
+                long count = toolResult.path("total_elements").asLong();
+                yield outputJson(
+                        "最近 7 天（2026-08-01 至 2026-08-09）缺货的订单行共 " + count + " 行",
+                        "list_procurement_tickets",
+                        Map.of("status", "PENDING", "date_from", "2026-08-01", "date_to", "2026-08-09"),
+                        (int) count,
+                        0.95,
+                        false,
+                        List.of());
+            }
+            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> {
+                JsonNode item = toolResult.path("items").get(0);
+                yield outputJson(
+                        "SKU-EVAL-000001 的进货价为 " + item.path("purchase_price").asText()
+                                + " 元、零售价为 " + item.path("retail_price").asText() + " 元",
+                        "search_skus",
+                        Map.of("query", "SKU-EVAL-000001"),
+                        toolResult.path("items").size(),
+                        0.95,
+                        false,
+                        List.of());
+            }
+            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> outputJson(
+                    "采购工单 9005 还差 " + toolResult.path("remaining_quantity").asText(),
+                    "get_procurement_ticket",
+                    Map.of("ticket_id", "9005"),
+                    1,
+                    0.95,
+                    false,
+                    List.of());
+            default -> throw new IllegalStateException("未知评测用例: " + question);
+        };
+    }
+
+    /** 按 DataQueryAgentOutput 的 JSON schema 组装最终答案。 */
+    private static String outputJson(
+            String answer,
+            String tool,
+            Map<String, Object> keyArgs,
+            int rowCount,
+            double confidence,
+            boolean requiresHuman,
+            List<String> clarificationNeeded) {
+        ObjectNode out = MAPPER.createObjectNode();
+        out.put("answer", answer);
+        if (tool != null) {
+            ObjectNode source = out.putArray("sources").addObject();
+            source.put("tool", tool);
+            source.set("key_args", MAPPER.valueToTree(keyArgs));
+            source.put("row_count", rowCount);
+        } else {
+            out.putArray("sources");
+        }
+        out.put("confidence", confidence);
+        out.put("requires_human", requiresHuman);
+        clarificationNeeded.forEach(out.putArray("clarification_needed")::add);
+        return out.toString();
+    }
+
+    // ------------------------------------------------------------------
+    // 迷你只读注册表（canned 事实，数字与 06 票集成测试数据库种子一致）
+    // ------------------------------------------------------------------
+
+    /** 只读引用 06 票注册配置的公共常量构造评测用 AgentDefinition（不动 06 票代码）。 */
+    private static cn.zimu.fulfillment.agent.AgentDefinition dataQueryDefinition() {
+        return cn.zimu.fulfillment.agent.AgentDefinition.of(
+                DataQueryAgentDefinitionConfiguration.SLUG,
+                DataQueryAgentDefinitionConfiguration.NAME,
+                "自然语言只读数据查询：订单/采购/SKU 价格/库存/主数据",
+                DataQueryAgentDefinitionConfiguration.SYSTEM_PROMPT,
+                DataQueryAgentDefinitionConfiguration.PROMPT_VERSION,
+                DataQueryAgentDefinitionConfiguration.MODEL_REF,
+                true,
+                DataQueryAgentDefinitionConfiguration.TOOL_NAMES);
+    }
+
+    private static McpToolRegistry miniRegistry() {
+        List<McpTool> tools = new ArrayList<>();
+        for (String name : DataQueryAgentDefinitionConfiguration.TOOL_NAMES) {
+            tools.add(McpToolTestSupport.tool(
+                    name, "只读工具 " + name, Map.of(), List.of(), (context, args) -> canned(name)));
+        }
+        return McpToolTestSupport.registry(tools.toArray(new McpTool[0]));
+    }
+
+    private static JsonNode canned(String name) {
+        return switch (name) {
+            case "list_procurement_tickets" -> MAPPER.createObjectNode().put("total_elements", 3);
+            case "search_skus" -> {
+                ObjectNode item = MAPPER.createObjectNode()
+                        .put("sku_code", "SKU-EVAL-000001")
+                        .put("purchase_price", "12.34")
+                        .put("retail_price", "25.60");
+                ObjectNode out = MAPPER.createObjectNode();
+                out.putArray("items").add(item);
+                yield out;
+            }
+            case "get_procurement_ticket" ->
+                    MAPPER.createObjectNode().put("ticket_id", "9005").put("remaining_quantity", "23.500");
+            default -> McpToolTestSupport.ok(name);
+        };
+    }
+
+    // ------------------------------------------------------------------
+    // 归档
+    // ------------------------------------------------------------------
+
+    private static ObjectNode toJson(Metrics metrics) {
+        ProcurementMetrics p = metrics.procurement();
+        DataQueryMetrics d = metrics.dataQuery();
+        ObjectNode root = MAPPER.createObjectNode();
+        root.put("baseline", "agent-eval-baseline");
+        root.put("archived_at", LocalDateTime.now().toString());
+        root.putObject("environment")
+                .put("provider", "deepseek")
+                .put("model", "deepseek-chat")
+                .put("model_backend", "local stub（确定性）")
+                .put("database", "none（单元级 canned 事实；数据库事实由 DataQueryAgentServiceIntegrationTest 承担）");
+        ObjectNode procurement = root.putObject("procurement");
+        procurement.put("eval_set_version", p.evalSetVersion());
+        procurement.put("total_cases", p.totalCases());
+        procurement.put("schema_valid", p.schemaValid());
+        procurement.put("schema_rejected", p.schemaRejected());
+        procurement.put("schema_pass_rate", p.schemaPassRate());
+        procurement.put("requires_human_expected", p.requiresHumanExpected());
+        procurement.put("requires_human_caught", p.requiresHumanCaught());
+        procurement.put("requires_human_recall", p.requiresHumanRecall());
+        procurement.put("happy_path_wrongly_requires_human", p.happyPathWronglyRequiresHuman());
+        procurement.put("write_tool_calls", p.writeToolCalls());
+        procurement.put("avg_latency_ms", p.avgLatencyMs());
+        procurement.put("total_tokens", p.totalTokens());
+        ObjectNode dataQuery = root.putObject("data_query");
+        dataQuery.put("eval_set_version", d.evalSetVersion());
+        dataQuery.put("total_queries", d.totalQueries());
+        dataQuery.put("gate_paths", d.gatePaths());
+        dataQuery.put("gate_requires_human_caught", d.gateRequiresHumanCaught());
+        dataQuery.put("gate_requires_human_recall", d.gateRequiresHumanRecall());
+        dataQuery.put("answerable_queries", d.answerableQueries());
+        dataQuery.put("tool_selection_correct", d.toolSelectionCorrect());
+        dataQuery.put("tool_selection_accuracy", d.toolSelectionAccuracy());
+        dataQuery.put("answer_numbers_correct", d.answerNumbersCorrect());
+        dataQuery.put("answer_number_accuracy", d.answerNumberAccuracy());
+        dataQuery.put("write_tool_calls", d.writeToolCalls());
+        dataQuery.put("avg_model_latency_ms", d.avgModelLatencyMs());
+        dataQuery.put("total_tokens", d.totalTokens());
+        return root;
+    }
+}

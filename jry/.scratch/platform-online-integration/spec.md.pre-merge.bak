@@ -1,0 +1,40 @@
+# 三平台订单在线接入（Phase 0 桥接 + Phase 1 Connector + Phase 2 回传）
+
+Spec 依据：`docs/research/platform-api-integration-design.md`（详细设计）+ `docs/research/platform-integration-redteam.md`（红队修正，本 spec 以其 §6 分票为准）
+契约依据：`docs/research/platform-apis-overview.md` 及三平台契约文档（caishixian/jufubao/feixiang）
+系统侧：`docs/api-contract.md` §4.2/§5.1/§6.2、`docs/excel-closed-loop-spec.md`
+
+## 目标
+
+把彩食鲜/聚福宝/飞象订单从「人工导 Excel → 上传」升级为自动接入，遵守架构铁律：
+- Connector 禁止直接写业务表，必须走应用层用例
+- CanonicalOrder 是长期事实源；批次（ImportBatch）语义不可绕过（orders 表 CHECK + trigger 强制非 WECOM 订单挂批次）
+- 兜底只承诺「人工导表」（上传入口永在）；Python 脚本是带 kill-date 的桥接，Phase 1 上线后退役
+
+## 关键决策（红队修正后）
+
+1. 聚福宝不走「JSON→Excel 转换器」（已删除）；JSON 直连须等「结构化导入用例」（T07）就绪
+2. 试点选型：彩食鲜/飞象（文件化 pullOrders，upload 可见性 1 行改动）为最快全链路；聚福宝（JSON）等 T07
+3. 幂等：行级跳过已存在订单（ORDER_ALREADY_EXISTS + AuditLog）必须在结构化导入用例内实现——现有代码「重复订单=整批 409 回滚」，Phase 0 次日重拉必撞
+4. Phase 0 必须有增量口径（窗口当日/昨日或上传前去重），否则第 2 天起整批失败
+5. D4 聚福宝收货人补抓升格为 blocker 票（缺收货人 → confirm 被拒，验收永远不过）
+6. D1 上传方式倾向方案 B（`/internal/v1/import-batches/source-orders` 薄端点 + Bearer 服务身份，避免网关 Basic 凭据扩散到脚本层）——待用户确认
+
+## 依赖图
+
+```
+01 接口演进（无 blocker）        02 结构化导入用例（无 blocker，关键路径）
+03 Phase 0 落盘（无 blocker）
+04 Phase 0 上传（←03）           07 彩食鲜 Connector（←01）
+05 Phase 0 增量口径（←03,04）    08 飞象 Connector（←01）
+06 Phase 0 调度告警（←05,D3）    09 聚福宝 Connector（←01,02,D4）
+                                10 健康检查+监控（←09|07|08,D3）
+                                11 Phase 2 回传（←D11,09）
+12 横切治理（凭据轮换/golden 样本/失效演练/.env 补齐，无 blocker）
+```
+
+## 范围外
+
+- 彩食鲜/飞象发货回传接口补抓（D11，独立用户动作，不阻塞 01-10）
+- 京东回传（已有 JD SDK 线）
+- 企微消息接入（已有 wecom 线）

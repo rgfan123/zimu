@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" agent="dsh-drawio-client" version="24.7.8" type="device">
+  <diagram id="zimu-finance-frame" name="财务与四板块框架图">
+    <mxGraphModel dx="1320" dy="1010" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1320" pageHeight="1010" math="0" shadow="0">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+
+    <!-- ===================== 顶部：四板块经营闭环主线 ===================== -->
+    <mxCell id="b1" value="客户板块 [已有]&#10;客户档案 · 账期 · 结账方式" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="30" y="30" width="210" height="84" as="geometry"/>
+    </mxCell>
+    <mxCell id="b2" value="采购 / 进货 [部分]&#10;采购工单已有 · 缺金额与应付" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="290" y="30" width="210" height="84" as="geometry"/>
+    </mxCell>
+    <mxCell id="b3" value="库存板块 [部分]&#10;数量已有 · 缺成本金额" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="550" y="30" width="210" height="84" as="geometry"/>
+    </mxCell>
+    <mxCell id="b4" value="订单履约 [已完成]&#10;订单 → 发货 → 来源回填" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="810" y="30" width="210" height="84" as="geometry"/>
+    </mxCell>
+    <mxCell id="b5" value="财务板块 [新建 · 重点]&#10;应收 · 应付 · 账期预警" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="1070" y="30" width="210" height="84" as="geometry"/>
+    </mxCell>
+    <mxCell id="l1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="b1" target="b2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="l2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="b2" target="b3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="l3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="b3" target="b4"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="l4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="b4" target="b5"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+    <!-- ===================== 财务板块展开（大虚线框） ===================== -->
+    <mxCell id="financeBox" value="财务板块展开（本次新增重点）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fbfbfb;strokeColor=#999999;dashed=1;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="30" y="180" width="1260" height="700" as="geometry"/>
+    </mxCell>
+
+    <!-- 左栏标题：应收侧 -->
+    <mxCell id="h1" value="应收侧 · 别人欠我的钱" style="text;html=1;align=left;verticalAlign=middle;fontStyle=1;fontSize=13;fontColor=#335577;" vertex="1" parent="1">
+      <mxGeometry x="70" y="214" width="280" height="26" as="geometry"/>
+    </mxCell>
+    <!-- 右栏标题：应付侧 -->
+    <mxCell id="h2" value="应付侧 · 我欠别人的钱" style="text;html=1;align=left;verticalAlign=middle;fontStyle=1;fontSize=13;fontColor=#775533;" vertex="1" parent="1">
+      <mxGeometry x="690" y="214" width="280" height="26" as="geometry"/>
+    </mxCell>
+
+    <!-- 应收侧节点 -->
+    <mxCell id="s1" value="发货完成（履约模块触发）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="90" y="256" width="280" height="48" as="geometry"/>
+    </mxCell>
+    <mxCell id="s2" value="自动生成「应收账款」&#10;金额 = 发货数量 × 单价&#10;到期日 = 发货日 + 账期" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="90" y="328" width="280" height="76" as="geometry"/>
+    </mxCell>
+    <mxCell id="s3" value="到期判断&#10;（账期到没到 / 是否回款）" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="90" y="428" width="280" height="62" as="geometry"/>
+    </mxCell>
+    <mxCell id="s4a" value="按时回款 → 冲销应收（正常）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="90" y="514" width="280" height="48" as="geometry"/>
+    </mxCell>
+    <mxCell id="s4b" value="未按期付 → 逾期预警&#10;黄 = 临近到期 · 红 = 已逾期" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="90" y="586" width="280" height="62" as="geometry"/>
+    </mxCell>
+    <mxCell id="s1s2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s1" target="s2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="s2s3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s2" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="s3a" value="按时回款" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;fontSize=11;labelBackgroundColor=#FFFFFF;exitX=0.3;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s3" target="s4a"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="s3b" value="未按期付" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#b85450;fontSize=11;labelBackgroundColor=#FFFFFF;exitX=0.7;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s3" target="s4b"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+    <!-- 应付侧节点 -->
+    <mxCell id="p1" value="采购完成（进货触发）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="680" y="256" width="280" height="48" as="geometry"/>
+    </mxCell>
+    <mxCell id="p2" value="生成「应付账款」&#10;金额 = 采购数量 × 采购单价" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="680" y="328" width="280" height="64" as="geometry"/>
+    </mxCell>
+    <mxCell id="p3" value="到期付款 → 冲销应付" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="680" y="416" width="280" height="48" as="geometry"/>
+    </mxCell>
+    <mxCell id="p1p2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="p1" target="p2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="p2p3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="p2" target="p3"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+    <!-- ===================== 对账区 ===================== -->
+    <mxCell id="h3" value="应收 ↔ 应付 对应（对账）" style="text;html=1;align=left;verticalAlign=middle;fontStyle=1;fontSize=13;fontColor=#5b3a7a;" vertex="1" parent="1">
+      <mxGeometry x="70" y="688" width="320" height="26" as="geometry"/>
+    </mxCell>
+    <mxCell id="f1" value="应收&#10;（客户欠我多少）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="90" y="730" width="230" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="f2" value="应付&#10;（我欠供应商多少）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="370" y="730" width="230" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="f3" value="毛利 = 应收 − 进货成本&#10;资金缺口 = 应收 − 应付" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="660" y="720" width="300" height="72" as="geometry"/>
+    </mxCell>
+    <mxCell id="f4" value="企业财务健康度&#10;账龄 · 逾期 · 缺口看板" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="1010" y="730" width="250" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="f1f3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673a6;exitX=1;exitY=0.5;entryX=0;entryY=0.3;" edge="1" parent="1" source="f1" target="f3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="f2f3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673a6;exitX=1;exitY=0.5;entryX=0;entryY=0.7;" edge="1" parent="1" source="f2" target="f3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="f3f4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673a6;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="f3" target="f4"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+    <!-- ===================== 底部注释 ===================== -->
+    <mxCell id="note1" value="数据源复用：发货 → 履约模块 · 进货 → 采购工单 · 账期/客户 → 客户档案 —— 财务模块是在现有履约系统上加一层，不推翻重来" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=11;fontColor=#555555;" vertex="1" parent="1">
+      <mxGeometry x="30" y="905" width="1260" height="36" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>
+  </diagram>
+</mxfile>

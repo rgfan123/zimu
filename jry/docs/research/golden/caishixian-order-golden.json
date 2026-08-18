@@ -1,0 +1,59 @@
+{
+  "meta": {
+    "platform": "CAISHIXIAN",
+    "endpoint": "orderList + orderDetail",
+    "fetched_at": "2026-08-18",
+    "note": "脱敏样例：姓名/电话/地址已替换，结构保持原样"
+  },
+  "orderList_response_data": {
+    "pageNum": 1,
+    "pageSize": 10,
+    "totalNum": 1,
+    "order": {
+      "id": "13395516",
+      "orderCode": "2608170617584694",
+      "orderKey": "2608170617584694",
+      "orderStatus": 3,
+      "orderStatusEnumName": "待发货",
+      "supplierCode": "20075684",
+      "payTime": "2026-08-17 22:50:32",
+      "orderTime": "2026-08-18 00:00:52",
+      "vip": false
+    },
+    "number": {
+      "waitDepotNum": 5,
+      "deliveryNum": 86,
+      "receivedNum": 0,
+      "canceledNum": 3,
+      "all": 0,
+      "beOverdueNum": 0,
+      "isOverdueNum": 0,
+      "waitVerificationNum": 0,
+      "finishVerificationNum": 0,
+      "waitConfirmNum": 0,
+      "confirmedNum": 0
+    }
+  },
+  "orderDetail_response_data": {
+    "orderCode": "2608170617584694",
+    "orderKey": "2608170617584694",
+    "orderKind": "MAIN_ORDER",
+    "orderStatus": 3,
+    "receiverProvince": "XX省",
+    "receiverCity": "XX市",
+    "receiverDistrict": "XX区",
+    "receiverAddress": "XX路XX号（脱敏）",
+    "supplierOrderGoodsVo": [
+      {
+        "goodsCode": "2047846",
+        "goodsName": "子牧原切眼肉牛排150g*4",
+        "count": 1,
+        "spec": "150g*4",
+        "unit": "套",
+        "price": 130.16,
+        "salePrice": 147.9
+      }
+    ],
+    "goodsPackageList": null
+  }
+}

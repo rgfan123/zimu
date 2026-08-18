@@ -1,0 +1,205 @@
+package cn.zimu.fulfillment.agent;
+
+import cn.zimu.fulfillment.common.audit.AuditActorType;
+import cn.zimu.fulfillment.common.audit.AuditLogService;
+import cn.zimu.fulfillment.common.domain.DataScope;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
+
+/**
+ * Agent 运行时门面（agent-decision-layer 02）：带注册表语义的统一调用入口。
+ *
+ * <p>在 01 的 {@link AgentRuntime} 模型接缝之上做编排：按 slug 解析 {@link AgentDefinition}、
+ * enabled 判定、每次运行生成唯一 run_id（沿用 trace_id 的 {@code "run_"+UUID-hex} 生成模式）、
+ * 通过 {@link AuditLogService} 落 AGENT 审计（service=agent, operation=agent.{slug}.run），
+ * 未启用/未注册的 Agent 显式拒绝且留审计，未配置模型（底层 fail-closed）同样拒绝并留审计。
+ *
+ * <p>接口取舍：01 的 {@code AgentRuntime.run(AgentTaskRequest)} 是纯模型接缝（不知道 slug 与
+ * 注册表），保持零改动；注册表语义全部收敛在本门面，拒绝路径与审计路径因此可独立 mock 测试。
+ * resume 一期与 invoke 行为一致（无状态会话），仅语义上表示延续已有 thread_id 会话。
+ *
+ * <p>工具执行（03 票）：每次运行按 {@code AgentDefinition.tool_names} 白名单从
+ * {@link McpToolRegistry} 生成工具绑定（run_id 即工具调用 request/trace id），随
+ * {@link AgentTaskRequest} 透传底层运行时；白名单之外的工具在 LangChain4j 侧不暴露。
+ * 白名单引用未知工具属配置漂移，绑定抛 {@link IllegalArgumentException} 直接暴露。
+ *
+ * <p>可观测性（08 票）：每次运行以 run_id 为关联键落 {@code agent_run} 行（先 RUNNING
+ * 后收口；input 只存 SHA-256 digest；拒绝路径同样留 FAILED 行供追责），并透传调用侧
+ * business_entity_type/id（{@link AgentRunContext#withBusinessEntity}）供双向追溯；
+ * 审计的 trace_id/request_id 与 run_id 同值，agent_run 与 AuditLog 由此双向关联。
+ * provider 经 {@link AgentObservability} 接缝注入（默认 DB 实现），任何观测回调失败
+ * 都 try/catch 隔离，不影响运行结果与审计。
+ */
+public class AgentRuntimeFacade {
+
+    private static final String DEFAULT_OPERATOR = "agent";
+    private static final String STATUS_SUCCESS = "SUCCESS";
+
+    private final AgentRegistry registry;
+    private final AgentRuntime runtime;
+    private final AuditLogService audits;
+    private final AgentModelMetadataRegistry metadata;
+    private final AgentToolBindingFactory toolBindingFactory;
+    private AgentObservability observability = AgentObservability.disabled();
+
+    public AgentRuntimeFacade(
+            AgentRegistry registry,
+            AgentRuntime runtime,
+            AuditLogService audits,
+            AgentModelMetadataRegistry metadata,
+            AgentToolBindingFactory toolBindingFactory) {
+        this.registry = registry;
+        this.runtime = runtime;
+        this.audits = audits;
+        this.metadata = metadata;
+        this.toolBindingFactory = toolBindingFactory;
+    }
+
+    /**
+     * 注入可观测性 provider（08 票）：Spring 装配 Bean 时经 setter 注入（{@code
+     * AgentRegistryConfiguration} 的 @Bean 工厂方法按 02 票签名构造，本类以可选 setter
+     * 保持该装配零改动）；单元测试直接 new 时默认 no-op，行为与 08 票之前一致。
+     */
+    @Autowired
+    public void setObservability(AgentObservability observability) {
+        if (observability != null) {
+            this.observability = observability;
+        }
+    }
+
+    /**
+     * 以注册表中的 Agent 定义运行一次（system prompt 取自 definition，输入为 userInput）。
+     *
+     * @return 模型运行结果；注册表拒绝（未注册/未启用）与底层失败均以
+     *         {@link AgentRunResult} 携带稳定失败码返回，不抛异常。
+     */
+    public AgentRunResult invoke(String agentSlug, String userInput, AgentRunContext context) {
+        AgentRunContext ctx = context == null ? AgentRunContext.empty() : context;
+        String runId = newRunId();
+        AgentDefinition definition = registry.bySlug(agentSlug);
+        if (definition == null) {
+            runStarted(ctx, runId, null, userInput);
+            recordAudit(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND.name(), 0, null);
+            runFinished(runId, AgentFailureCode.AGENT_NOT_FOUND.name(), 0, null);
+            return AgentRunResult.failClosed(AgentFailureCode.AGENT_NOT_FOUND);
+        }
+        if (!definition.enabled()) {
+            runStarted(ctx, runId, definition, userInput);
+            recordAudit(ctx, runId, definition, AgentFailureCode.AGENT_DISABLED.name(), 0, null);
+            runFinished(runId, AgentFailureCode.AGENT_DISABLED.name(), 0, null);
+            return AgentRunResult.failClosed(AgentFailureCode.AGENT_DISABLED);
+        }
+        runStarted(ctx, runId, definition, userInput);
+        long startedNanos = System.nanoTime();
+        try {
+            AgentToolBinding binding = toolBindingFactory.bind(runId, definition.toolNames());
+            AgentRunResult result =
+                    runtime.run(new AgentTaskRequest(definition.systemPrompt(), userInput, binding));
+            long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
+            String status = result.error() == null ? STATUS_SUCCESS : result.error();
+            recordAudit(ctx, runId, definition, status, latencyMs, result);
+            runFinished(runId, result.error(), latencyMs, projectedModel(result));
+            return result;
+        } catch (RuntimeException ex) {
+            // 绑定漂移等配置错误与运行时意外异常：留 FAILED 观测行收口后原样上抛（不吞配置错误）
+            long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
+            runFinished(runId, "AGENT_RUNTIME_EXCEPTION", latencyMs, null);
+            throw ex;
+        }
+    }
+
+    /** 会话延续：一期无状态，语义等价于 {@link #invoke}，thread_id 照常透传进审计。 */
+    public AgentRunResult resume(String agentSlug, String userInput, AgentRunContext context) {
+        return invoke(agentSlug, userInput, context);
+    }
+
+    /** 每次运行唯一 run_id，沿用 trace_id 生成模式（UUID hex，无连字符）。 */
+    public static String newRunId() {
+        return "run_" + UUID.randomUUID().toString().replace("-", "");
+    }
+
+    // ------------------------------------------------------------------
+    // 可观测性（08 票）：失败隔离——观测回调失败不得影响运行结果与审计
+    // ------------------------------------------------------------------
+
+    private void runStarted(AgentRunContext ctx, String runId, AgentDefinition definition, String userInput) {
+        try {
+            observability.runStarted(new AgentObservability.Start(
+                    runId,
+                    ctx.threadId(),
+                    definition == null ? "unknown" : definition.agentSlug(),
+                    null,
+                    definition == null ? "none" : definition.promptVersion(),
+                    definition == null ? "none" : definition.modelRef(),
+                    AgentPayloadRedactor.digest(userInput),
+                    ctx.businessEntityType(),
+                    ctx.businessEntityId()));
+        } catch (RuntimeException ignored) {
+            // 观测失败不掩盖运行（与既有审计失败容忍语义一致）
+        }
+    }
+
+    private void runFinished(String runId, String errorType, long latencyMs, String projectedModel) {
+        try {
+            observability.runFinished(
+                    new AgentObservability.Finish(runId, errorType, latencyMs, projectedModel));
+        } catch (RuntimeException ignored) {
+            // 观测失败不掩盖运行（与既有审计失败容忍语义一致）
+        }
+    }
+
+    /** 服务端 allowlist 投影后的模型名（未命中投影为 none），null 保留 Start 时值。 */
+    private String projectedModel(AgentRunResult result) {
+        if (result == null) {
+            return null;
+        }
+        return metadata.publicProjection(result.provider(), result.model(), result.promptVersion())
+                .model();
+    }
+
+    private void recordAudit(
+            AgentRunContext ctx,
+            String runId,
+            AgentDefinition definition,
+            String status,
+            long latencyMs,
+            AgentRunResult result) {
+        String slug = definition == null ? "unknown" : definition.agentSlug();
+        String promptVersion = definition == null ? "none" : definition.promptVersion();
+        AgentModelMetadataRegistry.PublicMetadata meta = result == null
+                ? AgentModelMetadataRegistry.none()
+                : metadata.publicProjection(result.provider(), result.model(), result.promptVersion());
+        try {
+            audits.record(new AuditLogService.AuditCommand()
+                    .dataScope(DataScope.BUSINESS)
+                    .requestId(runId)
+                    .traceId(runId)
+                    .operator(blankToDefault(ctx.operator(), DEFAULT_OPERATOR))
+                    .actorType(AuditActorType.AGENT)
+                    .service("agent")
+                    .operation("agent." + slug + ".run")
+                    .requestPayload(Map.of(
+                            "agent_slug", slug,
+                            "run_id", runId,
+                            "thread_id", ctx.threadId(),
+                            "prompt_version", promptVersion,
+                            "model_ref", definition == null ? "none" : definition.modelRef(),
+                            "tool_names", definition == null ? List.of() : definition.toolNames()))
+                    .responsePayload(Map.of(
+                            "status", status,
+                            "provider", meta.provider(),
+                            "model", meta.model(),
+                            "prompt_version", promptVersion))
+                    .businessCode(status)
+                    .latencyMs((int) latencyMs));
+        } catch (RuntimeException ignored) {
+            // 审计失败不掩盖 Agent 运行结果与拒绝结果（与既有 MCP 写路径审计语义一致）
+        }
+    }
+
+    private static String blankToDefault(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
+    }
+}

@@ -1,0 +1,395 @@
+.analytics-page {
+  color: var(--analytics-text);
+  min-height: calc(100vh - 56px);
+  margin: -20px;
+  padding: 20px;
+  background: var(--analytics-canvas);
+  animation: analytics-page-enter var(--analytics-motion-mid) ease-out both;
+}
+
+.analytics-filterbar {
+  position: sticky;
+  top: 56px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: -20px -20px 18px;
+  padding: 10px 18px;
+  background: var(--analytics-surface);
+  border-bottom: 1px solid var(--analytics-border);
+}
+
+.analytics-filterbar .ant-segmented {
+  background: var(--analytics-sunken);
+}
+
+.analytics-filterbar .ant-segmented-item-selected {
+  color: var(--analytics-brand-active);
+  box-shadow: none;
+}
+
+.analytics-filter-title {
+  margin-right: 4px;
+  color: var(--analytics-text);
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.analytics-filter-label,
+.analytics-loading-copy,
+.analytics-card-subtitle,
+.analytics-note {
+  color: var(--analytics-text-tertiary);
+  font-size: 12px;
+}
+
+.analytics-channel-filter {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.analytics-channel-button.ant-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--analytics-text-secondary);
+  background: var(--analytics-surface);
+  border-color: var(--analytics-border);
+  transition:
+    color var(--analytics-motion-fast) ease,
+    border-color var(--analytics-motion-fast) ease,
+    background var(--analytics-motion-fast) ease;
+}
+
+.analytics-channel-button.ant-btn:hover,
+.analytics-channel-button.ant-btn:focus-visible {
+  color: var(--analytics-brand-hover);
+  border-color: var(--analytics-brand-focus);
+}
+
+.analytics-channel-button.is-selected.ant-btn {
+  color: var(--analytics-brand-active);
+  background: var(--analytics-brand-subtle);
+  border-color: var(--analytics-brand-focus);
+}
+
+.analytics-channel-dot,
+.analytics-legend-dot,
+.analytics-kpi-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--analytics-marker-color, var(--analytics-border));
+}
+
+.analytics-channel-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.analytics-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.analytics-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.analytics-kpi-card {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  padding: 13px 14px 9px;
+  background: var(--analytics-surface);
+  border: 1px solid var(--analytics-border);
+  border-radius: 10px;
+  transition:
+    border-color var(--analytics-motion-fast) ease,
+    transform var(--analytics-motion-fast) ease;
+}
+
+.analytics-kpi-card:hover {
+  border-color: var(--analytics-brand-focus);
+  transform: translateY(-1px);
+}
+
+.analytics-kpi-card--warning,
+.analytics-kpi-card--critical {
+  border-left: 2px solid var(--analytics-kpi-accent);
+}
+
+.analytics-kpi-card--critical {
+  border-color: var(--analytics-kpi-accent);
+}
+
+.analytics-kpi-heading,
+.analytics-kpi-value-row {
+  display: flex;
+  align-items: center;
+}
+
+.analytics-kpi-heading {
+  min-height: 22px;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.analytics-kpi-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--analytics-text-secondary);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.analytics-kpi-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--analytics-kpi-accent);
+}
+
+.analytics-kpi-value-row {
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.analytics-kpi-value {
+  color: var(--analytics-text);
+  font-size: 24px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
+  line-height: 1;
+}
+
+.analytics-kpi-card--priority .analytics-kpi-value {
+  font-size: 28px;
+}
+
+.analytics-kpi-unit {
+  color: var(--analytics-text-tertiary);
+  font-size: 12px;
+}
+
+.analytics-kpi-spark {
+  height: 34px;
+  margin-top: 5px;
+}
+
+.analytics-kpi-spark--empty {
+  border-bottom: 1px solid var(--analytics-border-soft);
+}
+
+.analytics-delta.ant-tag {
+  margin-inline-end: 0;
+  padding-inline: 6px;
+  color: var(--analytics-text-secondary);
+  background: var(--analytics-sunken);
+  border-color: transparent;
+  font-size: 11px;
+  line-height: 19px;
+}
+
+.analytics-delta--good.ant-tag {
+  color: var(--analytics-success);
+}
+
+.analytics-delta--bad.ant-tag {
+  color: var(--analytics-error);
+}
+
+.analytics-panel-shell {
+  display: flex;
+  min-width: 0;
+}
+
+.analytics-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  background: var(--analytics-surface);
+  border: 1px solid var(--analytics-border);
+  border-radius: 10px;
+  transition:
+    border-color var(--analytics-motion-fast) ease,
+    transform var(--analytics-motion-fast) ease;
+}
+
+.analytics-panel:hover {
+  border-color: var(--analytics-brand-focus);
+  transform: translateY(-1px);
+}
+
+.analytics-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--analytics-border-soft);
+}
+
+.analytics-panel-title {
+  color: var(--analytics-text);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.analytics-card-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-panel-actions-spacer {
+  flex: 1;
+}
+
+.analytics-panel-toggle.ant-btn {
+  color: var(--analytics-text-tertiary);
+}
+
+.analytics-panel-toggle.is-selected.ant-btn,
+.analytics-panel-toggle.ant-btn:hover {
+  color: var(--analytics-brand);
+  background: var(--analytics-brand-subtle);
+}
+
+.analytics-panel-body {
+  flex: 1;
+  min-height: 224px;
+  padding: 4px 14px 14px;
+}
+
+.analytics-legend,
+.analytics-legend-item {
+  display: inline-flex;
+  align-items: center;
+}
+
+.analytics-legend {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.analytics-legend-item {
+  gap: 5px;
+  color: var(--analytics-text-tertiary);
+  font-size: 12px;
+}
+
+.analytics-legend-dot {
+  width: 8px;
+  height: 8px;
+}
+
+.analytics-note {
+  display: block;
+  margin-top: 12px;
+}
+
+.analytics-chart-note {
+  margin-top: 4px;
+  color: var(--analytics-text-tertiary);
+  font-size: 12px;
+}
+
+.analytics-share-row {
+  display: grid;
+  grid-template-columns: 86px 1fr 54px;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 5px 4px;
+  color: var(--analytics-text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  transition: background var(--analytics-motion-fast) ease;
+}
+
+.analytics-share-row:hover,
+.analytics-share-row:focus-visible {
+  background: var(--analytics-brand-subtle);
+  outline: 2px solid var(--analytics-brand-focus);
+  outline-offset: 1px;
+}
+
+.analytics-share-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.analytics-share-track {
+  height: 7px;
+  overflow: hidden;
+  background: var(--analytics-sunken);
+  border-radius: 999px;
+}
+
+.analytics-share-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--analytics-marker-color);
+  transition: width var(--analytics-motion-mid) ease;
+}
+
+.analytics-share-value {
+  color: var(--analytics-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+@keyframes analytics-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 900px) {
+  .analytics-overview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-dashboard-grid > .analytics-panel-shell {
+    grid-column: span 12 !important;
+  }
+}
+
+@media (max-width: 560px) {
+  .analytics-overview-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .analytics-page,
+  .analytics-kpi-card,
+  .analytics-panel,
+  .analytics-channel-button.ant-btn,
+  .analytics-share-fill {
+    animation: none;
+    transition: none;
+  }
+}

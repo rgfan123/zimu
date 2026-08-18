@@ -1,0 +1,146 @@
+.admin-page,
+.admin-crud {
+  width: 100%;
+}
+
+.admin-page {
+  display: flex;
+  max-width: 1600px;
+  margin: 0 auto;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.admin-page__intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.admin-page__intro-copy {
+  max-width: 760px;
+}
+
+.admin-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+  padding: 11px 14px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: var(--ant-border-radius-lg);
+  background: var(--ant-color-bg-container);
+}
+
+.admin-toolbar__spacer {
+  flex: 1;
+}
+
+.admin-surface {
+  overflow: hidden;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: var(--ant-border-radius-lg);
+  background: var(--ant-color-bg-container);
+}
+
+.admin-surface--padded {
+  padding: 16px;
+}
+
+.admin-state-panel {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+}
+
+.admin-tag-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-inline-end: 2px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.admin-surface .ant-table-wrapper .ant-table {
+  border-radius: 0;
+}
+
+.admin-surface .ant-table-thead > tr > th {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.admin-surface .ant-table-tbody > tr > td {
+  transition-duration: var(--ant-motion-duration-fast);
+}
+
+.admin-detail-section + .admin-detail-section {
+  padding-top: 18px;
+  border-top: 1px solid var(--ant-color-border-secondary);
+}
+
+.admin-detail-section__heading {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.admin-receipt-copy {
+  font-size: 12px;
+  color: var(--ant-color-text);
+}
+
+.admin-receipt-meta {
+  color: var(--ant-color-text-secondary);
+}
+
+.admin-form-note {
+  padding-top: 14px;
+  border-top: 1px solid var(--ant-color-border-secondary);
+}
+
+.admin-page .ant-card,
+.admin-crud .ant-card {
+  box-shadow: none;
+}
+
+.admin-page .ant-btn,
+.admin-page .ant-input,
+.admin-page .ant-select-selector,
+.admin-page .ant-table-row,
+.admin-crud .ant-btn,
+.admin-crud .ant-input,
+.admin-crud .ant-select-selector,
+.admin-crud .ant-table-row {
+  transition-duration: var(--ant-motion-duration-fast) !important;
+}
+
+@media (max-width: 720px) {
+  .admin-page__intro,
+  .admin-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .admin-toolbar__spacer {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-page *,
+  .admin-page *::before,
+  .admin-page *::after,
+  .admin-crud *,
+  .admin-crud *::before,
+  .admin-crud *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
