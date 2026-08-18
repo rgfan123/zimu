@@ -110,13 +110,15 @@ class ShipmentJdOutboundPreviewApiTest {
                 .containsEntry("sourceNo", "ISV-API-001")
                 .containsEntry("erpDeliveryNo", outboundOrderNo)
                 .containsEntry("warehouseNo", "WH-API-001")
-                .containsEntry("orderType", "1")
+                // 真实建单模板（2026-08-18）：订单类型留空（京东默认 B2C=1）
+                .doesNotContainKey("orderType")
                 .containsEntry("orderMark", "0".repeat(50))
                 .containsEntry("pin", "***");
         assertThat(body.toString()).doesNotContain("PIN-API-001");
         assertThat(castMap(request.get("channelInfo")))
                 .containsEntry("erpShopNo", "ERP-SHOP-001")
-                .containsEntry("salesPlatformDeliveryNo", fact.sourceRef())
+                // 真实建单模板（2026-08-18）：销售平台来源 6 不传平台单号
+                .doesNotContainKey("salesPlatformDeliveryNo")
                 .containsEntry("salesPlatformSource", "6");
         assertThat(castMap(request.get("customerInfo")))
                 .containsEntry("customerCode", "CUST-API-001")

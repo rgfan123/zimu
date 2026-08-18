@@ -686,9 +686,9 @@ public class ShipmentJdOutboundService {
         pass(validations, "erpDeliveryNo", "shipments.outbound_order_no");
         putRequiredConfig(request, "warehouseNo", state, CONFIG_WAREHOUSE_NO, "warehouseNo", false, validations, blockers);
 
-        // 这三个值来自已审批的当前销售出库政策，不是由商品或地址猜测。
-        request.put("orderType", "1");
-        pass(validations, "orderType", "JD sales-outbound policy (B2C=1)");
+        // 订单类型留空（模板：订单类型不传，京东默认 B2C=1），不再显式下发。
+        validations.add(new Validation(
+                "orderType", "OMITTED", "JD sales-outbound policy", "订单类型留空，京东默认 B2C=1"));
         request.put("orderMark", "0".repeat(50));
         pass(validations, "orderMark", "non-COD outbound policy (50 zero bits)");
         putRequiredConfig(request, "pin", state, CONFIG_PIN, "pin", true, validations, blockers);
@@ -696,13 +696,11 @@ public class ShipmentJdOutboundService {
         Map<String, Object> channelInfo = new LinkedHashMap<>();
         putRequiredConfig(channelInfo, "erpShopNo", state, CONFIG_ERP_SHOP_NO,
                 "channelInfo.erpShopNo", false, validations, blockers);
-        if (hasText(state.sourceRef())) {
-            channelInfo.put("salesPlatformDeliveryNo", state.sourceRef());
-            pass(validations, "channelInfo.salesPlatformDeliveryNo", "orders.source_ref");
-        } else {
-            validations.add(new Validation(
-                    "channelInfo.salesPlatformDeliveryNo", "OMITTED", "orders.source_ref", "来源未提供可选外部订单号"));
-        }
+        // 销售平台订单号留空（真实建单 2026-08-18 模板：来源 6 不传平台单号），
+        // 不再把彩食鲜来源单号填入 channelInfo.salesPlatformDeliveryNo。
+        validations.add(new Validation(
+                "channelInfo.salesPlatformDeliveryNo", "OMITTED", "sales-platform template",
+                "销售平台来源非京东平台，销售平台订单号留空"));
         putRequiredConfig(channelInfo, "salesPlatformSource", state, CONFIG_SALES_PLATFORM_SOURCE,
                 "channelInfo.salesPlatformSource", false, validations, blockers);
         request.put("channelInfo", channelInfo);
