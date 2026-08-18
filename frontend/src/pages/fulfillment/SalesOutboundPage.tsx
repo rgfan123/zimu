@@ -44,6 +44,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const [uploading, setUploading] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [jdSubmitting, setJdSubmitting] = useState(false);
+  const [returnExportLoading, setReturnExportLoading] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportBatch | null>(null);
   const [confirmRows, setConfirmRows] = useState<ImportRowView[]>([]);
@@ -143,6 +144,25 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     }
   };
 
+  /** 下载批次已生成的来源回填表（SDK 直连与文件路由共用；未生成时提示而非报错）。 */
+  const downloadSourceReturns = async (batchId: string) => {
+    setReturnExportLoading(true);
+    try {
+      const exports = await fileOperationsApi.sourceReturns(batchId);
+      if (exports.length === 0) {
+        message.info('当前批次尚未生成来源回填文件');
+        return;
+      }
+      for (const item of exports) {
+        await fileOperationsApi.downloadSourceReturn(item.id);
+      }
+    } catch (error) {
+      message.error(errorMessage(error));
+    } finally {
+      setReturnExportLoading(false);
+    }
+  };
+
   const confirmable = result && result.row_counts.need_review === 0 && result.row_counts.rejected === 0;
   const confirmLabel = result ? `确认本批次（已接收 ${result.row_counts.accepted} 行）` : '确认本批次';
   const confirmDisabledReason = result && result.row_counts.need_review + result.row_counts.rejected > 0
@@ -202,13 +222,22 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
               ? `${summarizeImportBatch(result.row_counts)}；批次已确认，生成履约文件 ${result.generated_fulfillment_export_ids?.length ?? 0} 份，已形成履约承诺。`
               : `${summarizeImportBatch(result.row_counts)}；确认后已接收行将写入系统订单，并生成履约文件，形成履约承诺。请核对整个批次后统一确认。`}
             action={result.confirmed_at ? (
-              <Button
-                icon={<ReloadOutlined />}
-                loading={jdSubmitting}
-                onClick={submitJdOutbounds}
-              >
-                重试京东建单
-              </Button>
+              <Space wrap>
+                <Button
+                  icon={<ReloadOutlined />}
+                  loading={jdSubmitting}
+                  onClick={submitJdOutbounds}
+                >
+                  重试京东建单
+                </Button>
+                <Button
+                  icon={<DownloadOutlined />}
+                  loading={returnExportLoading}
+                  onClick={() => downloadSourceReturns(result.id)}
+                >
+                  下载回填表
+                </Button>
+              </Space>
             ) : (
               <Tooltip title={confirmDisabledReason || undefined}>
                 <span>
