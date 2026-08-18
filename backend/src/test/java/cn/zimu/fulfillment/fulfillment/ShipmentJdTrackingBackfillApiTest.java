@@ -607,21 +607,22 @@ class ShipmentJdTrackingBackfillApiTest {
     @ValueSource(strings = {"UNKNOWN", "CODE_NAME_MISMATCH", "AMBIGUOUS_NAME"})
     void carrierMustResolveToOneConsistentEnabledInternalMasterRecord(String shape) {
         Fixture fixture = submittedShipment("CARRIER-MASTER-" + shape, List.of(singleItem("1.000")));
-        JdResult valid = fullResult(fixture, "JD-WAYBILL-CARRIER-MASTER-" + shape);
+        JdResult valid = fullResult(fixture, "XY-WAYBILL-CARRIER-MASTER-" + shape);
         Map<String, Object> data = new LinkedHashMap<>((Map<String, Object>) valid.data());
+        // 运单前缀用 XY-（无前缀映射），确保 stated 解析失败时不会经前缀兜底命中 JD。
         Map<String, Object> carrier = switch (shape) {
             case "UNKNOWN" -> Map.of(
                     "carrierNo", "UNKNOWN_CARRIER",
                     "carrierName", "未知物流",
-                    "waybillNo", "JD-WAYBILL-CARRIER-MASTER-UNKNOWN");
+                    "waybillNo", "XY-WAYBILL-CARRIER-MASTER-UNKNOWN");
             case "CODE_NAME_MISMATCH" -> Map.of(
                     "carrierNo", "JD",
                     "carrierName", "顺丰速运",
-                    "waybillNo", "JD-WAYBILL-CARRIER-MASTER-MISMATCH");
+                    "waybillNo", "XY-WAYBILL-CARRIER-MASTER-MISMATCH");
             case "AMBIGUOUS_NAME" -> Map.of(
                     "carrierNo", "AMB_A",
                     "carrierName", "重复物流",
-                    "waybillNo", "JD-WAYBILL-CARRIER-MASTER-AMBIGUOUS");
+                    "waybillNo", "XY-WAYBILL-CARRIER-MASTER-AMBIGUOUS");
             default -> throw new IllegalArgumentException(shape);
         };
         data.put("carrierInfo", carrier);
@@ -675,6 +676,35 @@ class ShipmentJdTrackingBackfillApiTest {
                 Long.class,
                 fixture.orderId(),
                 "req-jd-tracking-carrier-master-" + shape)).isEqualTo(1L);
+    }
+
+    @Test
+    void jdStatedCarrierFallsBackToWaybillPrefixMapping() {
+        Fixture fixture = submittedShipment("PREFIX-FALLBACK", List.of(singleItem("1.000")));
+        JdResult valid = fullResult(fixture, "JDVA46541368239");
+        Map<String, Object> data = new LinkedHashMap<>((Map<String, Object>) valid.data());
+        // 真实京东形态（2026-08-18 探针实测）：carrierNo=CYS0000010、carrierName=京东配送
+        // 均不在内部主数据，靠运单号前缀映射 JDVA→JD（V21 主数据权威）兜底解析。
+        data.put("carrierInfo", Map.of(
+                "carrierNo", "CYS0000010",
+                "carrierName", "京东配送",
+                "waybillNo", "JDVA46541368239"));
+        jd.enqueue(new JdResult(true, "1000", "成功", "jd-query-prefix-fallback", data));
+
+        ResponseEntity<Map> response = backfill(
+                fixture.shipmentId(), "jd-tracking-prefix-fallback-001", "req-jd-tracking-prefix-fallback-001");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody())
+                .containsEntry("poll_status", "TRACKED")
+                .containsEntry("tracking_number", "JDVA46541368239");
+        assertThat(jdbc.queryForMap(
+                "SELECT logistics_company_code, logistics_company_name, tracking_number "
+                        + "FROM app.trackings WHERE shipment_id=?",
+                fixture.shipmentId()))
+                .containsEntry("logistics_company_code", "JD")
+                .containsEntry("logistics_company_name", "京东物流")
+                .containsEntry("tracking_number", "JDVA46541368239");
     }
 
     @Test
@@ -1376,7 +1406,9 @@ class ShipmentJdTrackingBackfillApiTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"10027", "10029", "100130"})
+    // 10027 取消中、10029 取消失败仍是非终态；100130 起已获取运单属发货管道（见 SHIPPED_STATUS 注释），
+    // 真正的发货前状态是 10010（见 pendingResult fixture）。
+    @ValueSource(strings = {"10027", "10029"})
     void nonTerminalStatusesRemainPendingWithoutReviewCase(String jdStatus) {
         Fixture fixture = submittedShipment("NON-TERMINAL-" + jdStatus, List.of(singleItem("1.000")));
         jd.enqueue(statusResult(fixture, jdStatus));
@@ -1613,7 +1645,8 @@ class ShipmentJdTrackingBackfillApiTest {
         data.put("erpDeliveryNo", fixture.erpDeliveryNo());
         data.put("deliveryNo", fixture.jdDeliveryNo());
         data.put("warehouseNo", "WH-API-001");
-        data.put("status", "100130");
+        // 10010 订单初始化：运单号尚未产生的真正发货前状态（100130 起已获取运单，属已发货管道）
+        data.put("status", "10010");
         data.put("isSplit", "0");
         data.put("carrierInfo", Map.of(
                 "carrierNo", "JD", "carrierName", "京东物流", "waybillNo", "JD-PENDING-001"));

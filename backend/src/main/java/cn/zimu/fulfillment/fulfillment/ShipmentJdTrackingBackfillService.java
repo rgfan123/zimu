@@ -41,7 +41,13 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public class ShipmentJdTrackingBackfillService {
 
     static final String SCOPE = "shipment.jd_tracking.backfill";
-    private static final Set<String> SHIPPED_STATUS = Set.of("10020", "10034");
+    // 销售出库单状态枚举（access-guide 367/54597）：运单号自 100130 预分拣-获取运单起存在，
+    // 10014~10019 拣货/打包/交接全程有运单号；10020 包裹出库、10032/10033/10034 分拣/站点/妥投、
+    // 10054 分拣中心发货。真实探测（2026-08-18）：10015/10016 即返回 carrierInfo.waybillNo
+    // （如 JDVA46541368239），10054 为仓已发出的中后段状态。
+    private static final Set<String> SHIPPED_STATUS = Set.of(
+            "100130", "10014", "10015", "10016", "10017", "10018", "10019",
+            "10020", "10032", "10033", "10034", "10054");
     private static final Set<String> TERMINAL_EXCEPTION_STATUS =
             Set.of("10028", "10031", "10035");
 
@@ -522,10 +528,19 @@ public class ShipmentJdTrackingBackfillService {
                     carrierMatcher.resolveStated(carrierCode).orElse(null);
             CarrierPrefixMatcher.Carrier canonicalByName =
                     carrierMatcher.resolveStated(carrierName).orElse(null);
-            if (canonicalByCode == null
-                    || canonicalByCode.name() == null
-                    || canonicalByCode.name().isBlank()
-                    || !canonicalByCode.equals(canonicalByName)) {
+            // 京东 stated 承运商是京东内部编码/名称（如 CYS0000010/京东配送），不在内部主数据时
+            // 回退到运单号前缀映射（V21 主数据权威，如 JDVA→JD）；仍是恰好一个启用 Carrier 才接受。
+            CarrierPrefixMatcher.Carrier canonicalByPrefix =
+                    carrierMatcher.resolvePrefix(waybillNo).orElse(null);
+            if (canonicalByCode != null
+                    && canonicalByCode.name() != null
+                    && !canonicalByCode.name().isBlank()
+                    && canonicalByCode.equals(canonicalByName)) {
+                // stated 代码与名称一致命中，维持既有严格路径。
+            } else if (canonicalByPrefix != null) {
+                canonicalByCode = canonicalByPrefix;
+                canonicalByName = canonicalByPrefix;
+            } else {
                 return Parsed.carrierMappingRequired(
                         jdStatus,
                         carrierCode,
