@@ -451,8 +451,8 @@ class ShipmentJdOutboundPreviewApiTest {
 
         assertThat(response.getBody()).containsEntry("submittable", false);
         List<Map<String, Object>> blockers = castList(response.getBody().get("blockers"));
-        // 本票覆盖的 9 项标识不再产生 config 阻塞；02 票起 customerCode 按订单客户取值（已由
-        // @BeforeEach 在客户档案维护），地址确认与件数换算两类阻塞保持不变
+        // 本票覆盖的 9 项标识不再产生 config 阻塞；customerCode 真实建单裁决后回配置面
+        // （2026-08-18 京东 2157：青龙业主号按事业部维护），无配置值时回退客户档案
         assertThat(blockers).extracting(row -> row.get("code"))
                 .contains(
                         "JD_SHIPMENT_OUTBOUND_RECEIVER_ADDRESS_NOT_CONFIRMED",
@@ -464,11 +464,34 @@ class ShipmentJdOutboundPreviewApiTest {
                 .filteredOn(row -> "customerInfo.customerCode".equals(row.get("path")))
                 .singleElement()
                 .satisfies(row -> assertThat(row).containsEntry(
-                        "source", "customers.profile.jd_customer_code (customer archive)"));
+                        "source", "customers.profile.jd_customer_code (customer archive, deprecated)"));
     }
 
     @Test
-    void missingJdCustomerCodeBlocksPreviewPointingAtTheCustomer() {
+    void providerConfigCustomerCodeWinsOverCustomerArchive() {
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config = config || '{"customerCode":"010K-API-001"}'::jsonb
+                WHERE provider_code='JD'
+                """);
+        Fact fact = createOrder("CONFIG-CUSTOMER-CODE", List.of(item("1.000")), "待人工确认");
+        long shipmentId = createShipment(fact, "待人工确认");
+        confirmAddress(shipmentId, "config-customer-code");
+
+        ResponseEntity<Map> response = preview(shipmentId, "req-jd-preview-config-customer-code-001");
+
+        Map<String, Object> request = castMap(response.getBody().get("request"));
+        assertThat(castMap(request.get("customerInfo"))).containsEntry("customerCode", "010K-API-001");
+        assertThat(castList(response.getBody().get("validations")))
+                .filteredOn(row -> "customerInfo.customerCode".equals(row.get("path")))
+                .singleElement()
+                .satisfies(row -> assertThat(row).containsEntry(
+                        "source", "fulfillment_providers.config.customerCode"));
+    }
+
+    @Test
+    void missingJdCustomerCodeBlocksPreviewPointingAtProviderConfig() {
         Fact fact = createOrder("NO-CUSTOMER-CODE", List.of(item("1.000")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         jdbc.update(
@@ -486,8 +509,8 @@ class ShipmentJdOutboundPreviewApiTest {
                 .singleElement()
                 .satisfies(row -> {
                     assertThat(row).containsEntry("path", "customerInfo.customerCode");
-                    assertThat(row).containsEntry("source", "customers.profile.jd_customer_code");
-                    assertThat(row.get("message").toString()).contains("CUST-WECOM-0001");
+                    assertThat(row).containsEntry("source", "fulfillment_providers.config.customerCode");
+                    assertThat(row.get("message").toString()).contains("customerCode");
                 });
     }
 

@@ -11,7 +11,10 @@ import java.util.Set;
  *
  * <p>建单所需标识一律来自 {@code fulfillment_providers.config}（预览侧
  * {@code ShipmentJdOutboundService} 缺失即阻断）；本类维护允许写入的键清单、
- * 形状校验与对外状态投影。{@code customerCode} 不在本清单（见 02 票：改为客户级字段）。
+ * 形状校验与对外状态投影。{@code customerCode} 为青龙业主号（010K 开头，
+ * 京东 addSoOrder 的 customerInfo.customerCode），真实建单 2026-08-18 裁决：
+ * 京东按事业部维护单一青龙业主号，非客户级编码，故回到配置面（02 票原客户级
+ * 决策已被真实契约推翻，客户档案字段降级为回退源）。
  * {@code pin} 为敏感值：状态投影与审计负载只标记存在性，永不回显明文。
  * {@code outboundMode}（05 票）：来源批次确认后京东履约的建单路由，显式配置
  * {@code SDK} 才走 SDK 直连，缺省/显式 {@code FILE} 保持既有导单文件路径（可回退）。
@@ -20,7 +23,7 @@ public final class FulfillmentProviderJdConfig {
 
     public static final List<String> KNOWN_KEYS = List.of(
             "sourceNo", "warehouseNo", "pin", "erpShopNo", "salesPlatformSource",
-            "ownerNo", "shopNo", "carrierNo", "townRequired", "outboundMode");
+            "ownerNo", "shopNo", "carrierNo", "townRequired", "outboundMode", "customerCode");
 
     /** 建单路由模式：SDK 直连或导单文件；缺省为 FILE（不改变历史批次处置方式）。 */
     public static final String OUTBOUND_MODE_SDK = "SDK";

@@ -102,6 +102,7 @@ public class ShipmentJdOutboundService {
     static final String CONFIG_PIN = "pin";
     static final String CONFIG_CARRIER_NO = "carrierNo";
     static final String CONFIG_TOWN_REQUIRED = "townRequired";
+    static final String CONFIG_CUSTOMER_CODE = "customerCode";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -964,17 +965,23 @@ public class ShipmentJdOutboundService {
             Context state,
             List<Validation> validations,
             List<Blocker> blockers) {
+        // 青龙业主号（010K 开头）按事业部维护，京东 addSoOrder 裁决（2026-08-18 真实建单
+        // 2157：customerInfo.customerCode 必须命中基础资料已维护的青龙业主号）——
+        // 优先取履约方配置 customerCode，客户档案 jd_customer_code 仅为历史回退源。
         String path = "customerInfo.customerCode";
-        String source = "customers.profile.jd_customer_code";
-        if (hasText(state.jdCustomerCode())) {
+        String configCode = configValue(state.config(), CONFIG_CUSTOMER_CODE, null);
+        if (hasText(configCode)) {
+            target.put("customerCode", configCode);
+            pass(validations, path, SOURCE_PROVIDER_CONFIG + CONFIG_CUSTOMER_CODE);
+        } else if (hasText(state.jdCustomerCode())) {
             target.put("customerCode", state.jdCustomerCode());
-            pass(validations, path, source + " (customer archive)");
+            pass(validations, path, "customers.profile.jd_customer_code (customer archive, deprecated)");
         } else {
             block(
-                    blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_CUSTOMER_CODE_MISSING", path, source,
-                    "customer master data",
-                    "订单客户 " + state.orderCustomerCode() + "（" + state.orderCustomerName()
-                            + "）缺少京东客户编码，请先在客户档案维护");
+                    blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_CUSTOMER_CODE_MISSING", path,
+                    SOURCE_PROVIDER_CONFIG + CONFIG_CUSTOMER_CODE,
+                    "fulfillment provider configuration",
+                    "履约方配置缺少青龙业主号 customerCode（或客户档案 jd_customer_code 回退值），请先补齐");
         }
     }
 
