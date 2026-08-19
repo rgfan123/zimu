@@ -2,19 +2,15 @@ package cn.zimu.fulfillment.agent.eval;
 
 import cn.zimu.fulfillment.agent.AgentModelMetadataRegistry;
 import cn.zimu.fulfillment.agent.AgentModelProperties;
-import cn.zimu.fulfillment.agent.AgentRegistry;
-import cn.zimu.fulfillment.agent.AgentRegistryHolder;
 import cn.zimu.fulfillment.agent.AgentRunContext;
 import cn.zimu.fulfillment.agent.AgentSeedFixtures;
 import cn.zimu.fulfillment.agent.AgentTaskRequest;
 import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
-import cn.zimu.fulfillment.agent.DataQueryAgentEvalFixture;
 import cn.zimu.fulfillment.agent.DataQueryAgentService;
 import cn.zimu.fulfillment.agent.DataQueryRunResult;
 import cn.zimu.fulfillment.agent.McpToolTestSupport;
 import cn.zimu.fulfillment.agent.procurement.ProcurementPriceAgentRuntime;
-import cn.zimu.fulfillment.agent.procurement.ProcurementPriceEvalFixture;
 import cn.zimu.fulfillment.agent.procurement.ProcurementPriceRunResult;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
@@ -33,29 +29,31 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.mockito.Mockito;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Agent 评测跑分器（09 票基线，agent-decision-layer 09）：对版本化评测集
- * （{@link ProcurementPriceEvalFixture#VERSION} 与 {@link DataQueryAgentEvalFixture#VERSION}）
+ * Agent 评测跑分器（09 票基线；meta-agent-platform-impl 03 数据驱动化）：对版本化评测集
  * 运行确定性评测并计算指标，结果按版本归档（不覆盖历史）。
  *
- * <p>确定性来源：模型为本地 JDK HttpServer stub（脚本化工具调用 / 固定最终输出，usage
- * 固定 1/1/2），数据查询的注册表为迷你只读注册表（canned 事实，与 06 票集成测试的数据库
- * 种子数字一致：7 天缺货 3 行、SKU-EVAL-000001 进/零售价 12.34/25.60、工单 9005 缺口
- * 23.500）。数据库事实核对由 {@code DataQueryAgentServiceIntegrationTest}（Testcontainers）
- * 承担，本跑分器负责可重复的指标计算；latency 为实际测量（信息性指标，不做确定性断言），
- * token 由 stub 固定注入（每帧 total_tokens=2，确定性）。
+ * <p><b>用例真源 = DB</b>（{@code app.agent_eval_cases}，V33 播种 INVARIANT/CONFIRMED 14 例）：
+ * {@link #loadInvariantCases} 读取并按 metric_kind 派生 expected schema（INVARIANT →
+ * requires_human / tool_sequence / missing_fields / expected_error）校验，非法用例拒跑并可见；
+ * {@link #compute} 只接受已加载的用例（数据驱动，DB 无关）。stub 模型（脚本化工具调用 / 固定
+ * 最终输出，usage 固定 1/1/2）与 canned 事实保留为测试基建（见 {@link AgentEvalStubData} 与
+ * 迷你只读注册表）；数据查询的数据库事实核对由 {@code DataQueryAgentServiceIntegrationTest}
+ * 承担。latency 为实际测量（信息性指标，不做确定性断言），token 由 stub 固定注入。
  *
  * <p>指标：schema 通过率、工具选择准确率、答案数字正确率、requires_human 召回
  * （低置信度/字段缺失/歧义/PII 必须转人工）、写工具零调用不变式、avg latency / total tokens。
- * 归档位置 {@value #ARCHIVE_DIR}（相对工作目录 backend/，target/ 下、gitignored，与测试和
- * 文档解耦；文件名含时间戳，每次运行独立文件，绝不覆盖旧结果）。
+ * 归档位置 {@value #ARCHIVE_DIR}（相对工作目录 backend/，target/ 下、gitignored）。
  *
  * <p>本类只计算与归档，不断言；基线数字断言见 {@code AgentEvalBaselineTest}。
  */
@@ -63,6 +61,14 @@ public final class AgentEvalScorer {
 
     /** 归档目录（相对 backend/ 工作目录；target/ 已被 gitignore）。 */
     public static final String ARCHIVE_DIR = "target/agent-eval-results";
+
+    /** INVARIANT expected 允许的键（07 决策派生 schema；QUALITY → answer_contains 不在此列）。 */
+    private static final Set<String> INVARIANT_EXPECTED_KEYS =
+            Set.of("requires_human", "tool_sequence", "missing_fields", "expected_error");
+
+    /** 评测集版本标签（07：用例集按 (agent_slug, agent_version) 冻结；标签沿用 fixture 时代版本名）。 */
+    private static final String PROCUREMENT_EVAL_SET_VERSION = "procurement-eval-v1";
+    private static final String DATA_QUERY_EVAL_SET_VERSION = "data-query-eval-v1";
 
     private static final String API_KEY = "sk-agent-eval-secret";
     private static final String RUN_ID = "run_" + "0".repeat(32);
@@ -76,6 +82,109 @@ public final class AgentEvalScorer {
             "submit_review_request");
 
     private AgentEvalScorer() {}
+
+    /** 一条评测用例（真源在 DB，读取时已按 metric_kind 校验）。 */
+    public record AgentEvalCase(
+            String agentSlug, int agentVersion, String metricKind, String input, JsonNode expected) {}
+
+    // ------------------------------------------------------------------
+    // 用例加载（DB 真源，07/11 决策：INVARIANT 确定性基线）
+    // ------------------------------------------------------------------
+
+    /**
+     * 从 DB 读取 INVARIANT + CONFIRMED 用例并按 metric_kind 校验 expected 结构；
+     * 任一用例非法则整体拒跑（抛 {@link IllegalStateException} 并列出全部非法项，保证可见）。
+     */
+    public static List<AgentEvalCase> loadInvariantCases(JdbcTemplate jdbc) {
+        List<AgentEvalCase> cases = jdbc.query(
+                "SELECT agent_slug, agent_version, metric_kind, input::text, expected::text "
+                        + "FROM app.agent_eval_cases "
+                        + "WHERE metric_kind = 'INVARIANT' AND status = 'CONFIRMED' "
+                        + "ORDER BY agent_slug, id",
+                (rs, i) -> new AgentEvalCase(
+                        rs.getString("agent_slug"),
+                        rs.getInt("agent_version"),
+                        rs.getString("metric_kind"),
+                        toInputString(parse(rs.getString("input"))),
+                        parse(rs.getString("expected"))));
+
+        List<String> illegal = new ArrayList<>();
+        for (AgentEvalCase evalCase : cases) {
+            validateInvariantExpected(evalCase, illegal);
+        }
+        if (!illegal.isEmpty()) {
+            throw new IllegalStateException(
+                    "非法 INVARIANT 评测用例拒绝（请修正 agent_eval_cases 数据）:\n" + String.join("\n", illegal));
+        }
+        return cases;
+    }
+
+    /** input::text 是 JSONB：对象（采购）重序列化为字符串；纯文本（数据查询问题）取文本。 */
+    private static String toInputString(JsonNode input) {
+        if (input.isTextual()) {
+            return input.asText();
+        }
+        try {
+            return MAPPER.writeValueAsString(input);
+        } catch (IOException ex) {
+            throw new IllegalStateException("input JSONB 序列化失败", ex);
+        }
+    }
+
+    private static void validateInvariantExpected(AgentEvalCase evalCase, List<String> problems) {
+        JsonNode expected = evalCase.expected();
+        if (expected == null || !expected.isObject() || expected.isEmpty()) {
+            problems.add(evalCase.agentSlug() + " expected 必须为非空对象: " + expected);
+            return;
+        }
+        Iterator<String> names = expected.fieldNames();
+        while (names.hasNext()) {
+            String key = names.next();
+            JsonNode value = expected.get(key);
+            if (!INVARIANT_EXPECTED_KEYS.contains(key)) {
+                problems.add(evalCase.agentSlug() + " expected 未知字段（INVARIANT 允许 "
+                        + INVARIANT_EXPECTED_KEYS + "）: " + key);
+                continue;
+            }
+            switch (key) {
+                case "requires_human" -> {
+                    if (!value.isBoolean()) {
+                        problems.add(evalCase.agentSlug() + " requires_human 须为布尔: " + value);
+                    }
+                }
+                case "tool_sequence" -> {
+                    if (!isStringArray(value)) {
+                        problems.add(evalCase.agentSlug() + " tool_sequence 须为字符串数组: " + value);
+                    }
+                }
+                case "missing_fields" -> {
+                    if (!isStringArray(value)) {
+                        problems.add(evalCase.agentSlug() + " missing_fields 须为字符串数组: " + value);
+                    }
+                }
+                case "expected_error" -> {
+                    if (!value.isTextual()) {
+                        problems.add(evalCase.agentSlug() + " expected_error 须为字符串: " + value);
+                    }
+                }
+                default -> {
+                    // 不可达：INVARIANT_EXPECTED_KEYS 已过滤
+                }
+            }
+        }
+    }
+
+    private static boolean isStringArray(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            return false;
+        }
+        for (JsonNode item : node) {
+            if (!item.isTextual()) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     // ------------------------------------------------------------------
     // 指标结构
@@ -130,13 +239,21 @@ public final class AgentEvalScorer {
     public record Metrics(ProcurementMetrics procurement, DataQueryMetrics dataQuery) {}
 
     // ------------------------------------------------------------------
-    // 入口
+    // 入口（数据驱动：用例来自 DB 加载，本方法不触碰数据库）
     // ------------------------------------------------------------------
 
     /** 运行全部评测并计算指标（确定性：正确性指标可重复；latency 信息性）。 */
-    public static Metrics compute() {
+    public static Metrics compute(List<AgentEvalCase> cases) {
+        List<AgentEvalCase> procurementCases = cases.stream()
+                .filter(c -> "procurement-price-agent".equals(c.agentSlug()))
+                .toList();
+        List<AgentEvalCase> dataQueryCases = cases.stream()
+                .filter(c -> "data-query-agent".equals(c.agentSlug()))
+                .toList();
         try {
-            return new Metrics(procurementMetrics(), dataQueryMetrics());
+            return new Metrics(
+                    procurementMetrics(procurementCases),
+                    dataQueryMetrics(dataQueryCases));
         } catch (IOException ex) {
             throw new IllegalStateException("评测跑分失败", ex);
         }
@@ -190,10 +307,10 @@ public final class AgentEvalScorer {
     }
 
     // ------------------------------------------------------------------
-    // 采购比价（procurement-eval-v1，7 例，单帧 stub 模型）
+    // 采购比价（procurement-eval-v1，7 例，单帧 stub 模型；用例来自 DB）
     // ------------------------------------------------------------------
 
-    private static ProcurementMetrics procurementMetrics() throws IOException {
+    private static ProcurementMetrics procurementMetrics(List<AgentEvalCase> cases) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger hits = new AtomicInteger();
         AtomicReference<String> currentFinalAnswer = new AtomicReference<>();
@@ -207,7 +324,8 @@ public final class AgentEvalScorer {
         });
         server.start();
         try {
-            ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties(server.getAddress().getPort()));
+            ProcurementPriceAgentRuntime runtime =
+                    new ProcurementPriceAgentRuntime(properties(server.getAddress().getPort()));
             int schemaValid = 0;
             int schemaRejected = 0;
             int requiresHumanExpected = 0;
@@ -215,16 +333,17 @@ public final class AgentEvalScorer {
             int happyWrong = 0;
             long latencySum = 0;
             long frames = 0;
-            for (ProcurementPriceEvalFixture.EvalCase evalCase : ProcurementPriceEvalFixture.CASES) {
+            for (AgentEvalCase evalCase : cases) {
                 hits.set(0);
-                currentFinalAnswer.set(evalCase.modelOutput());
+                currentFinalAnswer.set(AgentEvalStubData.procurementModelOutput(evalCase.input()));
                 long start = System.nanoTime();
                 ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                        "你是采购比价 Agent。", evalCase.inputJson(), AgentToolBinding.empty(RUN_ID)));
+                        "你是采购比价 Agent。", evalCase.input(), AgentToolBinding.empty(RUN_ID)));
                 latencySum += (System.nanoTime() - start) / 1_000_000;
                 frames += hits.get();
-                if ("schema-invalid-output".equals(evalCase.id())) {
-                    if ("AGENT_OUTPUT_INVALID".equals(result.error())) {
+                JsonNode expected = evalCase.expected();
+                if (expected.has("expected_error")) {
+                    if (expected.get("expected_error").asText().equals(result.error())) {
                         schemaRejected++;
                     }
                     continue;
@@ -232,7 +351,7 @@ public final class AgentEvalScorer {
                 if (result.error() == null && result.recommendation() != null) {
                     schemaValid++;
                 }
-                if (evalCase.expectRequiresHuman()) {
+                if (expected.path("requires_human").asBoolean(false)) {
                     requiresHumanExpected++;
                     if (result.recommendation() != null && result.recommendation().requiresHuman()) {
                         requiresHumanCaught++;
@@ -242,8 +361,8 @@ public final class AgentEvalScorer {
                 }
             }
             return new ProcurementMetrics(
-                    ProcurementPriceEvalFixture.VERSION,
-                    ProcurementPriceEvalFixture.CASES.size(),
+                    PROCUREMENT_EVAL_SET_VERSION,
+                    cases.size(),
                     schemaValid,
                     schemaRejected,
                     requiresHumanExpected,
@@ -251,17 +370,17 @@ public final class AgentEvalScorer {
                     happyWrong,
                     0,
                     2 * frames,
-                    latencySum / ProcurementPriceEvalFixture.CASES.size());
+                    cases.isEmpty() ? 0 : latencySum / cases.size());
         } finally {
             server.stop(0);
         }
     }
 
     // ------------------------------------------------------------------
-    // 数据查询（data-query-eval-v1，7 条：4 门禁 + 3 可答）
+    // 数据查询（data-query-eval-v1，7 条：4 门禁 + 3 可答；用例来自 DB）
     // ------------------------------------------------------------------
 
-    private static DataQueryMetrics dataQueryMetrics() throws IOException {
+    private static DataQueryMetrics dataQueryMetrics(List<AgentEvalCase> cases) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger hits = new AtomicInteger();
         AtomicReference<String> round1Question = new AtomicReference<>();
@@ -292,7 +411,7 @@ public final class AgentEvalScorer {
         server.start();
         try {
             DataQueryAgentService service = new DataQueryAgentService(
-                    AgentSeedFixtures.holderOf(dataQueryDefinition()),
+                    AgentSeedFixtures.holderOf(AgentSeedFixtures.dataQueryDefinition()),
                     properties(server.getAddress().getPort()),
                     new AgentToolBindingFactory(
                             miniRegistry(), new McpAgentIdentity("eval-agent"), MAPPER),
@@ -307,39 +426,35 @@ public final class AgentEvalScorer {
             int numbersCorrect = 0;
             int writeCalls = 0;
             long latencySum = 0;
-            for (String question : DataQueryAgentEvalFixture.EXPECT_CLARIFICATION) {
-                DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-clarify"));
-                gatePaths++;
-                if (result.output() != null && result.output().requires_human()) {
-                    gateCaught++;
-                }
-                writeCalls += writeToolCallCount(result);
-            }
-            for (String question : DataQueryAgentEvalFixture.EXPECT_PII_TRANSFER) {
-                DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-pii"));
-                gatePaths++;
-                if (result.output() != null && result.output().requires_human()) {
-                    gateCaught++;
-                }
-                writeCalls += writeToolCallCount(result);
-            }
-            for (String question : DataQueryAgentEvalFixture.EXPECT_ANSWER) {
-                DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-answer"));
-                answerable++;
-                latencySum += result.latencyMs();
-                if (result.toolCalls().size() == 1
-                        && DataQueryAgentEvalFixture.expectedTool(question).equals(result.toolCalls().get(0).tool())) {
-                    toolCorrect++;
-                }
-                if (answerNumbersMatch(question, result.output() == null ? null : result.output().answer())) {
-                    numbersCorrect++;
+            for (AgentEvalCase evalCase : cases) {
+                String question = evalCase.input();
+                JsonNode expected = evalCase.expected();
+                DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-db"));
+                if (expected.has("tool_sequence")) {
+                    answerable++;
+                    latencySum += result.latencyMs();
+                    List<String> expectedTools = MAPPER.convertValue(
+                            expected.get("tool_sequence"),
+                            MAPPER.getTypeFactory().constructCollectionType(List.class, String.class));
+                    if (result.toolCalls().size() == 1
+                            && expectedTools.equals(List.of(result.toolCalls().get(0).tool()))) {
+                        toolCorrect++;
+                    }
+                    if (answerNumbersMatch(question, result.output() == null ? null : result.output().answer())) {
+                        numbersCorrect++;
+                    }
+                } else {
+                    gatePaths++;
+                    if (result.output() != null && result.output().requires_human()) {
+                        gateCaught++;
+                    }
                 }
                 writeCalls += writeToolCallCount(result);
             }
             // 每帧 stub 注入 total_tokens=2：可答查询 3 × 2 帧；门禁路径零模型调用
             return new DataQueryMetrics(
-                    DataQueryAgentEvalFixture.VERSION,
-                    DataQueryAgentEvalFixture.ALL_QUERIES.size(),
+                    DATA_QUERY_EVAL_SET_VERSION,
+                    cases.size(),
                     gatePaths,
                     gateCaught,
                     answerable,
@@ -358,12 +473,16 @@ public final class AgentEvalScorer {
         if (answer == null) {
             return false;
         }
-        return switch (question) {
-            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> answer.contains("3");
-            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> answer.contains("12.34") && answer.contains("25.60");
-            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> answer.contains("23.500");
-            default -> throw new IllegalStateException("未知可答评测用例: " + question);
-        };
+        if ("最近 7 天有多少缺货的订单行".equals(question)) {
+            return answer.contains("3");
+        }
+        if ("SKU-EVAL-000001 的进货价和零售价是多少".equals(question)) {
+            return answer.contains("12.34") && answer.contains("25.60");
+        }
+        if ("采购工单 9005 还差多少数量".equals(question)) {
+            return answer.contains("23.500");
+        }
+        throw new IllegalStateException("未知可答评测用例: " + question);
     }
 
     private static int writeToolCallCount(DataQueryRunResult result) {
@@ -462,22 +581,22 @@ public final class AgentEvalScorer {
         return result;
     }
 
-    /** 第一轮按评测问题返回脚本化工具调用（固定日期，确定性）。 */
+    /** 第一轮按评测问题返回脚本化工具调用（固定日期，确定性）；输入即 DB 用例的 input 文本。 */
     private static Map<String, Object> scriptedToolCalls(String question) {
         Map<String, Object> call = new LinkedHashMap<>();
         switch (question) {
-            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> {
+            case "最近 7 天有多少缺货的订单行" -> {
                 call.put("name", "list_procurement_tickets");
                 call.put("args", Map.of(
                         "status", "PENDING",
                         "date_from", "2026-08-01",
                         "date_to", "2026-08-09"));
             }
-            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> {
+            case "SKU-EVAL-000001 的进货价和零售价是多少" -> {
                 call.put("name", "search_skus");
                 call.put("args", Map.of("query", "SKU-EVAL-000001"));
             }
-            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> {
+            case "采购工单 9005 还差多少数量" -> {
                 call.put("name", "get_procurement_ticket");
                 call.put("args", Map.of("ticket_id", "9005"));
             }
@@ -488,31 +607,31 @@ public final class AgentEvalScorer {
 
     /** 第二轮：依据真实工具结果组装最终结构化答案（数字来自工具返回值 = canned 事实）。 */
     private static String composeAnswer(String question, JsonNode toolResult) {
-        return switch (question) {
-            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> {
-                long count = toolResult.path("total_elements").asLong();
-                yield outputJson(
-                        "最近 7 天（2026-08-01 至 2026-08-09）缺货的订单行共 " + count + " 行",
-                        "list_procurement_tickets",
-                        Map.of("status", "PENDING", "date_from", "2026-08-01", "date_to", "2026-08-09"),
-                        (int) count,
-                        0.95,
-                        false,
-                        List.of());
-            }
-            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> {
-                JsonNode item = toolResult.path("items").get(0);
-                yield outputJson(
-                        "SKU-EVAL-000001 的进货价为 " + item.path("purchase_price").asText()
-                                + " 元、零售价为 " + item.path("retail_price").asText() + " 元",
-                        "search_skus",
-                        Map.of("query", "SKU-EVAL-000001"),
-                        toolResult.path("items").size(),
-                        0.95,
-                        false,
-                        List.of());
-            }
-            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> outputJson(
+        if ("最近 7 天有多少缺货的订单行".equals(question)) {
+            long count = toolResult.path("total_elements").asLong();
+            return outputJson(
+                    "最近 7 天（2026-08-01 至 2026-08-09）缺货的订单行共 " + count + " 行",
+                    "list_procurement_tickets",
+                    Map.of("status", "PENDING", "date_from", "2026-08-01", "date_to", "2026-08-09"),
+                    (int) count,
+                    0.95,
+                    false,
+                    List.of());
+        }
+        if ("SKU-EVAL-000001 的进货价和零售价是多少".equals(question)) {
+            JsonNode item = toolResult.path("items").get(0);
+            return outputJson(
+                    "SKU-EVAL-000001 的进货价为 " + item.path("purchase_price").asText()
+                            + " 元、零售价为 " + item.path("retail_price").asText() + " 元",
+                    "search_skus",
+                    Map.of("query", "SKU-EVAL-000001"),
+                    toolResult.path("items").size(),
+                    0.95,
+                    false,
+                    List.of());
+        }
+        if ("采购工单 9005 还差多少数量".equals(question)) {
+            return outputJson(
                     "采购工单 9005 还差 " + toolResult.path("remaining_quantity").asText(),
                     "get_procurement_ticket",
                     Map.of("ticket_id", "9005"),
@@ -520,8 +639,8 @@ public final class AgentEvalScorer {
                     0.95,
                     false,
                     List.of());
-            default -> throw new IllegalStateException("未知评测用例: " + question);
-        };
+        }
+        throw new IllegalStateException("未知评测用例: " + question);
     }
 
     /** 按 DataQueryAgentOutput 的 JSON schema 组装最终答案。 */
@@ -552,11 +671,6 @@ public final class AgentEvalScorer {
     // ------------------------------------------------------------------
     // 迷你只读注册表（canned 事实，数字与 06 票集成测试数据库种子一致）
     // ------------------------------------------------------------------
-
-    /** 引用 V33 种子夹具（T02 后代码定义已删）构造评测用 AgentDefinition。 */
-    private static cn.zimu.fulfillment.agent.AgentDefinition dataQueryDefinition() {
-        return AgentSeedFixtures.dataQueryDefinition();
-    }
 
     private static McpToolRegistry miniRegistry() {
         List<McpTool> tools = new ArrayList<>();
@@ -599,6 +713,7 @@ public final class AgentEvalScorer {
                 .put("provider", "deepseek")
                 .put("model", "deepseek-chat")
                 .put("model_backend", "local stub（确定性）")
+                .put("eval_case_source", "agent_eval_cases（DB 真源，INVARIANT/CONFIRMED）")
                 .put("database", "none（单元级 canned 事实；数据库事实由 DataQueryAgentServiceIntegrationTest 承担）");
         ObjectNode procurement = root.putObject("procurement");
         procurement.put("eval_set_version", p.evalSetVersion());
@@ -628,5 +743,13 @@ public final class AgentEvalScorer {
         dataQuery.put("avg_model_latency_ms", d.avgModelLatencyMs());
         dataQuery.put("total_tokens", d.totalTokens());
         return root;
+    }
+
+    private static JsonNode parse(String json) {
+        try {
+            return MAPPER.readTree(json);
+        } catch (Exception ex) {
+            throw new IllegalStateException("JSON 解析失败: " + json, ex);
+        }
     }
 }

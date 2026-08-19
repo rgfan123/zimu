@@ -4,11 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import cn.zimu.fulfillment.FulfillmentHubApplication;
-import cn.zimu.fulfillment.agent.procurement.ProcurementPriceEvalFixture;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
@@ -171,36 +168,6 @@ class AgentPlatformSeedVerbatimTest {
         });
     }
 
-    @Test
-    void procurementEvalCasesMirrorFixture() {
-        List<EvalCaseRow> rows = evalCases("procurement-price-agent");
-        assertThat(rows).hasSize(ProcurementPriceEvalFixture.CASES.size());
-        for (int i = 0; i < ProcurementPriceEvalFixture.CASES.size(); i++) {
-            ProcurementPriceEvalFixture.EvalCase fixture = ProcurementPriceEvalFixture.CASES.get(i);
-            EvalCaseRow row = rows.get(i);
-            assertThat(row.agentVersion()).isEqualTo(1);
-            assertThat(parse(fixture.inputJson())).as("input 逐字一致（%s）", fixture.id())
-                    .isEqualTo(row.input());
-            assertThat(expectedForProcurement(fixture)).as("expected 一致（%s）", fixture.id())
-                    .isEqualTo(row.expected());
-        }
-    }
-
-    @Test
-    void dataQueryEvalCasesMirrorFixture() {
-        List<EvalCaseRow> rows = evalCases("data-query-agent");
-        assertThat(rows).hasSize(DataQueryAgentEvalFixture.ALL_QUERIES.size());
-        for (int i = 0; i < DataQueryAgentEvalFixture.ALL_QUERIES.size(); i++) {
-            String question = DataQueryAgentEvalFixture.ALL_QUERIES.get(i);
-            EvalCaseRow row = rows.get(i);
-            assertThat(row.agentVersion()).isEqualTo(1);
-            assertThat(JsonNodeFactory.instance.textNode(question)).as("input 逐字一致（%s）", question)
-                    .isEqualTo(row.input());
-            assertThat(expectedForDataQuery(question)).as("expected 一致（%s）", question)
-                    .isEqualTo(row.expected());
-        }
-    }
-
     // ------------------------------------------------------------------
     // 结构约束落地
     // ------------------------------------------------------------------
@@ -281,20 +248,6 @@ class AgentPlatformSeedVerbatimTest {
                 readStringList(rs.getString("guard_exemptions")));
     }
 
-    private static List<EvalCaseRow> evalCases(String slug) {
-        return jdbc.query(
-                "SELECT agent_slug, agent_version, metric_kind, status, input::text, expected::text "
-                        + "FROM app.agent_eval_cases WHERE agent_slug = ? ORDER BY id",
-                (rs, i) -> new EvalCaseRow(
-                        rs.getString("agent_slug"),
-                        rs.getInt("agent_version"),
-                        rs.getString("metric_kind"),
-                        rs.getString("status"),
-                        parse(rs.getString("input")),
-                        parse(rs.getString("expected"))),
-                slug);
-    }
-
     private static List<String> readStringList(String json) {
         return MAPPER.convertValue(parse(json), MAPPER.getTypeFactory().constructCollectionType(List.class, String.class));
     }
@@ -305,35 +258,5 @@ class AgentPlatformSeedVerbatimTest {
         } catch (Exception ex) {
             throw new IllegalStateException("JSON 解析失败: " + json, ex);
         }
-    }
-
-    private static JsonNode expectedForProcurement(ProcurementPriceEvalFixture.EvalCase fixture) {
-        ObjectNode expected = MAPPER.createObjectNode();
-        if ("schema-invalid-output".equals(fixture.id())) {
-            expected.put("expected_error", "AGENT_OUTPUT_INVALID");
-        } else {
-            expected.put("requires_human", fixture.expectRequiresHuman());
-            if (fixture.expectMissingContain() != null) {
-                expected.putArray("missing_fields").add(fixture.expectMissingContain());
-            }
-        }
-        return expected;
-    }
-
-    private static JsonNode expectedForDataQuery(String question) {
-        ObjectNode expected = MAPPER.createObjectNode();
-        String tool = switch (question) {
-            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> "list_procurement_tickets";
-            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> "search_skus";
-            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> "get_procurement_ticket";
-            default -> null;
-        };
-        if (tool != null) {
-            expected.put("requires_human", false);
-            expected.putArray("tool_sequence").add(tool);
-        } else {
-            expected.put("requires_human", true);
-        }
-        return expected;
     }
 }

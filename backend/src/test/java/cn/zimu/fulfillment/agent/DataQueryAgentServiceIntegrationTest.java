@@ -42,7 +42,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * 06 — 数据查询 Agent 端到端评测（agent-decision-layer 06，Testcontainers + stub 模型）：
- * 固定评测集（{@link DataQueryAgentEvalFixture}）在真实 {@link McpToolRegistry} + 真实
+ * 固定评测集（data-query-eval-v1，用例真源在 DB {@code agent_eval_cases}，本测试持问题字面量
+ * 副本做数据库事实核对）在真实 {@link McpToolRegistry} + 真实
  * PostgreSQL 事实数据上运行，模型经本地 JDK HttpServer stub（不依赖真实 key）。
  *
  * <p>断言：工具选择正确率（实际调用序列 == 预期）、答案数字正确率（stub 模型的最终答案
@@ -62,6 +63,27 @@ class DataQueryAgentServiceIntegrationTest {
     private static final String API_KEY = "sk-eval-agent-secret";
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final String GUARD_QUESTION = "查一下缺货 SKU 的进货价";
+
+    // 评测问题字面量（T03 后用例真源在 DB agent_eval_cases；本测试为数据库事实核对保留本地副本）
+    private static final String Q_7D_OUT_OF_STOCK = "最近 7 天有多少缺货的订单行";
+    private static final String Q_SKU_CONCRETE = "SKU-EVAL-000001 的进货价和零售价是多少";
+    private static final String Q_TICKET_CONCRETE = "采购工单 9005 还差多少数量";
+    private static final List<String> EVAL_CLARIFICATION_QUESTIONS = List.of(
+            "SKU-xxx 的进货价和零售价是多少",
+            "采购工单 P-123 还差多少数量",
+            "某履约方本月共接收多少运单回执");
+    private static final List<String> EVAL_PII_QUESTIONS = List.of("查一下客户张三的收货地址");
+    private static final List<String> EVAL_ANSWER_QUESTIONS =
+            List.of(Q_7D_OUT_OF_STOCK, Q_SKU_CONCRETE, Q_TICKET_CONCRETE);
+
+    private static String expectedTool(String question) {
+        return switch (question) {
+            case Q_7D_OUT_OF_STOCK -> "list_procurement_tickets";
+            case Q_SKU_CONCRETE -> "search_skus";
+            case Q_TICKET_CONCRETE -> "get_procurement_ticket";
+            default -> throw new IllegalArgumentException("可答评测查询未定义工具预期: " + question);
+        };
+    }
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -139,7 +161,7 @@ class DataQueryAgentServiceIntegrationTest {
     @Test
     void evalSetPassesToolSelectionAndNumberAccuracyAgainstDatabaseFacts() {
         // 1) 歧义澄清 + PII 拒绝路径：零模型调用、零工具调用
-        for (String question : DataQueryAgentEvalFixture.EXPECT_CLARIFICATION) {
+        for (String question : EVAL_CLARIFICATION_QUESTIONS) {
             DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-clarify"));
             assertThat(result.error()).isNull();
             assertThat(result.status()).isEqualTo("CLARIFICATION");
@@ -147,7 +169,7 @@ class DataQueryAgentServiceIntegrationTest {
             assertThat(result.output().clarification_needed()).isNotEmpty();
             assertThat(result.toolCalls()).isEmpty();
         }
-        for (String question : DataQueryAgentEvalFixture.EXPECT_PII_TRANSFER) {
+        for (String question : EVAL_PII_QUESTIONS) {
             DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-pii"));
             assertThat(result.error()).isNull();
             assertThat(result.status()).isEqualTo("PII_GUARDED");
@@ -159,7 +181,7 @@ class DataQueryAgentServiceIntegrationTest {
         assertThat(lastServerError.get()).as("stub 服务端不得报错").isNull();
 
         // 2) 可答查询：工具选择 + 数字与数据库事实核对
-        for (String question : DataQueryAgentEvalFixture.EXPECT_ANSWER) {
+        for (String question : EVAL_ANSWER_QUESTIONS) {
             DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-answer"));
             assertThat(lastServerError.get()).as("stub 服务端报错: %s", lastServerError.get()).isNull();
             assertThat(result.error()).isNull();
@@ -170,7 +192,7 @@ class DataQueryAgentServiceIntegrationTest {
 
             assertThat(result.toolCalls()).hasSize(1);
             DataQueryAgentToolCall call = result.toolCalls().get(0);
-            assertThat(call.tool()).isEqualTo(DataQueryAgentEvalFixture.expectedTool(question));
+            assertThat(call.tool()).isEqualTo(expectedTool(question));
             assertThat(call.guarded()).isFalse();
 
             assertThat(result.output().sources()).hasSize(1);
@@ -194,7 +216,7 @@ class DataQueryAgentServiceIntegrationTest {
     /** 答案数字正确性：以数据库事实核对（不以“读起来对”验收）。 */
     private void verifyAnswerNumbers(String question, DataQueryRunResult result) {
         switch (question) {
-            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> {
+            case Q_7D_OUT_OF_STOCK -> {
                 long dbCount = jdbc.queryForObject(
                         """
                         SELECT count(*) FROM app.procurement_tickets
@@ -211,7 +233,7 @@ class DataQueryAgentServiceIntegrationTest {
                 assertThat(call.arguments().get("status")).isEqualTo("PENDING");
                 assertThat(call.arguments()).containsKeys("date_from", "date_to");
             }
-            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> {
+            case Q_SKU_CONCRETE -> {
                 Map<String, Object> prices = jdbc.queryForMap(
                         "SELECT purchase_price, retail_price FROM app.skus WHERE sku_code='SKU-EVAL-000001'");
                 String purchase =
@@ -223,7 +245,7 @@ class DataQueryAgentServiceIntegrationTest {
                 assertThat(result.toolCalls().get(0).arguments().get("query"))
                         .isEqualTo("SKU-EVAL-000001");
             }
-            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> {
+            case Q_TICKET_CONCRETE -> {
                 BigDecimal remaining = jdbc.queryForObject(
                         """
                         SELECT COALESCE(sum(remaining_quantity), 0)
@@ -245,7 +267,7 @@ class DataQueryAgentServiceIntegrationTest {
 
     @Test
     void whitelistedToolsExposedToModelMatchDefinitionExactly() {
-        service.answer(DataQueryAgentEvalFixture.Q_SKU_CONCRETE, null);
+        service.answer(Q_SKU_CONCRETE, null);
 
         assertThat(exposedToolNames(firstRequestBody.get()))
                 .containsExactlyInAnyOrderElementsOf(AgentSeedFixtures.DATA_QUERY_TOOL_NAMES);
@@ -458,18 +480,18 @@ class DataQueryAgentServiceIntegrationTest {
     private Map<String, Object> scriptedToolCalls(String question) {
         Map<String, Object> call = new java.util.LinkedHashMap<>();
         switch (question) {
-            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> {
+            case Q_7D_OUT_OF_STOCK -> {
                 call.put("name", "list_procurement_tickets");
                 call.put("args", Map.of(
                         "status", "PENDING",
                         "date_from", refDate.minusDays(7).toString(),
                         "date_to", refDate.plusDays(1).toString()));
             }
-            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> {
+            case Q_SKU_CONCRETE -> {
                 call.put("name", "search_skus");
                 call.put("args", Map.of("query", "SKU-EVAL-000001"));
             }
-            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> {
+            case Q_TICKET_CONCRETE -> {
                 call.put("name", "get_procurement_ticket");
                 call.put("args", Map.of("ticket_id", "9005"));
             }
@@ -485,7 +507,7 @@ class DataQueryAgentServiceIntegrationTest {
     /** 依据真实工具结果组装最终答案（数字取自工具返回值，即数据库事实）。 */
     private String composeAnswer(String question, JsonNode toolResult) {
         return switch (question) {
-            case DataQueryAgentEvalFixture.Q_7D_OUT_OF_STOCK -> {
+            case Q_7D_OUT_OF_STOCK -> {
                 long count = toolResult.path("total_elements").asLong();
                 String dateFrom = refDate.minusDays(7).toString();
                 String dateTo = refDate.plusDays(1).toString();
@@ -498,7 +520,7 @@ class DataQueryAgentServiceIntegrationTest {
                         false,
                         List.of());
             }
-            case DataQueryAgentEvalFixture.Q_SKU_CONCRETE -> {
+            case Q_SKU_CONCRETE -> {
                 JsonNode item = toolResult.path("items").get(0);
                 yield outputJson(
                         "SKU-EVAL-000001 的进货价为 " + item.path("purchase_price").asText()
@@ -510,7 +532,7 @@ class DataQueryAgentServiceIntegrationTest {
                         false,
                         List.of());
             }
-            case DataQueryAgentEvalFixture.Q_TICKET_CONCRETE -> outputJson(
+            case Q_TICKET_CONCRETE -> outputJson(
                     "采购工单 9005 还差 " + toolResult.path("remaining_quantity").asText(),
                     "get_procurement_ticket",
                     Map.of("ticket_id", "9005"),

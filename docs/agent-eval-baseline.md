@@ -1,30 +1,31 @@
 # Agent 评测基线（agent-decision-layer 09）
 
 基线固化日期：2026-08-16
+数据驱动化（meta-agent-platform-impl 03）：2026-08-19
 
-## 评测集（代码内固定 fixture，版本化）
+## 评测集（DB 真源 `app.agent_eval_cases`，V33 播种 + 版本化）
 
-| 评测集 | 版本 | 内容 | 位置 |
+| 评测集 | 版本 | 内容 | 真源位置 |
 |---|---|---|---|
-| 采购比价 | `procurement-eval-v1` | 7 例：正常比价（ticket / sku 输入）、无候选、缺价格、低置信度+字段缺失、schema 不符（负例）、camelCase 模型输出兼容 | `backend/src/test/java/cn/zimu/fulfillment/agent/procurement/ProcurementPriceEvalFixture.java`（05 票测试只读引用） |
-| 数据查询 | `data-query-eval-v1` | 7 条：歧义澄清 3（SKU-xxx / P-123 / 某履约方）、PII 拒绝 1、可答落地 3（7 天缺货数、SKU 价格、工单缺口） | `backend/src/test/java/cn/zimu/fulfillment/agent/DataQueryAgentEvalFixture.java` |
+| 采购比价 | `procurement-eval-v1` | 7 例：正常比价（ticket / sku 输入）、无候选、缺价格、低置信度+字段缺失、schema 不符（负例）、camelCase 模型输出兼容 | `app.agent_eval_cases`（`metric_kind='INVARIANT'`，`status='CONFIRMED'`；代码 fixture 类已于 T03 删除） |
+| 数据查询 | `data-query-eval-v1` | 7 条：歧义澄清 3（SKU-xxx / P-123 / 某履约方）、PII 拒绝 1、可答落地 3（7 天缺货数、SKU 价格、工单缺口） | 同上 |
 | 意图识别回归门禁 | —（不新建用例） | 直接复用既有 `MessageInterpretation*Test` 套件（07 票不变式，行为零变化） | `backend/src/test/java/cn/zimu/fulfillment/message/` |
 
-评测集不可增删改：换例即换版本号（如 `procurement-eval-v2`），并同步更新基线门禁。
+用例不可增删改：换例即换版本号（如 `procurement-eval-v2`）——新增/修改用例 = 修改 `agent_eval_cases`（走定义草稿确认流联动，07 决策 5），并同步更新基线门禁。`expected` 结构按 metric_kind 派生并读取时校验（INVARIANT → `requires_human` / `tool_sequence` / `missing_fields` / `expected_error`），非法用例拒跑并可见（`AgentEvalScorer.loadInvariantCases`）。
 
 ## 跑分器与指标
 
-`AgentEvalScorer`（`backend/src/test/java/cn/zimu/fulfillment/agent/eval/`）以 **本地 JDK HttpServer stub 模型 + 迷你只读 MCP 注册表（canned 事实）** 运行评测，全程无真实网络、无数据库、无密钥：
+`AgentEvalScorer`（`backend/src/test/java/cn/zimu/fulfillment/agent/eval/`）以 **DB 用例（`loadInvariantCases` 读取并校验）+ 本地 JDK HttpServer stub 模型 + 迷你只读 MCP 注册表（canned 事实）** 运行评测，全程无真实网络、无密钥：
 
-- 数据查询 canned 事实与 06 票 Testcontainers 集成测试的数据库种子数字一致（7 天缺货 3 行、SKU-EVAL-000001 进/零售价 12.34/25.60、工单 9005 缺口 23.500）；数据库事实核对由 `DataQueryAgentServiceIntegrationTest` 承担，本跑分器负责可重复指标。
-- 确定性：正确性指标两次运行完全一致（`AgentEvalScorerTest` 断言）；latency 为实际测量（信息性）；token 由 stub 固定注入（每帧 total_tokens=2）。
+- stub 模型的固定输出（按用例 input 脚本化）在 `AgentEvalStubData`（canned 层，与 `ProcurementPriceEvalTest` 共享）；数据查询 canned 事实与 06 票 Testcontainers 集成测试的数据库种子数字一致（7 天缺货 3 行、SKU-EVAL-000001 进/零售价 12.34/25.60、工单 9005 缺口 23.500）；数据库事实核对由 `DataQueryAgentServiceIntegrationTest` 承担，本跑分器负责可重复指标。
+- `AgentEvalScorerTest` / `AgentEvalBaselineTest` 为 Testcontainers 集成测试（完整应用启动加载 DB 用例）；确定性：正确性指标两次运行完全一致（`AgentEvalScorerTest` 断言）；latency 为实际测量（信息性）；token 由 stub 固定注入（每帧 total_tokens=2）。
 
 指标：
 
 | 指标 | 口径 | 基线 |
 |---|---|---|
 | schema 通过率 | 合法用例解析成功 / 合法用例，负例必须稳定拒绝（AGENT_OUTPUT_INVALID） | 100%（6/6 + 负例 1 拒绝） |
-| 工具选择准确率 | 实际工具调用序列 == 预期工具 | 100%（3/3） |
+| 工具选择准确率 | 实际工具调用序列 == 预期工具（expected.tool_sequence） | 100%（3/3） |
 | 答案数字正确率 | 最终答案包含预期数字（数字来自工具返回值） | 100%（3/3） |
 | requires_human 召回 | 低置信度（<0.6）/无候选/缺价格/歧义/PII 必须转人工 | 采购 3/3；数据查询门禁 4/4 |
 | happy 路径误转人工 | 正常用例不得误转人工 | 0 |
@@ -34,7 +35,7 @@
 ## 运行命令
 
 ```bash
-# 跑分器 + 基线门禁（换模型/提示词/阈值后必跑）
+# 跑分器 + 基线门禁（换模型/提示词/阈值/用例后必跑；需要 Docker 起 Testcontainers 读 DB 用例）
 mvn -q test -Dtest='AgentEval*'
 
 # 全部 Agent 回归（05/06/07/09 相关套件）
