@@ -15,14 +15,18 @@ test('local Vite routes browser traffic through the loopback gateway without exp
   assert.doesNotMatch(vite, /X-Operator['"]?\s*:/);
 });
 
-test('canonical browser acceptance uses the passwordless public seam and never exposes internal APIs', () => {
+test('canonical browser acceptance authenticates at the credential-gated public seam and never exposes internal APIs', () => {
   const acceptance = readFileSync(
     fileURLToPath(new URL('../../scripts/acceptance.sh', import.meta.url)),
     'utf8',
   );
 
   assert.doesNotMatch(acceptance, /["']\/internal\//);
-  assert.doesNotMatch(acceptance, /Authorization: Basic|--config "\$acceptance_curl_config"/);
+  // 06: 边缘认证默认开启后，验收脚本从私有凭据文件派生 Basic 头；源码里不得出现
+  // 硬编码的凭据/令牌，也不得把密码放进 curl 的 argv（--config / --user 两种旧模式都被禁止）。
+  assert.match(acceptance, /"Authorization"\] = "Basic " \+ gateway_basic_auth/);
+  assert.doesNotMatch(acceptance, /--config "\$acceptance_curl_config"/);
+  assert.doesNotMatch(acceptance, /Authorization: Basic [A-Za-z0-9+/=]{16,}/);
   assert.doesNotMatch(acceptance, /error\.code == 401/);
   assert.match(acceptance, /request_headers = \{"Accept": "application\/json", \*\*\(headers or \{\}\)\}/);
 });
@@ -189,7 +193,7 @@ test('release documentation does not overstate the production identity or databa
 
   assert.match(readme, /docs\/postgres-role-migration\.md/);
   assert.match(readme, /still shares one PostgreSQL login/i);
-  assert.match(readme, /passwordless local/i);
+  assert.match(readme, /single shared Basic credential/i);
   assert.match(readme, /does not provide per-user attribution or remote access control/i);
   assert.match(ticket, /independent Bearer token/i);
   assert.match(ticket, /request_id.*trace_id/is);

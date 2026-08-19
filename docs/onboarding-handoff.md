@@ -32,7 +32,7 @@
 | BI | Metabase（连 PG 只读分析视图） |
 | AI | LangChain4j + OpenAI 兼容协议模型（意图识别、Agent）；MCP 工具注册 |
 | 京东 | 官方 SDK jar（`backend/libs/`）：`IntegratedSupplyChain_ISC_JAVA_6.1_*.jar` + `lop-opensdk-support-1.0.30.jar` |
-| 部署 | Docker Compose 一键起全套 + Nginx 网关（本地 passwordless 模式，只绑 127.0.0.1） |
+| 部署 | Docker Compose 一键起全套 + Nginx 网关（边缘 Basic Auth 默认开启，只绑 127.0.0.1） |
 
 ### Compose 服务（`docker-compose.yml`）
 
@@ -190,7 +190,7 @@ wayfinder/         早期决策地图（历史票，已关闭的决策仍权威�
 - `.env`（git-ignored）：Postgres/管理凭据、`APP_BIND_ADDRESS`（默认 127.0.0.1）、`JD_LOP_*`（京东 SDK，`JD_LOP_CLIENT_MODE=MOCK|REAL`、`JD_LOP_WRITE_MODE=OFF|ON`）、`WECOM_*`（企微长连接）、`MESSAGE_INTERPRETER_*`（模型供应商）、`DEMO_SEED_*`；
 - 本地密钥文件：`backend/.env.jd.uat.local`（京东凭据，0600）、`backend/.env.wecom.local`（企微，0600）、三平台凭据在 `data-local/*-credentials.txt`（0600）；
 - **密钥不进数据库、不进 API 响应、不进日志**；HTTP 边界移除联系人/电话/邮箱/地址；
-- 认证：本地 passwordless（Nginx 注入服务端身份）只保护审计归属，**不提供远程访问控制**；对外发布前必须先做真实认证 + HTTPS；
+- 认证：网关边缘 Basic Auth 默认开启（`GATEWAY_BASIC_AUTH_ENABLED`，单一共享凭据），Nginx 注入服务端身份只保护审计归属，**不提供远程访问控制**；对外发布前必须先做真实认证 + HTTPS；显式设 `GATEWAY_BASIC_AUTH_ENABLED=false` 可临时关闭（nginx 启动日志可见警告）；
 - Connector/Adapter/MCP/Agent **一律禁止直接写业务表**，只能调应用层用例。
 
 ---
