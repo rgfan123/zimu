@@ -40,7 +40,7 @@ T01 →（T02 ‖ T03 并行）→（T04 → T05 → T06）‖（T07 → T08）�
 | 02 | 注册表切 DB 真源 + 删代码定义 | 01 | resolved |
 | 03 | INVARIANT 评测数据化 + 基线门禁读 DB | 01 | resolved |
 | 04 | Runtime Adapter 骨架 + 通用门面（A 路径） | 02、03 | resolved |
-| 05 | B/C 路径收敛（采购比价/数据查询） | 04 | open |
+| 05 | B/C 路径收敛（采购比价/数据查询） | 04 | resolved |
 | 06 | D 路径意图桥适配 | 05 | open |
 | 07 | MCP 权限隔离（读写元数据 + 调用期复核 + stdio 只读） | 02 | open |
 | 08 | 门禁引擎 + 运行期 PII 守卫 | 07 | open |
