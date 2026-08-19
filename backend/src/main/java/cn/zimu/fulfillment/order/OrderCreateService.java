@@ -286,7 +286,11 @@ public class OrderCreateService {
         if (!customerMatched) reviewCases.add(orderReviewCase(order, canonical));
         for (LineResult result : lineResults) {
             if (!result.mapped()) reviewCases.add(lineReviewCase(
-                    order, result.line(), result.reviewReasonCode(), result.missingSourceSkuRefs()));
+                    order,
+                    result.line(),
+                    result.reviewReasonCode(),
+                    result.missingSourceSkuRefs(),
+                    result.missingComponentInputs()));
         }
         reviewCaseRepository.saveAll(reviewCases);
         List<Fulfillment> fulfillments = new ArrayList<>();
@@ -408,7 +412,11 @@ public class OrderCreateService {
         for (LineResult result : lineResults) {
             if (!result.mapped()) {
                 reviewCases.add(lineReviewCase(
-                        order, result.line(), result.reviewReasonCode(), result.missingSourceSkuRefs()));
+                        order,
+                        result.line(),
+                        result.reviewReasonCode(),
+                        result.missingSourceSkuRefs(),
+                        result.missingComponentInputs()));
             }
         }
         for (ReviewCase reviewCase : reviewCases) {
@@ -493,7 +501,7 @@ public class OrderCreateService {
             line.setExceptionCode("SKU_MAPPING_REQUIRED");
             line.setExceptionReason("未找到来源 SKU 映射: " + blankToEmpty(item.sourceSkuRef()));
             return new LineResult(
-                    line, List.of(), List.of(blankToEmpty(item.sourceSkuRef())), "SKU_MAPPING_REQUIRED");
+                    line, List.of(), List.of(blankToEmpty(item.sourceSkuRef())), List.of(), "SKU_MAPPING_REQUIRED");
         }
         Sku sku = requireSku(mapping);
         if (hasConflictingSkuCode(item.skuCode(), sku)) {
@@ -504,6 +512,7 @@ public class OrderCreateService {
                     line,
                     List.of(),
                     List.of(blankToEmpty(item.sourceSkuRef()), blankToEmpty(item.skuCode())),
+                    List.of(),
                     "SKU_MAPPING_CONFLICT");
         }
         skuCodes.put(sku.getId(), sku.getSkuCode());
@@ -517,7 +526,7 @@ public class OrderCreateService {
             line.setRequestedQuantity(quantity.multiply(multiplier).setScale(3, RoundingMode.HALF_UP));
         }
         line.setProcessingStage(ProcessingStage.READY_TO_EXPORT);
-        return new LineResult(line, List.of(), List.of(), null);
+        return new LineResult(line, List.of(), List.of(), List.of(), null);
     }
 
     private LineResult createBundleLine(SourceChannel channel, OrderItemInput item, int lineNo, Map<Long, String> skuCodes) {
@@ -535,6 +544,7 @@ public class OrderCreateService {
         }
         List<ComponentResolution> resolutions = new ArrayList<>();
         List<String> missingRefs = new ArrayList<>();
+        List<BundleComponentInput> missingComponentInputs = new ArrayList<>();
         String reviewReasonCode = null;
         for (BundleComponentInput componentInput : inputs) {
             ComponentResolution resolution = resolveComponent(channel, componentInput, item.bundleId() != null);
@@ -543,6 +553,7 @@ public class OrderCreateService {
                 missingRefs.add(componentInput.skuCode() == null || componentInput.skuCode().isBlank()
                         ? blankToEmpty(componentInput.sourceSkuRef())
                         : componentInput.skuCode());
+                missingComponentInputs.add(componentInput);
                 if ("SKU_MAPPING_CONFLICT".equals(resolution.reviewReasonCode())) {
                     reviewReasonCode = "SKU_MAPPING_CONFLICT";
                 } else if (reviewReasonCode == null) {
@@ -554,7 +565,7 @@ public class OrderCreateService {
             line.setProcessingStage(ProcessingStage.NEED_REVIEW);
             line.setExceptionCode(reviewReasonCode);
             line.setExceptionReason("礼包组件存在缺失或冲突的来源 SKU: " + String.join(", ", missingRefs));
-            return new LineResult(line, List.of(), missingRefs, reviewReasonCode);
+            return new LineResult(line, List.of(), missingRefs, missingComponentInputs, reviewReasonCode);
         }
         validateStaticBundleSnapshot(item.bundleId(), resolutions);
         Long providerId = resolutions.getFirst().sku().getFulfillmentProviderId();
@@ -580,7 +591,7 @@ public class OrderCreateService {
             component.setUnitSnapshot(resolution.input().unit());
             components.add(component);
         }
-        return new LineResult(line, components, List.of(), null);
+        return new LineResult(line, components, List.of(), List.of(), null);
     }
 
     /** 静态礼包分片必须逐项等量属于当前主数据；完整 BOM 由来源适配器按 provider 分片。 */
@@ -730,7 +741,11 @@ public class OrderCreateService {
     }
 
     private ReviewCase lineReviewCase(
-            Order order, OrderLine line, String reasonCode, List<String> missingSourceSkuRefs) {
+            Order order,
+            OrderLine line,
+            String reasonCode,
+            List<String> missingSourceSkuRefs,
+            List<BundleComponentInput> missingComponentInputs) {
         ReviewCase reviewCase = new ReviewCase();
         reviewCase.setCaseNo("RC-" + order.getOrderNo() + "-" + line.getLineNo());
         reviewCase.setCaseType("SKU_MAPPING");
@@ -739,11 +754,51 @@ public class OrderCreateService {
         reviewCase.setReasonCode(reasonCode);
         reviewCase.setOrderId(order.getId());
         reviewCase.setOrderLineId(line.getId());
-        reviewCase.setDetail(Map.of(
-                "source_channel", order.getSourceChannel().name(),
-                "line_no", line.getLineNo(),
-                "missing_source_sku_refs", missingSourceSkuRefs));
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("source_channel", order.getSourceChannel().name());
+        detail.put("line_no", line.getLineNo());
+        detail.put("missing_source_sku_refs", missingSourceSkuRefs);
+        // 来源原始商品信息：行快照即来源文件/结构化载荷的规范化值，直接复用不新增存储。
+        detail.put("source_product_name", line.getProductNameSnapshot());
+        detail.put("source_specification", line.getSpecificationSnapshot());
+        detail.put("source_unit", line.getUnitSnapshot());
+        detail.put("source_quantity", line.getRequestedQuantity().toPlainString());
+        // 结构化证据：逐个被阻断的商品独立成行，避免前端把多个编号合并成一串。
+        detail.put("evidence_items", skuEvidenceItems(line, missingSourceSkuRefs, missingComponentInputs));
+        reviewCase.setDetail(detail);
         return reviewCase;
+    }
+
+    /** 逐被阻断商品的结构化证据；字段缺失时留空，前端以「来源未提供」呈现而不是整行消失。 */
+    private List<Map<String, Object>> skuEvidenceItems(
+            OrderLine line, List<String> missingSourceSkuRefs, List<BundleComponentInput> missingComponentInputs) {
+        if (!missingComponentInputs.isEmpty()) {
+            return missingComponentInputs.stream().map(input -> {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("source_sku_ref", blankToEmpty(input.sourceSkuRef()));
+                item.put("product_name", blankToEmpty(input.productName()));
+                item.put("specification", blankToEmpty(input.specification()));
+                item.put("unit", blankToEmpty(input.unit()));
+                item.put("quantity", blankToEmpty(input.quantityPerBundle()));
+                return item;
+            }).toList();
+        }
+        if (line.getLineType() == LineType.SINGLE) {
+            // 单行：来源编号取首个缺失引用（冲突类事项的第二个元素是输入 SKU 编码，不是商品）。
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("source_sku_ref", missingSourceSkuRefs.isEmpty() ? "" : blankToEmpty(missingSourceSkuRefs.getFirst()));
+            item.put("product_name", blankToEmpty(line.getProductNameSnapshot()));
+            item.put("specification", blankToEmpty(line.getSpecificationSnapshot()));
+            item.put("unit", blankToEmpty(line.getUnitSnapshot()));
+            item.put("quantity", line.getRequestedQuantity().toPlainString());
+            return List.of(item);
+        }
+        // 非单行且无组件明细（理论不发生）：逐个编号成行，其余字段留空。
+        return missingSourceSkuRefs.stream().map(ref -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("source_sku_ref", blankToEmpty(ref));
+            return item;
+        }).toList();
     }
 
     private static BigDecimal parseQuantity(String quantity) {
@@ -765,6 +820,7 @@ public class OrderCreateService {
             OrderLine line,
             List<OrderLineComponent> components,
             List<String> missingSourceSkuRefs,
+            List<BundleComponentInput> missingComponentInputs,
             String reviewReasonCode) {
 
         boolean mapped() {

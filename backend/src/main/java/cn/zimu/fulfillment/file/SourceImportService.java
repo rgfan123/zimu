@@ -217,6 +217,8 @@ public class SourceImportService {
                 }
             }
         }
+        // raw 行已与订单行建立血缘后，把 sheet/行号并入 SKU 映射类复核事项并直连 raw_import_row_id。
+        enrichReviewCasesWithSourceRow(batchId);
 
         return finalizeBatch(batchId, started, context, AuditActorType.HUMAN,
                 "source-file-import", "source-orders.upload",
@@ -369,6 +371,8 @@ public class SourceImportService {
                         Long.valueOf(created.id()), Long.valueOf(line.id()), null, null);
             }
         }
+        // raw 行已与订单行建立血缘后，把 sheet/行号并入 SKU 映射类复核事项并直连 raw_import_row_id。
+        enrichReviewCasesWithSourceRow(batchId);
 
         // 3) 批次收尾：状态与审计口径与文件导入一致
         return finalizeBatch(batchId, started, context, AuditActorType.SYSTEM,
@@ -1045,6 +1049,32 @@ public class SourceImportService {
                 batchId,
                 row.sheetIndex(),
                 row.rowIndex());
+    }
+
+    /**
+     * 把 raw_import_rows 的来源文件位置（sheet 名 + 行号）并入 SKU 映射类复核事项的 detail，
+     * 并直连 review_cases.raw_import_row_id 外键。原始单元格值已存 raw_import_rows，
+     * 这里只补引用与展示字段，不新增冗余存储；文件导入与结构化导入在 raw 行与订单行
+     * 建立血缘后统一调用。
+     */
+    private void enrichReviewCasesWithSourceRow(long batchId) {
+        jdbc.update(
+                """
+                UPDATE app.review_cases rc
+                SET detail = rc.detail || jsonb_build_object(
+                        'source_sheet_name', rir.sheet_name,
+                        'source_row_index', rir.row_index),
+                    raw_import_row_id = rir.id,
+                    updated_at = CURRENT_TIMESTAMP
+                FROM app.raw_import_rows rir
+                WHERE rir.import_batch_id = ?
+                  AND rir.order_id = rc.order_id
+                  AND rir.order_line_id = rc.order_line_id
+                  AND rc.order_line_id IS NOT NULL
+                  AND rc.reason_code IN ('SKU_MAPPING_REQUIRED', 'SKU_MAPPING_CONFLICT',
+                                         'SOURCE_SKU_MAPPING_REQUIRED', 'PROVIDER_SKU_MAPPING_REQUIRED')
+                """,
+                batchId);
     }
 
     private Map<String, Integer> counts(long batchId) {

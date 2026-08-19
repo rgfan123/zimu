@@ -256,6 +256,24 @@ class ExcelClosedLoopApiTest {
                 String.class);
 
         Map<String, Object> skuCase = cases.get("SKU_MAPPING_REQUIRED");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> skuDetail = (Map<String, Object>) skuCase.get("detail");
+        // 复核抽屉逐条展示来源商品信息：名称/数量来自行快照，sheet/行号来自 raw_import_rows。
+        assertThat(skuDetail).containsEntry("source_channel", "FEIXIANG");
+        assertThat(skuDetail.get("source_product_name")).isEqualTo("子牧羊小腿");
+        assertThat(skuDetail.get("source_quantity")).isEqualTo("1.500");
+        assertThat(skuDetail.get("source_sheet_name")).isEqualTo("CSV");
+        assertThat(skuDetail.get("source_row_index")).isEqualTo(2);
+        assertThat((List<?>) skuDetail.get("evidence_items")).singleElement().satisfies(item -> {
+            Map<?, ?> evidence = (Map<?, ?>) item;
+            assertThat(evidence.get("source_sku_ref")).isEqualTo("FX-PRODUCT-REVIEW-001");
+            assertThat(evidence.get("product_name")).isEqualTo("子牧羊小腿");
+            assertThat(evidence.get("quantity")).isEqualTo("1.500");
+        });
+        // 复核事项直连原始文件行外键，原始单元格值可达。
+        assertThat(jdbc.queryForObject(
+                "SELECT raw_import_row_id FROM app.review_cases WHERE id=?",
+                Object.class, Long.parseLong(skuCase.get("id").toString()))).isNotNull();
         ResponseEntity<Map> skuResolved = resolveReview(
                 skuCase.get("id").toString(),
                 "resolve-sku",

@@ -3,6 +3,21 @@ export interface DisplayRow {
   value: string;
 }
 
+/** detail 里缺字段时的统一呈现，代替静默丢弃整行。 */
+export const SOURCE_NOT_PROVIDED = '来源未提供';
+
+/** SKU 映射类复核事项的 reason_code 全集；抽屉对它们逐条展示来源商品明细。 */
+export const SKU_MAPPING_REASON_CODES: readonly string[] = [
+  'SKU_MAPPING_REQUIRED',
+  'SKU_MAPPING_CONFLICT',
+  'SOURCE_SKU_MAPPING_REQUIRED',
+  'PROVIDER_SKU_MAPPING_REQUIRED',
+];
+
+export function isSkuMappingReasonCode(reasonCode: string): boolean {
+  return SKU_MAPPING_REASON_CODES.includes(reasonCode);
+}
+
 const EVENT_FIELD_LABELS: Record<string, string> = {
   sku_code: 'SKU',
   product_name: '商品',
@@ -46,6 +61,22 @@ const REVIEW_FIELD_LABELS: Record<string, string> = {
   quantity_multiplier: '数量换算',
   remark: '处理依据',
   note: '处理依据',
+  // ---- SKU 映射复核放行的「来源原始商品信息」----
+  // 逐条说明为什么不是 PII：
+  // source_product_name/source_specification/source_unit：来源渠道提供的商品目录属性
+  //   （名称/规格/计量单位），是运营对应内部 SKU 所必需的描述性业务数据；不是个人
+  //   姓名、联系方式或地址，且与既有白名单 product_name（商品）同属商品目录信息，
+  //   订单行快照本就公开展示。
+  // source_quantity：来源渠道给的商品数量，与既有白名单 requested_quantity（申请数量）
+  //   同类业务数值，不包含任何个人身份数据。
+  // source_sheet_name/source_row_index：来源 Excel/结构化载荷中该行所在位置，是文件结构
+  //   元数据（工作表名 + 行号），不指向任何个人数据。
+  source_product_name: '来源商品名称',
+  source_specification: '来源规格',
+  source_unit: '来源单位',
+  source_quantity: '来源数量',
+  source_sheet_name: '来源工作表',
+  source_row_index: '来源行号',
 };
 
 const AUDIT_FIELD_LABELS: Record<string, string> = {
@@ -128,6 +159,74 @@ export function reviewCaseSummary(reviewCase: {
 
 export function safeReviewDetailRows(detail: Record<string, unknown>): DisplayRow[] {
   return approvedRows(detail, REVIEW_FIELD_LABELS);
+}
+
+/**
+ * SKU 映射复核抽屉的固定展示字段（含来源文件位置）。只读取白名单内的键（fail-closed），
+ * 缺失/空白时以「来源未提供」呈现，而不是整行消失——静默丢弃正是本票要消灭的行为。
+ */
+const SKU_MAPPING_DETAIL_FIELDS: ReadonlyArray<readonly [keyof typeof REVIEW_FIELD_LABELS, string]> = [
+  ['source_channel', '来源渠道'],
+  ['line_no', '订单行'],
+  ['source_sheet_name', '来源工作表'],
+  ['source_row_index', '来源行号'],
+  ['missing_source_sku_refs', '待映射来源商品'],
+  ['source_product_name', '来源商品名称'],
+  ['source_specification', '来源规格'],
+  ['source_unit', '来源单位'],
+  ['source_quantity', '来源数量'],
+];
+
+export function skuMappingDetailRows(detail: Record<string, unknown>): DisplayRow[] {
+  return SKU_MAPPING_DETAIL_FIELDS.map(([key, label]) => ({
+    label,
+    value: scalarValue(detail[key]) ?? SOURCE_NOT_PROVIDED,
+  }));
+}
+
+export interface SkuMappingEvidenceItem {
+  sourceSkuRef: string | null;
+  productName: string | null;
+  specification: string | null;
+  unit: string | null;
+  quantity: string | null;
+}
+
+/** 结构化证据单元格：标量缺失/空白时统一呈现「来源未提供」。 */
+export function skuMappingEvidenceCell(value: unknown): string {
+  return scalarValue(value) ?? SOURCE_NOT_PROVIDED;
+}
+
+/**
+ * SKU 映射复核的结构化证据：逐个被阻断商品一行，绝不合并成一串编号。
+ * 优先读后端 evidence_items（对象数组，仅取固定白名单同源字段、标量强制、fail-closed）；
+ * 缺失时从白名单字段 missing_source_sku_refs 退化为逐编号一行，其余单元格由调用方
+ * 以「来源未提供」呈现。
+ */
+export function skuMappingEvidenceItems(detail: Record<string, unknown>): SkuMappingEvidenceItem[] {
+  const rawItems = Array.isArray(detail.evidence_items) ? detail.evidence_items : [];
+  const parsed = rawItems
+    .filter((raw): raw is Record<string, unknown> => Boolean(raw) && typeof raw === 'object')
+    .map((item) => ({
+      sourceSkuRef: scalarValue(item.source_sku_ref),
+      productName: scalarValue(item.product_name),
+      specification: scalarValue(item.specification),
+      unit: scalarValue(item.unit),
+      quantity: scalarValue(item.quantity),
+    }));
+  if (parsed.length) return parsed;
+  const refs = Array.isArray(detail.missing_source_sku_refs)
+    ? detail.missing_source_sku_refs
+        .map(scalarValue)
+        .filter((value): value is string => value !== null)
+    : [];
+  return refs.map((sourceSkuRef) => ({
+    sourceSkuRef,
+    productName: null,
+    specification: null,
+    unit: null,
+    quantity: null,
+  }));
 }
 
 export function safeAuditPayloadRows(

@@ -65,7 +65,13 @@ import {
   type MasterDataOptionLoader,
   type MasterDataOptionState,
 } from './orderDraftMasterData';
-import { safeReviewDetailRows } from '@/presentation/publicReady';
+import {
+  isSkuMappingReasonCode,
+  safeReviewDetailRows,
+  skuMappingDetailRows,
+  skuMappingEvidenceCell,
+  skuMappingEvidenceItems,
+} from '@/presentation/publicReady';
 
 const STATUS_LABELS: Record<ReviewCaseStatus, string> = {
   OPEN: '待处理',
@@ -593,23 +599,64 @@ export default function ManualReviewPage() {
               { key: 'resolved', label: '解决人', children: selected.resolved_by ?? '—' },
             ]} />
             <div>
-              <Typography.Text strong>复核依据</Typography.Text>
-              {safeReviewDetailRows(selected.detail).length ? (
-                <Descriptions
-                  bordered
-                  size="small"
-                  column={1}
-                  style={{ marginTop: 8 }}
-                  items={safeReviewDetailRows(selected.detail).map((row, index) => ({
-                    key: `${row.label}-${index}`,
-                    label: row.label,
-                    children: row.value,
-                  }))}
-                />
+              {isSkuMappingReasonCode(selected.reason_code) ? (
+                <>
+                  <Typography.Text strong>来源商品信息</Typography.Text>
+                  <Descriptions
+                    bordered
+                    size="small"
+                    column={1}
+                    style={{ marginTop: 8 }}
+                    items={skuMappingDetailRows(selected.detail).map((row, index) => ({
+                      key: `${row.label}-${index}`,
+                      label: row.label,
+                      children: row.value,
+                    }))}
+                  />
+                  <Typography.Text strong style={{ display: 'block', marginTop: 12 }}>
+                    待映射商品明细
+                  </Typography.Text>
+                  <Table
+                    size="small"
+                    rowKey="evidenceKey"
+                    pagination={false}
+                    style={{ marginTop: 8 }}
+                    dataSource={skuMappingEvidenceItems(selected.detail).map((item, index) => ({
+                      ...item,
+                      evidenceKey: index,
+                    }))}
+                    columns={[
+                      { title: '商品名称', dataIndex: 'productName', render: (value: string | null) => skuMappingEvidenceCell(value) },
+                      { title: '规格', dataIndex: 'specification', render: (value: string | null) => skuMappingEvidenceCell(value) },
+                      { title: '单位', dataIndex: 'unit', render: (value: string | null) => skuMappingEvidenceCell(value) },
+                      { title: '数量', dataIndex: 'quantity', render: (value: string | null) => skuMappingEvidenceCell(value) },
+                      { title: '来源商品编号', dataIndex: 'sourceSkuRef', render: (value: string | null) => skuMappingEvidenceCell(value) },
+                    ]}
+                    locale={{ emptyText: '来源未提供商品明细' }}
+                  />
+                </>
+              ) : safeReviewDetailRows(selected.detail).length ? (
+                <>
+                  <Typography.Text strong>复核依据</Typography.Text>
+                  <Descriptions
+                    bordered
+                    size="small"
+                    column={1}
+                    style={{ marginTop: 8 }}
+                    items={safeReviewDetailRows(selected.detail).map((row, index) => ({
+                      key: `${row.label}-${index}`,
+                      label: row.label,
+                      children: row.value,
+                    }))}
+                  />
+                </>
               ) : (
-                <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
-                  该事项没有可公开展示的补充字段，请按事项类型和关联订单处理。
-                </Typography.Paragraph>
+                <>
+                  <Typography.Text strong>复核依据</Typography.Text>
+                  <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+                    该事项没有可公开展示的补充字段，请按事项类型和关联订单处理。
+                  </Typography.Paragraph>
+                </>
               )}
             </div>
             {selectedAction === 'JD_SKU_MAPPING' && selected.status === 'OPEN' ? (
