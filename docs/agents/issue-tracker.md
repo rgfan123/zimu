@@ -1,20 +1,17 @@
-# Issue tracker: Local Markdown
+# Issue tracker: GitHub Issues
 
-Issues and specs for this repo live as markdown files in `.scratch/`.
+New issues and specs for this repository live in GitHub Issues at `rgfan123/zimu`.
+The `.scratch/` tree is retained as a historical archive.
 
 ## Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`
-- Triage state is recorded as a `Status:` line near the top of each issue file
-- Comments and conversation history append under a `## Comments` heading
+- Create new work with `gh issue create -R rgfan123/zimu`.
+- Read current work with `gh issue view <number> -R rgfan123/zimu`.
+- Keep migrated local ticket files only for audit history and add a `**GitHub:** <url>` link.
+- Treat GitHub open/closed state and labels as authoritative for migrated work.
 
 ## Skill operations
 
-- To publish work, create a file under `.scratch/<feature-slug>/`.
-- To fetch a ticket, read the referenced markdown file.
-- Wayfinder maps use `.scratch/<effort>/map.md` and child tickets use `.scratch/<effort>/issues/NN-<slug>.md`.
-- A child ticket records `Type:`, `Status:`, and optional `Blocked by:` lines.
-- Claim work by setting `Status: claimed` before implementation.
-- Resolve work by appending an `## Answer`, setting `Status: resolved`, and updating the map when one exists.
+- Publish and update current work through GitHub Issues.
+- Preserve existing `.scratch/<effort>/map.md` and ticket files as historical evidence.
+- Do not update a migrated local ticket instead of its linked GitHub Issue.
