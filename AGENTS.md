@@ -16,6 +16,11 @@ This repository uses a single-context domain layout rooted at `CONTEXT.md`. See 
 
 ## CI gate: local reproduction
 
+> **先确认 JDK**：项目 target 是 Java 21，`mvn` 若默认落到 JDK 26（如 Homebrew 的
+> `openjdk@26`）会让 `OrderDraftComplexityApiTest` 出现与改动无关的假失败——同一用例在
+> 兼容 JDK 下通过。跑测试前先 `export JAVA_HOME=$(/usr/libexec/java_home -v 21)`，
+> 或用 `mvn -version` 确认实际使用的版本。CI 用 temurin 21，不受此影响。
+
 The CI gate at `.github/workflows/ci.yml` runs these commands on every push and pull request.
 Reproduce it locally with:
 
