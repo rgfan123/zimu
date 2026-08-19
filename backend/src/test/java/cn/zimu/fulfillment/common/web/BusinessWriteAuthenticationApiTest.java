@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.common.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -9,12 +10,15 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -34,6 +38,17 @@ class BusinessWriteAuthenticationApiTest {
     @Container
     @ServiceConnection
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    // 与 DemoSeedHttpAcceptanceTest 同款：让 actuator 的 Redis 健康指标真实 UP，
+    // 从而 /actuator/health 豁免断言的是「探活可达且正常」，而不是依赖本地 Redis。
+    @Container
+    static final GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
+
+    @DynamicPropertySource
+    static void redisProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.redis.host", redis::getHost);
+        registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+    }
 
     @Autowired
     private TestRestTemplate http;
@@ -286,6 +301,53 @@ class BusinessWriteAuthenticationApiTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody()).containsEntry("business_code", "VALIDATION_ERROR");
+    }
+
+    @Test
+    void unknownPathOutsideTheWhitelistIsRejectedWithoutCredentials() {
+        // 不在豁免白名单里的全新路径（无任何控制器）：策略兜底要求业务操作人，
+        // 未认证访问在进入路由前就被过滤器拒绝。以后新增端点忘了登记，本用例会拦住。
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Request-Id", "req-unknown-path-anon-001");
+
+        ResponseEntity<Map> response = http.exchange(
+                "/v1/future-endpoint/things",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(response.getBody())
+                .containsEntry("business_code", "AUTHENTICATED_OPERATOR_REQUIRED")
+                .containsEntry("request_id", "req-unknown-path-anon-001")
+                .containsEntry("trace_id", "req-unknown-path-anon-001");
+    }
+
+    @Test
+    void whitelistedDemoEntryRemainsReachableWithoutCredentials() {
+        // Demo 入口（含写端点）在豁免白名单内：生产策略下保持既有无认证行为不变。
+        ResponseEntity<List> response = http.exchange(
+                "/demo/v1/scenarios",
+                HttpMethod.GET,
+                new HttpEntity<>(new HttpHeaders()),
+                List.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).hasSize(1);
+        assertThat((Map) response.getBody().get(0)).containsEntry("scenario_code", "HAPPY_PATH");
+    }
+
+    @Test
+    void whitelistedActuatorHealthRemainsReachableWithoutCredentials() {
+        // 健康检查在豁免白名单内：探活请求无需管理凭据。
+        ResponseEntity<Map> response = http.exchange(
+                "/actuator/health",
+                HttpMethod.GET,
+                new HttpEntity<>(new HttpHeaders()),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).containsEntry("status", "UP");
     }
 
     private static HttpHeaders writeHeaders(String operator, String idempotencyKey) {
