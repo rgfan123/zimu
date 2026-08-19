@@ -272,8 +272,16 @@ public class PlatformOrderRefreshService {
             result.put("row_counts", batch.get("row_counts"));
             result.put("file_name", filename);
         } catch (BusinessException ex) {
-            result.put("status", "FAILED");
-            result.put("message", "导入失败: " + ex.getMessage());
+            // 内容哈希幂等命中既有批次或订单已存在（DUPLICATE_ORDER）都是重复拉取的幂等防护，
+            // 按「无新数据」成功处理，不把幂等冲突当失败。
+            String code = ex.getBusinessCode();
+            if ("DUPLICATE_ORDER".equals(code) || "ORDER_ALREADY_EXISTS".equals(code)) {
+                result.put("status", "OK");
+                result.put("message", "已拉取，但订单已存在（重复拉取防护），无新数据导入");
+            } else {
+                result.put("status", "FAILED");
+                result.put("message", "导入失败: " + ex.getMessage());
+            }
         } catch (IOException ex) {
             result.put("status", "FAILED");
             result.put("message", "读取拉取产物失败: " + ex.getMessage());

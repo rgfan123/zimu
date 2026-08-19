@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.masterdata;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.net.URI;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -104,14 +105,19 @@ class SkuSearchApiTest {
     private Map<String, Object> skuReferences() {
         Map<String, Object> categoryPage = http.getForObject("/api/v1/categories?page=0&size=20", Map.class);
         Map<String, Object> category = ((List<Map<String, Object>>) categoryPage.get("items")).get(0);
-        List<Map<String, Object>> providers = Arrays.stream(
-                        http.getForObject("/api/v1/fulfillment-providers", Map[].class))
+        List<Map<String, Object>> providers = Arrays.stream(http.getForObject("/api/v1/fulfillment-providers", Map[].class))
+                .map(value -> (Map<String, Object>) value)
                 .toList();
         return Map.of("category_id", category.get("id"), "providers", providers);
     }
 
     private Map<String, Object> page(String path) {
-        ResponseEntity<Map> response = http.getForEntity(path + "&page=0&size=50", Map.class);
+        String separator = path.contains("?") ? "&" : "?";
+        String url = path + separator + "page=0&size=50";
+        // 含 % 的 URL 用 URI 对象传递，避免模板处理器二次编码（如 query=%20%20）。
+        ResponseEntity<Map> response = url.contains("%")
+                ? http.getForEntity(URI.create(url), Map.class)
+                : http.getForEntity(url, Map.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         return response.getBody();
     }
