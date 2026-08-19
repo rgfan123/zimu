@@ -2,21 +2,12 @@ package cn.zimu.fulfillment.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import cn.zimu.fulfillment.FulfillmentHubApplication;
 import java.util.List;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
-import org.springframework.boot.WebApplicationType;
-import org.springframework.boot.builder.SpringApplicationBuilder;
-import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * meta-agent-platform-impl 票 02：注册表 DB 真源 + {@link AgentRegistryHolder} 换实例验收。
@@ -30,12 +21,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * <p>三个测试共享一个启动上下文与同一数据库，状态变更按 {@link Order} 串行推进
  * （1 启动态 → 2 版本确认 → 3 启停正交），避免相互污染。
  */
-@Testcontainers
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-class AgentRegistryHolderIntegrationTest {
-
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
+class AgentRegistryHolderIntegrationTest extends AgentTestcontainersBase {
 
     private static final String DATA_QUERY_WHITELIST_JSON =
             "[\"list_procurement_tickets\",\"get_procurement_ticket\",\"list_procurement_receipts\","
@@ -43,31 +30,11 @@ class AgentRegistryHolderIntegrationTest {
                     + "\"get_inventory_detail\",\"list_products\",\"list_categories\","
                     + "\"list_fulfillment_providers\",\"list_interpretations\",\"list_message_media\"]";
 
-    private static ConfigurableApplicationContext context;
-    private static JdbcTemplate jdbc;
     private static AgentRegistryHolder holder;
 
     @BeforeAll
-    static void boot() {
-        String[] properties = {
-            "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
-            "--spring.datasource.username=" + POSTGRES.getUsername(),
-            "--spring.datasource.password=" + POSTGRES.getPassword(),
-            "--spring.data.redis.repositories.enabled=false",
-            "--spring.main.banner-mode=off"
-        };
-        context = new SpringApplicationBuilder(FulfillmentHubApplication.class)
-                .web(WebApplicationType.NONE)
-                .run(properties);
-        jdbc = context.getBean(JdbcTemplate.class);
+    static void resolveHolder() {
         holder = context.getBean(AgentRegistryHolder.class);
-    }
-
-    @AfterAll
-    static void close() {
-        if (context != null) {
-            context.close();
-        }
     }
 
     @Test

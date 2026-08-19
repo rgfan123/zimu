@@ -4,6 +4,7 @@ import cn.zimu.fulfillment.agent.AgentModelMetadataRegistry;
 import cn.zimu.fulfillment.agent.AgentModelProperties;
 import cn.zimu.fulfillment.agent.AgentRunContext;
 import cn.zimu.fulfillment.agent.AgentSeedFixtures;
+import cn.zimu.fulfillment.agent.DataQueryEvalInputs;
 import cn.zimu.fulfillment.agent.AgentTaskRequest;
 import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
@@ -70,6 +71,10 @@ public final class AgentEvalScorer {
     private static final String PROCUREMENT_EVAL_SET_VERSION = "procurement-eval-v1";
     private static final String DATA_QUERY_EVAL_SET_VERSION = "data-query-eval-v1";
 
+    /** 跑分器当前支持的 agent（其余 slug 的 INVARIANT/CONFIRMED 用例属配置漂移，拒跑可见）。 */
+    private static final Set<String> SUPPORTED_EVAL_SLUGS =
+            Set.of("procurement-price-agent", "data-query-agent");
+
     private static final String API_KEY = "sk-agent-eval-secret";
     private static final String RUN_ID = "run_" + "0".repeat(32);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -112,11 +117,26 @@ public final class AgentEvalScorer {
         for (AgentEvalCase evalCase : cases) {
             validateInvariantExpected(evalCase, illegal);
         }
+        validateVersionConsistency(cases, illegal);
         if (!illegal.isEmpty()) {
             throw new IllegalStateException(
                     "非法 INVARIANT 评测用例拒绝（请修正 agent_eval_cases 数据）:\n" + String.join("\n", illegal));
         }
         return cases;
+    }
+
+    /** 07 决策 2：用例按 (agent_slug, agent_version) 冻结——同 slug 的用例必须同一版本，防 v1/v2 混跑。 */
+    private static void validateVersionConsistency(List<AgentEvalCase> cases, List<String> problems) {
+        Map<String, Set<Integer>> versionsBySlug = new java.util.TreeMap<>();
+        for (AgentEvalCase evalCase : cases) {
+            versionsBySlug.computeIfAbsent(evalCase.agentSlug(), k -> new java.util.TreeSet<>())
+                    .add(evalCase.agentVersion());
+        }
+        versionsBySlug.forEach((slug, versions) -> {
+            if (versions.size() > 1) {
+                problems.add(slug + " 混跑多个 agent_version: " + versions + "（换例即新版本，禁止混跑）");
+            }
+        });
     }
 
     /** input::text 是 JSONB：对象（采购）重序列化为字符串；纯文本（数据查询问题）取文本。 */
@@ -171,6 +191,22 @@ public final class AgentEvalScorer {
                     // 不可达：INVARIANT_EXPECTED_KEYS 已过滤
                 }
             }
+        }
+        // 语义一致性：可答（tool_sequence）与转人工（requires_human=true）互斥——
+        // 同时出现会让跑分器静默错分类，必须拒跑
+        boolean hasToolSequence = expected.has("tool_sequence");
+        boolean expectsHuman = expected.path("requires_human").asBoolean(false);
+        if (hasToolSequence && expectsHuman) {
+            problems.add(evalCase.agentSlug() + " tool_sequence 与 requires_human=true 互斥: " + expected);
+        }
+        // 数据查询的分类只认 tool_sequence：requires_human=false 且无 tool_sequence 的用例无法归类，拒跑
+        if ("data-query-agent".equals(evalCase.agentSlug())
+                && expected.has("requires_human")
+                && !hasToolSequence
+                && !expectsHuman
+                && !expected.has("expected_error")) {
+            problems.add(evalCase.agentSlug()
+                    + " requires_human=false 且无 tool_sequence/expected_error 无法归类: " + expected);
         }
     }
 
@@ -244,6 +280,15 @@ public final class AgentEvalScorer {
 
     /** 运行全部评测并计算指标（确定性：正确性指标可重复；latency 信息性）。 */
     public static Metrics compute(List<AgentEvalCase> cases) {
+        List<String> unknownSlugs = cases.stream()
+                .map(AgentEvalCase::agentSlug)
+                .filter(slug -> !SUPPORTED_EVAL_SLUGS.contains(slug))
+                .distinct()
+                .toList();
+        if (!unknownSlugs.isEmpty()) {
+            throw new IllegalStateException(
+                    "跑分器不支持的评测 agent_slug（配置漂移，拒跑可见）: " + unknownSlugs);
+        }
         List<AgentEvalCase> procurementCases = cases.stream()
                 .filter(c -> "procurement-price-agent".equals(c.agentSlug()))
                 .toList();
@@ -473,13 +518,13 @@ public final class AgentEvalScorer {
         if (answer == null) {
             return false;
         }
-        if ("最近 7 天有多少缺货的订单行".equals(question)) {
+        if (DataQueryEvalInputs.Q_7D_OUT_OF_STOCK.equals(question)) {
             return answer.contains("3");
         }
-        if ("SKU-EVAL-000001 的进货价和零售价是多少".equals(question)) {
+        if (DataQueryEvalInputs.Q_SKU_CONCRETE.equals(question)) {
             return answer.contains("12.34") && answer.contains("25.60");
         }
-        if ("采购工单 9005 还差多少数量".equals(question)) {
+        if (DataQueryEvalInputs.Q_TICKET_CONCRETE.equals(question)) {
             return answer.contains("23.500");
         }
         throw new IllegalStateException("未知可答评测用例: " + question);
@@ -585,18 +630,18 @@ public final class AgentEvalScorer {
     private static Map<String, Object> scriptedToolCalls(String question) {
         Map<String, Object> call = new LinkedHashMap<>();
         switch (question) {
-            case "最近 7 天有多少缺货的订单行" -> {
+            case DataQueryEvalInputs.Q_7D_OUT_OF_STOCK -> {
                 call.put("name", "list_procurement_tickets");
                 call.put("args", Map.of(
                         "status", "PENDING",
                         "date_from", "2026-08-01",
                         "date_to", "2026-08-09"));
             }
-            case "SKU-EVAL-000001 的进货价和零售价是多少" -> {
+            case DataQueryEvalInputs.Q_SKU_CONCRETE -> {
                 call.put("name", "search_skus");
                 call.put("args", Map.of("query", "SKU-EVAL-000001"));
             }
-            case "采购工单 9005 还差多少数量" -> {
+            case DataQueryEvalInputs.Q_TICKET_CONCRETE -> {
                 call.put("name", "get_procurement_ticket");
                 call.put("args", Map.of("ticket_id", "9005"));
             }
@@ -607,7 +652,7 @@ public final class AgentEvalScorer {
 
     /** 第二轮：依据真实工具结果组装最终结构化答案（数字来自工具返回值 = canned 事实）。 */
     private static String composeAnswer(String question, JsonNode toolResult) {
-        if ("最近 7 天有多少缺货的订单行".equals(question)) {
+        if (DataQueryEvalInputs.Q_7D_OUT_OF_STOCK.equals(question)) {
             long count = toolResult.path("total_elements").asLong();
             return outputJson(
                     "最近 7 天（2026-08-01 至 2026-08-09）缺货的订单行共 " + count + " 行",
@@ -618,7 +663,7 @@ public final class AgentEvalScorer {
                     false,
                     List.of());
         }
-        if ("SKU-EVAL-000001 的进货价和零售价是多少".equals(question)) {
+        if (DataQueryEvalInputs.Q_SKU_CONCRETE.equals(question)) {
             JsonNode item = toolResult.path("items").get(0);
             return outputJson(
                     "SKU-EVAL-000001 的进货价为 " + item.path("purchase_price").asText()
@@ -630,7 +675,7 @@ public final class AgentEvalScorer {
                     false,
                     List.of());
         }
-        if ("采购工单 9005 还差多少数量".equals(question)) {
+        if (DataQueryEvalInputs.Q_TICKET_CONCRETE.equals(question)) {
             return outputJson(
                     "采购工单 9005 还差 " + toolResult.path("remaining_quantity").asText(),
                     "get_procurement_ticket",

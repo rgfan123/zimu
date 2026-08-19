@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
+import cn.zimu.fulfillment.agent.DataQueryEvalInputs;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.fulfillment.FulfillmentController;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
@@ -65,22 +66,19 @@ class DataQueryAgentServiceIntegrationTest {
     private static final String GUARD_QUESTION = "查一下缺货 SKU 的进货价";
 
     // 评测问题字面量（T03 后用例真源在 DB agent_eval_cases；本测试为数据库事实核对保留本地副本）
-    private static final String Q_7D_OUT_OF_STOCK = "最近 7 天有多少缺货的订单行";
-    private static final String Q_SKU_CONCRETE = "SKU-EVAL-000001 的进货价和零售价是多少";
-    private static final String Q_TICKET_CONCRETE = "采购工单 9005 还差多少数量";
-    private static final List<String> EVAL_CLARIFICATION_QUESTIONS = List.of(
-            "SKU-xxx 的进货价和零售价是多少",
-            "采购工单 P-123 还差多少数量",
-            "某履约方本月共接收多少运单回执");
-    private static final List<String> EVAL_PII_QUESTIONS = List.of("查一下客户张三的收货地址");
+                private static final List<String> EVAL_CLARIFICATION_QUESTIONS = List.of(
+            DataQueryEvalInputs.Q_SKU_PLACEHOLDER,
+            DataQueryEvalInputs.Q_TICKET_NO_PLACEHOLDER,
+            DataQueryEvalInputs.Q_PROVIDER_AMBIGUOUS);
+    private static final List<String> EVAL_PII_QUESTIONS = List.of(DataQueryEvalInputs.Q_PII_RECEIVER);
     private static final List<String> EVAL_ANSWER_QUESTIONS =
-            List.of(Q_7D_OUT_OF_STOCK, Q_SKU_CONCRETE, Q_TICKET_CONCRETE);
+            List.of(DataQueryEvalInputs.Q_7D_OUT_OF_STOCK, DataQueryEvalInputs.Q_SKU_CONCRETE, DataQueryEvalInputs.Q_TICKET_CONCRETE);
 
     private static String expectedTool(String question) {
         return switch (question) {
-            case Q_7D_OUT_OF_STOCK -> "list_procurement_tickets";
-            case Q_SKU_CONCRETE -> "search_skus";
-            case Q_TICKET_CONCRETE -> "get_procurement_ticket";
+            case DataQueryEvalInputs.Q_7D_OUT_OF_STOCK -> "list_procurement_tickets";
+            case DataQueryEvalInputs.Q_SKU_CONCRETE -> "search_skus";
+            case DataQueryEvalInputs.Q_TICKET_CONCRETE -> "get_procurement_ticket";
             default -> throw new IllegalArgumentException("可答评测查询未定义工具预期: " + question);
         };
     }
@@ -216,7 +214,7 @@ class DataQueryAgentServiceIntegrationTest {
     /** 答案数字正确性：以数据库事实核对（不以“读起来对”验收）。 */
     private void verifyAnswerNumbers(String question, DataQueryRunResult result) {
         switch (question) {
-            case Q_7D_OUT_OF_STOCK -> {
+            case DataQueryEvalInputs.Q_7D_OUT_OF_STOCK -> {
                 long dbCount = jdbc.queryForObject(
                         """
                         SELECT count(*) FROM app.procurement_tickets
@@ -233,7 +231,7 @@ class DataQueryAgentServiceIntegrationTest {
                 assertThat(call.arguments().get("status")).isEqualTo("PENDING");
                 assertThat(call.arguments()).containsKeys("date_from", "date_to");
             }
-            case Q_SKU_CONCRETE -> {
+            case DataQueryEvalInputs.Q_SKU_CONCRETE -> {
                 Map<String, Object> prices = jdbc.queryForMap(
                         "SELECT purchase_price, retail_price FROM app.skus WHERE sku_code='SKU-EVAL-000001'");
                 String purchase =
@@ -245,7 +243,7 @@ class DataQueryAgentServiceIntegrationTest {
                 assertThat(result.toolCalls().get(0).arguments().get("query"))
                         .isEqualTo("SKU-EVAL-000001");
             }
-            case Q_TICKET_CONCRETE -> {
+            case DataQueryEvalInputs.Q_TICKET_CONCRETE -> {
                 BigDecimal remaining = jdbc.queryForObject(
                         """
                         SELECT COALESCE(sum(remaining_quantity), 0)
@@ -267,7 +265,7 @@ class DataQueryAgentServiceIntegrationTest {
 
     @Test
     void whitelistedToolsExposedToModelMatchDefinitionExactly() {
-        service.answer(Q_SKU_CONCRETE, null);
+        service.answer(DataQueryEvalInputs.Q_SKU_CONCRETE, null);
 
         assertThat(exposedToolNames(firstRequestBody.get()))
                 .containsExactlyInAnyOrderElementsOf(AgentSeedFixtures.DATA_QUERY_TOOL_NAMES);
@@ -480,18 +478,18 @@ class DataQueryAgentServiceIntegrationTest {
     private Map<String, Object> scriptedToolCalls(String question) {
         Map<String, Object> call = new java.util.LinkedHashMap<>();
         switch (question) {
-            case Q_7D_OUT_OF_STOCK -> {
+            case DataQueryEvalInputs.Q_7D_OUT_OF_STOCK -> {
                 call.put("name", "list_procurement_tickets");
                 call.put("args", Map.of(
                         "status", "PENDING",
                         "date_from", refDate.minusDays(7).toString(),
                         "date_to", refDate.plusDays(1).toString()));
             }
-            case Q_SKU_CONCRETE -> {
+            case DataQueryEvalInputs.Q_SKU_CONCRETE -> {
                 call.put("name", "search_skus");
                 call.put("args", Map.of("query", "SKU-EVAL-000001"));
             }
-            case Q_TICKET_CONCRETE -> {
+            case DataQueryEvalInputs.Q_TICKET_CONCRETE -> {
                 call.put("name", "get_procurement_ticket");
                 call.put("args", Map.of("ticket_id", "9005"));
             }
@@ -507,7 +505,7 @@ class DataQueryAgentServiceIntegrationTest {
     /** 依据真实工具结果组装最终答案（数字取自工具返回值，即数据库事实）。 */
     private String composeAnswer(String question, JsonNode toolResult) {
         return switch (question) {
-            case Q_7D_OUT_OF_STOCK -> {
+            case DataQueryEvalInputs.Q_7D_OUT_OF_STOCK -> {
                 long count = toolResult.path("total_elements").asLong();
                 String dateFrom = refDate.minusDays(7).toString();
                 String dateTo = refDate.plusDays(1).toString();
@@ -520,7 +518,7 @@ class DataQueryAgentServiceIntegrationTest {
                         false,
                         List.of());
             }
-            case Q_SKU_CONCRETE -> {
+            case DataQueryEvalInputs.Q_SKU_CONCRETE -> {
                 JsonNode item = toolResult.path("items").get(0);
                 yield outputJson(
                         "SKU-EVAL-000001 的进货价为 " + item.path("purchase_price").asText()
@@ -532,7 +530,7 @@ class DataQueryAgentServiceIntegrationTest {
                         false,
                         List.of());
             }
-            case Q_TICKET_CONCRETE -> outputJson(
+            case DataQueryEvalInputs.Q_TICKET_CONCRETE -> outputJson(
                     "采购工单 9005 还差 " + toolResult.path("remaining_quantity").asText(),
                     "get_procurement_ticket",
                     Map.of("ticket_id", "9005"),

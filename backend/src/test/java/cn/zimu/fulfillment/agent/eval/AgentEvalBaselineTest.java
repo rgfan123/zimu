@@ -2,21 +2,12 @@ package cn.zimu.fulfillment.agent.eval;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import cn.zimu.fulfillment.FulfillmentHubApplication;
 import cn.zimu.fulfillment.agent.AgentSeedFixtures;
+import cn.zimu.fulfillment.agent.AgentTestcontainersBase;
 import cn.zimu.fulfillment.agent.procurement.ProcurementPriceAgentRuntime;
 import cn.zimu.fulfillment.agent.procurement.ProcurementPricePolicy;
 import java.util.List;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.WebApplicationType;
-import org.springframework.boot.builder.SpringApplicationBuilder;
-import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * 09 — 评测基线门禁（agent-decision-layer 09；meta-agent-platform-impl 03 数据驱动化）：
@@ -35,36 +26,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *   <li>评测集版本与提示词版本钉死，换版本必须显式更新并复跑归档。</li>
  * </ul>
  */
-@Testcontainers
-class AgentEvalBaselineTest {
+class AgentEvalBaselineTest extends AgentTestcontainersBase {
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
-
-    private static ConfigurableApplicationContext context;
-    private static List<AgentEvalScorer.AgentEvalCase> cases;
-
-    @BeforeAll
-    static void boot() {
-        String[] properties = {
-            "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
-            "--spring.datasource.username=" + POSTGRES.getUsername(),
-            "--spring.datasource.password=" + POSTGRES.getPassword(),
-            "--spring.data.redis.repositories.enabled=false",
-            "--spring.main.banner-mode=off"
-        };
-        context = new SpringApplicationBuilder(FulfillmentHubApplication.class)
-                .web(WebApplicationType.NONE)
-                .run(properties);
-        JdbcTemplate jdbc = context.getBean(JdbcTemplate.class);
-        cases = AgentEvalScorer.loadInvariantCases(jdbc);
-    }
-
-    @AfterAll
-    static void close() {
-        if (context != null) {
-            context.close();
-        }
+    private static List<AgentEvalScorer.AgentEvalCase> cases() {
+        return AgentEvalScorer.loadInvariantCases(jdbc);
     }
 
     // ------------------------------------------------------------------
@@ -73,7 +38,7 @@ class AgentEvalBaselineTest {
 
     @Test
     void procurementSchemaPassRateIsHundredPercentWithNegativeCaseRejected() {
-        AgentEvalScorer.ProcurementMetrics m = AgentEvalScorer.compute(cases).procurement();
+        AgentEvalScorer.ProcurementMetrics m = AgentEvalScorer.compute(cases()).procurement();
 
         assertThat(m.evalSetVersion()).isEqualTo("procurement-eval-v1");
         assertThat(m.totalCases()).isEqualTo(7);
@@ -85,7 +50,7 @@ class AgentEvalBaselineTest {
 
     @Test
     void procurementRequiresHumanRecallIsFullAndHappyPathsNeverFalsePositive() {
-        AgentEvalScorer.ProcurementMetrics m = AgentEvalScorer.compute(cases).procurement();
+        AgentEvalScorer.ProcurementMetrics m = AgentEvalScorer.compute(cases()).procurement();
 
         // 低置信度/无候选/缺价格 3 例必须全部转人工（低置信度阈值 0.6）
         assertThat(m.requiresHumanExpected()).isEqualTo(3);
@@ -97,7 +62,7 @@ class AgentEvalBaselineTest {
 
     @Test
     void procurementWriteToolsAreNeverCalled() {
-        AgentEvalScorer.ProcurementMetrics m = AgentEvalScorer.compute(cases).procurement();
+        AgentEvalScorer.ProcurementMetrics m = AgentEvalScorer.compute(cases()).procurement();
 
         assertThat(m.writeToolCalls()).isZero();
     }
@@ -108,7 +73,7 @@ class AgentEvalBaselineTest {
 
     @Test
     void dataQueryToolSelectionAccuracyIsHundredPercent() {
-        AgentEvalScorer.DataQueryMetrics m = AgentEvalScorer.compute(cases).dataQuery();
+        AgentEvalScorer.DataQueryMetrics m = AgentEvalScorer.compute(cases()).dataQuery();
 
         assertThat(m.evalSetVersion()).isEqualTo("data-query-eval-v1");
         assertThat(m.totalQueries()).isEqualTo(7);
@@ -119,7 +84,7 @@ class AgentEvalBaselineTest {
 
     @Test
     void dataQueryAnswerNumberAccuracyIsHundredPercent() {
-        AgentEvalScorer.DataQueryMetrics m = AgentEvalScorer.compute(cases).dataQuery();
+        AgentEvalScorer.DataQueryMetrics m = AgentEvalScorer.compute(cases()).dataQuery();
 
         assertThat(m.answerNumbersCorrect()).isEqualTo(3);
         assertThat(m.answerNumberAccuracy()).isEqualTo(1.0);
@@ -127,7 +92,7 @@ class AgentEvalBaselineTest {
 
     @Test
     void dataQueryGatePathsAlwaysRouteRequiresHumanWithoutWriteTools() {
-        AgentEvalScorer.DataQueryMetrics m = AgentEvalScorer.compute(cases).dataQuery();
+        AgentEvalScorer.DataQueryMetrics m = AgentEvalScorer.compute(cases()).dataQuery();
 
         // 歧义澄清 3 + PII 拒绝 1：全部 requires_human=true
         assertThat(m.gatePaths()).isEqualTo(4);
@@ -143,7 +108,7 @@ class AgentEvalBaselineTest {
     @Test
     void evalSetAndPromptVersionsArePinnedToBaseline() {
         // 评测集版本标签：跑分器按 agent_slug 发射固定版本名（07：用例集随定义版本冻结）
-        AgentEvalScorer.Metrics metrics = AgentEvalScorer.compute(cases);
+        AgentEvalScorer.Metrics metrics = AgentEvalScorer.compute(cases());
         assertThat(metrics.procurement().evalSetVersion()).isEqualTo("procurement-eval-v1");
         assertThat(metrics.dataQuery().evalSetVersion()).isEqualTo("data-query-eval-v1");
         // 提示词版本：运行时与夹具钉死

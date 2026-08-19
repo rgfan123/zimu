@@ -3,28 +3,21 @@ package cn.zimu.fulfillment.agent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import cn.zimu.fulfillment.FulfillmentHubApplication;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.WebApplicationType;
-import org.springframework.boot.builder.SpringApplicationBuilder;
-import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * meta-agent-platform-impl 票 01 + 02：V33 迁移种子与注册表 DB 真源的整合测试。
  *
- * <p>真实 PostgreSQL（Testcontainers）+ 完整应用启动（Flyway 执行全部迁移）后，断言：
+ * <p>真实 PostgreSQL（Testcontainers，{@link AgentTestcontainersBase}）+ 完整应用启动
+ * （Flyway 执行全部迁移）后，断言：
  * <ul>
  *   <li>DB 是定义唯一真源：上下文无代码定义 bean 残留（T02），active 种子恰为 4 个
  *       （procurement-price-agent / data-query-agent / intent-recognition / meta-agent），
@@ -33,43 +26,14 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *   <li>meta-agent 播种行：version=1、status='active'、allow_write=true、enabled=true、
  *       白名单 = [list_agent_tools, create_agent_draft, update_agent_draft]（06/08 决策）；</li>
  *   <li>14 例评测用例（procurement-eval-v1 7 例 + data-query-eval-v1 7 条）按 metric_kind=
- *       INVARIANT 播种为 CONFIRMED，input/expected 与代码 fixture 逐字一致；</li>
+ *       INVARIANT 播种为 CONFIRMED，input/expected 与 T03 钉死的字面量一致（防种子静默漂移）；</li>
  *   <li>结构约束落地：部分唯一索引（每 slug 至多一个 active）、agent_runs 新列与默认值、
  *       agent_eval_cases 外键。</li>
  * </ul>
  */
-@Testcontainers
-class AgentPlatformSeedVerbatimTest {
-
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
+class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    private static ConfigurableApplicationContext context;
-    private static JdbcTemplate jdbc;
-
-    @BeforeAll
-    static void boot() {
-        String[] properties = {
-            "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
-            "--spring.datasource.username=" + POSTGRES.getUsername(),
-            "--spring.datasource.password=" + POSTGRES.getPassword(),
-            "--spring.data.redis.repositories.enabled=false",
-            "--spring.main.banner-mode=off"
-        };
-        context = new SpringApplicationBuilder(FulfillmentHubApplication.class)
-                .web(WebApplicationType.NONE)
-                .run(properties);
-        jdbc = context.getBean(JdbcTemplate.class);
-    }
-
-    @AfterAll
-    static void close() {
-        if (context != null) {
-            context.close();
-        }
-    }
 
     private record DefinitionRow(
             String slug,
@@ -166,6 +130,88 @@ class AgentPlatformSeedVerbatimTest {
             assertThat(row.metricKind()).isEqualTo("INVARIANT");
             assertThat(row.status()).isEqualTo("CONFIRMED");
         });
+    }
+
+    @Test
+    void evalCaseSeedMatchesDesignedFourteenCases() {
+        // T03 删除 mirror 测试后，用例真源钉死在此（防种子静默漂移：input 集合 + 关键 expected 形态）
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT agent_slug, input::text, expected::text FROM app.agent_eval_cases "
+                        + "WHERE metric_kind = 'INVARIANT' AND status = 'CONFIRMED' "
+                        + "ORDER BY agent_slug, id");
+        assertThat(rows).hasSize(14);
+
+        List<String> procurementInputs = normalizedInputs(rows, "procurement-price-agent");
+        // 7 例：6 个不同 input（{"sku_id":"1001"} 出现 2 次：snake_case 与 camelCase 兼容两例同输入）
+        assertThat(procurementInputs).hasSize(7);
+        assertThat(procurementInputs).containsExactlyInAnyOrder(
+                norm("{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}"),
+                norm("{\"sku_id\":\"1001\"}"),
+                norm("{\"sku_id\":\"1001\"}"),
+                norm("{\"procurement_ticket_id\":\"9002\",\"quantity\":\"1\"}"),
+                norm("{\"procurement_ticket_id\":\"9003\"}"),
+                norm("{\"procurement_ticket_id\":\"9004\",\"quantity\":\"4\"}"),
+                norm("{\"sku_id\":\"1002\"}"));
+
+        List<String> dataQueryInputs = normalizedInputs(rows, "data-query-agent");
+        assertThat(dataQueryInputs).hasSize(7);
+        assertThat(dataQueryInputs).containsExactlyInAnyOrder(
+                DataQueryEvalInputs.Q_7D_OUT_OF_STOCK,
+                DataQueryEvalInputs.Q_SKU_PLACEHOLDER,
+                DataQueryEvalInputs.Q_TICKET_NO_PLACEHOLDER,
+                DataQueryEvalInputs.Q_PROVIDER_AMBIGUOUS,
+                DataQueryEvalInputs.Q_SKU_CONCRETE,
+                DataQueryEvalInputs.Q_TICKET_CONCRETE,
+                DataQueryEvalInputs.Q_PII_RECEIVER);
+
+        // 关键 expected 形态：负例 expected_error、可答 tool_sequence、门禁 requires_human=true
+        Map<String, JsonNode> expectedByInput = new java.util.HashMap<>();
+        for (Map<String, Object> row : rows) {
+            expectedByInput.put(canonical(parse((String) row.get("input"))), parse((String) row.get("expected")));
+        }
+        assertThat(expectedByInput.get(norm("{\"sku_id\":\"1002\"}")).path("expected_error").asText())
+                .isEqualTo("AGENT_OUTPUT_INVALID");
+        assertThat(expectedByInput.get(DataQueryEvalInputs.Q_TICKET_CONCRETE).path("tool_sequence").get(0).asText())
+                .isEqualTo("get_procurement_ticket");
+        assertThat(expectedByInput.get(DataQueryEvalInputs.Q_PII_RECEIVER).path("requires_human").asBoolean())
+                .isTrue();
+    }
+
+    private static List<String> normalizedInputs(List<Map<String, Object>> rows, String slug) {
+        return rows.stream()
+                .filter(r -> slug.equals(r.get("agent_slug")))
+                .map(r -> canonical(parse((String) r.get("input"))))
+                .toList();
+    }
+
+    /** 规范形：对象键递归排序后序列化（jsonb 按键长排序、Jackson 保留解析序，统一到键排序消除两处差异）。 */
+    private static String canonical(JsonNode node) {
+        if (node.isObject()) {
+            ObjectNode sorted = MAPPER.createObjectNode();
+            List<String> names = new java.util.ArrayList<>();
+            node.fieldNames().forEachRemaining(names::add);
+            names.sort(String::compareTo);
+            for (String name : names) {
+                sorted.set(name, parse(canonical(node.get(name))));
+            }
+            return sorted.toString();
+        }
+        if (node.isArray()) {
+            StringBuilder out = new StringBuilder("[");
+            for (int i = 0; i < node.size(); i++) {
+                if (i > 0) {
+                    out.append(',');
+                }
+                out.append(canonical(node.get(i)));
+            }
+            return out.append(']').toString();
+        }
+        // 文本节点（数据查询问题）取原文不带引号，与字面量直接可比
+        return node.isTextual() ? node.asText() : node.toString();
+    }
+
+    private static String norm(String json) {
+        return canonical(parse(json));
     }
 
     // ------------------------------------------------------------------

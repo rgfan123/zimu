@@ -2,10 +2,10 @@ package cn.zimu.fulfillment.agent.procurement;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import cn.zimu.fulfillment.FulfillmentHubApplication;
 import cn.zimu.fulfillment.agent.AgentModelProperties;
 import cn.zimu.fulfillment.agent.AgentSeedFixtures;
 import cn.zimu.fulfillment.agent.AgentTaskRequest;
+import cn.zimu.fulfillment.agent.AgentTestcontainersBase;
 import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
 import cn.zimu.fulfillment.agent.McpToolTestSupport;
@@ -28,18 +28,9 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.WebApplicationType;
-import org.springframework.boot.builder.SpringApplicationBuilder;
-import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * 05 — 采购比价 Agent 评测集与端到端（agent-decision-layer 05；meta-agent-platform-impl 03
@@ -52,8 +43,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * （负例）、camelCase 兼容等 7 例。schema 校验通过率 = 合法用例解析成功 100%，
  * 负例稳定拒绝为 AGENT_OUTPUT_INVALID；requires_human 召回 = 低置信度/字段缺失用例 100% 转人工。
  */
-@Testcontainers
-class ProcurementPriceEvalTest {
+class ProcurementPriceEvalTest extends AgentTestcontainersBase {
 
     private static final String API_KEY = "sk-procurement-eval-secret";
     private static final String RUN_ID = "run_" + "0".repeat(32);
@@ -65,35 +55,10 @@ class ProcurementPriceEvalTest {
             "submit_supplementary_material",
             "submit_review_request");
 
-    @Container
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
-
-    private static ConfigurableApplicationContext context;
-    private static List<AgentEvalScorer.AgentEvalCase> procurementCases;
-
-    @BeforeAll
-    static void boot() {
-        String[] properties = {
-            "--spring.datasource.url=" + POSTGRES.getJdbcUrl(),
-            "--spring.datasource.username=" + POSTGRES.getUsername(),
-            "--spring.datasource.password=" + POSTGRES.getPassword(),
-            "--spring.data.redis.repositories.enabled=false",
-            "--spring.main.banner-mode=off"
-        };
-        context = new SpringApplicationBuilder(FulfillmentHubApplication.class)
-                .web(WebApplicationType.NONE)
-                .run(properties);
-        JdbcTemplate jdbc = context.getBean(JdbcTemplate.class);
-        procurementCases = AgentEvalScorer.loadInvariantCases(jdbc).stream()
+    private static List<AgentEvalScorer.AgentEvalCase> procurementCases() {
+        return AgentEvalScorer.loadInvariantCases(jdbc).stream()
                 .filter(c -> "procurement-price-agent".equals(c.agentSlug()))
                 .toList();
-    }
-
-    @AfterAll
-    static void close() {
-        if (context != null) {
-            context.close();
-        }
     }
 
     private HttpServer server;
@@ -185,7 +150,7 @@ class ProcurementPriceEvalTest {
         int schemaValid = 0;
         int requiresHumanExpected = 0;
         int requiresHumanCaught = 0;
-        for (AgentEvalScorer.AgentEvalCase evalCase : procurementCases) {
+        for (AgentEvalScorer.AgentEvalCase evalCase : procurementCases()) {
             String modelOutput = AgentEvalStubData.procurementModelOutput(evalCase.input());
             hits.set(0);
             requestBodies.clear();
@@ -229,7 +194,7 @@ class ProcurementPriceEvalTest {
             }
         }
         // schema 校验通过率 100%（合法用例全部解析成功）
-        assertThat(schemaValid).isEqualTo(procurementCases.size() - 1);
+        assertThat(schemaValid).isEqualTo(procurementCases().size() - 1);
         // requires_human 召回 100%（低置信度/字段缺失全部转人工）
         assertThat(requiresHumanCaught).isEqualTo(requiresHumanExpected);
     }
@@ -267,6 +232,34 @@ class ProcurementPriceEvalTest {
     // 工具调用序列端到端（行为：get_procurement_ticket → get_sku →
     // list_provider_skus → get_inventory_overview → 结构化输出）
     // ------------------------------------------------------------------
+
+    @Test
+    void camelCaseModelOutputIsAcceptedByPolicy() {
+        // 评审修复（T03）：fixture 时代两例同 input 仅输出形态不同；数据化后 stub 按 input 只返回
+        // snake_case，camelCase 解析兼容需显式覆盖（LangChain4j 按 Java 字段名引导模型输出 camelCase）。
+        String camelCaseOutput = "{\"targetSku\":\"SKU-1001\",\"requestedQuantity\":null,"
+                + "\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},"
+                + "\"candidates\":[{\"providerCode\":\"P003\",\"price\":\"8.50\","
+                + "\"priceBasis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"}],"
+                + "\"recommendation\":{\"providerCode\":\"P003\",\"reason\":\"唯一候选\"},"
+                + "\"missingFields\":[],\"confidence\":0.85,\"requiresHuman\":false}";
+        hits.set(0);
+        requestBodies.clear();
+        script = List.of(Step.finalAnswer(camelCaseOutput));
+        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties());
+
+        ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
+                "你是采购比价 Agent。", "{\"sku_id\":\"1001\"}", AgentToolBinding.empty(RUN_ID)));
+
+        assertThat(result.error()).isNull();
+        ProcurementPriceRecommendation recommendation = result.recommendation();
+        assertThat(recommendation).isNotNull();
+        assertThat(recommendation.targetSku()).isEqualTo("SKU-1001");
+        assertThat(recommendation.requiresHuman()).isFalse();
+        assertThat(recommendation.candidates()).singleElement().satisfies(candidate ->
+                assertThat(candidate.price()).matches(PRICE_SCALE2));
+        assertThat(recommendation.recommendation().providerCode()).isEqualTo("P003");
+    }
 
     @Test
     void toolCallSequenceIsObservableAndFinalOutputParses() {
@@ -381,7 +374,7 @@ class ProcurementPriceEvalTest {
     // ------------------------------------------------------------------
 
     private static AgentEvalScorer.AgentEvalCase caseByInput(String inputJson) {
-        return procurementCases.stream()
+        return procurementCases().stream()
                 .filter(c -> jsonEquals(c.input(), inputJson))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("评测集中缺少用例: " + inputJson));
