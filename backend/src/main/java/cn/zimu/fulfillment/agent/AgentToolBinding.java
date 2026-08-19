@@ -32,4 +32,14 @@ public record AgentToolBinding(String runId, Map<ToolSpecification, ToolExecutor
     public List<ToolSpecification> specifications() {
         return List.copyOf(tools.keySet());
     }
+
+    /** 按工具名解析执行器；白名单外/未绑定返回 null（调用方按稳定错误信封拒绝）。 */
+    public ToolExecutor executorFor(String toolName) {
+        for (Map.Entry<ToolSpecification, ToolExecutor> entry : tools.entrySet()) {
+            if (entry.getKey().name().equals(toolName)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
 }

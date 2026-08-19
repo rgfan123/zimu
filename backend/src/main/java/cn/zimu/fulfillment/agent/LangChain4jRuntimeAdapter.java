@@ -3,7 +3,6 @@ package cn.zimu.fulfillment.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
-import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -23,7 +22,6 @@ import dev.langchain4j.service.tool.ToolExecutor;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -110,6 +108,9 @@ public class LangChain4jRuntimeAdapter implements AgentRuntime {
             }
             // 工具循环超限：模型未收敛为最终输出，按输出无效收口（不重试）
             return AgentRunResult.failure(provider, model, promptVersion, AgentFailureCode.AGENT_OUTPUT_INVALID);
+        } catch (IllegalStateException ex) {
+            // 配置漂移（output_schema 非法等）fail-fast 上抛——不允许伪装成模型调用失败被吞掉
+            throw ex;
         } catch (RuntimeException ex) {
             // 请求组装/HTTP/网络等意外失败走稳定码，不把异常细节带进结果
             return AgentRunResult.failure(provider, model, promptVersion, AgentFailureCode.AGENT_MODEL_CALL_FAILED);
@@ -160,17 +161,10 @@ public class LangChain4jRuntimeAdapter implements AgentRuntime {
 
     /** 执行一次工具调用：按白名单名称解析绑定内执行器；未绑定稳定拒绝回传模型。 */
     private String executeTool(AgentToolBinding binding, ToolExecutionRequest executionRequest) {
-        ToolExecutor executor = null;
-        if (binding != null && !binding.isEmpty()) {
-            for (Map.Entry<ToolSpecification, ToolExecutor> entry : binding.tools().entrySet()) {
-                if (entry.getKey().name().equals(executionRequest.name())) {
-                    executor = entry.getValue();
-                    break;
-                }
-            }
-        }
+        ToolExecutor executor = binding == null ? null : binding.executorFor(executionRequest.name());
         if (executor == null) {
-            return "{\"code\":\"MCP_INTERNAL_ERROR\",\"message\":\"tool not bound\"}";
+            // 白名单外/未绑定工具：与 MCP 面一致的稳定错误信封回传模型（不透出原始异常）
+            return McpToolErrorEnvelope.internalError();
         }
         return executor.execute(executionRequest, null);
     }

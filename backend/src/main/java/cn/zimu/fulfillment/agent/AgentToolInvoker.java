@@ -139,9 +139,7 @@ public class AgentToolInvoker implements ToolExecutor {
     }
 
     private String internalError(String detail) {
-        ObjectNode error = mapper.createObjectNode();
-        error.put("code", "MCP_INTERNAL_ERROR");
-        error.put("message", "内部错误，请联系运维");
-        return error.toString();
+        // 信封统一经 McpToolErrorEnvelope（detail 仅作日志/审计线索，不透出）
+        return McpToolErrorEnvelope.internalError();
     }
 }
