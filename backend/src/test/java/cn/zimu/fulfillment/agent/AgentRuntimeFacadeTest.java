@@ -142,12 +142,12 @@ class AgentRuntimeFacadeTest {
         when(runtime.run(any())).thenReturn(success());
         AgentRuntimeFacade facade = facade(enabledDefinition());
 
-        facade.invoke(SLUG, "客户问价", AgentRunContext.of("t1"));
+        facade.invoke(SLUG, "汇总一下各 SKU 进货价", AgentRunContext.of("t1"));
 
         ArgumentCaptor<AgentTaskRequest> captor = ArgumentCaptor.forClass(AgentTaskRequest.class);
         verify(runtime).run(captor.capture());
         assertThat(captor.getValue().systemPrompt()).isEqualTo("你是只读比价助手。");
-        assertThat(captor.getValue().userInput()).isEqualTo("客户问价");
+        assertThat(captor.getValue().userInput()).isEqualTo("汇总一下各 SKU 进货价");
     }
 
     @Test
@@ -356,6 +356,58 @@ class AgentRuntimeFacadeTest {
         verify(runtime).run(captor.capture());
         assertThat(captor.getValue().tools().isEmpty()).isTrue();
         assertThat(captor.getValue().tools().runId()).isEqualTo(lastAuditRunId());
+    }
+
+    // ------------------------------------------------------------------
+    // 08 票运行期守卫：平台默认链 [PII 拒绝]（豁免生效 / 失败隔离）
+    // ------------------------------------------------------------------
+
+    @Test
+    void piiInputIsRejectedBeforeRuntimeWithAudit() {
+        AgentRuntimeFacade facade = facade(enabledDefinition());
+
+        AgentRunResult result = facade.invoke(SLUG, "查一下客户张三的收货地址", null);
+
+        assertThat(result.error()).isEqualTo("PII_GUARDED");
+        assertThat(result.outcome()).isEqualTo(AgentOutcome.REJECTED);
+        assertThat(result.runId()).startsWith("run_");
+        // 命中守卫：不进模型、不建绑定
+        verify(runtime, org.mockito.Mockito.never()).run(any());
+
+        AuditLogService.AuditCommand command = lastAuditCommand();
+        assertThat(auditField(command, "operation")).isEqualTo("agent." + SLUG + ".run");
+        assertThat(auditField(command, "businessCode")).isEqualTo("PII_GUARDED");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> response = (Map<String, Object>) auditField(command, "responsePayload");
+        assertThat(response.get("status")).isEqualTo("PII_GUARDED");
+    }
+
+    @Test
+    void guardExemptedDefinitionSkipsGuardAndInvokesRuntime() {
+        when(runtime.run(any())).thenReturn(success());
+        AgentDefinition exempted = AgentDefinition.of(
+                SLUG,
+                "采购比价",
+                "d",
+                "你是只读比价助手。",
+                PROMPT_VERSION,
+                "app.agent",
+                true,
+                List.of("search_provider_skus", "get_sku_price"),
+                1,
+                AgentStatus.ACTIVE,
+                "system",
+                java.time.OffsetDateTime.now(),
+                false,
+                List.of(AgentGuardExemption.PII.name()),
+                null,
+                AgentInputFormat.NATURAL_LANGUAGE);
+        AgentRuntimeFacade facade = facade(exempted);
+
+        AgentRunResult result = facade.invoke(SLUG, "查一下客户张三的收货地址", null);
+
+        assertThat(result.error()).isNull();
+        verify(runtime).run(any());
     }
 
     private AuditLogService.AuditCommand lastAuditCommand() {

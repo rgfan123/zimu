@@ -44,4 +44,25 @@ public final class JsonSchemaValidator {
             throw new IllegalStateException("JSON Schema 校验执行失败", ex);
         }
     }
+
+    /**
+     * 仅判定 schema 自身可解析（门禁引擎 output_schema 项）：JSON 根必须是对象且
+     * networknt 可构建；null/空白/非法/非对象根返回 false。不做任何实例校验。
+     */
+    public static boolean schemaParses(String schema) {
+        if (schema == null || schema.isBlank()) {
+            return false;
+        }
+        try {
+            JsonNode node = MAPPER.readTree(schema);
+            if (node == null || !node.isObject()) {
+                // JSON Schema 根必须是对象（文本/数组/数字等均不是合法 schema）
+                return false;
+            }
+            FACTORY.getSchema(schema);
+            return true;
+        } catch (Exception ex) {
+            return false;
+        }
+    }
 }

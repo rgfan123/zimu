@@ -10,20 +10,18 @@ import java.util.regex.Pattern;
  *
  * <p>两层兜底，使「歧义不猜参数 / PII 转人工」不依赖模型自觉：
  * <ol>
- *   <li>问题级（模型调用前）：PII 关键词命中 → 转人工；占位/歧义标记
- *       （{@code SKU-xxx}、工单号 {@code P-123}、{@code 某履约方}）命中 → 澄清；</li>
+ *   <li>问题级（模型调用前）：PII 关键词命中 → 转人工（判定口径委托平台默认守卫链
+ *       {@link AgentGuard}，单一实现）；占位/歧义标记（{@code SKU-xxx}、工单号
+ *       {@code P-123}、{@code 某履约方}）命中 → 澄清；</li>
  *   <li>工具参数级（模型仍猜占位参数时）：{@link #toolArgumentProblem} 命中即拒绝该次
  *       工具调用并回传 {@code CLARIFICATION_REQUIRED}，模型据此转入澄清路径。</li>
  * </ol>
  *
  * <p>标记判定是领域启发式：覆盖本系统 SKU 编号（{@code SKU-<CODE>-000000}）与采购工单
- * （数字 ticket_id）的真实格式，避免把真实标识误判为占位。
+ * （数字 ticket_id）的真实格式，避免把真实标识误判为占位。歧义澄清是领域行为
+ * （05 决策不进平台默认链），保留为本校验器实现。
  */
 public final class DataQueryAgentGuard {
-
-    /** PII 关键词：命中即转人工（Agent 白名单无任何 PII 投影工具）。 */
-    private static final List<String> PII_KEYWORDS = List.of(
-            "客户", "收货人", "收件人", "手机", "电话", "姓名", "地址", "身份证");
 
     /** 独立成词的 x 占位序列（SKU-xxx / xxx）；后随完整编号段（-000000）时不视为占位。 */
     private static final Pattern SKU_PLACEHOLDER = Pattern.compile("(?i)(?<![a-z0-9])x{2,}(?!-?[0-9]{6})");
@@ -41,18 +39,9 @@ public final class DataQueryAgentGuard {
 
     private DataQueryAgentGuard() {}
 
-    /** PII 命中返回命中原因（逐条）；未命中返回空列表。 */
+    /** PII 命中返回命中原因（逐条，口径委托平台默认守卫链 {@link AgentGuard}）；未命中返回空列表。 */
     public static List<String> piiProblems(String question) {
-        List<String> hits = new ArrayList<>();
-        if (question == null || question.isBlank()) {
-            return hits;
-        }
-        for (String keyword : PII_KEYWORDS) {
-            if (question.contains(keyword)) {
-                hits.add("查询涉及客户/收货人 PII（" + keyword + "），Agent 无 PII 工具，须转人工");
-            }
-        }
-        return hits;
+        return AgentGuard.piiProblems(question);
     }
 
     /** 歧义/占位命中返回需要澄清的原因（逐条）；未命中返回空列表。 */
