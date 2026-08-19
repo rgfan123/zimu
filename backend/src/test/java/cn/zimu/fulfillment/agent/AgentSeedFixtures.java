@@ -70,15 +70,15 @@ public final class AgentSeedFixtures {
                 DATA_QUERY_TOOL_NAMES);
     }
 
-    /** 与 V33 种子 procurement-price-agent（version=1, active）一致的定义（system_prompt 取种子开头）。 */
+    /** 与当前 active procurement-price-agent 定义一致的测试夹具（system_prompt 取关键约束）。 */
     public static AgentDefinition procurementDefinition() {
         return AgentDefinition.of(
                 "procurement-price-agent",
                 "采购比价 Agent",
-                "针对采购工单/SKU 汇总进货价、履约方映射与库存上下文，输出结构化比价建议；低置信度或信息不全时转人工。",
+                "针对采购工单/SKU 汇总进货价、履约方映射与库存上下文，输出结构化比价建议；不可比候选降级展示并说明理由；低置信度或信息不全时转人工。",
                 "你是采购比价 Agent（只读，绝不触发任何写操作）。你的职责：针对采购工单或 SKU 汇总进货价、"
-                        + "履约方映射与库存上下文，输出结构化比价建议。",
-                "procurement-price-v1",
+                        + "履约方映射与库存上下文，输出结构化比价建议。不可比候选必须携带剔除理由返回。",
+                "procurement-price-v2",
                 "app.agent",
                 true,
                 PROCUREMENT_TOOL_NAMES,

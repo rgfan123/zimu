@@ -988,6 +988,58 @@ export interface ProcurementTicketPage extends PageMeta {
   items: ProcurementTicket[];
 }
 
+// ---------- 采购比价 Agent（01 票：不可比候选降级展示） ----------
+
+export type ProcurementPriceBasis = 'sku_commercial_price' | 'provider_sku';
+
+/** 不可比候选的剔除理由标签：价格离群 / 价格缺失 / 映射失效。 */
+export type ProcurementPriceExclusionReason = 'price_outlier' | 'price_missing' | 'mapping_stale';
+
+export interface ProcurementPriceCandidate {
+  provider_code: string;
+  price?: string | null;
+  price_basis?: ProcurementPriceBasis | null;
+  note?: string | null;
+}
+
+export interface ProcurementPriceExcludedCandidate extends ProcurementPriceCandidate {
+  exclusion_reason: ProcurementPriceExclusionReason;
+  exclusion_reason_detail?: string | null;
+}
+
+export interface ProcurementPriceInventory {
+  available?: string | null;
+  shortage?: string | null;
+}
+
+export interface ProcurementPriceRecommendation {
+  target_sku?: string;
+  requested_quantity?: string | null;
+  inventory?: ProcurementPriceInventory | null;
+  /** 可比候选（参与推荐与「可比候选」组展示）。 */
+  candidates: ProcurementPriceCandidate[];
+  /** 被剔除候选（降级展示，不是删除）：理由标签与可读说明可见。 */
+  excluded_candidates: ProcurementPriceExcludedCandidate[];
+  recommendation?: { provider_code: string; reason: string } | null;
+  missing_fields: string[];
+  confidence: number;
+  requires_human: boolean;
+}
+
+export interface ProcurementPriceRunResult {
+  recommendation?: ProcurementPriceRecommendation | null;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  error?: string | null;
+}
+
+export interface ProcurementPriceCompareCommand {
+  procurement_ticket_id?: string;
+  sku_id?: string;
+  quantity?: string;
+}
+
 // ---------- 复核队列 / 审计 ----------
 
 export type ReviewCaseStatus = 'OPEN' | 'RESOLVED' | 'DISMISSED';

@@ -24,6 +24,7 @@ export const appNavigation = [
       { path: '/workbench/channel-messages', label: '渠道消息' },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },
+      { path: '/procurement/price-compare', label: '采购比价' },
       { path: '/fulfillment/sales-outbound', label: '文件作业' },
       { path: '/fulfillment/shipments', label: '发货记录' },
       { path: '/fulfillment/outbound-recon', label: '出库信息对账' },

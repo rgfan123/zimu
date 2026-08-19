@@ -11,6 +11,7 @@ import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
@@ -39,11 +40,27 @@ public class ProcurementPriceAgent {
     private final AgentRuntimeFacade facade;
     private final AuditLogService audits;
     private final ObjectMapper mapper;
+    private final double outlierMultiple;
 
+    @Autowired
+    public ProcurementPriceAgent(
+            AgentRuntimeFacade facade,
+            AuditLogService audits,
+            ObjectMapper mapper,
+            ProcurementPricePolicyProperties policyProperties) {
+        this(facade, audits, mapper, policyProperties.getOutlierMultiple());
+    }
+
+    /** 单元测试与轻量装配使用默认阈值。 */
     public ProcurementPriceAgent(AgentRuntimeFacade facade, AuditLogService audits, ObjectMapper mapper) {
+        this(facade, audits, mapper, ProcurementPricePolicy.PRICE_OUTLIER_MULTIPLE);
+    }
+
+    ProcurementPriceAgent(AgentRuntimeFacade facade, AuditLogService audits, ObjectMapper mapper, double outlierMultiple) {
         this.facade = facade;
         this.audits = audits;
         this.mapper = mapper;
+        this.outlierMultiple = outlierMultiple;
     }
 
     /**
@@ -79,7 +96,7 @@ public class ProcurementPriceAgent {
             ProcurementPriceRecommendation raw =
                     mapper.treeToValue(result.output(), ProcurementPriceRecommendation.class);
             return new ProcurementPriceRunResult(
-                    ProcurementPricePolicy.enforce(raw),
+                    ProcurementPricePolicy.enforce(raw, outlierMultiple),
                     result.provider(),
                     result.model(),
                     result.promptVersion(),

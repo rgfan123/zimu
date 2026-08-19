@@ -48,6 +48,7 @@ class ProcurementPriceAgentTest {
                 new ProcurementPriceRecommendation.Inventory("0", "2"),
                 java.util.List.of(new ProcurementPriceRecommendation.Candidate(
                         "P001", "12.34", ProcurementPriceRecommendation.PriceBasis.sku_commercial_price, null)),
+                java.util.List.of(),
                 new ProcurementPriceRecommendation.Recommendation("P001", "最低价且来自主数据"),
                 java.util.List.of(), 0.9, false);
     }
@@ -59,13 +60,14 @@ class ProcurementPriceAgentTest {
                 new ProcurementPriceRecommendation.Inventory("0", "2"),
                 java.util.List.of(new ProcurementPriceRecommendation.Candidate(
                         "P001", "12.34", ProcurementPriceRecommendation.PriceBasis.sku_commercial_price, null)),
+                java.util.List.of(),
                 new ProcurementPriceRecommendation.Recommendation("P001", "x"),
                 java.util.List.of(), 0.2, false);
     }
 
     private static AgentRunResult successWith(ProcurementPriceRecommendation recommendation) {
         ObjectNode output = MAPPER.valueToTree(recommendation);
-        return AgentRunResult.success(output, "deepseek", "deepseek-chat", "procurement-price-v1")
+        return AgentRunResult.success(output, "deepseek", "deepseek-chat", "procurement-price-v2")
                 .withRunMetadata("run_abcdef", 42);
     }
 
@@ -92,7 +94,7 @@ class ProcurementPriceAgentTest {
         assertThat(result.error()).isNull();
         assertThat(result.provider()).isEqualTo("deepseek");
         assertThat(result.model()).isEqualTo("deepseek-chat");
-        assertThat(result.promptVersion()).isEqualTo("procurement-price-v1");
+        assertThat(result.promptVersion()).isEqualTo("procurement-price-v2");
         assertThat(result.recommendation()).isNotNull();
         assertThat(result.recommendation().targetSku()).isEqualTo("SKU-1001");
         assertThat(result.recommendation().requiresHuman()).isFalse();

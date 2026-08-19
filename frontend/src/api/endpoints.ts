@@ -59,6 +59,8 @@ import type {
   OperationalAlertPage,
   ProcurementTicket,
   ProcurementTicketPage,
+  ProcurementPriceCompareCommand,
+  ProcurementPriceRunResult,
   ProviderSkuReferencePreview,
   ProductMetric,
   PlatformOrderRefreshResult,
@@ -618,6 +620,17 @@ export const procurementApi = {
       method: 'POST',
       body: { expected_version: expectedVersion, reason: note },
       headers: writeHeaders(),
+    }),
+};
+
+// ---------- 采购比价 Agent（01 票：不可比候选降级展示） ----------
+
+/** POST /api/v1/procurement-price-agent/compare —— 运行一次采购比价（只读）。 */
+export const procurementPriceAgentApi = {
+  compare: (command: ProcurementPriceCompareCommand) =>
+    apiRequest<ProcurementPriceRunResult>('/api/v1/procurement-price-agent/compare', {
+      method: 'POST',
+      body: command,
     }),
 };
 

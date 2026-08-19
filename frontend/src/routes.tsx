@@ -42,7 +42,7 @@ import {
   SalesOutboundPage,
   ShipmentsPage,
 } from '@/pages/fulfillment';
-import ProcurementTicketsPage from '@/pages/procurement';
+import ProcurementTicketsPage, { ProcurementPriceComparePage } from '@/pages/procurement';
 import ManualReviewPage from '@/pages/workbench';
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
 import { ConnectorsPage, FulfillmentProvidersPage, SystemConfigPage } from '@/pages/system';
@@ -68,6 +68,7 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/workbench/channel-messages': <ChannelMessagesPage />,
   '/fulfillment/tasks': <FulfillmentTasksPage />,
   '/procurement/tickets': <ProcurementTicketsPage />,
+  '/procurement/price-compare': <ProcurementPriceComparePage />,
   '/fulfillment/sales-outbound': <SalesOutboundPage />,
   '/fulfillment/shipments': <ShipmentsPage />,
   '/fulfillment/outbound-recon': <OutboundReconPage />,

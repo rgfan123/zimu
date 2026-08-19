@@ -192,6 +192,7 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | GET | `/api/v1/procurement-tickets/{ticket_id}` | 工单、SKU/礼包组件明细、累计数量和只追加回执 |
 | POST | `/api/v1/procurement-tickets/{ticket_id}/retry` | FAILED 后人工创建关联的新工单 |
 | POST | `/api/v1/procurement-tickets/{ticket_id}/cancel-remaining` | 人工取消明确剩余未发量，不回滚已发事实 |
+| POST | `/api/v1/procurement-price-agent/compare` | 运行一次采购比价（只读 Agent）：入参 `{procurement_ticket_id?, sku_id?, quantity?}`；返回可比候选 `candidates` 与被剔除候选 `excluded_candidates`（含 `exclusion_reason` 理由标签与 `exclusion_reason_detail` 可读说明），推荐只在可比候选中产生，可比候选为空或信息不全时 `requires_human=true`；未配置模型等失败以结果内稳定 `error` 码返回（fail-closed），输入非法抛 `INVALID_PARAMETERS` |
 
 采购回执使用同一受信任接入面 `POST /internal/v1/procurement/tickets/{ticket_id}/receipts`；Demo 采购操作台也调用该真实应用用例，不设置内部快进按钮。
 

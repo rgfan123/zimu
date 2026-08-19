@@ -358,7 +358,7 @@ public final class AgentEvalScorer {
     }
 
     // ------------------------------------------------------------------
-    // 采购比价（procurement-eval-v1，7 例，单帧 stub 模型；用例来自 DB）
+    // 采购比价（procurement-eval-v2，12 例，单帧 stub 模型；用例来自 DB）
     // ------------------------------------------------------------------
 
     private static ProcurementMetrics procurementMetrics(List<AgentEvalCase> cases) throws IOException {
