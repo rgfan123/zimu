@@ -36,7 +36,7 @@ T01 →（T02 ‖ T03 并行）→（T04 → T05 → T06）‖（T07 → T08）�
 
 | ID | 票 | 依赖 | 状态 |
 |---|---|---|---|
-| 01 | V30 迁移：三表落地与播种（含 output_schema 修正） | — | open |
+| 01 | V33 迁移：三表落地与播种（含 output_schema 修正；版本号因 V30–V32 已占用顺延） | — | resolved |
 | 02 | 注册表切 DB 真源 + 删代码定义 | 01 | open |
 | 03 | INVARIANT 评测数据化 + 基线门禁读 DB | 01 | open |
 | 04 | Runtime Adapter 骨架 + 通用门面（A 路径） | 02、03 | open |
