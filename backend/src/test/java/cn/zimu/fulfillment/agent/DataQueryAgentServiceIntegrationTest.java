@@ -6,8 +6,12 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import cn.zimu.fulfillment.agent.DataQueryEvalInputs;
+import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.fulfillment.FulfillmentController;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.service.tool.ToolExecutor;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
 import cn.zimu.fulfillment.mcp.McpToolRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -25,6 +29,7 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -115,6 +120,7 @@ class DataQueryAgentServiceIntegrationTest {
     private final AtomicReference<Throwable> lastServerError = new AtomicReference<>();
     private LocalDate refDate;
     private DataQueryAgentService service;
+    private final java.util.List<DataQueryAgentToolCall> recordedToolCalls = new ArrayList<>();
 
     @BeforeEach
     void setUp() throws IOException {
@@ -124,6 +130,7 @@ class DataQueryAgentServiceIntegrationTest {
         hits.set(0);
         firstRequestBody.set(null);
         requestBodies.clear();
+        recordedToolCalls.clear();
         round1Question.set(null);
         lastServerError.set(null);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -137,7 +144,7 @@ class DataQueryAgentServiceIntegrationTest {
                 new LangChain4jRuntimeAdapter(stubProperties()),
                 audits,
                 metadata,
-                new AgentToolBindingFactory(registry, identity, mapper));
+                recordingBindingFactory());
         service = new DataQueryAgentService(facade, audits, mapper);
     }
 
@@ -659,41 +666,57 @@ class DataQueryAgentServiceIntegrationTest {
     // ------------------------------------------------------------------
 
     /**
-     * 最近一次请求帧中模型发起的工具调用（Adapter 手写 loop 回传的 assistant tool_calls
-     * 会随消息历史出现在后续请求帧中）：返回工具名 + 参数 + 未拦截标记。
+     * 最近一次运行实际执行的工具调用（记录式绑定捕获，走真实 McpToolRegistry）：
+     * 返回工具名 + 参数 + 未拦截标记。
      */
     private DataQueryAgentToolCall lastModelToolCall() {
-        for (int i = requestBodies.size() - 1; i >= 0; i--) {
-            JsonNode body = requestTree(requestBodies.get(i));
-            JsonNode messages = body.get("messages");
-            if (messages == null || !messages.isArray()) {
-                continue;
-            }
-            for (int m = messages.size() - 1; m >= 0; m--) {
-                JsonNode calls = messages.get(m).get("tool_calls");
-                if (calls != null && calls.isArray() && !calls.isEmpty()) {
-                    JsonNode function = calls.get(0).get("function");
-                    String name = function.path("name").asText();
-                    Map<String, Object> args = Map.of();
-                    try {
-                        args = MAPPER.readValue(
-                                function.path("arguments").asText(),
-                                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
-                    } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
-                        // 参数解析失败按空参数处理（不影响工具名核对）
-                    }
-                    return new DataQueryAgentToolCall(name, args, false, null);
-                }
-            }
+        if (recordedToolCalls.isEmpty()) {
+            throw new AssertionError("运行中未捕获到工具调用（记录式绑定为空）");
         }
-        throw new AssertionError("请求帧中未找到模型工具调用");
+        return recordedToolCalls.getLast();
     }
 
-    private static JsonNode requestTree(String body) {
-        try {
-            return MAPPER.readTree(body);
-        } catch (Exception ex) {
-            throw new IllegalStateException(ex);
+    /**
+     * 记录式绑定工厂：包装真实绑定（AgentToolInvoker → 真实 McpToolRegistry）的执行器，
+     * 把每次实际工具调用（工具名 + 参数）记入 {@link #recordedToolCalls}——05 收敛后
+     * 编排层不再返回工具调用序列，测试以此核对工具选择与参数（与 08 的 agent_tool_calls
+     * 观测同源语义）。
+     */
+    private AgentToolBindingFactory recordingBindingFactory() {
+        AgentToolBindingFactory base = new AgentToolBindingFactory(registry, identity, mapper);
+        return new AgentToolBindingFactory(registry, identity, mapper) {
+            @Override
+            public AgentToolBinding bind(String runId, List<String> toolNames) {
+                AgentToolBinding bound = base.bind(runId, toolNames);
+                Map<ToolSpecification, ToolExecutor> wrapped = new LinkedHashMap<>();
+                for (Map.Entry<ToolSpecification, ToolExecutor> entry : bound.tools().entrySet()) {
+                    wrapped.put(entry.getKey(), new RecordingToolExecutor(entry.getValue()));
+                }
+                return new AgentToolBinding(runId, wrapped);
+            }
+        };
+    }
+
+    /** 记录执行器：委托真实执行器，先把工具名与参数记入序列。 */
+    private final class RecordingToolExecutor implements ToolExecutor {
+        private final ToolExecutor delegate;
+
+        private RecordingToolExecutor(ToolExecutor delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public String execute(ToolExecutionRequest request, Object memoryId) {
+            Map<String, Object> args = Map.of();
+            try {
+                args = MAPPER.readValue(
+                        request.arguments(),
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
+                // 参数解析失败按空参数处理（不影响工具名核对）
+            }
+            recordedToolCalls.add(new DataQueryAgentToolCall(request.name(), args, false, null));
+            return delegate.execute(request, memoryId);
         }
     }
 }

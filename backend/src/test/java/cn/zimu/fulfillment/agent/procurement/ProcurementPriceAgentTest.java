@@ -32,6 +32,28 @@ class ProcurementPriceAgentTest {
     private final AgentRuntimeFacade facade = mock(AgentRuntimeFacade.class);
     private final ProcurementPriceAgent agent = new ProcurementPriceAgent(facade, MAPPER);
 
+    /** 策略可通过的 happy 路径推荐（候选 + 推荐 + 高置信度，requires_human 保持 false）。 */
+    private static ProcurementPriceRecommendation happyPathRecommendation() {
+        return new ProcurementPriceRecommendation(
+                "SKU-1001", "2",
+                new ProcurementPriceRecommendation.Inventory("0", "2"),
+                java.util.List.of(new ProcurementPriceRecommendation.Candidate(
+                        "P001", "12.34", ProcurementPriceRecommendation.PriceBasis.sku_commercial_price, null)),
+                new ProcurementPriceRecommendation.Recommendation("P001", "最低价且来自主数据"),
+                java.util.List.of(), 0.9, false);
+    }
+
+    /** 低置信度推荐：模型声明 requires_human=false 但 confidence=0.2 → 策略强制转人工。 */
+    private static ProcurementPriceRecommendation lowConfidenceRecommendation() {
+        return new ProcurementPriceRecommendation(
+                "SKU-1001", "2",
+                new ProcurementPriceRecommendation.Inventory("0", "2"),
+                java.util.List.of(new ProcurementPriceRecommendation.Candidate(
+                        "P001", "12.34", ProcurementPriceRecommendation.PriceBasis.sku_commercial_price, null)),
+                new ProcurementPriceRecommendation.Recommendation("P001", "x"),
+                java.util.List.of(), 0.2, false);
+    }
+
     private static AgentRunResult successWith(ProcurementPriceRecommendation recommendation) {
         ObjectNode output = MAPPER.valueToTree(recommendation);
         return AgentRunResult.success(output, "deepseek", "deepseek-chat", "procurement-price-v1")
@@ -41,8 +63,7 @@ class ProcurementPriceAgentTest {
     @Test
     void delegatesToFacadeWithDefinitionDrivenInput() {
         when(facade.invoke(eq(ProcurementPriceAgent.AGENT_SLUG), any(), any()))
-                .thenReturn(successWith(new ProcurementPriceRecommendation(
-                        "SKU-1001", "2", null, java.util.List.of(), null, java.util.List.of(), 0.9, false)));
+                .thenReturn(successWith(happyPathRecommendation()));
 
         agent.compare(INPUT, AgentRunContext.of("thread-42"));
 
@@ -55,8 +76,7 @@ class ProcurementPriceAgentTest {
     @Test
     void successPathAppliesPolicyEnforcementToDeserializedOutput() {
         when(facade.invoke(eq(ProcurementPriceAgent.AGENT_SLUG), any(), any()))
-                .thenReturn(successWith(new ProcurementPriceRecommendation(
-                        "SKU-1001", "2", null, java.util.List.of(), null, java.util.List.of(), 0.9, false)));
+                .thenReturn(successWith(happyPathRecommendation()));
 
         ProcurementPriceRunResult result = agent.compare(INPUT, null);
 
@@ -72,12 +92,7 @@ class ProcurementPriceAgentTest {
     @Test
     void lowConfidenceOutputIsForcedToHumanByPolicy() {
         when(facade.invoke(eq(ProcurementPriceAgent.AGENT_SLUG), any(), any()))
-                .thenReturn(successWith(new ProcurementPriceRecommendation(
-                        "SKU-1001", "2", null,
-                        java.util.List.of(new ProcurementPriceRecommendation.Candidate(
-                                "P001", "12.34", ProcurementPriceRecommendation.PriceBasis.sku_commercial_price, null)),
-                        new ProcurementPriceRecommendation.Recommendation("P001", "x"),
-                        java.util.List.of(), 0.2, false)));
+                .thenReturn(successWith(lowConfidenceRecommendation()));
 
         ProcurementPriceRunResult result = agent.compare(INPUT, null);
 

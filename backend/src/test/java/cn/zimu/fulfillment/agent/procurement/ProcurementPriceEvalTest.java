@@ -16,6 +16,8 @@ import cn.zimu.fulfillment.agent.McpToolTestSupport;
 import cn.zimu.fulfillment.agent.eval.AgentEvalScorer;
 import cn.zimu.fulfillment.agent.eval.AgentEvalStubData;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.service.tool.ToolExecutor;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
 import cn.zimu.fulfillment.mcp.McpRequestContext;
 import cn.zimu.fulfillment.mcp.McpTool;
@@ -28,6 +30,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -72,6 +75,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
     private final List<String> requestBodies = new ArrayList<>();
     private volatile List<Step> script = List.of();
     private final AtomicReference<McpRequestContext> capturedContext = new AtomicReference<>();
+    private final java.util.List<String> invokedTools = new ArrayList<>();
 
     @BeforeEach
     void startServer() throws IOException {
@@ -159,6 +163,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
             String modelOutput = AgentEvalStubData.procurementModelOutput(evalCase.input());
             hits.set(0);
             requestBodies.clear();
+        invokedTools.clear();
             script = List.of(Step.finalAnswer(modelOutput));
             ProcurementPriceRunResult result = agent.compare(evalCase.input(), null);
 
@@ -208,6 +213,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
         AgentEvalScorer.AgentEvalCase happyPath = caseByInput("{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}");
         hits.set(0);
         requestBodies.clear();
+        invokedTools.clear();
         script = List.of(Step.finalAnswer(AgentEvalStubData.procurementModelOutput(happyPath.input())));
         ProcurementPriceAgent agent = agent(properties());
 
@@ -227,8 +233,8 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
         // 模型收到的输入是归一化的结构化 JSON（转义后的 key 出现在 user 消息原文中）
         assertThat(requestBodies.get(0)).contains("procurement_ticket_id");
         assertThat(requestBodies.get(0)).contains("\\\"quantity\\\"");
-        // LangChain4j 文本指令按 Java 字段名（camelCase）引导模型，snake_case 与 camelCase 均须可解析
-        assertThat(requestBodies.get(0)).contains("targetSku");
+        // 05 收敛：低层 ChatRequest 不再附加 AiServices 的 camelCase 文本指令——
+        // camelCase 兼容由 camelCaseModelOutputIsAcceptedByPolicy 显式覆盖
     }
 
     // ------------------------------------------------------------------
@@ -248,6 +254,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
                 + "\"missingFields\":[],\"confidence\":0.85,\"requiresHuman\":false}";
         hits.set(0);
         requestBodies.clear();
+        invokedTools.clear();
         script = List.of(Step.finalAnswer(camelCaseOutput));
                 ProcurementPriceAgent agent = agent(properties());
 
@@ -267,6 +274,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
     void toolCallSequenceIsObservableAndFinalOutputParses() {
         hits.set(0);
         requestBodies.clear();
+        invokedTools.clear();
         script = List.of(
                 Step.toolCall("get_procurement_ticket", "{\"ticket_id\":\"9001\"}"),
                 Step.toolCall("get_sku", "{\"sku_id\":\"1001\"}"),
@@ -297,9 +305,10 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
         // 工具结果经 McpTool.invoke 回传（最后一帧含 get_inventory_overview 的结果）
         assertThat(toolResultMessage(requestBodies.get(4)).get("tool").asText())
                 .isEqualTo("get_inventory_overview");
-        // 工具调用上下文 requestId/traceId = run_id（与 MCP 既有路径一致）
-        assertThat(capturedContext.get().requestId()).isEqualTo(RUN_ID);
-        assertThat(capturedContext.get().traceId()).isEqualTo(RUN_ID);
+        // 工具调用上下文 requestId/traceId = 门面生成的 run_id（05 收敛后由门面统一生成，
+        // 不再由测试注入固定值；run_ + 32 hex 形态与 requestId==traceId 不变式保留）
+        assertThat(capturedContext.get().requestId()).matches("run_[0-9a-f]{32}");
+        assertThat(capturedContext.get().traceId()).isEqualTo(capturedContext.get().requestId());
     }
 
     // ------------------------------------------------------------------
@@ -406,11 +415,34 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
                 new LangChain4jRuntimeAdapter(modelProperties),
                 mock(AuditLogService.class),
                 new AgentModelMetadataRegistry(),
-                new AgentToolBindingFactory(
-                        McpToolTestSupport.registry(new McpToolRegistryToolSupport(capturedContext).readOnlyTools()),
-                        new McpAgentIdentity("procurement-price-agent"),
-                        MAPPER));
+                recordingBindingFactory());
         return new ProcurementPriceAgent(facade, MAPPER);
+    }
+
+    /** 记录式绑定工厂：把实际工具调用名记入 {@link #invokedTools}（05 收敛后序列由执行侧捕获）。 */
+    private AgentToolBindingFactory recordingBindingFactory() {
+        AgentToolBindingFactory base = new AgentToolBindingFactory(
+                McpToolTestSupport.registry(new McpToolRegistryToolSupport(capturedContext).readOnlyTools()),
+                new McpAgentIdentity("procurement-price-agent"),
+                MAPPER);
+        return new AgentToolBindingFactory(
+                McpToolTestSupport.registry(new McpToolRegistryToolSupport(capturedContext).readOnlyTools()),
+                new McpAgentIdentity("procurement-price-agent"),
+                MAPPER) {
+            @Override
+            public AgentToolBinding bind(String runId, List<String> toolNames) {
+                AgentToolBinding bound = base.bind(runId, toolNames);
+                Map<ToolSpecification, ToolExecutor> wrapped = new LinkedHashMap<>();
+                for (Map.Entry<ToolSpecification, ToolExecutor> entry : bound.tools().entrySet()) {
+                    ToolSpecification spec = entry.getKey();
+                    wrapped.put(spec, (request, memoryId) -> {
+                        invokedTools.add(request.name());
+                        return entry.getValue().execute(request, memoryId);
+                    });
+                }
+                return new AgentToolBinding(runId, wrapped);
+            }
+        };
     }
 
     private List<String> exposedToolNames(String body) {
@@ -425,23 +457,9 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
         return names;
     }
 
-    /** 逐帧工具调用序列：每帧取该帧新增的最近一条 assistant 工具调用（倒序扫描）。 */
+    /** 工具调用序列：记录式绑定捕获的实际执行顺序（05 收敛后由执行侧记录）。 */
     private List<String> toolCallSequence() {
-        List<String> sequence = new ArrayList<>();
-        for (String body : requestBodies) {
-            JsonNode messages = requestTree(body).get("messages");
-            if (messages == null || !messages.isArray()) {
-                continue;
-            }
-            for (int i = messages.size() - 1; i >= 0; i--) {
-                JsonNode calls = messages.get(i).get("tool_calls");
-                if (calls != null && calls.isArray() && !calls.isEmpty()) {
-                    sequence.add(calls.get(0).get("function").get("name").asText());
-                    break;
-                }
-            }
-        }
-        return sequence;
+        return List.copyOf(invokedTools);
     }
 
     private JsonNode toolResultMessage(String body) {
