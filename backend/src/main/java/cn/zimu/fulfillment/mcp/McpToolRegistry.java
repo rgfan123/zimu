@@ -17,12 +17,17 @@ public class McpToolRegistry {
 
     private final Map<String, McpTool> byName;
 
-    public McpToolRegistry(McpReadTools readTools, McpWriteTools writeTools, McpDomainReadTools domainReadTools) {
+    public McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools) {
         Map<String, McpTool> index = new java.util.LinkedHashMap<>();
         List<McpTool> tools = new java.util.ArrayList<>();
         tools.addAll(readTools.tools());
         tools.addAll(writeTools.tools());
         tools.addAll(domainReadTools.tools());
+        tools.addAll(controlReadTools.tools());
         for (McpTool tool : tools) {
             McpTool previous = index.putIfAbsent(tool.name(), tool);
             if (previous != null) {
@@ -71,7 +76,12 @@ public class McpToolRegistry {
     }
 
     public static ObjectNode objectProperty(String description) {
-        return JsonNodeFactory.instance.objectNode().put("type", "object").put("description", description);
+        // 恒带空 properties：与 McpToolSchemaConverter 的规范化输出一致（等价性测试逐字段比对）
+        ObjectNode node = JsonNodeFactory.instance.objectNode()
+                .put("type", "object")
+                .put("description", description);
+        node.putObject("properties");
+        return node;
     }
 
     public static ObjectNode arrayProperty(String description, ObjectNode itemSchema) {

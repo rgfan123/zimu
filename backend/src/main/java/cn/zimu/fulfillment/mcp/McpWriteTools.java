@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.mcp;
 
+import cn.zimu.fulfillment.agent.AgentDraftService;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
@@ -47,6 +48,7 @@ public class McpWriteTools {
     private final OrderDraftService orderDraftService;
     private final McpReviewRequestService reviewRequestService;
     private final ShipmentJdOutboundService jdOutboundService;
+    private final AgentDraftService agentDraftService;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate requiresNew;
     private final jakarta.persistence.EntityManager entityManager;
@@ -59,6 +61,7 @@ public class McpWriteTools {
             OrderDraftService orderDraftService,
             McpReviewRequestService reviewRequestService,
             ShipmentJdOutboundService jdOutboundService,
+            AgentDraftService agentDraftService,
             ObjectMapper objectMapper,
             PlatformTransactionManager transactionManager,
             jakarta.persistence.EntityManager entityManager) {
@@ -69,6 +72,7 @@ public class McpWriteTools {
         this.orderDraftService = orderDraftService;
         this.reviewRequestService = reviewRequestService;
         this.jdOutboundService = jdOutboundService;
+        this.agentDraftService = agentDraftService;
         this.objectMapper = objectMapper;
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -155,7 +159,25 @@ public class McpWriteTools {
                                         "idempotency_key", stringProperty("幂等键，至少 8 个字符"),
                                         "note", stringProperty("提交说明，仅随审计留存")),
                                 List.of("submission_id", "idempotency_key")),
-                        this::submitReviewRequest, false));
+                        this::submitReviewRequest, false),
+                new McpToolRegistry.SimpleTool(
+                        "create_agent_draft",
+                        "创建受管 Agent 的定义草稿（新 slug，v1）：完整草稿 JSON（定义全量字段 + suggested_eval_cases）经服务端校验与 08 静态门禁后落 draft 行 + PENDING 评测用例；不直接启用。",
+                        schema(
+                                Map.of(
+                                        "draft", objectProperty("完整草稿 JSON（agent_slug/name/description/system_prompt/prompt_version/model_ref/enabled/tool_whitelist/allow_write/guard_exemptions/output_schema/input_format/suggested_eval_cases）"),
+                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
+                                List.of("draft", "idempotency_key")),
+                        this::createAgentDraft, false),
+                new McpToolRegistry.SimpleTool(
+                        "update_agent_draft",
+                        "更新已有 Agent 的定义草稿（draft 最新版原地覆盖，否则开新版本）：完整草稿 JSON 经服务端校验与 08 静态门禁后落库；不直接启用。",
+                        schema(
+                                Map.of(
+                                        "draft", objectProperty("完整草稿 JSON（agent_slug/name/description/system_prompt/prompt_version/model_ref/enabled/tool_whitelist/allow_write/guard_exemptions/output_schema/input_format/suggested_eval_cases）"),
+                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
+                                List.of("draft", "idempotency_key")),
+                        this::updateAgentDraft, false));
     }
 
     private final List<McpTool> tools;
@@ -310,6 +332,64 @@ public class McpWriteTools {
                         200,
                         () -> reviewRequestService.submitForReview(
                                 submissionId, note, context.requireCommandContext())));
+    }
+
+    // ------------------------------------------------------------------
+    // 定义写工具（06 决策；meta-agent-platform-impl 10）：归入 McpWriteTools 白拿
+    // 幂等 + AGENT 审计 + REQUIRES_NEW 失败审计；领域校验/门禁在 AgentDraftService
+    // ------------------------------------------------------------------
+
+    private JsonNode createAgentDraft(McpRequestContext context, Map<String, Object> args) {
+        return agentDraftWrite(
+                "create_agent_draft",
+                "AGENT_DRAFT_CREATED",
+                context,
+                args,
+                (service, key, draft) -> service.createDraft(context.agentIdentity(), key, draft));
+    }
+
+    private JsonNode updateAgentDraft(McpRequestContext context, Map<String, Object> args) {
+        return agentDraftWrite(
+                "update_agent_draft",
+                "AGENT_DRAFT_UPDATED",
+                context,
+                args,
+                (service, key, draft) -> service.updateDraft(context.agentIdentity(), key, draft));
+    }
+
+    /** 定义写工具公共流程（create/update 同形）：幂等键 + 草稿解析 + executeWrite（审计/失败审计）。 */
+    private JsonNode agentDraftWrite(
+            String toolName,
+            String successCode,
+            McpRequestContext context,
+            Map<String, Object> args,
+            DraftWrite write) {
+        String idempotencyKey = requireIdempotencyKey(args);
+        JsonNode draft = draftJson(args);
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("draft", draft.toString());
+        return executeWrite(
+                toolName,
+                payload,
+                idempotencyKey,
+                200,
+                successCode,
+                context,
+                () -> write.apply(agentDraftService, idempotencyKey, draft));
+    }
+
+    /** 定义写委托：以幂等键 + 草稿执行创建/更新。 */
+    private interface DraftWrite {
+        cn.zimu.fulfillment.common.idempotency.IdempotentResult<JsonNode> apply(
+                AgentDraftService service, String idempotencyKey, JsonNode draft);
+    }
+
+    private JsonNode draftJson(Map<String, Object> args) {
+        Object value = args.get("draft");
+        if (value == null) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 draft 必须提供");
+        }
+        return objectMapper.valueToTree(value);
     }
 
     // ------------------------------------------------------------------
@@ -594,6 +674,10 @@ public class McpWriteTools {
 
     private static ObjectNode stringProperty(String description) {
         return McpToolRegistry.stringProperty(description);
+    }
+
+    private static ObjectNode objectProperty(String description) {
+        return McpToolRegistry.objectProperty(description);
     }
 
     private static ObjectNode arrayProperty(String description, ObjectNode itemSchema) {

@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
+import cn.zimu.fulfillment.mcp.McpControlReadTools;
 import cn.zimu.fulfillment.mcp.McpDomainReadTools;
 import cn.zimu.fulfillment.mcp.McpReadTools;
 import cn.zimu.fulfillment.mcp.McpTool;
@@ -61,7 +62,7 @@ class AgentRuntimeFacadeTest {
     /** 绑定工厂使用含白名单工具的迷你注册表：白名单之外的工具不注册，与生产「注册表唯一工具源」一致。 */
     private static AgentToolBindingFactory bindingFactory() {
         return new AgentToolBindingFactory(
-                new McpToolRegistry(readTools(), emptyWriteTools(), emptyDomainTools()),
+                new McpToolRegistry(readTools(), emptyWriteTools(), emptyDomainTools(), McpToolTestSupport.emptyControlTools()),
                 new McpAgentIdentity(""),
                 new ObjectMapper());
     }

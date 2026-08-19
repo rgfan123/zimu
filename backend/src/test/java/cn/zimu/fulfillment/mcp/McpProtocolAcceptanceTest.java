@@ -156,6 +156,8 @@ class McpProtocolAcceptanceTest {
         List<String> names = new ArrayList<>();
         response.get("result").get("tools").forEach(tool -> names.add(tool.get("name").asText()));
         assertThat(names).containsExactlyInAnyOrder(
+                // 控制面只读：工具发现（T10）
+                "list_agent_tools",
                 // 查询：消息提交/媒体元数据/解释历史
                 "list_channel_messages",
                 "get_channel_message",

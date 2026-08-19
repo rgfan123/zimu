@@ -4,6 +4,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
+import cn.zimu.fulfillment.mcp.McpControlReadTools;
 import cn.zimu.fulfillment.mcp.McpDomainReadTools;
 import cn.zimu.fulfillment.mcp.McpReadTools;
 import cn.zimu.fulfillment.mcp.McpTool;
@@ -31,7 +32,16 @@ public final class McpToolTestSupport {
         when(writes.tools()).thenReturn(List.of());
         McpDomainReadTools domains = mock(McpDomainReadTools.class);
         when(domains.tools()).thenReturn(List.of());
-        return new McpToolRegistry(reads, writes, domains);
+        McpControlReadTools control = mock(McpControlReadTools.class);
+        when(control.tools()).thenReturn(List.of());
+        return new McpToolRegistry(reads, writes, domains, control);
+    }
+
+    /** 空控制面工具组（仅测试：注册表构造占位，list_agent_tools 由真实类覆盖）。 */
+    public static McpControlReadTools emptyControlTools() {
+        McpControlReadTools tools = mock(McpControlReadTools.class);
+        when(tools.tools()).thenReturn(List.of());
+        return tools;
     }
 
     /**
