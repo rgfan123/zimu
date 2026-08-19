@@ -1,7 +1,7 @@
 # Agent 平台化：统一架构 + Meta-Agent map
 
 Type: map
-Status: charting
+Status: charting complete — 12/12 票 resolved，路线清晰，进入实施票阶段
 
 ## Destination
 
@@ -50,6 +50,8 @@ Status: charting
 - [08 — MCP 权限隔离设计](issues/08-mcp-permission-isolation.md) — **消歧地图决策 11**：Agent 根本不经过 `McpServer`（`AgentToolInvoker` 直查 `McpToolRegistry`），故「MCP 层强制」是两个面。**Agent 面** = 绑定期白名单 + `AgentToolInvoker.execute` 调用期复核双层（后者是防旁路的真强制点，现状只有未注册名报错、不是权限判定）；**stdio 面** = 一期收紧为只读（`toolsList`/`handleToolCall` 过滤写工具），不套 per-agent 权限——外部客户端共用全局 identity、无 slug。**权限表达** = 一期白名单即 profile，**删除 03 预留的 `permission_profile_ref`**（V30 未写，删是免费的），新增 `allow_write` 布尔；`McpTool` 加读写元数据使「默认禁写」成为可判定不变式。**meta-agent（用户选 B）**：定义写工具归入 `McpWriteTools`，白拿幂等 + AGENT 审计 + REQUIRES_NEW 失败审计三样能力，代价是业务面类引入控制面依赖（已知并接受）；须声明 `allow_write=true` 过 05 门禁，工具实现内强制 target 只能是 `agent_definitions` draft 行且拒绝 target slug=meta-agent。**必配改动**：`DataQueryAgentDefinitionTest`/`ProcurementPriceAgentInvariantTest` 的 `WRITE_TOOL_NAMES` 手抄常量改为向 registry 按读写元数据查询——写工具集合增长后手抄清单漏更新会让不变式测试静默漏检。
 - [07 — 评测用例数据化设计](issues/07-eval-cases-datafication.md) — **一张 `agent_eval_cases` 表 + `metric_kind`（INVARIANT/QUALITY）**：INVARIANT（工具序列/schema/写工具零调用/requires_human）→ stub 跑分器 + CI 基线门禁（09 只钉这类）；QUALITY → 异步 PREVIEW + promptfoo（真实模型，不进基线）。用例**绑定 `(agent_slug, agent_version)` 每版本冻结**（换例=新版本）；`input`/`expected` JSONB，expected schema 由 metric_kind 派生、读取时校验；**基线门禁读 DB**（Testcontainers + stub，fixture 14 例由 V 迁移播种后删，03 两步走同构）；确认**联动**（确认定义草稿=确认该版本用例，active 不可追加）；运行期**两级**：草稿提交同步快速门禁（不过阻断）+ 异步 QUALITY（run_mode=PREVIEW 落 agent_runs，Spring Worker，参考不阻断）；意图识别**不数据化**（提示词真源在 app.message-interpreter.*，维持代码套件）。
 - [06 — Meta-Agent 定义与工具面设计](issues/06-meta-agent-definition.md) — 工具发现 = 新增只读工具 `list_agent_tools`（全量工具名/描述/参数 schema/读写属性，工具面增长不改提示词）；写工具 = `create_agent_draft` + `update_agent_draft` 两个全量工具（归入 McpWriteTools：幂等 + AGENT 审计 + REQUIRES_NEW，input 含 `suggested_eval_cases`，服务端校验 slug 格式/唯一性/版本分配/allow_write/target≠meta-agent）；输出 = 全量草稿 JSON，缺信息 → outcome=NEEDS_INPUT + 澄清，slug 冲突拒绝不改名；自管理 = V30 播种（allow_write=true）+ 仅人工经管理 API 变更，全工具禁改（target 校验 + 白名单双重拒绝），output_schema 自举（「草稿 JSON」schema）。**管理 REST API 票已 graduate → 票 12**。
+- [05 — 通用门禁与守卫泛化设计](issues/05-generic-gates-guard.md) — **六项阻断**（结构完整性 / 工具白名单合法性 / 只读不变式（写工具需 allow_write=true）/ output_schema 可解析 / 凭据扫描 / 越权指令）+ **PII 仅警告**（人工确认时高亮）。**三时机**：写工具内嵌静态门禁（不过拒绝落库）→ 确认动作前全量复跑（静态 + INVARIANT stub 评测 + output_schema，全绿才可确认）→ 运行期守卫（每 run）。**AgentGuard 默认链 = [PII 拒绝]**（命中 → REJECTED 转人工，不进模型）；歧义澄清**不并入**平台默认链（数据查询类领域行为：提示词 + NEEDS_INPUT 承载，DataQueryAgentGuard 保留为该校验器实现）；豁免 = `agent_definitions.guard_exemptions` 枚举（默认空）；与 08 边界：守卫=行为约束（模型调用前），权限=访问控制（工具调用时强制）。
+- [12 — 管理 REST API 端点与权限设计](issues/12-management-rest-api.md) — /api 四域 11 端点（定义 CRUD+confirm/reject/set-enabled/rollback、eval-cases 查看、agent-runs 查询、meta-agent/run）+ /internal **只读镜像面**（写操作只走 /api）；record DTO 直映射 + jakarta 校验，**operator 取自 Basic Auth 身份不进 body**；**目标状态幂等** + DB `UNIQUE(slug) WHERE status='active'` 兜底 + `set-enabled {enabled}` 显式目标值（弃 toggle）；`rollback {target_version}`（须曾 active，复制为 v{n+1} draft）；**建草稿与 meta-agent/run 均 202 异步**——任务 = 运行+静态门禁+INVARIANT stub 评测闭环，QUALITY 另起异步链路，轮询复用 agent-runs/{runId}（run_mode=PREVIEW）。**与 07 调和**：07「提交同步快速门禁」在 REST 面调整为 202 任务内；06 写工具静态门禁仍同步拒绝落库（不过即 4xx）。
 
 ## 依赖图
 
@@ -69,7 +71,7 @@ Status: charting
 ## 实施顺序（预期）
 
 research 阶段：01/02/09/10/11 全部 ✅ resolved。
-grilling 阶段：03、04、06、07、08 ✅ resolved → **前沿现为 05（grilling）+ 12（grilling，REST API 已 graduate）** → 实施票（后续 session）。基座提交前置条件已满足（见 Notes），该 task 取消。
+grilling 阶段：03、04、05、06、07、08、12 全部 ✅ resolved → **charting 完成：所有决策票已闭，前沿为空，路线清晰**。下一步 = 实施票（后续 session，按 Schema 增量 + 各票 Answer 写迁移与实现）。基座提交前置条件已满足（见 Notes），该 task 取消。
 
 ## Tickets
 
@@ -79,18 +81,18 @@ grilling 阶段：03、04、06、07、08 ✅ resolved → **前沿现为 05（gr
 | 02 | 现有四条路径收敛点审计（含 MCP 权限点） | research (AFK) | — | ✅ resolved |
 | 03 | Agent 定义数据模型与版本状态机 | grilling (HITL) | — | ✅ resolved |
 | 04 | 基于 LangChain4j Agentic 的 Runtime Adapter 设计 | grilling (HITL) | 01、02、10 | ✅ resolved |
-| 05 | 通用门禁与守卫泛化设计 | grilling (HITL) | 02 | open |
+| 05 | 通用门禁与守卫泛化设计 | grilling (HITL) | 02 | ✅ resolved |
 | 06 | Meta-Agent 定义与工具面设计 | grilling (HITL) | 03 | ✅ resolved |
 | 07 | 评测用例数据化设计 | grilling (HITL) | 03 ✅、11 ✅ | ✅ resolved |
 | 08 | MCP 权限隔离设计 | grilling (HITL) | 02 | ✅ resolved |
 | 09 | AI/Agent UI 组件库调研 | research (AFK) | — | ✅ resolved |
 | 10 | langchain4j-agentic 能力盘点（1.19.0） | research (AFK) | — | ✅ resolved |
 | 11 | 评测与 Prompt 管理平台调研 | research (AFK) | — | ✅ resolved |
-| 12 | 管理 REST API 端点与权限设计 | grilling (HITL) | 03/04/06/07/08 ✅ | open |
+| 12 | 管理 REST API 端点与权限设计 | grilling (HITL) | 03/04/06/07/08 ✅ | ✅ resolved |
 
 ## Schema 增量（累计，实施票据此写迁移）
 
-- `agent_definitions`（新表，03）：现有 `AgentDefinition` 8 字段 + `id` / `version` / `status` / `activated_by` / `activated_at`，唯一 `(agent_slug, version)` + 部分唯一索引 `UNIQUE (agent_slug) WHERE status='active'`；**`permission_profile_ref` 已由 08 删除**（一期白名单即 profile）；保留 `tool_whitelist`（= 现有 `toolNames`），**新增 `allow_write` 布尔**（默认 false，仅 meta-agent 为 true 且需过 05 门禁）。
+- `agent_definitions`（新表，03/05/08）：现有 `AgentDefinition` 8 字段 + `id` / `version` / `status` / `activated_by` / `activated_at`，唯一 `(agent_slug, version)` + 部分唯一索引 `UNIQUE (agent_slug) WHERE status='active'`；**`permission_profile_ref` 已由 08 删除**（一期白名单即 profile）；保留 `tool_whitelist`（= 现有 `toolNames`），**新增 `allow_write` 布尔**（默认 false，仅 meta-agent 为 true 且需过 05 门禁）+ **`guard_exemptions` 枚举数组**（05，默认空 = PII 守卫生效）。
 - `agent_runs`（改表）：加 `run_mode IN ('LIVE','PREVIEW')`（03，隔离草稿试跑避免污染 09 基线）+ `intent` / `provider`（04，替代 D 的重复审计通道）。
 - `AgentRunResult`（改类型，04）：加 outcome 维度 SUCCESS/NEEDS_INPUT/REJECTED/FAILED。
 - `agent_eval_cases`（新表，07）：`id` / `agent_slug` / `agent_version`（引用 `agent_definitions (agent_slug, version)`）/ `metric_kind`（INVARIANT|QUALITY）/ `input` JSONB / `expected` JSONB（schema 由 metric_kind 派生）/ `status`（PENDING|CONFIRMED）/ `created_by` / `confirmed_by` / `confirmed_at`；确认与定义草稿联动，active 版本不可追加；唯一性与索引细节留实施票。
@@ -98,7 +100,7 @@ grilling 阶段：03、04、06、07、08 ✅ resolved → **前沿现为 05（gr
 ## Not yet specified
 
 - 现有三个 Agent 迁移播种的**回归验证口径**（播种策略已由 03 定：两步走 + 逐字对照；剩「验证到什么程度算通过」，等实施票）。
-- 提示词安全检查的具体实现手段（等 05）。
+- 提示词安全检查的**具体实现手段**（05 已定判定：凭据/越权阻断、PII 警告；正则/模式清单与位置留实施票）。
 - 07 已定运行期两级形态（同步 INVARIANT 门禁 + 异步 QUALITY/PREVIEW）；「同步门禁与 09 CI 门禁的共用跑分器实现」细节留实施票。
 - 12 已 graduate：管理 REST API 端点与权限设计（见票 12，open）。
 

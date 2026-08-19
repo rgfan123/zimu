@@ -85,6 +85,10 @@ services:
       - fulfillment-files:/var/lib/zimu-fulfillment/files
       # wecom-message-intake 12：内容寻址媒体存储挂载持久化命名卷，重启不丢原图。
       - app-media-data:/var/lib/zimu-fulfillment/media
+      # 三平台订单刷新通道（platform-pull）：拉取脚本 + 本地凭据文件挂载进容器，
+      # 后端在容器内直接执行拉取并自动上传导入批次。
+      - ./scripts:/app/platform-pull-scripts:ro
+      - ./data-local:/app/platform-pull-credentials:ro
     depends_on:
       postgres:
         condition: service_healthy

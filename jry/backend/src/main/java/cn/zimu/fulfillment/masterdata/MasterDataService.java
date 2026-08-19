@@ -535,10 +535,19 @@ public class MasterDataService {
     }
 
     @Transactional(readOnly = true)
-    public PageResponse<MasterDataRecord> skus(int page, int size, String providerId) {
-        Page<Sku> result = providerId == null
-                ? skus.findAll(page(page, size))
-                : skus.findByFulfillmentProviderId(WriteCommands.parseIdentifier(providerId), page(page, size));
+    public PageResponse<MasterDataRecord> skus(int page, int size, String providerId, String query) {
+        Page<Sku> result;
+        if (query != null && !query.isBlank()) {
+            // 商品名/规格/SKU 编码大小写不敏感模糊检索，可与履约方筛选叠加。
+            result = skus.search(
+                    "%" + query.trim() + "%",
+                    providerId == null ? null : WriteCommands.parseIdentifier(providerId),
+                    page(page, size));
+        } else if (providerId == null) {
+            result = skus.findAll(page(page, size));
+        } else {
+            result = skus.findByFulfillmentProviderId(WriteCommands.parseIdentifier(providerId), page(page, size));
+        }
         return PageResponse.of(result.stream().map(this::sku).toList(), result);
     }
 
