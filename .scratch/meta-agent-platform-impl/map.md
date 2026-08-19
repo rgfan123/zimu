@@ -44,7 +44,7 @@ T01 →（T02 ‖ T03 并行）→（T04 → T05 → T06）‖（T07 → T08）�
 | 06 | D 路径意图桥适配（GitHub #7） | 05 | resolved |
 | 07 | MCP 权限隔离（读写元数据 + 调用期复核 + stdio 只读）（GitHub #8） | 02 | resolved |
 | 08 | 门禁引擎 + 运行期 PII 守卫（GitHub #9） | 07 | resolved |
-| 09 | QUALITY 链路：promptfoo 执行器 + 异步评测 | 03、05 | open |
+| 09 | QUALITY 链路：promptfoo 执行器 + 异步评测（GitHub #10） | 03、05 | resolved |
 | 10 | Meta-Agent 工具面（list_agent_tools + 定义写工具） | 02、08 | open |
 | 11 | 异步任务基建 + 定义域写端点（202/confirm/reject/set-enabled/rollback） | 03、05、08 | open |
 | 12 | 读端点 + /internal 只读镜像 | 02、03 | open |
