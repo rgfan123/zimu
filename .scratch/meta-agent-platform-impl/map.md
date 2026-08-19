@@ -39,7 +39,7 @@ T01 →（T02 ‖ T03 并行）→（T04 → T05 → T06）‖（T07 → T08）�
 | 01 | V33 迁移：三表落地与播种（含 output_schema 修正；版本号因 V30–V32 已占用顺延） | — | resolved |
 | 02 | 注册表切 DB 真源 + 删代码定义 | 01 | resolved |
 | 03 | INVARIANT 评测数据化 + 基线门禁读 DB | 01 | resolved |
-| 04 | Runtime Adapter 骨架 + 通用门面（A 路径） | 02、03 | open |
+| 04 | Runtime Adapter 骨架 + 通用门面（A 路径） | 02、03 | resolved |
 | 05 | B/C 路径收敛（采购比价/数据查询） | 04 | open |
 | 06 | D 路径意图桥适配 | 05 | open |
 | 07 | MCP 权限隔离（读写元数据 + 调用期复核 + stdio 只读） | 02 | open |
