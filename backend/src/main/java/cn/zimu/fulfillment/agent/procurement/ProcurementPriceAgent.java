@@ -1,9 +1,15 @@
 package cn.zimu.fulfillment.agent.procurement;
 
+import cn.zimu.fulfillment.agent.AgentDefinition;
 import cn.zimu.fulfillment.agent.AgentFailureCode;
+import cn.zimu.fulfillment.agent.AgentInputFormat;
 import cn.zimu.fulfillment.agent.AgentRunContext;
 import cn.zimu.fulfillment.agent.AgentRunResult;
 import cn.zimu.fulfillment.agent.AgentRuntimeFacade;
+import cn.zimu.fulfillment.common.audit.AuditActorType;
+import cn.zimu.fulfillment.common.audit.AuditLogService;
+import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 
@@ -31,10 +37,12 @@ public class ProcurementPriceAgent {
     public static final String AGENT_SLUG = "procurement-price-agent";
 
     private final AgentRuntimeFacade facade;
+    private final AuditLogService audits;
     private final ObjectMapper mapper;
 
-    public ProcurementPriceAgent(AgentRuntimeFacade facade, ObjectMapper mapper) {
+    public ProcurementPriceAgent(AgentRuntimeFacade facade, AuditLogService audits, ObjectMapper mapper) {
         this.facade = facade;
+        this.audits = audits;
         this.mapper = mapper;
     }
 
@@ -46,7 +54,21 @@ public class ProcurementPriceAgent {
      *         输入不合法抛 {@code INVALID_PARAMETERS} 业务错误。
      */
     public ProcurementPriceRunResult compare(String jsonInput, AgentRunContext context) {
-        ProcurementPriceInput input = ProcurementPriceInput.parse(jsonInput);
+        // 定义驱动：定义 input 约定须为结构化 JSON（04 决策 2）；否则视为配置漂移 fail-fast
+        AgentDefinition definition = facade.definitionOf(AGENT_SLUG);
+        if (definition == null
+                || definition.inputFormat() != AgentInputFormat.STRUCTURED_JSON) {
+            throw new IllegalStateException(
+                    "procurement-price-agent 定义 input_format 必须为 STRUCTURED_JSON（配置漂移）");
+        }
+        final ProcurementPriceInput input;
+        try {
+            input = ProcurementPriceInput.parse(jsonInput);
+        } catch (BusinessException ex) {
+            // 拒绝必审计（04 决策 5 统一审计）：INVALID_PARAMETERS 不进入模型，留拒绝审计后原样上抛
+            recordRejectionAudit(context, ex.getBusinessCode(), ex.getMessage());
+            throw ex;
+        }
         AgentRunResult result = facade.invoke(AGENT_SLUG, input.toUserInput(), context);
         if (result.error() != null) {
             // REJECTED / FAILED：稳定失败码（门面已留审计与观测）
@@ -70,6 +92,37 @@ public class ProcurementPriceAgent {
                     result.model(),
                     result.promptVersion(),
                     AgentFailureCode.AGENT_OUTPUT_INVALID.name());
+        }
+    }
+
+    /** 输入拒绝审计（04 决策 5 统一审计）：INVALID_PARAMETERS 不进入模型，拒绝必留痕。 */
+    private void recordRejectionAudit(AgentRunContext context, String businessCode, String detail) {
+        try {
+            AgentRunContext ctx = context == null ? AgentRunContext.empty() : context;
+            String runId = AgentRuntimeFacade.newRunId();
+            audits.record(new AuditLogService.AuditCommand()
+                    .dataScope(DataScope.BUSINESS)
+                    .requestId(runId)
+                    .traceId(runId)
+                    .operator(ctx.operator() == null || ctx.operator().isBlank() ? "agent" : ctx.operator())
+                    .actorType(AuditActorType.AGENT)
+                    .service("agent")
+                    .operation("agent." + AGENT_SLUG + ".run")
+                    .requestPayload(java.util.Map.of(
+                            "agent_slug", AGENT_SLUG,
+                            "thread_id", ctx.threadId(),
+                            "prompt_version", "none",
+                            "model_ref", "none",
+                            "tool_names", java.util.List.of()))
+                    .responsePayload(java.util.Map.of(
+                            "status", businessCode,
+                            "provider", "none",
+                            "model", "none",
+                            "prompt_version", "none",
+                            "error_detail", detail))
+                    .businessCode(businessCode));
+        } catch (RuntimeException ignored) {
+            // 审计失败不掩盖拒绝（与既有审计失败容忍语义一致）
         }
     }
 }

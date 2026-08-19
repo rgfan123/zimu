@@ -12,9 +12,12 @@ import cn.zimu.fulfillment.agent.AgentFailureCode;
 import cn.zimu.fulfillment.agent.AgentRunContext;
 import cn.zimu.fulfillment.agent.AgentRunResult;
 import cn.zimu.fulfillment.agent.AgentRuntimeFacade;
+import cn.zimu.fulfillment.agent.AgentSeedFixtures;
+import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -30,7 +33,13 @@ class ProcurementPriceAgentTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AgentRuntimeFacade facade = mock(AgentRuntimeFacade.class);
-    private final ProcurementPriceAgent agent = new ProcurementPriceAgent(facade, MAPPER);
+    private final ProcurementPriceAgent agent = new ProcurementPriceAgent(facade, mock(AuditLogService.class), MAPPER);
+
+    @BeforeEach
+    void stubDefinition() {
+        when(facade.definitionOf(ProcurementPriceAgent.AGENT_SLUG))
+                .thenReturn(AgentSeedFixtures.procurementDefinition());
+    }
 
     /** 策略可通过的 happy 路径推荐（候选 + 推荐 + 高置信度，requires_human 保持 false）。 */
     private static ProcurementPriceRecommendation happyPathRecommendation() {
@@ -120,13 +129,15 @@ class ProcurementPriceAgentTest {
         assertThatThrownBy(() -> agent.compare("{\"unknown\":1}", null))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("procurement_ticket_id");
-        org.mockito.Mockito.verifyNoInteractions(facade);
+        org.mockito.Mockito.verify(facade, org.mockito.Mockito.never())
+                .invoke(any(), any(), any());
     }
 
     @Test
     void blankInputIsRejectedBeforeModel() {
         assertThatThrownBy(() -> agent.compare("   ", null))
                 .isInstanceOf(BusinessException.class);
-        org.mockito.Mockito.verifyNoInteractions(facade);
+        org.mockito.Mockito.verify(facade, org.mockito.Mockito.never())
+                .invoke(any(), any(), any());
     }
 }

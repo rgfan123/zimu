@@ -416,7 +416,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
                 mock(AuditLogService.class),
                 new AgentModelMetadataRegistry(),
                 recordingBindingFactory());
-        return new ProcurementPriceAgent(facade, MAPPER);
+        return new ProcurementPriceAgent(facade, mock(AuditLogService.class), MAPPER);
     }
 
     /** 记录式绑定工厂：把实际工具调用名记入 {@link #invokedTools}（05 收敛后序列由执行侧捕获）。 */

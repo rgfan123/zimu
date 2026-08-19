@@ -97,11 +97,14 @@ public class DataQueryAgentService {
         try {
             DataQueryAgentOutput output =
                     mapper.treeToValue(result.output(), DataQueryAgentOutput.class);
+            // 模型路径澄清（04 决策：NEEDS_INPUT 不再是失败）：输出带澄清要求即按 NEEDS_INPUT 收口
+            boolean modelClarified = output != null && !output.clarification_needed().isEmpty();
+            String status = modelClarified ? AgentOutcome.NEEDS_INPUT.name() : result.outcome().name();
             return new DataQueryRunResult(
                     output,
                     null,
                     result.runId(),
-                    result.outcome().name(),
+                    status,
                     List.of(),
                     result.latencyMs());
         } catch (Exception ex) {

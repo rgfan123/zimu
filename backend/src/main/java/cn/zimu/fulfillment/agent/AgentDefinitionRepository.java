@@ -23,7 +23,7 @@ public class AgentDefinitionRepository {
     private static final String SELECT_ACTIVE =
             "SELECT agent_slug, name, description, system_prompt, prompt_version, model_ref, "
                     + "enabled, version, status, activated_by, activated_at, allow_write, "
-                    + "guard_exemptions::text, output_schema::text, tool_whitelist::text "
+                    + "guard_exemptions::text, output_schema::text, tool_whitelist::text, input_format "
                     + "FROM app.agent_definitions WHERE status = 'active' ORDER BY id";
 
     private final JdbcTemplate jdbc;
@@ -60,7 +60,8 @@ public class AgentDefinitionRepository {
                     rs.getObject("activated_at", OffsetDateTime.class),
                     rs.getBoolean("allow_write"),
                     readStringList(rs.getString("guard_exemptions")),
-                    readJson(rs.getString("output_schema")));
+                    readJson(rs.getString("output_schema")),
+                    AgentInputFormat.fromDb(rs.getString("input_format")));
 
     private List<String> readStringList(String json) {
         if (json == null || json.isBlank()) {

@@ -1,5 +1,7 @@
 package cn.zimu.fulfillment.agent;
 
+import cn.zimu.fulfillment.agent.AgentInputFormat;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -70,7 +72,7 @@ public final class AgentSeedFixtures {
 
     /** 与 V33 种子 procurement-price-agent（version=1, active）一致的定义（system_prompt 取种子开头）。 */
     public static AgentDefinition procurementDefinition() {
-        return AgentDefinition.ofActiveV1(
+        return AgentDefinition.of(
                 "procurement-price-agent",
                 "采购比价 Agent",
                 "针对采购工单/SKU 汇总进货价、履约方映射与库存上下文，输出结构化比价建议；低置信度或信息不全时转人工。",
@@ -79,7 +81,15 @@ public final class AgentSeedFixtures {
                 "procurement-price-v1",
                 "app.agent",
                 true,
-                PROCUREMENT_TOOL_NAMES);
+                PROCUREMENT_TOOL_NAMES,
+                1,
+                AgentStatus.ACTIVE,
+                "system",
+                java.time.OffsetDateTime.now(),
+                false,
+                java.util.List.of(),
+                null,
+                AgentInputFormat.STRUCTURED_JSON);
     }
 
     /** 以给定定义构造持有器（测试便捷构造，等价 {@code new AgentRegistryHolder(new AgentRegistry(...))}）。 */

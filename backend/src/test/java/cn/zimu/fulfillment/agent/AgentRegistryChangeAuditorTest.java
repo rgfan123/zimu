@@ -128,7 +128,8 @@ class AgentRegistryChangeAuditorTest {
                 "slug-a", "n", "d", "s", "v1", "app.agent", true, List.of("t1"));
         AgentDefinition v2 = AgentDefinition.of(
                 "slug-a", "n", "d", "s", "v2", "app.agent", true, List.of("t1"),
-                2, AgentStatus.ACTIVE, "human-1", OffsetDateTime.now(), false, List.of(), null);
+                2, AgentStatus.ACTIVE, "human-1", OffsetDateTime.now(), false, List.of(), null,
+                AgentInputFormat.NATURAL_LANGUAGE);
 
         AgentRegistry before = new AgentRegistry(List.of(v1));
         AgentRegistry after = new AgentRegistry(List.of(v2));
@@ -150,7 +151,8 @@ class AgentRegistryChangeAuditorTest {
                 "slug-a", "n", "d", "s", "v1", "app.agent", true, List.of("t1"));
         AgentDefinition v2 = AgentDefinition.of(
                 "slug-a", "n", "d", "s", "v2", "app.agent", true, List.of("t1"),
-                2, AgentStatus.ACTIVE, "human-1", OffsetDateTime.now(), false, List.of(), null);
+                2, AgentStatus.ACTIVE, "human-1", OffsetDateTime.now(), false, List.of(), null,
+                AgentInputFormat.NATURAL_LANGUAGE);
 
         auditor.recordChanges(new AgentRegistry(List.of(v1)), new AgentRegistry(List.of(v2)));
 

@@ -83,13 +83,13 @@ public class AgentRuntimeFacade {
             runStarted(ctx, runId, null, userInput);
             recordAudit(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND.name(), 0, null);
             runFinished(runId, AgentFailureCode.AGENT_NOT_FOUND.name(), 0, null);
-            return AgentRunResult.failClosed(AgentFailureCode.AGENT_NOT_FOUND);
+            return AgentRunResult.failClosed(AgentFailureCode.AGENT_NOT_FOUND).withRunMetadata(runId, 0);
         }
         if (!definition.enabled()) {
             runStarted(ctx, runId, definition, userInput);
             recordAudit(ctx, runId, definition, AgentFailureCode.AGENT_DISABLED.name(), 0, null);
             runFinished(runId, AgentFailureCode.AGENT_DISABLED.name(), 0, null);
-            return AgentRunResult.failClosed(AgentFailureCode.AGENT_DISABLED);
+            return AgentRunResult.failClosed(AgentFailureCode.AGENT_DISABLED).withRunMetadata(runId, 0);
         }
         runStarted(ctx, runId, definition, userInput);
         long startedNanos = System.nanoTime();
@@ -110,6 +110,11 @@ public class AgentRuntimeFacade {
             runFinished(runId, "AGENT_RUNTIME_EXCEPTION", latencyMs, null);
             throw ex;
         }
+    }
+
+    /** 按 slug 取当前生效定义（定义驱动：输入形态/输出 schema 由调用方按定义约定路由）。 */
+    public AgentDefinition definitionOf(String agentSlug) {
+        return holder.current().bySlug(agentSlug);
     }
 
     /** 会话延续：一期无状态，语义等价于 {@link #invoke}，thread_id 照常透传进审计。 */
