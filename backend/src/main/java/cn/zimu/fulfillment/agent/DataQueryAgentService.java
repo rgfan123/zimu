@@ -50,13 +50,16 @@ import org.springframework.stereotype.Service;
 @Service
 public class DataQueryAgentService {
 
+    /** 注册表 slug（与 V33 种子 data-query-agent 一致）。 */
+    public static final String AGENT_SLUG = "data-query-agent";
+
     private static final String DEFAULT_OPERATOR = "agent";
     private static final String STATUS_SUCCESS = "SUCCESS";
     private static final String STATUS_CLARIFICATION = "CLARIFICATION";
     private static final String STATUS_PII_GUARDED = "PII_GUARDED";
     private static final String STATUS_FAILURE = "FAILURE";
 
-    private final AgentRegistry registry;
+    private final AgentRegistryHolder holder;
     private final AgentModelProperties properties;
     private final AgentToolBindingFactory bindingFactory;
     private final AuditLogService audits;
@@ -64,13 +67,13 @@ public class DataQueryAgentService {
     private final ObjectMapper mapper;
 
     public DataQueryAgentService(
-            AgentRegistry registry,
+            AgentRegistryHolder holder,
             AgentModelProperties properties,
             AgentToolBindingFactory bindingFactory,
             AuditLogService audits,
             AgentModelMetadataRegistry metadata,
             ObjectMapper mapper) {
-        this.registry = registry;
+        this.holder = holder;
         this.properties = properties;
         this.bindingFactory = bindingFactory;
         this.audits = audits;
@@ -87,7 +90,7 @@ public class DataQueryAgentService {
     public DataQueryRunResult answer(String question, AgentRunContext context) {
         AgentRunContext ctx = context == null ? AgentRunContext.empty() : context;
         String runId = AgentRuntimeFacade.newRunId();
-        AgentDefinition definition = registry.bySlug(DataQueryAgentDefinitionConfiguration.SLUG);
+        AgentDefinition definition = holder.current().bySlug(AGENT_SLUG);
         if (definition == null) {
             return rejected(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND);
         }

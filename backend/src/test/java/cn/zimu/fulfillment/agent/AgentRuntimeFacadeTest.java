@@ -51,7 +51,7 @@ class AgentRuntimeFacadeTest {
 
     private AgentRuntimeFacade facade(AgentDefinition... definitions) {
         return new AgentRuntimeFacade(
-                new AgentRegistry(List.of(definitions)),
+                new AgentRegistryHolder(new AgentRegistry(List.of(definitions))),
                 runtime,
                 audits,
                 metadata,
@@ -202,7 +202,7 @@ class AgentRuntimeFacadeTest {
     void unconfiguredModelFailsClosedWithAudit() {
         // 真实兜底运行时：模型未配置时 fail-closed（不连接任何模型）
         AgentRuntimeFacade facade = new AgentRuntimeFacade(
-                new AgentRegistry(List.of(enabledDefinition())),
+                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))),
                 new DefaultAgentRuntime(new AgentModelProperties()),
                 audits,
                 metadata,

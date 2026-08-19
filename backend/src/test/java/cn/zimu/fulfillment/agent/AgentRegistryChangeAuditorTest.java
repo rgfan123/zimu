@@ -6,6 +6,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import cn.zimu.fulfillment.common.audit.AuditLogService;
+import java.time.OffsetDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -119,6 +120,48 @@ class AgentRegistryChangeAuditorTest {
                 AgentRegistryChangeAuditor.Kinds.MODEL_REF_CHANGED,
                 AgentRegistryChangeAuditor.Kinds.PROMPT_VERSION_CHANGED,
                 AgentRegistryChangeAuditor.Kinds.TOOL_WHITELIST_CHANGED);
+    }
+
+    @Test
+    void versionTransitionProducesRetiredThenActivatedEvents() {
+        AgentDefinition v1 = AgentDefinition.of(
+                "slug-a", "n", "d", "s", "v1", "app.agent", true, List.of("t1"));
+        AgentDefinition v2 = AgentDefinition.of(
+                "slug-a", "n", "d", "s", "v2", "app.agent", true, List.of("t1"),
+                2, AgentStatus.ACTIVE, "human-1", OffsetDateTime.now(), false, List.of(), null);
+
+        AgentRegistry before = new AgentRegistry(List.of(v1));
+        AgentRegistry after = new AgentRegistry(List.of(v2));
+
+        List<AgentRegistryChangeAuditor.Change> changes = auditor.diff(before, after);
+
+        assertThat(changes).hasSize(2);
+        assertThat(changes.get(0).agentSlug()).isEqualTo("slug-a");
+        assertThat(changes.get(0).kind()).isEqualTo(AgentRegistryChangeAuditor.Kinds.RETIRED);
+        assertThat(changes.get(0).detail()).containsEntry("version", 1);
+        assertThat(changes.get(1).agentSlug()).isEqualTo("slug-a");
+        assertThat(changes.get(1).kind()).isEqualTo(AgentRegistryChangeAuditor.Kinds.ACTIVATED);
+        assertThat(changes.get(1).detail()).containsEntry("version", 2);
+    }
+
+    @Test
+    void versionTransitionIsAuditedWithBothLifecycleKinds() {
+        AgentDefinition v1 = AgentDefinition.of(
+                "slug-a", "n", "d", "s", "v1", "app.agent", true, List.of("t1"));
+        AgentDefinition v2 = AgentDefinition.of(
+                "slug-a", "n", "d", "s", "v2", "app.agent", true, List.of("t1"),
+                2, AgentStatus.ACTIVE, "human-1", OffsetDateTime.now(), false, List.of(), null);
+
+        auditor.recordChanges(new AgentRegistry(List.of(v1)), new AgentRegistry(List.of(v2)));
+
+        org.mockito.ArgumentCaptor<AuditLogService.AuditCommand> captor =
+                org.mockito.ArgumentCaptor.forClass(AuditLogService.AuditCommand.class);
+        verify(audits, org.mockito.Mockito.times(2)).record(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(cmd -> auditField(cmd, "businessCode"))
+                .containsExactly(
+                        AgentRegistryChangeAuditor.Kinds.RETIRED,
+                        AgentRegistryChangeAuditor.Kinds.ACTIVATED);
     }
 
     private AuditLogService.AuditCommand lastAuditCommand() {

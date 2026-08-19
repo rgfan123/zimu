@@ -7,9 +7,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -44,20 +42,13 @@ class AgentObservabilityDisabledIntegrationTest {
     private AgentRuntimeFacade facade;
 
     @Autowired
+    private AgentRegistryHolder holder;
+
+    @Autowired
     private AgentObservability observability;
 
     @Autowired
     private AgentToolBindingFactory bindingFactory;
-
-    @TestConfiguration
-    static class DisabledObsTestConfiguration {
-        @Bean
-        AgentDefinition obsTestAgent() {
-            return AgentDefinition.of(
-                    SLUG, "可观测性验收 Agent", "d", "你是只读助手。", "obs-v1", "app.agent", true,
-                    List.of("search_skus"));
-        }
-    }
 
     @BeforeEach
     void resetDatabase() {
@@ -65,6 +56,18 @@ class AgentObservabilityDisabledIntegrationTest {
                 TRUNCATE app.agent_runs, app.agent_tool_calls, app.audit_logs
                 RESTART IDENTITY CASCADE
                 """);
+        // T02 后定义真源为 DB：测试 Agent 先删后插（幂等），holder 换实例即被运行路径感知
+        jdbc.update("DELETE FROM app.agent_definitions WHERE agent_slug = ?", SLUG);
+        jdbc.update(
+                "INSERT INTO app.agent_definitions ("
+                        + "agent_slug, name, description, system_prompt, prompt_version, model_ref, "
+                        + "enabled, version, status, activated_by, activated_at, allow_write, "
+                        + "guard_exemptions, output_schema, tool_whitelist) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 'test', CURRENT_TIMESTAMP, "
+                        + "false, '[]'::jsonb, NULL, ?::jsonb)",
+                SLUG, "可观测性验收 Agent", "d", "你是只读助手。", "obs-v1", "app.agent", true, 1,
+                "[\"search_skus\"]");
+        holder.reload();
     }
 
     @Test

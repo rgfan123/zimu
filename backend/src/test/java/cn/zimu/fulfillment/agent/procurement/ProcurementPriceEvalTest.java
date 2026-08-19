@@ -3,6 +3,7 @@ package cn.zimu.fulfillment.agent.procurement;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import cn.zimu.fulfillment.agent.AgentModelProperties;
+import cn.zimu.fulfillment.agent.AgentSeedFixtures;
 import cn.zimu.fulfillment.agent.AgentTaskRequest;
 import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
@@ -246,7 +247,7 @@ class ProcurementPriceEvalTest {
         // 第一轮暴露给模型的工具恰为白名单（11 个只读工具，无任何写工具）
         List<String> exposedTools = exposedToolNames(requestBodies.get(0));
         assertThat(exposedTools)
-                .containsExactlyInAnyOrderElementsOf(ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS);
+                .containsExactlyInAnyOrderElementsOf(AgentSeedFixtures.PROCUREMENT_TOOL_NAMES);
         assertThat(exposedTools).doesNotContainAnyElementsOf(KNOWN_WRITE_TOOLS);
 
         // 工具结果经 McpTool.invoke 回传（最后一帧含 get_inventory_overview 的结果）
@@ -263,7 +264,7 @@ class ProcurementPriceEvalTest {
 
     @Test
     void whitelistContainsOnlyReadOnlyToolsFromTicket04() {
-        assertThat(ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS)
+        assertThat(AgentSeedFixtures.PROCUREMENT_TOOL_NAMES)
                 .containsExactly(
                         "list_procurement_tickets",
                         "get_procurement_ticket",
@@ -277,7 +278,7 @@ class ProcurementPriceEvalTest {
                         "list_categories",
                         "list_fulfillment_providers");
         // 不含任何写工具（对照 McpWriteTools 已知写工具清单）
-        assertThat(ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS)
+        assertThat(AgentSeedFixtures.PROCUREMENT_TOOL_NAMES)
                 .doesNotContainAnyElementsOf(KNOWN_WRITE_TOOLS);
     }
 
@@ -287,7 +288,7 @@ class ProcurementPriceEvalTest {
 
         assertThat(binding.specifications())
                 .extracting(spec -> spec.name())
-                .containsExactlyInAnyOrderElementsOf(ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS);
+                .containsExactlyInAnyOrderElementsOf(AgentSeedFixtures.PROCUREMENT_TOOL_NAMES);
         assertThat(binding.tools().values())
                 .allSatisfy(executor -> assertThat(executor).isInstanceOf(cn.zimu.fulfillment.agent.AgentToolInvoker.class));
     }
@@ -333,7 +334,7 @@ class ProcurementPriceEvalTest {
                         McpToolTestSupport.registry(new McpToolRegistryToolSupport(capturedContext).readOnlyTools()),
                         new McpAgentIdentity("procurement-price-agent"),
                         MAPPER)
-                .bind(RUN_ID, ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS);
+                .bind(RUN_ID, AgentSeedFixtures.PROCUREMENT_TOOL_NAMES);
     }
 
     private List<String> exposedToolNames(String body) {

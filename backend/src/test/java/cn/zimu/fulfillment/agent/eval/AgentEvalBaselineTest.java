@@ -2,7 +2,7 @@ package cn.zimu.fulfillment.agent.eval;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import cn.zimu.fulfillment.agent.DataQueryAgentDefinitionConfiguration;
+import cn.zimu.fulfillment.agent.AgentSeedFixtures;
 import cn.zimu.fulfillment.agent.DataQueryAgentEvalFixture;
 import cn.zimu.fulfillment.agent.procurement.ProcurementPriceAgentRuntime;
 import cn.zimu.fulfillment.agent.procurement.ProcurementPriceEvalFixture;
@@ -104,7 +104,7 @@ class AgentEvalBaselineTest {
         assertThat(ProcurementPriceEvalFixture.VERSION).isEqualTo("procurement-eval-v1");
         assertThat(DataQueryAgentEvalFixture.VERSION).isEqualTo("data-query-eval-v1");
         assertThat(ProcurementPriceAgentRuntime.PROMPT_VERSION).isEqualTo("agent-foundation-v1");
-        assertThat(DataQueryAgentDefinitionConfiguration.PROMPT_VERSION).isEqualTo("data-query-v1");
+        assertThat(AgentSeedFixtures.dataQueryDefinition().promptVersion()).isEqualTo("data-query-v1");
     }
 
     @Test

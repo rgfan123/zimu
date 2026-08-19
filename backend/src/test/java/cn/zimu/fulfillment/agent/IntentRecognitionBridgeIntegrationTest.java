@@ -15,22 +15,22 @@ import cn.zimu.fulfillment.message.MessageInterpretation;
 import cn.zimu.fulfillment.message.MessageInterpretationRepository;
 import cn.zimu.fulfillment.message.MessageInterpreter;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
+import java.util.List;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.HexFormat;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -116,7 +116,7 @@ class IntentRecognitionBridgeIntegrationTest {
     private AuditLogRepository audits;
 
     @Autowired
-    private AgentRegistry registry;
+    private AgentRegistryHolder holder;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -137,9 +137,9 @@ class IntentRecognitionBridgeIntegrationTest {
 
     @Test
     void intentRecognitionIsRegisteredAndEnabledByDefault() {
-        assertThat(registry.has("intent-recognition")).isTrue();
-        assertThat(registry.isEnabled("intent-recognition")).isTrue();
-        AgentDefinition definition = registry.bySlug("intent-recognition");
+        assertThat(holder.current().has("intent-recognition")).isTrue();
+        assertThat(holder.current().isEnabled("intent-recognition")).isTrue();
+        AgentDefinition definition = holder.current().bySlug("intent-recognition");
         assertThat(definition.modelRef()).isEqualTo("app.message-interpreter");
         assertThat(definition.toolNames()).isEmpty();
         assertThat(definition.description()).isEqualTo("企业微信消息意图分类与分流");

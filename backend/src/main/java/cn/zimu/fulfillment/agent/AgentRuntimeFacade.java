@@ -11,7 +11,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 /**
  * Agent 运行时门面（agent-decision-layer 02）：带注册表语义的统一调用入口。
  *
- * <p>在 01 的 {@link AgentRuntime} 模型接缝之上做编排：按 slug 解析 {@link AgentDefinition}、
+ * <p>在 01 的 {@link AgentRuntime} 模型接缝之上做编排：经 {@link AgentRegistryHolder} 取当前
+ * 注册表（DB 真源，确认/回滚后 reload 换实例即感知）按 slug 解析 {@link AgentDefinition}、
  * enabled 判定、每次运行生成唯一 run_id（沿用 trace_id 的 {@code "run_"+UUID-hex} 生成模式）、
  * 通过 {@link AuditLogService} 落 AGENT 审计（service=agent, operation=agent.{slug}.run），
  * 未启用/未注册的 Agent 显式拒绝且留审计，未配置模型（底层 fail-closed）同样拒绝并留审计。
@@ -37,7 +38,7 @@ public class AgentRuntimeFacade {
     private static final String DEFAULT_OPERATOR = "agent";
     private static final String STATUS_SUCCESS = "SUCCESS";
 
-    private final AgentRegistry registry;
+    private final AgentRegistryHolder holder;
     private final AgentRuntime runtime;
     private final AuditLogService audits;
     private final AgentModelMetadataRegistry metadata;
@@ -45,12 +46,12 @@ public class AgentRuntimeFacade {
     private AgentObservability observability = AgentObservability.disabled();
 
     public AgentRuntimeFacade(
-            AgentRegistry registry,
+            AgentRegistryHolder holder,
             AgentRuntime runtime,
             AuditLogService audits,
             AgentModelMetadataRegistry metadata,
             AgentToolBindingFactory toolBindingFactory) {
-        this.registry = registry;
+        this.holder = holder;
         this.runtime = runtime;
         this.audits = audits;
         this.metadata = metadata;
@@ -78,7 +79,7 @@ public class AgentRuntimeFacade {
     public AgentRunResult invoke(String agentSlug, String userInput, AgentRunContext context) {
         AgentRunContext ctx = context == null ? AgentRunContext.empty() : context;
         String runId = newRunId();
-        AgentDefinition definition = registry.bySlug(agentSlug);
+        AgentDefinition definition = holder.current().bySlug(agentSlug);
         if (definition == null) {
             runStarted(ctx, runId, null, userInput);
             recordAudit(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND.name(), 0, null);

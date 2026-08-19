@@ -52,7 +52,7 @@ class IntentRecognitionAgentBridgeTest {
 
     private IntentRecognitionAgentBridge bridge(AgentDefinition... definitions) {
         return new IntentRecognitionAgentBridge(
-                new AgentRegistry(List.of(definitions)), observability, audits, metadata);
+                new AgentRegistryHolder(new AgentRegistry(List.of(definitions))), observability, audits, metadata);
     }
 
     private static IntentRecognitionRunMetadata success() {
@@ -183,7 +183,7 @@ class IntentRecognitionAgentBridgeTest {
     void observabilityAndAuditFailuresNeverMaskInterpretationRun() {
         AuditLogService failingAudits = mock(AuditLogService.class);
         IntentRecognitionAgentBridge bridge = new IntentRecognitionAgentBridge(
-                new AgentRegistry(List.of(enabledDefinition())), observability, failingAudits, metadata);
+                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))), observability, failingAudits, metadata);
         doThrow(new IllegalStateException("db down")).when(observability).runStarted(any());
         doThrow(new IllegalStateException("db down")).when(observability).runFinished(any());
         when(failingAudits.record(any())).thenThrow(new IllegalStateException("db down"));

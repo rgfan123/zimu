@@ -13,18 +13,18 @@ import cn.zimu.fulfillment.message.MessageInterpretation;
 import cn.zimu.fulfillment.message.MessageInterpretationRepository;
 import cn.zimu.fulfillment.message.MessageInterpreter;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
+import java.util.List;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -65,21 +65,6 @@ class IntentRecognitionBridgeDisabledIntegrationTest {
         MessageInterpreter stubInterpreter() {
             return ignored -> RESULT;
         }
-
-        /** 覆盖真实注册表：intent-recognition 停用（其余 Agent 不在本测试范围）。 */
-        @Bean
-        @Primary
-        AgentRegistry disabledIntentRecognitionRegistry() {
-            return new AgentRegistry(List.of(AgentDefinition.of(
-                    "intent-recognition",
-                    "意图识别",
-                    "企业微信消息意图分类与分流",
-                    "你是意图识别 Agent。",
-                    "intent-recognition-v1",
-                    "app.message-interpreter",
-                    false,
-                    List.of())));
-        }
     }
 
     private static final InterpretationResult RESULT = new InterpretationResult(
@@ -109,6 +94,9 @@ class IntentRecognitionBridgeDisabledIntegrationTest {
     private JdbcTemplate jdbc;
 
     @Autowired
+    private AgentRegistryHolder holder;
+
+    @Autowired
     private ObjectMapper objectMapper;
 
     @BeforeEach
@@ -119,6 +107,10 @@ class IntentRecognitionBridgeDisabledIntegrationTest {
                          app.review_cases, app.order_drafts
                 RESTART IDENTITY CASCADE
                 """);
+        // T02 后定义真源为 DB：停用 = 改 DB 行 + holder 换实例（无需重启即感知）
+        jdbc.update("UPDATE app.agent_definitions SET enabled = false "
+                + "WHERE agent_slug = 'intent-recognition' AND version = 1");
+        holder.reload();
     }
 
     @Test

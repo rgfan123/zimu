@@ -3,11 +3,12 @@ package cn.zimu.fulfillment.agent.eval;
 import cn.zimu.fulfillment.agent.AgentModelMetadataRegistry;
 import cn.zimu.fulfillment.agent.AgentModelProperties;
 import cn.zimu.fulfillment.agent.AgentRegistry;
+import cn.zimu.fulfillment.agent.AgentRegistryHolder;
 import cn.zimu.fulfillment.agent.AgentRunContext;
+import cn.zimu.fulfillment.agent.AgentSeedFixtures;
 import cn.zimu.fulfillment.agent.AgentTaskRequest;
 import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
-import cn.zimu.fulfillment.agent.DataQueryAgentDefinitionConfiguration;
 import cn.zimu.fulfillment.agent.DataQueryAgentEvalFixture;
 import cn.zimu.fulfillment.agent.DataQueryAgentService;
 import cn.zimu.fulfillment.agent.DataQueryRunResult;
@@ -291,7 +292,7 @@ public final class AgentEvalScorer {
         server.start();
         try {
             DataQueryAgentService service = new DataQueryAgentService(
-                    new AgentRegistry(List.of(dataQueryDefinition())),
+                    new AgentRegistryHolder(new AgentRegistry(List.of(dataQueryDefinition()))),
                     properties(server.getAddress().getPort()),
                     new AgentToolBindingFactory(
                             miniRegistry(), new McpAgentIdentity("eval-agent"), MAPPER),
@@ -552,22 +553,14 @@ public final class AgentEvalScorer {
     // 迷你只读注册表（canned 事实，数字与 06 票集成测试数据库种子一致）
     // ------------------------------------------------------------------
 
-    /** 只读引用 06 票注册配置的公共常量构造评测用 AgentDefinition（不动 06 票代码）。 */
+    /** 引用 V33 种子夹具（T02 后代码定义已删）构造评测用 AgentDefinition。 */
     private static cn.zimu.fulfillment.agent.AgentDefinition dataQueryDefinition() {
-        return cn.zimu.fulfillment.agent.AgentDefinition.of(
-                DataQueryAgentDefinitionConfiguration.SLUG,
-                DataQueryAgentDefinitionConfiguration.NAME,
-                "自然语言只读数据查询：订单/采购/SKU 价格/库存/主数据",
-                DataQueryAgentDefinitionConfiguration.SYSTEM_PROMPT,
-                DataQueryAgentDefinitionConfiguration.PROMPT_VERSION,
-                DataQueryAgentDefinitionConfiguration.MODEL_REF,
-                true,
-                DataQueryAgentDefinitionConfiguration.TOOL_NAMES);
+        return AgentSeedFixtures.dataQueryDefinition();
     }
 
     private static McpToolRegistry miniRegistry() {
         List<McpTool> tools = new ArrayList<>();
-        for (String name : DataQueryAgentDefinitionConfiguration.TOOL_NAMES) {
+        for (String name : AgentSeedFixtures.DATA_QUERY_TOOL_NAMES) {
             tools.add(McpToolTestSupport.tool(
                     name, "只读工具 " + name, Map.of(), List.of(), (context, args) -> canned(name)));
         }

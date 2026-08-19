@@ -3,7 +3,7 @@ package cn.zimu.fulfillment.agent.procurement;
 import cn.zimu.fulfillment.agent.AgentDefinition;
 import cn.zimu.fulfillment.agent.AgentFailureCode;
 import cn.zimu.fulfillment.agent.AgentModelMetadataRegistry;
-import cn.zimu.fulfillment.agent.AgentRegistry;
+import cn.zimu.fulfillment.agent.AgentRegistryHolder;
 import cn.zimu.fulfillment.agent.AgentRunContext;
 import cn.zimu.fulfillment.agent.AgentRuntimeFacade;
 import cn.zimu.fulfillment.agent.AgentTaskRequest;
@@ -36,19 +36,19 @@ public class ProcurementPriceAgent {
     private static final String DEFAULT_OPERATOR = "agent";
     private static final String STATUS_SUCCESS = "SUCCESS";
 
-    private final AgentRegistry registry;
+    private final AgentRegistryHolder holder;
     private final ProcurementPriceRuntime runtime;
     private final AuditLogService audits;
     private final AgentModelMetadataRegistry metadata;
     private final AgentToolBindingFactory toolBindingFactory;
 
     public ProcurementPriceAgent(
-            AgentRegistry registry,
+            AgentRegistryHolder holder,
             ProcurementPriceRuntime runtime,
             AuditLogService audits,
             AgentModelMetadataRegistry metadata,
             AgentToolBindingFactory toolBindingFactory) {
-        this.registry = registry;
+        this.holder = holder;
         this.runtime = runtime;
         this.audits = audits;
         this.metadata = metadata;
@@ -66,7 +66,7 @@ public class ProcurementPriceAgent {
         ProcurementPriceInput input = ProcurementPriceInput.parse(jsonInput);
         AgentRunContext ctx = context == null ? AgentRunContext.empty() : context;
         String runId = AgentRuntimeFacade.newRunId();
-        AgentDefinition definition = registry.bySlug(AGENT_SLUG);
+        AgentDefinition definition = holder.current().bySlug(AGENT_SLUG);
         if (definition == null) {
             recordAudit(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND.name(), 0, null);
             return ProcurementPriceRunResult.failClosed(AgentFailureCode.AGENT_NOT_FOUND);

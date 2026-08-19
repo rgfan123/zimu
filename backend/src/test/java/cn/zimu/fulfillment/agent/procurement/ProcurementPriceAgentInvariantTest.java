@@ -3,7 +3,8 @@ package cn.zimu.fulfillment.agent.procurement;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import cn.zimu.fulfillment.agent.AgentDefinition;
-import cn.zimu.fulfillment.agent.AgentRegistry;
+import cn.zimu.fulfillment.agent.AgentRegistryHolder;
+import cn.zimu.fulfillment.agent.AgentSeedFixtures;
 import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
 import cn.zimu.fulfillment.common.web.TestRequestAuthenticationConfiguration;
@@ -45,7 +46,7 @@ class ProcurementPriceAgentInvariantTest {
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Autowired
-    private AgentRegistry registry;
+    private AgentRegistryHolder holder;
 
     @Autowired
     private McpToolRegistry toolRegistry;
@@ -61,13 +62,13 @@ class ProcurementPriceAgentInvariantTest {
 
     @Test
     void registryContainsEnabledProcurementAgentWithReadOnlyWhitelist() {
-        AgentDefinition definition = registry.bySlug(ProcurementPriceAgent.AGENT_SLUG);
+        AgentDefinition definition = holder.current().bySlug(ProcurementPriceAgent.AGENT_SLUG);
         assertThat(definition).as("注册表必须含采购比价 Agent 定义").isNotNull();
         assertThat(definition.enabled()).isTrue();
-        assertThat(definition.promptVersion()).isEqualTo(ProcurementPriceAgentConfiguration.PROMPT_VERSION);
+        assertThat(definition.promptVersion()).isEqualTo("procurement-price-v1");
         assertThat(definition.modelRef()).isEqualTo("app.agent");
         assertThat(definition.toolNames())
-                .containsExactlyElementsOf(ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS);
+                .containsExactlyElementsOf(AgentSeedFixtures.PROCUREMENT_TOOL_NAMES);
     }
 
     @Test
@@ -77,13 +78,13 @@ class ProcurementPriceAgentInvariantTest {
                 .as("写工具清单必须非空（McpWriteTools 现网清单）")
                 .isNotEmpty();
 
-        AgentDefinition definition = registry.bySlug(ProcurementPriceAgent.AGENT_SLUG);
+        AgentDefinition definition = holder.current().bySlug(ProcurementPriceAgent.AGENT_SLUG);
         assertThat(definition.toolNames()).doesNotContainAnyElementsOf(writeToolNames);
     }
 
     @Test
     void whitelistToolsAllResolveInRealRegistryAndBindWithoutWriteTools() {
-        AgentDefinition definition = registry.bySlug(ProcurementPriceAgent.AGENT_SLUG);
+        AgentDefinition definition = holder.current().bySlug(ProcurementPriceAgent.AGENT_SLUG);
         // 白名单引用的工具必须在唯一工具源全部可解析（配置漂移 fail-fast）
         for (String name : definition.toolNames()) {
             assertThat(toolRegistry.find(name)).as("白名单工具必须已注册: %s", name).isPresent();

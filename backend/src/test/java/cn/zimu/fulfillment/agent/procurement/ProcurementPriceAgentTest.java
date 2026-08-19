@@ -12,7 +12,9 @@ import cn.zimu.fulfillment.agent.AgentFailureCode;
 import cn.zimu.fulfillment.agent.AgentModelMetadataRegistry;
 import cn.zimu.fulfillment.agent.AgentModelProperties;
 import cn.zimu.fulfillment.agent.AgentRegistry;
+import cn.zimu.fulfillment.agent.AgentRegistryHolder;
 import cn.zimu.fulfillment.agent.AgentRunContext;
+import cn.zimu.fulfillment.agent.AgentSeedFixtures;
 import cn.zimu.fulfillment.agent.AgentTaskRequest;
 import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
@@ -48,32 +50,24 @@ class ProcurementPriceAgentTest {
     private final AgentModelMetadataRegistry metadata = new AgentModelMetadataRegistry();
 
     private AgentDefinition enabledDefinition() {
-        return AgentDefinition.of(
-                ProcurementPriceAgentConfiguration.AGENT_SLUG,
-                "采购比价 Agent",
-                "d",
-                "你是采购比价 Agent。",
-                ProcurementPriceAgentConfiguration.PROMPT_VERSION,
-                ProcurementPriceAgentConfiguration.MODEL_REF,
-                true,
-                ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS);
+        return AgentSeedFixtures.procurementDefinition();
     }
 
     private AgentDefinition disabledDefinition() {
         return AgentDefinition.of(
-                ProcurementPriceAgentConfiguration.AGENT_SLUG,
+                ProcurementPriceAgent.AGENT_SLUG,
                 "采购比价 Agent",
                 "d",
                 "你是采购比价 Agent。",
-                ProcurementPriceAgentConfiguration.PROMPT_VERSION,
-                ProcurementPriceAgentConfiguration.MODEL_REF,
+                "procurement-price-v1",
+                "app.agent",
                 false,
                 List.of());
     }
 
     private ProcurementPriceAgent agent(AgentDefinition... definitions) {
         return new ProcurementPriceAgent(
-                new AgentRegistry(List.of(definitions)),
+                new AgentRegistryHolder(new AgentRegistry(List.of(definitions))),
                 runtime,
                 audits,
                 metadata,
@@ -81,9 +75,9 @@ class ProcurementPriceAgentTest {
     }
 
     private static AgentToolBindingFactory bindingFactory() {
-        McpTool[] tools = new McpTool[ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS.size()];
+        McpTool[] tools = new McpTool[AgentSeedFixtures.PROCUREMENT_TOOL_NAMES.size()];
         for (int i = 0; i < tools.length; i++) {
-            String name = ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS.get(i);
+            String name = AgentSeedFixtures.PROCUREMENT_TOOL_NAMES.get(i);
             tools[i] = McpToolTestSupport.tool(name, "只读工具 " + name);
         }
         return new AgentToolBindingFactory(
@@ -129,15 +123,15 @@ class ProcurementPriceAgentTest {
         assertThat(request.get("agent_slug")).isEqualTo(ProcurementPriceAgent.AGENT_SLUG);
         assertThat(request.get("run_id")).isEqualTo(auditField(command, "traceId"));
         assertThat(request.get("thread_id")).isEqualTo("thread-42");
-        assertThat(request.get("prompt_version")).isEqualTo(ProcurementPriceAgentConfiguration.PROMPT_VERSION);
+        assertThat(request.get("prompt_version")).isEqualTo("procurement-price-v1");
         assertThat(request.get("model_ref")).isEqualTo("app.agent");
         assertThat(request.get("tool_names"))
-                .isEqualTo(ProcurementPriceAgentConfiguration.READ_ONLY_TOOLS);
+                .isEqualTo(AgentSeedFixtures.PROCUREMENT_TOOL_NAMES);
 
         @SuppressWarnings("unchecked")
         Map<String, Object> response = (Map<String, Object>) auditField(command, "responsePayload");
         assertThat(response.get("status")).isEqualTo("SUCCESS");
-        assertThat(response.get("prompt_version")).isEqualTo(ProcurementPriceAgentConfiguration.PROMPT_VERSION);
+        assertThat(response.get("prompt_version")).isEqualTo("procurement-price-v1");
         assertThat(auditField(command, "businessCode")).isEqualTo("SUCCESS");
         assertThat((Integer) auditField(command, "latencyMs")).isGreaterThanOrEqualTo(0);
     }
@@ -222,7 +216,9 @@ class ProcurementPriceAgentTest {
 
         ArgumentCaptor<AgentTaskRequest> captor = ArgumentCaptor.forClass(AgentTaskRequest.class);
         verify(runtime).run(captor.capture());
-        assertThat(captor.getValue().systemPrompt()).isEqualTo("你是采购比价 Agent。");
+        // 定义 system prompt 逐字透传运行时（真源为 V33 种子，测试用夹具镜像）
+        assertThat(captor.getValue().systemPrompt())
+                .isEqualTo(AgentSeedFixtures.procurementDefinition().systemPrompt());
         // 归一化后的结构化 JSON 输入
         assertThat(captor.getValue().userInput()).contains("\"procurement_ticket_id\"");
         assertThat(captor.getValue().userInput()).contains("\"quantity\"");
@@ -281,7 +277,7 @@ class ProcurementPriceAgentTest {
     @Test
     void unconfiguredModelFailsClosedWithAudit() {
         ProcurementPriceAgent agent = new ProcurementPriceAgent(
-                new AgentRegistry(List.of(enabledDefinition())),
+                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))),
                 new ProcurementPriceAgentRuntime(new AgentModelProperties()),
                 audits,
                 metadata,
@@ -343,7 +339,7 @@ class ProcurementPriceAgentTest {
     @Test
     void whitelistReferencingUnknownToolFailsFast() {
         AgentDefinition definition = AgentDefinition.of(
-                ProcurementPriceAgentConfiguration.AGENT_SLUG,
+                ProcurementPriceAgent.AGENT_SLUG,
                 "采购比价 Agent",
                 "d",
                 "sys",

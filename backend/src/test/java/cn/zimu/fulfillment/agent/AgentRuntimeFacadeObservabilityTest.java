@@ -47,7 +47,7 @@ class AgentRuntimeFacadeObservabilityTest {
 
     private AgentRuntimeFacade facade(AgentDefinition... definitions) {
         AgentRuntimeFacade facade = new AgentRuntimeFacade(
-                new AgentRegistry(List.of(definitions)),
+                new AgentRegistryHolder(new AgentRegistry(List.of(definitions))),
                 runtime,
                 audits,
                 metadata,
@@ -240,7 +240,7 @@ class AgentRuntimeFacadeObservabilityTest {
                 .when(broken)
                 .toolCallFinished(any());
         AgentRuntimeFacade facade = new AgentRuntimeFacade(
-                new AgentRegistry(List.of(enabledDefinition())),
+                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))),
                 runtime,
                 audits,
                 metadata,
@@ -277,7 +277,7 @@ class AgentRuntimeFacadeObservabilityTest {
     void defaultNoopObservabilityKeepsBusinessWorking() {
         when(runtime.run(any())).thenReturn(success());
         AgentRuntimeFacade facade = new AgentRuntimeFacade(
-                new AgentRegistry(List.of(enabledDefinition())),
+                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))),
                 runtime,
                 audits,
                 metadata,

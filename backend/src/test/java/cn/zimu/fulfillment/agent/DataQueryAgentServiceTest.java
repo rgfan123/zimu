@@ -31,9 +31,9 @@ class DataQueryAgentServiceTest {
 
     @BeforeEach
     void setUp() {
-        definition = new DataQueryAgentDefinitionConfiguration().dataQueryAgentDefinition();
+        definition = AgentSeedFixtures.dataQueryDefinition();
         service = new DataQueryAgentService(
-                new AgentRegistry(List.of(definition)),
+                new AgentRegistryHolder(new AgentRegistry(List.of(definition))),
                 new AgentModelProperties(),
                 bindingFactory,
                 audits,
@@ -43,7 +43,7 @@ class DataQueryAgentServiceTest {
 
     private DataQueryAgentService serviceWithRegistry(AgentRegistry registry) {
         return new DataQueryAgentService(
-                registry,
+                new AgentRegistryHolder(registry),
                 new AgentModelProperties(),
                 bindingFactory,
                 audits,
@@ -193,7 +193,7 @@ class DataQueryAgentServiceTest {
         assertThat(request.get("prompt_version")).isEqualTo("data-query-v1");
         assertThat(request.get("model_ref")).isEqualTo("app.agent");
         assertThat(request.get("tool_names"))
-                .isEqualTo(DataQueryAgentDefinitionConfiguration.TOOL_NAMES);
+                .isEqualTo(AgentSeedFixtures.DATA_QUERY_TOOL_NAMES);
     }
 
     @Test

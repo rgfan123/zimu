@@ -13,9 +13,11 @@ import java.util.Set;
  * Agent 注册表配置变更审计（agent-decision-layer 02）。
  *
  * <p>对前后两个 {@link AgentRegistry} 实例做按 slug 的 diff，为每个变更（新增/移除/启停/
- * 模型引用/提示词版本/工具白名单）记录一条 AGENT 审计（service=agent,
- * operation=agent.registry.changed）。注册表本身不可变：启停、工具白名单等变更只能通过
- * 新实例体现，本审计器在变更发生时（如配置重新加载/部署）被调用，保证变更留痕可追。
+ * 模型引用/提示词版本/工具白名单/版本生命周期 ACTIVATED·RETIRED）记录一条 AGENT 审计
+ * （service=agent, operation=agent.registry.changed）。注册表本身不可变：启停、工具白名单等
+ * 变更只能通过新实例体现，本审计器在变更发生时（如配置重新加载/部署/草稿确认）被调用，
+ * 保证变更留痕可追。版本生命周期（03）：同 slug 生效版本被替换时，旧版本 RETIRED +
+ * 新版本 ACTIVATED（版本切换吸收字段级 diff）。
  */
 public class AgentRegistryChangeAuditor {
 
@@ -30,6 +32,9 @@ public class AgentRegistryChangeAuditor {
         public static final String MODEL_REF_CHANGED = "AGENT_REGISTRY_MODEL_REF_CHANGED";
         public static final String PROMPT_VERSION_CHANGED = "AGENT_REGISTRY_PROMPT_VERSION_CHANGED";
         public static final String TOOL_WHITELIST_CHANGED = "AGENT_REGISTRY_TOOL_WHITELIST_CHANGED";
+        /** 版本生命周期（03）：同 slug 生效版本被新版本替换（旧版本 retired + 新版本 activated）。 */
+        public static final String ACTIVATED = "AGENT_REGISTRY_ACTIVATED";
+        public static final String RETIRED = "AGENT_REGISTRY_RETIRED";
 
         private Kinds() {}
     }
@@ -73,6 +78,17 @@ public class AgentRegistryChangeAuditor {
                         "model_ref", oldDef.modelRef(),
                         "prompt_version", oldDef.promptVersion(),
                         "tool_names", oldDef.toolNames())));
+            } else if (oldDef.version() != newDef.version()) {
+                // 版本生命周期（03 全快照链）：生效版本被新版本替换 = 旧版本 retired + 新版本 activated。
+                // 版本切换即整快照替换，字段级 diff 被版本化快照语义吸收，不再逐字段输出。
+                changes.add(new Change(slug, Kinds.RETIRED, Map.of(
+                        "version", oldDef.version(),
+                        "status", oldDef.status().toDb())));
+                changes.add(new Change(slug, Kinds.ACTIVATED, Map.of(
+                        "version", newDef.version(),
+                        "status", newDef.status().toDb(),
+                        "prompt_version", newDef.promptVersion(),
+                        "allow_write", newDef.allowWrite())));
             } else {
                 if (oldDef.enabled() != newDef.enabled()) {
                     changes.add(new Change(slug,

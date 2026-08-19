@@ -109,7 +109,8 @@ class DataQueryAgentServiceIntegrationTest {
         server.start();
         port = server.getAddress().getPort();
         service = new DataQueryAgentService(
-                new AgentRegistry(List.of(new DataQueryAgentDefinitionConfiguration().dataQueryAgentDefinition())),
+                new AgentRegistryHolder(
+                        new AgentRegistry(List.of(AgentSeedFixtures.dataQueryDefinition()))),
                 stubProperties(),
                 new AgentToolBindingFactory(registry, identity, mapper),
                 audits,
@@ -248,7 +249,7 @@ class DataQueryAgentServiceIntegrationTest {
         service.answer(DataQueryAgentEvalFixture.Q_SKU_CONCRETE, null);
 
         assertThat(exposedToolNames(firstRequestBody.get()))
-                .containsExactlyInAnyOrderElementsOf(DataQueryAgentDefinitionConfiguration.TOOL_NAMES);
+                .containsExactlyInAnyOrderElementsOf(AgentSeedFixtures.DATA_QUERY_TOOL_NAMES);
     }
 
     @Test

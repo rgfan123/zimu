@@ -9,6 +9,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.List;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -23,13 +25,14 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * meta-agent-platform-impl 票 01：V33 迁移「种子 ↔ 代码常量逐字对照」测试。
+ * meta-agent-platform-impl 票 01 + 02：V33 迁移种子与注册表 DB 真源的整合测试。
  *
  * <p>真实 PostgreSQL（Testcontainers）+ 完整应用启动（Flyway 执行全部迁移）后，断言：
  * <ul>
- *   <li>三个业务 Agent 的播种行与代码 Configuration 常量逐字一致（name/description/
- *       system_prompt/prompt_version/model_ref/enabled/tool_whitelist 顺序），version=1、
- *       status='active'、allow_write=false、guard_exemptions 为空；</li>
+ *   <li>DB 是定义唯一真源：上下文无代码定义 bean 残留（T02），active 种子恰为 4 个
+ *       （procurement-price-agent / data-query-agent / intent-recognition / meta-agent），
+ *       version=1、status='active'、allow_write 仅 meta-agent 为 true、守卫豁免为空，
+ *       注册表（holder 当前实例）按 status='active' AND enabled=true 可解析全部 slug；</li>
  *   <li>meta-agent 播种行：version=1、status='active'、allow_write=true、enabled=true、
  *       白名单 = [list_agent_tools, create_agent_draft, update_agent_draft]（06/08 决策）；</li>
  *   <li>14 例评测用例（procurement-eval-v1 7 例 + data-query-eval-v1 7 条）按 metric_kind=
@@ -90,49 +93,46 @@ class AgentPlatformSeedVerbatimTest {
             JsonNode input, JsonNode expected) {}
 
     // ------------------------------------------------------------------
-    // 种子定义 ↔ 代码常量逐字对照
+    // 种子定义 ↔ DB 唯一真源（T02 后代码定义 bean 已删除）
     // ------------------------------------------------------------------
 
     @Test
-    void procurementSeedMatchesCodeDefinitionVerbatim() {
-        // 从 Spring 上下文取实际注册的 @Bean（expand 阶段代码定义并行保留），与 DB 种子逐字对照
-        assertDefinitionMatches(
-                loadDefinition("procurement-price-agent"),
-                context.getBean("procurementPriceAgentDefinition", AgentDefinition.class));
-    }
-
-    @Test
-    void dataQuerySeedMatchesCodeDefinitionVerbatim() {
-        assertDefinitionMatches(
-                loadDefinition("data-query-agent"),
-                context.getBean("dataQueryAgentDefinition", AgentDefinition.class));
-    }
-
-    @Test
-    void intentRecognitionSeedMatchesCodeDefinitionVerbatim() {
-        // 代码中 prompt_version 由配置动态镜像（未配置回退 DEFAULT_PROMPT_VERSION）；
-        // 种子为静态数据，逐字对照以常量 DEFAULT_PROMPT_VERSION（测试环境未配置该版本号）。
-        AgentDefinition expected =
-                context.getBean("intentRecognitionAgentDefinition", AgentDefinition.class);
-        assertThat(expected.promptVersion())
-                .isEqualTo(IntentRecognitionAgentConfiguration.DEFAULT_PROMPT_VERSION);
-        assertDefinitionMatches(loadDefinition("intent-recognition"), expected);
-    }
-
-    private static void assertDefinitionMatches(DefinitionRow row, AgentDefinition expected) {
-        assertThat(row.slug()).isEqualTo(expected.agentSlug());
-        assertThat(row.name()).isEqualTo(expected.name());
-        assertThat(row.description()).isEqualTo(expected.description());
-        assertThat(row.systemPrompt()).isEqualTo(expected.systemPrompt());
-        assertThat(row.promptVersion()).isEqualTo(expected.promptVersion());
-        assertThat(row.modelRef()).isEqualTo(expected.modelRef());
-        assertThat(row.enabled()).isEqualTo(expected.enabled());
-        assertThat(row.toolWhitelist()).containsExactlyElementsOf(expected.toolNames());
-        // 版本链与状态机：播种 = version 1 + active + 无写权限 + 无守卫豁免
-        assertThat(row.version()).isEqualTo(1);
-        assertThat(row.status()).isEqualTo("active");
-        assertThat(row.allowWrite()).isFalse();
-        assertThat(row.guardExemptions()).isEmpty();
+    void dbIsTheOnlyDefinitionSourceNoCodeDefinitionBeansRemain() {
+        // T02：三个代码定义 Configuration 已删，注册表从 DB 加载——上下文不得再有定义 bean
+        for (String beanName : new String[] {
+                "procurementPriceAgentDefinition", "dataQueryAgentDefinition", "intentRecognitionAgentDefinition"}) {
+            assertThatThrownBy(() -> context.getBean(beanName))
+                    .as("代码定义 bean %s 必须已删除", beanName)
+                    .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
+        }
+        // 种子为唯一来源：active 定义恰为 4 个，身份与版本链字段与 V33 播种一致
+        List<DefinitionRow> active = jdbc.query(
+                "SELECT agent_slug, name, description, system_prompt, prompt_version, model_ref, "
+                        + "enabled, version, status, allow_write, tool_whitelist::text, guard_exemptions::text "
+                        + "FROM app.agent_definitions WHERE status = 'active' ORDER BY id",
+                (rs, i) -> row(rs));
+        assertThat(active).extracting(DefinitionRow::slug)
+                .containsExactly("procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent");
+        assertThat(active).allSatisfy(row -> {
+            assertThat(row.version()).isEqualTo(1);
+            assertThat(row.status()).isEqualTo("active");
+            assertThat(row.enabled()).isTrue();
+            assertThat(row.allowWrite()).as("仅 meta-agent 允许写（%s）", row.slug())
+                    .isEqualTo("meta-agent".equals(row.slug()));
+            assertThat(row.guardExemptions()).isEmpty();
+            assertThat(row.systemPrompt()).isNotBlank();
+            if ("intent-recognition".equals(row.slug())) {
+                assertThat(row.toolWhitelist()).as("意图识别无工具调用（单次分类接缝）").isEmpty();
+            } else {
+                assertThat(row.toolWhitelist()).isNotEmpty();
+            }
+        });
+        // 运行条件 status='active' AND enabled=true：注册表（holder 当前实例）可解析全部 4 slug
+        AgentRegistryHolder holder = context.getBean(AgentRegistryHolder.class);
+        assertThat(holder.current().slugs())
+                .containsExactlyInAnyOrder("procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent");
+        assertThat(holder.current().isEnabled("procurement-price-agent")).isTrue();
+        assertThat(holder.current().isEnabled("meta-agent")).isTrue();
     }
 
     @Test
@@ -261,20 +261,24 @@ class AgentPlatformSeedVerbatimTest {
                 "SELECT agent_slug, name, description, system_prompt, prompt_version, model_ref, "
                         + "enabled, version, status, allow_write, tool_whitelist::text, guard_exemptions::text "
                         + "FROM app.agent_definitions WHERE agent_slug = ? AND version = 1",
-                (rs, i) -> new DefinitionRow(
-                        rs.getString("agent_slug"),
-                        rs.getString("name"),
-                        rs.getString("description"),
-                        rs.getString("system_prompt"),
-                        rs.getString("prompt_version"),
-                        rs.getString("model_ref"),
-                        rs.getBoolean("enabled"),
-                        rs.getInt("version"),
-                        rs.getString("status"),
-                        rs.getBoolean("allow_write"),
-                        readStringList(rs.getString("tool_whitelist")),
-                        readStringList(rs.getString("guard_exemptions"))),
+                (rs, i) -> row(rs),
                 slug);
+    }
+
+    private static DefinitionRow row(ResultSet rs) throws SQLException {
+        return new DefinitionRow(
+                rs.getString("agent_slug"),
+                rs.getString("name"),
+                rs.getString("description"),
+                rs.getString("system_prompt"),
+                rs.getString("prompt_version"),
+                rs.getString("model_ref"),
+                rs.getBoolean("enabled"),
+                rs.getInt("version"),
+                rs.getString("status"),
+                rs.getBoolean("allow_write"),
+                readStringList(rs.getString("tool_whitelist")),
+                readStringList(rs.getString("guard_exemptions")));
     }
 
     private static List<EvalCaseRow> evalCases(String slug) {

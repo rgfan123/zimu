@@ -32,20 +32,23 @@ public class IntentRecognitionAgentBridge {
 
     public static final String BUSINESS_ENTITY_TYPE = "MESSAGE_SUBMISSION";
 
+    /** 注册表 slug（与 V33 种子 intent-recognition 一致）。 */
+    public static final String AGENT_SLUG = "intent-recognition";
+
     private static final String AUDIT_OPERATOR = "message-worker";
     private static final String STATUS_SUCCESS = "SUCCESS";
 
-    private final AgentRegistry registry;
+    private final AgentRegistryHolder holder;
     private final AgentObservability observability;
     private final AuditLogService audits;
     private final AgentModelMetadataRegistry metadata;
 
     public IntentRecognitionAgentBridge(
-            AgentRegistry registry,
+            AgentRegistryHolder holder,
             AgentObservability observability,
             AuditLogService audits,
             AgentModelMetadataRegistry metadata) {
-        this.registry = registry;
+        this.holder = holder;
         this.observability = observability;
         this.audits = audits;
         this.metadata = metadata;
@@ -53,7 +56,7 @@ public class IntentRecognitionAgentBridge {
 
     /** 注册表可见性 + enabled 判定（fail-closed：未注册=未启用）。 */
     public boolean isEnabled() {
-        return registry.isEnabled(IntentRecognitionAgentConfiguration.AGENT_SLUG);
+        return holder.current().isEnabled(AGENT_SLUG);
     }
 
     /**
@@ -62,7 +65,7 @@ public class IntentRecognitionAgentBridge {
      * @return run_id；Agent 未注册/未启用时返回 null（无观测写入，不影响既有管线）
      */
     public String runStarted(String threadId, long submissionId, String inputContent) {
-        AgentDefinition definition = registry.bySlug(IntentRecognitionAgentConfiguration.AGENT_SLUG);
+        AgentDefinition definition = holder.current().bySlug(AGENT_SLUG);
         if (definition == null || !definition.enabled()) {
             return null;
         }
@@ -112,8 +115,8 @@ public class IntentRecognitionAgentBridge {
 
     private void recordAudit(
             String runId, String threadId, IntentRecognitionRunMetadata run, long latencyMs) {
-        AgentDefinition definition = registry.bySlug(IntentRecognitionAgentConfiguration.AGENT_SLUG);
-        String slug = definition == null ? IntentRecognitionAgentConfiguration.AGENT_SLUG : definition.agentSlug();
+        AgentDefinition definition = holder.current().bySlug(AGENT_SLUG);
+        String slug = definition == null ? AGENT_SLUG : definition.agentSlug();
         String promptVersion = definition == null ? "none" : definition.promptVersion();
         AgentModelMetadataRegistry.PublicMetadata meta =
                 metadata.publicProjection(run.provider(), run.model(), run.promptVersion());

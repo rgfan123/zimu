@@ -13,8 +13,7 @@ import org.junit.jupiter.api.Test;
  */
 class DataQueryAgentDefinitionTest {
 
-    private final AgentDefinition definition =
-            new DataQueryAgentDefinitionConfiguration().dataQueryAgentDefinition();
+    private final AgentDefinition definition = AgentSeedFixtures.dataQueryDefinition();
 
     // ------------------------------------------------------------------
     // 注册表定义
@@ -58,7 +57,7 @@ class DataQueryAgentDefinitionTest {
     @Test
     void whitelistContainsOnlyReadOnlyDomainAndNonPiiTools() {
         assertThat(definition.toolNames())
-                .containsExactlyInAnyOrderElementsOf(DataQueryAgentDefinitionConfiguration.TOOL_NAMES);
+                .containsExactlyInAnyOrderElementsOf(AgentSeedFixtures.DATA_QUERY_TOOL_NAMES);
         // 04 票核心领域工具全覆盖
         assertThat(definition.toolNames())
                 .contains(
