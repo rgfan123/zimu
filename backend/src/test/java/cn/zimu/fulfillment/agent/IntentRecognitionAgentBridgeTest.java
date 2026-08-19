@@ -39,7 +39,7 @@ class IntentRecognitionAgentBridgeTest {
     private final AgentModelMetadataRegistry metadata = new AgentModelMetadataRegistry();
 
     private AgentDefinition enabledDefinition() {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 "intent-recognition",
                 "意图识别",
                 "企业微信消息意图分类与分流",
@@ -52,7 +52,7 @@ class IntentRecognitionAgentBridgeTest {
 
     private IntentRecognitionAgentBridge bridge(AgentDefinition... definitions) {
         return new IntentRecognitionAgentBridge(
-                new AgentRegistryHolder(new AgentRegistry(List.of(definitions))), observability, audits, metadata);
+                AgentSeedFixtures.holderOf(definitions), observability, audits, metadata);
     }
 
     private static IntentRecognitionRunMetadata success() {
@@ -154,7 +154,7 @@ class IntentRecognitionAgentBridgeTest {
 
     @Test
     void disabledAgentWritesNoObservationAndNoAudit() {
-        AgentDefinition disabled = AgentDefinition.of(
+        AgentDefinition disabled = AgentDefinition.ofActiveV1(
                 "intent-recognition", "意图识别", "d", "s", "v1", "app.message-interpreter", false,
                 List.of());
         IntentRecognitionAgentBridge bridge = bridge(disabled);
@@ -183,7 +183,7 @@ class IntentRecognitionAgentBridgeTest {
     void observabilityAndAuditFailuresNeverMaskInterpretationRun() {
         AuditLogService failingAudits = mock(AuditLogService.class);
         IntentRecognitionAgentBridge bridge = new IntentRecognitionAgentBridge(
-                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))), observability, failingAudits, metadata);
+                AgentSeedFixtures.holderOf(enabledDefinition()), observability, failingAudits, metadata);
         doThrow(new IllegalStateException("db down")).when(observability).runStarted(any());
         doThrow(new IllegalStateException("db down")).when(observability).runFinished(any());
         when(failingAudits.record(any())).thenThrow(new IllegalStateException("db down"));

@@ -6,12 +6,12 @@ import cn.zimu.fulfillment.common.audit.AuditLog;
 import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
 import cn.zimu.fulfillment.mcp.McpToolRegistry;
-import java.util.List;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -78,17 +78,12 @@ class AgentObservabilityIntegrationTest {
                          app.idempotency_registry
                 RESTART IDENTITY CASCADE
                 """);
-        // T02 后定义真源为 DB：测试 Agent 先删后插（幂等），holder 换实例即被运行路径感知
-        jdbc.update("DELETE FROM app.agent_definitions WHERE agent_slug = ?", SLUG);
-        jdbc.update(
-                "INSERT INTO app.agent_definitions ("
-                        + "agent_slug, name, description, system_prompt, prompt_version, model_ref, "
-                        + "enabled, version, status, activated_by, activated_at, allow_write, "
-                        + "guard_exemptions, output_schema, tool_whitelist) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 'test', CURRENT_TIMESTAMP, "
-                        + "false, '[]'::jsonb, NULL, ?::jsonb)",
-                SLUG, "可观测性验收 Agent", "d", "你是只读助手。", "obs-v1", "app.agent", true, 1,
-                "[\"search_skus\",\"reinterpret_submission\"]");
+        // T02 后定义真源为 DB：测试 Agent 幂等注册（先删同 slug 再插），holder 换实例即被运行路径感知
+        AgentSeedFixtures.upsertActiveDefinition(
+                jdbc,
+                AgentDefinition.ofActiveV1(
+                        SLUG, "可观测性验收 Agent", "d", "你是只读助手。", "obs-v1", "app.agent", true,
+                        List.of("search_skus", "reinterpret_submission")));
         holder.reload();
     }
 

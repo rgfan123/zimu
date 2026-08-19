@@ -54,7 +54,7 @@ class ProcurementPriceAgentTest {
     }
 
     private AgentDefinition disabledDefinition() {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 ProcurementPriceAgent.AGENT_SLUG,
                 "采购比价 Agent",
                 "d",
@@ -67,7 +67,7 @@ class ProcurementPriceAgentTest {
 
     private ProcurementPriceAgent agent(AgentDefinition... definitions) {
         return new ProcurementPriceAgent(
-                new AgentRegistryHolder(new AgentRegistry(List.of(definitions))),
+                AgentSeedFixtures.holderOf(definitions),
                 runtime,
                 audits,
                 metadata,
@@ -277,7 +277,7 @@ class ProcurementPriceAgentTest {
     @Test
     void unconfiguredModelFailsClosedWithAudit() {
         ProcurementPriceAgent agent = new ProcurementPriceAgent(
-                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))),
+                AgentSeedFixtures.holderOf(enabledDefinition()),
                 new ProcurementPriceAgentRuntime(new AgentModelProperties()),
                 audits,
                 metadata,
@@ -338,7 +338,7 @@ class ProcurementPriceAgentTest {
 
     @Test
     void whitelistReferencingUnknownToolFailsFast() {
-        AgentDefinition definition = AgentDefinition.of(
+        AgentDefinition definition = AgentDefinition.ofActiveV1(
                 ProcurementPriceAgent.AGENT_SLUG,
                 "采购比价 Agent",
                 "d",

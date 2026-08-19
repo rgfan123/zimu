@@ -21,7 +21,7 @@ class AgentRegistryChangeAuditorTest {
     private final AgentRegistryChangeAuditor auditor = new AgentRegistryChangeAuditor(audits);
 
     private static AgentDefinition purchasing(boolean enabled, List<String> tools) {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 "purchasing-comparison",
                 "采购比价",
                 "d",
@@ -33,7 +33,7 @@ class AgentRegistryChangeAuditorTest {
     }
 
     private static AgentDefinition intentRecognition(boolean enabled) {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 "intent-recognition", "意图识别", "d", "s", "intent-v1", "app.agent", enabled, List.of());
     }
 
@@ -107,9 +107,9 @@ class AgentRegistryChangeAuditorTest {
 
     @Test
     void multipleFieldChangesProduceOneAuditPerKind() {
-        AgentRegistry before = new AgentRegistry(List.of(AgentDefinition.of(
+        AgentRegistry before = new AgentRegistry(List.of(AgentDefinition.ofActiveV1(
                 "slug-a", "n", "d", "s", "v1", "app.agent", true, List.of("t1"))));
-        AgentRegistry after = new AgentRegistry(List.of(AgentDefinition.of(
+        AgentRegistry after = new AgentRegistry(List.of(AgentDefinition.ofActiveV1(
                 "slug-a", "n", "d", "s", "v2", "app.agent.overrides.slug-a", false, List.of("t2"))));
 
         List<AgentRegistryChangeAuditor.Change> changes = auditor.diff(before, after);
@@ -124,7 +124,7 @@ class AgentRegistryChangeAuditorTest {
 
     @Test
     void versionTransitionProducesRetiredThenActivatedEvents() {
-        AgentDefinition v1 = AgentDefinition.of(
+        AgentDefinition v1 = AgentDefinition.ofActiveV1(
                 "slug-a", "n", "d", "s", "v1", "app.agent", true, List.of("t1"));
         AgentDefinition v2 = AgentDefinition.of(
                 "slug-a", "n", "d", "s", "v2", "app.agent", true, List.of("t1"),
@@ -146,7 +146,7 @@ class AgentRegistryChangeAuditorTest {
 
     @Test
     void versionTransitionIsAuditedWithBothLifecycleKinds() {
-        AgentDefinition v1 = AgentDefinition.of(
+        AgentDefinition v1 = AgentDefinition.ofActiveV1(
                 "slug-a", "n", "d", "s", "v1", "app.agent", true, List.of("t1"));
         AgentDefinition v2 = AgentDefinition.of(
                 "slug-a", "n", "d", "s", "v2", "app.agent", true, List.of("t1"),

@@ -3,7 +3,6 @@ package cn.zimu.fulfillment.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -58,7 +57,7 @@ public class AgentDefinitionRepository {
                     rs.getInt("version"),
                     AgentStatus.fromDb(rs.getString("status")),
                     rs.getString("activated_by"),
-                    readOffsetDateTime(rs),
+                    rs.getObject("activated_at", OffsetDateTime.class),
                     rs.getBoolean("allow_write"),
                     readStringList(rs.getString("guard_exemptions")),
                     readJson(rs.getString("output_schema")));
@@ -85,10 +84,5 @@ public class AgentDefinitionRepository {
         } catch (Exception ex) {
             throw new IllegalStateException("agent_definitions JSONB 解析失败: " + json, ex);
         }
-    }
-
-    private static OffsetDateTime readOffsetDateTime(ResultSet rs) throws SQLException {
-        var activatedAt = rs.getObject("activated_at", OffsetDateTime.class);
-        return activatedAt;
     }
 }

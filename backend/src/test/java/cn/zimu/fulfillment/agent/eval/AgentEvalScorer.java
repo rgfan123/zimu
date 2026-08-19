@@ -292,7 +292,7 @@ public final class AgentEvalScorer {
         server.start();
         try {
             DataQueryAgentService service = new DataQueryAgentService(
-                    new AgentRegistryHolder(new AgentRegistry(List.of(dataQueryDefinition()))),
+                    AgentSeedFixtures.holderOf(dataQueryDefinition()),
                     properties(server.getAddress().getPort()),
                     new AgentToolBindingFactory(
                             miniRegistry(), new McpAgentIdentity("eval-agent"), MAPPER),

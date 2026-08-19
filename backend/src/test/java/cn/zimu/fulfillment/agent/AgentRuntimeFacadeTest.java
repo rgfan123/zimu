@@ -38,20 +38,20 @@ class AgentRuntimeFacadeTest {
     private final AgentModelMetadataRegistry metadata = new AgentModelMetadataRegistry();
 
     private AgentDefinition enabledDefinition() {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 SLUG, "采购比价", "d", "你是只读比价助手。", PROMPT_VERSION, "app.agent", true,
                 List.of("search_provider_skus", "get_sku_price"));
     }
 
     private AgentDefinition disabledDefinition() {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 SLUG, "采购比价", "d", "你是只读比价助手。", PROMPT_VERSION, "app.agent", false,
                 List.of());
     }
 
     private AgentRuntimeFacade facade(AgentDefinition... definitions) {
         return new AgentRuntimeFacade(
-                new AgentRegistryHolder(new AgentRegistry(List.of(definitions))),
+                AgentSeedFixtures.holderOf(definitions),
                 runtime,
                 audits,
                 metadata,
@@ -202,7 +202,7 @@ class AgentRuntimeFacadeTest {
     void unconfiguredModelFailsClosedWithAudit() {
         // 真实兜底运行时：模型未配置时 fail-closed（不连接任何模型）
         AgentRuntimeFacade facade = new AgentRuntimeFacade(
-                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))),
+                AgentSeedFixtures.holderOf(enabledDefinition()),
                 new DefaultAgentRuntime(new AgentModelProperties()),
                 audits,
                 metadata,
@@ -327,7 +327,7 @@ class AgentRuntimeFacadeTest {
 
     @Test
     void whitelistReferencingUnknownToolFailsFast() {
-        AgentDefinition definition = AgentDefinition.of(
+        AgentDefinition definition = AgentDefinition.ofActiveV1(
                 SLUG, "采购比价", "d", "你是只读比价助手。", PROMPT_VERSION, "app.agent", true,
                 List.of("search_provider_skus", "no_such_tool"));
         AgentRuntimeFacade facade = facade(definition);
@@ -342,7 +342,7 @@ class AgentRuntimeFacadeTest {
     @Test
     void emptyWhitelistYieldsEmptyBindingAndStillRuns() {
         when(runtime.run(any())).thenReturn(success());
-        AgentDefinition definition = AgentDefinition.of(
+        AgentDefinition definition = AgentDefinition.ofActiveV1(
                 SLUG, "采购比价", "d", "你是只读比价助手。", PROMPT_VERSION, "app.agent", true, List.of());
         AgentRuntimeFacade facade = facade(definition);
 

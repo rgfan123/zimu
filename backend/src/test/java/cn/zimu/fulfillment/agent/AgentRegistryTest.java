@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 class AgentRegistryTest {
 
     private static AgentDefinition purchasing() {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 "purchasing-comparison",
                 "采购比价",
                 "汇总 SKU 进货价与库存上下文给出比价建议",
@@ -25,7 +25,7 @@ class AgentRegistryTest {
     }
 
     private static AgentDefinition intentRecognition() {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 "intent-recognition",
                 "意图识别",
                 "企业微信消息意图分类与分流",
@@ -91,25 +91,25 @@ class AgentRegistryTest {
 
     @Test
     void invalidSlugIsRejected() {
-        assertThatThrownBy(() -> AgentDefinition.of(
+        assertThatThrownBy(() -> AgentDefinition.ofActiveV1(
                 "PURCHASING", "n", "d", "s", "v1", "app.agent", true, List.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("agent_slug");
-        assertThatThrownBy(() -> AgentDefinition.of(
+        assertThatThrownBy(() -> AgentDefinition.ofActiveV1(
                 "", "n", "d", "s", "v1", "app.agent", true, List.of()))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> AgentDefinition.of(
+        assertThatThrownBy(() -> AgentDefinition.ofActiveV1(
                 "a b", "n", "d", "s", "v1", "app.agent", true, List.of()))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void blankRequiredTextFieldsAreRejected() {
-        assertThatThrownBy(() -> AgentDefinition.of(
+        assertThatThrownBy(() -> AgentDefinition.ofActiveV1(
                 "ok-agent", "", "d", "s", "v1", "app.agent", true, List.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("name");
-        assertThatThrownBy(() -> AgentDefinition.of(
+        assertThatThrownBy(() -> AgentDefinition.ofActiveV1(
                 "ok-agent", "n", "d", "s", "", "app.agent", true, List.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("prompt_version");
@@ -118,7 +118,7 @@ class AgentRegistryTest {
     @Test
     void registryIsImmutable() {
         List<String> tools = new java.util.ArrayList<>(List.of("t1"));
-        AgentDefinition definition = AgentDefinition.of(
+        AgentDefinition definition = AgentDefinition.ofActiveV1(
                 "slug-a", "n", "d", "s", "v1", "app.agent", true, tools);
         tools.add("t2");
 

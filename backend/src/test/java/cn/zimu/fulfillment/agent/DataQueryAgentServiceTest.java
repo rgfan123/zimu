@@ -33,7 +33,7 @@ class DataQueryAgentServiceTest {
     void setUp() {
         definition = AgentSeedFixtures.dataQueryDefinition();
         service = new DataQueryAgentService(
-                new AgentRegistryHolder(new AgentRegistry(List.of(definition))),
+                AgentSeedFixtures.holderOf(definition),
                 new AgentModelProperties(),
                 bindingFactory,
                 audits,
@@ -144,7 +144,7 @@ class DataQueryAgentServiceTest {
 
     @Test
     void disabledAgentFailsClosed() {
-        AgentDefinition disabled = AgentDefinition.of(
+        AgentDefinition disabled = AgentDefinition.ofActiveV1(
                 definition.agentSlug(),
                 definition.name(),
                 definition.description(),

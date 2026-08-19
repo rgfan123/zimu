@@ -109,8 +109,7 @@ class DataQueryAgentServiceIntegrationTest {
         server.start();
         port = server.getAddress().getPort();
         service = new DataQueryAgentService(
-                new AgentRegistryHolder(
-                        new AgentRegistry(List.of(AgentSeedFixtures.dataQueryDefinition()))),
+                AgentSeedFixtures.holderOf(AgentSeedFixtures.dataQueryDefinition()),
                 stubProperties(),
                 new AgentToolBindingFactory(registry, identity, mapper),
                 audits,

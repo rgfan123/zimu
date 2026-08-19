@@ -40,14 +40,14 @@ class AgentRuntimeFacadeObservabilityTest {
     private final AgentObservability observability = mock(AgentObservability.class);
 
     private AgentDefinition enabledDefinition() {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 SLUG, "采购比价", "d", "你是只读比价助手。", PROMPT_VERSION, "app.agent", true,
                 List.of("search_provider_skus", "get_sku_price"));
     }
 
     private AgentRuntimeFacade facade(AgentDefinition... definitions) {
         AgentRuntimeFacade facade = new AgentRuntimeFacade(
-                new AgentRegistryHolder(new AgentRegistry(List.of(definitions))),
+                AgentSeedFixtures.holderOf(definitions),
                 runtime,
                 audits,
                 metadata,
@@ -199,7 +199,7 @@ class AgentRuntimeFacadeObservabilityTest {
 
     @Test
     void disabledAgentEmitsFailedRunWithStableCode() {
-        AgentDefinition definition = AgentDefinition.of(
+        AgentDefinition definition = AgentDefinition.ofActiveV1(
                 SLUG, "采购比价", "d", "你是只读比价助手。", PROMPT_VERSION, "app.agent", false, List.of());
         AgentRuntimeFacade facade = facade(definition);
 
@@ -240,7 +240,7 @@ class AgentRuntimeFacadeObservabilityTest {
                 .when(broken)
                 .toolCallFinished(any());
         AgentRuntimeFacade facade = new AgentRuntimeFacade(
-                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))),
+                AgentSeedFixtures.holderOf(enabledDefinition()),
                 runtime,
                 audits,
                 metadata,
@@ -259,7 +259,7 @@ class AgentRuntimeFacadeObservabilityTest {
 
     @Test
     void whitelistDriftEmitsFailedRunThenRethrows() {
-        AgentDefinition definition = AgentDefinition.of(
+        AgentDefinition definition = AgentDefinition.ofActiveV1(
                 SLUG, "采购比价", "d", "你是只读比价助手。", PROMPT_VERSION, "app.agent", true,
                 List.of("search_provider_skus", "no_such_tool"));
         AgentRuntimeFacade facade = facade(definition);
@@ -277,7 +277,7 @@ class AgentRuntimeFacadeObservabilityTest {
     void defaultNoopObservabilityKeepsBusinessWorking() {
         when(runtime.run(any())).thenReturn(success());
         AgentRuntimeFacade facade = new AgentRuntimeFacade(
-                new AgentRegistryHolder(new AgentRegistry(List.of(enabledDefinition()))),
+                AgentSeedFixtures.holderOf(enabledDefinition()),
                 runtime,
                 audits,
                 metadata,

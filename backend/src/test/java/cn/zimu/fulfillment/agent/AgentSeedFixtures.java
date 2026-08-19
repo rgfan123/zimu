@@ -1,16 +1,26 @@
 package cn.zimu.fulfillment.agent;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * 测试夹具：与 V33 种子（{@code app.agent_definitions}，meta-agent-platform-impl 01）逐字
- * 一致的 Agent 定义与工具白名单。T02 删除代码定义后，单元测试（无 DB）需要定义时统一
- * 从这里取，避免各测试内联重复清单造成漂移。
+ * 测试夹具：与 V33 种子（{@code app.agent_definitions}，meta-agent-platform-impl 01）
+ * 身份字段与工具白名单一致的 Agent 定义。T02 删除代码定义后，单元测试（无 DB）需要定义时
+ * 统一从这里取，避免各测试内联重复清单造成漂移。
  *
- * <p>这些清单必须与 V33 迁移种子一致（种子 ↔ 库的完整性由
- * {@code AgentPlatformSeedVerbatimTest} 的 DB 断言兜底）；改种子必须同步本类。
+ * <p>注意口径：{@link #dataQueryDefinition()} / {@link #procurementDefinition()} 的
+ * slug/name/description/prompt_version/model_ref/enabled/tool_whitelist 与 V33 种子一致，
+ * 但 <b>system_prompt 为截断节选</b>（单元测试不驱动真实模型，只需断言所需的关键约束词）；
+ * 完整提示词真源在 DB 种子，不在本类重复。种子 ↔ 库的完整性由
+ * {@code AgentPlatformSeedVerbatimTest} 的 DB 断言兜底；改种子必须同步本类的清单字段。
+ *
+ * <p>集成测试在 DB 真源上注册测试 Agent 用 {@link #upsertActiveDefinition}（先删同 slug
+ * 再插，幂等），避免多处内联重复 INSERT SQL。
  */
 public final class AgentSeedFixtures {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private AgentSeedFixtures() {}
 
@@ -46,7 +56,7 @@ public final class AgentSeedFixtures {
 
     /** 与 V33 种子 data-query-agent（version=1, active）一致的定义（system_prompt 取种子开头与关键约束）。 */
     public static AgentDefinition dataQueryDefinition() {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 "data-query-agent",
                 "数据查询",
                 "自然语言只读数据查询：订单/采购/SKU 价格/库存/主数据",
@@ -60,7 +70,7 @@ public final class AgentSeedFixtures {
 
     /** 与 V33 种子 procurement-price-agent（version=1, active）一致的定义（system_prompt 取种子开头）。 */
     public static AgentDefinition procurementDefinition() {
-        return AgentDefinition.of(
+        return AgentDefinition.ofActiveV1(
                 "procurement-price-agent",
                 "采购比价 Agent",
                 "针对采购工单/SKU 汇总进货价、履约方映射与库存上下文，输出结构化比价建议；低置信度或信息不全时转人工。",
@@ -70,5 +80,44 @@ public final class AgentSeedFixtures {
                 "app.agent",
                 true,
                 PROCUREMENT_TOOL_NAMES);
+    }
+
+    /** 以给定定义构造持有器（测试便捷构造，等价 {@code new AgentRegistryHolder(new AgentRegistry(...))}）。 */
+    public static AgentRegistryHolder holderOf(AgentDefinition... definitions) {
+        return new AgentRegistryHolder(new AgentRegistry(List.of(definitions)));
+    }
+
+    /**
+     * 在 DB 真源（{@code app.agent_definitions}）上幂等注册一个 active 定义（先删同 slug 再插）：
+     * 集成测试注册测试 Agent 用，避免各处内联重复 INSERT SQL。注意：会删除同 slug 的既有行
+     * （含历史版本），不适合需要保留版本链的「草稿确认」流程模拟（后者用显式 UPDATE+INSERT）。
+     */
+    public static void upsertActiveDefinition(JdbcTemplate jdbc, AgentDefinition definition) {
+        jdbc.update("DELETE FROM app.agent_definitions WHERE agent_slug = ?", definition.agentSlug());
+        jdbc.update(
+                "INSERT INTO app.agent_definitions ("
+                        + "agent_slug, name, description, system_prompt, prompt_version, model_ref, "
+                        + "enabled, version, status, activated_by, activated_at, allow_write, "
+                        + "guard_exemptions, output_schema, tool_whitelist) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 'test', CURRENT_TIMESTAMP, "
+                        + "?, '[]'::jsonb, NULL, ?::jsonb)",
+                definition.agentSlug(),
+                definition.name(),
+                definition.description(),
+                definition.systemPrompt(),
+                definition.promptVersion(),
+                definition.modelRef(),
+                definition.enabled(),
+                definition.version(),
+                definition.allowWrite(),
+                toJsonArray(definition.toolNames()));
+    }
+
+    private static String toJsonArray(List<String> values) {
+        try {
+            return MAPPER.writeValueAsString(values);
+        } catch (Exception ex) {
+            throw new IllegalStateException("工具白名单序列化失败: " + values, ex);
+        }
     }
 }

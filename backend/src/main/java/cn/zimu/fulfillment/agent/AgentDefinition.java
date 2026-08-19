@@ -56,11 +56,21 @@ public record AgentDefinition(
         if (status == null) {
             throw new IllegalArgumentException("status 不能为 null");
         }
+        // 03 决策：确认事实上行（activated_by/activated_at 与 status='active' 同事务）——
+        // active 定义必须携带激活事实（种子为 'system'/迁移时间，确认流为人工/确认时间）
+        if (status == AgentStatus.ACTIVE && (activatedBy == null || activatedBy.isBlank() || activatedAt == null)) {
+            throw new IllegalArgumentException(
+                    "status=active 的定义必须携带 activated_by 与 activated_at: " + agentSlug);
+        }
         guardExemptions = guardExemptions == null ? List.of() : List.copyOf(guardExemptions);
     }
 
-    /** 既有 8 参调用面：等价于一个 version=1 的 active 定义（无写权限、无守卫豁免、无输出 schema）。 */
-    public static AgentDefinition of(
+    /**
+     * 便捷工厂：一个 version=1 的 active 定义（无写权限、无守卫豁免、无输出 schema），
+     * 激活事实记为 {@code system} 迁移引导（与 V33 种子语义一致）。仅供测试/夹具使用——
+     * 生产路径一律经 {@link AgentDefinitionRepository} 走全量构造，版本链事实显式传入。
+     */
+    public static AgentDefinition ofActiveV1(
             String agentSlug,
             String name,
             String description,
@@ -80,8 +90,8 @@ public record AgentDefinition(
                 toolNames,
                 1,
                 AgentStatus.ACTIVE,
-                null,
-                null,
+                "system",
+                OffsetDateTime.now(),
                 false,
                 List.of(),
                 null);
