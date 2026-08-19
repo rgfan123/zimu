@@ -46,7 +46,9 @@ public class InterpretationWorker {
             return;
         }
         while (true) {
-            Optional<AsyncTaskStore.AsyncTask> claimed = taskStore.claim(owner, lease);
+            // 09 票：多 Worker 共享 async_tasks，按类型领取防止互抢 QUALITY 评测任务
+            Optional<AsyncTaskStore.AsyncTask> claimed =
+                    taskStore.claim("INTERPRET_MESSAGE", owner, lease);
             if (claimed.isEmpty()) {
                 return;
             }

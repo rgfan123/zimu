@@ -32,6 +32,14 @@
 | 写工具零调用不变式 | 评测运行中白名单外写工具零调用；绑定只暴露只读工具 | 0 |
 | latency / token | stub 实测毫秒 / stub 注入 token | 信息性（见归档） |
 
+## QUALITY 指标（参考，不进 CI 门禁；meta-agent-platform-impl 09）
+
+与 INVARIANT（stub 跑分器 + CI 基线门禁，确定性）分工：
+
+- **INVARIANT**（本文件上文）：工具序列 / schema 通过率 / requires_human 召回 / 写工具零调用，stub 模型 + DB 用例，`AgentEvalBaselineTest` 钉死基线——CI 只钉这类。
+- **QUALITY**（答案质量，真实模型）：由 `QualityEvalService` 按 `(agent_slug, agent_version)` 冻结的 QUALITY 用例集 + 定义 system_prompt 生成 promptfoo 配置（deepseek provider，密钥只经 `DEEPSEEK_API_KEY` 环境变量，绝不入 DB/日志/产物），`NpxPromptfooRunner`（ProcessBuilder 跑 `npx promptfoo eval`）执行，结果回写 `app.agent_eval_results`（`metric_kind='QUALITY'`，按 run_id/用例关联）；异步任务（`QUALITY_EVAL`，Spring Worker）执行并以 `run_mode=PREVIEW` 落 `agent_runs`，不污染 LIVE 统计与 INVARIANT 基线。
+- **分工**：QUALITY 是参考指标（供确认人参考、有波动），**不**进入 CI 门禁、不钉基线；失败不阻断草稿确认（落 FAILED 结果 + 观测行后任务收口）。运行形态：`app.quality-eval.enabled=true` 时 `QualityEvalWorker` 按 `app.quality-eval.poll-ms` 领取执行；冒烟 `PROMPTFOO_SMOKE=1` 跑 `PromptfooEvalSmokeTest`（echo provider 免密钥验证配置端到端消费；真实 deepseek 调用需设置 `DEEPSEEK_API_KEY` 后同一配置直接跑）。
+
 ## 运行命令
 
 ```bash

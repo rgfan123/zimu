@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.ResultSet;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Component;
@@ -20,11 +21,11 @@ import org.springframework.stereotype.Component;
 @Component
 public class AgentDefinitionRepository {
 
-    private static final String SELECT_ACTIVE =
+    private static final String SELECT_BASE =
             "SELECT agent_slug, name, description, system_prompt, prompt_version, model_ref, "
                     + "enabled, version, status, activated_by, activated_at, allow_write, "
                     + "guard_exemptions::text, output_schema::text, tool_whitelist::text, input_format "
-                    + "FROM app.agent_definitions WHERE status = 'active' ORDER BY id";
+                    + "FROM app.agent_definitions ";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -36,12 +37,25 @@ public class AgentDefinitionRepository {
 
     /** 加载全部 active 定义（每 slug 至多一行），按播种/创建顺序。 */
     public List<AgentDefinition> loadActive() {
-        return jdbc.query(SELECT_ACTIVE, ROW_MAPPER);
+        return jdbc.query(SELECT_BASE + "WHERE status = 'active' ORDER BY id", ROW_MAPPER);
     }
 
     /** 以当前 active 定义构造注册表。 */
     public AgentRegistry loadRegistry() {
         return new AgentRegistry(loadActive());
+    }
+
+    /**
+     * 按 (agent_slug, version) 加载指定版本定义（09 票：QUALITY 评测按提交时冻结的版本取
+     * 定义与用例集，保证可复现可回滚；全快照版本链行在表内恒在）。
+     */
+    public Optional<AgentDefinition> findVersion(String agentSlug, int version) {
+        List<AgentDefinition> rows = jdbc.query(
+                SELECT_BASE + "WHERE agent_slug = ? AND version = ?",
+                ROW_MAPPER,
+                agentSlug,
+                version);
+        return rows.stream().findFirst();
     }
 
     private final RowMapper<AgentDefinition> ROW_MAPPER = (ResultSet rs, int rowNum) ->

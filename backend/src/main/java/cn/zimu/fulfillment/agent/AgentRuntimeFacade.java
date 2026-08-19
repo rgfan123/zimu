@@ -167,7 +167,8 @@ public class AgentRuntimeFacade {
                     definition == null ? "none" : definition.modelRef(),
                     AgentPayloadRedactor.digest(userInput),
                     ctx.businessEntityType(),
-                    ctx.businessEntityId()));
+                    ctx.businessEntityId(),
+                    null));
         } catch (RuntimeException ignored) {
             // 观测失败不掩盖运行（与既有审计失败容忍语义一致）
         }

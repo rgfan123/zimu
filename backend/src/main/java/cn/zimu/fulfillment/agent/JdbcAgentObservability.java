@@ -23,8 +23,8 @@ public class JdbcAgentObservability implements AgentObservability {
     private static final String INSERT_RUN = """
             INSERT INTO app.agent_runs
                 (run_id, thread_id, agent_slug, agent_version, prompt_version, model,
-                 input_digest, status, business_entity_type, business_entity_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?)
+                 input_digest, status, business_entity_type, business_entity_id, run_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, COALESCE(NULLIF(?, ''), 'LIVE'))
             """;
 
     private static final String UPDATE_FINISH = """
@@ -70,7 +70,8 @@ public class JdbcAgentObservability implements AgentObservability {
                 start.model(),
                 start.inputDigest(),
                 start.businessEntityType(),
-                start.businessEntityId());
+                start.businessEntityId(),
+                start.runMode());
     }
 
     @Override

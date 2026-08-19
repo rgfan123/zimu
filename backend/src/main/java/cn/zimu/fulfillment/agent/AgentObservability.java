@@ -19,7 +19,11 @@ package cn.zimu.fulfillment.agent;
  */
 public interface AgentObservability {
 
-    /** 运行开始事件；实现方先落 RUNNING 行（finished_at 为空），进程中断时可检出。 */
+    /**
+     * 运行开始事件；实现方先落 RUNNING 行（finished_at 为空），进程中断时可检出。
+     * {@code runMode}（09 票）：运行模式隔离——QUALITY 评测等试跑以 PREVIEW 落
+     * {@code agent_runs.run_mode}，不污染 LIVE 统计与基线；null/空白按 LIVE。
+     */
     record Start(
             String runId,
             String threadId,
@@ -29,7 +33,8 @@ public interface AgentObservability {
             String model,
             String inputDigest,
             String businessEntityType,
-            String businessEntityId) {}
+            String businessEntityId,
+            String runMode) {}
 
     /**
      * 运行收口事件。{@code errorType} 为 null 表示成功（status=SUCCESS）；

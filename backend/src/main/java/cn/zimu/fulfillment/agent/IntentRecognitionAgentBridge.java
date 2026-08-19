@@ -72,7 +72,8 @@ public class IntentRecognitionAgentBridge {
                     definition.modelRef(),
                     AgentPayloadRedactor.digest(inputContent),
                     BUSINESS_ENTITY_TYPE,
-                    String.valueOf(submissionId)));
+                    String.valueOf(submissionId),
+                    null));
         } catch (RuntimeException ignored) {
             // 观测失败不掩盖解释运行（与 08 票失败隔离契约一致）
         }

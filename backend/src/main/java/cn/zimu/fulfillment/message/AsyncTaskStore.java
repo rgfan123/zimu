@@ -43,8 +43,18 @@ public class AsyncTaskStore {
                 maxAttempts);
     }
 
+    /** 领取任意类型任务（仅测试/单 Worker 形态使用；多 Worker 共享队列必须用按类型领取）。 */
     @Transactional
     public Optional<AsyncTask> claim(String owner, Duration lease) {
+        return claim(null, owner, lease);
+    }
+
+    /**
+     * 按任务类型领取（09 票：多 Worker 共享 {@code app.async_tasks} 时防止解释 Worker 与
+     * QUALITY 评测 Worker 互抢任务）。{@code taskType} 为 null 时领取任意类型。
+     */
+    @Transactional
+    public Optional<AsyncTask> claim(String taskType, String owner, Duration lease) {
         List<AsyncTask> claimed = jdbc.query(
                 """
                 UPDATE app.async_tasks
@@ -63,9 +73,10 @@ public class AsyncTaskStore {
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = (
                     SELECT id FROM app.async_tasks
-                    WHERE (status = 'PENDING' AND next_run_at <= CURRENT_TIMESTAMP)
-                       OR (status = 'RUNNING' AND lease_until < statement_timestamp())
-                       OR (status = 'FINALIZING' AND lease_until < statement_timestamp())
+                    WHERE ((status = 'PENDING' AND next_run_at <= CURRENT_TIMESTAMP)
+                        OR (status = 'RUNNING' AND lease_until < statement_timestamp())
+                        OR (status = 'FINALIZING' AND lease_until < statement_timestamp()))
+                      AND (CAST(? AS VARCHAR) IS NULL OR task_type = CAST(? AS VARCHAR))
                     ORDER BY next_run_at, id
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
@@ -76,7 +87,9 @@ public class AsyncTaskStore {
                 """,
                 AsyncTaskStore::map,
                 lease.toSeconds(),
-                owner);
+                owner,
+                taskType,
+                taskType);
         return claimed.stream().findFirst();
     }
 
