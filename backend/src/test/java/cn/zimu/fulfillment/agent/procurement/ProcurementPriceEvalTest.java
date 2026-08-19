@@ -1,9 +1,13 @@
 package cn.zimu.fulfillment.agent.procurement;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
+import cn.zimu.fulfillment.agent.AgentModelMetadataRegistry;
 import cn.zimu.fulfillment.agent.AgentModelProperties;
+import cn.zimu.fulfillment.agent.AgentRuntimeFacade;
 import cn.zimu.fulfillment.agent.AgentSeedFixtures;
+import cn.zimu.fulfillment.agent.LangChain4jRuntimeAdapter;
 import cn.zimu.fulfillment.agent.AgentTaskRequest;
 import cn.zimu.fulfillment.agent.AgentTestcontainersBase;
 import cn.zimu.fulfillment.agent.AgentToolBinding;
@@ -11,6 +15,7 @@ import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
 import cn.zimu.fulfillment.agent.McpToolTestSupport;
 import cn.zimu.fulfillment.agent.eval.AgentEvalScorer;
 import cn.zimu.fulfillment.agent.eval.AgentEvalStubData;
+import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
 import cn.zimu.fulfillment.mcp.McpRequestContext;
 import cn.zimu.fulfillment.mcp.McpTool;
@@ -146,7 +151,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
 
     @Test
     void evalSetSchemaPassRateIsHundredPercentAndRequiresHumanRecallIsFull() {
-        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties());
+        ProcurementPriceAgent agent = agent(properties());
         int schemaValid = 0;
         int requiresHumanExpected = 0;
         int requiresHumanCaught = 0;
@@ -155,8 +160,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
             hits.set(0);
             requestBodies.clear();
             script = List.of(Step.finalAnswer(modelOutput));
-            ProcurementPriceRunResult result =
-                    runtime.run(new AgentTaskRequest("你是采购比价 Agent。", evalCase.input(), AgentToolBinding.empty(RUN_ID)));
+            ProcurementPriceRunResult result = agent.compare(evalCase.input(), null);
 
             if (evalCase.expected().has("expected_error")) {
                 // 负例：schema 不符稳定拒绝，不进入业务结果
@@ -205,10 +209,9 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
         hits.set(0);
         requestBodies.clear();
         script = List.of(Step.finalAnswer(AgentEvalStubData.procurementModelOutput(happyPath.input())));
-        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties());
+        ProcurementPriceAgent agent = agent(properties());
 
-        ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                "你是采购比价 Agent。", happyPath.input(), AgentToolBinding.empty(RUN_ID)));
+        ProcurementPriceRunResult result = agent.compare(happyPath.input(), null);
 
         ProcurementPriceRecommendation recommendation = result.recommendation();
         assertThat(recommendation.requiresHuman()).isFalse();
@@ -246,10 +249,9 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
         hits.set(0);
         requestBodies.clear();
         script = List.of(Step.finalAnswer(camelCaseOutput));
-        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties());
+                ProcurementPriceAgent agent = agent(properties());
 
-        ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                "你是采购比价 Agent。", "{\"sku_id\":\"1001\"}", AgentToolBinding.empty(RUN_ID)));
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1001\"}", null);
 
         assertThat(result.error()).isNull();
         ProcurementPriceRecommendation recommendation = result.recommendation();
@@ -272,12 +274,10 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
                 Step.toolCall("get_inventory_overview", "{\"sku_id\":\"1001\"}"),
                 Step.finalAnswer(AgentEvalStubData.procurementModelOutput(
                         "{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}")));
-        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties());
+        ProcurementPriceAgent agent = agent(properties());
 
-        ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                "你是采购比价 Agent。",
-                "{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}",
-                binding()));
+        ProcurementPriceRunResult result = agent.compare(
+                "{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}", null);
 
         assertThat(result.error()).isNull();
         assertThat(result.recommendation().requiresHuman()).isFalse();
@@ -358,10 +358,9 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
     void unconfiguredModelFailsClosedWithoutConnecting() {
         AgentModelProperties incomplete = properties();
         incomplete.setApiKey("");
-        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(incomplete);
+        ProcurementPriceAgent agent = agent(incomplete);
 
-        ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                "sys", "{\"sku_id\":\"1001\"}", AgentToolBinding.empty(RUN_ID)));
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1001\"}", null);
 
         assertThat(result.error()).isEqualTo("AGENT_MODEL_NOT_CONFIGURED");
         assertThat(result.recommendation()).isNull();
@@ -395,6 +394,23 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
                         new McpAgentIdentity("procurement-price-agent"),
                         MAPPER)
                 .bind(RUN_ID, AgentSeedFixtures.PROCUREMENT_TOOL_NAMES);
+    }
+
+    /**
+     * 05 收敛：评测走门面（A 路径）——门面 + stub Adapter + 本测试的迷你只读注册表
+     * （capturedContext 记录工具调用的 requestId/traceId = run_id），经领域包装执行。
+     */
+    private ProcurementPriceAgent agent(AgentModelProperties modelProperties) {
+        AgentRuntimeFacade facade = new AgentRuntimeFacade(
+                AgentSeedFixtures.holderOf(AgentSeedFixtures.procurementDefinition()),
+                new LangChain4jRuntimeAdapter(modelProperties),
+                mock(AuditLogService.class),
+                new AgentModelMetadataRegistry(),
+                new AgentToolBindingFactory(
+                        McpToolTestSupport.registry(new McpToolRegistryToolSupport(capturedContext).readOnlyTools()),
+                        new McpAgentIdentity("procurement-price-agent"),
+                        MAPPER));
+        return new ProcurementPriceAgent(facade, MAPPER);
     }
 
     private List<String> exposedToolNames(String body) {

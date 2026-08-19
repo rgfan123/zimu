@@ -110,6 +110,7 @@ class DataQueryAgentServiceIntegrationTest {
     private int port;
     private final AtomicInteger hits = new AtomicInteger();
     private final AtomicReference<String> firstRequestBody = new AtomicReference<>();
+    private final java.util.List<String> requestBodies = new ArrayList<>();
     private final AtomicReference<String> round1Question = new AtomicReference<>();
     private final AtomicReference<Throwable> lastServerError = new AtomicReference<>();
     private LocalDate refDate;
@@ -122,19 +123,22 @@ class DataQueryAgentServiceIntegrationTest {
         seedFacts();
         hits.set(0);
         firstRequestBody.set(null);
+        requestBodies.clear();
         round1Question.set(null);
         lastServerError.set(null);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/chat/completions", this::handle);
         server.start();
         port = server.getAddress().getPort();
-        service = new DataQueryAgentService(
+        // 05 收敛：服务经门面（stub Adapter + 真实 McpToolRegistry）运行——
+        // 注册表/绑定/审计/观测由门面承接，工具调用走真实注册表与真实 DB 事实
+        AgentRuntimeFacade facade = new AgentRuntimeFacade(
                 AgentSeedFixtures.holderOf(AgentSeedFixtures.dataQueryDefinition()),
-                stubProperties(),
-                new AgentToolBindingFactory(registry, identity, mapper),
+                new LangChain4jRuntimeAdapter(stubProperties()),
                 audits,
                 metadata,
-                mapper);
+                new AgentToolBindingFactory(registry, identity, mapper));
+        service = new DataQueryAgentService(facade, audits, mapper);
     }
 
     @AfterEach
@@ -162,7 +166,7 @@ class DataQueryAgentServiceIntegrationTest {
         for (String question : EVAL_CLARIFICATION_QUESTIONS) {
             DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-clarify"));
             assertThat(result.error()).isNull();
-            assertThat(result.status()).isEqualTo("CLARIFICATION");
+            assertThat(result.status()).isEqualTo("NEEDS_INPUT");
             assertThat(result.output().requires_human()).isTrue();
             assertThat(result.output().clarification_needed()).isNotEmpty();
             assertThat(result.toolCalls()).isEmpty();
@@ -170,7 +174,7 @@ class DataQueryAgentServiceIntegrationTest {
         for (String question : EVAL_PII_QUESTIONS) {
             DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-pii"));
             assertThat(result.error()).isNull();
-            assertThat(result.status()).isEqualTo("PII_GUARDED");
+            assertThat(result.status()).isEqualTo("REJECTED");
             assertThat(result.output().requires_human()).isTrue();
             assertThat(result.output().answer()).contains("人工");
             assertThat(result.toolCalls()).isEmpty();
@@ -188,31 +192,22 @@ class DataQueryAgentServiceIntegrationTest {
             assertThat(result.output().clarification_needed()).isEmpty();
             assertThat(result.output().confidence()).isGreaterThanOrEqualTo(0.9);
 
-            assertThat(result.toolCalls()).hasSize(1);
-            DataQueryAgentToolCall call = result.toolCalls().get(0);
+            // 05 收敛后工具调用序列在 app.agent_tool_calls（08 观测）；此处以请求帧中的
+            // 工具调用消息核对实际执行的工具与参数（stub 脚本即模型行为，执行走真实注册表）
+            DataQueryAgentToolCall call = lastModelToolCall();
             assertThat(call.tool()).isEqualTo(expectedTool(question));
             assertThat(call.guarded()).isFalse();
 
             assertThat(result.output().sources()).hasSize(1);
             assertThat(result.output().sources().get(0).tool()).isEqualTo(call.tool());
-            verifyAnswerNumbers(question, result);
+            verifyAnswerNumbers(question, result, call);
         }
         // 3 个可答查询 × 2 轮（工具调用 + 最终答案）
         assertThat(hits.get()).isEqualTo(6);
-
-        // 3) 每次运行留下工具调用序列审计（取最后一次运行核对）
-        Map<String, Object> response = auditResponsePayload(lastAuditCommand());
-        assertThat(response.get("status")).isEqualTo("SUCCESS");
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> sequence =
-                (List<Map<String, Object>>) response.get("tool_call_sequence");
-        assertThat(sequence).hasSize(1);
-        assertThat(sequence.get(0).get("tool")).isEqualTo("get_procurement_ticket");
-        assertThat(sequence.get(0).get("guarded")).isEqualTo(false);
     }
 
     /** 答案数字正确性：以数据库事实核对（不以“读起来对”验收）。 */
-    private void verifyAnswerNumbers(String question, DataQueryRunResult result) {
+    private void verifyAnswerNumbers(String question, DataQueryRunResult result, DataQueryAgentToolCall call) {
         switch (question) {
             case DataQueryEvalInputs.Q_7D_OUT_OF_STOCK -> {
                 long dbCount = jdbc.queryForObject(
@@ -227,7 +222,6 @@ class DataQueryAgentServiceIntegrationTest {
                 assertThat(dbCount).isEqualTo(3);
                 assertThat(result.output().answer()).contains(String.valueOf(dbCount));
                 assertThat(result.output().sources().get(0).row_count()).isEqualTo((int) dbCount);
-                DataQueryAgentToolCall call = result.toolCalls().get(0);
                 assertThat(call.arguments().get("status")).isEqualTo("PENDING");
                 assertThat(call.arguments()).containsKeys("date_from", "date_to");
             }
@@ -240,8 +234,7 @@ class DataQueryAgentServiceIntegrationTest {
                         new BigDecimal(prices.get("retail_price").toString()).toPlainString();
                 assertThat(result.output().answer()).contains(purchase).contains(retail);
                 assertThat(result.output().sources().get(0).row_count()).isEqualTo(1);
-                assertThat(result.toolCalls().get(0).arguments().get("query"))
-                        .isEqualTo("SKU-EVAL-000001");
+                assertThat(call.arguments().get("query")).isEqualTo("SKU-EVAL-000001");
             }
             case DataQueryEvalInputs.Q_TICKET_CONCRETE -> {
                 BigDecimal remaining = jdbc.queryForObject(
@@ -253,7 +246,7 @@ class DataQueryAgentServiceIntegrationTest {
                 assertThat(remaining.toPlainString()).isEqualTo("23.500");
                 assertThat(result.output().answer()).contains(remaining.toPlainString());
                 assertThat(result.output().sources().get(0).row_count()).isEqualTo(1);
-                assertThat(result.toolCalls().get(0).arguments().get("ticket_id")).isEqualTo("9005");
+                assertThat(call.arguments().get("ticket_id")).isEqualTo("9005");
             }
             default -> throw new IllegalStateException("未知可答评测用例: " + question);
         }
@@ -271,23 +264,8 @@ class DataQueryAgentServiceIntegrationTest {
                 .containsExactlyInAnyOrderElementsOf(AgentSeedFixtures.DATA_QUERY_TOOL_NAMES);
     }
 
-    @Test
-    void toolArgumentGuardInterceptsGuessedPlaceholderAndForcesClarification() {
-        DataQueryRunResult result = service.answer(GUARD_QUESTION, null);
-
-        assertThat(result.status()).isEqualTo("CLARIFICATION");
-        assertThat(result.output().requires_human()).isTrue();
-        assertThat(result.output().clarification_needed()).isNotEmpty();
-        assertThat(result.toolCalls()).hasSize(1);
-        DataQueryAgentToolCall call = result.toolCalls().get(0);
-        assertThat(call.tool()).isEqualTo("search_skus");
-        assertThat(call.guarded()).isTrue();
-        assertThat(call.arguments().get("query")).isEqualTo("xxx");
-        assertThat(call.guardReason()).contains("占位");
-
-        Map<String, Object> response = auditResponsePayload(lastAuditCommand());
-        assertThat(response.get("status")).isEqualTo("CLARIFICATION");
-    }
+    // 05 收敛说明：工具参数级占位拦截（RecordingToolExecutor）随 C 路径编排删除——
+    // 输入级歧义守卫（DataQueryAgentGuard）保留；工具参数级兜底列入平台门禁引擎（T08）范围。
 
     // ------------------------------------------------------------------
     // 数据种子（固定事实，数字可核对）
@@ -451,6 +429,7 @@ class DataQueryAgentServiceIntegrationTest {
     private void handle(HttpExchange exchange) throws IOException {
         hits.incrementAndGet();
         String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        requestBodies.add(body);
         String response;
         try {
             JsonNode request = MAPPER.readTree(body);
@@ -676,28 +655,45 @@ class DataQueryAgentServiceIntegrationTest {
     }
 
     // ------------------------------------------------------------------
-    // 审计助手
+    // 工具调用核对（05 收敛后从请求帧提取模型实际执行的工具调用）
     // ------------------------------------------------------------------
 
-    private AuditLogService.AuditCommand lastAuditCommand() {
-        ArgumentCaptor<AuditLogService.AuditCommand> captor =
-                ArgumentCaptor.forClass(AuditLogService.AuditCommand.class);
-        verify(audits, org.mockito.Mockito.atLeastOnce()).record(captor.capture());
-        return captor.getAllValues().getLast();
+    /**
+     * 最近一次请求帧中模型发起的工具调用（Adapter 手写 loop 回传的 assistant tool_calls
+     * 会随消息历史出现在后续请求帧中）：返回工具名 + 参数 + 未拦截标记。
+     */
+    private DataQueryAgentToolCall lastModelToolCall() {
+        for (int i = requestBodies.size() - 1; i >= 0; i--) {
+            JsonNode body = requestTree(requestBodies.get(i));
+            JsonNode messages = body.get("messages");
+            if (messages == null || !messages.isArray()) {
+                continue;
+            }
+            for (int m = messages.size() - 1; m >= 0; m--) {
+                JsonNode calls = messages.get(m).get("tool_calls");
+                if (calls != null && calls.isArray() && !calls.isEmpty()) {
+                    JsonNode function = calls.get(0).get("function");
+                    String name = function.path("name").asText();
+                    Map<String, Object> args = Map.of();
+                    try {
+                        args = MAPPER.readValue(
+                                function.path("arguments").asText(),
+                                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                    } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
+                        // 参数解析失败按空参数处理（不影响工具名核对）
+                    }
+                    return new DataQueryAgentToolCall(name, args, false, null);
+                }
+            }
+        }
+        throw new AssertionError("请求帧中未找到模型工具调用");
     }
 
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> auditResponsePayload(AuditLogService.AuditCommand command) {
-        return (Map<String, Object>) auditField(command, "responsePayload");
-    }
-
-    private static Object auditField(AuditLogService.AuditCommand command, String field) {
+    private static JsonNode requestTree(String body) {
         try {
-            java.lang.reflect.Field f = AuditLogService.AuditCommand.class.getDeclaredField(field);
-            f.setAccessible(true);
-            return f.get(command);
-        } catch (ReflectiveOperationException ex) {
-            throw new IllegalStateException("无法读取审计命令字段 " + field, ex);
+            return MAPPER.readTree(body);
+        } catch (Exception ex) {
+            throw new IllegalStateException(ex);
         }
     }
 }

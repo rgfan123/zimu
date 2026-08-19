@@ -1,58 +1,41 @@
 package cn.zimu.fulfillment.agent.procurement;
 
-import cn.zimu.fulfillment.agent.AgentDefinition;
 import cn.zimu.fulfillment.agent.AgentFailureCode;
-import cn.zimu.fulfillment.agent.AgentModelMetadataRegistry;
-import cn.zimu.fulfillment.agent.AgentRegistryHolder;
 import cn.zimu.fulfillment.agent.AgentRunContext;
+import cn.zimu.fulfillment.agent.AgentRunResult;
 import cn.zimu.fulfillment.agent.AgentRuntimeFacade;
-import cn.zimu.fulfillment.agent.AgentTaskRequest;
-import cn.zimu.fulfillment.agent.AgentToolBinding;
-import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
-import cn.zimu.fulfillment.common.audit.AuditActorType;
-import cn.zimu.fulfillment.common.audit.AuditLogService;
-import cn.zimu.fulfillment.common.domain.DataScope;
-import java.util.List;
-import java.util.Map;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.stereotype.Component;
 
 /**
- * 采购比价 Agent 的服务编排（agent-decision-layer 05）：按注册表定义执行一次采购比价。
+ * 采购比价 Agent（agent-decision-layer 05；meta-agent-platform-impl 05 收敛为门面薄包装）：
+ * 按注册表定义执行一次采购比价。
  *
- * <p>与 02 票 {@link AgentRuntimeFacade} 同构：按 slug 解析 {@link AgentDefinition}、
- * enabled 判定、每次运行生成唯一 run_id、经 {@link AuditLogService} 落 AGENT 审计
- * （service=agent, operation=agent.procurement-price-agent.run），未启用/未注册显式拒绝
- * 且留审计，未配置模型 fail-closed 且留审计。输入为结构化 JSON
- * （{@link ProcurementPriceInput}），解析校验失败抛 {@code INVALID_PARAMETERS} 业务错误，
- * 不进入模型调用。
+ * <p>注册表解析 / enabled 判定 / run_id / 工具绑定 / 模型运行 / 审计 / 观测全部由
+ * {@link AgentRuntimeFacade} 承接（04 决策：权限/守卫/审计/观测留 Control Plane）；
+ * 本类只保留领域层：
+ * <ul>
+ *   <li>结构化输入解析与校验（{@link ProcurementPriceInput}，INVALID_PARAMETERS 不进入模型）；</li>
+ *   <li>输出 record 反序列化 + 策略落地（{@link ProcurementPricePolicy#enforce} 确定性归一化，
+ *       无候选/无价格/字段缺失/低置信度 → requires_human=true）；</li>
+ *   <li>业务 run-result 组装（{@link ProcurementPriceRunResult}）。</li>
+ * </ul>
  *
- * <p>建议不落任何业务表：运行结果仅返回给调用方并随 AGENT 审计留痕（responsePayload 携带
- * 可复核事实摘要），完整工具调用序列可观测性由 08 票承接。
+ * <p>建议不落任何业务表：运行结果仅返回给调用方并随门面 AGENT 审计留痕（可复核事实摘要的
+ * 完整工具调用序列可观测性在 {@code app.agent_tool_calls}，08 票承接）。
  */
+@Component
 public class ProcurementPriceAgent {
 
-    /** 注册表 slug，与 {@code ProcurementPriceAgentConfiguration} 声明一致。 */
+    /** 注册表 slug（与 V33 种子 procurement-price-agent 一致）。 */
     public static final String AGENT_SLUG = "procurement-price-agent";
 
-    private static final String DEFAULT_OPERATOR = "agent";
-    private static final String STATUS_SUCCESS = "SUCCESS";
+    private final AgentRuntimeFacade facade;
+    private final ObjectMapper mapper;
 
-    private final AgentRegistryHolder holder;
-    private final ProcurementPriceRuntime runtime;
-    private final AuditLogService audits;
-    private final AgentModelMetadataRegistry metadata;
-    private final AgentToolBindingFactory toolBindingFactory;
-
-    public ProcurementPriceAgent(
-            AgentRegistryHolder holder,
-            ProcurementPriceRuntime runtime,
-            AuditLogService audits,
-            AgentModelMetadataRegistry metadata,
-            AgentToolBindingFactory toolBindingFactory) {
-        this.holder = holder;
-        this.runtime = runtime;
-        this.audits = audits;
-        this.metadata = metadata;
-        this.toolBindingFactory = toolBindingFactory;
+    public ProcurementPriceAgent(AgentRuntimeFacade facade, ObjectMapper mapper) {
+        this.facade = facade;
+        this.mapper = mapper;
     }
 
     /**
@@ -64,121 +47,29 @@ public class ProcurementPriceAgent {
      */
     public ProcurementPriceRunResult compare(String jsonInput, AgentRunContext context) {
         ProcurementPriceInput input = ProcurementPriceInput.parse(jsonInput);
-        AgentRunContext ctx = context == null ? AgentRunContext.empty() : context;
-        String runId = AgentRuntimeFacade.newRunId();
-        AgentDefinition definition = holder.current().bySlug(AGENT_SLUG);
-        if (definition == null) {
-            recordAudit(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND.name(), 0, null);
-            return ProcurementPriceRunResult.failClosed(AgentFailureCode.AGENT_NOT_FOUND);
+        AgentRunResult result = facade.invoke(AGENT_SLUG, input.toUserInput(), context);
+        if (result.error() != null) {
+            // REJECTED / FAILED：稳定失败码（门面已留审计与观测）
+            return new ProcurementPriceRunResult(
+                    null, result.provider(), result.model(), result.promptVersion(), result.error());
         }
-        if (!definition.enabled()) {
-            recordAudit(ctx, runId, definition, AgentFailureCode.AGENT_DISABLED.name(), 0, null);
-            return ProcurementPriceRunResult.failClosed(AgentFailureCode.AGENT_DISABLED);
-        }
-        long startedNanos = System.nanoTime();
-        AgentToolBinding binding = toolBindingFactory.bind(runId, definition.toolNames());
-        ProcurementPriceRunResult result =
-                runtime.run(new AgentTaskRequest(definition.systemPrompt(), input.toUserInput(), binding));
-        long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
-        String status = result.error() == null ? STATUS_SUCCESS : result.error();
-        recordAudit(ctx, runId, definition, status, latencyMs, result);
-        return result;
-    }
-
-    private void recordAudit(
-            AgentRunContext ctx,
-            String runId,
-            AgentDefinition definition,
-            String status,
-            long latencyMs,
-            ProcurementPriceRunResult result) {
-        String slug = definition == null ? "unknown" : definition.agentSlug();
-        String promptVersion = definition == null ? "none" : definition.promptVersion();
-        AgentModelMetadataRegistry.PublicMetadata meta = result == null
-                ? AgentModelMetadataRegistry.none()
-                : metadata.publicProjection(result.provider(), result.model(), result.promptVersion());
         try {
-            audits.record(new AuditLogService.AuditCommand()
-                    .dataScope(DataScope.BUSINESS)
-                    .requestId(runId)
-                    .traceId(runId)
-                    .operator(blankToDefault(ctx.operator(), DEFAULT_OPERATOR))
-                    .actorType(AuditActorType.AGENT)
-                    .service("agent")
-                    .operation("agent." + slug + ".run")
-                    .requestPayload(Map.of(
-                            "agent_slug", slug,
-                            "run_id", runId,
-                            "thread_id", ctx.threadId(),
-                            "prompt_version", promptVersion,
-                            "model_ref", definition == null ? "none" : definition.modelRef(),
-                            "tool_names", definition == null ? List.of() : definition.toolNames()))
-                    .responsePayload(responsePayload(status, meta, promptVersion, result))
-                    .businessCode(status)
-                    .latencyMs((int) latencyMs));
-        } catch (RuntimeException ignored) {
-            // 审计失败不掩盖 Agent 运行结果与拒绝结果（与既有审计失败容忍语义一致）
+            ProcurementPriceRecommendation raw =
+                    mapper.treeToValue(result.output(), ProcurementPriceRecommendation.class);
+            return new ProcurementPriceRunResult(
+                    ProcurementPricePolicy.enforce(raw),
+                    result.provider(),
+                    result.model(),
+                    result.promptVersion(),
+                    null);
+        } catch (Exception ex) {
+            // 传输层 JsonNode 无法还原为业务 record：按输出无效收口（不把解析细节带进结果）
+            return new ProcurementPriceRunResult(
+                    null,
+                    result.provider(),
+                    result.model(),
+                    result.promptVersion(),
+                    AgentFailureCode.AGENT_OUTPUT_INVALID.name());
         }
-    }
-
-    /** 建议只进审计与可观测记录：只携带可复核事实摘要，不含任何凭据/配置。 */
-    private static Map<String, Object> responsePayload(
-            String status,
-            AgentModelMetadataRegistry.PublicMetadata meta,
-            String promptVersion,
-            ProcurementPriceRunResult result) {
-        // 顶层与嵌套均可空值，一律用 LinkedHashMap 组装，避免 Map.of/Map.ofEntries
-        // 对 null 的 NPE 在 recordAudit 的 try 内被吞掉而丢审计
-        Map<String, Object> payload = new java.util.LinkedHashMap<>();
-        payload.put("status", status);
-        payload.put("provider", meta.provider());
-        payload.put("model", meta.model());
-        payload.put("prompt_version", promptVersion);
-        Object summary = recommendationSummary(result);
-        if (summary != null) {
-            payload.put("recommendation_summary", summary);
-        }
-        return payload;
-    }
-
-    private static Object recommendationSummary(ProcurementPriceRunResult result) {
-        if (result == null || result.recommendation() == null) {
-            return null;
-        }
-        ProcurementPriceRecommendation recommendation = result.recommendation();
-        Map<String, Object> summary = new java.util.LinkedHashMap<>();
-        summary.put("target_sku", recommendation.targetSku());
-        summary.put("requested_quantity", recommendation.requestedQuantity());
-        summary.put("confidence", recommendation.confidence());
-        summary.put("requires_human", recommendation.requiresHuman());
-        summary.put("missing_fields", recommendation.missingFields());
-        summary.put("candidates", recommendation.candidates().stream()
-                .map(candidate -> candidate == null ? null : candidateSummary(candidate))
-                .toList());
-        if (recommendation.recommendation() != null) {
-            summary.put("recommendation", recommendationSummary(recommendation.recommendation()));
-        }
-        return summary;
-    }
-
-    /** 候选摘要：任何字段（provider_code/price/price_basis）为 null 时审计照常落库。 */
-    private static Map<String, Object> candidateSummary(ProcurementPriceRecommendation.Candidate candidate) {
-        Map<String, Object> entry = new java.util.LinkedHashMap<>();
-        entry.put("provider_code", candidate.providerCode());
-        entry.put("price", candidate.price());
-        entry.put("price_basis", candidate.priceBasis() == null ? null : candidate.priceBasis().name());
-        return entry;
-    }
-
-    /** 推荐摘要：provider_code/reason 可空，null 安全组装。 */
-    private static Map<String, Object> recommendationSummary(ProcurementPriceRecommendation.Recommendation recommendation) {
-        Map<String, Object> entry = new java.util.LinkedHashMap<>();
-        entry.put("provider_code", recommendation.providerCode());
-        entry.put("reason", recommendation.reason());
-        return entry;
-    }
-
-    private static String blankToDefault(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value;
     }
 }

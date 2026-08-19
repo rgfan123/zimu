@@ -10,200 +10,152 @@ import static org.mockito.Mockito.when;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.util.List;
-import java.util.Map;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 /**
- * 06 — 数据查询 Agent 服务（agent-decision-layer 06）：确定性策略门（PII 转人工 /
- * 歧义澄清 / 空输入澄清）、未配置模型 fail-closed、审计记录（run_id / thread_id /
- * 白名单 / 工具调用序列）。底层模型接缝不触碰（本类所有路径在模型调用前返回）。
+ * 06/05 — 数据查询 Agent 领域包装（agent-decision-layer 06；meta-agent-platform-impl 05
+ * 收敛为门面薄包装）：领域守卫（PII 拒绝 → REJECTED / 歧义澄清 → NEEDS_INPUT，决策 05 不进
+ * 平台链）+ 拒绝审计、输出 record 反序列化、失败码映射。模型路径经门面（mock），门面自身的
+ * 注册表拒绝/审计/观测在 {@code AgentRuntimeFacadeTest} 覆盖。
  */
 class DataQueryAgentServiceTest {
 
+    private final AgentRuntimeFacade facade = mock(AgentRuntimeFacade.class);
     private final AuditLogService audits = mock(AuditLogService.class);
-    private final AgentToolBindingFactory bindingFactory = mock(AgentToolBindingFactory.class);
+    private final ObjectMapper mapper = new ObjectMapper();
 
     private DataQueryAgentService service;
-    private AgentDefinition definition;
 
     @BeforeEach
     void setUp() {
-        definition = AgentSeedFixtures.dataQueryDefinition();
-        service = new DataQueryAgentService(
-                AgentSeedFixtures.holderOf(definition),
-                new AgentModelProperties(),
-                bindingFactory,
-                audits,
-                new AgentModelMetadataRegistry(),
-                new ObjectMapper());
+        service = new DataQueryAgentService(facade, audits, mapper);
     }
 
-    private DataQueryAgentService serviceWithRegistry(AgentRegistry registry) {
-        return new DataQueryAgentService(
-                new AgentRegistryHolder(registry),
-                new AgentModelProperties(),
-                bindingFactory,
-                audits,
-                new AgentModelMetadataRegistry(),
-                new ObjectMapper());
+    private static AgentRunResult successOutput() {
+        ObjectNode output = new ObjectMapper().createObjectNode()
+                .put("answer", "最近 7 天缺货的订单行共 3 行")
+                .put("confidence", 0.95)
+                .put("requires_human", false);
+        output.putArray("sources").addObject()
+                .put("tool", "list_procurement_tickets")
+                .put("row_count", 3);
+        output.putArray("clarification_needed");
+        return AgentRunResult.success(output, "deepseek", "deepseek-chat", "data-query-v1")
+                .withRunMetadata("run_q1", 15);
     }
 
     // ------------------------------------------------------------------
-    // 歧义澄清路径
+    // 领域守卫：NEEDS_INPUT / REJECTED（零模型调用，决策 05 不进平台链）
     // ------------------------------------------------------------------
 
     @Test
-    void blankQuestionRequiresClarificationWithoutModelCall() {
+    void blankQuestionYieldsNeedsInputWithoutModelCall() {
         DataQueryRunResult result = service.answer("   ", null);
 
         assertThat(result.error()).isNull();
-        assertThat(result.status()).isEqualTo("CLARIFICATION");
+        assertThat(result.status()).isEqualTo("NEEDS_INPUT");
         assertThat(result.output().requires_human()).isTrue();
         assertThat(result.output().clarification_needed()).isNotEmpty();
-        assertThat(result.output().sources()).isEmpty();
-        assertThat(result.toolCalls()).isEmpty();
-        assertThat(result.output().answer()).contains("澄清");
+        verify(facade, never()).invoke(any(), any(), any());
+        assertThat(lastGuardAuditBusinessCode()).isEqualTo("NEEDS_INPUT");
     }
 
     @Test
-    void placeholderSkuQuestionRequiresClarificationAndPassesThreadId() {
+    void placeholderSkuQuestionYieldsNeedsInputAndPassesThreadId() {
         DataQueryRunResult result =
                 service.answer("SKU-xxx 的进货价和零售价是多少", AgentRunContext.of("thread-6"));
 
-        assertThat(result.status()).isEqualTo("CLARIFICATION");
+        assertThat(result.status()).isEqualTo("NEEDS_INPUT");
         assertThat(result.output().requires_human()).isTrue();
         assertThat(result.output().clarification_needed())
                 .anySatisfy(reason -> assertThat(reason).contains("SKU"));
-        assertThat(result.toolCalls()).isEmpty();
-
-        AuditLogService.AuditCommand command = lastAuditCommand();
-        assertThat(auditRequestPayload(command).get("thread_id")).isEqualTo("thread-6");
-        assertThat(auditResponsePayload(command).get("tool_call_sequence"))
-                .isEqualTo(List.of());
-    }
-
-    @Test
-    void ticketNoQuestionRequiresClarificationNotGuessing() {
-        DataQueryRunResult result = service.answer("采购工单 P-123 还差多少数量", null);
-
-        assertThat(result.status()).isEqualTo("CLARIFICATION");
-        assertThat(result.output().clarification_needed())
-                .anySatisfy(reason -> assertThat(reason).contains("ticket_id"));
-        assertThat(result.toolCalls()).isEmpty();
-    }
-
-    @Test
-    void ambiguousProviderQuestionRequiresClarification() {
-        DataQueryRunResult result = service.answer("某履约方本月共接收多少运单回执", null);
-
-        assertThat(result.status()).isEqualTo("CLARIFICATION");
-        assertThat(result.output().clarification_needed()).isNotEmpty();
-        assertThat(result.toolCalls()).isEmpty();
-        // 澄清路径同样留审计（工具调用序列为空）
-        assertThat(auditResponsePayload(lastAuditCommand()).get("tool_call_sequence"))
-                .isEqualTo(List.of());
-    }
-
-    // ------------------------------------------------------------------
-    // PII 拒绝路径
-    // ------------------------------------------------------------------
-
-    @Test
-    void piiQuestionIsRoutedToHumanWithoutModelCall() {
-        DataQueryRunResult result = service.answer("查一下客户张三的收货地址", null);
-
-        assertThat(result.status()).isEqualTo("PII_GUARDED");
-        assertThat(result.output().requires_human()).isTrue();
-        assertThat(result.output().answer()).contains("人工");
-        assertThat(result.output().clarification_needed()).isEmpty();
-        assertThat(result.toolCalls()).isEmpty();
-
-        AuditLogService.AuditCommand command = lastAuditCommand();
-        assertThat(auditResponsePayload(command).get("status")).isEqualTo("PII_GUARDED");
-        assertThat(auditField(command, "businessCode")).isEqualTo("PII_GUARDED");
-    }
-
-    // ------------------------------------------------------------------
-    // 注册表拒绝与 fail-closed
-    // ------------------------------------------------------------------
-
-    @Test
-    void unknownAgentSlugFailsClosed() {
-        DataQueryAgentService empty = serviceWithRegistry(new AgentRegistry(List.of()));
-
-        DataQueryRunResult result = empty.answer("最近 7 天有多少缺货的订单行", null);
-
-        assertThat(result.error()).isEqualTo("AGENT_NOT_FOUND");
-        assertThat(result.output()).isNull();
-        assertThat(result.status()).isEqualTo("AGENT_NOT_FOUND");
-        assertThat(auditRequestPayload(lastAuditCommand()).get("agent_slug")).isEqualTo("unknown");
-    }
-
-    @Test
-    void disabledAgentFailsClosed() {
-        AgentDefinition disabled = AgentDefinition.ofActiveV1(
-                definition.agentSlug(),
-                definition.name(),
-                definition.description(),
-                definition.systemPrompt(),
-                definition.promptVersion(),
-                definition.modelRef(),
-                false,
-                definition.toolNames());
-        DataQueryAgentService svc =
-                serviceWithRegistry(new AgentRegistry(List.of(disabled)));
-
-        DataQueryRunResult result = svc.answer("最近 7 天有多少缺货的订单行", null);
-
-        assertThat(result.error()).isEqualTo("AGENT_DISABLED");
-        assertThat(result.output()).isNull();
-    }
-
-    @Test
-    void unconfiguredModelFailsClosedWithoutConnecting() {
-        DataQueryRunResult result = service.answer("最近 7 天有多少缺货的订单行", null);
-
-        assertThat(result.error()).isEqualTo("AGENT_MODEL_NOT_CONFIGURED");
-        assertThat(result.output()).isNull();
-        assertThat(auditResponsePayload(lastAuditCommand()).get("status"))
-                .isEqualTo("AGENT_MODEL_NOT_CONFIGURED");
-        // 门面语义一致：失败路径模型三元组一律 none
-        assertThat(auditResponsePayload(lastAuditCommand()).get("model")).isEqualTo("none");
-    }
-
-    // ------------------------------------------------------------------
-    // 审计
-    // ------------------------------------------------------------------
-
-    @Test
-    void auditRecordsRunIdWhitelistAndOperation() {
-        service.answer("SKU-xxx 的进货价和零售价是多少", null);
+        assertThat(result.output().sources()).isEmpty();
+        verify(facade, never()).invoke(any(), any(), any());
 
         AuditLogService.AuditCommand command = lastAuditCommand();
         assertThat(auditField(command, "operation")).isEqualTo("agent.data-query-agent.run");
         assertThat(auditField(command, "actorType")).isEqualTo(AuditActorType.AGENT);
-        assertThat(auditField(command, "operator")).isEqualTo("agent");
-
-        Map<String, Object> request = auditRequestPayload(command);
-        assertThat((String) request.get("run_id")).startsWith("run_").hasSize(4 + 32);
-        assertThat(request.get("agent_slug")).isEqualTo("data-query-agent");
-        assertThat(request.get("prompt_version")).isEqualTo("data-query-v1");
-        assertThat(request.get("model_ref")).isEqualTo("app.agent");
-        assertThat(request.get("tool_names"))
-                .isEqualTo(AgentSeedFixtures.DATA_QUERY_TOOL_NAMES);
+        assertThat(auditRequestPayload(command).get("thread_id")).isEqualTo("thread-6");
     }
 
     @Test
-    void gatePathsProjectNoneModelMetadataIntoAudit() {
-        service.answer("查一下客户张三的收货地址", null);
+    void ticketNoQuestionYieldsNeedsInputNotGuessing() {
+        DataQueryRunResult result = service.answer("采购工单 P-123 还差多少数量", null);
 
-        Map<String, Object> response = auditResponsePayload(lastAuditCommand());
-        assertThat(response.get("model")).isEqualTo("none");
-        assertThat(response.get("provider")).isEqualTo("none");
-        assertThat(response.get("prompt_version")).isEqualTo("none");
+        assertThat(result.status()).isEqualTo("NEEDS_INPUT");
+        assertThat(result.output().clarification_needed())
+                .anySatisfy(reason -> assertThat(reason).contains("ticket_id"));
+    }
+
+    @Test
+    void ambiguousProviderQuestionYieldsNeedsInput() {
+        DataQueryRunResult result = service.answer("某履约方本月共接收多少运单回执", null);
+
+        assertThat(result.status()).isEqualTo("NEEDS_INPUT");
+        assertThat(result.output().clarification_needed()).isNotEmpty();
+    }
+
+    @Test
+    void piiQuestionIsRoutedToHumanAsRejectedWithoutModelCall() {
+        DataQueryRunResult result = service.answer("查一下客户张三的收货地址", null);
+
+        assertThat(result.status()).isEqualTo("REJECTED");
+        assertThat(result.output().requires_human()).isTrue();
+        assertThat(result.output().answer()).contains("人工");
+        assertThat(result.output().clarification_needed()).isEmpty();
+        verify(facade, never()).invoke(any(), any(), any());
+        assertThat(lastGuardAuditBusinessCode()).isEqualTo("REJECTED");
+    }
+
+    // ------------------------------------------------------------------
+    // 模型路径：经门面（mock）→ 反序列化 → 失败码映射
+    // ------------------------------------------------------------------
+
+    @Test
+    void modelPathDeserializesFacadeOutputIntoDomainRecord() {
+        when(facade.invoke(org.mockito.ArgumentMatchers.eq(DataQueryAgentService.AGENT_SLUG), any(), any())).thenReturn(successOutput());
+
+        DataQueryRunResult result = service.answer("最近 7 天有多少缺货的订单行", null);
+
+        assertThat(result.error()).isNull();
+        assertThat(result.status()).isEqualTo("SUCCESS");
+        assertThat(result.runId()).isEqualTo("run_q1");
+        assertThat(result.latencyMs()).isEqualTo(15);
+        assertThat(result.output().requires_human()).isFalse();
+        assertThat(result.output().answer()).contains("3");
+        assertThat(result.output().sources()).hasSize(1);
+    }
+
+    @Test
+    void facadeFailureCodeIsMappedThrough() {
+        when(facade.invoke(org.mockito.ArgumentMatchers.eq(DataQueryAgentService.AGENT_SLUG), any(), any()))
+                .thenReturn(AgentRunResult.failure(
+                        "deepseek", "deepseek-chat", "data-query-v1",
+                        AgentFailureCode.AGENT_MODEL_NOT_CONFIGURED)
+                        .withRunMetadata("run_x", 3));
+
+        DataQueryRunResult result = service.answer("最近 7 天有多少缺货的订单行", null);
+
+        assertThat(result.error()).isEqualTo("AGENT_MODEL_NOT_CONFIGURED");
+        assertThat(result.status()).isEqualTo("AGENT_MODEL_NOT_CONFIGURED");
+        assertThat(result.output()).isNull();
+    }
+
+    @Test
+    void facadeRejectedCodeIsMappedThrough() {
+        when(facade.invoke(org.mockito.ArgumentMatchers.eq(DataQueryAgentService.AGENT_SLUG), any(), any()))
+                .thenReturn(AgentRunResult.rejected(
+                        "deepseek", "deepseek-chat", "data-query-v1",
+                        AgentFailureCode.AGENT_DISABLED)
+                        .withRunMetadata("run_y", 0));
+
+        DataQueryRunResult result = service.answer("最近 7 天有多少缺货的订单行", null);
+
+        assertThat(result.error()).isEqualTo("AGENT_DISABLED");
+        assertThat(result.output()).isNull();
     }
 
     // ------------------------------------------------------------------
@@ -217,14 +169,13 @@ class DataQueryAgentServiceTest {
         return captor.getValue();
     }
 
-    @SuppressWarnings("unchecked")
-    private static Map<String, Object> auditRequestPayload(AuditLogService.AuditCommand command) {
-        return (Map<String, Object>) auditField(command, "requestPayload");
+    private String lastGuardAuditBusinessCode() {
+        return String.valueOf(auditField(lastAuditCommand(), "businessCode"));
     }
 
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> auditResponsePayload(AuditLogService.AuditCommand command) {
-        return (Map<String, Object>) auditField(command, "responsePayload");
+    private static java.util.Map<String, Object> auditRequestPayload(AuditLogService.AuditCommand command) {
+        return (java.util.Map<String, Object>) auditField(command, "requestPayload");
     }
 
     private static Object auditField(AuditLogService.AuditCommand command, String field) {

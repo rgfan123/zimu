@@ -102,7 +102,8 @@ public class AgentRuntimeFacade {
             String status = result.error() == null ? result.outcome().name() : result.error();
             recordAudit(ctx, runId, definition, status, latencyMs, result);
             runFinished(runId, result.error(), latencyMs, projectedModel(result));
-            return result;
+            // 控制面收口富化：回填 run_id 与实测耗时（供领域包装回填业务 run-result 观测字段）
+            return result.withRunMetadata(runId, latencyMs);
         } catch (RuntimeException ex) {
             // 绑定漂移等配置错误与运行时意外异常：留 FAILED 观测行收口后原样上抛（不吞配置错误）
             long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;

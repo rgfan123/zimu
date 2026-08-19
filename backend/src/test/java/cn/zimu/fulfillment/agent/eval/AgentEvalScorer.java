@@ -2,7 +2,10 @@ package cn.zimu.fulfillment.agent.eval;
 
 import cn.zimu.fulfillment.agent.AgentModelMetadataRegistry;
 import cn.zimu.fulfillment.agent.AgentModelProperties;
+import cn.zimu.fulfillment.agent.AgentDefinition;
 import cn.zimu.fulfillment.agent.AgentRunContext;
+import cn.zimu.fulfillment.agent.AgentRuntimeFacade;
+import cn.zimu.fulfillment.agent.LangChain4jRuntimeAdapter;
 import cn.zimu.fulfillment.agent.AgentSeedFixtures;
 import cn.zimu.fulfillment.agent.DataQueryEvalInputs;
 import cn.zimu.fulfillment.agent.AgentTaskRequest;
@@ -11,7 +14,7 @@ import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
 import cn.zimu.fulfillment.agent.DataQueryAgentService;
 import cn.zimu.fulfillment.agent.DataQueryRunResult;
 import cn.zimu.fulfillment.agent.McpToolTestSupport;
-import cn.zimu.fulfillment.agent.procurement.ProcurementPriceAgentRuntime;
+import cn.zimu.fulfillment.agent.procurement.ProcurementPriceAgent;
 import cn.zimu.fulfillment.agent.procurement.ProcurementPriceRunResult;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
@@ -77,6 +80,9 @@ public final class AgentEvalScorer {
 
     private static final String API_KEY = "sk-agent-eval-secret";
     private static final String RUN_ID = "run_" + "0".repeat(32);
+
+    /** 05 收敛后工具序列指标：canned 注册表实际被调用的工具（按问题逐轮核对） */
+    private static final AtomicReference<String> LAST_INVOKED_TOOL = new AtomicReference<>();
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** 04 票已知写工具（对照：写工具零调用不变式的反面）。 */
@@ -369,8 +375,10 @@ public final class AgentEvalScorer {
         });
         server.start();
         try {
-            ProcurementPriceAgentRuntime runtime =
-                    new ProcurementPriceAgentRuntime(properties(server.getAddress().getPort()));
+            // 05 收敛：评测走门面（A 路径）——门面 + stub Adapter + canned 注册表，经领域包装执行
+            AgentRuntimeFacade facade = facadeWithStub(
+                    server.getAddress().getPort(), AgentSeedFixtures.procurementDefinition());
+            ProcurementPriceAgent agent = new ProcurementPriceAgent(facade, MAPPER);
             int schemaValid = 0;
             int schemaRejected = 0;
             int requiresHumanExpected = 0;
@@ -382,8 +390,8 @@ public final class AgentEvalScorer {
                 hits.set(0);
                 currentFinalAnswer.set(AgentEvalStubData.procurementModelOutput(evalCase.input()));
                 long start = System.nanoTime();
-                ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                        "你是采购比价 Agent。", evalCase.input(), AgentToolBinding.empty(RUN_ID)));
+                ProcurementPriceRunResult result =
+                        agent.compare(evalCase.input(), AgentRunContext.of("eval-db"));
                 latencySum += (System.nanoTime() - start) / 1_000_000;
                 frames += hits.get();
                 JsonNode expected = evalCase.expected();
@@ -455,14 +463,11 @@ public final class AgentEvalScorer {
         });
         server.start();
         try {
-            DataQueryAgentService service = new DataQueryAgentService(
-                    AgentSeedFixtures.holderOf(AgentSeedFixtures.dataQueryDefinition()),
-                    properties(server.getAddress().getPort()),
-                    new AgentToolBindingFactory(
-                            miniRegistry(), new McpAgentIdentity("eval-agent"), MAPPER),
-                    Mockito.mock(AuditLogService.class),
-                    new AgentModelMetadataRegistry(),
-                    MAPPER);
+            // 05 收敛：评测走门面（A 路径）——门面 + stub Adapter + canned 注册表，经领域包装执行
+            AgentRuntimeFacade facade = facadeWithStub(
+                    server.getAddress().getPort(), AgentSeedFixtures.dataQueryDefinition());
+            DataQueryAgentService service =
+                    new DataQueryAgentService(facade, Mockito.mock(AuditLogService.class), MAPPER);
 
             int gatePaths = 0;
             int gateCaught = 0;
@@ -474,6 +479,7 @@ public final class AgentEvalScorer {
             for (AgentEvalCase evalCase : cases) {
                 String question = evalCase.input();
                 JsonNode expected = evalCase.expected();
+                LAST_INVOKED_TOOL.set(null);
                 DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-db"));
                 if (expected.has("tool_sequence")) {
                     answerable++;
@@ -481,8 +487,10 @@ public final class AgentEvalScorer {
                     List<String> expectedTools = MAPPER.convertValue(
                             expected.get("tool_sequence"),
                             MAPPER.getTypeFactory().constructCollectionType(List.class, String.class));
-                    if (result.toolCalls().size() == 1
-                            && expectedTools.equals(List.of(result.toolCalls().get(0).tool()))) {
+                    // 05 收敛后工具调用序列在 app.agent_tool_calls（08 观测）——
+                    // 跑分器以 canned 注册表实际被调用的工具核对选择正确率
+                    if (LAST_INVOKED_TOOL.get() != null
+                            && expectedTools.equals(List.of(LAST_INVOKED_TOOL.get()))) {
                         toolCorrect++;
                     }
                     if (answerNumbersMatch(question, result.output() == null ? null : result.output().answer())) {
@@ -721,9 +729,26 @@ public final class AgentEvalScorer {
         List<McpTool> tools = new ArrayList<>();
         for (String name : AgentSeedFixtures.DATA_QUERY_TOOL_NAMES) {
             tools.add(McpToolTestSupport.tool(
-                    name, "只读工具 " + name, Map.of(), List.of(), (context, args) -> canned(name)));
+                    name, "只读工具 " + name, Map.of(), List.of(), (context, args) -> {
+                        LAST_INVOKED_TOOL.set(name);
+                        return canned(name);
+                    }));
         }
         return McpToolTestSupport.registry(tools.toArray(new McpTool[0]));
+    }
+
+    /**
+     * 门面 + stub Adapter + canned 注册表（05 收敛后评测的统一运行路径）：注册表/绑定/审计/
+     * 观测由门面承接，模型为本地 stub，工具为 canned 只读事实。领域包装（采购/数据查询）经此门面执行。
+     */
+    private static AgentRuntimeFacade facadeWithStub(int port, AgentDefinition definition) {
+        return new AgentRuntimeFacade(
+                AgentSeedFixtures.holderOf(definition),
+                new LangChain4jRuntimeAdapter(properties(port)),
+                Mockito.mock(AuditLogService.class),
+                new AgentModelMetadataRegistry(),
+                new AgentToolBindingFactory(
+                        miniRegistry(), new McpAgentIdentity("eval-agent"), MAPPER));
     }
 
     private static JsonNode canned(String name) {

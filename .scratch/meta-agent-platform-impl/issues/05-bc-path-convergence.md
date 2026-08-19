@@ -4,7 +4,8 @@
 
 **Blocked by:** 04 — Runtime Adapter 骨架 + 通用门面（设计源：meta-agent-platform 票 04、05）。
 
-**Status:** ready-for-agent
+**Status:** claimed
+**Claimed by:** zed-agent (2026-08-19)
 
 - [ ] 采购/数据查询全套测试绿；无专属 gateway 类残留（含自建 OpenAI 通道删除）
 - [ ] 输入解析两种形态（结构化 json / 自然语言）在定义驱动下正确路由

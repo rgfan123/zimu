@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import cn.zimu.fulfillment.agent.AgentSeedFixtures;
 import cn.zimu.fulfillment.agent.AgentTestcontainersBase;
-import cn.zimu.fulfillment.agent.procurement.ProcurementPriceAgentRuntime;
 import cn.zimu.fulfillment.agent.procurement.ProcurementPricePolicy;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -112,7 +111,7 @@ class AgentEvalBaselineTest extends AgentTestcontainersBase {
         assertThat(metrics.procurement().evalSetVersion()).isEqualTo("procurement-eval-v1");
         assertThat(metrics.dataQuery().evalSetVersion()).isEqualTo("data-query-eval-v1");
         // 提示词版本：运行时与夹具钉死
-        assertThat(ProcurementPriceAgentRuntime.PROMPT_VERSION).isEqualTo("agent-foundation-v1");
+        assertThat(AgentSeedFixtures.procurementDefinition().promptVersion()).isEqualTo("procurement-price-v1");
         assertThat(AgentSeedFixtures.dataQueryDefinition().promptVersion()).isEqualTo("data-query-v1");
     }
 
