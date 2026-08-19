@@ -13,10 +13,13 @@ RUN --mount=type=cache,target=/root/.m2 \
 
 FROM eclipse-temurin:21-jre-alpine
 
-RUN addgroup -S app \
+# 三平台订单刷新通道（platform-pull）：容器内直接执行拉取脚本（python3 + requests）。
+RUN apk add --no-cache python3 py3-requests \
+    && addgroup -S app \
     && adduser -S -G app app \
     && mkdir -p /var/lib/zimu-fulfillment/files \
-    && chown -R app:app /var/lib/zimu-fulfillment
+    && mkdir -p /app/platform-pull-work \
+    && chown -R app:app /var/lib/zimu-fulfillment /app/platform-pull-work
 WORKDIR /app
 COPY --from=build /workspace/backend/target/fulfillment-hub-0.1.0-SNAPSHOT.jar app.jar
 USER app

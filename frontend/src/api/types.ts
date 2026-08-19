@@ -741,6 +741,26 @@ export interface TrackingBatchRow {
 
 export type RawRowStatus = 'RECEIVED' | 'ACCEPTED' | 'NEED_REVIEW' | 'REJECTED';
 
+/** 三平台订单刷新结果（POST /api/v1/platform-orders/refresh）。 */
+export interface PlatformOrderRefreshResult {
+  channels: Array<{
+    channel: SourceChannel;
+    status: 'OK' | 'FAILED' | 'SKIPPED';
+    message?: string;
+    /** 已生成导入批次（彩食鲜/飞象） */
+    batch_no?: string;
+    batch_id?: string;
+    row_counts?: ImportRowCounts;
+    /** 聚福宝 JSON 直连拉取订单数（缺收货人字段未导入） */
+    order_count?: number;
+    file_name?: string;
+    script_output?: string;
+    latency_ms?: number;
+  }>;
+  date_begin?: string;
+  date_end?: string;
+}
+
 /** 来源文件原始行血缘；raw_cells 仅由展示层白名单取值，不得整体渲染。 */
 export interface RawImportRow {
   id: string;

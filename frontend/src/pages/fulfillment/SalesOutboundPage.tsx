@@ -6,12 +6,12 @@
 
 import { useMemo, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, Upload, message } from 'antd';
-import { DownloadOutlined, FileExcelOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
+import { CloudSyncOutlined, DownloadOutlined, FileExcelOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import { errorMessage } from '@/api/client';
-import { fileOperationsApi, fulfillmentExportsApi, providersApi } from '@/api/endpoints';
-import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, ImportBatch, TrackingImportBatch } from '@/api/types';
+import { fileOperationsApi, fulfillmentExportsApi, platformOrdersApi, providersApi } from '@/api/endpoints';
+import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, ImportBatch, PlatformOrderRefreshResult, TrackingImportBatch } from '@/api/types';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
@@ -50,6 +50,8 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const [confirmTotal, setConfirmTotal] = useState(0);
   const [confirmRowsLoading, setConfirmRowsLoading] = useState(false);
   const [confirmRowsError, setConfirmRowsError] = useState<unknown>(null);
+  const [pulling, setPulling] = useState(false);
+  const [pullResult, setPullResult] = useState<PlatformOrderRefreshResult | null>(null);
 
   const loadConfirmRows = async (batch: ImportBatch) => {
     const statuses = [
@@ -149,6 +151,27 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     ? `待复核 ${result.row_counts.need_review} 行、拒绝 ${result.row_counts.rejected} 行，请先处理后再确认`
     : '';
 
+  /** 一键刷新三平台（彩食鲜/聚福宝/飞象）订单数据：拉取脚本产物自动上传为导入批次。 */
+  const refreshPlatforms = async () => {
+    setPulling(true);
+    setPullResult(null);
+    try {
+      const outcome = await platformOrdersApi.refresh();
+      setPullResult(outcome);
+      const imported = outcome.channels.filter((c) => c.batch_no);
+      if (imported.length > 0) {
+        message.success(`三平台刷新完成：${imported.map((c) => `${CHANNEL_LABELS[c.channel]} ${c.batch_no}`).join('、')}`);
+      } else {
+        message.info('三平台刷新完成，未生成新导入批次（请查看各渠道结果）');
+      }
+      onCompleted();
+    } catch (error) {
+      message.error(errorMessage(error));
+    } finally {
+      setPulling(false);
+    }
+  };
+
   return (
     <Card
       title={<Space><FileExcelOutlined /><span>来源订单导入</span></Space>}
@@ -158,6 +181,37 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
         <Typography.Text type="secondary">
           上传彩食鲜、聚福宝或飞象的待发货订单文件。商品编号资料不属于订单模板，请前往主数据 → SKU 映射维护。
         </Typography.Text>
+        <Space wrap>
+          <Button icon={<CloudSyncOutlined />} loading={pulling} onClick={refreshPlatforms}>
+            刷新三平台订单
+          </Button>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            一键拉取彩食鲜、聚福宝、飞象最新待发货订单并自动生成导入批次（聚福宝缺收货人字段，仅拉取不导入）。
+          </Typography.Text>
+        </Space>
+        {pullResult ? (
+          <Alert
+            type={pullResult.channels.some((c) => c.status === 'FAILED') ? 'warning' : 'success'}
+            showIcon
+            closable
+            onClose={() => setPullResult(null)}
+            message={`三平台订单刷新完成（${pullResult.date_begin ?? ''} ~ ${pullResult.date_end ?? ''}）`}
+            description={(
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                {pullResult.channels.map((c) => (
+                  <Typography.Text key={c.channel} style={{ display: 'block' }}>
+                    {CHANNEL_LABELS[c.channel] ?? c.channel}：
+                    {c.status === 'OK' && c.batch_no
+                      ? `批次 ${c.batch_no} · 已接收 ${c.row_counts?.accepted ?? 0} 行 / 待复核 ${c.row_counts?.need_review ?? 0} / 拒绝 ${c.row_counts?.rejected ?? 0}`
+                      : c.status === 'OK' && c.order_count != null
+                        ? `已拉取 ${c.order_count} 单（${c.message ?? ''}）`
+                        : c.message ?? (c.status === 'SKIPPED' ? '已跳过' : '失败')}
+                  </Typography.Text>
+                ))}
+              </Space>
+            )}
+          />
+        ) : null}
         <Space wrap>
           <Upload
             accept=".xlsx,.csv"

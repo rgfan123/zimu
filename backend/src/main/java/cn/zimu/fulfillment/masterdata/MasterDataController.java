@@ -102,7 +102,10 @@ public class MasterDataController {
 
     @GetMapping("/skus") public PageResponse<MasterDataRecord> skus(@RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(200) int size,
-            @RequestParam(name = "provider_id", required = false) String providerId) { return service.skus(page, size, providerId); }
+            @RequestParam(name = "provider_id", required = false) String providerId,
+            @RequestParam(name = "query", required = false) String query) {
+        return service.skus(page, size, providerId, query);
+    }
     @GetMapping("/skus/{id}") public MasterDataRecord sku(@PathVariable String id) { return service.sku(id(id)); }
     @PostMapping("/skus") public ResponseEntity<?> createSku(@Valid @RequestBody SkuWrite body,
             @RequestHeader("Idempotency-Key") String key, @RequestHeader("X-Operator") String operator) {

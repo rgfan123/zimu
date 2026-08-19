@@ -31,8 +31,7 @@ import type {
   ImportBatch,
   InventoryDetailsResponse,
   InventoryOverviewResponse,
-  JdQueryResult,
-  JdClientStatus,
+  JdQueryResult,  JdClientStatus,
   JdPiecesCandidate,
   JdPiecesImportResult,
   JdReceiverAddressCandidate,
@@ -52,6 +51,7 @@ import type {
   ProcurementTicketPage,
   ProviderSkuReferencePreview,
   ProductMetric,
+  PlatformOrderRefreshResult,
   RawImportRowPage,
   RawRowStatus,
   ReviewCasePage,
@@ -67,6 +67,7 @@ import type {
   ShipmentPage,
   SkuPage,
   SkuRecord,
+  SourceChannel,
   SourceReturnExport,
   TrackingImportBatch,
 } from './types';
@@ -96,6 +97,8 @@ export interface MasterDataListQuery {
   size?: number;
   provider_id?: string;
   source_channel?: string;
+  /** SKU 档案列表：按 SKU 编码 / 商品名称模糊搜索。 */
+  query?: string;
 }
 
 export interface CustomerListQuery extends PageQuery {
@@ -525,6 +528,17 @@ async function downloadFile(path: string, fallbackName: string): Promise<void> {
   anchor.click();
   URL.revokeObjectURL(url);
 }
+
+/** 三平台（彩食鲜/聚福宝/飞象）订单数据一键刷新（人工触发）。 */
+export const platformOrdersApi = {
+  /** POST /api/v1/platform-orders/refresh —— 拉取并自动上传为导入批次。 */
+  refresh: (body?: { channels?: SourceChannel[]; date_begin?: string; date_end?: string }) =>
+    apiRequest<PlatformOrderRefreshResult>('/api/v1/platform-orders/refresh', {
+      method: 'POST',
+      body: body ?? {},
+      headers: writeHeaders(),
+    }),
+};
 
 /** 来源订单、履约回传与来源回填组成同一条文件作业闭环。 */
 export const fileOperationsApi = {

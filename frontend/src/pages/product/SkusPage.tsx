@@ -3,7 +3,7 @@
  */
 
 import { useState } from 'react';
-import { Button, Select, Space, Tag, Typography } from 'antd';
+import { Button, Input, Select, Space, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import MasterDataCrud, { attr, type CrudField } from '@/pages/shared/MasterDataCrud';
@@ -23,6 +23,7 @@ import { leadTimeLabel, listingPeriodLabel, marginLabel } from './productArchive
 
 export default function SkusPage() {
   const [providerId, setProviderId] = useState<string | undefined>();
+  const [searchQuery, setSearchQuery] = useState<string | undefined>();
   const providerOptions = useProviderOptions();
   const productOptions = useProductOptions();
   const categoryOptions = useCategoryOptions();
@@ -135,9 +136,15 @@ export default function SkusPage() {
     <MasterDataCrud
       filters={
         <Space wrap>
+          <Input.Search
+            style={{ width: 260 }}
+            placeholder="搜索 SKU 编码 / 商品名称"
+            allowClear
+            onSearch={(value) => setSearchQuery(value.trim() || undefined)}
+          />
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>履约方</Typography.Text>
           <Select
-            style={{ width: 220 }}
+            style={{ width: 200 }}
             placeholder="全部履约方"
             allowClear
             value={providerId}
@@ -151,8 +158,8 @@ export default function SkusPage() {
           <Button size="small"><Link to="/product/categories">管理品类</Link></Button>
         </Space>
       }
-      extraQuery={{ provider_id: providerId }}
-      fetchPage={(q) => skusApi.list({ ...q, provider_id: providerId })}
+      extraQuery={{ provider_id: providerId, query: searchQuery }}
+      fetchPage={(q) => skusApi.list({ ...q, provider_id: providerId, query: searchQuery })}
       create={(v) => skusApi.create(buildSkuCreateBody(v))}
       update={(id, v) => skusApi.update(id, buildSkuUpdateBody(v))}
       columns={columns}
