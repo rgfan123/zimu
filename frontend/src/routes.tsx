@@ -38,6 +38,7 @@ import {
   JdSerialQueryPage,
   JdStockQueryPage,
   JdWarehousePage,
+  OutboundReconPage,
   SalesOutboundPage,
   ShipmentsPage,
 } from '@/pages/fulfillment';
@@ -69,6 +70,7 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/procurement/tickets': <ProcurementTicketsPage />,
   '/fulfillment/sales-outbound': <SalesOutboundPage />,
   '/fulfillment/shipments': <ShipmentsPage />,
+  '/fulfillment/outbound-recon': <OutboundReconPage />,
   '/orders': <OrdersPage />,
   '/orders/pending': <PendingOrdersPage />,
   '/orders/exceptions': <ExceptionOrdersPage />,

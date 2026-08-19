@@ -285,6 +285,8 @@ public interface JDWarehouseService {
 
 管理端暴露四个只读作业接缝：`GET /api/v1/jd-warehouse/owners`、`GET /api/v1/jd-warehouse/warehouses`、`GET /api/v1/jd-warehouse/outbound-orders/{erp_delivery_no}`、`GET /api/v1/jd-warehouse/tracking`。`owners` 允许在只有 PIN 时发现已授权事业部；负责人、电话、邮箱和地址与出库单收发件信息一样在 HTTP 边界移除。Shipment 页面另有唯一受控建单入口 `POST /api/v1/shipments/{shipment_id}/jd-so-order`；它不调用通用 `jd-write/order/so-create`，且会重新执行授权、幂等、SKU/数量/库存门禁。取消出库仍不得由页面直接调用。真实客户端配置统一从 `JD_LOP_*` 环境变量映射到 `app.jd.*`，密钥不得进入数据库或 API 响应。
 
+出库信息内外事实并排（Ticket 01）暴露 `GET /api/v1/outbound-recon`：输入系统出库单号 / 京东单号 / 订单号，收敛到同一笔出库后把内部事实与 `querySoOrder` 返回按语义对齐，逐字段给差异状态；京东侧失败/超时与无记录分别用 `jd.status=UNAVAILABLE` / `NOT_FOUND` 表达，内部事实照常返回。每次查询写审计（`outbound.recon.query`），京东收件人 PII 只在响应中保留脱敏姓名。
+
 ### 6.2 三平台 Connector
 
 ```java

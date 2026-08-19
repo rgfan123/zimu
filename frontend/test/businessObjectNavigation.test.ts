@@ -20,7 +20,7 @@ function findNavigationNode(routes: readonly NavigationNode[], path: string): Na
   return undefined;
 }
 
-test('production navigation keeps the workbench limited to six daily operations', () => {
+test('production navigation lists daily workbench operations including outbound recon', () => {
   const workbench = findNavigationNode(appNavigation, '/workbench');
 
   assert.deepEqual(
@@ -32,6 +32,7 @@ test('production navigation keeps the workbench limited to six daily operations'
       { path: '/procurement/tickets', label: '采购协同' },
       { path: '/fulfillment/sales-outbound', label: '文件作业' },
       { path: '/fulfillment/shipments', label: '发货记录' },
+      { path: '/fulfillment/outbound-recon', label: '出库信息对账' },
     ],
   );
 });

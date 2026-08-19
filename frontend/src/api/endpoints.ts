@@ -45,6 +45,8 @@ import type {
   JdReceiverAddressCandidate,
   MasterDataPage,
   MasterDataRecord,
+  OutboundReconQueryType,
+  OutboundReconView,
   ProductImageUploadResult,
   OrderDetail,
   OrderShipment,
@@ -677,6 +679,14 @@ export const jdWarehouseApi = {
     apiRequest<JdQueryResult>(`/api/v1/jd-warehouse/outbound-orders/${encodeURIComponent(erpDeliveryNo)}`),
   tracking: (query: { waybill_no?: string; warehouse_order_no?: string }) =>
     apiRequest<JdQueryResult>('/api/v1/jd-warehouse/tracking', { params: query }),
+};
+
+// ---------- 出库信息内外事实并排（Ticket 01） ----------
+
+export const outboundReconApi = {
+  /** GET /api/v1/outbound-recon —— 系统出库单号 / 京东单号 / 订单号收敛到同一笔出库并排对照。 */
+  query: (query: { query_type: OutboundReconQueryType; query_value: string }) =>
+    apiRequest<OutboundReconView>('/api/v1/outbound-recon', { params: query }),
 };
 
 // ---------- 系统（Connector / Audit Log） ----------

@@ -1058,6 +1058,59 @@ export interface JdClientStatus {
   live_ready: boolean;
 }
 
+// ---------- 出库信息内外事实并排（GET /api/v1/outbound-recon） ----------
+
+export type OutboundReconQueryType = 'OUTBOUND_ORDER_NO' | 'JD_DELIVERY_NO' | 'ORDER_NO';
+
+/** 京东侧查询结果状态：OK 已返回；NOT_FOUND 京东没有这笔；UNAVAILABLE 查询失败/超时未取到。 */
+export type OutboundReconJdStatus = 'OK' | 'NOT_FOUND' | 'UNAVAILABLE';
+
+/** 逐字段差异状态。JD_UNAVAILABLE / JD_NOT_FOUND 表示整侧未取到/无记录，不是字段为空。 */
+export type OutboundReconRowState =
+  | 'MATCH'
+  | 'MISMATCH'
+  | 'INTERNAL_ONLY'
+  | 'JD_ONLY'
+  | 'EMPTY'
+  | 'JD_UNAVAILABLE'
+  | 'JD_NOT_FOUND';
+
+export interface OutboundReconComparisonRow {
+  key: string;
+  label: string;
+  internal_value: unknown;
+  jd_value: unknown;
+  internal_present: boolean;
+  jd_present: boolean;
+  state: OutboundReconRowState;
+  note: string | null;
+}
+
+export interface OutboundReconInternalSide {
+  summary: Record<string, unknown>;
+  items: Array<Record<string, unknown>>;
+  tracking: Record<string, unknown> | null;
+}
+
+export interface OutboundReconJdSide {
+  status: OutboundReconJdStatus;
+  business_code: string | null;
+  message: string | null;
+  client_mode: 'MOCK' | 'REAL';
+  summary: Record<string, unknown> | null;
+  items: Array<Record<string, unknown>>;
+}
+
+export interface OutboundReconView {
+  query: { type: OutboundReconQueryType; value: string };
+  audit: { request_id: string | null; operator: string };
+  internal: OutboundReconInternalSide;
+  jd: OutboundReconJdSide;
+  comparisons: OutboundReconComparisonRow[];
+  matched_count: number;
+  mismatch_count: number;
+}
+
 export interface AuditLog {
   id: string;
   data_scope: 'BUSINESS' | 'DEMO';

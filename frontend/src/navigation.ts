@@ -26,6 +26,7 @@ export const appNavigation = [
       { path: '/procurement/tickets', label: '采购协同' },
       { path: '/fulfillment/sales-outbound', label: '文件作业' },
       { path: '/fulfillment/shipments', label: '发货记录' },
+      { path: '/fulfillment/outbound-recon', label: '出库信息对账' },
     ],
   },
   {

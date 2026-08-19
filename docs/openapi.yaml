@@ -2235,6 +2235,34 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/JdQueryResult' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/outbound-recon:
+    get:
+      summary: Outbound internal-vs-JD fact reconciliation
+      tags: [Fulfillment]
+      operationId: queryOutboundRecon
+      description: >-
+        Side-by-side internal and JD facts for one outbound (Shipment). The query converges through
+        system outbound order no / JD delivery no / order no onto the same outbound; internal facts
+        always return, while JD status is OK / NOT_FOUND / UNAVAILABLE so that "not fetched" or
+        "no record" is never rendered as an empty value. Each query is audited (outbound.recon.query).
+      parameters:
+        - name: query_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [OUTBOUND_ORDER_NO, JD_DELIVERY_NO, ORDER_NO]
+        - name: query_value
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Aligned internal and JD facts with per-field diff states
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OutboundReconView' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/admin/message-pipeline/summary:
     get:
       tags: [Operations]
@@ -4302,6 +4330,61 @@ components:
         request_id: { type: string, nullable: true }
         data:
           description: SDK response data normalized to JSON; outbound-order responses exclude receiver/customer personal data.
+    OutboundReconView:
+      type: object
+      required: [query, audit, internal, jd, comparisons, matched_count, mismatch_count]
+      properties:
+        query:
+          type: object
+          required: [type, value]
+          properties:
+            type: { type: string, enum: [OUTBOUND_ORDER_NO, JD_DELIVERY_NO, ORDER_NO] }
+            value: { type: string }
+        audit:
+          type: object
+          required: [request_id, operator]
+          properties:
+            request_id: { type: string, nullable: true }
+            operator: { type: string }
+        internal:
+          type: object
+          required: [summary, items, tracking]
+          properties:
+            summary: { type: object, additionalProperties: true }
+            items:
+              type: array
+              items: { type: object, additionalProperties: true }
+            tracking: { type: object, nullable: true, additionalProperties: true }
+        jd:
+          type: object
+          required: [status, business_code, message, client_mode, summary, items]
+          properties:
+            status: { type: string, enum: [OK, NOT_FOUND, UNAVAILABLE] }
+            business_code: { type: string, nullable: true }
+            message: { type: string, nullable: true }
+            client_mode: { type: string, enum: [MOCK, REAL] }
+            summary: { type: object, nullable: true, additionalProperties: true }
+            items:
+              type: array
+              items: { type: object, additionalProperties: true }
+        comparisons:
+          type: array
+          items:
+            type: object
+            required: [key, label, internal_value, jd_value, internal_present, jd_present, state]
+            properties:
+              key: { type: string }
+              label: { type: string }
+              internal_value: { nullable: true }
+              jd_value: { nullable: true }
+              internal_present: { type: boolean }
+              jd_present: { type: boolean }
+              state:
+                type: string
+                enum: [MATCH, MISMATCH, INTERNAL_ONLY, JD_ONLY, EMPTY, JD_UNAVAILABLE, JD_NOT_FOUND]
+              note: { type: string, nullable: true }
+        matched_count: { type: integer }
+        mismatch_count: { type: integer }
     JdClientStatus:
       type: object
       required: [client_mode, credentials_configured, tenant_configured, live_ready]
