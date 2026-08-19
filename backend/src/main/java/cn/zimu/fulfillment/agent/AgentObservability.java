@@ -34,9 +34,26 @@ public interface AgentObservability {
     /**
      * 运行收口事件。{@code errorType} 为 null 表示成功（status=SUCCESS）；
      * 非 null 表示失败（status=FAILED，error_type=errorType，只取稳定枚举）。
-     * {@code model} 为服务端 allowlist 投影后的模型名（null/空白则保留 Start 时值）。
+     * {@code model}/{@code provider}/{@code promptVersion} 为服务端 allowlist 投影后的
+     * 实际运行三元组；{@code intent} 为归一化意图（04 差异⑦：agent_runs 已含
+     * intent/provider 列，替代意图桥每次运行额外落一条重复 AGENT 审计的通道）。
+     * model/promptVersion 为 null/空白时保留 Start 时值；provider/intent 无 Start 值，
+     * null 即不落（非意图 Agent 的调用方用 {@link #of} 便捷工厂即可）。
      */
-    record Finish(String runId, String errorType, long latencyMs, String model) {}
+    record Finish(
+            String runId,
+            String errorType,
+            long latencyMs,
+            String model,
+            String provider,
+            String intent,
+            String promptVersion) {
+
+        /** 通用路径便捷工厂：provider/intent/promptVersion 不落（null），保留 Start 时值。 */
+        static Finish of(String runId, String errorType, long latencyMs, String model) {
+            return new Finish(runId, errorType, latencyMs, model, null, null, null);
+        }
+    }
 
     /** 一次工具调用的脱敏摘要（args/result 均已脱敏与截断）。 */
     record ToolCall(

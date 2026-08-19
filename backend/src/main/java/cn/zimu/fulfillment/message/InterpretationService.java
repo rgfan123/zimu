@@ -95,8 +95,6 @@ public class InterpretationService {
         } catch (RuntimeException ex) {
             intentRecognitionBridge.runFinished(
                     agentRunId,
-                    threadId,
-                    task.submissionId(),
                     IntentRecognitionRunMetadata.failed(InterpretationFailureCode.MODEL_CALL_FAILED.name()),
                     elapsedMillis(startedNanos));
             throw ex;
@@ -104,8 +102,6 @@ public class InterpretationService {
         String errorCode = InterpretationFailureCode.normalize(result.error(), result.structuredOutput());
         intentRecognitionBridge.runFinished(
                 agentRunId,
-                threadId,
-                task.submissionId(),
                 new IntentRecognitionRunMetadata(
                         result.provider(),
                         result.model(),

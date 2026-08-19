@@ -2,7 +2,6 @@ package cn.zimu.fulfillment.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.InterpretationInput;
@@ -34,9 +33,9 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * 07 — 意图识别 Agent 启停验收（agent-decision-layer 07，Testcontainers）：注册表中
+ * 07 — 意图识别 Agent 启停验收（agent-decision-layer 07，T06 适配，Testcontainers）：注册表中
  * intent-recognition 被停用（enabled=false）时，既有消息解释任务照常执行并持久化
- * MessageInterpretation，但 Agent 观测（agent_runs）与桥审计零写入——启停只影响观测/
+ * MessageInterpretation，但 Agent 观测（agent_runs）零写入——启停只影响观测/
  * 注册视图，不影响既有消息管线执行。
  */
 @Testcontainers
@@ -88,9 +87,6 @@ class IntentRecognitionBridgeDisabledIntegrationTest {
     private MessageInterpretationRepository interpretations;
 
     @Autowired
-    private AuditLogRepository audits;
-
-    @Autowired
     private JdbcTemplate jdbc;
 
     @Autowired
@@ -139,14 +135,10 @@ class IntentRecognitionBridgeDisabledIntegrationTest {
         assertThat(persisted).singleElement().satisfies(item ->
                 assertThat(item.getIntent()).isEqualTo(MessageIntent.CUSTOMER_ORDER));
 
-        // 停用 Agent：零观测、零桥审计
+        // 停用 Agent：零观测（重复审计通道已删，无桥审计可查）
         assertThat(jdbc.queryForObject(
                         "SELECT count(*) FROM app.agent_runs WHERE agent_slug = 'intent-recognition'",
                         Long.class))
-                .isZero();
-        assertThat(audits.findAll().stream()
-                        .filter(log -> "agent.intent-recognition.run".equals(log.getOperation()))
-                        .count())
                 .isZero();
     }
 }

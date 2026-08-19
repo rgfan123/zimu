@@ -151,7 +151,7 @@ public class AgentRuntimeFacade {
     private void runFinished(String runId, String errorType, long latencyMs, String projectedModel) {
         try {
             observability.runFinished(
-                    new AgentObservability.Finish(runId, errorType, latencyMs, projectedModel));
+                    AgentObservability.Finish.of(runId, errorType, latencyMs, projectedModel));
         } catch (RuntimeException ignored) {
             // 观测失败不掩盖运行（与既有审计失败容忍语义一致）
         }
