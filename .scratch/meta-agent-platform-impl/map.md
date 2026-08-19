@@ -43,7 +43,7 @@ T01 →（T02 ‖ T03 并行）→（T04 → T05 → T06）‖（T07 → T08）�
 | 05 | B/C 路径收敛（采购比价/数据查询） | 04 | resolved |
 | 06 | D 路径意图桥适配（GitHub #7） | 05 | resolved |
 | 07 | MCP 权限隔离（读写元数据 + 调用期复核 + stdio 只读）（GitHub #8） | 02 | resolved |
-| 08 | 门禁引擎 + 运行期 PII 守卫 | 07 | open |
+| 08 | 门禁引擎 + 运行期 PII 守卫（GitHub #9） | 07 | resolved |
 | 09 | QUALITY 链路：promptfoo 执行器 + 异步评测 | 03、05 | open |
 | 10 | Meta-Agent 工具面（list_agent_tools + 定义写工具） | 02、08 | open |
 | 11 | 异步任务基建 + 定义域写端点（202/confirm/reject/set-enabled/rollback） | 03、05、08 | open |
