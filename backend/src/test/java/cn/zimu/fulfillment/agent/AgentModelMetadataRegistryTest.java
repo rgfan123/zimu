@@ -36,7 +36,10 @@ class AgentModelMetadataRegistryTest {
     }
 
     private static AgentRunResult result(String provider, String model, String prompt, String error) {
-        return new AgentRunResult(null, provider, model, prompt, error);
+        if (error != null) {
+            return AgentRunResult.failure(provider, model, prompt, AgentFailureCode.AGENT_MODEL_CALL_FAILED);
+        }
+        return AgentRunResult.success(null, provider, model, prompt);
     }
 
     @Test

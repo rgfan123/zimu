@@ -16,6 +16,7 @@ import cn.zimu.fulfillment.mcp.McpTool;
 import cn.zimu.fulfillment.mcp.McpToolRegistry;
 import cn.zimu.fulfillment.mcp.McpWriteTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.List;
 import java.util.Map;
@@ -92,9 +93,12 @@ class AgentRuntimeFacadeObservabilityTest {
                 (context, args) -> new ObjectMapper().createObjectNode().put("ok", true));
     }
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private static AgentRunResult success() {
-        return new AgentRunResult(
-                new AgentStructuredOutput("建议", "推理"), "deepseek", "deepseek-chat", "v1", null);
+        return AgentRunResult.success(
+                MAPPER.createObjectNode().put("summary", "建议").put("reasoning", "推理"),
+                "deepseek", "deepseek-chat", "v1");
     }
 
     @Test
@@ -251,7 +255,7 @@ class AgentRuntimeFacadeObservabilityTest {
 
         // 业务与审计完全不受观测失败影响
         assertThat(result.error()).isNull();
-        assertThat(result.output().summary()).isEqualTo("建议");
+        assertThat(result.output().path("summary").asText()).isEqualTo("建议");
         AuditLogService.AuditCommand command = lastAuditCommand();
         assertThat(auditField(command, "operation")).isEqualTo("agent." + SLUG + ".run");
         assertThat(auditField(command, "actorType")).isEqualTo(AuditActorType.AGENT);
@@ -286,7 +290,7 @@ class AgentRuntimeFacadeObservabilityTest {
         AgentRunResult result = facade.invoke(SLUG, INPUT, null);
 
         assertThat(result.error()).isNull();
-        assertThat(result.output().summary()).isEqualTo("建议");
+        assertThat(result.output().path("summary").asText()).isEqualTo("建议");
         // 未注入 provider 时门面不触碰任何观测实现（默认 no-op）
         verify(observability, never()).runStarted(any());
         verify(observability, never()).runFinished(any());

@@ -16,6 +16,7 @@ import cn.zimu.fulfillment.mcp.McpTool;
 import cn.zimu.fulfillment.mcp.McpToolRegistry;
 import cn.zimu.fulfillment.mcp.McpWriteTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.List;
 import java.util.Map;
@@ -95,9 +96,12 @@ class AgentRuntimeFacadeTest {
                 name, description, schema, (context, args) -> new ObjectMapper().createObjectNode().put("ok", true));
     }
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private static AgentRunResult success() {
-        return new AgentRunResult(
-                new AgentStructuredOutput("建议", "推理"), "deepseek", "deepseek-chat", "v1", null);
+        return AgentRunResult.success(
+                MAPPER.createObjectNode().put("summary", "建议").put("reasoning", "推理"),
+                "deepseek", "deepseek-chat", "v1");
     }
 
     @Test
@@ -109,7 +113,7 @@ class AgentRuntimeFacadeTest {
                 facade.invoke(SLUG, "汇总一下进货价", AgentRunContext.of("thread-42"));
 
         assertThat(result.error()).isNull();
-        assertThat(result.output().summary()).isEqualTo("建议");
+        assertThat(result.output().path("summary").asText()).isEqualTo("建议");
 
         AuditLogService.AuditCommand command = lastAuditCommand();
         assertThat(auditField(command, "service")).isEqualTo("agent");

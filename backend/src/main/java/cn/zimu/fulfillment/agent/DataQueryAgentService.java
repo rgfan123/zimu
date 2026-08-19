@@ -42,10 +42,10 @@ import org.springframework.stereotype.Service;
  * 审计 responsePayload 携带工具调用序列（tool_call_sequence），满足「每次运行留下工具
  * 调用序列审计」。
  *
- * <p>与 {@link AgentRuntimeFacade} 的关系：门面的底层运行时 schema 固定为
- * {@link AgentStructuredOutput}（01 票最小 schema，不修改），本业务 Agent 按 02 票
- * 「业务 Agent 定义更丰富记录」的语义走自己的网关；两者共享注册表定义、模型配置与
- * 审计模型，审计 operation 命名一致。
+ * <p>与 {@link AgentRuntimeFacade} 的关系：门面底层运行时为 {@link LangChain4jRuntimeAdapter}
+ * （04 票，传输层统一 JsonNode、输出 schema 由定义携带并客户端校验），本业务 Agent 按 02 票
+ * 「业务 Agent 定义更丰富记录」的语义走自己的网关（B/C 路径收敛前）；两者共享注册表定义、
+ * 模型配置与审计模型，审计 operation 命名一致。
  */
 @Service
 public class DataQueryAgentService {

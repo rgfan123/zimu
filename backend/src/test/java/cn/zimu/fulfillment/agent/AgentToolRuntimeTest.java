@@ -170,13 +170,13 @@ class AgentToolRuntimeTest {
 
     @Test
     void modelToolCallRunsThroughMcpInvokeAndReturnsStructuredOutput() throws Exception {
-        LangChain4jAgentRuntime runtime = new LangChain4jAgentRuntime(properties());
+        LangChain4jRuntimeAdapter runtime = new LangChain4jRuntimeAdapter(properties());
 
         AgentRunResult result = runtime.run(
                 new AgentTaskRequest("你是只读查询助手。", "查一下最近消息", binding()));
 
         assertThat(result.error()).isNull();
-        assertThat(result.output().summary()).isEqualTo("已汇总");
+        assertThat(result.output().path("summary").asText()).isEqualTo("已汇总");
         assertThat(hits.get()).isEqualTo(2);
 
         // 第一轮：暴露给模型的工具恰为白名单（schema 与注册表一致），未暴露 get_sku
@@ -204,7 +204,7 @@ class AgentToolRuntimeTest {
 
     @Test
     void emptyBindingExposesNoToolsToModel() {
-        LangChain4jAgentRuntime runtime = new LangChain4jAgentRuntime(properties());
+        LangChain4jRuntimeAdapter runtime = new LangChain4jRuntimeAdapter(properties());
 
         AgentRunResult result = runtime.run(new AgentTaskRequest(
                 "你是只读查询助手。", "查一下最近消息", AgentToolBinding.empty(RUN_ID)));

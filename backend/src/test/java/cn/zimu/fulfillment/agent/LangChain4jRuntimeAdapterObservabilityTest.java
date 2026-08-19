@@ -75,13 +75,13 @@ class LangChain4jAgentRuntimeObservabilityTest {
     void tokenUsageIsRecordedWithRunIdOnSuccessfulRun() {
         serveOk("{\"summary\":\"已确认\",\"reasoning\":\"客户要一盒羊小腿\"}");
         AgentObservability observability = mock(AgentObservability.class);
-        AgentRuntime runtime = new LangChain4jAgentRuntime(properties(), observability);
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties(), observability);
 
         AgentRunResult result = runtime.run(
                 new AgentTaskRequest("你是客服助手", "客户要一盒羊小腿", AgentToolBinding.empty(RUN_ID)));
 
         assertThat(result.error()).isNull();
-        assertThat(result.output().summary()).isEqualTo("已确认");
+        assertThat(result.output().path("summary").asText()).isEqualTo("已确认");
         ArgumentCaptor<String> runIdCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<AgentObservability.TokenUsage> tokensCaptor =
                 ArgumentCaptor.forClass(AgentObservability.TokenUsage.class);
@@ -96,7 +96,7 @@ class LangChain4jAgentRuntimeObservabilityTest {
     void noBindingMeansNoTokenRecording() {
         serveOk("{\"summary\":\"已确认\",\"reasoning\":\"r\"}");
         AgentObservability observability = mock(AgentObservability.class);
-        AgentRuntime runtime = new LangChain4jAgentRuntime(properties(), observability);
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties(), observability);
 
         runtime.run(new AgentTaskRequest("sys", "x"));
 
@@ -107,7 +107,7 @@ class LangChain4jAgentRuntimeObservabilityTest {
     void failedModelCallRecordsNoTokens() {
         responseBody = "{\"error\":{\"message\":\"boom\"}}";
         AgentObservability observability = mock(AgentObservability.class);
-        AgentRuntime runtime = new LangChain4jAgentRuntime(properties(), observability);
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties(), observability);
 
         AgentRunResult result = runtime.run(
                 new AgentTaskRequest("sys", "x", AgentToolBinding.empty(RUN_ID)));
@@ -123,24 +123,24 @@ class LangChain4jAgentRuntimeObservabilityTest {
         org.mockito.Mockito.doThrow(new IllegalStateException("观测库不可用"))
                 .when(broken)
                 .recordModelTokens(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
-        AgentRuntime runtime = new LangChain4jAgentRuntime(properties(), broken);
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties(), broken);
 
         AgentRunResult result = runtime.run(
                 new AgentTaskRequest("sys", "x", AgentToolBinding.empty(RUN_ID)));
 
         assertThat(result.error()).isNull();
-        assertThat(result.output().summary()).isEqualTo("已确认");
+        assertThat(result.output().path("summary").asText()).isEqualTo("已确认");
     }
 
     @Test
     void oneArgConstructorKeepsLegacyNoopBehavior() {
         serveOk("{\"summary\":\"已确认\",\"reasoning\":\"r\"}");
-        AgentRuntime runtime = new LangChain4jAgentRuntime(properties());
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties());
 
         AgentRunResult result = runtime.run(
                 new AgentTaskRequest("sys", "x", AgentToolBinding.empty(RUN_ID)));
 
         assertThat(result.error()).isNull();
-        assertThat(result.output().summary()).isEqualTo("已确认");
+        assertThat(result.output().path("summary").asText()).isEqualTo("已确认");
     }
 }

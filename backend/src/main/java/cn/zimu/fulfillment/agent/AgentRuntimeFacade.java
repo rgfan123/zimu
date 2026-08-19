@@ -36,7 +36,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 public class AgentRuntimeFacade {
 
     private static final String DEFAULT_OPERATOR = "agent";
-    private static final String STATUS_SUCCESS = "SUCCESS";
 
     private final AgentRegistryHolder holder;
     private final AgentRuntime runtime;
@@ -96,10 +95,11 @@ public class AgentRuntimeFacade {
         long startedNanos = System.nanoTime();
         try {
             AgentToolBinding binding = toolBindingFactory.bind(runId, definition.toolNames());
-            AgentRunResult result =
-                    runtime.run(new AgentTaskRequest(definition.systemPrompt(), userInput, binding));
+            AgentRunResult result = runtime.run(
+                    new AgentTaskRequest(definition.systemPrompt(), userInput, binding, definition));
             long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
-            String status = result.error() == null ? STATUS_SUCCESS : result.error();
+            // 04 决策：outcome 维度——失败（REJECTED/FAILED）才以失败码作状态，NEEDS_INPUT 不再是失败
+            String status = result.error() == null ? result.outcome().name() : result.error();
             recordAudit(ctx, runId, definition, status, latencyMs, result);
             runFinished(runId, result.error(), latencyMs, projectedModel(result));
             return result;
