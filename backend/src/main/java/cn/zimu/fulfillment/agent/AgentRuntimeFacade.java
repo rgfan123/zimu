@@ -94,7 +94,8 @@ public class AgentRuntimeFacade {
         runStarted(ctx, runId, definition, userInput);
         long startedNanos = System.nanoTime();
         try {
-            AgentToolBinding binding = toolBindingFactory.bind(runId, definition.toolNames());
+            AgentToolBinding binding = toolBindingFactory.bind(
+                    runId, definition.toolNames(), definition.allowWrite());
             AgentRunResult result = runtime.run(
                     new AgentTaskRequest(definition.systemPrompt(), userInput, binding, definition));
             long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;

@@ -78,12 +78,13 @@ class AgentObservabilityIntegrationTest {
                          app.idempotency_registry
                 RESTART IDENTITY CASCADE
                 """);
-        // T02 后定义真源为 DB：测试 Agent 幂等注册（先删同 slug 再插），holder 换实例即被运行路径感知
+        // T02 后定义真源为 DB：测试 Agent 幂等注册（先删同 slug 再插），holder 换实例即被运行路径感知；
+        // 白名单只含只读工具（08 决策：写工具需 allow_write=true 才能在绑定期放行）
         AgentSeedFixtures.upsertActiveDefinition(
                 jdbc,
                 AgentDefinition.ofActiveV1(
                         SLUG, "可观测性验收 Agent", "d", "你是只读助手。", "obs-v1", "app.agent", true,
-                        List.of("search_skus", "reinterpret_submission")));
+                        List.of("search_skus")));
         holder.reload();
     }
 
@@ -192,7 +193,8 @@ class AgentObservabilityIntegrationTest {
     @Test
     void failedToolCallIsRecordedWithFailedStatus() throws Exception {
         String runId = AgentRuntimeFacade.newRunId();
-        AgentToolBinding binding = bindingFactory.bind(runId, List.of("reinterpret_submission"));
+        // 写工具需显式 allow_write=true 才能在 Agent 面绑定（08 决策）
+        AgentToolBinding binding = bindingFactory.bind(runId, List.of("reinterpret_submission"), true);
         AgentToolInvoker invoker = (AgentToolInvoker) binding.tools().values().iterator().next();
 
         // 写工具缺 idempotency_key → 业务失败（INVALID_PARAMETERS），观测行必须 FAILED

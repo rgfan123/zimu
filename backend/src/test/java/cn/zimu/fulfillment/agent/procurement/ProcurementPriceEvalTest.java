@@ -421,28 +421,11 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
 
     /** 记录式绑定工厂：把实际工具调用名记入 {@link #invokedTools}（05 收敛后序列由执行侧捕获）。 */
     private AgentToolBindingFactory recordingBindingFactory() {
-        AgentToolBindingFactory base = new AgentToolBindingFactory(
+        return McpToolTestSupport.recordingBindingFactory(
                 McpToolTestSupport.registry(new McpToolRegistryToolSupport(capturedContext).readOnlyTools()),
                 new McpAgentIdentity("procurement-price-agent"),
-                MAPPER);
-        return new AgentToolBindingFactory(
-                McpToolTestSupport.registry(new McpToolRegistryToolSupport(capturedContext).readOnlyTools()),
-                new McpAgentIdentity("procurement-price-agent"),
-                MAPPER) {
-            @Override
-            public AgentToolBinding bind(String runId, List<String> toolNames) {
-                AgentToolBinding bound = base.bind(runId, toolNames);
-                Map<ToolSpecification, ToolExecutor> wrapped = new LinkedHashMap<>();
-                for (Map.Entry<ToolSpecification, ToolExecutor> entry : bound.tools().entrySet()) {
-                    ToolSpecification spec = entry.getKey();
-                    wrapped.put(spec, (request, memoryId) -> {
-                        invokedTools.add(request.name());
-                        return entry.getValue().execute(request, memoryId);
-                    });
-                }
-                return new AgentToolBinding(runId, wrapped);
-            }
-        };
+                MAPPER,
+                request -> invokedTools.add(request.name()));
     }
 
     private List<String> exposedToolNames(String body) {

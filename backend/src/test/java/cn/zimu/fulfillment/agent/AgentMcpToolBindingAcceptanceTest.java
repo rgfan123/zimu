@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -87,7 +88,8 @@ class AgentMcpToolBindingAcceptanceTest {
         List<String> allNames = registry.all().stream().map(McpTool::name).toList();
         assertThat(allNames).hasSizeGreaterThan(20);
 
-        AgentToolBinding binding = factory().bind(RUN_ID, allNames);
+        // 全量注册表（含写工具）显式 allow_write=true 绑定（08 决策）
+        AgentToolBinding binding = factory().bind(RUN_ID, allNames, true);
 
         assertThat(binding.specifications()).hasSameSizeAs(allNames);
         assertThat(binding.specifications())
@@ -106,8 +108,17 @@ class AgentMcpToolBindingAcceptanceTest {
 
     @Test
     void readToolInvokeMatchesStdioPathPayload() throws Exception {
-        AgentToolInvoker invoker =
-                new AgentToolInvoker(RUN_ID, registry, identity, mapper);
+        AgentToolInvoker invoker = new AgentToolInvoker(
+                RUN_ID,
+                registry,
+                identity,
+                mapper,
+                Set.of(
+                        "list_channel_messages",
+                        "list_products",
+                        "search_skus",
+                        "get_inventory_overview",
+                        "list_fulfillment_providers"));
 
         // 覆盖只读工具集（消息/主数据/SKU 检索/库存）：同一工具、同一参数、同一注册表
         List<String[]> invocations = List.of(
@@ -146,7 +157,7 @@ class AgentMcpToolBindingAcceptanceTest {
                 null,
                 mapper.createObjectNode().put("message_id", "BIND-ACCEPT-001")));
 
-        AgentToolBinding binding = factory().bind(RUN_ID, List.of("reinterpret_submission"));
+        AgentToolBinding binding = factory().bind(RUN_ID, List.of("reinterpret_submission"), true);
         AgentToolInvoker invoker = (AgentToolInvoker) binding.tools().values().iterator().next();
         String result = invoker.execute(
                 dev.langchain4j.agent.tool.ToolExecutionRequest.builder()

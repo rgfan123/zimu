@@ -21,4 +21,16 @@ final class McpToolErrorEnvelope {
         error.put("message", "内部错误，请联系运维");
         return error.toString();
     }
+
+    /**
+     * 越权调用（08 决策：调用期复核）：工具已注册但不在当前 Agent 绑定白名单内——
+     * 白名单外即使注册存在也拒绝，返回稳定权限码（不透出注册表细节）。
+     */
+    static String notAuthorized() {
+        ObjectNode error = MAPPER.createObjectNode();
+        error.put("code", "TOOL_NOT_AUTHORIZED");
+        error.put("http_status", 403);
+        error.put("message", "工具不在当前 Agent 白名单内");
+        return error.toString();
+    }
 }

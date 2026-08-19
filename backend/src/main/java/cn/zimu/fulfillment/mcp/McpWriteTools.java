@@ -82,7 +82,7 @@ public class McpWriteTools {
                                         "submission_id", stringProperty("消息提交 ID"),
                                         "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
                                 List.of("submission_id", "idempotency_key")),
-                        this::reinterpretSubmission),
+                        this::reinterpretSubmission, false),
                 new McpToolRegistry.SimpleTool(
                         "submit_order_draft_suggestion",
                         "提交订单草稿修改建议：修订行数量或从该行候选中选择 SKU；草稿保持 OPEN，由人工最终确认。要求草稿期望版本。",
@@ -96,7 +96,7 @@ public class McpWriteTools {
                                                         "行级建议，每项 {line_no, quantity?, sku_id?}",
                                                         lineSupplementSchema())),
                                 List.of("draft_id", "expected_revision", "idempotency_key")),
-                        this::submitOrderDraftSuggestion),
+                        this::submitOrderDraftSuggestion, false),
                 new McpToolRegistry.SimpleTool(
                         "confirm_order_draft",
                         "确认订单草稿成单：将已复核通过的草稿转成内部标准订单（生成 CanonicalOrder 与初始履约单元）。幂等，重复调用返回首次结果。要求草稿与复核事项期望版本、客户选择（二选一）、收货与结账信息、逐行 SKU 与数量。",
@@ -123,7 +123,7 @@ public class McpWriteTools {
                                         "settlement",
                                         "items",
                                         "idempotency_key")),
-                        this::confirmOrderDraft),
+                        this::confirmOrderDraft, false),
                 new McpToolRegistry.SimpleTool(
                         "submit_jd_outbound",
                         "触发京东云仓建出库单（addSoOrder）：对一个已就绪的 Shipment 提交京东建单，请求由 Shipment 及其全部行派生。幂等，重复调用返回首次结果；写门闩关闭或操作人未授权时拒绝，不触网。",
@@ -132,7 +132,7 @@ public class McpWriteTools {
                                         "shipment_id", stringProperty("Shipment ID"),
                                         "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
                                 List.of("shipment_id", "idempotency_key")),
-                        this::submitJdOutbound),
+                        this::submitJdOutbound, false),
                 new McpToolRegistry.SimpleTool(
                         "submit_supplementary_material",
                         "提交订单草稿补充材料：补充或覆盖收货资料与结账方式；草稿保持 OPEN，由人工最终确认。要求草稿期望版本。",
@@ -145,7 +145,7 @@ public class McpWriteTools {
                                         "settlement_method",
                                                 stringProperty("结账方式：MONTHLY/IMMEDIATE/CREDIT_TERM/PREPAID/COD/OTHER")),
                                 List.of("draft_id", "expected_revision", "idempotency_key")),
-                        this::submitSupplementaryMaterial),
+                        this::submitSupplementaryMaterial, false),
                 new McpToolRegistry.SimpleTool(
                         "submit_review_request",
                         "显式提交人工复核：确保消息提交上存在开放的人工复核事项（新建或复用）；提交下存在开放草稿时拒绝。",
@@ -155,7 +155,7 @@ public class McpWriteTools {
                                         "idempotency_key", stringProperty("幂等键，至少 8 个字符"),
                                         "note", stringProperty("提交说明，仅随审计留存")),
                                 List.of("submission_id", "idempotency_key")),
-                        this::submitReviewRequest));
+                        this::submitReviewRequest, false));
     }
 
     private final List<McpTool> tools;

@@ -1,6 +1,8 @@
 package cn.zimu.fulfillment.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
@@ -16,8 +18,10 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 /**
  * 03 — AgentToolInvoker（agent-decision-layer 03）：run_id 作为 request/trace id、
@@ -72,7 +76,12 @@ class AgentToolInvokerTest {
     }
 
     private AgentToolInvoker invoker() {
-        return new AgentToolInvoker(RUN_ID, registry(), new McpAgentIdentity(IDENTITY), MAPPER);
+        return new AgentToolInvoker(
+                RUN_ID,
+                registry(),
+                new McpAgentIdentity(IDENTITY),
+                MAPPER,
+                Set.of("capture_tool", "echo_tool", "failing_tool"));
     }
 
     @Test
@@ -157,13 +166,40 @@ class AgentToolInvokerTest {
                             throw new IllegalStateException("内部 boom");
                         }));
         AgentToolInvoker invoker =
-                new AgentToolInvoker(RUN_ID, boom, new McpAgentIdentity(IDENTITY), MAPPER);
+                new AgentToolInvoker(RUN_ID, boom, new McpAgentIdentity(IDENTITY), MAPPER, Set.of("boom_tool"));
 
         String result = invoker.execute(toolRequest("boom_tool", "{}"), null);
 
         JsonNode node = MAPPER.readTree(result);
         assertThat(node.get("code").asText()).isEqualTo("MCP_INTERNAL_ERROR");
         assertThat(result).doesNotContain("boom");
+    }
+
+    @Test
+    void registeredToolOutsideWhitelistIsRejectedAsNotAuthorizedAndRecordedFailed() throws Exception {
+        // 08 决策调用期复核：capture_tool 已注册但不在绑定白名单（仅 echo_tool）→ 权限拒绝
+        AgentObservability observability = mock(AgentObservability.class);
+        AgentToolInvoker invoker = new AgentToolInvoker(
+                RUN_ID, registry(), new McpAgentIdentity(IDENTITY), MAPPER, observability, Set.of("echo_tool"));
+
+        String result = invoker.execute(toolRequest("capture_tool", "{\"page\":0}"), null);
+
+        JsonNode node = MAPPER.readTree(result);
+        assertThat(node.get("code").asText()).isEqualTo("TOOL_NOT_AUTHORIZED");
+        assertThat(node.get("http_status").asInt()).isEqualTo(403);
+        // 拒绝不得泄漏注册表/白名单细节
+        assertThat(result).doesNotContain("capture_tool");
+        // 工具必须未被实际执行（捕获回调未触发）
+        assertThat(capturedContext.get()).isNull();
+
+        // 越权拒绝留观测审计：agent_tool_calls 行以 FAILED 状态落账（工具名留痕）
+        ArgumentCaptor<AgentObservability.ToolCall> captor =
+                ArgumentCaptor.forClass(AgentObservability.ToolCall.class);
+        verify(observability).toolCallFinished(captor.capture());
+        AgentObservability.ToolCall call = captor.getValue();
+        assertThat(call.runId()).isEqualTo(RUN_ID);
+        assertThat(call.toolName()).isEqualTo("capture_tool");
+        assertThat(call.success()).isFalse();
     }
 
     // ------------------------------------------------------------------
