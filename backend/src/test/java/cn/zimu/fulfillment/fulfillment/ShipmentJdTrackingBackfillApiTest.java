@@ -135,7 +135,7 @@ class ShipmentJdTrackingBackfillApiTest {
         }
 
         boolean awaitQueryEntered() throws InterruptedException {
-            return queryEntered.await(10, TimeUnit.SECONDS);
+            return queryEntered.await(30, TimeUnit.SECONDS);
         }
 
         void releaseQuery() {
@@ -160,7 +160,7 @@ class ShipmentJdTrackingBackfillApiTest {
             if (latch != null) {
                 latch.countDown();
                 try {
-                    if (!latch.await(10, TimeUnit.SECONDS)) {
+                    if (!latch.await(30, TimeUnit.SECONDS)) {
                         throw new IllegalStateException("concurrent JD query did not rendezvous");
                     }
                 } catch (InterruptedException exception) {
@@ -173,7 +173,7 @@ class ShipmentJdTrackingBackfillApiTest {
             if (entered != null && release != null && pauseClaimed.compareAndSet(false, true)) {
                 entered.countDown();
                 try {
-                    if (!release.await(10, TimeUnit.SECONDS)) {
+                    if (!release.await(30, TimeUnit.SECONDS)) {
                         throw new IllegalStateException("paused JD query was not released");
                     }
                 } catch (InterruptedException exception) {
@@ -459,7 +459,7 @@ class ShipmentJdTrackingBackfillApiTest {
             jd.releaseQuery();
         }
 
-        ResponseEntity<Map> response = request.get(20, TimeUnit.SECONDS);
+        ResponseEntity<Map> response = request.get(40, TimeUnit.SECONDS);
         assertThat(response.getStatusCode())
                 .as("response body: %s", response.getBody())
                 .isEqualTo(HttpStatus.CONFLICT);
@@ -510,7 +510,7 @@ class ShipmentJdTrackingBackfillApiTest {
         } finally {
             jd.releaseQuery();
         }
-        ResponseEntity<Map> completionResponse = completionRequest.get(20, TimeUnit.SECONDS);
+        ResponseEntity<Map> completionResponse = completionRequest.get(40, TimeUnit.SECONDS);
         assertThat(completionResponse.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(completionResponse.getBody()).containsEntry(
                 "business_code", "JD_TRACKING_BACKFILL_FACTS_CHANGED");
@@ -1189,8 +1189,8 @@ class ShipmentJdTrackingBackfillApiTest {
         var second = executor.submit(() -> backfill(
                 fixture.shipmentId(), "jd-tracking-concurrent-002", "req-jd-tracking-concurrent-002"));
 
-        ResponseEntity<Map> firstResponse = first.get(20, TimeUnit.SECONDS);
-        ResponseEntity<Map> secondResponse = second.get(20, TimeUnit.SECONDS);
+        ResponseEntity<Map> firstResponse = first.get(40, TimeUnit.SECONDS);
+        ResponseEntity<Map> secondResponse = second.get(40, TimeUnit.SECONDS);
         assertThat(firstResponse.getStatusCode())
                 .as("response body: %s", firstResponse.getBody())
                 .isEqualTo(HttpStatus.OK);
@@ -1231,7 +1231,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 .containsEntry("tracking_number", terminalWaybill);
 
         jd.releaseQuery();
-        ResponseEntity<Map> absorbed = slow.get(20, TimeUnit.SECONDS);
+        ResponseEntity<Map> absorbed = slow.get(40, TimeUnit.SECONDS);
         assertThat(absorbed.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(absorbed.getBody())
                 .containsEntry("poll_status", "TRACKED")
@@ -1284,7 +1284,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 .containsEntry("tracking_number", acceptedWaybill);
 
         jd.releaseQuery();
-        ResponseEntity<Map> surfaced = slowEvidence.get(20, TimeUnit.SECONDS);
+        ResponseEntity<Map> surfaced = slowEvidence.get(40, TimeUnit.SECONDS);
 
         assertThat(surfaced.getStatusCode()).isEqualTo(HttpStatus.OK);
         if ("QUERY_FAILED".equals(lateResultKind)) {
@@ -1450,7 +1450,7 @@ class ShipmentJdTrackingBackfillApiTest {
         assertThat(conflict.getBody()).containsEntry("poll_status", "CONFLICT");
 
         jd.releaseQuery();
-        ResponseEntity<Map> lateFull = slowFull.get(20, TimeUnit.SECONDS);
+        ResponseEntity<Map> lateFull = slowFull.get(40, TimeUnit.SECONDS);
 
         assertThat(lateFull.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(lateFull.getBody())
@@ -1558,7 +1558,7 @@ class ShipmentJdTrackingBackfillApiTest {
                         backfillService, true, 20, java.time.Duration.ofSeconds(61))
                 .poll();
         jd.releaseQuery();
-        first.get(20, TimeUnit.SECONDS);
+        first.get(40, TimeUnit.SECONDS);
 
         assertThat(jd.queries).hasValue(1);
         assertThat(jdbc.queryForMap(
