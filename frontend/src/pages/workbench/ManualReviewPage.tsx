@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Button,
@@ -20,9 +20,10 @@ import {
 import { CheckSquareOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
-import { errorMessage } from '@/api/client';
+import { ApiError, errorMessage } from '@/api/client';
 import {
   customersApi,
+  fileOperationsApi,
   operationalAlertsApi,
   reviewCasesApi,
   shipmentsApi,
@@ -42,6 +43,12 @@ import {
   severitySemantic,
 } from '@/pages/shared/semanticStatus';
 import { saasVisualTokens } from '@/theme/saasTheme';
+import {
+  REVIEWS_BATCH_PARAM,
+  fileJobUrlForBatch,
+  invalidBatchIdMessage,
+  parseBatchIdParam,
+} from '@/pages/shared/batchUrl';
 import {
   buildCustomerResolution,
   buildDismissCommand,
@@ -178,6 +185,12 @@ function resolutionTarget(item: ReviewCase): string | undefined {
 
 export default function ManualReviewPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const batchParam = parseBatchIdParam(searchParams.get(REVIEWS_BATCH_PARAM));
+  const batchId = batchParam.kind === 'valid' ? batchParam.id : null;
+  const batchFilterInvalid = batchParam.kind === 'invalid' ? batchParam.raw : null;
+  /** 非法批次标识时整块隐藏队列 UI（fail-closed：绝不显示无筛选的全局队列）。 */
+  const queueVisible = batchFilterInvalid === null;
   const [messageApi, messageContext] = message.useMessage();
   const [view, setView] = useState<'REVIEWS' | 'ALERTS'>('REVIEWS');
   const [page, setPage] = useState(0);
@@ -203,9 +216,16 @@ export default function ManualReviewPage() {
   const [alertSubmitting, setAlertSubmitting] = useState(false);
 
   const queue = useAsync(
-    () => reviewCasesApi.list({ page, size, status, responsible_team: team }),
-    [page, size, status, team],
+    () => !queueVisible
+      ? Promise.resolve({ items: [], page, size, total_elements: 0, total_pages: 0 })
+      : reviewCasesApi.list({ page, size, status, responsible_team: team, import_batch_id: batchId ?? undefined }),
+    [page, size, status, team, batchId, queueVisible],
   );
+  const batch = useAsync(
+    () => (batchId ? fileOperationsApi.getSourceBatch(batchId) : Promise.resolve(null)),
+    [batchId],
+  );
+  const batchMissing = batch.error instanceof ApiError && batch.error.status === 404;
   const alerts = useAsync(
     () => operationalAlertsApi.list({ page: alertPage, size: alertSize, status: alertStatus }),
     [alertPage, alertSize, alertStatus],
@@ -518,31 +538,78 @@ export default function ManualReviewPage() {
 
       {view === 'REVIEWS' ? (
         <>
-          {queue.error ? <Alert type="error" showIcon message="复核队列加载失败" description={errorMessage(queue.error)} /> : null}
-          <Card size="small">
-            <Space wrap>
-              <Typography.Text type="secondary">状态</Typography.Text>
-              <Select<ReviewCaseStatus>
-                value={status} style={{ width: 130 }}
-                onChange={(value) => { setStatus(value); setPage(0); }}
-                options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value: value as ReviewCaseStatus, label }))}
-              />
-              <Typography.Text type="secondary">责任团队</Typography.Text>
-              <Select allowClear placeholder="全部团队" value={team} style={{ width: 160 }} onChange={(value) => { setTeam(value); setPage(0); }} options={TEAM_OPTIONS} />
-              <Button icon={<ReloadOutlined />} onClick={queue.reload}>刷新</Button>
-              <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{queue.data?.total_elements ?? 0} 项</Typography.Text>
-            </Space>
-          </Card>
-          <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
-            <Table<ReviewCase>
-              rowKey="id" loading={queue.loading} columns={reviewColumns} dataSource={items} scroll={{ x: 900 }}
-              locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有复核事项" /> }}
-              pagination={{
-                current: page + 1, pageSize: size, total: queue.data?.total_elements ?? 0, showSizeChanger: true,
-                showTotal: (total) => `共 ${total} 项`, onChange: (nextPage, nextSize) => { setPage(nextPage - 1); setSize(nextSize); },
-              }}
+          {batchFilterInvalid !== null ? (
+            <Alert
+              type="error"
+              showIcon
+              message="导入批次标识无效"
+              description={invalidBatchIdMessage(batchFilterInvalid, '加载复核队列')}
+              action={<Link to="/fulfillment/sales-outbound">返回文件作业</Link>}
             />
-          </Card>
+          ) : batchId ? (
+            <Card size="small">
+              {batch.loading ? (
+                <Typography.Text type="secondary">正在核对导入批次 {batchId}…</Typography.Text>
+              ) : batch.error ? (
+                <Alert
+                  type={batchMissing ? 'warning' : 'error'}
+                  showIcon
+                  message={batchMissing ? '导入批次不存在' : '导入批次加载失败'}
+                  description={batchMissing
+                    ? `批次 ${batchId} 不存在或已被清理，请核对分享链接。`
+                    : errorMessage(batch.error)}
+                  action={<Link to="/fulfillment/sales-outbound">返回文件作业</Link>}
+                />
+              ) : batch.data ? (
+                batch.data.confirmed_at ? (
+                  <Alert
+                    type="success"
+                    showIcon
+                    message="本批次已确认"
+                    description={`批次 ${batch.data.batch_no} 已于 ${dayjs(batch.data.confirmed_at).format('YYYY-MM-DD HH:mm')}${batch.data.confirmed_by ? ` 由 ${batch.data.confirmed_by}` : ''} 确认，无需继续处理。`}
+                    action={<Link to={fileJobUrlForBatch(batchId)}>返回该批次</Link>}
+                  />
+                ) : (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message={`正在复核导入批次 ${batch.data.batch_no}`}
+                    description={`共 ${batch.data.row_counts.total} 行，已接收 ${batch.data.row_counts.accepted} 行，待复核 ${batch.data.row_counts.need_review} 行，拒绝 ${batch.data.row_counts.rejected} 行。处理完成后可返回该批次统一确认。`}
+                    action={<Link to={fileJobUrlForBatch(batchId)}>返回该批次</Link>}
+                  />
+                )
+              ) : null}
+            </Card>
+          ) : null}
+          {queue.error && queueVisible ? <Alert type="error" showIcon message="复核队列加载失败" description={errorMessage(queue.error)} /> : null}
+          {queueVisible ? (
+            <Card size="small">
+              <Space wrap>
+                <Typography.Text type="secondary">状态</Typography.Text>
+                <Select<ReviewCaseStatus>
+                  value={status} style={{ width: 130 }}
+                  onChange={(value) => { setStatus(value); setPage(0); }}
+                  options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value: value as ReviewCaseStatus, label }))}
+                />
+                <Typography.Text type="secondary">责任团队</Typography.Text>
+                <Select allowClear placeholder="全部团队" value={team} style={{ width: 160 }} onChange={(value) => { setTeam(value); setPage(0); }} options={TEAM_OPTIONS} />
+                <Button icon={<ReloadOutlined />} onClick={queue.reload}>刷新</Button>
+                <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{queue.data?.total_elements ?? 0} 项</Typography.Text>
+              </Space>
+            </Card>
+          ) : null}
+          {queueVisible ? (
+            <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
+              <Table<ReviewCase>
+                rowKey="id" loading={queue.loading} columns={reviewColumns} dataSource={items} scroll={{ x: 900 }}
+                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有复核事项" /> }}
+                pagination={{
+                  current: page + 1, pageSize: size, total: queue.data?.total_elements ?? 0, showSizeChanger: true,
+                  showTotal: (total) => `共 ${total} 项`, onChange: (nextPage, nextSize) => { setPage(nextPage - 1); setSize(nextSize); },
+                }}
+              />
+            </Card>
+          ) : null}
         </>
       ) : (
         <>

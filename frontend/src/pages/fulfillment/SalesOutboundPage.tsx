@@ -4,17 +4,23 @@
  * 使用状态见 ExportUsageStatus。文件一旦生成即形成履约承诺（CONTEXT.md 履约导出）。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, Upload, message } from 'antd';
 import { CloudSyncOutlined, DownloadOutlined, FileExcelOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { Link } from 'react-router-dom';
-import { errorMessage } from '@/api/client';
+import { Link, useSearchParams } from 'react-router-dom';
+import { ApiError, errorMessage } from '@/api/client';
 import { fileOperationsApi, fulfillmentExportsApi, platformOrdersApi, providersApi } from '@/api/endpoints';
 import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, ImportBatch, PlatformOrderRefreshResult, TrackingImportBatch } from '@/api/types';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
+import {
+  FILE_JOB_BATCH_PARAM,
+  invalidBatchIdMessage,
+  parseBatchIdParam,
+  reviewsUrlForBatch,
+} from '@/pages/shared/batchUrl';
 import {
   canReceiveTracking,
   presentImportRow,
@@ -38,6 +44,11 @@ function num(v: string | number | undefined | null): string {
 }
 
 function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const batchParam = parseBatchIdParam(searchParams.get(FILE_JOB_BATCH_PARAM));
+  const urlBatchId = batchParam.kind === 'valid' ? batchParam.id : null;
+  const urlBatchInvalid = batchParam.kind === 'invalid' ? batchParam.raw : null;
+  const [urlBatchError, setUrlBatchError] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState<'NEW' | 'REVISION'>('NEW');
   const [parentBatchId, setParentBatchId] = useState('');
@@ -52,6 +63,45 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const [confirmRowsError, setConfirmRowsError] = useState<unknown>(null);
   const [pulling, setPulling] = useState(false);
   const [pullResult, setPullResult] = useState<PlatformOrderRefreshResult | null>(null);
+
+  /** 批次标识进 URL（Issue #95）：刷新或浏览器回退后按 ?import_batch= 恢复当前批次，不再依赖页面本地 state。 */
+  useEffect(() => {
+    if (urlBatchInvalid !== null) {
+      setUrlBatchError(invalidBatchIdMessage(urlBatchInvalid, '自动恢复该批次'));
+      setResult(null);
+      setConfirmRows([]);
+      setConfirmTotal(0);
+      return;
+    }
+    if (urlBatchId === null) {
+      setUrlBatchError(null);
+      return;
+    }
+    if (result?.id === urlBatchId) {
+      return; // 本批次刚上传/刚确认，页面已有权威结果，无需重复拉取
+    }
+    let active = true;
+    setUrlBatchError(null);
+    fileOperationsApi.getSourceBatch(urlBatchId)
+      .then(async (batch) => {
+        if (!active) return;
+        setResult(batch);
+        await loadConfirmRows(batch);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setResult(null);
+        setConfirmRows([]);
+        setConfirmTotal(0);
+        setUrlBatchError(error instanceof ApiError && error.status === 404
+          ? `批次 ${urlBatchId} 不存在或已被清理，请核对链接或重新上传文件。`
+          : errorMessage(error));
+      });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlBatchId, urlBatchInvalid, result?.id]);
 
   const loadConfirmRows = async (batch: ImportBatch) => {
     const statuses = [
@@ -90,6 +140,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     try {
       const imported = await fileOperationsApi.uploadSource(file, mode, parentBatchId.trim() || undefined);
       setResult(imported);
+      setSearchParams({ [FILE_JOB_BATCH_PARAM]: imported.id });
       setFile(null);
       message.success('来源订单文件已处理');
       onCompleted();
@@ -223,6 +274,8 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
               setConfirmRows([]);
               setConfirmTotal(0);
               setConfirmRowsError(null);
+              setUrlBatchError(null);
+              setSearchParams({});
               return false;
             }}
           >
@@ -247,6 +300,20 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
             开始导入
           </Button>
         </Space>
+        {urlBatchId !== null && !result && !urlBatchError ? (
+          <Typography.Text type="secondary">正在恢复批次 {urlBatchId} 的导入结果…</Typography.Text>
+        ) : null}
+        {urlBatchError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="批次恢复失败"
+            description={urlBatchError}
+            closable
+            onClose={() => setUrlBatchError(null)}
+            action={<Link to="/fulfillment/sales-outbound">清除批次参数</Link>}
+          />
+        ) : null}
         {result ? (
           <Alert
             type={result.row_counts.need_review > 0 || result.row_counts.rejected > 0 ? 'warning' : 'success'}
@@ -415,7 +482,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                     ? row.orderId === '—'
                       ? <Typography.Text type="warning">未建立订单关联</Typography.Text>
                       : <Link to={`/orders/${row.orderId}`}>查看系统订单</Link>
-                    : <Link to="/workbench/reviews">前往人工复核</Link>,
+                    : <Link to={reviewsUrlForBatch(result.id)}>前往人工复核</Link>,
                 },
               ]}
             />

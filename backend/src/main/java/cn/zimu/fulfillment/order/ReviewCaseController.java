@@ -141,7 +141,8 @@ public class ReviewCaseController {
             @RequestParam(required = false) ReviewCaseStatus status,
             @RequestParam(name = "reason_code", required = false) String reasonCode,
             @RequestParam(name = "responsible_team", required = false) String responsibleTeam,
-            @RequestParam(name = "source_channel", required = false) SourceChannel sourceChannel) {
+            @RequestParam(name = "source_channel", required = false) SourceChannel sourceChannel,
+            @RequestParam(name = "import_batch_id", required = false) String importBatchId) {
         Specification<ReviewCase> specification = businessOrderCases(sourceChannel);
         if (status != null) {
             specification = specification.and((root, query, cb) -> cb.equal(root.get("status"), status));
@@ -153,11 +154,26 @@ public class ReviewCaseController {
             specification = specification.and(
                     (root, query, cb) -> cb.equal(root.get("responsibleTeam"), responsibleTeam));
         }
+        if (importBatchId != null) {
+            // fail-closed：缺失=无筛选；出现但非法（含空串/空白）一律 400，绝不静默退化成全局队列
+            specification = specification.and(
+                    (root, query, cb) -> cb.equal(root.get("importBatchId"), parseBatchId(importBatchId)));
+        }
 
         Page<ReviewCase> result = repository.findAll(
                 specification,
                 PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt")));
         return PageResponse.of(result.getContent().stream().map(mapper::toReviewCase).toList(), result);
+    }
+
+    /** 与 WriteCommands.parseIdentifier 同一校验口径；仅数字溢出需另行收敛为 400 而非 500。 */
+    private static Long parseBatchId(String raw) {
+        try {
+            return cn.zimu.fulfillment.common.web.WriteCommands.parseIdentifier(raw);
+        } catch (NumberFormatException overflow) {
+            throw cn.zimu.fulfillment.common.error.BusinessException.badRequest(
+                    "INVALID_IDENTIFIER", "无效的标识符: " + raw);
+        }
     }
 
     private static Specification<ReviewCase> businessOrderCases(SourceChannel sourceChannel) {

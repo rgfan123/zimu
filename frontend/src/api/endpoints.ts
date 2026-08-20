@@ -649,7 +649,7 @@ export const procurementPriceAgentApi = {
 
 /** GET /api/v1/review-cases —— 业务人工复核队列（数据中台「需人工介入」）。 */
 export const reviewCasesApi = {
-  list: (query: { page?: number; size?: number; status?: string; reason_code?: string; responsible_team?: string; source_channel?: string }) =>
+  list: (query: { page?: number; size?: number; status?: string; reason_code?: string; responsible_team?: string; source_channel?: string; import_batch_id?: string }) =>
     apiRequest<ReviewCasePage>('/api/v1/review-cases', { params: query as Record<string, QueryValue> }),
   detail: (id: string) => apiRequest<ReviewCase>(`/api/v1/review-cases/${id}`),
   resolveCustomer: (id: string, body: ResolveCustomerReviewCommand) =>

@@ -1284,6 +1284,10 @@ paths:
           in: query
           description: Limits the queue to BUSINESS orders from this source channel.
           schema: { $ref: '#/components/schemas/SourceChannel' }
+        - name: import_batch_id
+          in: query
+          description: Limits the queue to review cases linked to this import batch; malformed values are rejected.
+          schema: { type: string, pattern: '^[1-9][0-9]*$' }
       responses:
         '200':
           description: BUSINESS manual-review queue
