@@ -37,7 +37,9 @@ final class Rfc6455TestServer implements AutoCloseable {
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicInteger connectionCount = new AtomicInteger();
     private final AtomicInteger subscribeErrcode = new AtomicInteger(0);
+    private final AtomicInteger sendMessageErrcode = new AtomicInteger(0);
     private final AtomicBoolean autoPong = new AtomicBoolean(true);
+    private final AtomicBoolean autoSendMessageAck = new AtomicBoolean(true);
     private final AtomicReference<Socket> currentConnection = new AtomicReference<>();
     private final CopyOnWriteArrayList<String> receivedTextFrames = new CopyOnWriteArrayList<>();
     private final List<Throwable> failures = new CopyOnWriteArrayList<>();
@@ -60,6 +62,15 @@ final class Rfc6455TestServer implements AutoCloseable {
     /** 订阅应答 errcode；0 表示成功，非 0 触发客户端订阅失败计数。 */
     void subscribeErrcode(int errcode) {
         subscribeErrcode.set(errcode);
+    }
+
+    /** 主动消息应答 errcode；默认成功。 */
+    void sendMessageErrcode(int errcode) {
+        sendMessageErrcode.set(errcode);
+    }
+
+    void autoSendMessageAck(boolean enabled) {
+        autoSendMessageAck.set(enabled);
     }
 
     /** 是否对 ping 自动回 pong；关闭后服务器保持静默以模拟僵死连接。 */
@@ -102,6 +113,16 @@ final class Rfc6455TestServer implements AutoCloseable {
             throw new IOException("no current connection");
         }
         sendFrame(socket.getOutputStream(), new Frame(0x1, payload.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    void sendAck(String requestId, int errcode) throws IOException {
+        sendText("{\"headers\":{\"req_id\":\""
+                + requestId
+                + "\"},\"errcode\":"
+                + errcode
+                + ",\"errmsg\":\""
+                + (errcode == 0 ? "ok" : "rejected")
+                + "\"}");
     }
 
     /** 服务端发起关闭握手并断开。 */
@@ -213,6 +234,18 @@ final class Rfc6455TestServer implements AutoCloseable {
             sendFrame(out, new Frame(
                     0x1,
                     // 真实协议：订阅应答不带 cmd，req_id 在 headers 内（官方文档 path/101463 响应示例）。
+                    ("{\"headers\":{\"req_id\":\""
+                                    + reqId
+                                    + "\"},\"errcode\":"
+                                    + errcode
+                                    + ",\"errmsg\":\""
+                                    + (errcode == 0 ? "ok" : "rejected")
+                                    + "\"}")
+                            .getBytes(StandardCharsets.UTF_8)));
+        } else if ("aibot_send_msg".equals(cmd) && autoSendMessageAck.get()) {
+            int errcode = sendMessageErrcode.get();
+            sendFrame(out, new Frame(
+                    0x1,
                     ("{\"headers\":{\"req_id\":\""
                                     + reqId
                                     + "\"},\"errcode\":"

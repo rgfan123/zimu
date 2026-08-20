@@ -19,7 +19,7 @@ import org.springframework.stereotype.Component;
  * 通过 {@link #respond(String, JsonNode)} 发送「已接收」回执。
  */
 @Component
-public class WecomConnectionManager {
+public class WecomConnectionManager implements WecomOutboundTransport {
 
     private final WecomProperties properties;
     private final ObjectMapper objectMapper;
@@ -76,6 +76,14 @@ public class WecomConnectionManager {
     public boolean respond(String reqId, JsonNode body) {
         WecomLongConnectionClient current = client;
         return current != null && current.respond(reqId, body);
+    }
+
+    @Override
+    public WecomSendResult send(WecomOutboundMessage message) {
+        WecomLongConnectionClient current = client;
+        return current == null
+                ? WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true)
+                : current.send(message);
     }
 
     public WecomConnectionStateHolder stateHolder() {

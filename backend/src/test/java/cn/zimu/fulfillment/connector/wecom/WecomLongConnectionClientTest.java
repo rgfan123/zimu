@@ -8,8 +8,14 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -107,6 +113,9 @@ class WecomLongConnectionClientTest {
         String subscribe = server.awaitFrame("aibot_subscribe", 2_000);
         assertThat(subscribe).isNotNull();
         assertThat(subscribe).contains("\"bot_id\":\"" + BOT_ID + "\"").contains("\"secret\":\"" + SECRET + "\"");
+        JsonNode subscribeFrame = MAPPER.readTree(subscribe);
+        assertThat(subscribeFrame.path("headers").path("req_id").asText()).isNotBlank();
+        assertThat(subscribeFrame.has("req_id")).isFalse();
 
         // 心跳持续期间不重复订阅（连接存活期内只发一次）
         awaitTrue(() -> stateHolder.heartbeatCount() >= 2);
@@ -130,7 +139,8 @@ class WecomLongConnectionClientTest {
         for (String ping : pings) {
             JsonNode frame = MAPPER.readTree(ping);
             assertThat(frame.path("cmd").asText()).isEqualTo("ping");
-            assertThat(frame.path("req_id").asText()).isNotBlank();
+            assertThat(frame.path("headers").path("req_id").asText()).isNotBlank();
+            assertThat(frame.has("req_id")).isFalse();
             assertThat(frame.path("body").isMissingNode() || frame.path("body").isObject()).isTrue();
         }
     }
@@ -155,7 +165,8 @@ class WecomLongConnectionClientTest {
                 .filter(f -> f != null && "aibot_respond_msg".equals(f.path("cmd").asText()))
                 .findFirst()
                 .orElseThrow();
-        assertThat(frame.path("req_id").asText()).isEqualTo("req-001");
+        assertThat(frame.path("headers").path("req_id").asText()).isEqualTo("req-001");
+        assertThat(frame.has("req_id")).isFalse();
         assertThat(frame.path("body").path("msgtype").asText()).isEqualTo("text");
     }
 
@@ -164,16 +175,137 @@ class WecomLongConnectionClientTest {
         startClient();
         awaitState(WecomConnectionState.SUBSCRIBED);
 
-        server.sendText("{\"cmd\":\"aibot_msg_callback\",\"req_id\":\"cb-1\",\"body\":{\"msgtype\":\"text\"}}");
+        server.sendText(
+                "{\"cmd\":\"aibot_msg_callback\",\"headers\":{\"req_id\":\"cb-1\"},\"body\":{\"msgtype\":\"text\"}}");
         server.sendText(
                 "{\"cmd\":\"aibot_event_callback\",\"req_id\":\"ev-1\",\"body\":{\"event_type\":\"enter_chat\"}}");
 
         awaitTrue(() -> dispatchedFrames.size() >= 2);
         assertThat(dispatchedFrames.get(0).path("cmd").asText()).isEqualTo("aibot_msg_callback");
-        assertThat(dispatchedFrames.get(0).path("req_id").asText()).isEqualTo("cb-1");
+        assertThat(dispatchedFrames.get(0).path("headers").path("req_id").asText()).isEqualTo("cb-1");
         assertThat(dispatchedFrames.get(1).path("cmd").asText()).isEqualTo("aibot_event_callback");
+        assertThat(dispatchedFrames.get(1).path("req_id").asText()).isEqualTo("ev-1");
         assertThat(stateHolder.lastEventType()).isEqualTo("enter_chat");
         assertThat(stateHolder.lastEventTime()).isNotNull();
+    }
+
+    @Test
+    void pendingBusinessAckDoesNotBlockHeartbeat() throws Exception {
+        startClient();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        server.autoSendMessageAck(false);
+        long heartbeatBefore = stateHolder.heartbeatCount();
+
+        try (var sender = Executors.newSingleThreadExecutor()) {
+            Future<WecomSendResult> pending =
+                    sender.submit(() -> client.send(WecomOutboundMessage.markdown("group-001", "**待确认**")));
+            JsonNode frame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
+
+            org.awaitility.Awaitility.await()
+                    .atMost(Duration.ofSeconds(2))
+                    .untilAsserted(() -> assertThat(stateHolder.heartbeatCount()).isGreaterThan(heartbeatBefore));
+
+            server.sendAck(frame.path("headers").path("req_id").asText(), 0);
+            assertThat(pending.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+        }
+    }
+
+    @Test
+    void heartbeatJumpsAheadOfBusinessFramesQueuedBehindSocketBackpressure() throws Exception {
+        WecomProperties properties = configuredProperties();
+        List<String> submittedCommands = new CopyOnWriteArrayList<>();
+        AtomicBoolean blockFirstBusinessFrame = new AtomicBoolean(true);
+        AtomicReference<CompletableFuture<java.net.http.WebSocket>> blockedSend = new AtomicReference<>();
+        AtomicReference<java.net.http.WebSocket> blockedSocket = new AtomicReference<>();
+        WecomLongConnectionClient.FrameWriter writer = (webSocket, payload) -> {
+            try {
+                String cmd = MAPPER.readTree(payload).path("cmd").asText();
+                submittedCommands.add(cmd);
+                if ("aibot_send_msg".equals(cmd) && blockFirstBusinessFrame.compareAndSet(true, false)) {
+                    CompletableFuture<java.net.http.WebSocket> blocked = new CompletableFuture<>();
+                    blockedSend.set(blocked);
+                    blockedSocket.set(webSocket);
+                    return blocked;
+                }
+                return webSocket.sendText(payload, true);
+            } catch (Exception ex) {
+                return CompletableFuture.failedFuture(ex);
+            }
+        };
+        client = new WecomLongConnectionClient(
+                properties,
+                MAPPER,
+                stateHolder,
+                HttpClient.newHttpClient(),
+                scheduler,
+                50,
+                200,
+                false,
+                3_000,
+                500,
+                writer);
+        client.start();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+
+        try (var senders = Executors.newFixedThreadPool(2)) {
+            Future<WecomSendResult> first =
+                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-a", "消息 A")));
+            awaitTrue(() -> blockedSend.get() != null);
+            Future<WecomSendResult> second =
+                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-b", "消息 B")));
+
+            Thread.sleep(1_200);
+            blockedSend.get().complete(blockedSocket.get());
+
+            awaitTrue(() -> submittedCommands.stream().filter("aibot_send_msg"::equals).count() >= 2
+                    && submittedCommands.contains("ping"));
+            int firstPing = submittedCommands.indexOf("ping");
+            int secondBusiness = submittedCommands.lastIndexOf("aibot_send_msg");
+            assertThat(firstPing).isPositive().isLessThan(secondBusiness);
+            assertThat(first.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.TIMEOUT);
+            assertThat(second.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+        }
+    }
+
+    @Test
+    void sendFutureTimeoutReconnectsBeforeNextBusinessMessage() {
+        WecomProperties properties = configuredProperties();
+        AtomicBoolean timeOutFirstBusinessFrame = new AtomicBoolean(true);
+        WecomLongConnectionClient.FrameWriter writer = (webSocket, payload) -> {
+            try {
+                String cmd = MAPPER.readTree(payload).path("cmd").asText();
+                if ("aibot_send_msg".equals(cmd) && timeOutFirstBusinessFrame.compareAndSet(true, false)) {
+                    return new CompletableFuture<>();
+                }
+                return webSocket.sendText(payload, true);
+            } catch (Exception ex) {
+                return CompletableFuture.failedFuture(ex);
+            }
+        };
+        client = new WecomLongConnectionClient(
+                properties,
+                MAPPER,
+                stateHolder,
+                HttpClient.newHttpClient(),
+                scheduler,
+                50,
+                200,
+                false,
+                5_000,
+                500,
+                writer);
+        client.start();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+
+        WecomSendResult timedOutSend = client.send(WecomOutboundMessage.text("user-a", "消息 A"));
+        assertThat(timedOutSend.status()).isEqualTo(WecomSendStatus.FAILED);
+        assertThat(timedOutSend.errorMessage()).isEqualTo("TRANSPORT_SEND_FAILED");
+        assertThat(timedOutSend.retryable()).isFalse();
+
+        awaitTrue(() -> server.connectionCount() >= 2);
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        WecomSendResult recoveredSend = client.send(WecomOutboundMessage.text("user-b", "消息 B"));
+        assertThat(recoveredSend.status()).isEqualTo(WecomSendStatus.SUCCESS);
     }
 
     // ---- 断线重连 ----
