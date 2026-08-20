@@ -805,11 +805,12 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
 
     private String sourceChannelDisplayName(String sourceChannel) {
         return switch (sourceChannel) {
-            case "CAISHIXIAN" -> "菜实鲜";
+            case "CAISHIXIAN" -> "彩食鲜";
             case "JUFUBAO" -> "聚福宝";
             case "FEIXIANG" -> "飞象";
             case "ZHONGHUI" -> "中汇";
-            case "WANGQI" -> "万齐";
+            case "DAZHE", "WANGQI" -> "大者";
+            case "WANQI" -> "万齐";
             case "WECOM" -> "企业微信";
             default -> throw new IllegalStateException("unsupported source channel: " + sourceChannel);
         };
