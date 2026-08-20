@@ -287,6 +287,34 @@ public class TrackingFileService {
                 "SELECT COUNT(*) FROM app.raw_import_rows WHERE import_batch_id=? AND status='ACCEPTED'",
                 Integer.class,
                 sourceBatchId);
+        boolean hasUnfinishedPartition = Boolean.TRUE.equals(jdbc.queryForObject(
+                """
+                WITH raw_line_links AS (
+                    SELECT rir.id raw_row_id, rir.order_line_id
+                    FROM app.raw_import_rows rir
+                    WHERE rir.import_batch_id=? AND rir.order_line_id IS NOT NULL
+                    UNION
+                    SELECT rirol.raw_import_row_id, rirol.order_line_id
+                    FROM app.raw_import_row_order_lines rirol
+                    JOIN app.raw_import_rows rir ON rir.id=rirol.raw_import_row_id
+                    WHERE rir.import_batch_id=?
+                )
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM raw_line_links rll
+                    JOIN app.raw_import_rows rir ON rir.id=rll.raw_row_id AND rir.status='ACCEPTED'
+                    LEFT JOIN app.fulfillments f ON f.order_line_id=rll.order_line_id
+                    WHERE f.id IS NULL
+                       OR f.outcome NOT IN ('FULLY_FULFILLED', 'PARTIALLY_FULFILLED', 'CANCELLED')
+                       OR EXISTS (
+                           SELECT 1 FROM app.review_cases rc
+                           WHERE rc.order_line_id=rll.order_line_id AND rc.status='OPEN'
+                       )
+                )
+                """,
+                Boolean.class,
+                sourceBatchId,
+                sourceBatchId));
         boolean hasMultiShipmentFollowup = Boolean.TRUE.equals(jdbc.queryForObject(
                 """
                 SELECT EXISTS (
@@ -298,7 +326,7 @@ public class TrackingFileService {
                 """,
                 Boolean.class,
                 sourceBatchId));
-        if (hasMultiShipmentFollowup || acceptedRows == 0 || returns.size() != acceptedRows) {
+        if (hasUnfinishedPartition || hasMultiShipmentFollowup || acceptedRows == 0 || returns.size() != acceptedRows) {
             return null;
         }
         ParsedSourceFile original = sourceFileParser.parse(fileStore.read(source.fileRef()));
@@ -420,8 +448,9 @@ public class TrackingFileService {
                 """
                 SELECT DISTINCT import_batch_id FROM (
                     SELECT rir.import_batch_id
-                    FROM app.raw_import_rows rir
-                    JOIN app.order_lines ol ON ol.id=rir.order_line_id
+                    FROM app.raw_import_row_order_lines rirol
+                    JOIN app.raw_import_rows rir ON rir.id=rirol.raw_import_row_id
+                    JOIN app.order_lines ol ON ol.id=rirol.order_line_id
                     JOIN app.fulfillments f ON f.order_line_id=ol.id
                     JOIN app.shipment_items si ON si.fulfillment_id=f.id
                     WHERE si.shipment_id=?

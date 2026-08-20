@@ -363,6 +363,7 @@ public class OrderCreateService {
                 fullyMapped = false;
             }
         }
+        validateCompleteStaticBundlePartitions(lineResults);
 
         Order order = new Order();
         order.setOrderNo(orderNo);
@@ -536,13 +537,12 @@ public class OrderCreateService {
         List<String> missingRefs = new ArrayList<>();
         String reviewReasonCode = null;
         for (BundleComponentInput componentInput : inputs) {
-            ComponentResolution resolution = item.bundleId() == null
-                    ? resolveComponent(channel, componentInput)
-                    : resolveStaticBundleComponent(componentInput);
+            ComponentResolution resolution = resolveComponent(channel, componentInput, item.bundleId() != null);
             resolutions.add(resolution);
             if (!resolution.mapped()) {
-                missingRefs.add(blankToEmpty(
-                        item.bundleId() == null ? componentInput.sourceSkuRef() : componentInput.skuCode()));
+                missingRefs.add(componentInput.skuCode() == null || componentInput.skuCode().isBlank()
+                        ? blankToEmpty(componentInput.sourceSkuRef())
+                        : componentInput.skuCode());
                 if ("SKU_MAPPING_CONFLICT".equals(resolution.reviewReasonCode())) {
                     reviewReasonCode = "SKU_MAPPING_CONFLICT";
                 } else if (reviewReasonCode == null) {
@@ -583,17 +583,13 @@ public class OrderCreateService {
         return new LineResult(line, components, List.of(), null);
     }
 
-    /** 静态礼包必须完整、逐项等量命中当前主数据；定制礼包（bundleId=null）保持原有语义。 */
+    /** 静态礼包分片必须逐项等量属于当前主数据；完整 BOM 由来源适配器按 provider 分片。 */
     private void validateStaticBundleSnapshot(String bundleId, List<ComponentResolution> resolutions) {
         if (bundleId == null) {
             return;
         }
         long parsedBundleId = WriteCommands.parseIdentifier(bundleId);
         List<BundleItem> expected = bundleItemRepository.findByBundleIdOrderBySortNo(parsedBundleId);
-        if (expected.size() != resolutions.size()) {
-            throw BusinessException.unprocessable(
-                    "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包组件数量与主数据 BOM 不一致");
-        }
         Map<Long, BigDecimal> expectedQuantities = new LinkedHashMap<>();
         for (BundleItem item : expected) {
             expectedQuantities.put(item.getSkuId(), item.getQuantityPerBundle());
@@ -606,9 +602,63 @@ public class OrderCreateService {
                         "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包组件与主数据 BOM 不一致");
             }
         }
-        if (!expectedQuantities.isEmpty()) {
+    }
+
+    /**
+     * 同一来源礼包的 provider 分片在输入中相邻出现；每组分片合并后必须恰好覆盖一次完整 BOM。
+     * 已进入 NEED_REVIEW 的静态分片保持 fail-closed，不把缺映射改写成结构性 422。
+     */
+    private void validateCompleteStaticBundlePartitions(List<LineResult> results) {
+        Long currentBundleId = null;
+        Map<Long, BigDecimal> actual = new LinkedHashMap<>();
+        Map<Long, BigDecimal> expected = Map.of();
+        for (LineResult result : results) {
+            Long bundleId = result.line().getBundleId();
+            if (!result.mapped()) {
+                currentBundleId = null;
+                actual = new LinkedHashMap<>();
+                expected = Map.of();
+                continue;
+            }
+            if (bundleId == null) {
+                if (currentBundleId != null && !actual.equals(expected)) {
+                    throw BusinessException.unprocessable(
+                            "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包分片未完整覆盖主数据 BOM");
+                }
+                currentBundleId = null;
+                actual = new LinkedHashMap<>();
+                expected = Map.of();
+                continue;
+            }
+            if (!Objects.equals(currentBundleId, bundleId)) {
+                if (currentBundleId != null && !actual.equals(expected)) {
+                    throw BusinessException.unprocessable(
+                            "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包分片未完整覆盖主数据 BOM");
+                }
+                currentBundleId = bundleId;
+                actual = new LinkedHashMap<>();
+                expected = bundleItemRepository.findByBundleIdOrderBySortNo(bundleId).stream()
+                        .collect(java.util.stream.Collectors.toMap(
+                                BundleItem::getSkuId,
+                                BundleItem::getQuantityPerBundle,
+                                (left, right) -> left,
+                                LinkedHashMap::new));
+            }
+            for (OrderLineComponent component : result.components()) {
+                if (actual.put(component.getSkuId(), component.getQuantityPerBundle()) != null) {
+                    throw BusinessException.unprocessable(
+                            "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包分片重复包含同一组件");
+                }
+            }
+            if (actual.equals(expected)) {
+                currentBundleId = null;
+                actual = new LinkedHashMap<>();
+                expected = Map.of();
+            }
+        }
+        if (currentBundleId != null && !actual.equals(expected)) {
             throw BusinessException.unprocessable(
-                    "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包缺少主数据 BOM 组件");
+                    "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包分片未完整覆盖主数据 BOM");
         }
     }
 
@@ -623,7 +673,17 @@ public class OrderCreateService {
         return line;
     }
 
-    private ComponentResolution resolveComponent(SourceChannel channel, BundleComponentInput input) {
+    private ComponentResolution resolveComponent(
+            SourceChannel channel, BundleComponentInput input, boolean staticBundle) {
+        if (staticBundle) {
+            if (input.skuCode() == null || input.skuCode().isBlank()) {
+                return new ComponentResolution(false, null, "SKU_MAPPING_REQUIRED", input);
+            }
+            Sku sku = skuRepository.findBySkuCode(input.skuCode()).orElse(null);
+            return sku == null
+                    ? new ComponentResolution(false, null, "SKU_MAPPING_REQUIRED", input)
+                    : new ComponentResolution(true, sku, null, input);
+        }
         SourceChannelSku mapping = findMapping(channel, input.sourceSkuRef());
         if (mapping == null) {
             return new ComponentResolution(false, null, "SKU_MAPPING_REQUIRED", input);
@@ -633,17 +693,6 @@ public class OrderCreateService {
             return new ComponentResolution(false, null, "SKU_MAPPING_CONFLICT", input);
         }
         return new ComponentResolution(true, sku, null, input);
-    }
-
-    /** 静态礼包组件来自权威 BOM，按内部 SKU 编码解析，不伪造来源渠道 SKU 映射。 */
-    private ComponentResolution resolveStaticBundleComponent(BundleComponentInput input) {
-        if (input.skuCode() == null || input.skuCode().isBlank()) {
-            return new ComponentResolution(false, null, "SKU_MAPPING_REQUIRED", input);
-        }
-        Sku sku = skuRepository.findBySkuCode(input.skuCode()).orElse(null);
-        return sku == null
-                ? new ComponentResolution(false, null, "SKU_MAPPING_REQUIRED", input)
-                : new ComponentResolution(true, sku, null, input);
     }
 
     private SourceChannelSku findMapping(SourceChannel channel, String sourceSkuRef) {

@@ -22,7 +22,6 @@ import cn.zimu.fulfillment.product.ProductRepository;
 import cn.zimu.fulfillment.product.SourceBundleMappingWrite;
 import cn.zimu.fulfillment.product.SourceChannelBundle;
 import cn.zimu.fulfillment.product.SourceChannelBundleRepository;
-import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
@@ -178,7 +177,6 @@ public class BundleMasterDataService {
     private List<BundleItem> parseItems(List<BundleItemInput> inputs) {
         List<BundleItem> result = new ArrayList<>();
         Set<Long> seenSkuIds = new HashSet<>();
-        Long providerId = null;
         int sortNo = 1;
         for (BundleItemInput input : inputs) {
             long skuId = WriteCommands.parseIdentifier(input.skuId());
@@ -186,12 +184,7 @@ public class BundleMasterDataService {
                 throw BusinessException.badRequest(
                         "BUNDLE_DUPLICATE_SKU", "同一礼包内组件 SKU 重复: " + input.skuId());
             }
-            Sku sku = skus.findById(skuId).orElseThrow(() -> BusinessException.notFound("SKU 不存在"));
-            if (providerId == null) {
-                providerId = sku.getFulfillmentProviderId();
-            } else if (!providerId.equals(sku.getFulfillmentProviderId())) {
-                throw BusinessException.unprocessable("BUNDLE_MIXED_PROVIDERS", "礼包组件必须归属同一履约方");
-            }
+            skus.findById(skuId).orElseThrow(() -> BusinessException.notFound("SKU 不存在"));
             BundleItem item = new BundleItem();
             item.setSortNo(sortNo++);
             item.setSkuId(skuId);

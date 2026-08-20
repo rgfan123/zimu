@@ -199,7 +199,7 @@ class BundleMasterDataApiTest {
     }
 
     @Test
-    void componentsFromDifferentProvidersAreRejectedThroughThePublicApi() {
+    void componentsFromDifferentProvidersCreateAMixedStaticBundleThroughThePublicApi() {
         Map<String, Object> jdSku = firstSkuForProvider("1");
         Map<String, Object> thirdPartySku = firstSkuForProvider("2");
         Map<String, Object> request = Map.of(
@@ -217,8 +217,11 @@ class BundleMasterDataApiTest {
                         "bundle-mixed-provider-001", "req-bundle-mixed-provider-001")),
                 Map.class);
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
-        assertThat(response.getBody()).containsEntry("business_code", "BUNDLE_MIXED_PROVIDERS");
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody()).containsEntry("active", true);
+        assertThat(attributes(response.getBody())).containsEntry("status", "ACTIVE");
+        assertThat(attributes(response.getBody()).get("fulfillment_provider_id")).isNull();
+        assertThat((List<?>) attributes(response.getBody()).get("items")).hasSize(2);
     }
 
     @SuppressWarnings("unchecked")

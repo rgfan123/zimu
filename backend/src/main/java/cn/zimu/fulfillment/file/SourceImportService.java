@@ -166,17 +166,27 @@ public class SourceImportService {
                 group.forEach(row -> markReview(batchId, row, "IMPORT_VALIDATION", "同一来源订单的收货人快照不一致"));
                 continue;
             }
-            CanonicalOrderInput orderInput = canonical(parsed, batchNo, entry.getKey(), group);
+            CanonicalizedGroup canonical = canonical(parsed, batchNo, entry.getKey(), group);
             OrderDetailDto order = orderCreateService.createImported(
-                            orderInput,
+                            canonical.order(),
                             batchId,
                             "import-" + batchId + "-" + sha256(entry.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8)),
                             context)
                     .result();
+            int lineCursor = 0;
             for (int index = 0; index < group.size(); index++) {
                 ParsedSourceRow row = group.get(index);
-                OrderLineDto line = order.lines().get(index);
-                String errorCode = importErrorCode(line.exceptionCode());
+                int partitionCount = canonical.partitionCounts().get(index);
+                List<OrderLineDto> partitionLines = order.lines().subList(lineCursor, lineCursor + partitionCount);
+                lineCursor += partitionCount;
+                OrderLineDto primaryLine = partitionLines.getFirst();
+                String errorCode = partitionLines.stream()
+                        .map(OrderLineDto::exceptionCode)
+                        .filter(Objects::nonNull)
+                        .map(this::importErrorCode)
+                        .filter(Objects::nonNull)
+                        .findFirst()
+                        .orElse(null);
                 jdbc.update(
                         """
                         UPDATE app.raw_import_rows
@@ -185,12 +195,25 @@ public class SourceImportService {
                         """,
                         errorCode == null ? "ACCEPTED" : "NEED_REVIEW",
                         errorCode,
-                        errorCode == null ? null : json(Map.of("order_line_exception", line.exceptionCode())),
+                        errorCode == null ? null : json(Map.of(
+                                "order_line_exceptions",
+                                partitionLines.stream().map(OrderLineDto::exceptionCode).filter(Objects::nonNull).toList())),
                         Long.valueOf(order.id()),
-                        Long.valueOf(line.id()),
+                        Long.valueOf(primaryLine.id()),
                         batchId,
                         row.sheetIndex(),
                         row.rowIndex());
+                Long rawId = rawIds.get(new RowKey(row.sheetIndex(), row.rowIndex()));
+                for (int partitionNo = 0; partitionNo < partitionLines.size(); partitionNo++) {
+                    jdbc.update(
+                            """
+                            INSERT INTO app.raw_import_row_order_lines(raw_import_row_id, order_line_id, partition_no)
+                            VALUES (?, ?, ?)
+                            """,
+                            rawId,
+                            Long.valueOf(partitionLines.get(partitionNo).id()),
+                            partitionNo + 1);
+                }
             }
         }
 
@@ -377,13 +400,15 @@ public class SourceImportService {
             Long orderLineId,
             String errorCode,
             String errorDetail) {
-        jdbc.update(
+        Long rawId = jdbc.queryForObject(
                 """
                 INSERT INTO app.raw_import_rows
                     (import_batch_id, sheet_name, sheet_index, row_index, raw_cells,
                      source_order_ref, status, error_code, error_detail, order_id, order_line_id)
                 VALUES (?, 'STRUCTURED', 0, ?, ?::jsonb, ?, ?, ?, ?::jsonb, ?, ?)
+                RETURNING id
                 """,
+                Long.class,
                 batchId,
                 rowIndex,
                 json(rowCells(order, itemIndex)),
@@ -393,6 +418,15 @@ public class SourceImportService {
                 errorDetail,
                 orderId,
                 orderLineId);
+        if (orderLineId != null) {
+            jdbc.update(
+                    """
+                    INSERT INTO app.raw_import_row_order_lines(raw_import_row_id, order_line_id, partition_no)
+                    VALUES (?, ?, 1)
+                    """,
+                    rawId,
+                    orderLineId);
+        }
     }
 
     /** 结构化导入的内容哈希幂等查询；与 uq_import_content_scope（batch_type+sha+channel+provider+export）语义对齐。 */
@@ -646,18 +680,22 @@ public class SourceImportService {
         }
     }
 
-    private CanonicalOrderInput canonical(
+    private CanonicalizedGroup canonical(
             ParsedSourceFile parsed, String batchNo, String groupKey, List<ParsedSourceRow> rows) {
         ParsedSourceRow first = rows.getFirst();
         CustomerInput customer = importedCustomers.resolve(
                 parsed.sourceChannel(), first.receiverName(), first.receiverPhone());
-        List<OrderItemInput> items = rows.stream()
-                .map(row -> canonicalItem(parsed.sourceChannel(), row))
-                .toList();
+        List<OrderItemInput> items = new ArrayList<>();
+        List<Integer> partitionCounts = new ArrayList<>();
+        for (ParsedSourceRow row : rows) {
+            List<OrderItemInput> rowItems = canonicalItems(parsed.sourceChannel(), row);
+            items.addAll(rowItems);
+            partitionCounts.add(rowItems.size());
+        }
         Instant settlementAt = rows.stream().map(ParsedSourceRow::orderedAt).filter(Objects::nonNull)
                 .min(Comparator.naturalOrder()).orElseGet(
                         () -> parsed.sourceChannel() == SourceChannel.WANQI ? null : Instant.now());
-        return new CanonicalOrderInput(
+        CanonicalOrderInput order = new CanonicalOrderInput(
                 parsed.sourceChannel(),
                 first.sourceOrderRef() == null ? groupKey : first.sourceOrderRef(),
                 batchNo,
@@ -671,21 +709,27 @@ public class SourceImportService {
                         : new Settlement(SettlementMethod.valueOf(first.settlementMethod()), settlementAt),
                 first.remark(),
                 rows.stream().map(row -> "import://" + batchNo + "/" + row.sheetIndex() + "/" + row.rowIndex()).toList());
+        return new CanonicalizedGroup(order, List.copyOf(partitionCounts));
     }
 
-    /** 来源礼包显式映射优先于普通来源 SKU 映射；权威 BOM 组件只使用内部 SKU 编码。 */
-    private OrderItemInput canonicalItem(SourceChannel channel, ParsedSourceRow row) {
+    /**
+     * 来源礼包显式映射优先于普通来源 SKU 映射；其他渠道和非礼包行保持既有 SINGLE 语义。
+     *
+     * <p>显式命中权威礼包后，组件按所属履约方稳定分组为多个同质订单行。组件身份使用内部
+     * sku_code 快照；EMG 是京东履约编码，不能冒充来源渠道 SKU 映射。
+     */
+    private List<OrderItemInput> canonicalItems(SourceChannel channel, ParsedSourceRow row) {
         StaticSourceBundle sourceBundle = activeSourceBundle(channel, row.sourceSkuRef());
         if (sourceBundle == null) {
             if (List.of(SourceChannel.WANGQI, SourceChannel.DAZHE, SourceChannel.WANQI).contains(channel)
                     && looksLikeBundle(row.productName())) {
-                return unresolvedBundleItem(row);
+                return List.of(unresolvedBundleItem(row));
             }
-            return singleItem(row);
+            return List.of(singleItem(row));
         }
-        List<BundleComponentInput> components = jdbc.query(
+        List<StaticBundleComponent> components = jdbc.query(
                 """
-                SELECT s.sku_code, p.product_name, s.specification, s.unit,
+                SELECT s.fulfillment_provider_id, s.sku_code, p.product_name, s.specification, s.unit,
                        bi.quantity_per_bundle
                 FROM app.bundle_items bi
                 JOIN app.skus s ON s.id=bi.sku_id
@@ -693,25 +737,33 @@ public class SourceImportService {
                 WHERE bi.bundle_id=?
                 ORDER BY bi.sort_no
                 """,
-                (resultSet, rowNum) -> new BundleComponentInput(
-                        resultSet.getString("sku_code"),
-                        null,
-                        resultSet.getString("product_name"),
-                        resultSet.getString("specification"),
-                        resultSet.getString("unit"),
-                        resultSet.getBigDecimal("quantity_per_bundle").toPlainString()),
+                (resultSet, rowNum) -> new StaticBundleComponent(
+                        resultSet.getLong("fulfillment_provider_id"),
+                        new BundleComponentInput(
+                                resultSet.getString("sku_code"),
+                                null,
+                                resultSet.getString("product_name"),
+                                resultSet.getString("specification"),
+                                resultSet.getString("unit"),
+                                resultSet.getBigDecimal("quantity_per_bundle").toPlainString())),
                 sourceBundle.bundleId());
-        return new OrderItemInput(
-                row.sourceLineRef(),
-                LineType.CUSTOM_BUNDLE,
-                null,
-                row.sourceSkuRef(),
-                row.productName(),
-                row.specification(),
-                row.unit(),
-                quantity(row),
-                Long.toString(sourceBundle.bundleId()),
-                List.copyOf(components));
+        Map<Long, List<BundleComponentInput>> byProvider = new LinkedHashMap<>();
+        for (StaticBundleComponent component : components) {
+            byProvider.computeIfAbsent(component.providerId(), ignored -> new ArrayList<>()).add(component.input());
+        }
+        return byProvider.values().stream()
+                .map(providerComponents -> new OrderItemInput(
+                        row.sourceLineRef(),
+                        LineType.CUSTOM_BUNDLE,
+                        null,
+                        row.sourceSkuRef(),
+                        row.productName(),
+                        row.specification(),
+                        row.unit(),
+                        quantity(row),
+                        Long.toString(sourceBundle.bundleId()),
+                        List.copyOf(providerComponents)))
+                .toList();
     }
 
     /**
@@ -803,20 +855,37 @@ public class SourceImportService {
                 List<Long> sdkShipments = (List<Long>) routing.get("jd_sdk_shipment_ids");
                 Integer uncoveredAcceptedRows = jdbc.queryForObject(
                         """
+                        WITH raw_line_links AS (
+                            SELECT rir.id raw_row_id, rir.order_line_id
+                            FROM app.raw_import_rows rir
+                            WHERE rir.import_batch_id=? AND rir.order_line_id IS NOT NULL
+                            UNION
+                            SELECT rirol.raw_import_row_id, rirol.order_line_id
+                            FROM app.raw_import_row_order_lines rirol
+                            JOIN app.raw_import_rows rir ON rir.id=rirol.raw_import_row_id
+                            WHERE rir.import_batch_id=?
+                        )
                         SELECT count(*)
                         FROM app.raw_import_rows rir
+                        JOIN raw_line_links rll ON rll.raw_row_id=rir.id
                         WHERE rir.import_batch_id=? AND rir.status='ACCEPTED'
                           AND NOT EXISTS (
                             SELECT 1 FROM app.fulfillment_export_items fei
-                            WHERE fei.raw_import_row_id=rir.id
+                            WHERE fei.raw_import_row_id=rir.id AND fei.order_line_id=rll.order_line_id
                           )
                           AND NOT EXISTS (
                             SELECT 1 FROM app.shipment_items si
                             JOIN app.fulfillments f ON f.id=si.fulfillment_id
-                            WHERE f.order_line_id=rir.order_line_id
+                            WHERE f.order_line_id=rll.order_line_id
+                          )
+                          AND NOT EXISTS (
+                            SELECT 1 FROM app.review_cases rc
+                            WHERE rc.order_line_id=rll.order_line_id AND rc.status='OPEN'
                           )
                         """,
                         Integer.class,
+                        batchId,
+                        batchId,
                         batchId);
                 if (uncoveredAcceptedRows != null && uncoveredAcceptedRows > 0) {
                     throw BusinessException.conflict(
@@ -1103,4 +1172,6 @@ public class SourceImportService {
     private record ParentBatch(String sourceChannel, int revisionNo) {}
     private record RowKey(int sheetIndex, int rowIndex) {}
     private record StaticSourceBundle(long bundleId) {}
+    private record StaticBundleComponent(long providerId, BundleComponentInput input) {}
+    private record CanonicalizedGroup(CanonicalOrderInput order, List<Integer> partitionCounts) {}
 }
