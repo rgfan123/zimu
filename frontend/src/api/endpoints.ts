@@ -9,6 +9,14 @@
 import { apiRequest, type QueryValue } from './client';
 import { ApiError } from './client';
 import type {
+  AgentDetail,
+  AgentEvalCaseItem,
+  AgentListResponse,
+  AgentVersionItem,
+  RunDetail,
+  RunListResponse,
+} from './agentTypes';
+import type {
   AuditLog,
   AuditLogPage,
   ChannelMessageDetail,
@@ -748,4 +756,41 @@ export const analyticsApi = {
     apiRequest<ProductMetric[]>('/api/v1/analytics/products', { params: query as Record<string, QueryValue> }),
   fulfillments: (query: AnalyticsQuery) =>
     apiRequest<FulfillmentMetric[]>('/api/v1/analytics/fulfillments', { params: query as Record<string, QueryValue> }),
+};
+
+// ---------- Agent 中心（T12 读契约；只读，写动作等 T11） ----------
+
+/** GET /api/v1/agent-runs 的查询参数（AgentRunFilter，snake_case）。 */
+export interface AgentRunsQuery {
+  run_id?: string;
+  slug?: string;
+  outcome?: string;
+  /** 不传 = LIVE（后端默认即 LIVE——PREVIEW 草稿试跑不污染线上判断） */
+  run_mode?: string;
+  business_entity_type?: string;
+  business_entity_id?: string;
+  started_from?: string;
+  started_to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** GET /api/v1/agents 列表 —— 一次拿全聚合，无分页无查询参数。 */
+export const agentsApi = {
+  list: () => apiRequest<AgentListResponse>('/api/v1/agents'),
+  detail: (slug: string) => apiRequest<AgentDetail>(`/api/v1/agents/${slug}`),
+  versions: (slug: string) => apiRequest<AgentVersionItem[]>(`/api/v1/agents/${slug}/versions`),
+  /** 某定义版本的冻结用例集（可选 metric_kind 过滤，不传返回全部）。 */
+  evalCases: (slug: string, version: number, metricKind?: string) =>
+    apiRequest<AgentEvalCaseItem[]>(`/api/v1/agents/${slug}/versions/${version}/eval-cases`, {
+      params: metricKind ? { metric_kind: metricKind } : undefined,
+    }),
+};
+
+export const agentRunsApi = {
+  /** GET /api/v1/agent-runs —— 列表；limit 1..500，offset ≥ 0。 */
+  list: (query: AgentRunsQuery = {}) =>
+    apiRequest<RunListResponse>('/api/v1/agent-runs', { params: query as Record<string, QueryValue> }),
+  /** GET /api/v1/agent-runs/{run_id} —— 元信息 + 工具调用序列 + 评测结果摘要。 */
+  detail: (runId: string) => apiRequest<RunDetail>(`/api/v1/agent-runs/${runId}`),
 };

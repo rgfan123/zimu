@@ -13,6 +13,7 @@ import {
   DatabaseOutlined,
   DashboardOutlined,
   GlobalOutlined,
+  RobotOutlined,
   RocketOutlined,
   SettingOutlined,
   UnorderedListOutlined,
@@ -44,6 +45,12 @@ import ProcurementTicketsPage from '@/pages/procurement';
 import ManualReviewPage from '@/pages/workbench';
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
 import { ConnectorsPage, FulfillmentProvidersPage, SystemConfigPage } from '@/pages/system';
+import {
+  AgentDetailPage,
+  AgentRunsPage,
+  AgentsListPage,
+  RunDetailPage,
+} from '@/pages/agents';
 import { appNavigation, routeMatchScore, type NavigationNode } from '@/navigation';
 
 export interface AppRoute extends Omit<NavigationNode, 'children'> {
@@ -67,6 +74,11 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/orders/exceptions': <ExceptionOrdersPage />,
   '/orders/tracking': <OrderTrackingPage />,
   '/orders/:orderId': <OrderDetailPage />,
+  '/agents': <AgentsListPage />,
+  '/agents/runs': <AgentRunsPage />,
+  '/agents/:slug': <AgentDetailPage />,
+  '/agents/runs/:runId': <RunDetailPage />,
+  '/agents/:slug/evals': <AgentDetailPage />,
   '/inventory/overview': <InventoryOverviewPage />,
   '/inventory/details': <InventoryDetailsPage />,
   '/product/products': <ProductsPage />,
@@ -91,6 +103,7 @@ const routeIcons: Readonly<Record<string, ReactNode>> = {
   '/dashboard': <DashboardOutlined style={{ fontSize: iconFontSize }} />,
   '/workbench': <CheckSquareOutlined style={{ fontSize: iconFontSize }} />,
   '/orders': <UnorderedListOutlined style={{ fontSize: iconFontSize }} />,
+  '/agents': <RobotOutlined style={{ fontSize: iconFontSize }} />,
   '/inventory': <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
   '/product': <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
   '/analytics': <BarChartOutlined style={{ fontSize: iconFontSize }} />,

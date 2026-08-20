@@ -147,3 +147,14 @@ body {
   padding: 1px 7px;
   font-variant-numeric: tabular-nums;
 }
+
+/* ============ Agent 中心：PREVIEW 运行行底色 ============ */
+/* run_mode 存在的全部理由是隔离草稿试跑。横幅说明「现在在看什么」，
+   行底色让人滚到半页时仍然知道——两者缺一，隔离就是半拉子。
+   紫色是刻意选的：与品牌蓝相邻但绝不混淆，且不占用 success/warning/error 三个语义位。 */
+.agent-run-preview-row > td {
+  background: var(--zimu-saas-colorPurpleBg, #f1eef8);
+}
+.agent-run-preview-row:hover > td {
+  background: var(--zimu-saas-colorPurpleBgHover, #e8e3f4);
+}

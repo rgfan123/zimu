@@ -40,6 +40,17 @@ export const appNavigation = [
     ],
   },
   {
+    path: '/agents',
+    label: 'Agent 中心',
+    children: [
+      { path: '/agents', label: 'Agent 列表' },
+      { path: '/agents/runs', label: '运行记录' },
+      { path: '/agents/:slug', label: 'Agent 详情', hideInMenu: true },
+      { path: '/agents/runs/:runId', label: '运行详情', hideInMenu: true },
+      { path: '/agents/:slug/evals', label: '评测用例', hideInMenu: true },
+    ],
+  },
+  {
     path: '/inventory',
     label: '库存中心',
     children: [
