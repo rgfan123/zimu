@@ -14,7 +14,6 @@ import cn.zimu.fulfillment.order.dto.OrderDetailDto;
 import cn.zimu.fulfillment.order.dto.OrderEventDto;
 import cn.zimu.fulfillment.order.dto.OrderLineComponentDto;
 import cn.zimu.fulfillment.order.dto.OrderLineDto;
-import cn.zimu.fulfillment.order.dto.OrderSummaryDto;
 import cn.zimu.fulfillment.order.dto.OrderVersionDto;
 import cn.zimu.fulfillment.order.dto.ReviewCaseDto;
 import cn.zimu.fulfillment.order.dto.Receiver;
@@ -34,26 +33,6 @@ public class OrderMapper {
         this.metadataRegistry = metadataRegistry;
     }
 
-    public OrderSummaryDto toSummary(Order order, String customerName, OrderQueryService.ViewProjection projection) {
-        return new OrderSummaryDto(
-                String.valueOf(order.getId()),
-                order.getOrderNo(),
-                order.getSourceChannel().name(),
-                order.getSourceRef(),
-                order.getCustomerId() == null ? null : String.valueOf(order.getCustomerId()),
-                customerName,
-                order.getReceiverName(),
-                order.getOrderStatus().name(),
-                projection.stage(),
-                projection.health(),
-                projection.completedCount(),
-                projection.totalCount(),
-                projection.attentionReason(),
-                order.getCreatedAt(),
-                order.getUpdatedAt(),
-                order.getLockVersion());
-    }
-
     public OrderDetailDto toDetail(
             Order order,
             List<OrderLine> lines,
@@ -61,6 +40,7 @@ public class OrderMapper {
             List<ReviewCase> reviewCases,
             String customerName,
             Map<Long, String> skuCodes,
+            String sourceChannel,
             OrderQueryService.ViewProjection projection) {
         Map<Long, List<OrderLineComponent>> componentsByLine = new LinkedHashMap<>();
         for (OrderLineComponent component : components) {
@@ -79,7 +59,7 @@ public class OrderMapper {
         return new OrderDetailDto(
                 String.valueOf(order.getId()),
                 order.getOrderNo(),
-                order.getSourceChannel().name(),
+                sourceChannel,
                 order.getSourceRef(),
                 order.getCustomerId() == null ? null : String.valueOf(order.getCustomerId()),
                 customerName,

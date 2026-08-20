@@ -4154,7 +4154,7 @@ components:
       properties:
         source_channel_display_name:
           type: string
-          enum: [大者, 万齐]
+          enum: [大者]
         reason: { type: string, minLength: 1, maxLength: 500 }
         evidence: { type: object, additionalProperties: true }
     SourceAttributionCorrection:
@@ -4171,7 +4171,7 @@ components:
         id: { $ref: '#/components/schemas/Identifier' }
         import_batch_id: { $ref: '#/components/schemas/Identifier' }
         correction_no: { type: integer, minimum: 1 }
-        recorded_source_channel_display_name: { type: string, example: 万齐 }
+        recorded_source_channel_display_name: { type: string, example: 大者 }
         effective_source_channel_display_name: { type: string, example: 大者 }
         reason: { type: string }
         invalidated_source_return_count: { type: integer, minimum: 0 }

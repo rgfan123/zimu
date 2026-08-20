@@ -700,6 +700,9 @@ export interface ImportBatch {
   parent_import_batch_id?: string;
   revision_no: number;
   source_channel?: SourceChannel;
+  recorded_source_channel_display_name?: string | null;
+  effective_source_channel_display_name?: string | null;
+  source_channel_display_name?: string | null;
   fulfillment_provider_id?: string;
   source_fulfillment_export_id?: string;
   template_family: string;

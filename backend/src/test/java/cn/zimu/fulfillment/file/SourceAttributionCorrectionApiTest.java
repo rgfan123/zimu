@@ -101,6 +101,16 @@ class SourceAttributionCorrectionApiTest {
                 "SELECT effective_source_channel FROM app.v_import_batch_effective_source WHERE import_batch_id=?",
                 String.class,
                 batchId)).isEqualTo("DAZHE");
+        assertThat(http.getForObject("/api/v1/orders/" + orderId, Map.class))
+                .containsEntry("source_channel", "DAZHE");
+        assertThat(http.getForObject(
+                        "/api/v1/orders?source_channel=DAZHE&query=HISTORICAL-SOURCE-001&page=0&size=20",
+                        Map.class))
+                .containsEntry("total_elements", 1);
+        assertThat(http.getForObject(
+                        "/api/v1/analytics/channels?source_channel=DAZHE",
+                        Map[].class))
+                .anySatisfy(row -> assertThat(row).containsEntry("source_channel", "DAZHE"));
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.source_attribution_corrections WHERE import_batch_id=?",
                 Integer.class,

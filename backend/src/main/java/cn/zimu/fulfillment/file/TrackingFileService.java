@@ -797,6 +797,7 @@ public class TrackingFileService {
         if (rows.isEmpty()) throw BusinessException.notFound("运单导入批次不存在");
         Map<String, Object> row = new LinkedHashMap<>(rows.getFirst());
         row.replaceAll((key, value) -> key.endsWith("_id") && value != null ? value.toString() : value);
+        row.put("settlement_missing", false);
         row.put("row_counts", rowCounts(batchId));
         row.put("generated_fulfillment_export_ids", List.of());
         row.put("generated_source_return_export_ids", generatedSourceReturnIds(batchId));
@@ -954,9 +955,9 @@ public class TrackingFileService {
     private Map<String, Integer> businessResults(long batchId) {
         return jdbc.queryForObject(
                 """
-                SELECT COUNT(*) FILTER (WHERE raw_cells->>'结果'='SHIPPED') shipped,
-                       COUNT(*) FILTER (WHERE raw_cells->>'结果'='PARTIAL') partial,
-                       COUNT(*) FILTER (WHERE raw_cells->>'结果'='FAILED') failed
+                SELECT COUNT(DISTINCT order_line_id) FILTER (WHERE raw_cells->>'结果'='SHIPPED') shipped,
+                       COUNT(DISTINCT order_line_id) FILTER (WHERE raw_cells->>'结果'='PARTIAL') partial,
+                       COUNT(DISTINCT order_line_id) FILTER (WHERE raw_cells->>'结果'='FAILED') failed
                 FROM app.raw_import_rows WHERE import_batch_id=?
                 """,
                 (resultSet, rowNum) -> Map.of(

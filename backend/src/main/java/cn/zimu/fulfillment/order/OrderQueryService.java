@@ -50,10 +50,14 @@ public class OrderQueryService {
 
     private static final String SELECT_COLUMNS =
             """
-            SELECT o.id, o.order_no, o.source_channel, o.source_ref, o.customer_id, c.customer_name,
+            SELECT o.id, o.order_no,
+                   COALESCE(source.effective_source_channel, o.source_channel) source_channel,
+                   o.source_ref, o.customer_id, c.customer_name,
                    o.receiver_name, o.order_status, o.lock_version, o.created_at, o.updated_at,
                    v.processing_stage, v.processing_health, v.completed_count, v.total_count, v.attention_reason
             FROM app.orders o
+            LEFT JOIN app.v_import_batch_effective_source source
+              ON source.import_batch_id=o.source_import_batch_id
             LEFT JOIN app.customers c ON c.id = o.customer_id
             LEFT JOIN app.v_order_progress_summary v ON v.order_id = o.id
             """;
@@ -105,7 +109,7 @@ public class OrderQueryService {
             args.add(query.dateTo());
         }
         if (query.sourceChannel() != null) {
-            where.append(" AND o.source_channel = ?");
+            where.append(" AND COALESCE(source.effective_source_channel, o.source_channel) = ?");
             args.add(query.sourceChannel().name());
         }
         if (query.orderStatus() != null) {
@@ -189,7 +193,31 @@ public class OrderQueryService {
         if (!lines.isEmpty()) {
             skuRepository.findAllById(collectSkuIds(lines, components)).forEach(sku -> skuCodes.put(sku.getId(), sku.getSkuCode()));
         }
-        return orderMapper.toDetail(order, lines, components, reviewCases, customerName, skuCodes, viewProjection(order.getId()));
+        return orderMapper.toDetail(
+                order,
+                lines,
+                components,
+                reviewCases,
+                customerName,
+                skuCodes,
+                effectiveSourceChannel(order),
+                viewProjection(order.getId()));
+    }
+
+    private String effectiveSourceChannel(Order order) {
+        if (order.getSourceImportBatchId() == null) {
+            return order.getSourceChannel().name();
+        }
+        return jdbcTemplate.queryForObject(
+                """
+                SELECT COALESCE(source.effective_source_channel, o.source_channel)
+                FROM app.orders o
+                LEFT JOIN app.v_import_batch_effective_source source
+                  ON source.import_batch_id=o.source_import_batch_id
+                WHERE o.id=?
+                """,
+                String.class,
+                order.getId());
     }
 
     /** 供命令服务在事务内复用：同一事务内先 flush 再调用，保证视图查询可见。 */

@@ -251,7 +251,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
           <Alert
             type={result.row_counts.need_review > 0 || result.row_counts.rejected > 0 ? 'warning' : 'success'}
             showIcon
-            message={`批次 ${result.batch_no} · ${result.source_channel ?? '来源待确认'}`}
+            message={`批次 ${result.batch_no} · ${result.source_channel_display_name ?? '来源待确认'}`}
             description={result.confirmed_at
               ? `${summarizeImportBatch(result.row_counts)}；批次已确认，生成履约文件 ${result.generated_fulfillment_export_ids?.length ?? 0} 份，已形成履约承诺。`
               : `${summarizeImportBatch(result.row_counts)}；确认后已接收行将写入系统订单，并生成履约文件，形成履约承诺。请核对整个批次后统一确认。`}
@@ -329,7 +329,8 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                   title: '所属来源',
                   dataIndex: 'sourceChannel',
                   width: 110,
-                  render: () => result?.source_channel ? CHANNEL_LABELS[result.source_channel] : '—',
+                  render: () => result?.source_channel_display_name
+                    ?? (result?.source_channel ? CHANNEL_LABELS[result.source_channel] : '—'),
                 },
                 { title: '来源订单号', dataIndex: 'sourceOrderRef', width: 160 },
                 {

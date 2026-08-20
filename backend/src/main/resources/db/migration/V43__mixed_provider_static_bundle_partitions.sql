@@ -68,9 +68,10 @@ CREATE TABLE app.raw_import_row_order_lines (
 );
 
 INSERT INTO app.raw_import_row_order_lines(raw_import_row_id, order_line_id, partition_no)
-SELECT id, order_line_id, 1
-FROM app.raw_import_rows
-WHERE order_line_id IS NOT NULL;
+SELECT rir.id, rir.order_line_id, 1
+FROM app.raw_import_rows rir
+JOIN app.import_batches ib ON ib.id=rir.import_batch_id AND ib.batch_type='SOURCE_ORDER'
+WHERE rir.order_line_id IS NOT NULL;
 
 CREATE FUNCTION app.validate_raw_import_row_order_line() RETURNS TRIGGER
 LANGUAGE plpgsql AS $$

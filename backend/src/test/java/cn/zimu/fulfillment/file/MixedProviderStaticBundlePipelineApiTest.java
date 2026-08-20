@@ -240,6 +240,9 @@ class MixedProviderStaticBundlePipelineApiTest {
                 exportIds.getFirst().toString(), fillThirdPartyTracking(thirdPartyFile));
         assertThat(tracking.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(castMap(tracking.getBody().get("business_results"))).containsEntry("shipped", 1);
+        Map<String, Object> trackingReplay = get(
+                "/api/v1/tracking-imports/" + tracking.getBody().get("id"));
+        assertThat(trackingReplay.get("business_results")).isEqualTo(tracking.getBody().get("business_results"));
         long thirdPartyShipmentId = jdbc.queryForObject(
                 """
                 SELECT DISTINCT fei.shipment_id
