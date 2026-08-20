@@ -46,6 +46,6 @@ T01 →（T02 ‖ T03 并行）→（T04 → T05 → T06）‖（T07 → T08）�
 | 08 | 门禁引擎 + 运行期 PII 守卫（GitHub #9） | 07 | resolved |
 | 09 | QUALITY 链路：promptfoo 执行器 + 异步评测（GitHub #10） | 03、05 | resolved |
 | 10 | Meta-Agent 工具面（list_agent_tools + 定义写工具）（GitHub #11） | 02、08 | resolved |
-| 11 | 异步任务基建 + 定义域写端点（202/confirm/reject/set-enabled/rollback） | 03、05、08 | open |
+| 11 | 异步任务基建 + 定义域写端点（202/confirm/reject/set-enabled/rollback） | 03、05、08 | resolved |
 | 12 | 读端点 + /internal 只读镜像 | 02、03 | open |
 | 13 | Meta-Agent REST 端点（202 闭环） | 10、11 | open |

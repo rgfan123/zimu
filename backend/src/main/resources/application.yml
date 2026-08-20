@@ -54,6 +54,12 @@ app:
     poll-ms: ${MESSAGE_WORKER_POLL_MS:500}
     lease-seconds: ${MESSAGE_WORKER_LEASE_SECONDS:30}
     backoff-seconds: ${MESSAGE_WORKER_BACKOFF_SECONDS:5}
+  agent-worker:
+    # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
+    enabled: ${AGENT_WORKER_ENABLED:true}
+    poll-ms: ${AGENT_WORKER_POLL_MS:500}
+    lease-seconds: ${AGENT_WORKER_LEASE_SECONDS:30}
+    backoff-seconds: ${AGENT_WORKER_BACKOFF_SECONDS:5}
   message-interpreter:
     provider: ${MESSAGE_INTERPRETER_PROVIDER:}
     model: ${MESSAGE_INTERPRETER_MODEL:}
