@@ -1,4 +1,4 @@
--- V40: 万齐来源渠道 + 静态礼包显式映射。
+-- V41: 万齐来源渠道 + 静态礼包显式映射。
 -- 万齐订单表是独立来源渠道；来源礼包编号只能显式指向已 ACTIVE 的静态礼包。
 
 ALTER TABLE app.customer_source_refs DROP CONSTRAINT customer_source_refs_source_channel_check;
