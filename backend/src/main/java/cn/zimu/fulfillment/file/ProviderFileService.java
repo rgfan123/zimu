@@ -125,6 +125,164 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
         return result;
     }
 
+    /**
+     * 把已经人工确认且完成映射的企业微信订单接回京东 Shipment pipeline。
+     *
+     * <p>该接缝只创建本地 Shipment/ShipmentItem，不调用京东；地址确认、实时库存、京东建单与
+     * 运单回填仍由既有 Shipment 级公开命令分别完成。当前只接受全部订单行均为京东普通单品的
+     * 订单，任何第三方、礼包、复核、缺映射或非整数数量均失败关闭。
+     */
+    @Transactional
+    ReadyOrderRoute routeReadyWecomOrder(long orderId, long expectedOrderVersion) {
+        ReadyOrder header = lockReadyOrder(orderId);
+        if (header.version() != expectedOrderVersion) {
+            throw BusinessException.conflict("VERSION_CONFLICT", "订单已更新，请刷新后重试");
+        }
+        if (!"WECOM".equals(header.sourceChannel())) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_SOURCE_UNSUPPORTED", "该入口只处理已确认的企业微信订单");
+        }
+        if (header.sourceImportBatchId() != null) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_BATCH_UNSUPPORTED", "来源批次订单必须通过批次确认路由");
+        }
+        if (!"SKU_MAPPED".equals(header.orderStatus())) {
+            throw BusinessException.conflict(
+                    "ORDER_ROUTING_STATUS_INVALID", "订单必须处于已完成 SKU 映射状态");
+        }
+        Boolean openReview = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM app.review_cases WHERE order_id=? AND status='OPEN')",
+                Boolean.class,
+                orderId);
+        if (Boolean.TRUE.equals(openReview)) {
+            throw BusinessException.conflict("ORDER_ROUTING_REVIEW_OPEN", "订单仍有开放复核事项");
+        }
+        Boolean alreadyRouted = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM app.shipment_items si "
+                        + "JOIN app.fulfillments f ON f.id=si.fulfillment_id "
+                        + "JOIN app.order_lines ol ON ol.id=f.order_line_id WHERE ol.order_id=?)",
+                Boolean.class,
+                orderId);
+        if (Boolean.TRUE.equals(alreadyRouted)) {
+            throw BusinessException.conflict("ORDER_ALREADY_ROUTED", "订单已经生成发货批次，禁止重复路由");
+        }
+
+        List<ExportRow> rows = readyWecomJdRows(orderId);
+        long distinctLines = rows.stream().map(ExportRow::orderLineId).distinct().count();
+        if (rows.isEmpty() || rows.size() != distinctLines || distinctLines != header.lineCount()) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_NOT_READY", "订单存在非京东普通单品、缺少履约方 SKU 映射或尚未就绪的行");
+        }
+        if (rows.stream().anyMatch(row -> !"JD_WAREHOUSE".equals(row.providerType())
+                || !"SDK".equals(outboundMode(row.providerId())))) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_PROVIDER_UNSUPPORTED", "该入口只支持京东云仓 SDK 履约");
+        }
+        if (rows.stream().anyMatch(row -> !jdQuantityIsPositiveInteger(row))) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_QUANTITY_INVALID", "京东出库数量必须为正整数");
+        }
+
+        List<Long> shipmentIds = new ArrayList<>();
+        rows.stream()
+                .collect(Collectors.groupingBy(ExportRow::providerId, LinkedHashMap::new, Collectors.toList()))
+                .forEach((providerId, providerRows) -> shipmentIds.addAll(createJdShipments(providerId, providerRows)));
+        jdbc.update(
+                """
+                UPDATE app.order_lines
+                SET fulfillment_committed_at=COALESCE(fulfillment_committed_at, CURRENT_TIMESTAMP),
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE order_id=?
+                """,
+                orderId);
+        int updated = jdbc.update(
+                "UPDATE app.orders SET lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP "
+                        + "WHERE id=? AND lock_version=?",
+                orderId,
+                expectedOrderVersion);
+        if (updated != 1) {
+            throw BusinessException.conflict("VERSION_CONFLICT", "订单已更新，请刷新后重试");
+        }
+        return new ReadyOrderRoute(List.copyOf(shipmentIds), expectedOrderVersion + 1);
+    }
+
+    private ReadyOrder lockReadyOrder(long orderId) {
+        ReadyOrder value = jdbc.query(
+                """
+                SELECT o.lock_version, o.source_channel, o.order_status, o.source_import_batch_id,
+                       (SELECT count(*) FROM app.order_lines ol WHERE ol.order_id=o.id) line_count
+                FROM app.orders o
+                WHERE o.id=? AND o.data_scope='BUSINESS'
+                FOR UPDATE OF o
+                """,
+                resultSet -> resultSet.next()
+                        ? new ReadyOrder(
+                                resultSet.getLong("lock_version"),
+                                resultSet.getString("source_channel"),
+                                resultSet.getString("order_status"),
+                                resultSet.getObject("source_import_batch_id", Long.class),
+                                resultSet.getLong("line_count"))
+                        : null,
+                orderId);
+        if (value == null) {
+            throw BusinessException.notFound("BUSINESS 订单不存在");
+        }
+        return value;
+    }
+
+    private List<ExportRow> readyWecomJdRows(long orderId) {
+        return jdbc.query(
+                """
+                SELECT 0::bigint raw_row_id, o.id order_id, o.order_no, o.source_channel, o.source_ref,
+                       o.settlement_time ordered_at, o.remark,
+                       o.receiver_name, o.receiver_phone, o.receiver_address,
+                       ol.id order_line_id, ol.line_no, ol.product_name_snapshot,
+                       ol.specification_snapshot, ol.unit_snapshot,
+                       f.id fulfillment_id, f.requested_quantity fulfillment_quantity,
+                       f.requested_quantity requested_quantity,
+                       fp.id provider_id, fp.provider_code, fp.provider_name, fp.provider_type,
+                       fp.tracking_sla_minutes, ps.provider_sku_code
+                FROM app.orders o
+                JOIN app.order_lines ol ON ol.order_id=o.id
+                    AND ol.line_type='SINGLE' AND ol.processing_stage='READY_TO_EXPORT'
+                JOIN app.fulfillments f ON f.order_line_id=ol.id
+                    AND f.shipping_progress='NOT_SHIPPED' AND f.outcome='IN_PROGRESS'
+                JOIN app.fulfillment_providers fp ON fp.id=f.fulfillment_provider_id AND fp.active
+                JOIN app.provider_skus ps ON ps.fulfillment_provider_id=fp.id
+                    AND ps.sku_id=ol.sku_id AND ps.active
+                WHERE o.id=? AND o.data_scope='BUSINESS' AND o.source_channel='WECOM'
+                ORDER BY fp.id, ol.line_no
+                FOR UPDATE OF ol, f
+                """,
+                (resultSet, rowNum) -> new ExportRow(
+                        resultSet.getLong("raw_row_id"),
+                        resultSet.getLong("order_id"),
+                        resultSet.getString("order_no"),
+                        resultSet.getString("source_channel"),
+                        resultSet.getString("source_ref"),
+                        nullableInstant(resultSet, "ordered_at"),
+                        resultSet.getString("remark"),
+                        resultSet.getString("receiver_name"),
+                        resultSet.getString("receiver_phone"),
+                        resultSet.getString("receiver_address"),
+                        resultSet.getLong("order_line_id"),
+                        resultSet.getInt("line_no"),
+                        resultSet.getString("product_name_snapshot"),
+                        resultSet.getString("specification_snapshot"),
+                        resultSet.getString("unit_snapshot"),
+                        resultSet.getLong("fulfillment_id"),
+                        null,
+                        resultSet.getBigDecimal("fulfillment_quantity"),
+                        resultSet.getBigDecimal("requested_quantity"),
+                        resultSet.getLong("provider_id"),
+                        resultSet.getString("provider_code"),
+                        resultSet.getString("provider_name"),
+                        resultSet.getString("provider_type"),
+                        resultSet.getInt("tracking_sla_minutes"),
+                        resultSet.getString("provider_sku_code")),
+                orderId);
+    }
+
     /** 京东 SDK 路由：只创建发货批次与明细，不产文件、不推进订单阶段（由建单结果决定）。 */
     private List<Long> createJdShipments(long providerId, List<ExportRow> sourceRows) {
         Map<String, ShipmentPlan> shipments = new LinkedHashMap<>();
@@ -988,6 +1146,9 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     private record ShipmentPlan(long id, String outboundOrderNo) {}
     private record PlannedExportRow(int lineNo, ExportRow source, ShipmentPlan shipment) {}
     private record ProviderSkuHold(long orderId, long orderLineId, long fulfillmentId) {}
+    record ReadyOrderRoute(List<Long> shipmentIds, long orderVersion) {}
+    private record ReadyOrder(
+            long version, String sourceChannel, String orderStatus, Long sourceImportBatchId, long lineCount) {}
     private record ExportRow(
             long rawRowId, long orderId, String orderNo, String sourceChannel, String sourceRef,
             Instant orderedAt, String remark,

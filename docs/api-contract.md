@@ -105,6 +105,7 @@
 | GET | `/api/v1/orders/{order_id}/versions` | 不可变 OrderVersion 列表 |
 | GET | `/api/v1/orders/{order_id}/shipments` | 订单页展示履约方、商户/京东出库号、同步状态、失败阶段、运单与更新时间；不返回 Shipment 收件人快照、凭据或供应商原始响应 |
 | POST | `/api/v1/orders/{order_id}/corrections` | 已形成履约承诺后创建显式纠正单，不覆盖原单 |
+| POST | `/api/v1/orders/{order_id}/fulfillment-routing` | 将无来源批次、已确认且全部为京东普通单品的企业微信订单幂等接入 Shipment pipeline；只创建本地 Shipment，不调用京东 |
 
 订单列表返回行级聚合的 `processing_stage`、`processing_health`、`completed_count/total_count`和 `attention_reason`，不允许客户端自行重算最差进度。`source_channel` 表示订单来源，`provider_id` 表示订单行已分配的履约方，两者不得混用。
 
@@ -393,7 +394,7 @@ MCP 标识符和数量沿用 OpenAPI 的字符串规则。`operator`/Agent 身�
 以下是命令成功后的领域副作用，客户端不得分步拼装：
 
 1. 来源导入/内部订单通过客户和 SKU 校验后，自动创建 Fulfillment。
-2. 行达到 `READY_TO_EXPORT` 时按 provider/收货地址/批次自动创建 Shipment(CREATED) 和 FulfillmentExport，并冻结履约字段。
+2. 来源批次确认后，`READY_TO_EXPORT` 行按 provider/收货地址/批次自动创建 Shipment(CREATED) 和 FulfillmentExport；无来源批次的已确认企业微信订单由受权操作员调用 `fulfillment-routing` 接回同一 Shipment pipeline。两条路径都必须冻结履约字段并追加事件、版本和审计。
 3. 我方库存不足时，自动生成可发批次、采购工单和黄色提醒；第三方库存不由本系统判断。
 4. 某 provider 的合法运单回传批次整批提交后，自动生成一版 SourceReturnExport。
 5. 多 Shipment 只自动回填来源行首批；后续完成由人工命令关闭复核，不伪造首批-only final 文件。

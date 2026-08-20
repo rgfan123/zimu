@@ -595,6 +595,33 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/OrderDetail' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/orders/{order_id}/fulfillment-routing:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    post:
+      tags: [Orders, Fulfillments, Shipments]
+      operationId: routeReadyWecomOrderToFulfillment
+      summary: 将已确认企业微信订单接入京东 Shipment pipeline
+      description: >-
+        仅创建本地 Shipment 和 ShipmentItem，不调用京东。只接受全部订单行均为
+        READY_TO_EXPORT 的京东普通单品订单；第三方、礼包、开放复核、缺少履约方 SKU
+        映射、非整数数量或已生成发货批次时失败关闭。后续仍须经过结构化地址确认、
+        实时库存检查、京东提交与运单回填门禁。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderFulfillmentRoutingCommand' }
+      responses:
+        '201':
+          description: 已生成且仅生成一次的京东发货批次
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderFulfillmentRoutingResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/import-batches/source-orders:
     post:
       tags: [Imports]
@@ -3818,6 +3845,25 @@ components:
         Empty command — the JD request is derived entirely from the Shipment and its
         ShipmentItems; the command itself carries no business fields.
       properties: {}
+    OrderFulfillmentRoutingCommand:
+      type: object
+      required: [expected_order_version]
+      properties:
+        expected_order_version:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 当前订单数据版本；过期请求返回 VERSION_CONFLICT。
+    OrderFulfillmentRoutingResult:
+      type: object
+      required: [order_id, order_version, jd_sdk_shipment_ids]
+      properties:
+        order_id: { $ref: '#/components/schemas/Identifier' }
+        order_version: { type: integer, format: int64, minimum: 1 }
+        jd_sdk_shipment_ids:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/Identifier' }
     ShipmentJdOutboundSubmitResult:
       type: object
       required: [shipment_id, erp_delivery_no, outbound_order_no, sync_status, retry_count, plan_quantity, goods_count]
