@@ -22,7 +22,7 @@ WHERE agent_slug = $seed$procurement-price-agent$seed$
 
 -- ② v2 作为新的生效版本插入，未变更的列从 v1 继承
 INSERT INTO app.agent_definitions (
-    agent_slug, version, name, description, system_prompt, prompt_version, model_ref,
+    agent_slug, version, name, description, system_prompt, prompt_version, model_ref, input_format,
     enabled, tool_whitelist, output_schema, allow_write, guard_exemptions,
     status, activated_by, activated_at)
 SELECT agent_slug,
@@ -57,6 +57,7 @@ SELECT agent_slug,
 - 不发起采购、不下单、不修改任何工单；建议不落业务表。$seed$,
        $seed$procurement-price-v2$seed$,
        model_ref,
+       input_format,
        enabled,
        tool_whitelist,
        $seed$
