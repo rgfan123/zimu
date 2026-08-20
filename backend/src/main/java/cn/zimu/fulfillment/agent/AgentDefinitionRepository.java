@@ -58,6 +58,19 @@ public class AgentDefinitionRepository {
         return rows.stream().findFirst();
     }
 
+    /** 某 slug 的全部版本定义（按 version 升序；12 票管理读面：版本链/详情/列表聚合）。 */
+    public List<AgentDefinition> versionsOf(String agentSlug) {
+        return jdbc.query(
+                SELECT_BASE + "WHERE agent_slug = ? ORDER BY version",
+                ROW_MAPPER,
+                agentSlug);
+    }
+
+    /** 全部版本定义（按 slug、version 升序；12 票管理读面：列表一次拿全，防 N+1）。 */
+    public List<AgentDefinition> findAllVersions() {
+        return jdbc.query(SELECT_BASE + "ORDER BY agent_slug, version", ROW_MAPPER);
+    }
+
     private final RowMapper<AgentDefinition> ROW_MAPPER = (ResultSet rs, int rowNum) ->
             AgentDefinition.of(
                     rs.getString("agent_slug"),

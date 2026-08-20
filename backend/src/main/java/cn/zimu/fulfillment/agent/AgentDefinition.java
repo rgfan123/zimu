@@ -41,8 +41,8 @@ public record AgentDefinition(
         JsonNode outputSchema,
         AgentInputFormat inputFormat) {
 
-    /** slug 格式（写工具/门禁共用，AgentDraftService 等引用）。 */
-    static final String SLUG_PATTERN = "[a-z][a-z0-9-]{0,63}";
+    /** slug 格式（写工具/门禁/读面过滤共用，AgentDraftService、AgentRunFilter 等引用）。 */
+    public static final String SLUG_PATTERN = "[a-z][a-z0-9-]{0,63}";
 
     public AgentDefinition {
         agentSlug = requireSlug(agentSlug);
