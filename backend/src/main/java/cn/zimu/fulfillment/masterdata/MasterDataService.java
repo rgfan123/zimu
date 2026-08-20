@@ -35,6 +35,7 @@ import cn.zimu.fulfillment.sku.FulfillmentProviderJdConfig;
 import cn.zimu.fulfillment.sku.JdPiecesCandidateParser;
 import cn.zimu.fulfillment.sku.FulfillmentProviderPatch;
 import cn.zimu.fulfillment.sku.FulfillmentProviderRepository;
+import cn.zimu.fulfillment.sku.FulfillmentProviderWecomConfig;
 import cn.zimu.fulfillment.sku.ProviderSku;
 import cn.zimu.fulfillment.sku.ProviderSkuDetail;
 import cn.zimu.fulfillment.sku.ProviderSkuJdFactorImport;
@@ -769,7 +770,7 @@ public class MasterDataService {
         }
         Map<String, Object> validatedConfig = input.config() == null
                 ? null
-                : FulfillmentProviderJdConfig.validate(input.config());
+                : validateProviderConfig(input.config());
         // 审计负载不携带 pin 明文：以校验后的投影（敏感键仅存在性标记）替代原始请求体
         Object auditInput = input.config() == null
                 ? input
@@ -911,7 +912,7 @@ public class MasterDataService {
                 : Map.of();
         return new FulfillmentProviderDto(id(value.getId()), value.getProviderCode(), value.getProviderName(),
                 value.getProviderType().name(), value.getTrackingSlaMinutes(), value.isActive(), value.getLockVersion(),
-                jdConfig);
+                jdConfig, wecomGroupChatId(value.getConfig()));
     }
 
     private SkuDetail skuDetail(Sku value) {
@@ -992,6 +993,38 @@ public class MasterDataService {
     private static void requireAny(Object... values) {
         for (Object value : values) if (value != null) return;
         throw BusinessException.badRequest("PATCH_EMPTY", "至少需要修改一个业务字段");
+    }
+
+    /**
+     * 履约方 config 合并校验（Issue #83）：京东标识键走 {@link FulfillmentProviderJdConfig}，
+     * 企微群 chatid 走 {@link FulfillmentProviderWecomConfig}；两者之外的键由京东契约以
+     * 未知键拒绝。每个键族只由各自的契约模块解析，不在此处重复实现键规则。
+     */
+    private static Map<String, Object> validateProviderConfig(Map<String, Object> patch) {
+        Map<String, Object> jdPatch = new LinkedHashMap<>();
+        Object wecomGroupChatId = null;
+        boolean hasWecomGroupChatId = false;
+        for (Map.Entry<String, Object> entry : patch.entrySet()) {
+            if (FulfillmentProviderWecomConfig.GROUP_CHAT_ID_KEY.equals(entry.getKey())) {
+                wecomGroupChatId = entry.getValue();
+                hasWecomGroupChatId = true;
+            } else {
+                jdPatch.put(entry.getKey(), entry.getValue());
+            }
+        }
+        Map<String, Object> validated = new LinkedHashMap<>(FulfillmentProviderJdConfig.validate(jdPatch));
+        if (hasWecomGroupChatId) {
+            validated.put(
+                    FulfillmentProviderWecomConfig.GROUP_CHAT_ID_KEY,
+                    FulfillmentProviderWecomConfig.validate(wecomGroupChatId));
+        }
+        return validated;
+    }
+
+    /** 对外投影：只回显符合写入规则的已登记企微群 chatid；未配置/非法存量值一律投影为 null。 */
+    private static String wecomGroupChatId(Map<String, Object> config) {
+        Object value = config == null ? null : config.get(FulfillmentProviderWecomConfig.GROUP_CHAT_ID_KEY);
+        return FulfillmentProviderWecomConfig.normalizeStored(value);
     }
 
     private static String blankToNull(String value) {

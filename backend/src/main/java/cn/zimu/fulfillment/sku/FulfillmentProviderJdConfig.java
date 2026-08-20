@@ -42,7 +42,8 @@ public final class FulfillmentProviderJdConfig {
             throw BusinessException.unprocessable(
                     "FULFILLMENT_PROVIDER_CONFIG_KEY_UNKNOWN",
                     "未知的京东配置键: " + String.join(", ", unknown)
-                            + "；支持的键: " + String.join(", ", KNOWN_KEYS));
+                            + "；支持的键: " + String.join(", ", KNOWN_KEYS)
+                            + "；企微群 chatid 请使用 " + FulfillmentProviderWecomConfig.GROUP_CHAT_ID_KEY);
         }
         Map<String, Object> validated = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : patch.entrySet()) {

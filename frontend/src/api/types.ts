@@ -578,6 +578,8 @@ export interface FulfillmentProvider {
   version: number;
   /** 京东标识状态投影（非京东履约方为空 map；pin 只含 present，永不回显明文）。 */
   jd_config: Record<string, JdProviderConfigEntry>;
+  /** 企微群 chatid（Issue #83）：标识符非凭据，按既有投影回显；未登记/已清除为 null。 */
+  wecom_group_chat_id: string | null;
 }
 
 export interface ConnectorConfig {

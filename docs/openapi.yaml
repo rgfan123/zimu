@@ -5906,7 +5906,7 @@ components:
           items: { $ref: '#/components/schemas/InventoryDetailCapability' }
     FulfillmentProvider:
       type: object
-      required: [id, provider_code, provider_name, provider_type, tracking_sla_minutes, active, version, jd_config]
+      required: [id, provider_code, provider_name, provider_type, tracking_sla_minutes, active, version, jd_config, wecom_group_chat_id]
       properties:
         id: { $ref: '#/components/schemas/Identifier' }
         provider_code: { type: string }
@@ -5915,6 +5915,13 @@ components:
         tracking_sla_minutes: { type: integer, minimum: 1 }
         active: { type: boolean }
         version: { type: integer, minimum: 0 }
+        wecom_group_chat_id:
+          type: string
+          nullable: true
+          description: >-
+            履约方登记的企业微信群 chatid（Issue #83）。chatid 是标识符不是凭据，
+            按既有 Provider 投影回显；未登记/已清除为 null。登记在
+            fulfillment_providers.config 的 wecomGroupChatId 键，改完即时生效无需重启。
         jd_config:
           type: object
           description: >-
@@ -5942,7 +5949,8 @@ components:
         config:
           type: object
           description: >-
-            京东标识合并写入（jd-real-sdk-switch 01；05 票新增 outboundMode）。仅接受
+            履约方 config 合并写入（jd-real-sdk-switch 01；05 票新增 outboundMode；
+            #83 新增 wecomGroupChatId）。京东键仅接受
             sourceNo/warehouseNo/pin/erpShopNo/salesPlatformSource/ownerNo/shopNo/carrierNo/townRequired/outboundMode
             十个键；未知键拒绝（422 FULFILLMENT_PROVIDER_CONFIG_KEY_UNKNOWN）。字符串值必须非空，
             townRequired 只接受布尔（422 FULFILLMENT_PROVIDER_CONFIG_TOWN_REQUIRED_NOT_BOOLEAN），
@@ -5950,7 +5958,14 @@ components:
             （422 FULFILLMENT_PROVIDER_CONFIG_OUTBOUND_MODE_INVALID），
             显式 null 清除该键。customerCode 为客户级字段，由客户档案维护（见
             /api/v1/customers/jd-customer-code-imports）。pin 为敏感值，
-            响应与审计只标记存在性。
+            响应与审计只标记存在性。wecomGroupChatId 为企微群 chatid（所有履约方类型
+            均可登记；标识符非凭据）：显式 null 清除，非 null 先 trim、空串拒绝、
+            最长 128 字符、只接受可见 ASCII（等价正则 ^[\x21-\x7E]{1,128}$，
+            不含空白与控制字符）
+            （422 FULFILLMENT_PROVIDER_WECOM_GROUP_CHAT_ID_INVALID，字段
+            config.wecomGroupChatId）；未登记时 #84 发送侧解析 seam 抛
+            422 FULFILLMENT_PROVIDER_WECOM_GROUP_CHAT_MISSING（包含
+            「请在履约方配置登记企微群」），不静默不发。
           additionalProperties:
             nullable: true
             oneOf:

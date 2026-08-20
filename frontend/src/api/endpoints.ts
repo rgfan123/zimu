@@ -388,7 +388,7 @@ export const providersApi = {
     provider_name?: string;
     tracking_sla_minutes?: number;
     active?: boolean;
-    /** 京东标识：字符串键必须非空，townRequired 只接受布尔；null 值清除该键。 */
+    /** config 合并写入：京东键字符串必须非空，townRequired 只接受布尔，null 清除该键；wecomGroupChatId 为企微群 chatid（空串/留空提交 null 清除）。 */
     config?: Record<string, string | boolean | null>;
   }) =>
     apiRequest<FulfillmentProvider>(`/api/v1/fulfillment-providers/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
