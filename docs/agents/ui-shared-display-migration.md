@@ -19,8 +19,8 @@
 |---|---|---|
 | A | `frontend/src/pages/fulfillment`（10 个生产页面，页面最多、最长） | ✅ 本批完成（Issue #97 第 1 批） |
 | B | `frontend/src/pages/workbench`（基线 ManualReviewPage 1020 行，#95/#96 合入后实测） | ✅ 本批完成（Issue #97 第 2 批） |
-| C | `frontend/src/pages/product` 与其余页面（orders / inventory / procurement / system / dashboard / demo / analytics / agents 存量） | 待后续批次 |
-| D | 全仓最终审计：逐页核对采纳情况、更新本文件累计度量 | 待后续批次 |
+| C | `frontend/src/pages/product` + `frontend/src/pages/inventory`（7 个生产路由页面） | ✅ 本批完成（Issue #97 第 3 批） |
+| D | 其余页面（orders / procurement / system / dashboard / demo / analytics / agents 存量）+ 全仓最终审计：逐页核对采纳情况、更新本文件累计度量 | 待后续批次 |
 
 批次 C/D 开工时把实际 before/after 行数追加到下方「累计度量」并逐页登记。
 
@@ -162,6 +162,89 @@ FilterBar；存在真正的列表数据源时用 DataTable；抽屉/弹窗内明
   - ChannelMessagesPage 表格 Card 的 title/extra 换为 PageShell 页头（文案与按钮不变，
     刷新按钮仍在右上角）；错误条位置同 batch A（列表上方）。
 
+## 批次 C：product + inventory（本批）
+
+### 逐页 before/after
+
+行数为本批改动前后 `wc -l` 实测（含 import 与注释）。product 目录实际路由页面为
+CategoriesPage / ProductsPage / SkusPage / SkuMappingsPage / BundlesPage（`routes.tsx`
+挂载 `/product/*`）；inventory 目录为 InventoryOverviewPage / InventoryDetailsPage
+（`/inventory/overview`、`/inventory/details`）。`index.ts`、masterOptions / productArchive /
+productArchiveFields / providerSkuMapping / skuCommercialPrice / skuMappingMatrix /
+inventoryOverviewView / inventoryDetailsView 等 helper/presentation 文件不是页面，
+不入采纳率计数、本批零改动（与 batch A/B 口径一致）。
+
+| 页面 | before | after | Δ | 采用组件 | 说明 |
+|---|---|---|---|---|---|
+| SkuMappingsPage | 699 | 696 | −3 | PageShell + DataTable | 页头 Flex（标题 + 说明 + 「主数据」Tag）→ PageShell（Tag 进 actions，文案原样）；矩阵表 → DataTable（`locale` → `emptyText`，`scroll`/`sticky`/分页原样）；矩阵加载/错误态与两个辅助面板保持自定义（例外见下） |
+| InventoryOverviewPage | 310 | 310 | 0 | PageShell + FilterBar + DataTable | 新增 PageShell 页头（title「总库存」取自导航标签，原 intro 说明文案移入 description）；筛选行 admin-toolbar → FilterBar（刷新按钮进 actions 右对齐，控件/aria-label/查询重置逻辑原样）；表格 → DataTable（`scroll` x=1360 / `emptyText` / 分页原样）；加载/错误态保留（例外见下） |
+| InventoryDetailsPage | 150 | 153 | +3 | PageShell | 标题行（Space wrap + Typography.Title + 返回链接 + 两个状态 Tag）→ PageShell（返回链接与 Tags 进 actions，文案原样）；库存对象/能力卡/口径说明零改动；加载/错误态保留（例外见下） |
+| CategoriesPage | 50 | 50 | 0 | — | 不可迁：页面是共享骨架 MasterDataCrud 的薄配置层，无逐页页头/筛选/表格样板（原因见下） |
+| ProductsPage | 195 | 195 | 0 | — | 同上 |
+| SkusPage | 170 | 170 | 0 | — | 同上（筛选控件经 `filters` prop 由骨架 toolbar 承载） |
+| BundlesPage | 367 | 367 | 0 | PageShell + DataTable | 试点已采用（53c8aa7 随静态礼包功能合入），本批零改动，仅登记 |
+| **合计（7 页）** | **1941** | **1941** | **0** | — | 3 页采用/1 页已采用；另删 skuMappings.css 死规则 −13 行 |
+
+> 行数说明：本批三页可删的承载样板本就各只有一处（页头卡 / 筛选行容器 / 表格 locale），
+> PageShell / FilterBar 的 props 化 API 与删掉的 JSX 等量（details 页头原来只有 8 行，
+> 换 PageShell 反而 +3）；与 batch A/B 各页 −3 ~ −9 的幅度一致，页面主体（列定义、表单、
+> 抽屉、面板、业务文案）原样保留。真实的样板减少体现在结构统一与 CSS 死规则清理。
+
+### 本批无法套用共享组件的页面（逐页原因）
+
+FilterBar / DataTable 采用口径沿用 batch A/B：存在独立于工具面板的常驻筛选/查询行时用
+FilterBar；存在真正的列表数据源时用 DataTable；视图级三态、权限语义 Alert 与面板内
+特写小表不强套。以下例外均按 Issue #97 验收「发现某页确实无法套用共享组件时，记录原因
+而不是强行套」登记；DataTable 的加载/空/错默认行为只覆盖「表格数据页的列表三态」，
+视图级三态（整页/整块替换）与权限语义错误不在其覆盖范围（组件文件头注释明确错误态
+只承载系统错误 `errorMessage`）。
+
+| 页面/文件 | 组件 | 原因 |
+|---|---|---|
+| CategoriesPage / ProductsPage / SkusPage | PageShell / FilterBar / DataTable | 三个页面是共享骨架 MasterDataCrud（`pages/shared/`）的薄配置层：页头、筛选 toolbar、表格、加载/空/错三态已集中在该骨架一处，不存在逐页重复样板。骨架不在本批范围（非 product/inventory 页面文件），其内部 admin-toolbar / Table 的 FilterBar / DataTable 化会同时改变五个主数据页的加载/空/错行为（如全页 loading → 表格内 loading），列入 batch D 候选；强套 PageShell 只会新增可见页头与行数、无样板可删，不为采纳率乱改。 |
+| SkuMappingsPage 矩阵工具行 | FilterBar | 矩阵工具行是弹性筛选行：显示平台多选宽度由 `sku-matrix__filter` 网格（`minmax(260px, 460px)` + 移动端 1fr 全宽）驱动，行内还含「N 个内部 SKU · 显示 M 个平台」计数文本；FilterBar 的固定控件行（Space wrap）会把多选宽度钉死并改变移动端布局，属可见行为倒退。 |
+| SkuMappingsPage 矩阵加载/错误 | DataTable | 视图级三态：整块工作区被 AdminLoading / AdminFailureAlert 替换（含权限语义），不是列表三态，沿用 batch A OutboundRecon 口径。 |
+| SkuMappingsPage 参考预览表 / 京东件数换算表 | DataTable | Collapse 工具面板内的特写小表（rowSelection / 自定义列 / 无三态样板），沿用 batch A「抽屉/弹窗内明细子表不强套」口径。 |
+| InventoryOverviewPage / InventoryDetailsPage 加载/错误 | DataTable | 视图级三态 + 权限语义：403 业务码 FORBIDDEN →「暂无查看权限」warning Alert（`adminFailurePresentation`），DataTable 错误态只承载系统错误（`errorMessage`），沿用 batch A「业务码语义 Alert 保留」口径；由 inventoryOverviewRoute / inventoryDetailsRoute 既有测试固定。 |
+| InventoryOverviewPage 表格容器 | — | `admin-surface` 边框/圆角容器保留（DataTable 不提供表格容器，且页面在 `.admin-page` 内阴影口径不变）。 |
+
+### 本批保留的自定义三态（有意为之）
+
+- InventoryOverviewPage / InventoryDetailsPage 的视图级 AdminLoading（「正在加载库存观测…」
+  /「正在加载专业库存明细…」）与 AdminFailureAlert（403 权限 →「暂无查看权限」warning，
+  系统错误 → 错误标题 + 安全文案）。
+- SkuMappingsPage 矩阵工作区与京东件数换算面板的 AdminLoading / AdminFailureAlert
+  （「正在加载 SKU 映射矩阵…」/「京东件数换算加载失败」等）。
+- 参考预览面板的预览结果表（无列表三态，加载在「开始核对」按钮上）。
+
+### 可见行为核对（本批）
+
+- 既有文案零改动：标题「SKU 映射矩阵」「专业库存明细」「总库存」、说明、页脚、两个
+  Collapse 面板标题与说明、「主数据」Tag、「返回总库存」、筛选占位符与 aria-label、
+  空态（「当前筛选范围内暂无匹配 SKU」「暂无内部 SKU」）、错误标题与权限文案与迁移前
+  逐字一致（Spec review 按字符串逐条比对确认）。
+- 新增文案仅一处页头标题：InventoryOverviewPage 此前没有页头，「总库存」取自导航标签，
+  原 intro 说明文字移入 PageShell description（文案不变）——与 batch A 为无页头页面
+  （FulfillmentTasks / SalesOutbound）新增 PageShell 页头同口径。
+- URL / API / 跳转零改动：InventoryOverview 筛选（provider_id / sku_id / warehouse_code /
+  page / size）与「查看明细」跳转（含 return_to 闭环）、InventoryDetails 的 return_to
+  安全回落与能力工具链接、SkuMappings 矩阵两个 list 请求与 jd-pieces-candidates 请求，
+  均由既有 route tests（inventoryOverviewRoute / inventoryDetailsRoute / adminMasterDataRoute）
+  与本批新增 3 个测试固定。
+- 表格列 / 分页 / 行选择 / sticky / 确认弹窗 / 抽屉零改动。
+- 有意的承载变化（与 batch A/B 同口径）：
+  - SkuMappingsPage 页头 Flex → PageShell：标题字号 level 4 → PageShell level 5 统一；
+    工作区可访问名称由 `aria-labelledby`（指向手写标题 id，名称 =「SKU 映射矩阵」）改为
+    `aria-label="SKU 映射矩阵工作区"`（标题 id 随手写页头移除；名称变更为更明确的
+    「SKU 映射矩阵工作区」，语义等价）；删除 `box-shadow: none` 页级规则后页头卡恢复
+    antd 默认阴影（与 fulfillment/workbench 页头一致）。
+  - InventoryOverviewPage 筛选区 admin-toolbar → FilterBar（圆角容器外观统一，刷新按钮
+    从行内移至 actions 右对齐；查询/重置按钮保留在筛选控件行内——与输入框同属筛选操作
+    分组，维持原布局，不因 FilterBar 的 children/actions 拆分而移动）；表格 locale 样板
+    → DataTable `emptyText`（渲染节点相同）。
+  - InventoryDetailsPage 返回链接与两个状态 Tag 从标题行左/中位移入 PageShell actions
+    右侧（与 batch A「刷新按钮进 actions」同口径）。
+
 ## 累计度量（供后续批次追加）
 
 以固定基线 e3e6b87（#96 合入后）为准：`frontend/src/pages` 共 54 个页面文件。
@@ -173,8 +256,8 @@ Issue #97 立项时采纳数为 PageShell 5/53、DataTable 4/53、FilterBar 3/53
 | 基线（e3e6b87） | 6/54 | 3/54 | 5/54 | 试点页 + Agent 中心 |
 | A fulfillment（第 1 批） | **15/54** | **8/54** | **10/54** | +9 页 PageShell，+5 页 FilterBar/DataTable |
 | B workbench（第 2 批） | **17/54** | **9/54** | **12/54** | +2 页 PageShell / +2 页 DataTable（ManualReviewPage + ChannelMessagesPage），+1 页 FilterBar（ManualReviewPage 双视图筛选；ChannelMessagesPage 无常驻筛选行不套） |
-| C product + 其余 | 待追加 | 待追加 | 待追加 | |
-| D 最终审计 | 待追加 | 待追加 | 待追加 | 全仓逐页核对并收敛口径 |
+| C product + inventory（第 3 批） | **20/54** | **10/54** | **14/54** | +3 页 PageShell（SkuMappingsPage + InventoryOverviewPage + InventoryDetailsPage）；+1 页 FilterBar（InventoryOverviewPage）；+2 页 DataTable（SkuMappingsPage 矩阵表 + InventoryOverviewPage）。BundlesPage 为试点已计基线（本批零改动）；Categories/Products/Skus 由共享骨架 MasterDataCrud 承载不计数 |
+| D 最终审计 | 待追加 | 待追加 | 待追加 | 其余页面（orders / procurement / system / dashboard / demo / analytics / agents 存量）+ 全仓逐页核对并收敛口径；MasterDataCrud 骨架的 FilterBar/DataTable 化列入候选 |
 
 口径说明：按「页面文件 import 并实际使用该组件」计数（`grep "components/<Name>'"`
 命中即计 1 页）；子组件（如 EvalsTab）单独计数会导致页面数虚高，后续批次沿用

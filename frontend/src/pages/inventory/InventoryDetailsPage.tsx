@@ -1,6 +1,7 @@
 import { Alert, Button, Card, Descriptions, Space, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Link, useSearchParams } from 'react-router-dom';
+import PageShell from '@/components/PageShell';
 import { inventoryApi } from '@/api/endpoints';
 import type { InventoryDetailCapability, InventoryDetailsResponse } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
@@ -68,16 +69,18 @@ export default function InventoryDetailsPage() {
 
   return (
     <div className="admin-page inventory-details">
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        <Space wrap>
-          <Link to={returnTo}><ArrowLeftOutlined /> 返回总库存</Link>
-          <Typography.Title level={5} style={{ margin: 0 }}>专业库存明细</Typography.Title>
-          <Tag>{inventoryDetailModeLabel(observation)}</Tag>
-          <Tag color={observationPresentation.tone === 'error' ? 'red' : observationPresentation.tone}>
-            {observationPresentation.label}
-          </Tag>
-        </Space>
-
+      <PageShell
+        title="专业库存明细"
+        actions={(
+          <>
+            <Link to={returnTo}><ArrowLeftOutlined /> 返回总库存</Link>
+            <Tag>{inventoryDetailModeLabel(observation)}</Tag>
+            <Tag color={observationPresentation.tone === 'error' ? 'red' : observationPresentation.tone}>
+              {observationPresentation.label}
+            </Tag>
+          </>
+        )}
+      >
         <Card size="small" title="库存对象">
           <Descriptions
             size="small"
@@ -144,7 +147,7 @@ export default function InventoryDetailsPage() {
           description="本页只展示已有总库存字段与履约方明确接入的专业查询；不自动增加在途、预留等未经证实的数字。京东原始查询仍是系统工具，其返回不直接改写权威库存。"
           action={<Button icon={<ReloadOutlined />} onClick={details.reload}>重读已落库明细</Button>}
         />
-      </Space>
+      </PageShell>
     </div>
   );
 }

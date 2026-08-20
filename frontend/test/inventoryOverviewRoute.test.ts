@@ -206,6 +206,27 @@ test('real inventory route requests data, renders loading, then renders the empt
     finishRequest?.(jsonResponse(overview()));
   });
   await waitFor(() => assert.match(bodyText(), /当前筛选范围内暂无匹配 SKU/));
+  // 页头（PageShell）与页头说明文案随页面数据一起呈现。
+  assert.match(bodyText(), /总库存/);
+  assert.match(bodyText(), /按 SKU、仓库与履约方查看已落库的最新库存观测；未观测范围始终与零库存分开。/);
+});
+
+test('refresh stays reachable and re-requests the overview route', async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return jsonResponse(overview());
+  };
+  await mountRoute();
+  await waitFor(() => assert.equal(calls, 1));
+
+  const refresh = [...document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('刷新'));
+  assert.ok(refresh, 'overview page must expose a refresh action');
+  await act(async () => {
+    simulate.click(refresh);
+  });
+  await waitFor(() => assert.equal(calls, 2));
 });
 
 test('real inventory route distinguishes permission failures from safe system failures', async () => {
