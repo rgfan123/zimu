@@ -20,22 +20,61 @@ function findNavigationNode(routes: readonly NavigationNode[], path: string): Na
   return undefined;
 }
 
-test('production navigation lists daily operations including price comparison and outbound recon', () => {
+test('production navigation keeps the two demoted query tools registered under the workbench', () => {
   const workbench = findNavigationNode(appNavigation, '/workbench');
 
   assert.deepEqual(
-    workbench?.children?.map(({ path, label }) => ({ path, label })),
+    workbench?.children?.map(({ path, label, hideInMenu }) => ({ path, label, hideInMenu: hideInMenu ?? false })),
+    [
+      { path: '/workbench/reviews', label: '人工复核', hideInMenu: false },
+      { path: '/workbench/channel-messages', label: '渠道消息', hideInMenu: false },
+      { path: '/fulfillment/tasks', label: '履约任务', hideInMenu: false },
+      { path: '/procurement/tickets', label: '采购协同', hideInMenu: false },
+      { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
+      { path: '/fulfillment/sales-outbound', label: '文件作业', hideInMenu: false },
+      { path: '/fulfillment/shipments', label: '发货记录', hideInMenu: false },
+      { path: '/fulfillment/outbound-recon', label: '出库信息对账', hideInMenu: true },
+    ],
+  );
+});
+
+test('workbench menu gate keeps exactly the six daily high-frequency operations visible', () => {
+  const workbench = findNavigationNode(appNavigation, '/workbench');
+  const visibleChildren = workbench?.children?.filter(({ hideInMenu }) => !hideInMenu);
+
+  // 设计口径（business-object-navigation 01 / Issue #98）：作业中心只放日常高频运营入口，上限 6。
+  assert.deepEqual(
+    visibleChildren?.map(({ path, label }) => ({ path, label })),
     [
       { path: '/workbench/reviews', label: '人工复核' },
       { path: '/workbench/channel-messages', label: '渠道消息' },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },
-      { path: '/procurement/price-compare', label: '采购比价' },
       { path: '/fulfillment/sales-outbound', label: '文件作业' },
       { path: '/fulfillment/shipments', label: '发货记录' },
-      { path: '/fulfillment/outbound-recon', label: '出库信息对账' },
     ],
   );
+  assert.ok((visibleChildren?.length ?? 0) <= 6, '作业中心可见叶子不得超过高频上限 6');
+});
+
+test('demoted workbench tools stay routable and keep their workbench context', () => {
+  const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
+  const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
+
+  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon']) {
+    const node = findNavigationNode(appNavigation, path);
+    assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
+    assert.equal(visiblePaths.includes(path), false, `${path} 不得出现在可见菜单`);
+    assert.equal(routablePaths.includes(path), true, `${path} 必须保持可路由（降级不等于删除，旧路径不 404）`);
+  }
+  assert.deepEqual(navigationContext('/procurement/price-compare', ''), {
+    section: '作业中心',
+    page: '采购比价',
+  });
+  assert.deepEqual(navigationContext('/fulfillment/outbound-recon', ''), {
+    section: '作业中心',
+    page: '出库信息对账',
+  });
 });
 
 test('production navigation nests the six legacy JD URLs under system tools', () => {

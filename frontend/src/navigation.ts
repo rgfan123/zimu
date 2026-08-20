@@ -24,10 +24,11 @@ export const appNavigation = [
       { path: '/workbench/channel-messages', label: '渠道消息' },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },
-      { path: '/procurement/price-compare', label: '采购比价' },
+      // 低频专用查询（Issue #98 准入规则）：隐藏菜单、保留路由与上下文入口，见 docs/agents/navigation-admission.md。
+      { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
       { path: '/fulfillment/sales-outbound', label: '文件作业' },
       { path: '/fulfillment/shipments', label: '发货记录' },
-      { path: '/fulfillment/outbound-recon', label: '出库信息对账' },
+      { path: '/fulfillment/outbound-recon', label: '出库信息对账', hideInMenu: true },
     ],
   },
   {

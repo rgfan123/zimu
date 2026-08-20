@@ -109,6 +109,28 @@ test('jd warehouse page keeps the outbound list empty state and export action', 
   assert.ok(control('查询'));
 });
 
+test('shipments page exposes the contextual entry to outbound recon (demoted tool stays discoverable)', async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/shipments/jd-receiver-address-candidates')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/shipments?')) return jsonResponse(page([]));
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/fulfillment/shipments']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /发货记录/));
+
+  const reconLink = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    .find((link) => link.textContent?.includes('出库信息对账'));
+  assert.ok(reconLink, '发货记录必须提供指向出库信息对账的上下文入口');
+  assert.equal(reconLink.getAttribute('href'), '/fulfillment/outbound-recon', '上下文入口 href 必须指向原路径');
+
+  await harness.dispatchEvent(reconLink, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.location(), /\/fulfillment\/outbound-recon/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /输入单号开始查询/));
+});
+
 test('outbound recon page writes the query into the URL and shows a readable failure', async () => {
   const requests: string[] = [];
   globalThis.fetch = async (input) => {

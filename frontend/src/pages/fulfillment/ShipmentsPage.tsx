@@ -5,6 +5,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Alert, Button, Card, Checkbox, Descriptions, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -393,7 +394,13 @@ export default function ShipmentsPage() {
     <PageShell
       title="发货记录"
       description="一次出库/发货批次，可包含同一订单、同一履约方、同一收货地址下的多条订单行；缺货后的后续批次生成新 Shipment / 出库单号 / 运单。"
-      actions={<Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>}
+      actions={
+        <Space size={12}>
+          {/* 低频专用查询的上下文入口（Issue #98）：出库信息对账已从菜单隐藏，由发货记录承载发现路径。 */}
+          <Link to="/fulfillment/outbound-recon">出库信息对账</Link>
+          <Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>
+        </Space>
+      }
     >
       <FilterBar>
         <span style={{ color: '#7a8699', fontSize: 13 }}>履约方</span>

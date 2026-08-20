@@ -71,6 +71,22 @@ test('采购工单 route renders the page header, intro copy and the ticket list
   assert.match(harness.bodyText(), /共 2 条/);
 });
 
+test('采购协同 exposes the contextual entry to 采购比价 (demoted tool stays discoverable)', async () => {
+  globalThis.fetch = ticketsFetch([], [ticket('1')]);
+
+  await harness.mount(['/procurement/tickets']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /T-1/));
+
+  const compareLink = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    .find((link) => link.textContent?.includes('采购比价'));
+  assert.ok(compareLink, '采购协同必须提供指向采购比价的上下文入口');
+  assert.equal(compareLink.getAttribute('href'), '/procurement/price-compare', '上下文入口 href 必须指向原路径');
+
+  await harness.dispatchEvent(compareLink, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.location(), /\/procurement\/price-compare/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /开始比价/));
+});
+
 test('采购工单 loading state keeps the view-level loading copy', async () => {
   let finishRequest: ((response: Response) => void) | undefined;
   globalThis.fetch = () => new Promise<Response>((resolve) => { finishRequest = resolve; });

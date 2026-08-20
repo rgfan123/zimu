@@ -6,6 +6,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { App as AntApp, Alert, Button, Descriptions, Drawer, Input, Modal, Select, Space, Table, Timeline, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -115,7 +116,13 @@ export default function ProcurementTicketsPage() {
         description="查看缺货补齐进度与不可变回执，仅对待处理缺口执行重试或取消。"
       >
         <FilterBar
-          actions={<Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>}
+          actions={
+            <Space size={12}>
+              {/* 低频专用查询的上下文入口（Issue #98）：采购比价已从菜单隐藏，由本页承载发现路径。 */}
+              <Link to="/procurement/price-compare">采购比价</Link>
+              <Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>
+            </Space>
+          }
         >
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>状态</Typography.Text>
           <Select style={{ width: 150 }} placeholder="全部" allowClear value={status} onChange={setStatus}
