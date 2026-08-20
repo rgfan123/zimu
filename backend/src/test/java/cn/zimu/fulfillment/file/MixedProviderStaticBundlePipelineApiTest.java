@@ -57,6 +57,7 @@ class MixedProviderStaticBundlePipelineApiTest {
     private static final String SOURCE_ORDER_REF = "WQ-MIXED-ORDER-001";
     private static final String SOURCE_BUNDLE_REF = "WQ-MIXED-BUNDLE-001";
     private static final String THIRD_PARTY_SKU_CODE = "TP-OSTRICH-FIXTURE-001";
+    private static final String SECOND_THIRD_PARTY_SKU_CODE = "TP-SAUCE-FIXTURE-001";
 
     @Container
     @ServiceConnection
@@ -110,7 +111,15 @@ class MixedProviderStaticBundlePipelineApiTest {
             throws Exception {
         Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
         Map<String, Object> tpSku = createThirdPartySkuFixture();
-        String bundleId = createMixedBundle(jdSku.get("id").toString(), tpSku.get("id").toString());
+        Map<String, Object> secondTpSku = createSecondThirdPartySkuFixture();
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-PROVIDER-001",
+                "羊蝎子鸵鸟测试礼包",
+                List.of(
+                        jdSku.get("id").toString(),
+                        tpSku.get("id").toString(),
+                        secondTpSku.get("id").toString()),
+                "mix-bundle-001");
         createSourceBundleMapping(bundleId);
 
         ResponseEntity<Map> uploaded = upload(workbook());
@@ -128,7 +137,8 @@ class MixedProviderStaticBundlePipelineApiTest {
                 .containsEntry("bundle_id", bundleId)
                 .containsEntry("processing_stage", "READY_TO_EXPORT"));
         assertThat(lines).extracting(line -> line.get("provider_id")).doesNotHaveDuplicates();
-        assertThat(lines).allSatisfy(line -> assertThat((List<?>) line.get("components")).hasSize(1));
+        assertThat(lines).extracting(line -> ((List<?>) line.get("components")).size())
+                .containsExactlyInAnyOrder(1, 2);
 
         ResponseEntity<Map> confirmed = confirm(batchId);
         assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -148,9 +158,14 @@ class MixedProviderStaticBundlePipelineApiTest {
         try (var exported = WorkbookFactory.create(new java.io.ByteArrayInputStream(thirdPartyFile))) {
             var sheet = exported.getSheetAt(0);
             DataFormatter formatter = new DataFormatter();
+            assertThat(sheet.getLastRowNum()).isEqualTo(2);
             assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(6))).isEqualTo("万齐");
             assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(9))).isNotBlank();
             assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(13))).isEqualTo(THIRD_PARTY_SKU_CODE);
+            assertThat(formatter.formatCellValue(sheet.getRow(2).getCell(9)))
+                    .isEqualTo(formatter.formatCellValue(sheet.getRow(1).getCell(9)));
+            assertThat(formatter.formatCellValue(sheet.getRow(2).getCell(13)))
+                    .isEqualTo(SECOND_THIRD_PARTY_SKU_CODE);
         }
 
         String shipmentId = jdShipmentIds.getFirst().toString();
@@ -219,6 +234,41 @@ class MixedProviderStaticBundlePipelineApiTest {
         List<?> returns = http.getForObject(
                 "/api/v1/import-batches/" + batchId + "/source-return-exports", List.class);
         assertThat(returns).isEmpty();
+
+        ResponseEntity<Map> tracking = uploadTracking(
+                exportIds.getFirst().toString(), fillThirdPartyTracking(thirdPartyFile));
+        assertThat(tracking.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(castMap(tracking.getBody().get("business_results"))).containsEntry("shipped", 1);
+        long thirdPartyShipmentId = jdbc.queryForObject(
+                """
+                SELECT DISTINCT fei.shipment_id
+                FROM app.fulfillment_export_items fei
+                WHERE fei.fulfillment_export_id=?
+                """,
+                Long.class,
+                Long.parseLong(exportIds.getFirst().toString()));
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.trackings WHERE shipment_id=?",
+                Integer.class,
+                thirdPartyShipmentId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT f.shipping_progress
+                FROM app.shipment_items si
+                JOIN app.fulfillments f ON f.id=si.fulfillment_id
+                WHERE si.shipment_id=?
+                """,
+                String.class,
+                thirdPartyShipmentId)).isEqualTo("SHIPPED");
+        assertThat(http.getForObject(
+                "/api/v1/import-batches/" + batchId + "/source-return-exports", List.class)).isEmpty();
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.review_cases
+                WHERE order_id=? AND status='OPEN' AND reason_code='MULTI_SHIPMENT_SOURCE_FOLLOWUP'
+                """,
+                Integer.class,
+                Long.parseLong(orderId))).isEqualTo(1);
     }
 
     @Test
@@ -313,21 +363,49 @@ class MixedProviderStaticBundlePipelineApiTest {
         return get("/api/v1/skus/" + skuId);
     }
 
+    private Map<String, Object> createSecondThirdPartySkuFixture() {
+        long providerId = jdbc.queryForObject(
+                "SELECT id FROM app.fulfillment_providers WHERE provider_type='THIRD_PARTY' ORDER BY id LIMIT 1",
+                Long.class);
+        long productId = jdbc.queryForObject(
+                "INSERT INTO app.products(product_code,product_name) "
+                        + "VALUES ('PROD-TP-SAUCE-FIXTURE','测试礼包配料') RETURNING id",
+                Long.class);
+        long skuId = jdbc.queryForObject(
+                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit) "
+                        + "VALUES (?,?,'1袋','袋') RETURNING id",
+                Long.class,
+                productId,
+                providerId);
+        jdbc.update(
+                "INSERT INTO app.provider_skus(fulfillment_provider_id,sku_id,provider_sku_code,active) "
+                        + "VALUES (?,?,?,true)",
+                providerId,
+                skuId,
+                SECOND_THIRD_PARTY_SKU_CODE);
+        return get("/api/v1/skus/" + skuId);
+    }
+
     private String createMixedBundle(String jdSkuId, String tpSkuId) {
         return createMixedBundle(
                 "BUNDLE-MIXED-PROVIDER-001", "羊蝎子鸵鸟测试礼包",
-                jdSkuId, tpSkuId, "mix-bundle-001");
+                List.of(jdSkuId, tpSkuId), "mix-bundle-001");
     }
 
     private String createMixedBundle(
             String bundleCode, String bundleName, String jdSkuId, String tpSkuId, String idempotencyKey) {
+        return createMixedBundle(bundleCode, bundleName, List.of(jdSkuId, tpSkuId), idempotencyKey);
+    }
+
+    private String createMixedBundle(
+            String bundleCode, String bundleName, List<String> skuIds, String idempotencyKey) {
         Map<String, Object> body = Map.of(
                 "bundle_code", bundleCode,
                 "bundle_name", bundleName,
                 "status", "ACTIVE",
-                "items", List.of(
-                        Map.of("sku_id", jdSkuId, "quantity_per_bundle", "1"),
-                        Map.of("sku_id", tpSkuId, "quantity_per_bundle", "1")));
+                "items", skuIds.stream()
+                        .map(skuId -> Map.of("sku_id", skuId, "quantity_per_bundle", "1"))
+                        .toList());
         ResponseEntity<Map> response = http.exchange(
                 "/api/v1/product-bundles",
                 HttpMethod.POST,
@@ -397,6 +475,40 @@ class MixedProviderStaticBundlePipelineApiTest {
                 HttpMethod.POST,
                 new HttpEntity<>(Map.of(), writeHeaders(idempotencyKey)),
                 Map.class);
+    }
+
+    private ResponseEntity<Map> uploadTracking(String exportId, byte[] bytes) {
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("file", new ByteArrayResource(bytes) {
+            @Override public String getFilename() { return "mixed-bundle-tracking.xlsx"; }
+        });
+        body.add("import_mode", "NEW");
+        HttpHeaders headers = operatorHeaders();
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        headers.set("Idempotency-Key", "mix-tracking-001");
+        return http.exchange(
+                "/api/v1/fulfillment-exports/" + exportId + "/tracking-imports",
+                HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                Map.class);
+    }
+
+    private byte[] fillThirdPartyTracking(byte[] bytes) throws Exception {
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new java.io.ByteArrayInputStream(bytes));
+                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.getSheetAt(0);
+            for (int rowIndex = 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+                var row = sheet.getRow(rowIndex);
+                row.getCell(18).setCellValue("SHIPPED");
+                row.getCell(19).setCellValue(row.getCell(17).getStringCellValue());
+                row.getCell(20).setCellValue("京东物流");
+                row.getCell(21).setCellValue("TP-MIXED-BUNDLE-001");
+                row.getCell(22).setCellValue("");
+                row.getCell(23).setCellValue("");
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        }
     }
 
     private HttpHeaders operatorHeaders() {

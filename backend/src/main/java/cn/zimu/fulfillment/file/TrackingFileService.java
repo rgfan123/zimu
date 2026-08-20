@@ -6,6 +6,8 @@ import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.fulfillment.ShipmentTrackingAcceptance;
+import cn.zimu.fulfillment.fulfillment.ShipmentTrackingBatchCommand;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingCommand;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -113,9 +115,6 @@ public class TrackingFileService {
                 retained.fileRef(),
                 context.operator());
 
-        int shipped = 0;
-        int partial = 0;
-        int failed = 0;
         for (TrackingRow row : rows) {
             jdbc.update(
                     """
@@ -130,10 +129,14 @@ public class TrackingFileService {
                     row.outboundOrderNo(),
                     row.orderId(),
                     row.orderLineId());
-            shipmentTrackingService.accept(new ShipmentTrackingCommand(
-                    batchId, row.shipmentId(), row.fulfillmentId(), row.orderLineId(), row.orderId(), row.result(),
-                    row.shippedQuantity(), row.carrier() == null ? null : internalCarrierCode(row.carrier()),
-                    row.carrier(), row.trackingNo(), row.shippedAt(), row.failureReason(), row.cells()), context);
+        }
+
+        List<TrackingRow> acceptedRows = collapseBundleComponentRows(rows);
+        acceptTrackingRows(batchId, acceptedRows, context);
+        int shipped = 0;
+        int partial = 0;
+        int failed = 0;
+        for (TrackingRow row : acceptedRows) {
             if ("FAILED".equals(row.result())) {
                 failed++;
                 continue;
@@ -173,6 +176,126 @@ public class TrackingFileService {
                 .requestPayload(Map.of("export_id", exportId, "content_sha256", hash, "idempotency_key", idempotencyKey))
                 .responsePayload(result).httpStatus(201).businessCode("TRACKING_BATCH_ACCEPTED"));
         return result;
+    }
+
+    /**
+     * 礼包在第三方文件中按组件展开，但业务履约数量是完整礼包份数。组件原行全部留证，
+     * 此处按 Fulfillment 聚合并校验完整比例与同一运单，避免一份礼包重复接受 Tracking。
+     */
+    private List<TrackingRow> collapseBundleComponentRows(List<TrackingRow> rows) {
+        Map<Long, List<TrackingRow>> byFulfillment = new LinkedHashMap<>();
+        for (TrackingRow row : rows) {
+            byFulfillment.computeIfAbsent(row.fulfillmentId(), ignored -> new ArrayList<>()).add(row);
+        }
+        List<TrackingRow> collapsed = new ArrayList<>();
+        for (List<TrackingRow> group : byFulfillment.values()) {
+            TrackingRow first = group.getFirst();
+            boolean componentExport = first.line().orderLineComponentId() != null;
+            if (!componentExport) {
+                if (group.size() != 1) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_FULFILLMENT_DUPLICATE", "普通履约明细不能重复出现在回传文件中");
+                }
+                collapsed.add(first);
+                continue;
+            }
+            if (group.stream().anyMatch(row -> row.line().orderLineComponentId() == null)
+                    || group.stream().map(TrackingRow::shipmentId).distinct().count() != 1
+                    || group.stream().map(TrackingRow::orderLineId).distinct().count() != 1
+                    || group.stream().map(row -> row.cells().get("礼包分组标识")).distinct().count() != 1
+                    || first.cells().get("礼包分组标识").isBlank()) {
+                throw BusinessException.unprocessable(
+                        "TRACKING_BUNDLE_GROUP_MISMATCH", "礼包组件必须完整归属同一礼包分组与 Shipment");
+            }
+            if (group.stream().map(TrackingRow::result).distinct().count() != 1) {
+                throw BusinessException.unprocessable(
+                        "TRACKING_BUNDLE_RESULT_MISMATCH", "同一礼包分组的组件结果必须一致");
+            }
+            if ("FAILED".equals(first.result())) {
+                if (group.stream().map(TrackingRow::failureReason).distinct().count() != 1) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_BUNDLE_RESULT_MISMATCH", "同一礼包分组的失败原因必须一致");
+                }
+                collapsed.add(first);
+                continue;
+            }
+            if (group.stream().map(TrackingRow::carrier).distinct().count() != 1
+                    || group.stream().map(TrackingRow::trackingNo).distinct().count() != 1
+                    || group.stream().map(TrackingRow::shippedAt).distinct().count() != 1) {
+                throw BusinessException.unprocessable(
+                        "TRACKING_BUNDLE_TRACKING_MISMATCH", "同一礼包分组的组件必须使用同一承运商、运单与发货时间");
+            }
+            BigDecimal bundleQuantity = null;
+            for (TrackingRow row : group) {
+                BigDecimal componentQuantity = row.line().componentQuantityPerBundle();
+                BigDecimal current;
+                try {
+                    current = row.shippedQuantity().divide(componentQuantity, 0, RoundingMode.UNNECESSARY);
+                } catch (ArithmeticException exception) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_BUNDLE_QUANTITY_MISMATCH", "礼包组件实发数量无法还原为完整礼包份数");
+                }
+                if (current.signum() <= 0 || (bundleQuantity != null && current.compareTo(bundleQuantity) != 0)) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_BUNDLE_QUANTITY_MISMATCH", "同一礼包分组的组件实发比例必须一致");
+                }
+                bundleQuantity = current;
+            }
+            collapsed.add(new TrackingRow(
+                    first.rowIndex(), first.cells(), first.result(), first.line(), bundleQuantity,
+                    first.carrier(), first.trackingNo(), first.shippedAt(), null));
+        }
+        return List.copyOf(collapsed);
+    }
+
+    /** 同 Shipment 的完整发货一次接受；多明细 PARTIAL/FAILED 暂无安全批量语义，失败关闭。 */
+    private void acceptTrackingRows(long batchId, List<TrackingRow> rows, CommandContext context) {
+        Map<Long, List<TrackingRow>> byShipment = new LinkedHashMap<>();
+        for (TrackingRow row : rows) {
+            byShipment.computeIfAbsent(row.shipmentId(), ignored -> new ArrayList<>()).add(row);
+        }
+        for (List<TrackingRow> shipmentRows : byShipment.values()) {
+            TrackingRow first = shipmentRows.getFirst();
+            if (shipmentRows.size() == 1) {
+                acceptTrackingRow(batchId, first, context);
+                continue;
+            }
+            if (shipmentRows.stream().anyMatch(row -> !"SHIPPED".equals(row.result()))
+                    || shipmentRows.stream().map(TrackingRow::carrier).distinct().count() != 1
+                    || shipmentRows.stream().map(TrackingRow::trackingNo).distinct().count() != 1
+                    || shipmentRows.stream().map(TrackingRow::shippedAt).distinct().count() != 1
+                    || shipmentRows.stream().map(TrackingRow::orderId).distinct().count() != 1) {
+                throw BusinessException.unprocessable(
+                        "TRACKING_MULTI_ITEM_SHIPMENT_MISMATCH",
+                        "同一 Shipment 的多履约明细必须完整发货并使用同一运单");
+            }
+            ShipmentTrackingAcceptance acceptance = shipmentTrackingService.acceptShipment(
+                    new ShipmentTrackingBatchCommand(
+                            batchId,
+                            first.shipmentId(),
+                            first.orderId(),
+                            shipmentRows.stream()
+                                    .map(row -> new ShipmentTrackingBatchCommand.Item(
+                                            row.fulfillmentId(), row.orderLineId(), row.shippedQuantity()))
+                                    .toList(),
+                            internalCarrierCode(first.carrier()),
+                            first.carrier(),
+                            first.trackingNo(),
+                            first.shippedAt(),
+                            Map.of("rows", shipmentRows.stream().map(TrackingRow::cells).toList()),
+                            "第三方履约文件整批回传"),
+                    context);
+            if (acceptance.conflicted()) {
+                throw BusinessException.conflict("TRACKING_CONFLICT", "同一 Shipment 已存在不同运单");
+            }
+        }
+    }
+
+    private void acceptTrackingRow(long batchId, TrackingRow row, CommandContext context) {
+        shipmentTrackingService.accept(new ShipmentTrackingCommand(
+                batchId, row.shipmentId(), row.fulfillmentId(), row.orderLineId(), row.orderId(), row.result(),
+                row.shippedQuantity(), row.carrier() == null ? null : internalCarrierCode(row.carrier()),
+                row.carrier(), row.trackingNo(), row.shippedAt(), row.failureReason(), row.cells()), context);
     }
 
     private List<TrackingRow> parseAndValidateThirdParty(ExportHeader export, byte[] bytes) {
@@ -285,10 +408,11 @@ public class TrackingFileService {
             return existingFinal.getFirst();
         }
         SourceBatch source = sourceBatch(sourceBatchId);
+        if (holdMultiPartitionSourceReturns(sourceBatchId)) {
+            return null;
+        }
         if ("WANQI".equals(source.channel())) {
-            throw BusinessException.unprocessable(
-                    "SOURCE_RETURN_TEMPLATE_UNSUPPORTED",
-                    "万齐来源回填契约尚未确认，禁止生成或追加来源回填列");
+            return null;
         }
         List<ReturnRow> returns = returnRows(sourceBatchId);
         int acceptedRows = jdbc.queryForObject(
@@ -445,6 +569,59 @@ public class TrackingFileService {
                     row.orderLineId());
         }
         return returnId;
+    }
+
+    /**
+     * 一个来源行对应多个履约分片时，原模板单行无法无损表达多 Shipment/Tracking。
+     * 创建人工后续事项并失败关闭，绝不拿 legacy 第一分片生成 final 回填。
+     */
+    private boolean holdMultiPartitionSourceReturns(long sourceBatchId) {
+        List<MultiPartitionSourceRow> rows = jdbc.query(
+                """
+                WITH raw_line_links AS (
+                    SELECT rir.id raw_row_id, rir.order_line_id
+                    FROM app.raw_import_rows rir
+                    WHERE rir.import_batch_id=? AND rir.order_line_id IS NOT NULL
+                    UNION
+                    SELECT rirol.raw_import_row_id, rirol.order_line_id
+                    FROM app.raw_import_row_order_lines rirol
+                    JOIN app.raw_import_rows rir ON rir.id=rirol.raw_import_row_id
+                    WHERE rir.import_batch_id=?
+                )
+                SELECT rir.id raw_row_id, rir.order_id, count(DISTINCT rll.order_line_id) partition_count
+                FROM app.raw_import_rows rir
+                JOIN raw_line_links rll ON rll.raw_row_id=rir.id
+                WHERE rir.import_batch_id=? AND rir.status='ACCEPTED'
+                GROUP BY rir.id, rir.order_id
+                HAVING count(DISTINCT rll.order_line_id)>1
+                ORDER BY rir.id
+                """,
+                (resultSet, rowNum) -> new MultiPartitionSourceRow(
+                        resultSet.getLong("raw_row_id"),
+                        resultSet.getLong("order_id"),
+                        resultSet.getInt("partition_count")),
+                sourceBatchId,
+                sourceBatchId,
+                sourceBatchId);
+        for (MultiPartitionSourceRow row : rows) {
+            jdbc.update(
+                    """
+                    INSERT INTO app.review_cases
+                        (case_no, case_type, status, responsible_team, reason_code,
+                         order_id, import_batch_id, raw_import_row_id, detail)
+                    VALUES (?, 'SOURCE_FOLLOWUP', 'OPEN', 'FULFILLMENT_OPS',
+                            'MULTI_SHIPMENT_SOURCE_FOLLOWUP', ?, ?, ?, jsonb_build_object(
+                                'message', '来源礼包行包含多个履约分片，原模板单行无法自动表达多运单',
+                                'partition_count', ?))
+                    ON CONFLICT (case_no) DO NOTHING
+                    """,
+                    "RC-MIXED-SOURCE-" + row.rawRowId(),
+                    row.orderId(),
+                    sourceBatchId,
+                    row.rawRowId(),
+                    row.partitionCount());
+        }
+        return !rows.isEmpty();
     }
 
     /** 京东运单回填后，尝试为 Shipment 所属来源批次生成唯一最终原格式文件。 */
@@ -632,16 +809,23 @@ public class TrackingFileService {
         return jdbc.query(
                 """
                 SELECT fei.export_line_no, fei.shipment_id, fei.fulfillment_id, fei.order_line_id,
+                       fei.order_line_component_id,
                        fei.outbound_order_no, fei.instructed_quantity, fei.output_cells::text output_cells,
+                       COALESCE(olc.quantity_per_bundle, 1) component_quantity_per_bundle,
                        s.order_id
-                FROM app.fulfillment_export_items fei JOIN app.shipments s ON s.id=fei.shipment_id
+                FROM app.fulfillment_export_items fei
+                JOIN app.shipments s ON s.id=fei.shipment_id
+                LEFT JOIN app.order_line_components olc ON olc.id=fei.order_line_component_id
                 WHERE fei.fulfillment_export_id=? ORDER BY fei.export_line_no
                 """,
                 (resultSet, rowNum) -> new ExpectedExportLine(
                         resultSet.getInt("export_line_no"), resultSet.getLong("shipment_id"),
                         resultSet.getLong("fulfillment_id"), resultSet.getLong("order_line_id"),
+                        (Long) resultSet.getObject("order_line_component_id"),
                         resultSet.getLong("order_id"), resultSet.getString("outbound_order_no"),
-                        resultSet.getBigDecimal("instructed_quantity"), jsonMap(resultSet.getString("output_cells"))),
+                        resultSet.getBigDecimal("instructed_quantity"),
+                        resultSet.getBigDecimal("component_quantity_per_bundle"),
+                        jsonMap(resultSet.getString("output_cells"))),
                 exportId);
     }
 
@@ -691,14 +875,25 @@ public class TrackingFileService {
     private List<ReturnRow> returnRows(long sourceBatchId) {
         return jdbc.query(
                 """
-                SELECT rir.id raw_row_id, rir.sheet_index, rir.row_index, rir.order_line_id,
+                WITH raw_line_links AS (
+                    SELECT rir.id raw_row_id, rir.order_line_id
+                    FROM app.raw_import_rows rir
+                    WHERE rir.import_batch_id=? AND rir.order_line_id IS NOT NULL
+                    UNION
+                    SELECT rirol.raw_import_row_id, rirol.order_line_id
+                    FROM app.raw_import_row_order_lines rirol
+                    JOIN app.raw_import_rows rir ON rir.id=rirol.raw_import_row_id
+                    WHERE rir.import_batch_id=?
+                )
+                SELECT rir.id raw_row_id, rir.sheet_index, rir.row_index, rll.order_line_id,
                        s.id shipment_id, s.shipment_sequence, si.shipped_quantity,
                        ol.mapping_multiplier_snapshot,
                        t.tracking_number, f.outcome, f.cancelled_quantity,
                        cc.config #>> ARRAY['carrier_mappings', t.logistics_company_code] source_carrier
                 FROM app.raw_import_rows rir
-                JOIN app.order_lines ol ON ol.id=rir.order_line_id
-                JOIN app.fulfillments f ON f.order_line_id=rir.order_line_id
+                JOIN raw_line_links rll ON rll.raw_row_id=rir.id
+                JOIN app.order_lines ol ON ol.id=rll.order_line_id
+                JOIN app.fulfillments f ON f.order_line_id=rll.order_line_id
                 JOIN app.shipment_items si ON si.fulfillment_id=f.id AND si.shipped_quantity>0
                 JOIN app.shipments s ON s.id=si.shipment_id
                 JOIN app.trackings t ON t.shipment_id=s.id
@@ -723,7 +918,7 @@ public class TrackingFileService {
                             resultSet.getBigDecimal("mapping_multiplier_snapshot"), carrier,
                             resultSet.getString("tracking_number"), resultSet.getString("outcome"),
                             resultSet.getBigDecimal("cancelled_quantity"));
-                }, sourceBatchId);
+                }, sourceBatchId, sourceBatchId, sourceBatchId);
     }
 
     private ParsedSourceRow copyWithCells(ParsedSourceRow row, Map<String, String> cells) {
@@ -820,8 +1015,9 @@ public class TrackingFileService {
 
     private record ExportHeader(long id, long providerId, String batchNo, String exportKind) {}
     private record ExpectedExportLine(
-            int lineNo, long shipmentId, long fulfillmentId, long orderLineId, long orderId,
-            String outboundOrderNo, BigDecimal instructedQuantity, Map<String, Object> outputCells) {}
+            int lineNo, long shipmentId, long fulfillmentId, long orderLineId, Long orderLineComponentId,
+            long orderId, String outboundOrderNo, BigDecimal instructedQuantity,
+            BigDecimal componentQuantityPerBundle, Map<String, Object> outputCells) {}
     private record TrackingRow(
             int rowIndex, Map<String, String> cells, String result, ExpectedExportLine line,
             BigDecimal shippedQuantity, String carrier, String trackingNo, Instant shippedAt, String failureReason) {
@@ -832,6 +1028,7 @@ public class TrackingFileService {
         String outboundOrderNo() { return line.outboundOrderNo(); }
     }
     private record SourceBatch(String channel, String templateVersion, String fileRef) {}
+    private record MultiPartitionSourceRow(long rawRowId, long orderId, int partitionCount) {}
     /**
      * 来源平台数量列的取值：内部数量按建单时冻结的渠道乘数还原为来源份数，且必须是整数。
      *
