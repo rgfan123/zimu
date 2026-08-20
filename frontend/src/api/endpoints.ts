@@ -47,6 +47,9 @@ import type {
   MasterDataRecord,
   OutboundReconQueryType,
   OutboundReconView,
+  ProductBundleCreateInput,
+  ProductBundlePage,
+  ProductBundleRecord,
   ProductImageUploadResult,
   OrderDetail,
   OrderShipment,
@@ -309,6 +312,14 @@ export const skusApi = {
     active?: boolean;
   }) =>
     apiRequest<SkuRecord>(`/api/v1/skus/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
+};
+
+/** GET/POST /api/v1/product-bundles —— 静态礼包及其当前 BOM。 */
+export const productBundlesApi = {
+  list: (query: PageQuery = {}) =>
+    apiRequest<ProductBundlePage>('/api/v1/product-bundles', { params: query as Record<string, QueryValue> }),
+  create: (body: ProductBundleCreateInput) =>
+    apiRequest<ProductBundleRecord>('/api/v1/product-bundles', { method: 'POST', body, headers: writeHeaders() }),
 };
 
 /** GET/POST /api/v1/source-sku-mappings，GET/PATCH /api/v1/source-sku-mappings/{id}。 */

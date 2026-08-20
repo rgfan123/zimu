@@ -29,7 +29,7 @@ import { AuditLogsPage } from '@/pages/system';
 import AnalyticsPage from '@/pages/analytics/AnalyticsPage';
 import DemoOrderPage from '@/pages/demo/DemoOrderPage';
 import DashboardPage from '@/pages/dashboard/DashboardPage';
-import { CategoriesPage, ProductsPage, SkuMappingsPage, SkusPage } from '@/pages/product';
+import { BundlesPage, CategoriesPage, ProductsPage, SkuMappingsPage, SkusPage } from '@/pages/product';
 import {
   FulfillmentTasksPage,
   JdBasicInfoQueryPage,
@@ -88,6 +88,7 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/product/categories': <CategoriesPage />,
   '/product/skus': <SkusPage />,
   '/product/sku-mappings': <SkuMappingsPage />,
+  '/product/bundles': <BundlesPage />,
   '/analytics': <AnalyticsPage />,
   '/system/connectors': <ConnectorsPage />,
   '/system/audit-logs': <AuditLogsPage />,

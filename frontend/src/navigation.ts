@@ -68,6 +68,7 @@ export const appNavigation = [
       { path: '/product/categories', label: '品类基础信息', hideInMenu: true },
       { path: '/product/skus', label: '商品档案' },
       { path: '/product/sku-mappings', label: 'SKU 映射' },
+      { path: '/product/bundles', label: '静态礼包' },
     ],
   },
   { path: '/analytics', label: '经营分析' },

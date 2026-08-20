@@ -468,6 +468,50 @@ export interface SkuPage extends Omit<MasterDataPage, 'items'> {
   items: SkuRecord[];
 }
 
+export type ProductBundleStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE';
+
+export interface ProductBundleItem {
+  sku_id: string;
+  quantity_per_bundle: string;
+  sku_code?: string;
+  product_name?: string;
+  specification?: string;
+  unit?: string;
+  emg_code_snapshot?: string | null;
+  source_text_snapshot?: string | null;
+}
+
+export interface ProductBundleAttributes {
+  barcode?: string | null;
+  description?: string | null;
+  status: ProductBundleStatus;
+  fulfillment_provider_id?: string | null;
+  items: ProductBundleItem[];
+}
+
+export interface ProductBundleRecord extends Omit<MasterDataRecord, 'attributes'> {
+  attributes: ProductBundleAttributes;
+}
+
+export interface ProductBundlePage extends Omit<MasterDataPage, 'items'> {
+  items: ProductBundleRecord[];
+}
+
+export interface ProductBundleItemInput {
+  sku_id: string;
+  quantity_per_bundle: string;
+  emg_code_snapshot?: string;
+}
+
+export interface ProductBundleCreateInput {
+  bundle_code: string;
+  bundle_name: string;
+  barcode?: string;
+  description?: string;
+  status?: ProductBundleStatus;
+  items: ProductBundleItemInput[];
+}
+
 /** 主图上传结果：内容寻址引用与可访问 URL（openapi ProductImageUploadResult）。 */
 export interface ProductImageUploadResult {
   file_ref: string;

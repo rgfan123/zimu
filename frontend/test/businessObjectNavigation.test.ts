@@ -90,13 +90,14 @@ test('system menu exposes each connector and provider configuration capability o
   assert.equal(findNavigationNode(appNavigation, '/system/config')?.hideInMenu, true);
 });
 
-test('product operations expose one product archive and keep technical product/category pages out of the menu', () => {
+test('product operations expose product archive, SKU mappings, and static bundle management', () => {
   const product = findNavigationNode(appNavigation, '/product');
   const visibleChildren = product?.children?.filter(({ hideInMenu }) => !hideInMenu);
 
   assert.deepEqual(visibleChildren, [
     { path: '/product/skus', label: '商品档案' },
     { path: '/product/sku-mappings', label: 'SKU 映射' },
+    { path: '/product/bundles', label: '静态礼包' },
   ]);
   assert.equal(findNavigationNode(appNavigation, '/product/products')?.hideInMenu, true);
   assert.equal(findNavigationNode(appNavigation, '/product/categories')?.hideInMenu, true);
