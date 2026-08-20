@@ -42,7 +42,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * 05 — 采购比价 Agent 评测集与端到端（agent-decision-layer 05；meta-agent-platform-impl 03
- * 数据驱动化）：本地 JDK HttpServer stub 覆盖固定评测集（procurement-eval-v1，用例真源在 DB
+ * 数据驱动化）：本地 JDK HttpServer stub 覆盖固定评测集（procurement-eval-v2，用例真源在 DB
  * {@code agent_eval_cases}，Testcontainers 加载）、工具调用序列端到端、白名单只含只读工具、
  * 写工具永不暴露。不依赖真实网络与真实密钥。
  *

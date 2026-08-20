@@ -10,8 +10,8 @@
 -- 换例 = 换版本」。因此 procurement-eval-v1 的 7 例**原样保留**在 version 1 上（基线可复现、
 -- 可回滚），v2 的 12 例绑定到 version 2，而不是删掉旧的。
 --
--- 播种内容与代码常量（ProcurementPriceAgentConfiguration 的系统提示词 / DESCRIPTION /
--- outputSchemaForSeed）及评测 fixture 逐字一致，AgentDefinitionSeedParityTest 校验。
+-- 播种内容由 active definition、ProcurementPriceEvalFixture 与
+-- AgentPlatformSeedVerbatimTest 在当前 DB 真源架构上共同校验。
 
 -- ① v1 退役（前向转移，状态机允许）
 UPDATE app.agent_definitions
@@ -125,49 +125,49 @@ SELECT agent_slug,
        allow_write,
        guard_exemptions,
        'active',
-       $seed$system:v34-seed$seed$,
+       $seed$system:v45-seed$seed$,
        CURRENT_TIMESTAMP
 FROM app.agent_definitions
 WHERE agent_slug = $seed$procurement-price-agent$seed$ AND version = 1;
 
 
 INSERT INTO app.agent_eval_cases (
-    agent_slug, agent_version, eval_set_version, case_key, metric_kind,
+    agent_slug, agent_version, metric_kind,
     input, expected, status, created_by, confirmed_by, confirmed_at)
 VALUES
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$happy-path-ticket$seed$, 'INVARIANT', $seed$
-{"input": {"procurement_ticket_id":"9001","quantity":"2"}, "model_output": "{\"target_sku\":\"SKU-1001\",\"requested_quantity\":\"2\",\"inventory\":{\"available\":\"0\",\"shortage\":\"2\"},\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\",\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"},{\"provider_code\":\"P002\",\"price\":\"12.90\",\"price_basis\":\"provider_sku\",\"note\":\"履约方映射价格\"}],\"excluded_candidates\":[],\"recommendation\":{\"provider_code\":\"P001\",\"reason\":\"最低价且来自主数据进货价\"},\"missing_fields\":[],\"confidence\":0.9,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":false,"write_tool_calls":0}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$happy-path-sku-no-quantity$seed$, 'INVARIANT', $seed$
-{"input": {"sku_id":"1001"}, "model_output": "{\"target_sku\":\"SKU-1001\",\"requested_quantity\":null,\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},\"candidates\":[{\"provider_code\":\"P003\",\"price\":\"8.50\",\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"}],\"excluded_candidates\":[],\"recommendation\":{\"provider_code\":\"P003\",\"reason\":\"唯一候选\"},\"missing_fields\":[],\"confidence\":0.85,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":false,"write_tool_calls":0}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$no-candidates$seed$, 'INVARIANT', $seed$
-{"input": {"procurement_ticket_id":"9002","quantity":"1"}, "model_output": "{\"target_sku\":\"SKU-2001\",\"requested_quantity\":\"1\",\"inventory\":{\"available\":\"0\",\"shortage\":\"1\"},\"candidates\":[],\"excluded_candidates\":[],\"recommendation\":null,\"missing_fields\":[],\"confidence\":0.8,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":true,"write_tool_calls":0,"missing_fields_contains":"candidates"}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$missing-price$seed$, 'INVARIANT', $seed$
-{"input": {"procurement_ticket_id":"9003"}, "model_output": "{\"target_sku\":\"SKU-3001\",\"requested_quantity\":null,\"inventory\":{\"available\":\"0\",\"shortage\":\"3\"},\"candidates\":[{\"provider_code\":\"P001\",\"price\":null,\"price_basis\":\"sku_commercial_price\",\"note\":\"未定价\"}],\"excluded_candidates\":[],\"recommendation\":{\"provider_code\":\"P001\",\"reason\":\"x\"},\"missing_fields\":[],\"confidence\":0.7,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":true,"write_tool_calls":0,"missing_fields_contains":"price"}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$low-confidence-and-missing-fields$seed$, 'INVARIANT', $seed$
-{"input": {"procurement_ticket_id":"9004","quantity":"4"}, "model_output": "{\"target_sku\":\"SKU-4001\",\"requested_quantity\":\"4\",\"inventory\":{\"available\":\"0\",\"shortage\":\"4\"},\"candidates\":[{\"provider_code\":\"P002\",\"price\":\"20.10\",\"price_basis\":\"provider_sku\",\"note\":\"外部映射无本地名\"}],\"excluded_candidates\":[],\"recommendation\":{\"provider_code\":\"P002\",\"reason\":\"x\"},\"missing_fields\":[\"provider_sku_name\"],\"confidence\":0.2,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":true,"write_tool_calls":0,"missing_fields_contains":"provider_sku_name"}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$happy-path-camelcase-model-output$seed$, 'INVARIANT', $seed$
-{"input": {"sku_id":"1001"}, "model_output": "{\"targetSku\":\"SKU-1001\",\"requestedQuantity\":null,\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},\"candidates\":[{\"providerCode\":\"P003\",\"price\":\"8.50\",\"priceBasis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"}],\"excludedCandidates\":[],\"recommendation\":{\"providerCode\":\"P003\",\"reason\":\"唯一候选\"},\"missingFields\":[],\"confidence\":0.85,\"requiresHuman\":false}"}$seed$::jsonb, $seed$
-{"requires_human":false,"write_tool_calls":0}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$schema-invalid-output$seed$, 'INVARIANT', $seed$
-{"input": {"sku_id":"1002"}, "model_output": "这不是符合 schema 的 JSON"}$seed$::jsonb, $seed$
-{"requires_human":true,"write_tool_calls":0}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$outlier-candidate-excluded$seed$, 'INVARIANT', $seed$
-{"input": {"sku_id":"1001"}, "model_output": "{\"target_sku\":\"SKU-5001\",\"requested_quantity\":null,\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\",\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"},{\"provider_code\":\"P002\",\"price\":\"12.90\",\"price_basis\":\"provider_sku\",\"note\":\"履约方映射价格\"},{\"provider_code\":\"P003\",\"price\":\"45.67\",\"price_basis\":\"provider_sku\",\"note\":\"渠道报价异常高\"}],\"excluded_candidates\":[],\"recommendation\":{\"provider_code\":\"P001\",\"reason\":\"最低价且可比\"},\"missing_fields\":[],\"confidence\":0.9,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":false,"write_tool_calls":0}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$all-mapping-stale-forces-human$seed$, 'INVARIANT', $seed$
-{"input": {"sku_id":"1003"}, "model_output": "{\"target_sku\":\"SKU-6001\",\"requested_quantity\":null,\"inventory\":{\"available\":\"0\",\"shortage\":\"6\"},\"candidates\":[],\"excluded_candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\",\"price_basis\":\"provider_sku\",\"note\":\"映射已停用\",\"exclusion_reason\":\"mapping_stale\",\"exclusion_reason_detail\":\"映射已停用\"},{\"provider_code\":\"P002\",\"price\":\"12.90\",\"price_basis\":\"provider_sku\",\"note\":\"映射已过期\",\"exclusion_reason\":\"mapping_stale\",\"exclusion_reason_detail\":\"映射已过期\"}],\"recommendation\":{\"provider_code\":\"P001\",\"reason\":\"x\"},\"missing_fields\":[],\"confidence\":0.85,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":true,"write_tool_calls":0,"missing_fields_contains":"candidates"}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$mapping-stale-candidate-excluded$seed$, 'INVARIANT', $seed$
-{"input": {"sku_id":"1001"}, "model_output": "{\"target_sku\":\"SKU-1001\",\"requested_quantity\":null,\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\",\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"}],\"excluded_candidates\":[{\"provider_code\":\"P002\",\"price\":\"12.90\",\"price_basis\":\"provider_sku\",\"note\":\"履约方映射已停用\",\"exclusion_reason\":\"mapping_stale\",\"exclusion_reason_detail\":\"映射已停用\"}],\"recommendation\":{\"provider_code\":\"P001\",\"reason\":\"唯一可比候选\"},\"missing_fields\":[],\"confidence\":0.85,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":false,"write_tool_calls":0}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$price-missing-candidate-excluded-forces-human$seed$, 'INVARIANT', $seed$
-{"input": {"sku_id":"1004"}, "model_output": "{\"target_sku\":\"SKU-7001\",\"requested_quantity\":null,\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\",\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"},{\"provider_code\":\"P002\",\"price\":\"12.90\",\"price_basis\":\"provider_sku\",\"note\":\"履约方映射价格\"}],\"excluded_candidates\":[{\"provider_code\":\"P003\",\"price\":null,\"price_basis\":\"provider_sku\",\"note\":\"未定价\",\"exclusion_reason\":\"price_missing\",\"exclusion_reason_detail\":\"无可用价格\"}],\"recommendation\":{\"provider_code\":\"P001\",\"reason\":\"x\"},\"missing_fields\":[],\"confidence\":0.8,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":true,"write_tool_calls":0,"missing_fields_contains":"price"}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP),
-    ($seed$procurement-price-agent$seed$, 2, $seed$procurement-eval-v2$seed$, $seed$recommendation-on-excluded-candidate-forces-human$seed$, 'INVARIANT', $seed$
-{"input": {"sku_id":"1005"}, "model_output": "{\"target_sku\":\"SKU-8001\",\"requested_quantity\":null,\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\",\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"},{\"provider_code\":\"P002\",\"price\":\"12.90\",\"price_basis\":\"provider_sku\",\"note\":\"履约方映射价格\"}],\"excluded_candidates\":[{\"provider_code\":\"P003\",\"price\":\"45.67\",\"price_basis\":\"provider_sku\",\"note\":\"渠道报价异常高\",\"exclusion_reason\":\"price_outlier\",\"exclusion_reason_detail\":\"偏离中位数\"}],\"recommendation\":{\"provider_code\":\"P003\",\"reason\":\"x\"},\"missing_fields\":[],\"confidence\":0.9,\"requires_human\":false}"}$seed$::jsonb, $seed$
-{"requires_human":true,"write_tool_calls":0,"missing_fields_contains":"recommendation"}$seed$::jsonb, 'CONFIRMED', 'system:v34-seed', 'system:v34-seed', CURRENT_TIMESTAMP);
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"procurement_ticket_id":"9001","quantity":"2"}$seed$::jsonb, $seed$
+{"requires_human":false}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"sku_id":"1001"}$seed$::jsonb, $seed$
+{"requires_human":false}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"procurement_ticket_id":"9002","quantity":"1"}$seed$::jsonb, $seed$
+{"requires_human":true,"missing_fields":["candidates"]}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"procurement_ticket_id":"9003"}$seed$::jsonb, $seed$
+{"requires_human":true,"missing_fields":["price"]}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"procurement_ticket_id":"9004","quantity":"4"}$seed$::jsonb, $seed$
+{"requires_human":true,"missing_fields":["provider_sku_name"]}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"sku_id":"1001"}$seed$::jsonb, $seed$
+{"requires_human":false}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"sku_id":"1002"}$seed$::jsonb, $seed$
+{"requires_human":true,"expected_error":"AGENT_OUTPUT_INVALID"}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"sku_id":"1001"}$seed$::jsonb, $seed$
+{"requires_human":false}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"sku_id":"1003"}$seed$::jsonb, $seed$
+{"requires_human":true,"missing_fields":["candidates"]}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"sku_id":"1001"}$seed$::jsonb, $seed$
+{"requires_human":false}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"sku_id":"1004"}$seed$::jsonb, $seed$
+{"requires_human":true,"missing_fields":["price"]}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP),
+    ($seed$procurement-price-agent$seed$, 2, 'INVARIANT', $seed$
+{"sku_id":"1005"}$seed$::jsonb, $seed$
+{"requires_human":true,"missing_fields":["recommendation"]}$seed$::jsonb, 'CONFIRMED', 'system:v45-seed', 'system:v45-seed', CURRENT_TIMESTAMP);

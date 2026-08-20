@@ -74,7 +74,8 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                         + "FROM app.agent_definitions WHERE status = 'active' ORDER BY id",
                 (rs, i) -> row(rs));
         assertThat(active).extracting(DefinitionRow::slug)
-                .containsExactly("procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent");
+                .containsExactlyInAnyOrder(
+                        "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent");
         assertThat(active).allSatisfy(row -> {
             assertThat(row.version()).isEqualTo("procurement-price-agent".equals(row.slug()) ? 2 : 1);
             assertThat(row.status()).isEqualTo("active");

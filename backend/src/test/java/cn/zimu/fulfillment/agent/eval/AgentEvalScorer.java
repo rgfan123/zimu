@@ -71,7 +71,7 @@ public final class AgentEvalScorer {
             Set.of("requires_human", "tool_sequence", "missing_fields", "expected_error");
 
     /** 评测集版本标签（07：用例集按 (agent_slug, agent_version) 冻结；标签沿用 fixture 时代版本名）。 */
-    private static final String PROCUREMENT_EVAL_SET_VERSION = "procurement-eval-v1";
+    private static final String PROCUREMENT_EVAL_SET_VERSION = "procurement-eval-v2";
     private static final String DATA_QUERY_EVAL_SET_VERSION = "data-query-eval-v1";
 
     /** 跑分器当前支持的 agent（其余 slug 的 INVARIANT/CONFIRMED 用例属配置漂移，拒跑可见）。 */
@@ -108,10 +108,12 @@ public final class AgentEvalScorer {
      */
     public static List<AgentEvalCase> loadInvariantCases(JdbcTemplate jdbc) {
         List<AgentEvalCase> cases = jdbc.query(
-                "SELECT agent_slug, agent_version, metric_kind, input::text, expected::text "
-                        + "FROM app.agent_eval_cases "
-                        + "WHERE metric_kind = 'INVARIANT' AND status = 'CONFIRMED' "
-                        + "ORDER BY agent_slug, id",
+                "SELECT c.agent_slug, c.agent_version, c.metric_kind, c.input::text, c.expected::text "
+                        + "FROM app.agent_eval_cases c "
+                        + "JOIN app.agent_definitions d ON d.agent_slug=c.agent_slug "
+                        + "AND d.version=c.agent_version AND d.status='active' "
+                        + "WHERE c.metric_kind = 'INVARIANT' AND c.status = 'CONFIRMED' "
+                        + "ORDER BY c.agent_slug, c.id",
                 (rs, i) -> new AgentEvalCase(
                         rs.getString("agent_slug"),
                         rs.getInt("agent_version"),

@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.agent.eval;
 
+import cn.zimu.fulfillment.agent.procurement.ProcurementPriceEvalFixture;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Map;
@@ -68,6 +69,11 @@ public final class AgentEvalStubData {
     public static String procurementModelOutput(String inputJson) {
         try {
             JsonNode input = MAPPER.readTree(inputJson);
+            for (ProcurementPriceEvalFixture.EvalCase evalCase : ProcurementPriceEvalFixture.CASES) {
+                if (MAPPER.readTree(evalCase.inputJson()).equals(input)) {
+                    return evalCase.modelOutput();
+                }
+            }
             for (Map.Entry<String, String> entry : PROCUREMENT_MODEL_OUTPUT_BY_INPUT.entrySet()) {
                 if (MAPPER.readTree(entry.getKey()).equals(input)) {
                     return entry.getValue();
