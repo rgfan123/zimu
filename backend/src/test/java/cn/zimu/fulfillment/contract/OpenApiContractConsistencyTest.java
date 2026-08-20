@@ -28,7 +28,7 @@ import org.yaml.snakeyaml.Yaml;
 
 /**
  * 工单 07 契约门禁：从运行中的应用导出 springdoc 生成的 OpenAPI spec，与手写评审契约
- * {@code jry/docs/openapi.yaml} 做结构化比对，漂移即失败并打印差异。
+ * {@code docs/openapi.yaml} 做结构化比对，漂移即失败并打印差异。
  *
  * <h2>比对粒度（详见工单 Resolution）</h2>
  * <ul>
@@ -156,7 +156,7 @@ class OpenApiContractConsistencyTest {
 
         List<String> diffs = compare(generated, handwritten);
         if (!diffs.isEmpty()) {
-            System.out.println("=== OpenAPI 契约漂移（生成物 vs 手写 jry/docs/openapi.yaml），共 " + diffs.size() + " 处 ===");
+            System.out.println("=== OpenAPI 契约漂移（生成物 vs 手写 docs/openapi.yaml），共 " + diffs.size() + " 处 ===");
             diffs.forEach(d -> System.out.println(d));
         }
         assertThat(diffs).as("生成契约与手写评审契约的结构化比对必须为零差异（差异逐条登记在工单 07 Resolution）")
@@ -442,7 +442,7 @@ class OpenApiContractConsistencyTest {
                 }
             }
         }
-        throw new IllegalStateException("找不到手写契约 docs/openapi.yaml（相对 jry/backend 尝试了 " + candidates + "）");
+        throw new IllegalStateException("找不到手写契约 docs/openapi.yaml（相对 backend 尝试了 " + candidates + "）");
     }
 
     @SuppressWarnings("unchecked")

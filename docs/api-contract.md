@@ -11,7 +11,7 @@
   `/v3/api-docs` / `/v3/api-docs.yaml` 暴露由控制器与 DTO 实时生成的 OpenAPI 契约。CI
   （`.github/workflows/ci-jry.yml`）里的 `OpenApiContractConsistencyTest` 把生成物与手写 yaml
   做结构化比对，漂移即失败并打印差异；每次测试也会把生成物快照导出到
-  `jry/backend/target/generated-openapi.yaml` 供人工检查。
+  `backend/target/generated-openapi.yaml` 供人工检查。
 - **手写 `docs/openapi.yaml` 是评审用契约草案**：承载业务语义、评审意图与说明性描述（即本文件
   §1–§9 的约定与逐端点说明，以及 yaml 里的描述/示例/错误响应）。它的机器可读结构——路径、方法、
   query/header 参数、2xx 响应码、请求体与成功响应的 schema——不再靠人眼与控制器保持一致：

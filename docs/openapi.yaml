@@ -2608,6 +2608,595 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DemoRun' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  "/api/v1/source-bundle-mappings":
+    get:
+      tags:
+      - bundle-master-data-controller
+      operationId: sourceBundleMappings
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          minimum: 0
+      - name: size
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 20
+          maximum: 200
+          minimum: 1
+      - name: source_channel
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - CAISHIXIAN
+          - JUFUBAO
+          - FEIXIANG
+          - ZHONGHUI
+          - DAZHE
+          - WANGQI
+          - WANQI
+          - WECOM
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/PageResponseMasterDataRecord"
+    post:
+      tags:
+      - bundle-master-data-controller
+      operationId: createSourceBundleMapping
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: X-Operator
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SourceBundleMappingWrite"
+        required: true
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/v1/product-bundles":
+    get:
+      tags:
+      - bundle-master-data-controller
+      operationId: productBundles
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          minimum: 0
+      - name: size
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 20
+          maximum: 200
+          minimum: 1
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/PageResponseMasterDataRecord"
+    post:
+      tags:
+      - bundle-master-data-controller
+      operationId: createProductBundle
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: X-Operator
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/BundleWrite"
+        required: true
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/agents/{slug}/set-enabled":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: setEnabled
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/agents/{slug}/rollback":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: rollback
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/agents/{slug}/drafts/{version}/reject":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: reject_1
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/agents/{slug}/drafts/{version}/confirm":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: confirm_3
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/agents/drafts":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: createDraft
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/internal/v1/agents":
+    get:
+      tags:
+      - internal-agent-read-controller
+      operationId: list
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/AgentListResponse"
+  "/internal/v1/agents/{slug}":
+    get:
+      tags:
+      - internal-agent-read-controller
+      operationId: detail
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/AgentDetail"
+  "/internal/v1/agents/{slug}/versions":
+    get:
+      tags:
+      - internal-agent-read-controller
+      operationId: versions
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: array
+                items:
+                  "$ref": "#/components/schemas/AgentVersionItem"
+  "/internal/v1/agent-runs":
+    get:
+      tags:
+      - internal-agent-run-read-controller
+      operationId: list_1
+      parameters:
+      - name: run_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: slug
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: outcome
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: run_mode
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_type
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_to
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/RunListResponse"
+  "/internal/v1/agent-runs/{runId}":
+    get:
+      tags:
+      - internal-agent-run-read-controller
+      operationId: detail_1
+      parameters:
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/RunDetail"
+  "/api/v1/source-bundle-mappings/{id}":
+    get:
+      tags:
+      - bundle-master-data-controller
+      operationId: sourceBundleMapping
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/MasterDataRecord"
+  "/api/v1/product-bundles/{id}":
+    get:
+      tags:
+      - bundle-master-data-controller
+      operationId: productBundle
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/MasterDataRecord"
+  "/api/v1/agents":
+    get:
+      tags:
+      - agent-read-controller
+      operationId: list_14
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/AgentListResponse"
+  "/api/v1/agents/{slug}":
+    get:
+      tags:
+      - agent-read-controller
+      operationId: detail_13
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/AgentDetail"
+  "/api/v1/agents/{slug}/versions":
+    get:
+      tags:
+      - agent-read-controller
+      operationId: versions_2
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: array
+                items:
+                  "$ref": "#/components/schemas/AgentVersionItem"
+  "/api/v1/agents/{slug}/versions/{version}/eval-cases":
+    get:
+      tags:
+      - agent-read-controller
+      operationId: evalCases
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+      - name: metric_kind
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: array
+                items:
+                  "$ref": "#/components/schemas/AgentEvalCaseItem"
+  "/api/v1/agent-runs":
+    get:
+      tags:
+      - agent-run-read-controller
+      operationId: list_15
+      parameters:
+      - name: run_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: slug
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: outcome
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: run_mode
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_type
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_to
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/RunListResponse"
+  "/api/v1/agent-runs/{runId}":
+    get:
+      tags:
+      - agent-run-read-controller
+      operationId: detail_14
+      parameters:
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/RunDetail"
+
 components:
   securitySchemes:
     basicAuth:
