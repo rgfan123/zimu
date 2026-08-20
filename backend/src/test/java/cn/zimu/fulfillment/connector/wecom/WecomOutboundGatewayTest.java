@@ -14,8 +14,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.EntityManager;
 import java.net.http.HttpClient;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
@@ -32,7 +32,7 @@ class WecomOutboundGatewayTest {
     private ScheduledExecutorService scheduler;
     private WecomLongConnectionClient client;
     private WecomOutboundGateway gateway;
-    private final List<AuditLog> storedAudits = new ArrayList<>();
+    private final List<AuditLog> storedAudits = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() throws Exception {
