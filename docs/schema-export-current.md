@@ -36,6 +36,10 @@ pg_dump --schema-only --schema=app --no-owner --no-privileges --no-comments
 
 注意：`analytics` 分析 schema 的 4 个视图**不在此导出内**（`--schema=app` 限定）。需要分析库结构时，对 `analytics` 另行导出。
 
+> 定位提醒：本导出是 2026-08-17 的一次性交接基线，早于 V33（缺 `agent_definitions`/`agent_eval_cases`），
+> 与 Flyway 迁移链没有联动机制。当前结构的权威对照是 `docs/schema.sql`（空库快照），等价性由
+> `SchemaSnapshotMigrationEquivalenceTest` 保证；本文件只在需要重新交接基线时按 §5 再导出。
+
 ## 3. 表按领域分组
 
 导出的 53 张表可归入以下领域（与 `docs/schema.md` §3 的分组对齐，含其未收录的消息链路组）：
