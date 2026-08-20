@@ -244,10 +244,9 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
     void outlierCandidateIsExcludedAndRecommendationStaysAmongComparable() {
         hits.set(0);
         script = List.of(Step.finalAnswer(evalOutput("outlier-candidate-excluded")));
-        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties());
+        ProcurementPriceAgent agent = agent(properties());
 
-        ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                "你是采购比价 Agent。", "{\"sku_id\":\"1001\"}", AgentToolBinding.empty(RUN_ID)));
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1001\"}", null);
 
         assertThat(result.error()).isNull();
         ProcurementPriceRecommendation recommendation = result.recommendation();
@@ -268,10 +267,9 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
     void mappingStaleCandidateIsExcludedButComparableCandidateStillRecommends() {
         hits.set(0);
         script = List.of(Step.finalAnswer(evalOutput("mapping-stale-candidate-excluded")));
-        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties());
+        ProcurementPriceAgent agent = agent(properties());
 
-        ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                "你是采购比价 Agent。", "{\"sku_id\":\"1001\"}", AgentToolBinding.empty(RUN_ID)));
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1001\"}", null);
 
         ProcurementPriceRecommendation recommendation = result.recommendation();
         assertThat(recommendation.requiresHuman()).isFalse();
@@ -289,10 +287,9 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
     void allCandidatesExcludedRoutesRequiresHumanWithoutHardRecommendation() {
         hits.set(0);
         script = List.of(Step.finalAnswer(evalOutput("all-mapping-stale-forces-human")));
-        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties());
+        ProcurementPriceAgent agent = agent(properties());
 
-        ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                "你是采购比价 Agent。", "{\"sku_id\":\"1003\"}", AgentToolBinding.empty(RUN_ID)));
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1003\"}", null);
 
         ProcurementPriceRecommendation recommendation = result.recommendation();
         assertThat(recommendation.requiresHuman()).isTrue();
@@ -310,10 +307,9 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
     void recommendationOnExcludedCandidateIsRejectedAndRoutesHuman() {
         hits.set(0);
         script = List.of(Step.finalAnswer(evalOutput("recommendation-on-excluded-candidate-forces-human")));
-        ProcurementPriceAgentRuntime runtime = new ProcurementPriceAgentRuntime(properties());
+        ProcurementPriceAgent agent = agent(properties());
 
-        ProcurementPriceRunResult result = runtime.run(new AgentTaskRequest(
-                "你是采购比价 Agent。", "{\"sku_id\":\"1005\"}", AgentToolBinding.empty(RUN_ID)));
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1005\"}", null);
 
         ProcurementPriceRecommendation recommendation = result.recommendation();
         assertThat(recommendation.requiresHuman()).isTrue();
