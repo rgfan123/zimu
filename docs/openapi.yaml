@@ -643,7 +643,7 @@ paths:
                 source_file:
                   type: string
                   format: binary
-                  description: CAISHIXIAN, JUFUBAO, or FEIXIANG source-order file
+                  description: Supported source-order file; channel is determined by its exact template fingerprint
       responses:
         '200':
           description: Mapping candidates and review reasons; no master data was written
@@ -2603,7 +2603,7 @@ components:
       pattern: '^[0-9a-f]{64}$'
     SourceChannel:
       type: string
-      enum: [CAISHIXIAN, JUFUBAO, FEIXIANG, WECOM]
+      enum: [CAISHIXIAN, JUFUBAO, FEIXIANG, ZHONGHUI, WANGQI, DAZHE, WANQI, WECOM]
     ImportMode:
       type: string
       enum: [NEW, REVISION]
@@ -3223,6 +3223,20 @@ components:
       properties:
         method: { type: string, enum: [MONTHLY, IMMEDIATE, CREDIT_TERM, PREPAID, COD, OTHER] }
         settlement_time: { type: string, format: date-time }
+    SettlementView:
+      type: object
+      required: [method, settlement_time]
+      properties:
+        method:
+          type: string
+          enum: [MONTHLY, IMMEDIATE, CREDIT_TERM, PREPAID, COD, OTHER]
+          nullable: true
+          description: 万齐 52 列来源未提供结账信息时为空
+        settlement_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: 万齐 52 列来源未提供结账信息时为空
     BundleComponentInput:
       type: object
       required: [product_name, specification, unit, quantity_per_bundle]
@@ -3347,7 +3361,7 @@ components:
           required: [receiver, settlement, lines, review_cases]
           properties:
             receiver: { $ref: '#/components/schemas/Receiver' }
-            settlement: { $ref: '#/components/schemas/Settlement' }
+            settlement: { $ref: '#/components/schemas/SettlementView' }
             remark: { type: string }
             lines:
               type: array
@@ -3455,7 +3469,7 @@ components:
               quantity_per_bundle: { type: string, pattern: '^\\d+(\\.\\d{3})$' }
     ImportBatch:
       type: object
-      required: [id, batch_no, batch_type, import_mode, template_family, template_version, original_file_name, content_sha256, status, row_counts, received_at]
+      required: [id, batch_no, batch_type, import_mode, template_family, template_version, original_file_name, content_sha256, status, settlement_missing, row_counts, received_at]
       properties:
         id: { $ref: '#/components/schemas/Identifier' }
         batch_no: { type: string }
@@ -3474,6 +3488,9 @@ components:
         status: { $ref: '#/components/schemas/ImportBatchStatus' }
         confirmed_at: { type: string, format: date-time, nullable: true }
         confirmed_by: { type: string, nullable: true }
+        settlement_missing:
+          type: boolean
+          description: 真实万齐 52 列来源未提供结账方式和时间时为 true
         row_counts:
           type: object
           required: [total, accepted, need_review, rejected]

@@ -117,8 +117,8 @@ public class SourceImportService {
                 INSERT INTO app.import_batches
                     (batch_no, batch_type, import_mode, parent_import_batch_id, revision_no,
                      source_channel, template_family, template_version, template_fingerprint,
-                     original_file_name, content_sha256, file_ref, status, uploaded_by)
-                VALUES (?, 'SOURCE_ORDER', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING', ?)
+                     original_file_name, content_sha256, file_ref, status, uploaded_by, settlement_missing)
+                VALUES (?, 'SOURCE_ORDER', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING', ?, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -133,7 +133,8 @@ public class SourceImportService {
                 safeFilename,
                 sha256,
                 retained.toString(),
-                context.operator());
+                context.operator(),
+                parsed.sourceChannel() == SourceChannel.WANQI);
 
         Map<RowKey, Long> rawIds = new LinkedHashMap<>();
         for (ParsedSourceRow row : parsed.rows()) {
@@ -199,7 +200,8 @@ public class SourceImportService {
                         "idempotency_key", idempotencyKey,
                         "original_file_name", safeFilename,
                         "content_sha256", sha256,
-                        "import_mode", mode));
+                        "import_mode", mode,
+                        "settlement_missing", parsed.sourceChannel() == SourceChannel.WANQI));
     }
 
     /** 批次收尾共享：counts → 状态（NEED_REVIEW 阻断 confirm 语义不变）→ SYSTEM/HUMAN 审计。 */
@@ -460,7 +462,7 @@ public class SourceImportService {
                        source_channel, fulfillment_provider_id, source_fulfillment_export_id,
                        template_family, template_version, template_fingerprint, original_file_name,
                        content_sha256, status, error_detail::text error_detail, received_at, processed_at,
-                       confirmed_at, confirmed_by
+                       confirmed_at, confirmed_by, settlement_missing
                 FROM app.import_batches WHERE id=?
                 """,
                 (resultSet, rowNum) -> {
@@ -487,6 +489,7 @@ public class SourceImportService {
                     value.put("confirmed_at", resultSet.getTimestamp("confirmed_at") == null
                             ? null : resultSet.getTimestamp("confirmed_at").toInstant());
                     value.put("confirmed_by", resultSet.getString("confirmed_by"));
+                    value.put("settlement_missing", resultSet.getBoolean("settlement_missing"));
                     return value;
                 },
                 batchId);
@@ -652,7 +655,8 @@ public class SourceImportService {
                 .map(row -> canonicalItem(parsed.sourceChannel(), row))
                 .toList();
         Instant settlementAt = rows.stream().map(ParsedSourceRow::orderedAt).filter(Objects::nonNull)
-                .min(Comparator.naturalOrder()).orElse(Instant.now());
+                .min(Comparator.naturalOrder()).orElseGet(
+                        () -> parsed.sourceChannel() == SourceChannel.WANQI ? null : Instant.now());
         return new CanonicalOrderInput(
                 parsed.sourceChannel(),
                 first.sourceOrderRef() == null ? groupKey : first.sourceOrderRef(),
@@ -662,29 +666,26 @@ public class SourceImportService {
                         first.receiverName(), first.receiverPhone(), first.receiverProvince(), first.receiverCity(),
                         first.receiverDistrict(), null, first.receiverAddress()),
                 items,
-                new Settlement(SettlementMethod.valueOf(first.settlementMethod()), settlementAt),
+                "UNSPECIFIED".equals(first.settlementMethod())
+                        ? Settlement.unspecifiedSourceFact()
+                        : new Settlement(SettlementMethod.valueOf(first.settlementMethod()), settlementAt),
                 first.remark(),
                 rows.stream().map(row -> "import://" + batchNo + "/" + row.sheetIndex() + "/" + row.rowIndex()).toList());
     }
 
-    /**
-     * 万齐显式礼包映射优先于普通来源 SKU 映射；其他渠道和非礼包万齐行保持既有 SINGLE 语义。
-     *
-     * <p>组件仍走 {@link OrderCreateService} 的公共礼包用例：bundle_items 中冻结的 EMG 编码作为
-     * WANGQI sourceSkuRef，经 source_channel_skus 精确解析。EMG 为空或映射缺失时，该用例会按
-     * 现有 SKU_MAPPING_REQUIRED 分支把整条礼包行留在 NEED_REVIEW，而不是绕过门禁直接使用 sku_id。
-     */
+    /** 来源礼包显式映射优先于普通来源 SKU 映射；权威 BOM 组件只使用内部 SKU 编码。 */
     private OrderItemInput canonicalItem(SourceChannel channel, ParsedSourceRow row) {
         StaticSourceBundle sourceBundle = activeSourceBundle(channel, row.sourceSkuRef());
         if (sourceBundle == null) {
-            if (channel == SourceChannel.WANGQI && looksLikeBundle(row.productName())) {
+            if (List.of(SourceChannel.WANGQI, SourceChannel.DAZHE, SourceChannel.WANQI).contains(channel)
+                    && looksLikeBundle(row.productName())) {
                 return unresolvedBundleItem(row);
             }
             return singleItem(row);
         }
         List<BundleComponentInput> components = jdbc.query(
                 """
-                SELECT bi.emg_code_snapshot, s.sku_code, p.product_name, s.specification, s.unit,
+                SELECT s.sku_code, p.product_name, s.specification, s.unit,
                        bi.quantity_per_bundle
                 FROM app.bundle_items bi
                 JOIN app.skus s ON s.id=bi.sku_id
@@ -694,7 +695,7 @@ public class SourceImportService {
                 """,
                 (resultSet, rowNum) -> new BundleComponentInput(
                         resultSet.getString("sku_code"),
-                        resultSet.getString("emg_code_snapshot"),
+                        null,
                         resultSet.getString("product_name"),
                         resultSet.getString("specification"),
                         resultSet.getString("unit"),
@@ -739,7 +740,9 @@ public class SourceImportService {
     }
 
     private StaticSourceBundle activeSourceBundle(SourceChannel channel, String sourceSkuRef) {
-        if (channel != SourceChannel.WANGQI || sourceSkuRef == null || sourceSkuRef.isBlank()) {
+        if (!List.of(SourceChannel.WANGQI, SourceChannel.DAZHE, SourceChannel.WANQI).contains(channel)
+                || sourceSkuRef == null
+                || sourceSkuRef.isBlank()) {
             return null;
         }
         List<StaticSourceBundle> matches = jdbc.query(
@@ -747,10 +750,11 @@ public class SourceImportService {
                 SELECT scb.bundle_id
                 FROM app.source_channel_bundles scb
                 JOIN app.product_bundles pb ON pb.id=scb.bundle_id AND pb.status='ACTIVE'
-                WHERE scb.source_channel='WANGQI' AND scb.source_bundle_ref=?
+                WHERE scb.source_channel=? AND scb.source_bundle_ref=?
                   AND scb.active AND scb.quantity_multiplier=1
                 """,
                 (resultSet, rowNum) -> new StaticSourceBundle(resultSet.getLong("bundle_id")),
+                channel.name(),
                 sourceSkuRef);
         return matches.isEmpty() ? null : matches.getFirst();
     }

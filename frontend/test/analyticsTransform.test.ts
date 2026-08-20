@@ -83,7 +83,7 @@ test('tracking funnel retains the tracking stage and exposes the synced terminal
 test('channel selection round-trips through the public URL state', () => {
   assert.deepEqual(parseChannels('WECOM,FEIXIANG'), ['WECOM', 'FEIXIANG']);
   assert.deepEqual(parseChannels('UNKNOWN,WECOM,WECOM'), ['WECOM']);
-  assert.deepEqual(parseChannels(null), ['CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI', 'WECOM']);
+  assert.deepEqual(parseChannels(null), ['CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI', 'DAZHE', 'WANQI', 'WECOM']);
   assert.equal(serializeChannels(['WECOM', 'CAISHIXIAN']), 'WECOM,CAISHIXIAN');
   assert.equal(serializeChannels([]), null);
 });

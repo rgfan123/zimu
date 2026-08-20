@@ -9,6 +9,7 @@ import cn.zimu.fulfillment.order.domain.OrderLine;
 import cn.zimu.fulfillment.order.domain.OrderLineComponent;
 import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
+import cn.zimu.fulfillment.order.domain.SettlementMethod;
 import cn.zimu.fulfillment.order.dto.OrderDetailDto;
 import cn.zimu.fulfillment.order.dto.OrderEventDto;
 import cn.zimu.fulfillment.order.dto.OrderLineComponentDto;
@@ -100,7 +101,9 @@ public class OrderMapper {
                         null,
                         null,
                         order.getReceiverAddress()),
-                new Settlement(order.getSettlementMethod(), order.getSettlementTime()),
+                order.getSettlementMethod() == SettlementMethod.UNSPECIFIED
+                        ? new Settlement(null, null)
+                        : new Settlement(order.getSettlementMethod(), order.getSettlementTime()),
                 order.getRemark(),
                 lineDtos,
                 reviewCases.stream().map(this::toReviewCase).toList());
@@ -227,8 +230,10 @@ public class OrderMapper {
         snapshot.put("order_status", order.getOrderStatus().name());
         snapshot.put("customer_id", order.getCustomerId());
         snapshot.put("correction_of_order_id", order.getCorrectionOfOrderId());
-        snapshot.put("settlement_method", order.getSettlementMethod().name());
-        snapshot.put("settlement_time", order.getSettlementTime().toString());
+        boolean settlementMissing = order.getSettlementMethod()
+                == SettlementMethod.UNSPECIFIED;
+        snapshot.put("settlement_method", settlementMissing ? null : order.getSettlementMethod().name());
+        snapshot.put("settlement_time", order.getSettlementTime() == null ? null : order.getSettlementTime().toString());
         snapshot.put(
                 "receiver",
                 Map.of(

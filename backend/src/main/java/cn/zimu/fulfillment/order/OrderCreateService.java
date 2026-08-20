@@ -536,10 +536,13 @@ public class OrderCreateService {
         List<String> missingRefs = new ArrayList<>();
         String reviewReasonCode = null;
         for (BundleComponentInput componentInput : inputs) {
-            ComponentResolution resolution = resolveComponent(channel, componentInput);
+            ComponentResolution resolution = item.bundleId() == null
+                    ? resolveComponent(channel, componentInput)
+                    : resolveStaticBundleComponent(componentInput);
             resolutions.add(resolution);
             if (!resolution.mapped()) {
-                missingRefs.add(blankToEmpty(componentInput.sourceSkuRef()));
+                missingRefs.add(blankToEmpty(
+                        item.bundleId() == null ? componentInput.sourceSkuRef() : componentInput.skuCode()));
                 if ("SKU_MAPPING_CONFLICT".equals(resolution.reviewReasonCode())) {
                     reviewReasonCode = "SKU_MAPPING_CONFLICT";
                 } else if (reviewReasonCode == null) {
@@ -630,6 +633,17 @@ public class OrderCreateService {
             return new ComponentResolution(false, null, "SKU_MAPPING_CONFLICT", input);
         }
         return new ComponentResolution(true, sku, null, input);
+    }
+
+    /** 静态礼包组件来自权威 BOM，按内部 SKU 编码解析，不伪造来源渠道 SKU 映射。 */
+    private ComponentResolution resolveStaticBundleComponent(BundleComponentInput input) {
+        if (input.skuCode() == null || input.skuCode().isBlank()) {
+            return new ComponentResolution(false, null, "SKU_MAPPING_REQUIRED", input);
+        }
+        Sku sku = skuRepository.findBySkuCode(input.skuCode()).orElse(null);
+        return sku == null
+                ? new ComponentResolution(false, null, "SKU_MAPPING_REQUIRED", input)
+                : new ComponentResolution(true, sku, null, input);
     }
 
     private SourceChannelSku findMapping(SourceChannel channel, String sourceSkuRef) {

@@ -560,7 +560,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 (resultSet, rowNum) -> new ExportRow(
                         resultSet.getLong("raw_row_id"), resultSet.getLong("order_id"),
                         resultSet.getString("order_no"), resultSet.getString("source_channel"),
-                        resultSet.getString("source_ref"), resultSet.getTimestamp("ordered_at").toInstant(),
+                        resultSet.getString("source_ref"), nullableInstant(resultSet, "ordered_at"),
                         appendRemark(resultSet.getString("remark"), continuationRemark),
                         resultSet.getString("receiver_name"), resultSet.getString("receiver_phone"),
                         resultSet.getString("receiver_address"), resultSet.getLong("order_line_id"),
@@ -626,7 +626,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 (resultSet, rowNum) -> new ExportRow(
                         resultSet.getLong("raw_row_id"), resultSet.getLong("order_id"), resultSet.getString("order_no"),
                         resultSet.getString("source_channel"), resultSet.getString("source_ref"),
-                        resultSet.getTimestamp("ordered_at").toInstant(), resultSet.getString("remark"),
+                        nullableInstant(resultSet, "ordered_at"), resultSet.getString("remark"),
                         resultSet.getString("receiver_name"), resultSet.getString("receiver_phone"),
                         resultSet.getString("receiver_address"), resultSet.getLong("order_line_id"),
                         resultSet.getInt("line_no"), resultSet.getString("product_name_snapshot"),
@@ -836,6 +836,11 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
 
     private String nullableId(Object value) {
         return value == null ? null : value.toString();
+    }
+
+    private Instant nullableInstant(java.sql.ResultSet resultSet, String column) throws java.sql.SQLException {
+        java.sql.Timestamp timestamp = resultSet.getTimestamp(column);
+        return timestamp == null ? null : timestamp.toInstant();
     }
 
     private String json(Object value) {

@@ -18,7 +18,7 @@ function detailString(item: ReviewCase, key: string): string {
 
 function sourceChannel(item: ReviewCase): SourceChannel {
   const value = detailString(item, 'source_channel');
-  if (!['CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI', 'WECOM'].includes(value)) {
+  if (!['CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI', 'WANGQI', 'DAZHE', 'WANQI', 'WECOM'].includes(value)) {
     throw new Error('复核证据中的来源渠道无效');
   }
   return value as SourceChannel;

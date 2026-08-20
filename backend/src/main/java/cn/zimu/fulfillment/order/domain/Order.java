@@ -65,7 +65,7 @@ public class Order extends AuditableEntity {
     @Column(name = "settlement_method", nullable = false)
     private SettlementMethod settlementMethod;
 
-    @Column(name = "settlement_time", nullable = false)
+    @Column(name = "settlement_time")
     private Instant settlementTime;
 
     @Column(name = "receiver_name", nullable = false)

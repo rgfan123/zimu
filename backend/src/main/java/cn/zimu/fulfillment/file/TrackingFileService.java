@@ -276,6 +276,12 @@ public class TrackingFileService {
         if (!existingFinal.isEmpty()) {
             return existingFinal.getFirst();
         }
+        SourceBatch source = sourceBatch(sourceBatchId);
+        if ("WANQI".equals(source.channel())) {
+            throw BusinessException.unprocessable(
+                    "SOURCE_RETURN_TEMPLATE_UNSUPPORTED",
+                    "万齐来源回填契约尚未确认，禁止生成或追加来源回填列");
+        }
         List<ReturnRow> returns = returnRows(sourceBatchId);
         int acceptedRows = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM app.raw_import_rows WHERE import_batch_id=? AND status='ACCEPTED'",
@@ -295,7 +301,6 @@ public class TrackingFileService {
         if (hasMultiShipmentFollowup || acceptedRows == 0 || returns.size() != acceptedRows) {
             return null;
         }
-        SourceBatch source = sourceBatch(sourceBatchId);
         ParsedSourceFile original = sourceFileParser.parse(fileStore.read(source.fileRef()));
         Map<String, ReturnRow> byCoordinate = returns.stream().collect(java.util.stream.Collectors.toMap(
                 row -> row.sheetIndex() + ":" + row.rowIndex(), row -> row));
@@ -330,7 +335,7 @@ public class TrackingFileService {
                     // 平台模板未提供承运商列，不新增「物流公司」列。
                     cells.put("物流单号", fill.trackingNo());
                 }
-                case "WANGQI" -> {
+                case "WANGQI", "DAZHE" -> {
                     cells.put("订单商品状态", "已发货");
                     cells.put("快递单号", fill.trackingNo());
                     cells.put("快递公司", fill.sourceCarrier());
