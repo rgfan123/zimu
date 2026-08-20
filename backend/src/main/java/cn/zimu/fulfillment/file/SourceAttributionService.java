@@ -64,9 +64,14 @@ public class SourceAttributionService {
         return idempotency.execute("source_attribution.correct", idempotencyKey, payload, 201, () -> {
             BatchSource source = lockSourceBatch(batchId);
             SourceChannel target = SourceChannelDisplayNames.fromDisplayName(input.sourceChannelDisplayName());
-            if (!List.of(SourceChannel.DAZHE, SourceChannel.WANQI).contains(target)) {
+            boolean historicalDazheMisattribution = "WANGQI".equals(source.recordedChannel())
+                    && "WANGQI".equals(source.effectiveChannel())
+                    && "WANGQI_SOURCE_ORDER".equals(source.effectiveTemplateFamily())
+                    && source.effectiveTemplateFingerprint().startsWith("WANGQI-v1-");
+            if (target != SourceChannel.DAZHE || !historicalDazheMisattribution) {
                 throw BusinessException.unprocessable(
-                        "SOURCE_ATTRIBUTION_CHANNEL_UNSUPPORTED", "当前仅支持大者与万齐来源归因纠正");
+                        "SOURCE_ATTRIBUTION_SCOPE_UNSUPPORTED",
+                        "当前仅支持把历史十五列表格从旧误标纠正为大者");
             }
             if (target.name().equals(source.effectiveChannel())) {
                 throw BusinessException.conflict("SOURCE_ATTRIBUTION_UNCHANGED", "来源归因没有变化");

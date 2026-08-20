@@ -266,6 +266,28 @@ class Wanqi52SourceOrderImportApiTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void missingChildOrderIdFailsClosed() throws Exception {
+        Map<String, String> missing = sourceRow(
+                "1248941457073590550", "", "1161501915637485551",
+                "测试收货人", "13800000004", "北京/丰台区/卢沟桥街道 测试地址4号", "商品六", "规格:1件;");
+
+        ResponseEntity<Map> uploaded = upload(workbook(List.of(missing)));
+        Map<String, Object> batch = uploaded.getBody();
+        ResponseEntity<Map> rowsResponse = http.exchange(
+                "/api/v1/import-batches/" + batch.get("id") + "/rows?page=0&size=20",
+                HttpMethod.GET,
+                new HttpEntity<>(operatorHeaders()),
+                Map.class);
+        Map<String, Object> row = (Map<String, Object>) ((List<?>) rowsResponse.getBody().get("items")).getFirst();
+
+        assertThat(row)
+                .containsEntry("status", "NEED_REVIEW")
+                .containsEntry("error_code", "SOURCE_LINE_REF_REQUIRED")
+                .containsEntry("order_id", null);
+    }
+
+    @Test
     void reordered52ColumnsDoNotMatchTheKnownTemplateVersion() throws Exception {
         List<String> reordered = new ArrayList<>(HEADERS);
         Collections.swap(reordered, 31, 33);

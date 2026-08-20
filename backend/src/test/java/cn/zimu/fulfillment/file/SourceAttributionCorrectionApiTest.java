@@ -70,7 +70,7 @@ class SourceAttributionCorrectionApiTest {
                 "source_channel_display_name", "大者",
                 "reason", "用户确认历史十五列表格实际来自大者",
                 "evidence", Map.of("source", "人工确认"));
-        HttpHeaders headers = writeHeaders();
+        HttpHeaders headers = writeHeaders("source-attribution-001");
         ResponseEntity<Map> corrected = http.exchange(
                 "/api/v1/import-batches/" + batchId + "/source-attribution-corrections",
                 HttpMethod.POST,
@@ -118,11 +118,41 @@ class SourceAttributionCorrectionApiTest {
                 Integer.class)).isOne();
     }
 
-    private HttpHeaders writeHeaders() {
+    @Test
+    void realWanqiBatchCannotBeRelabeledAsDazhe() {
+        long batchId = jdbc.queryForObject(
+                """
+                INSERT INTO app.import_batches
+                    (batch_no,batch_type,source_channel,template_family,template_version,template_fingerprint,
+                     original_file_name,content_sha256,file_ref,status,uploaded_by,processed_at,settlement_missing)
+                VALUES ('IMP-WANQI-SCOPE-001','SOURCE_ORDER','WANQI','WANQI_SOURCE_ORDER','v1-52-columns',
+                        'WANQI-v1-52-columns-test','万齐.xlsx',repeat('c',64),'wanqi-source-file','COMPLETED',
+                        'source-attribution-test',CURRENT_TIMESTAMP,true)
+                RETURNING id
+                """,
+                Long.class);
+        ResponseEntity<Map> response = http.exchange(
+                "/api/v1/import-batches/" + batchId + "/source-attribution-corrections",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "source_channel_display_name", "大者",
+                        "reason", "错误尝试",
+                        "evidence", Map.of()), writeHeaders("source-attribution-scope-001")),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(response.getBody()).containsEntry("business_code", "SOURCE_ATTRIBUTION_SCOPE_UNSUPPORTED");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.source_attribution_corrections WHERE import_batch_id=?",
+                Integer.class,
+                batchId)).isZero();
+    }
+
+    private HttpHeaders writeHeaders(String key) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("Idempotency-Key", "source-attribution-001");
-        headers.set("X-Request-Id", "req-source-attribution-001");
+        headers.set("Idempotency-Key", key);
+        headers.set("X-Request-Id", "req-" + key);
         headers.set("X-Operator", "source-attribution-test");
         headers.setBasicAuth("source-attribution-test", "source-attribution-password");
         return headers;

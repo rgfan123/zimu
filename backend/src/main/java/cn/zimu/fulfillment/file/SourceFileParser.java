@@ -279,6 +279,9 @@ class SourceFileParser {
         if (!parsed.valid()) {
             return parsed;
         }
+        if (value(cells, "子订单ID").isBlank()) {
+            return withError(parsed, "SOURCE_LINE_REF_REQUIRED", "万齐来源行缺少子订单 ID");
+        }
         if (!"实体商品".equals(value(cells, "商品类型")) || !"销售订单".equals(value(cells, "订单类型"))) {
             return withError(parsed, "SOURCE_ORDER_TYPE_BLOCKED", "万齐来源行不是可发货的实体销售订单");
         }
