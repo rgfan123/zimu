@@ -44,11 +44,18 @@ import {
 } from '@/pages/shared/semanticStatus';
 import { saasVisualTokens } from '@/theme/saasTheme';
 import {
-  REVIEWS_BATCH_PARAM,
   fileJobUrlForBatch,
   invalidBatchIdMessage,
   parseBatchIdParam,
 } from '@/pages/shared/batchUrl';
+import {
+  REVIEWS_BATCH_PARAM,
+  REVIEWS_REASON_PARAM,
+  REVIEWS_STATUS_PARAM,
+  REVIEWS_TEAM_PARAM,
+  REVIEWS_VIEW_PARAM,
+  type ReviewQueueView,
+} from '@/pages/shared/reviewQueueUrl';
 import {
   buildCustomerResolution,
   buildDismissCommand,
@@ -185,18 +192,23 @@ function resolutionTarget(item: ReviewCase): string | undefined {
 
 export default function ManualReviewPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const batchParam = parseBatchIdParam(searchParams.get(REVIEWS_BATCH_PARAM));
   const batchId = batchParam.kind === 'valid' ? batchParam.id : null;
   const batchFilterInvalid = batchParam.kind === 'invalid' ? batchParam.raw : null;
   /** 非法批次标识时整块隐藏队列 UI（fail-closed：绝不显示无筛选的全局队列）。 */
   const queueVisible = batchFilterInvalid === null;
+  // 队列筛选全部以 URL 为唯一事实源（Issue #96）：工作台跳转携带筛选、刷新/分享/回退可恢复。
+  const statusParam = searchParams.get(REVIEWS_STATUS_PARAM);
+  const status: ReviewCaseStatus = statusParam === 'RESOLVED' || statusParam === 'DISMISSED'
+    ? statusParam
+    : 'OPEN';
+  const reasonCode = searchParams.get(REVIEWS_REASON_PARAM) || undefined;
+  const team = searchParams.get(REVIEWS_TEAM_PARAM) || undefined;
+  const view: ReviewQueueView = searchParams.get(REVIEWS_VIEW_PARAM) === 'alerts' ? 'alerts' : 'reviews';
   const [messageApi, messageContext] = message.useMessage();
-  const [view, setView] = useState<'REVIEWS' | 'ALERTS'>('REVIEWS');
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(20);
-  const [status, setStatus] = useState<ReviewCaseStatus>('OPEN');
-  const [team, setTeam] = useState<string>();
   const [selected, setSelected] = useState<ReviewCase | null>(null);
   const [alertPage, setAlertPage] = useState(0);
   const [alertSize, setAlertSize] = useState(20);
@@ -218,8 +230,11 @@ export default function ManualReviewPage() {
   const queue = useAsync(
     () => !queueVisible
       ? Promise.resolve({ items: [], page, size, total_elements: 0, total_pages: 0 })
-      : reviewCasesApi.list({ page, size, status, responsible_team: team, import_batch_id: batchId ?? undefined }),
-    [page, size, status, team, batchId, queueVisible],
+      : reviewCasesApi.list({
+          page, size, status, reason_code: reasonCode, responsible_team: team,
+          import_batch_id: batchId ?? undefined,
+        }),
+    [page, size, status, team, reasonCode, batchId, queueVisible],
   );
   const batch = useAsync(
     () => (batchId ? fileOperationsApi.getSourceBatch(batchId) : Promise.resolve(null)),
@@ -232,6 +247,46 @@ export default function ManualReviewPage() {
   );
   const items = useMemo(() => queue.data?.items ?? [], [queue.data]);
   const alertItems = useMemo(() => alerts.data?.items ?? [], [alerts.data]);
+
+  /**
+   * 队列筛选变更：写回 URL（保留 import_batch/view 等其他参数）并回到第一页。
+   * null 表示清空该筛选（删除参数），undefined 表示不修改。
+   * status 始终显式写出（含默认 OPEN），与工作台跳转链接的 URL 形态保持一致。
+   */
+  function updateQueueFilters(updates: {
+    status?: ReviewCaseStatus | null;
+    reasonCode?: string | null;
+    team?: string | null;
+  }) {
+    const next = new URLSearchParams(searchParams);
+    if (updates.status !== undefined) {
+      if (updates.status) next.set(REVIEWS_STATUS_PARAM, updates.status);
+      else next.delete(REVIEWS_STATUS_PARAM);
+    }
+    if (updates.reasonCode !== undefined) {
+      if (updates.reasonCode) next.set(REVIEWS_REASON_PARAM, updates.reasonCode);
+      else next.delete(REVIEWS_REASON_PARAM);
+    }
+    if (updates.team !== undefined) {
+      if (updates.team) next.set(REVIEWS_TEAM_PARAM, updates.team);
+      else next.delete(REVIEWS_TEAM_PARAM);
+    }
+    setPage(0);
+    setSearchParams(next);
+  }
+
+  function switchView(nextView: ReviewQueueView) {
+    const next = new URLSearchParams(searchParams);
+    if (nextView === 'alerts') next.set(REVIEWS_VIEW_PARAM, 'alerts');
+    else next.delete(REVIEWS_VIEW_PARAM);
+    setSearchParams(next);
+  }
+
+  /** URL 筛选变化（含浏览器回退/前进）时回到第一页，避免带着旧页码看新筛选。 */
+  const urlFilterKey = `${status}|${reasonCode ?? ''}|${team ?? ''}`;
+  useEffect(() => {
+    setPage(0);
+  }, [urlFilterKey]);
 
   const masterLoaders: Record<'CUSTOMER' | 'SKU', MasterDataOptionLoader> = {
     CUSTOMER: (query) => customersApi.list(query),
@@ -530,13 +585,13 @@ export default function ManualReviewPage() {
           </Space>
           <Segmented
             value={view}
-            onChange={(value) => setView(value as 'REVIEWS' | 'ALERTS')}
-            options={[{ value: 'REVIEWS', label: '阻断复核' }, { value: 'ALERTS', label: '运营提醒' }]}
+            onChange={(value) => switchView(value as ReviewQueueView)}
+            options={[{ value: 'reviews', label: '阻断复核' }, { value: 'alerts', label: '运营提醒' }]}
           />
         </Space>
       </Card>
 
-      {view === 'REVIEWS' ? (
+      {view === 'reviews' ? (
         <>
           {batchFilterInvalid !== null ? (
             <Alert
@@ -587,12 +642,30 @@ export default function ManualReviewPage() {
               <Space wrap>
                 <Typography.Text type="secondary">状态</Typography.Text>
                 <Select<ReviewCaseStatus>
+                  id="review-status-filter"
                   value={status} style={{ width: 130 }}
-                  onChange={(value) => { setStatus(value); setPage(0); }}
+                  onChange={(value) => updateQueueFilters({ status: value })}
                   options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value: value as ReviewCaseStatus, label }))}
                 />
+                <Typography.Text type="secondary">事项类型</Typography.Text>
+                <Select
+                  id="review-reason-filter"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="全部事项"
+                  value={reasonCode} style={{ width: 200 }}
+                  onChange={(value) => updateQueueFilters({ reasonCode: value ?? null })}
+                  options={Object.entries(REASON_LABELS).map(([value, label]) => ({ value, label }))}
+                />
                 <Typography.Text type="secondary">责任团队</Typography.Text>
-                <Select allowClear placeholder="全部团队" value={team} style={{ width: 160 }} onChange={(value) => { setTeam(value); setPage(0); }} options={TEAM_OPTIONS} />
+                <Select
+                  id="review-team-filter"
+                  allowClear placeholder="全部团队"
+                  value={team} style={{ width: 160 }}
+                  onChange={(value) => updateQueueFilters({ team: value ?? null })}
+                  options={TEAM_OPTIONS}
+                />
                 <Button icon={<ReloadOutlined />} onClick={queue.reload}>刷新</Button>
                 <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{queue.data?.total_elements ?? 0} 项</Typography.Text>
               </Space>

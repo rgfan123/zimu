@@ -59,7 +59,26 @@ function installDom(initialUrl: string): JSDOM {
   Object.defineProperty(dom.window, 'scrollTo', { configurable: true, value() {} });
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
   Object.defineProperty(globalThis, 'MessageChannel', { configurable: true, value: undefined });
+  // jsdom 未实现 canvas 2d：ECharts（趋势图/KPI sparkline）渲染需要最小上下文桩，与上方
+  // ResizeObserver/matchMedia 同为浏览器环境补全；不装 canvas 包时图表页面会整树崩溃。
+  Object.defineProperty(dom.window.HTMLCanvasElement.prototype, 'getContext', {
+    configurable: true,
+    value: () => canvasContextStub(),
+  });
   return dom;
+}
+
+/** ECharts/zrender 用到的 2d 上下文最小实现；measureText/gradient 返回可消费值，其余 no-op。 */
+function canvasContextStub(): CanvasRenderingContext2D {
+  const gradient = { addColorStop() {} };
+  return new Proxy({} as CanvasRenderingContext2D, {
+    get: (_target, prop) => {
+      if (prop === 'measureText') return () => ({ width: 0 });
+      if (prop === 'createLinearGradient' || prop === 'createRadialGradient') return () => gradient;
+      return () => undefined;
+    },
+    set: () => true,
+  });
 }
 
 export function jsonResponse(body: unknown, status = 200) {
@@ -80,6 +99,30 @@ export function page(items: unknown[], size = 20) {
     size,
     total_elements: items.length,
     total_pages: items.length ? 1 : 0,
+  };
+}
+
+/** 复核事项 DTO 测试夹具：工作台/复核队列等 route 测试共用同一形状，避免逐文件复制。 */
+export function reviewCaseFixture(
+  id: string,
+  overrides: { reasonCode?: string; team?: string; status?: string; orderId?: string; caseNo?: string } = {},
+) {
+  return {
+    id,
+    case_no: overrides.caseNo ?? `RC-FIXTURE-${id}`,
+    case_type: 'ORDER',
+    responsible_team: overrides.team ?? 'SKU_OPS',
+    reason_code: overrides.reasonCode ?? 'SKU_MAPPING_REQUIRED',
+    status: overrides.status ?? 'OPEN',
+    order_id: overrides.orderId ?? '101',
+    order_line_id: '201',
+    subject_type: 'ORDER_LINE',
+    subject_id: '201',
+    detail: {},
+    suggestions: [],
+    allowed_actions: ['RESOLVE_MANUALLY'],
+    version: 0,
+    created_at: '2026-08-20T02:00:00Z',
   };
 }
 

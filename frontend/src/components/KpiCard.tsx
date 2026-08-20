@@ -9,6 +9,7 @@ import type { ReactNode } from 'react';
 import { Card, Skeleton, Tooltip, theme } from 'antd';
 import type { EChartsOption } from 'echarts';
 import { useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { saasVisualTokens } from '@/theme/saasTheme';
 import Chart from './Chart';
 
@@ -26,6 +27,8 @@ export interface KpiCardProps {
   loading?: boolean;
   /** 悬浮提示 */
   tooltip?: string;
+  /** 数字可点击时指向的目标 URL（工作台「待人工介入」KPI/attention 卡直达对应列表）。 */
+  valueHref?: string;
 }
 
 function sparklineOption(data: number[], color: string): EChartsOption {
@@ -59,9 +62,17 @@ function sparklineOption(data: number[], color: string): EChartsOption {
   };
 }
 
-export default function KpiCard({ title, value, unit, icon, color = saasVisualTokens.brand.primary, spark, extra, loading, tooltip }: KpiCardProps) {
+export default function KpiCard({ title, value, unit, icon, color = saasVisualTokens.brand.primary, spark, extra, loading, tooltip, valueHref }: KpiCardProps) {
   const { token } = theme.useToken();
   const option = useMemo(() => (spark?.length ? sparklineOption(spark, color) : null), [spark, color]);
+
+  const valueStyle: React.CSSProperties = {
+    fontSize: 28,
+    fontWeight: 600,
+    lineHeight: 1,
+    color: token.colorTextHeading,
+    fontVariantNumeric: 'tabular-nums',
+  };
 
   const body = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -73,9 +84,13 @@ export default function KpiCard({ title, value, unit, icon, color = saasVisualTo
         <Skeleton active paragraph={false} title={{ width: '60%' }} />
       ) : (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-          <span style={{ fontSize: 28, fontWeight: 600, lineHeight: 1, color: token.colorTextHeading, fontVariantNumeric: 'tabular-nums' }}>
-            {value ?? '—'}
-          </span>
+          {valueHref ? (
+            <Link to={valueHref} style={valueStyle} title={`前往处理：${title}`}>
+              {value ?? '—'}
+            </Link>
+          ) : (
+            <span style={valueStyle}>{value ?? '—'}</span>
+          )}
           {unit ? <span style={{ fontSize: 13, color: token.colorTextTertiary }}>{unit}</span> : null}
           {extra ? <span style={{ marginLeft: 'auto' }}>{extra}</span> : null}
         </div>

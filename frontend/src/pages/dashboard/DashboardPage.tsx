@@ -5,7 +5,7 @@
  */
 
 import { useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Alert, Button, Card, Col, Empty, Row, Space, Table, Typography } from 'antd';
 import { AlertOutlined, CarOutlined, InboxOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -16,6 +16,7 @@ import { errorMessage } from '@/api/client';
 import type { ReviewCase } from '@/api/types';
 import { reasonLabel } from '@/constants/labels';
 import { ATTENTION_COLORS } from '@/pages/shared/semanticStatus';
+import { attentionCardUrl, reviewsQueueUrl } from '@/pages/shared/reviewQueueUrl';
 import { saasChartPalette, saasVisualTokens } from '@/theme/saasTheme';
 import { useAsync } from '@/hooks/useAsync';
 import Chart from '@/components/Chart';
@@ -130,6 +131,14 @@ async function fetchOpenReviewCases(): Promise<ReviewCase[]> {
   return [first, ...rest].flatMap((page) => page.items);
 }
 
+/**
+ * 明细行目标：按该行上下文预筛的复核队列（Issue #96）。
+ * 时间口径与「待人工介入」KPI 一致——summary SQL 对该聚合无时间边界，因此不带 date 参数。
+ */
+function issueTargetUrl(item: ReviewCase): string {
+  return reviewsQueueUrl({ status: 'OPEN', reasonCode: item.reason_code, team: item.responsible_team });
+}
+
 const issueColumns: ColumnsType<ReviewCase> = [
   {
     title: '原因',
@@ -155,7 +164,12 @@ const issueColumns: ColumnsType<ReviewCase> = [
       );
     },
   },
-  { title: '复核单号', dataIndex: 'case_no', ellipsis: true },
+  {
+    title: '复核单号',
+    dataIndex: 'case_no',
+    ellipsis: true,
+    render: (v: string, item) => <Link to={issueTargetUrl(item)}>{v}</Link>,
+  },
   { title: '责任团队', dataIndex: 'responsible_team', ellipsis: true },
   {
     title: '订单',
@@ -167,6 +181,7 @@ const issueColumns: ColumnsType<ReviewCase> = [
 ];
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
   // KPI 摘要与待介入明细并行加载，但互不拖垮：明细失败不影响 KPI 卡展示
   const { data, loading, error, reload } = useAsync(
     () =>
@@ -244,6 +259,7 @@ export default function DashboardPage() {
             icon={<AlertOutlined />}
             loading={loading}
             tooltip="待人工介入事项（复核/缺货/异常等）"
+            valueHref={reviewsQueueUrl({ status: 'OPEN' })}
           />
         </Col>
         {summary?.attention.map((item) => (
@@ -255,6 +271,7 @@ export default function DashboardPage() {
               color={item.severity === 'RED' ? ATTENTION_COLORS.severe : ATTENTION_COLORS.waiting}
               icon={<WarningOutlined />}
               loading={loading}
+              valueHref={attentionCardUrl(item.reason_code)}
             />
           </Col>
         ))}
@@ -276,9 +293,17 @@ export default function DashboardPage() {
               loading={loading}
               pagination={false}
               scroll={{ x: 620 }}
+              onRow={(item) => ({
+                style: { cursor: 'pointer' },
+                onClick: (event) => {
+                  // 行内链接（复核单号/查看订单）自行处理跳转，整行点击不重复入栈
+                  if ((event.target as HTMLElement).closest('a')) return;
+                  navigate(issueTargetUrl(item));
+                },
+              })}
               locale={{ emptyText: issuesError
                 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="明细加载失败，请刷新重试" />
-                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无待介入事项" /> }}
+                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前无待人工介入" /> }}
             />
           </Card>
         </Col>
