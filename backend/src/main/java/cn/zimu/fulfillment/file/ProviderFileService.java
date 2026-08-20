@@ -806,6 +806,19 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     }
 
     private void markJdQuantityReview(long sourceBatchId, ExportRow row) {
+        Map<String, Object> lineFacts = jdbc.queryForMap(
+                "SELECT source_quantity_snapshot, mapping_multiplier_snapshot FROM app.order_lines WHERE id=?",
+                row.orderLineId());
+        // 数量换算事实（Issue #72）：来源数量原文/单位/当前乘数/换算后结果/拒绝原因，
+        // 全部为确定性快照与固定文案，不读取任何敏感字段。
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("reject_reason", "京东出库数量必须为正整数");
+        detail.put("source_quantity", toPlainString(lineFacts.get("source_quantity_snapshot")));
+        detail.put("source_unit", row.unit());
+        detail.put("quantity_multiplier", toPlainString(lineFacts.get("mapping_multiplier_snapshot")));
+        detail.put("converted_quantity", row.requestedQuantity().toPlainString());
+        detail.put("requested_quantity", row.requestedQuantity().toPlainString());
+        detail.put("provider_code", row.providerCode());
         jdbc.update(
                 """
                 UPDATE app.order_lines
@@ -821,10 +834,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     (case_no, case_type, status, responsible_team, reason_code,
                      order_id, order_line_id, fulfillment_id, import_batch_id, raw_import_row_id, detail)
                 VALUES (?, 'FULFILLMENT_EXPORT', 'OPEN', 'FULFILLMENT_OPS', 'QUANTITY_SCALE',
-                        ?, ?, ?, ?, ?, jsonb_build_object(
-                            'message', '京东出库数量必须为正整数',
-                            'requested_quantity', ?::text,
-                            'provider_code', ?))
+                        ?, ?, ?, ?, ?, ?::jsonb)
                 ON CONFLICT (case_no) DO NOTHING
                 """,
                 "RC-QUANTITY-" + row.orderLineId(),
@@ -833,8 +843,11 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 row.fulfillmentId(),
                 sourceBatchId,
                 row.rawRowId(),
-                row.requestedQuantity().toPlainString(),
-                row.providerCode());
+                json(detail));
+    }
+
+    private static String toPlainString(Object value) {
+        return value instanceof BigDecimal decimal ? decimal.toPlainString() : null;
     }
 
     private ShipmentPlan createShipment(ExportRow row) {

@@ -106,6 +106,66 @@ class ReviewCaseResolutionApiTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void customerReviewCaseCarriesReceiverAndCandidateFactsForTheDecision() {
+        Map<String, Object> createdOrder = createOrderNeedingCustomerReview();
+        Map<String, Object> createdCase = firstReviewCase(createdOrder);
+        String caseId = createdCase.get("id").toString();
+
+        ResponseEntity<Map> detail = http.getForEntity("/api/v1/review-cases/" + caseId, Map.class);
+        assertThat(detail.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Map<String, Object> facts = (Map<String, Object>) detail.getBody().get("detail");
+        assertThat(facts)
+                .containsEntry("source_channel", "WECOM")
+                .containsEntry("source_customer_ref", "WECOM-CUSTOMER-REVIEW-001")
+                .containsEntry("customer_name", "待确认客户")
+                .containsEntry("receiver_name", "张三")
+                .containsEntry("receiver_address", "上海市浦东新区测试路 1 号");
+        assertThat((List<?>) facts.get("customer_candidates")).isEmpty();
+        assertThat(facts).doesNotContainKey("receiver_phone");
+
+        // 输入携带已确认客户编码时，候选客户档案给出确定性命中（按编码精确匹配，不做相似度猜测）。
+        Map<String, Object> request = Map.of(
+                "source", "WECOM",
+                "source_ref", "WECOM-ORDER-CUSTOMER-CANDIDATE-001",
+                "customer", Map.of(
+                        "customer_code", "CUST-WECOM-0001",
+                        "source_customer_ref", "WECOM-CUSTOMER-CANDIDATE-001",
+                        "name", "待确认客户"),
+                "receiver", Map.of(
+                        "name", "张三",
+                        "phone", "13800000000",
+                        "address", "上海市浦东新区测试路 1 号"),
+                "items", List.of(Map.of(
+                        "line_type", "SINGLE",
+                        "source_sku_ref", "WECOM-SKU-JD-001",
+                        "product_name", "子牧羊小腿",
+                        "specification", "500g/盒",
+                        "unit", "盒",
+                        "quantity", "1.000")),
+                "settlement", Map.of(
+                        "method", "MONTHLY",
+                        "settlement_time", "2026-08-12T10:00:00+08:00"));
+        ResponseEntity<Map> response = http.exchange(
+                "/internal/v1/orders",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders("order-customer-candidate-001", "req-order-customer-candidate-001")),
+                Map.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        Map<String, Object> candidateCase = firstReviewCase(response.getBody());
+        ResponseEntity<Map> candidateDetail = http.getForEntity(
+                "/api/v1/review-cases/" + candidateCase.get("id"), Map.class);
+        Map<String, Object> candidateFacts = (Map<String, Object>) candidateDetail.getBody().get("detail");
+        assertThat((List<Map<String, Object>>) candidateFacts.get("customer_candidates"))
+                .singleElement()
+                .satisfies(candidate -> {
+                    assertThat(candidate).containsEntry("customer_code", "CUST-WECOM-0001");
+                    assertThat(candidate).containsEntry("customer_name", "子牧测试客户");
+                });
+        assertThat(candidateFacts).doesNotContainKey("receiver_phone");
+    }
+
+    @Test
     void resolvesSingleSkuCaseWithAnExistingActiveSkuWithoutCreatingSkuMasterData() {
         Map<String, Object> createdOrder = createOrderNeedingSkuReview();
         Map<String, Object> createdCase = firstReviewCase(createdOrder);

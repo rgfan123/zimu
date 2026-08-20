@@ -784,6 +784,17 @@ class ExcelClosedLoopApiTest {
             assertThat(reviewCase.get("reason_code")).isEqualTo("QUANTITY_SCALE");
             assertThat(reviewCase.get("status")).isEqualTo("OPEN");
             assertThat(reviewCase.get("order_line_id")).isNotNull();
+            Map<String, Object> detail = (Map<String, Object>) reviewCase.get("detail");
+            assertThat(detail)
+                    .containsEntry("reject_reason", "京东出库数量必须为正整数")
+                    // 飞象样表无单位列：解析器回退标记「来源数量单位」即行快照里的真实事实。
+                    .containsEntry("source_unit", "来源数量单位");
+            assertThat(new java.math.BigDecimal((String) detail.get("source_quantity")))
+                    .isEqualByComparingTo("1.5");
+            assertThat(new java.math.BigDecimal((String) detail.get("quantity_multiplier")))
+                    .isEqualByComparingTo("1.000");
+            assertThat(new java.math.BigDecimal((String) detail.get("converted_quantity")))
+                    .isEqualByComparingTo("1.5");
         });
     }
 

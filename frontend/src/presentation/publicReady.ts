@@ -6,6 +6,278 @@ export interface DisplayRow {
 /** detail 里缺字段时的统一呈现，代替静默丢弃整行。 */
 export const SOURCE_NOT_PROVIDED = '来源未提供';
 
+/**
+ * 复核事项「做决定所需事实」的可复用呈现结构（Issue #72）。
+ *
+ * 每个复核家族 = 一组「事实组」（FactGroup），每组 = 固定字段清单（FactFieldDef）。
+ * 抽屉用一个循环渲染所有家族，不逐家族复制 JSX；字段不在白名单就显示占位
+ * （SOURCE_NOT_PROVIDED），不整行消失。字段定义本身就是白名单：读取只发生在
+ * 固定键上，未知键 / 任意 detail 遍历被 fail-closed。
+ */
+export interface FactFieldDef {
+  /** detail 中的固定键（白名单键）。 */
+  key: string;
+  /** 展示标签。 */
+  label: string;
+  /**
+   * 可选的结构化标量投影：数组/对象证据经固定形状投影为标量文本；
+   * 缺省按标量白名单规则读取 detail[key]。投影函数只读自己的固定键，fail-closed。
+   */
+  value?: (detail: Record<string, unknown>) => string | null;
+}
+
+export interface FactGroup {
+  title: string;
+  fields: readonly FactFieldDef[];
+}
+
+/** 结构化证据的固定截断上限：cell 值 / 改前改后值只展示受控长度。 */
+const FACT_VALUE_CAP = 200;
+
+/** 确定性候选的零命中事实：空数组表示「系统未命中任何候选」，不是「来源未提供」。 */
+const NO_CANDIDATE = '未命中候选';
+
+function truncate(value: unknown, cap = FACT_VALUE_CAP): string | null {
+  const scalar = scalarValue(value);
+  if (scalar === null) return null;
+  return scalar.length <= cap ? scalar : `${scalar.slice(0, cap - 1)}…`;
+}
+
+/**
+ * 候选清单投影：只读固定键（编号 + 名称），数组内其他键（如档案里的联系方式）不读取。
+ * 空数组是确定性零命中事实，显示「未命中候选」而非占位。
+ */
+function candidateListText(
+  detail: Record<string, unknown>,
+  listKey: string,
+  codeKey: string,
+  nameKey: string,
+): string | null {
+  const raw = detail[listKey];
+  if (!Array.isArray(raw)) return null;
+  const items = raw.filter((item): item is Record<string, unknown> =>
+    Boolean(item) && typeof item === 'object');
+  const text = items.flatMap((item) => {
+    const code = scalarValue(item[codeKey]);
+    const name = scalarValue(item[nameKey]);
+    return code === null && name === null ? [] : [[code, name].filter(Boolean).join(' · ')];
+  });
+  return text.length ? text.join('；') : NO_CANDIDATE;
+}
+
+/**
+ * 导出后改单的改动明细投影（Issue #72）：逐条「字段（行号）：改前 X → 改后 Y」。
+ * 字段键本身是白名单（REVISION_FIELD_LABELS），未知字段键的条目被 fail-closed 丢弃；
+ * 改前/改后值截断到固定上限。改动字段键全部由后端 diff 生成，不承载任意自由文本。
+ */
+const REVISION_FIELD_LABELS: Record<string, string> = {
+  source_version: '来源版本',
+  receiver_name: '收货人',
+  receiver_address: '收货地址',
+  quantity: '数量',
+  product_name: '商品名称',
+  specification: '规格',
+  unit: '单位',
+  line_count: '行数',
+  settlement_method: '结账方式',
+  settlement_time: '结账时间',
+  remark: '备注',
+};
+
+function revisionChangesText(detail: Record<string, unknown>): string | null {
+  const raw = detail.changes;
+  if (!Array.isArray(raw)) return null;
+  if (raw.length === 0) return '无字段变更';
+  const text = raw
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .flatMap((item) => {
+      const field = scalarValue(item.field);
+      const label = field === null ? null : REVISION_FIELD_LABELS[field];
+      if (!label) return [];
+      const lineNo = scalarValue(item.line_no);
+      const before = truncate(item.before);
+      const after = truncate(item.after);
+      const location = lineNo === null ? '' : `（第 ${lineNo} 行）`;
+      return [`${label}${location}：改前 ${before ?? '—'} → 改后 ${after ?? '—'}`];
+    });
+  return text.length ? text.join('；') : '无字段变更';
+}
+
+/** 数量换算 / 精度家族共用的事实组：来源数量原文、单位、当前乘数、换算后结果、拒绝原因、履约方。 */
+function quantityFactGroups(): FactGroup[] {
+  return [{
+    title: '数量换算',
+    fields: [
+      { key: 'source_quantity', label: '来源数量原文' },
+      { key: 'source_unit', label: '来源单位' },
+      { key: 'quantity_multiplier', label: '当前乘数' },
+      { key: 'converted_quantity', label: '换算后结果' },
+      { key: 'reject_reason', label: '拒绝原因' },
+      // provider_code 沿袭通用白名单既有展示（#71 已放行），切事实组后不回归。
+      { key: 'provider_code', label: '履约方' },
+    ],
+  }];
+}
+
+/**
+ * SKU 映射复核抽屉的固定展示字段（含来源文件位置）。只读取白名单内的键（fail-closed），
+ * 缺失/空白时以「来源未提供」呈现，而不是整行消失——静默丢弃正是本票要消灭的行为。
+ * 与 Issue #72 的事实组共用同一渲染结构（factGroupRows）。
+ */
+const SKU_MAPPING_FACT_GROUP: FactGroup = {
+  title: '来源商品信息',
+  fields: [
+    { key: 'source_channel', label: '来源渠道' },
+    { key: 'line_no', label: '订单行' },
+    { key: 'source_sheet_name', label: '来源工作表' },
+    { key: 'source_row_index', label: '来源行号' },
+    { key: 'missing_source_sku_refs', label: '待映射来源商品' },
+    { key: 'source_product_name', label: '来源商品名称' },
+    { key: 'source_specification', label: '来源规格' },
+    { key: 'source_unit', label: '来源单位' },
+    { key: 'source_quantity', label: '来源数量' },
+  ],
+};
+
+/**
+ * 各复核家族的「做决定所需事实」（Issue #72）。字段即白名单，逐条说明为什么不是 PII：
+ *
+ * CUSTOMER_MATCH_REQUIRED：
+ * - customer_name / source_customer_ref：来源渠道给出的客户名称原文与客户编号，是复核
+ *   决策的对象（#71 已放行 customer_name / source_customer_ref 同源字段）。
+ * - receiver_name / receiver_address：收货人与地址的可展示部分（不含电话），与销售出库页
+ *   「收货人/收货地址」列、发货页既有展示同属既有安全投影。
+ * - customer_candidates：确定性映射命中的既有客户档案（编号 + 名称），不读取档案内其他
+ *   字段（联系方式等）；零命中是触发本复核的事实，显示「未命中候选」。
+ *
+ * CARRIER_MAPPING：
+ * - tracking_number：来源渠道给的物流单号，业务标识而非个人信息。
+ * - tracking_prefix：从运单号按确定性前缀规则识别的标识段。
+ * - source_logistics_company：来源渠道给的物流公司名称。
+ * - carrier_candidates：前缀规则命中的内部 Carrier 主数据（代码 + 名称）。
+ *
+ * MAPPING_MULTIPLIER / QUANTITY_SCALE：
+ * - source_quantity / source_unit：来源渠道给的数量与单位（#71 已放行同源字段）。
+ * - quantity_multiplier：当前生效的来源包装乘数快照，业务数值。
+ * - converted_quantity：来源数量 × 乘数的结果（被拒绝的值），业务数值。
+ * - reject_reason：系统确定性拒绝原因，非自由文本。
+ *
+ * IMPORT_DATA：
+ * - source_sheet_name / source_row_index：来源文件结构元数据（#71 已放行）。
+ * - column_name / cell_value：出问题列的列名与原始单元格值。cell_value 是本家族复核的
+ *   明确对象（被标记的问题单元格），只读这一个固定键、不遍历其他单元格，且截断到
+ *   固定上限；它不是「任意 detail 键」，故不属于 PII 泄漏路径。
+ * - reject_reason：标记原因。
+ *
+ * REVISION_AFTER_EXPORT：
+ * - changes：后端对改前订单与修订输入做确定性 diff 得到的字段级改动（字段键经
+ *   REVISION_FIELD_LABELS 白名单过滤；改前/改后值截断；收货电话不在 diff 字段内）。
+ * - export_batch_no / template_version：已导出履约文件的批次号与模板版本。
+ * - source_version / change_reason：来源版本与声明的变更原因（#71 已放行 change_reason）。
+ */
+const REVIEW_FACT_GROUPS: Record<string, FactGroup[]> = {
+  // SKU 映射家族沿用 #71 确立的固定字段结构，与其余家族同一渲染路径。
+  SKU_MAPPING_REQUIRED: [SKU_MAPPING_FACT_GROUP],
+  SKU_MAPPING_CONFLICT: [SKU_MAPPING_FACT_GROUP],
+  SOURCE_SKU_MAPPING_REQUIRED: [SKU_MAPPING_FACT_GROUP],
+  PROVIDER_SKU_MAPPING_REQUIRED: [SKU_MAPPING_FACT_GROUP],
+  CUSTOMER_MATCH_REQUIRED: [
+    {
+      title: '来源客户',
+      fields: [
+        // source_channel 沿袭通用白名单既有展示（#71 已放行），切事实组后不回归。
+        { key: 'source_channel', label: '来源渠道' },
+        { key: 'customer_name', label: '来源客户名称原文' },
+        { key: 'source_customer_ref', label: '来源客户编号' },
+      ],
+    },
+    {
+      title: '收货信息（可展示部分）',
+      fields: [
+        { key: 'receiver_name', label: '收货人' },
+        { key: 'receiver_address', label: '收货地址' },
+      ],
+    },
+    {
+      title: '候选客户档案',
+      fields: [{
+        key: 'customer_candidates',
+        label: '候选客户',
+        value: (detail) => candidateListText(detail, 'customer_candidates', 'customer_code', 'customer_name'),
+      }],
+    },
+  ],
+  CARRIER_MAPPING: [
+    {
+      title: '来源运单',
+      fields: [
+        { key: 'tracking_number', label: '运单号原文' },
+        { key: 'tracking_prefix', label: '识别前缀' },
+        { key: 'source_logistics_company', label: '来源物流公司' },
+      ],
+    },
+    {
+      title: '候选标准承运商',
+      fields: [{
+        key: 'carrier_candidates',
+        label: '候选标准承运商',
+        value: (detail) => candidateListText(detail, 'carrier_candidates', 'carrier_code', 'carrier_name'),
+      }],
+    },
+  ],
+  MAPPING_MULTIPLIER: quantityFactGroups(),
+  QUANTITY_SCALE: quantityFactGroups(),
+  IMPORT_DATA: [
+    {
+      title: '问题单元格',
+      fields: [
+        { key: 'source_sheet_name', label: '来源工作表' },
+        { key: 'source_row_index', label: '来源行号' },
+        { key: 'column_name', label: '列名' },
+        { key: 'cell_value', label: '原始单元格值', value: (detail) => truncate(detail.cell_value) },
+      ],
+    },
+    {
+      title: '拒绝原因',
+      fields: [{ key: 'reject_reason', label: '拒绝原因' }],
+    },
+  ],
+  REVISION_AFTER_EXPORT: [
+    {
+      title: '改动明细',
+      fields: [{ key: 'changes', label: '改动字段', value: revisionChangesText }],
+    },
+    {
+      title: '导出文件版本',
+      fields: [
+        { key: 'export_batch_no', label: '已导出文件批次' },
+        { key: 'template_version', label: '导出模板版本' },
+      ],
+    },
+    {
+      title: '来源与原因',
+      fields: [
+        { key: 'source_version', label: '来源版本' },
+        { key: 'change_reason', label: '变更原因' },
+      ],
+    },
+  ],
+};
+
+/** 复核家族 → 事实组；未定义事实组的家族返回空数组（走通用白名单兜底）。 */
+export function reviewFactGroups(reasonCode: string): FactGroup[] {
+  return REVIEW_FACT_GROUPS[reasonCode] ?? [];
+}
+
+/** 事实组逐字段渲染：白名单字段缺失/空白显示「来源未提供」，不整行消失。 */
+export function factGroupRows(detail: Record<string, unknown>, group: FactGroup): DisplayRow[] {
+  return group.fields.map((field) => ({
+    label: field.label,
+    value: field.value ? (field.value(detail) ?? SOURCE_NOT_PROVIDED)
+      : (scalarValue(detail[field.key]) ?? SOURCE_NOT_PROVIDED),
+  }));
+}
+
 /** SKU 映射类复核事项的 reason_code 全集；抽屉对它们逐条展示来源商品明细。 */
 export const SKU_MAPPING_REASON_CODES: readonly string[] = [
   'SKU_MAPPING_REQUIRED',
@@ -161,27 +433,8 @@ export function safeReviewDetailRows(detail: Record<string, unknown>): DisplayRo
   return approvedRows(detail, REVIEW_FIELD_LABELS);
 }
 
-/**
- * SKU 映射复核抽屉的固定展示字段（含来源文件位置）。只读取白名单内的键（fail-closed），
- * 缺失/空白时以「来源未提供」呈现，而不是整行消失——静默丢弃正是本票要消灭的行为。
- */
-const SKU_MAPPING_DETAIL_FIELDS: ReadonlyArray<readonly [keyof typeof REVIEW_FIELD_LABELS, string]> = [
-  ['source_channel', '来源渠道'],
-  ['line_no', '订单行'],
-  ['source_sheet_name', '来源工作表'],
-  ['source_row_index', '来源行号'],
-  ['missing_source_sku_refs', '待映射来源商品'],
-  ['source_product_name', '来源商品名称'],
-  ['source_specification', '来源规格'],
-  ['source_unit', '来源单位'],
-  ['source_quantity', '来源数量'],
-];
-
 export function skuMappingDetailRows(detail: Record<string, unknown>): DisplayRow[] {
-  return SKU_MAPPING_DETAIL_FIELDS.map(([key, label]) => ({
-    label,
-    value: scalarValue(detail[key]) ?? SOURCE_NOT_PROVIDED,
-  }));
+  return factGroupRows(detail, SKU_MAPPING_FACT_GROUP);
 }
 
 export interface SkuMappingEvidenceItem {

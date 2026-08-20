@@ -24,7 +24,15 @@ import {
 import type { ReviewCase } from '@/api/types';
 import { customersApi, reviewCasesApi, shipmentsApi, skusApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
-import { isSkuMappingReasonCode, safeReviewDetailRows, skuMappingDetailRows, skuMappingEvidenceCell, skuMappingEvidenceItems } from '@/presentation/publicReady';
+import {
+  factGroupRows,
+  isSkuMappingReasonCode,
+  reviewFactGroups,
+  safeReviewDetailRows,
+  skuMappingEvidenceCell,
+  skuMappingEvidenceItems,
+  type FactGroup,
+} from '@/presentation/publicReady';
 import {
   buildCustomerResolution,
   buildDismissCommand,
@@ -110,6 +118,34 @@ function resolutionTarget(item: ReviewCase): string | undefined {
   if (reviewAction(item) === 'SKU' || reviewAction(item) === 'JD_SKU_MAPPING') return '/product/sku-mappings';
   if (item.order_id) return `/orders/${item.order_id}`;
   return undefined;
+}
+
+/**
+ * Issue #72：按家族事实组渲染「做决定所需事实」。所有家族共用同一呈现结构——
+ * 字段定义（白名单）/ 事实组 / 「来源未提供」占位，不逐家族复制 JSX；
+ * 字段缺失显示占位而不是整行消失，未知 detail 键 fail-closed。
+ */
+function FactGroupSection({ detail, groups }: { detail: Record<string, unknown>; groups: FactGroup[] }) {
+  return (
+    <>
+      {groups.map((group) => (
+        <div key={group.title}>
+          <Typography.Text strong>{group.title}</Typography.Text>
+          <Descriptions
+            bordered
+            size="small"
+            column={1}
+            style={{ marginTop: 8 }}
+            items={factGroupRows(detail, group).map((row, index) => ({
+              key: `${group.title}-${row.label}-${index}`,
+              label: row.label,
+              children: row.value,
+            }))}
+          />
+        </div>
+      ))}
+    </>
+  );
 }
 
 export interface ReviewCaseDrawerProps {
@@ -388,18 +424,7 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
           <div>
             {isSkuMappingReasonCode(selected.reason_code) ? (
               <>
-                <Typography.Text strong>来源商品信息</Typography.Text>
-                <Descriptions
-                  bordered
-                  size="small"
-                  column={1}
-                  style={{ marginTop: 8 }}
-                  items={skuMappingDetailRows(selected.detail).map((row, index) => ({
-                    key: `${row.label}-${index}`,
-                    label: row.label,
-                    children: row.value,
-                  }))}
-                />
+                <FactGroupSection detail={selected.detail} groups={reviewFactGroups(selected.reason_code)} />
                 <Typography.Text strong style={{ display: 'block', marginTop: 12 }}>
                   待映射商品明细
                 </Typography.Text>
@@ -422,6 +447,8 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
                   locale={{ emptyText: '来源未提供商品明细' }}
                 />
               </>
+            ) : reviewFactGroups(selected.reason_code).length ? (
+              <FactGroupSection detail={selected.detail} groups={reviewFactGroups(selected.reason_code)} />
             ) : safeReviewDetailRows(selected.detail).length ? (
               <>
                 <Typography.Text strong>复核依据</Typography.Text>
@@ -622,16 +649,22 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
               ) : null}
             </>
           ) : selected.resolution ? (
-            <Descriptions
-              bordered
-              size="small"
-              column={1}
-              items={safeReviewDetailRows(selected.resolution).map((row, index) => ({
-                key: `${row.label}-${index}`,
-                label: row.label,
-                children: row.value,
-              }))}
-            />
+            safeReviewDetailRows(selected.resolution).length ? (
+              <Descriptions
+                bordered
+                size="small"
+                column={1}
+                items={safeReviewDetailRows(selected.resolution).map((row, index) => ({
+                  key: `${row.label}-${index}`,
+                  label: row.label,
+                  children: row.value,
+                }))}
+              />
+            ) : (
+              <Typography.Paragraph type="secondary">
+                该事项的解决记录没有可公开展示的补充字段。
+              </Typography.Paragraph>
+            )
           ) : resolutionTarget(selected) ? (
             <Button type="primary" onClick={() => navigate(resolutionTarget(selected)!)}>前往关联页面处理</Button>
           ) : null}

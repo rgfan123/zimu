@@ -132,7 +132,23 @@ class WecomOrderFulfillmentRoutingApiTest {
         assertThat((List<Map<String, Object>>) revisionResult.getBody().get("review_cases"))
                 .anySatisfy(review -> assertThat(review)
                         .containsEntry("reason_code", "REVISION_AFTER_EXPORT")
-                        .containsEntry("status", "OPEN"));
+                        .containsEntry("status", "OPEN")
+                        .satisfies(item -> {
+                            Map<String, Object> detail = (Map<String, Object>) item.get("detail");
+                            assertThat(detail)
+                                    .containsEntry("source_version", "after-routing")
+                                    .containsEntry("change_reason", "验证履约承诺后必须转人工复核");
+                            assertThat((List<String>) detail.get("changed_fields"))
+                                    .contains("source_version");
+                            List<Map<String, Object>> changes =
+                                    (List<Map<String, Object>>) detail.get("changes");
+                            assertThat(changes).anySatisfy(change -> assertThat(change)
+                                    .containsEntry("field", "source_version")
+                                    .containsEntry("before", null)
+                                    .containsEntry("after", "after-routing"));
+                            // 收货电话不进 detail：不新增完整电话泄露面。
+                            assertThat(detail).doesNotContainKey("receiver_phone");
+                        }));
     }
 
     private ResponseEntity<Map> createReadyOrder() {
