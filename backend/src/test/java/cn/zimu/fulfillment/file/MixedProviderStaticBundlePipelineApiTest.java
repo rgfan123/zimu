@@ -281,10 +281,6 @@ class MixedProviderStaticBundlePipelineApiTest {
         String bundleRef = "WQ-MIXED-HOLD-BUNDLE-001";
         Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
         Map<String, Object> tpSku = createThirdPartySkuFixtureWithoutProviderMapping();
-        String tpSkuCode = jdbc.queryForObject(
-                "SELECT sku_code FROM app.skus WHERE id=?",
-                String.class,
-                Long.parseLong(tpSku.get("id").toString()));
         String bundleId = createMixedBundle(
                 "BUNDLE-MIXED-HOLD-001", "羊蝎子鸵鸟待映射礼包",
                 jdSku.get("id").toString(), tpSku.get("id").toString(), "mix-bundle-hold-001");
@@ -336,6 +332,8 @@ class MixedProviderStaticBundlePipelineApiTest {
                 Long.parseLong(orderId));
         Map<String, Object> reviewDetail = objectMapper.readValue(reviewDetailJson, new TypeReference<>() {});
         assertThat(reviewDetail)
+                .containsEntry("source_channel", "WANQI")
+                .containsEntry("line_no", 2)
                 .containsEntry("source_product_name", "羊蝎子鸵鸟待映射礼包")
                 .containsEntry("source_specification", "规格:1080g;")
                 .containsEntry("source_unit", "件")
@@ -343,10 +341,10 @@ class MixedProviderStaticBundlePipelineApiTest {
                 .containsEntry("source_sheet_name", "订单")
                 .containsEntry("source_row_index", 2);
         assertThat(reviewDetail.get("missing_source_sku_refs"))
-                .isEqualTo(List.of(tpSkuCode));
+                .isEqualTo(List.of(bundleRef));
         assertThat((List<?>) reviewDetail.get("evidence_items")).singleElement().satisfies(item -> {
             assertThat(castMap(item))
-                    .containsEntry("source_sku_ref", tpSkuCode)
+                    .containsEntry("source_sku_ref", bundleRef)
                     .containsEntry("product_name", "鸵鸟80g待映射组件")
                     .containsEntry("specification", "80g/袋")
                     .containsEntry("unit", "袋")

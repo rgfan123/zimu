@@ -70,7 +70,7 @@ class WecomOrderFulfillmentRoutingApiTest {
                 .isEqualTo(HttpStatus.CREATED);
         assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(replayed.getBody()).isEqualTo(routed.getBody());
-        assertThat((List<?>) routed.getBody().get("jd_sdk_shipment_ids")).hasSize(1);
+        assertThat((List<?>) routed.getBody().get("shipment_ids")).hasSize(1);
         assertThat(((Number) routed.getBody().get("order_version")).longValue())
                 .isEqualTo(orderVersion + 1);
         assertThat(jdbc.queryForObject(

@@ -75,9 +75,7 @@ class OrderFulfillmentRoutingService {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("order_id", String.valueOf(orderId));
             result.put("order_version", routed.orderVersion());
-            result.put(
-                    "jd_sdk_shipment_ids",
-                    routed.shipmentIds().stream().map(String::valueOf).toList());
+            result.put("shipment_ids", routed.shipmentIds().stream().map(String::valueOf).toList());
             audits.record(new AuditLogService.AuditCommand()
                     .dataScope(DataScope.BUSINESS)
                     .orderId(orderId)

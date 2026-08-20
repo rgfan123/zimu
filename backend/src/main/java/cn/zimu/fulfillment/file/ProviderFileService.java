@@ -3,6 +3,7 @@ package cn.zimu.fulfillment.file;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
@@ -392,7 +393,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     private Map<String, Object> providerSkuReviewDetail(long sourceBatchId, ProviderSkuHold hold) {
         Map<String, Object> line = jdbc.queryForMap(
                 """
-                SELECT product_name_snapshot, specification_snapshot, unit_snapshot, requested_quantity
+                SELECT line_no, product_name_snapshot, specification_snapshot, unit_snapshot, requested_quantity
                 FROM app.order_lines WHERE id=?
                 """,
                 hold.orderLineId());
@@ -414,7 +415,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 """,
                 (resultSet, rowNum) -> {
                     Map<String, Object> item = new LinkedHashMap<>();
-                    item.put("source_sku_ref", resultSet.getString("sku_code"));
+                    item.put("source_sku_ref", null);
                     item.put("product_name", resultSet.getString("product_name"));
                     item.put("specification", resultSet.getString("specification"));
                     item.put("unit", resultSet.getString("unit"));
@@ -428,19 +429,16 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
 
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("message", "第三方礼包组件缺少履约方 SKU 映射");
+        detail.put("line_no", line.get("line_no"));
         detail.put("source_product_name", line.get("product_name_snapshot"));
         detail.put("source_specification", line.get("specification_snapshot"));
         detail.put("source_unit", line.get("unit_snapshot"));
         detail.put("source_quantity", ((BigDecimal) line.get("requested_quantity")).toPlainString());
-        detail.put(
-                "missing_source_sku_refs",
-                evidenceItems.stream().map(item -> item.get("source_sku_ref")).toList());
-        detail.put("evidence_items", evidenceItems);
-
         List<Map<String, Object>> sourceRows = jdbc.queryForList(
                 """
-                SELECT rir.sheet_name, rir.row_index
+                SELECT ib.source_channel, rir.sheet_name, rir.row_index, rir.raw_cells::text AS raw_cells
                 FROM app.raw_import_rows rir
+                JOIN app.import_batches ib ON ib.id=rir.import_batch_id
                 LEFT JOIN app.raw_import_row_order_lines rirol ON rirol.raw_import_row_id=rir.id
                 WHERE rir.import_batch_id=?
                   AND (rir.order_line_id=? OR rirol.order_line_id=?)
@@ -451,10 +449,28 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 hold.orderLineId(),
                 hold.orderLineId());
         if (!sourceRows.isEmpty()) {
-            detail.put("source_sheet_name", sourceRows.getFirst().get("sheet_name"));
-            detail.put("source_row_index", sourceRows.getFirst().get("row_index"));
+            Map<String, Object> sourceRow = sourceRows.getFirst();
+            String sourceChannel = sourceRow.get("source_channel").toString();
+            Map<String, String> projection = sourceProjection(sourceChannel, sourceRow.get("raw_cells").toString());
+            String sourceSkuRef = projection.get("source_sku_ref");
+            detail.put("source_channel", sourceChannel);
+            detail.put("source_sheet_name", sourceRow.get("sheet_name"));
+            detail.put("source_row_index", sourceRow.get("row_index"));
+            detail.put("missing_source_sku_refs", sourceSkuRef == null ? List.of() : List.of(sourceSkuRef));
+            evidenceItems.forEach(item -> item.put("source_sku_ref", sourceSkuRef));
         }
+        detail.putIfAbsent("missing_source_sku_refs", List.of());
+        detail.put("evidence_items", evidenceItems);
         return detail;
+    }
+
+    private Map<String, String> sourceProjection(String sourceChannel, String rawCellsJson) {
+        try {
+            Map<String, String> rawCells = objectMapper.readValue(rawCellsJson, new TypeReference<>() {});
+            return new SourceFileParser().projection(SourceChannel.valueOf(sourceChannel), rawCells);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("来源行快照无法解析", exception);
+        }
     }
 
     @Override

@@ -4521,11 +4521,11 @@ components:
           description: 当前订单数据版本；过期请求返回 VERSION_CONFLICT。
     OrderFulfillmentRoutingResult:
       type: object
-      required: [order_id, order_version, jd_sdk_shipment_ids]
+      required: [order_id, order_version, shipment_ids]
       properties:
         order_id: { $ref: '#/components/schemas/Identifier' }
         order_version: { type: integer, format: int64, minimum: 1 }
-        jd_sdk_shipment_ids:
+        shipment_ids:
           type: array
           minItems: 1
           items: { $ref: '#/components/schemas/Identifier' }
