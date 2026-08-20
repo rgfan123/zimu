@@ -115,7 +115,7 @@ class WecomOutboundGatewayTest {
     }
 
     @Test
-    void connectionLossFailsPendingMessageImmediatelyAndRetryably() throws Exception {
+    void connectionLossAfterSubmissionIsDeliveryUnknownAndNotBlindlyRetryable() throws Exception {
         server.autoSendMessageAck(false);
 
         try (var sender = Executors.newSingleThreadExecutor()) {
@@ -127,8 +127,8 @@ class WecomOutboundGatewayTest {
 
             WecomSendResult result = pending.get(2, TimeUnit.SECONDS);
             assertThat(result.status()).isEqualTo(WecomSendStatus.FAILED);
-            assertThat(result.retryable()).isTrue();
-            assertThat(result.errorMessage()).isEqualTo("CONNECTION_LOST");
+            assertThat(result.retryable()).isFalse();
+            assertThat(result.errorMessage()).isEqualTo("CONNECTION_LOST_AFTER_SUBMIT");
         }
     }
 
@@ -140,7 +140,7 @@ class WecomOutboundGatewayTest {
 
         assertThat(result.status()).isEqualTo(WecomSendStatus.TIMEOUT);
         assertThat(result.acknowledgedAt()).isNull();
-        assertThat(result.retryable()).isTrue();
+        assertThat(result.retryable()).isFalse();
         assertThat(result.errorMessage()).isEqualTo("ACK_TIMEOUT");
         assertThat(storedAudits).singleElement().satisfies(audit -> {
             assertThat(audit.getResponsePayload()).containsEntry("status", "TIMEOUT");

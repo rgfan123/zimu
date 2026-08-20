@@ -48,6 +48,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private static final long CONNECT_TIMEOUT_MILLIS = 10_000L;
     private static final long SEND_TIMEOUT_MILLIS = 3_000L;
     private static final long ACK_TIMEOUT_MILLIS = 5_000L;
+    private static final int MAX_QUEUED_FRAMES = 64;
 
     private final WecomProperties properties;
     private final ObjectMapper objectMapper;
@@ -66,7 +67,10 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean();
     private final AtomicInteger subscribeFailures = new AtomicInteger();
     private final AtomicInteger backoffAttempt = new AtomicInteger();
+    private final AtomicInteger queuedFrames = new AtomicInteger();
     private final ConcurrentMap<String, CompletableFuture<ReceivedAck>> pendingAcks = new ConcurrentHashMap<>();
+    private final Object sendOrderLock = new Object();
+    private CompletableFuture<Void> sendTail = CompletableFuture.completedFuture(null);
 
     private volatile WecomFrameHandler frameHandler = WecomFrameHandler.EMPTY;
     private volatile boolean running;
@@ -207,9 +211,15 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
 
         CompletableFuture<ReceivedAck> pending = new CompletableFuture<>();
         pendingAcks.put(requestId, pending);
-        if (!sendRaw(frame)) {
+        FrameSendStatus submission = awaitSubmission(enqueueRaw(frame));
+        if (submission != FrameSendStatus.SENT) {
             pendingAcks.remove(requestId, pending);
-            return WecomSendResult.failed(requestId, null, "TRANSPORT_SEND_FAILED", true);
+            return switch (submission) {
+                case NOT_READY -> WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true);
+                case BACKPRESSURE -> WecomSendResult.failed(null, null, "OUTBOUND_BACKPRESSURE", true);
+                case FAILED -> WecomSendResult.failed(requestId, null, "TRANSPORT_SEND_FAILED", false);
+                case SENT -> throw new IllegalStateException("handled above");
+            };
         }
         try {
             ReceivedAck ack = pending.get(ackTimeoutMillis, TimeUnit.MILLISECONDS);
@@ -217,16 +227,24 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             if (errorCode == 0) {
                 return WecomSendResult.success(requestId, ack.receivedAt());
             }
-            return WecomSendResult.failed(requestId, errorCode, text(ack.frame(), "errmsg"), false);
+            String errorMessage = text(ack.frame(), "errmsg");
+            return WecomSendResult.failed(
+                    requestId,
+                    errorCode,
+                    errorMessage == null || errorMessage.isBlank() ? "WECOM_REJECTED" : errorMessage,
+                    false);
         } catch (java.util.concurrent.TimeoutException ex) {
             return WecomSendResult.timeout(requestId);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return WecomSendResult.failed(requestId, null, "ACK_WAIT_INTERRUPTED", false);
         } catch (java.util.concurrent.ExecutionException ex) {
             if (ex.getCause() instanceof PendingAckFailure failure) {
-                return WecomSendResult.failed(requestId, null, failure.getMessage(), true);
+                return WecomSendResult.failed(requestId, null, failure.getMessage(), false);
             }
-            return WecomSendResult.failed(requestId, null, "ACK_WAIT_FAILED", true);
+            return WecomSendResult.failed(requestId, null, "ACK_WAIT_FAILED", false);
         } catch (Exception ex) {
-            return WecomSendResult.failed(requestId, null, "ACK_WAIT_FAILED", true);
+            return WecomSendResult.failed(requestId, null, "ACK_WAIT_FAILED", false);
         } finally {
             pendingAcks.remove(requestId, pending);
         }
@@ -247,7 +265,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             return;
         }
         running = false;
-        failPendingAcks("CONNECTION_LOST");
+        failPendingAcks("CONNECTION_LOST_AFTER_SUBMIT");
         cancelHeartbeatTask();
         cancelWatchdogTask();
         scheduler.shutdownNow();
@@ -376,7 +394,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         cancelHeartbeatTask();
         stateHolder.recordError("被新连接抢占（disconnected_event），停止自动重连");
         stateHolder.transitionTo(WecomConnectionState.KICKED);
-        failPendingAcks("CONNECTION_LOST");
+        failPendingAcks("CONNECTION_LOST_AFTER_SUBMIT");
         log.error("企业微信长连接被新连接抢占，已停止自动重连，需人工介入");
         ws.abort();
     }
@@ -468,9 +486,15 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         if (!running || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
             return;
         }
-        if (sendFrame("ping", null)) {
-            stateHolder.recordHeartbeat();
-        }
+        ObjectNode frame = objectMapper.createObjectNode();
+        frame.put("cmd", "ping");
+        frame.putObject("headers").put("req_id", newReqId());
+        frame.set("body", objectMapper.createObjectNode());
+        enqueueRaw(frame).thenAccept(status -> {
+            if (status == FrameSendStatus.SENT) {
+                stateHolder.recordHeartbeat();
+            }
+        });
     }
 
     private void cancelHeartbeatTask() {
@@ -495,7 +519,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         cancelHeartbeatTask();
         WebSocket ws = socket.getAndSet(null);
         stateHolder.transitionTo(WecomConnectionState.DISCONNECTED);
-        failPendingAcks("CONNECTION_LOST");
+        failPendingAcks("CONNECTION_LOST_AFTER_SUBMIT");
         if (ws != null && !ws.isOutputClosed()) {
             ws.abort();
         }
@@ -531,17 +555,66 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         return ThreadLocalRandom.current().nextLong(exponential + 1);
     }
 
-    private synchronized boolean sendRaw(ObjectNode frame) {
+    private boolean sendRaw(ObjectNode frame) {
+        return awaitSubmission(enqueueRaw(frame)) == FrameSendStatus.SENT;
+    }
+
+    /**
+     * 按调用顺序提交帧，但不占用心跳调度线程等待上一帧的 JDK send future；队列有界，避免业务突发无限吃内存。
+     */
+    private CompletableFuture<FrameSendStatus> enqueueRaw(ObjectNode frame) {
         WebSocket ws = socket.get();
-        if (ws == null || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
-            return false;
+        if (!running || ws == null || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
+            return CompletableFuture.completedFuture(FrameSendStatus.NOT_READY);
+        }
+        if (queuedFrames.incrementAndGet() > MAX_QUEUED_FRAMES) {
+            queuedFrames.decrementAndGet();
+            return CompletableFuture.completedFuture(FrameSendStatus.BACKPRESSURE);
+        }
+
+        String payload = frame.toString();
+        synchronized (sendOrderLock) {
+            CompletableFuture<FrameSendStatus> submission = sendTail.handle((ignored, failure) -> null)
+                    .thenCompose(ignored -> submitToSocket(ws, payload));
+            sendTail = submission.handle((ignored, failure) -> {
+                queuedFrames.decrementAndGet();
+                return null;
+            });
+            return submission;
+        }
+    }
+
+    private CompletableFuture<FrameSendStatus> submitToSocket(WebSocket expectedSocket, String payload) {
+        if (!running
+                || socket.get() != expectedSocket
+                || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
+            return CompletableFuture.completedFuture(FrameSendStatus.NOT_READY);
         }
         try {
-            ws.sendText(frame.toString(), true).get(SEND_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
-            return true;
-        } catch (Exception ex) {
+            return expectedSocket
+                    .sendText(payload, true)
+                    .orTimeout(SEND_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
+                    .handle((ignored, failure) -> {
+                        if (failure != null) {
+                            log.warn("企业微信长连接发送帧失败: {}", rootCauseSimpleName(failure));
+                            return FrameSendStatus.FAILED;
+                        }
+                        return FrameSendStatus.SENT;
+                    });
+        } catch (RuntimeException ex) {
             log.warn("企业微信长连接发送帧失败: {}", rootCauseSimpleName(ex));
-            return false;
+            return CompletableFuture.completedFuture(FrameSendStatus.FAILED);
+        }
+    }
+
+    private static FrameSendStatus awaitSubmission(CompletableFuture<FrameSendStatus> submission) {
+        try {
+            return submission.get();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return FrameSendStatus.FAILED;
+        } catch (java.util.concurrent.ExecutionException ex) {
+            return FrameSendStatus.FAILED;
         }
     }
 
@@ -617,6 +690,13 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
 
     private record ReceivedAck(JsonNode frame, Instant receivedAt) {}
 
+    private enum FrameSendStatus {
+        SENT,
+        NOT_READY,
+        BACKPRESSURE,
+        FAILED
+    }
+
     /** 单连接监听器：以代际 id（每次 connect 递增）判定过期，防止旧连接事件干扰新连接。 */
     private final class FrameListener implements WebSocket.Listener {
 
@@ -650,7 +730,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             }
             socket.compareAndSet(ws, null);
             stateHolder.transitionTo(WecomConnectionState.DISCONNECTED);
-            failPendingAcks("CONNECTION_LOST");
+            failPendingAcks("CONNECTION_LOST_AFTER_SUBMIT");
             cancelHeartbeatTask();
             log.info("企业微信长连接关闭: code={}", statusCode);
             scheduleReconnect();
@@ -664,7 +744,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             }
             socket.compareAndSet(ws, null);
             stateHolder.transitionTo(WecomConnectionState.DISCONNECTED);
-            failPendingAcks("CONNECTION_LOST");
+            failPendingAcks("CONNECTION_LOST_AFTER_SUBMIT");
             cancelHeartbeatTask();
             stateHolder.recordError("连接异常: " + rootCauseSimpleName(error));
             log.warn("企业微信长连接异常: {}", rootCauseSimpleName(error));
