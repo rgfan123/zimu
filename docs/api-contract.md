@@ -5,6 +5,22 @@
 机器可读契约：`docs/openapi.yaml`  
 权威边界：`docs/prd-v0.1.md`、`docs/state-machine.md`、`docs/schema.md`、`docs/excel-closed-loop-spec.md`及已关闭 Wayfinder 决策票。
 
+## 0. 两份契约的关系（工单 07）
+
+- **生成物是事实**：后端接入 springdoc-openapi（2.9.0，按 Spring Boot 3.5.16 构建），运行中的应用在
+  `/v3/api-docs` / `/v3/api-docs.yaml` 暴露由控制器与 DTO 实时生成的 OpenAPI 契约。CI
+  （`.github/workflows/ci-jry.yml`）里的 `OpenApiContractConsistencyTest` 把生成物与手写 yaml
+  做结构化比对，漂移即失败并打印差异；每次测试也会把生成物快照导出到
+  `jry/backend/target/generated-openapi.yaml` 供人工检查。
+- **手写 `docs/openapi.yaml` 是评审用契约草案**：承载业务语义、评审意图与说明性描述（即本文件
+  §1–§9 的约定与逐端点说明，以及 yaml 里的描述/示例/错误响应）。它的机器可读结构——路径、方法、
+  query/header 参数、2xx 响应码、请求体与成功响应的 schema——不再靠人眼与控制器保持一致：
+  这些结构以生成物为事实，由门禁保证两份契约不漂移；散文层由人工维护，不在比对范围。
+- **门禁粒度与首次处置**：比对路径模板集合（`{param}` 归一）、方法集合、参数名、2xx 码、
+  schema 引用名（归一化 + 别名注册表），排除描述/示例/排序/路径参数命名/认证头等噪音；
+  首次比对暴露的差异逐条修正或登记豁免，清单见
+  `.scratch/repo-design-hardening/issues/07-spec-generation-gate.md` 的 Resolution。
+
 ## 1. 目标与非目标
 
 本契约覆盖：
@@ -343,6 +359,10 @@ public interface PlatformConnector {
 
 上表 LOP API 路径由对应 `Integratedsupplychain<域><动作>V<版本>LopRequest` 请求类名推导，与 §6.1 同源；登记开通时以京东开放平台后台展示为准。
 
+> 工单 07 注：上表涉及的 54 条 `/api/v1/jd-write` 等 ISC 透传端点由 springdoc 生成契约（`/v3/api-docs`）
+> 覆盖；手写 `docs/openapi.yaml` 未逐条补录（登记为已知豁免，门禁仍盯住这些路径），原因与清单见
+> `.scratch/repo-design-hardening/issues/07-spec-generation-gate.md` 的 Resolution。
+
 #### 启用条件与权限核对
 
 受控 Shipment 建单启用条件：`app.jd.write-mode: ON`、操作人通过服务端身份复验并进入授权名单，且京东开放平台已开通对应接口权限，缺一不可。旧通用 HTTP 写面不作为真实环境验收入口；真实环境权限核对按以下步骤进行（外部 gate 约束见 `.scratch/jd-sdk-bridge/spec.md`，不把 Mock 冒充真实权限）：
@@ -413,3 +433,7 @@ MCP 标识符和数量沿用 OpenAPI 的字符串规则。`operator`/Agent 身�
 5. 所有 `BUSINESS` 列表不暴露 Demo；
 6. 覆盖前端导航、P0 Excel 闭环、人工复核、采购、审计、分析和 DemoScenario；
 7. 不存在通用「推进订单」、「改状态」或「任意关闭 ReviewCase」端点。
+
+其中第 1 条的「能被 YAML 解析」以及路径/方法/参数/2xx 码/schema 名等机器可读结构，由 CI 门禁
+（`OpenApiContractConsistencyTest`，见 §0）对照运行中应用生成的契约强制执行；本节的评审要求
+（业务语义、白名单、副作用描述）落在人工评审层，由本文件的散文与 yaml 的 description 承载。

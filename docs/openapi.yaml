@@ -1,3 +1,9 @@
+# 评审用契约草案（工单 07）。本文件是人工评审的契约载体，承载业务语义与说明性描述；
+# 机器可读结构（路径/方法/参数/2xx 响应码/请求体与成功响应 schema）以 springdoc 从运行中的
+# 应用实时生成的契约为事实（/v3/api-docs 与 /v3/api-docs.yaml）。CI 门禁
+# OpenApiContractConsistencyTest 按固定粒度比对本文件与生成物，漂移即失败并打印差异；
+# 生成物快照见 jry/backend/target/generated-openapi.yaml。粒度与首次处置见
+# .scratch/repo-design-hardening/issues/07-spec-generation-gate.md 的 Resolution。
 openapi: 3.0.3
 info:
   title: Order Fulfillment and Logistics Hub API
@@ -34,57 +40,6 @@ tags:
 security:
   - basicAuth: []
 paths:
-  /wecom/callbacks/{connection_id}:
-    parameters:
-      - $ref: '#/components/parameters/WecomConnectionId'
-    get:
-      tags: [WeCom]
-      operationId: verifyWecomCallbackUrl
-      description: >-
-        Public enterprise WeChat intelligent-bot URL verification. The
-        msg_signature authenticates the encrypted challenge; Nginx Basic Auth
-        is intentionally disabled for this callback only.
-      security: []
-      parameters:
-        - $ref: '#/components/parameters/WecomMessageSignature'
-        - $ref: '#/components/parameters/WecomTimestamp'
-        - $ref: '#/components/parameters/WecomNonce'
-        - name: echostr
-          in: query
-          required: true
-          schema: { type: string, minLength: 1 }
-      responses:
-        '200':
-          description: Decrypted challenge returned as unquoted text without a trailing newline
-          content:
-            text/plain:
-              schema: { type: string }
-        default: { $ref: '#/components/responses/ErrorResponse' }
-    post:
-      tags: [WeCom]
-      operationId: receiveWecomCallback
-      description: >-
-        Public encrypted JSON callback. Only configured bot and business-group
-        text or mixed text/image messages are persisted. Every accepted retry receives an encrypted
-        fixed stream receipt after durable idempotent storage; ignored groups or
-        message types receive an empty 200 response.
-      security: []
-      parameters:
-        - $ref: '#/components/parameters/WecomMessageSignature'
-        - $ref: '#/components/parameters/WecomTimestamp'
-        - $ref: '#/components/parameters/WecomNonce'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/WecomEncryptedEnvelope' }
-      responses:
-        '200':
-          description: Encrypted fixed receipt JSON for an accepted message, or an empty body for a callback outside the configured boundary.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/WecomEncryptedResponse' }
-        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/channel-messages:
     get:
       tags: [Messages]
@@ -113,25 +68,6 @@ paths:
       responses:
         '200':
           description: Configuration gates and long-connection state
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/WecomConnectionReadiness' }
-        default: { $ref: '#/components/responses/ErrorResponse' }
-  /api/v1/wecom/connections/{connection_id}/readiness:
-    parameters:
-      - $ref: '#/components/parameters/WecomConnectionId'
-    get:
-      tags: [WeCom]
-      operationId: getWecomConnectionReadiness
-      description: >-
-        Authorized non-secret diagnostic of the configuration gates required to
-        run a real enterprise WeChat callback acceptance. real_acceptance_executable does
-        not prove public reachability or that a real group message was received.
-      parameters:
-        - $ref: '#/components/parameters/Operator'
-      responses:
-        '200':
-          description: Credential-presence, allowlist, and explicit public HTTPS callback gates
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WecomConnectionReadiness' }
@@ -320,6 +256,31 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/order-drafts/{draft_id}/supplement:
+    parameters:
+      - $ref: '#/components/parameters/OrderDraftId'
+    post:
+      tags: [OrderDrafts]
+      operationId: supplementOrderDraft
+      description: >-
+        Idempotently add supplementary lines to an existing draft. The expected revision
+        guards against concurrent edits; quantities are the NUMERIC(18,3) decimal strings
+        used across the contract.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderDraftSupplementCommand' }
+      responses:
+        '200':
+          description: Supplemented draft at its new revision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDraftDetail' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/tracking-drafts:
     get:
@@ -846,8 +807,6 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Size'
-        - $ref: '#/components/parameters/DateFrom'
-        - $ref: '#/components/parameters/DateTo'
         - name: provider_id
           in: query
           schema: { $ref: '#/components/schemas/Identifier' }
@@ -1370,48 +1329,6 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
         default: { $ref: '#/components/responses/ErrorResponse' }
-  /api/v1/review-cases/{case_id}/resolve-carrier:
-    parameters:
-      - $ref: '#/components/parameters/CaseId'
-    post:
-      tags: [Reviews]
-      operationId: resolveCarrierReview
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-        - $ref: '#/components/parameters/Operator'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ResolveCarrierReviewCommand' }
-      responses:
-        '200':
-          description: Channel carrier mapping saved and review resolved
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ReviewCase' }
-        default: { $ref: '#/components/responses/ErrorResponse' }
-  /api/v1/review-cases/{case_id}/resolve-import-data:
-    parameters:
-      - $ref: '#/components/parameters/CaseId'
-    post:
-      tags: [Reviews]
-      operationId: resolveImportDataReview
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-        - $ref: '#/components/parameters/Operator'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ResolveImportDataCommand' }
-      responses:
-        '200':
-          description: Pre-commit import data corrected and review resolved
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ReviewCase' }
-        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/review-cases/{case_id}/resolve-jd-tracking-conflict:
     parameters:
       - $ref: '#/components/parameters/CaseId'
@@ -1635,6 +1552,27 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProcurementTicket' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/procurement-price-agent/compare:
+    post:
+      tags: [Procurement]
+      operationId: compareProcurementPrice
+      description: >-
+        Runs one procurement price comparison (agent-decision-layer 05): structured input JSON
+        with procurement_ticket_id or sku_id plus optional quantity. Invalid input returns 4xx;
+        an unconfigured model returns a stable error code inside the result body (fail-closed)
+        rather than an exception. The run is audited by the agent runtime.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: string }
+      responses:
+        '200':
+          description: Comparison result with candidates, excluded candidates, and recommendation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementPriceRunResult' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/admin/catalog-imports/jd-authoritative:
     post:
@@ -2051,6 +1989,49 @@ paths:
           description: Provider mapping updated for future exports
           content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/provider-sku-mappings/jd-pieces-candidates:
+    get:
+      tags: [MasterData]
+      operationId: listJdPiecesCandidates
+      description: >-
+        Candidate provider-SKU rows whose per-unit JD factor is still unset, for the
+        per-unit import step. Read-only projection; values are applied only through
+        the import endpoint below.
+      responses:
+        '200':
+          description: Candidate rows without a per-unit factor
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/provider-sku-mappings/jd-pieces-per-unit-imports:
+    post:
+      tags: [MasterData]
+      operationId: importJdPiecesPerUnit
+      description: >-
+        Idempotently applies per-unit JD factor values to provider SKU mappings. All rows
+        are validated before any write; this endpoint never calls a JD write API.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderSkuJdFactorImport' }
+      responses:
+        '200':
+          description: Applied factor import summary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/fulfillment-providers:
     get:
       tags: [MasterData]
@@ -2155,6 +2136,31 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ConnectionTestResult' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/platform-orders/refresh:
+    post:
+      tags: [Connectors]
+      operationId: refreshPlatformOrders
+      description: >-
+        Manually triggers a one-shot refresh of CAISHIXIAN / JUFUBAO / FEIXIANG order data.
+        Reuses the phase-0 fetch scripts in-process: produced files enter the existing
+        ImportBatch manual-confirm loop instead of bypassing batch semantics. JUFUBAO
+        JSON direct-connect lacks receiver fields and is reported without auto-import.
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200':
+          description: Per-channel fetch results with counts
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/jd-warehouse/owners:
     get:
       summary: Discover authorized JD business units
@@ -2235,6 +2241,26 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/JdQueryResult' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/jd-sku-mapping/check:
+    post:
+      tags: [Connectors]
+      operationId: checkJdSkuMapping
+      description: >-
+        Manually triggers the global JD cloud-warehouse SKU mapping reconciliation. Results
+        are classified by difference kind and written into operational alerts or audit;
+        the check is read-only against JD and never creates a shipment.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: Reconciliation run completed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/outbound-recon:
     get:
       summary: Outbound internal-vs-JD fact reconciliation
@@ -2280,6 +2306,63 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MessagePipelineSummary' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/admin/message-pipeline/tasks:
+    get:
+      tags: [Operations]
+      operationId: listMessagePipelineTasks
+      description: >-
+        Authorized operational task list for the message pipeline, filterable by scope and
+        status. Minimal projections only: no lease owners, payloads, or other worker internals.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: scope
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Message pipeline task page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessagePipelineTaskPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/admin/message-pipeline/media-failures:
+    get:
+      tags: [Operations]
+      operationId: listMessagePipelineMediaFailures
+      description: Authorized media-download failure list for the message pipeline; minimal projection.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Media failure page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageMediaFailurePage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/admin/message-pipeline/cleanup:
+    post:
+      tags: [Operations]
+      operationId: runMessagePipelineCleanup
+      description: >-
+        Manually triggers NON_BUSINESS retention cleanup; the task is idempotent, repeatable,
+        and records an audit summary. Business-group messages are never touched.
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: Retention cleanup report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RetentionCleanupReport' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/audit-logs:
     get:
@@ -2604,26 +2687,6 @@ components:
     MessageSubmissionId: { name: submission_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
     OrderDraftId: { name: draft_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
     TrackingDraftId: { name: draft_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
-    WecomConnectionId:
-      name: connection_id
-      in: path
-      required: true
-      schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,63}$' }
-    WecomMessageSignature:
-      name: msg_signature
-      in: query
-      required: true
-      schema: { type: string, pattern: '^[a-f0-9]{40}$' }
-    WecomTimestamp:
-      name: timestamp
-      in: query
-      required: true
-      schema: { type: string, pattern: '^[0-9]+$' }
-    WecomNonce:
-      name: nonce
-      in: query
-      required: true
-      schema: { type: string, minLength: 1, maxLength: 128 }
     RunId: { name: run_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
     SourceChannelPath:
       name: source_channel
@@ -2720,21 +2783,6 @@ components:
         details:
           type: object
           additionalProperties: true
-    WecomEncryptedEnvelope:
-      type: object
-      additionalProperties: false
-      required: [encrypt]
-      properties:
-        encrypt: { type: string, minLength: 1, description: Base64 AES-256-CBC ciphertext }
-    WecomEncryptedResponse:
-      type: object
-      additionalProperties: false
-      required: [encrypt, msgsignature, timestamp, nonce]
-      properties:
-        encrypt: { type: string, minLength: 1 }
-        msgsignature: { type: string, pattern: '^[a-f0-9]{40}$' }
-        timestamp: { type: string, pattern: '^[0-9]+$' }
-        nonce: { type: string, minLength: 1 }
     WecomConnectionReadiness:
       type: object
       additionalProperties: false
@@ -4260,25 +4308,6 @@ components:
         source_sku_ref: { type: string, minLength: 1 }
         quantity_multiplier: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
         remark: { type: string, minLength: 1, maxLength: 1000 }
-    ResolveCarrierReviewCommand:
-      type: object
-      required: [expected_version, source_channel, internal_carrier_code, source_output_value, remark]
-      properties:
-        expected_version: { type: integer, minimum: 0 }
-        source_channel: { $ref: '#/components/schemas/SourceChannel' }
-        internal_carrier_code: { type: string, minLength: 1 }
-        source_output_value: { type: string, minLength: 1 }
-        remark: { type: string, minLength: 1, maxLength: 1000 }
-    ResolveImportDataCommand:
-      type: object
-      required: [expected_version, corrected_fields, remark]
-      properties:
-        expected_version: { type: integer, minimum: 0 }
-        corrected_fields:
-          type: object
-          minProperties: 1
-          additionalProperties: true
-        remark: { type: string, minLength: 1, maxLength: 1000 }
     CompleteSourceFollowupCommand:
       type: object
       required: [expected_version, note]
@@ -4773,7 +4802,7 @@ components:
       required: [file_ref, url]
       properties:
         file_ref: { type: string, description: 受控引用，写入 products.main_image_ref }
-        url: { type: string, description: 可访问 URL（/api/v1/product-images?ref=...） }
+        url: { type: string, description: '可访问 URL（/api/v1/product-images?ref=...）' }
     SkuWrite:
       type: object
       required: [provider_id, product_id, specification, unit]
@@ -5540,3 +5569,164 @@ components:
                   quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
                   unit: { type: string }
                   processing_stage: { type: string, enum: [COMPLETED] }
+    # ---- 工单 07 补录：结构取自 springdoc 生成物，描述经评审；新增端点见对应 paths 条目 ----
+    LineSupplement:
+      type: object
+      required: [lineNo]
+      properties:
+        lineNo: { type: integer, minimum: 1, description: 被补充的原草稿行号 }
+        quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        skuId: { type: string, pattern: '^[1-9][0-9]*$' }
+    OrderDraftSupplementCommand:
+      type: object
+      required: [expectedRevision]
+      properties:
+        expectedRevision: { type: integer, format: int64, description: 乐观并发守卫：草稿当前版本号 }
+        receiver: { $ref: '#/components/schemas/Receiver' }
+        settlementMethod: { type: string, enum: [MONTHLY, IMMEDIATE, CREDIT_TERM, PREPAID, COD, OTHER] }
+        items:
+          type: array
+          minItems: 0
+          maxItems: 100
+          items: { $ref: '#/components/schemas/LineSupplement' }
+    RefreshRequest:
+      type: object
+      description: 平台订单一键刷新范围；缺省为全部已配置渠道。
+      properties:
+        channels:
+          type: array
+          items: { type: string, enum: [CAISHIXIAN, JUFUBAO, FEIXIANG] }
+        date_begin: { type: string, description: 拉取起点（业务日） }
+        date_end: { type: string, description: 拉取终点（业务日） }
+    ProviderSkuJdFactorRow:
+      type: object
+      required: [providerSkuCode, jdPiecesPerUnit]
+      properties:
+        providerSkuCode: { type: string, description: 供应商 SKU 编码 }
+        jdPiecesPerUnit: { $ref: '#/components/schemas/DecimalQuantity' }
+    ProviderSkuJdFactorImport:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/ProviderSkuJdFactorRow' }
+    MessagePipelineTaskSummary:
+      type: object
+      description: 消息链路后台任务的最小投影（不含租约、载荷或密钥）。
+      required: [id, taskType, status]
+      properties:
+        id: { type: string }
+        taskType: { type: string }
+        status: { type: string }
+        attempts: { type: integer, format: int32, minimum: 0 }
+        maxAttempts: { type: integer, format: int32, minimum: 1 }
+        nextRunAt: { type: string, format: date-time, nullable: true }
+        lastError: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    MessagePipelineTaskPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/MessagePipelineTaskSummary' }
+    MessageMediaFailureSummary:
+      type: object
+      description: 媒体下载失败记录的最小投影。
+      required: [id, channelMediaId, downloadStatus]
+      properties:
+        id: { type: string }
+        channelMediaId: { type: string }
+        mediaType: { type: string, nullable: true }
+        downloadStatus: { type: string }
+        attempts: { type: integer, format: int32, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+    MessageMediaFailurePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/MessageMediaFailureSummary' }
+    RetentionCleanupReport:
+      type: object
+      description: 保留清理运行结果；enabled=false 表示清理未启用，其余字段为 0。
+      required: [enabled, retentionDays, cutoff]
+      properties:
+        enabled: { type: boolean }
+        retentionDays: { type: integer, format: int32 }
+        cutoff: { type: string, format: date-time }
+        expiredCandidates: { type: integer, format: int32 }
+        protectedCount: { type: integer, format: int32 }
+        submissionsRemoved: { type: integer, format: int32 }
+        messagesRemoved: { type: integer, format: int32 }
+        mediaRowsRemoved: { type: integer, format: int32 }
+        filesRemoved: { type: integer, format: int32 }
+    Inventory:
+      type: object
+      description: 采购比价用库存投影。
+      properties:
+        available: { $ref: '#/components/schemas/DecimalQuantity' }
+        shortage: { $ref: '#/components/schemas/DecimalQuantity' }
+    Candidate:
+      type: object
+      description: 可比候选供应商报价。
+      required: [provider_code, price, price_basis]
+      properties:
+        provider_code: { type: string }
+        price: { $ref: '#/components/schemas/DecimalQuantity' }
+        price_basis: { type: string, enum: [sku_commercial_price, provider_sku] }
+        note: { type: string }
+    ExcludedCandidate:
+      type: object
+      description: 被剔除的候选及其原因。
+      required: [provider_code, price, price_basis, exclusion_reason]
+      properties:
+        provider_code: { type: string }
+        price: { $ref: '#/components/schemas/DecimalQuantity' }
+        price_basis: { type: string, enum: [sku_commercial_price, provider_sku] }
+        note: { type: string }
+        exclusion_reason: { type: string, enum: [price_outlier, price_missing, mapping_stale] }
+        exclusion_reason_detail: { type: string }
+    Recommendation:
+      type: object
+      required: [provider_code]
+      properties:
+        provider_code: { type: string }
+        reason: { type: string }
+    ProcurementPriceRecommendation:
+      type: object
+      description: 采购比价的完整结构化输出。
+      required: [target_sku]
+      properties:
+        target_sku: { type: string }
+        requested_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        inventory: { $ref: '#/components/schemas/Inventory' }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/Candidate' }
+        excluded_candidates:
+          type: array
+          items: { $ref: '#/components/schemas/ExcludedCandidate' }
+        recommendation: { $ref: '#/components/schemas/Recommendation' }
+        missing_fields:
+          type: array
+          items: { type: string }
+        confidence: { type: number, format: double }
+        requires_human: { type: boolean }
+    ProcurementPriceRunResult:
+      type: object
+      description: 一次比价运行的稳定结果；模型未配置/未启用时以 error 码返回（fail-closed）。
+      required: [provider, model, prompt_version]
+      properties:
+        recommendation: { $ref: '#/components/schemas/ProcurementPriceRecommendation' }
+        provider: { type: string, description: 实际使用的模型供应商；未命中 allowlist 时为 none }
+        model: { type: string }
+        prompt_version: { type: string }
+        error: { type: string, description: 稳定错误码；null 表示运行成功 }

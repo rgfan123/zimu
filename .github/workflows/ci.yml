@@ -25,6 +25,16 @@ jobs:
           java-version: '21'
           cache: maven
           cache-dependency-path: backend/pom.xml
+      - name: OpenAPI contract gate
+        working-directory: backend
+        run: mvn -B --no-transfer-progress -Dtest=OpenApiContractConsistencyTest test
+      - name: Upload generated OpenAPI spec
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-openapi
+          path: backend/target/generated-openapi.yaml
+          if-no-files-found: ignore
       - name: Run backend test suite
         working-directory: backend
         run: mvn -B --no-transfer-progress test
