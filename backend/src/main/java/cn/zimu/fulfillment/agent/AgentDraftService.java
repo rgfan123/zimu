@@ -155,7 +155,8 @@ public class AgentDraftService {
         }
     }
 
-    private void insertDefinition(AgentDefinition definition) {
+    /** 插入定义行（全量快照）。包可见：T11 回滚任务复制目标版本为新草稿复用同一落库 SQL。 */
+    void insertDefinition(AgentDefinition definition) {
         jdbc.update(
                 """
                 INSERT INTO app.agent_definitions
