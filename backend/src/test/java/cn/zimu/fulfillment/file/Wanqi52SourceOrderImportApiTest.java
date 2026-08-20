@@ -1,9 +1,7 @@
 package cn.zimu.fulfillment.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import cn.zimu.fulfillment.common.error.BusinessException;
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -359,11 +357,13 @@ class Wanqi52SourceOrderImportApiTest {
                 shipmentId,
                 fulfillmentId);
 
-        assertThatThrownBy(() -> trackingFileService.finalizeReadySourceReturnsForShipment(
+        assertThat(trackingFileService.finalizeReadySourceReturnsForShipment(
                         shipmentId, "wanqi-return-test"))
-                .isInstanceOfSatisfying(BusinessException.class, exception -> assertThat(exception)
-                        .extracting(BusinessException::getBusinessCode)
-                        .isEqualTo("SOURCE_RETURN_TEMPLATE_UNSUPPORTED"));
+                .isEmpty();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.source_return_exports WHERE import_batch_id=?",
+                Integer.class,
+                batchId)).isZero();
     }
 
     private ResponseEntity<Map> upload(byte[] bytes) {

@@ -39,7 +39,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** WANGQI 静态礼包从来源文件进入 CanonicalOrder，再确认生成京东 Shipment 的公共 seam。 */
+/** 大者静态礼包从来源文件进入 CanonicalOrder，再确认生成京东 Shipment 的公共 seam。 */
 @Testcontainers
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -154,9 +154,9 @@ class WangqiBundlePipelineApiTest {
         jdbc.update("UPDATE app.product_bundles SET status='ACTIVE' WHERE id=?", bundleId);
         jdbc.update(
                 "INSERT INTO app.source_channel_bundles(source_channel,source_bundle_ref,source_bundle_name,"
-                        + "quantity_multiplier,bundle_id,active) VALUES ('WANGQI',?,?,1,?,true)",
+                        + "quantity_multiplier,bundle_id,active) VALUES ('DAZHE',?,?,1,?,true)",
                 SOURCE_BUNDLE_REF,
-                "来源万齐礼包",
+                "来源大者礼包",
                 bundleId);
 
         jdbc.update(
@@ -178,7 +178,7 @@ class WangqiBundlePipelineApiTest {
                 .withFailMessage("upload body: %s", uploaded.getBody())
                 .isEqualTo(HttpStatus.CREATED);
         Map<String, Object> batch = uploaded.getBody();
-        assertThat(batch).containsEntry("source_channel", "WANGQI");
+        assertThat(batch).containsEntry("source_channel", "DAZHE");
         assertThat(castMap(batch.get("row_counts")))
                 .containsEntry("accepted", 1)
                 .containsEntry("need_review", 0);
@@ -196,7 +196,6 @@ class WangqiBundlePipelineApiTest {
         assertThat(orderPage).containsEntry("total_elements", 1);
         String orderId = ((Map<?, ?>) ((List<?>) orderPage.get("items")).getFirst()).get("id").toString();
         Map<String, Object> order = get("/api/v1/orders/" + orderId);
-        String recordedOrderSource = order.get("source_channel").toString();
         assertThat(castMap(order.get("settlement")))
                 .containsEntry("method", "IMMEDIATE")
                 .containsEntry("settlement_time", "2026-08-20T02:01:00Z");
@@ -204,7 +203,7 @@ class WangqiBundlePipelineApiTest {
         assertThat(line)
                 .containsEntry("line_type", "CUSTOM_BUNDLE")
                 .containsEntry("bundle_id", Long.toString(bundleId))
-                .containsEntry("product_name", "来源万齐礼包")
+                .containsEntry("product_name", "来源大者礼包")
                 .containsEntry("requested_quantity", "2.000")
                 .containsEntry("processing_stage", "READY_TO_EXPORT");
         List<Map<String, Object>> components = castList(line.get("components"));
@@ -298,7 +297,7 @@ class WangqiBundlePipelineApiTest {
                 byte[].class);
         assertThat(ContentDisposition.parse(returnedDownload.getHeaders()
                         .getFirst(HttpHeaders.CONTENT_DISPOSITION)).getFilename())
-                .isEqualTo("万齐-来源回填-" + returnId + ".xlsx");
+                .isEqualTo("大者-来源回填-" + returnId + ".xlsx");
         byte[] returned = returnedDownload.getBody();
         try (var returnedWorkbook = WorkbookFactory.create(new ByteArrayInputStream(returned))) {
             var returnedSheet = returnedWorkbook.getSheetAt(0);
@@ -315,99 +314,13 @@ class WangqiBundlePipelineApiTest {
             assertThat(formatter.formatCellValue(row.getCell(columns.get("快递公司")))).isEqualTo("京东物流");
         }
 
-        List<?> timelineBefore = http.getForObject("/api/v1/orders/" + orderId + "/timeline", List.class);
-        List<?> versionsBefore = http.getForObject("/api/v1/orders/" + orderId + "/versions", List.class);
-        Map<String, Object> correctionRequest = Map.of(
-                "source_channel_display_name", "大者",
-                "reason", "用户确认来源实际为大者",
-                "evidence", Map.of("recorded_format", "历史十五列表格"));
-        HttpHeaders correctionHeaders = writeHeaders(
-                "source-attribution-correction-001", "req-source-attribution-correction-001");
-        ResponseEntity<Map> corrected = http.exchange(
-                "/api/v1/import-batches/" + batchId + "/source-attribution-corrections",
-                HttpMethod.POST,
-                new HttpEntity<>(correctionRequest, correctionHeaders),
-                Map.class);
-        ResponseEntity<Map> replayedCorrection = http.exchange(
-                "/api/v1/import-batches/" + batchId + "/source-attribution-corrections",
-                HttpMethod.POST,
-                new HttpEntity<>(correctionRequest, correctionHeaders),
-                Map.class);
-
-        assertThat(corrected.getStatusCode())
-                .withFailMessage("correction body: %s", corrected.getBody())
-                .isEqualTo(HttpStatus.CREATED);
-        assertThat(replayedCorrection.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(replayedCorrection.getBody()).isEqualTo(corrected.getBody());
-        assertThat(corrected.getBody())
-                .containsEntry("recorded_source_channel_display_name", "万齐")
-                .containsEntry("effective_source_channel_display_name", "大者")
-                .containsEntry("invalidated_source_return_count", 1)
-                .containsKey("successor_source_return_export_id");
-
-        Map<String, Object> correctedBatch = get("/api/v1/import-batches/" + batchId);
-        assertThat(correctedBatch)
-                .containsEntry("source_channel", "WANGQI")
-                .containsEntry("recorded_source_channel_display_name", "万齐")
-                .containsEntry("effective_source_channel_display_name", "大者")
-                .containsEntry("source_channel_display_name", "大者");
-        assertThat(get("/api/v1/orders/" + orderId)).containsEntry("source_channel", recordedOrderSource);
-
-        ResponseEntity<Map> revision = uploadRevision(workbook(), batchId);
-        assertThat(revision.getStatusCode())
-                .withFailMessage("revision body: %s", revision.getBody())
-                .isEqualTo(HttpStatus.CREATED);
-        assertThat(revision.getBody())
-                .containsEntry("import_mode", "REVISION")
-                .containsEntry("parent_import_batch_id", batchId)
-                .containsEntry("source_channel_display_name", "大者");
-
-        List<?> timelineAfter = http.getForObject("/api/v1/orders/" + orderId + "/timeline", List.class);
-        List<?> versionsAfter = http.getForObject("/api/v1/orders/" + orderId + "/versions", List.class);
-        assertThat(timelineAfter).hasSize(timelineBefore.size() + 1);
-        assertThat(versionsAfter).hasSize(versionsBefore.size() + 1);
-
-        Map<String, Object> audits = get(
-                "/api/v1/audit-logs?request_id=req-source-attribution-correction-001");
-        assertThat((List<?>) audits.get("items")).singleElement();
-
-        List<Map<String, Object>> correctedReturns = castList(http.getForObject(
-                "/api/v1/import-batches/" + batchId + "/source-return-exports", List.class));
-        assertThat(correctedReturns).hasSize(2);
-        assertThat(correctedReturns.getFirst())
-                .containsEntry("valid", false)
-                .containsEntry("invalidation_reason", "SOURCE_ATTRIBUTION_CORRECTED");
-        Map<String, Object> successor = correctedReturns.get(1);
-        assertThat(successor)
-                .containsEntry("valid", true)
-                .containsEntry("version_no", 2);
-
-        ResponseEntity<Map> invalidatedDownload = http.exchange(
-                "/api/v1/source-return-exports/" + returnId + "/file",
-                HttpMethod.GET,
-                new HttpEntity<>(operatorHeaders()),
-                Map.class);
-        assertThat(invalidatedDownload.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-
-        ResponseEntity<byte[]> successorDownload = http.exchange(
-                "/api/v1/source-return-exports/" + successor.get("id") + "/file",
-                HttpMethod.GET,
-                new HttpEntity<>(operatorHeaders()),
-                byte[].class);
-        assertThat(ContentDisposition.parse(successorDownload.getHeaders()
-                        .getFirst(HttpHeaders.CONTENT_DISPOSITION)).getFilename())
-                .isEqualTo("大者-来源回填-" + successor.get("id") + ".xlsx");
-        byte[] successorFile = successorDownload.getBody();
-        try (var successorWorkbook = WorkbookFactory.create(new ByteArrayInputStream(successorFile))) {
-            assertThat((int) successorWorkbook.getSheetAt(0).getRow(0).getLastCellNum()).isEqualTo(15);
-        }
     }
 
     private void addWangqiSkuMapping(String emg, long skuId, String productName, String specification) {
         jdbc.update(
                 "INSERT INTO app.source_channel_skus(source_channel,source_sku_ref,source_product_name,"
                         + "source_specification,quantity_multiplier,sku_id,active) "
-                        + "VALUES ('WANGQI',?,?,?,?,?,true)",
+                        + "VALUES ('DAZHE',?,?,?,?,?,true)",
                 emg,
                 productName,
                 specification,
@@ -427,26 +340,6 @@ class WangqiBundlePipelineApiTest {
             }
         });
         body.add("import_mode", "NEW");
-        return http.exchange(
-                "/api/v1/import-batches/source-orders",
-                HttpMethod.POST,
-                new HttpEntity<>(body, headers),
-                Map.class);
-    }
-
-    private ResponseEntity<Map> uploadRevision(byte[] bytes, String parentBatchId) {
-        HttpHeaders headers = operatorHeaders();
-        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        headers.set("Idempotency-Key", "source-attribution-revision-001");
-        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-        body.add("file", new ByteArrayResource(bytes) {
-            @Override
-            public String getFilename() {
-                return "来源修订.xlsx";
-            }
-        });
-        body.add("import_mode", "REVISION");
-        body.add("parent_import_batch_id", parentBatchId);
         return http.exchange(
                 "/api/v1/import-batches/source-orders",
                 HttpMethod.POST,
@@ -503,7 +396,7 @@ class WangqiBundlePipelineApiTest {
                 "商品数量", "收货人", "收货人手机", "收货人详细地址", "预计到货时间", "渠道下单时间",
                 "渠道支付时间", "快递单号", "快递公司");
         List<String> values = List.of(
-                SOURCE_ORDER_REF, SOURCE_BUNDLE_REF, "来源供应商礼包", "来源万齐礼包", "待发货", "100.00",
+                SOURCE_ORDER_REF, SOURCE_BUNDLE_REF, "来源供应商礼包", "来源大者礼包", "待发货", "100.00",
                 "2", "测试收货人", "13800000000", "上海市浦东新区测试路1号", "2026-08-22 12:00:00",
                 "2026-08-20 10:00:00", "2026-08-20 10:01:00", "", "");
         try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {

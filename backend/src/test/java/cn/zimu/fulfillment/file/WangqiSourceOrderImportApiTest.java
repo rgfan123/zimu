@@ -25,7 +25,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** 万齐真实十五列表格经公开上传接口进入来源订单批次。 */
+/** 大者十五列表格经公开上传接口进入来源订单批次。 */
 @Testcontainers
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -52,7 +52,7 @@ class WangqiSourceOrderImportApiTest {
                 "SELECT sku_id FROM app.provider_skus WHERE provider_sku_code='JD-SKU-000001'", Long.class);
         jdbc.update(
                 "INSERT INTO app.source_channel_skus(source_channel,source_sku_ref,source_product_name,"
-                        + "quantity_multiplier,sku_id,active) VALUES ('WANGQI','P26011900044','错误普通映射',1,?,true)",
+                        + "quantity_multiplier,sku_id,active) VALUES ('DAZHE','P26011900044','错误普通映射',1,?,true)",
                 skuId);
         ResponseEntity<Map> uploaded = upload(wangqiWorkbook());
 
@@ -60,7 +60,7 @@ class WangqiSourceOrderImportApiTest {
                 .withFailMessage("upload body: %s", uploaded.getBody())
                 .isEqualTo(HttpStatus.CREATED);
         Map<String, Object> batch = uploaded.getBody();
-        assertThat(batch).containsEntry("source_channel", "WANGQI");
+        assertThat(batch).containsEntry("source_channel", "DAZHE");
         Map<?, ?> counts = (Map<?, ?>) batch.get("row_counts");
         assertThat(counts.get("total")).isEqualTo(2);
         assertThat(counts.get("rejected")).isEqualTo(0);

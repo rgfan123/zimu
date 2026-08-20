@@ -7,6 +7,7 @@ import cn.zimu.fulfillment.connector.jd.MockJdWarehouseClient;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -425,7 +426,7 @@ class MixedProviderStaticBundlePipelineApiTest {
     private void createSourceBundleMapping(
             String sourceBundleRef, String sourceBundleName, String bundleId, String idempotencyKey) {
         Map<String, Object> body = Map.of(
-                "source_channel", "WANGQI",
+                "source_channel", "WANQI",
                 "source_bundle_ref", sourceBundleRef,
                 "source_bundle_name", sourceBundleName,
                 "quantity_multiplier", "1",
@@ -539,13 +540,44 @@ class MixedProviderStaticBundlePipelineApiTest {
 
     private byte[] workbook(String sourceOrderRef, String sourceBundleRef, String productName) throws Exception {
         List<String> headers = List.of(
-                "渠道订单号", "主商品编码", "供应商商品名称", "商品名称", "订单商品状态", "采购单价（元）",
-                "商品数量", "收货人", "收货人手机", "收货人详细地址", "预计到货时间", "渠道下单时间",
-                "渠道支付时间", "快递单号", "快递公司");
-        List<String> values = List.of(
-                sourceOrderRef, sourceBundleRef, "测试供应商", productName, "待发货", "100.00",
-                "1", "测试收货人", "13800000000", "上海市浦东新区测试路1号", "",
-                "2026-08-20 10:00:00", "2026-08-20 10:01:00", "", "");
+                "收货人姓名", "收货人手机号", "详细地址", "商品名称", "规格信息", "商品类型", "品牌",
+                "一级分类", "二级分类", "三级分类", "一级逻辑分类", "二级逻辑分类", "三级逻辑分类",
+                "售价", "购买数量", "成本价", "结算价", "优惠类型", "优惠金额", "供应商", "商品来源",
+                "子订单状态", "售后状态", "退款类型", "供应商发货时间", "确认收货时间", "申请退款时间",
+                "售后完成时间", "用户备注", "商家/客服备注", "订单处理形式", "订单ID", "聚合ID", "子订单ID",
+                "供应商单号", "商品id", "供应商商品id", "门店id", "供应商sku id", "服务时效", "期望时间",
+                "物流信息", "crm 单号", "订单总金额", "skuid", "sku名称", "不含运毛利额", "不含运毛利率",
+                "含运毛利额", "含运毛利率", "订单类型", "实物售后");
+        List<String> values = new ArrayList<>(java.util.Collections.nCopies(headers.size(), ""));
+        values.set(0, "测试收货人");
+        values.set(1, "13800000000");
+        values.set(2, "上海/浦东新区/测试街道 测试路1号");
+        values.set(3, productName);
+        values.set(4, "规格:1080g;");
+        values.set(5, "实体商品");
+        values.set(6, "子牧");
+        values.set(10, "节日礼包");
+        values.set(11, "测试档期");
+        values.set(12, "测试档");
+        values.set(13, "100.00");
+        values.set(14, "1");
+        values.set(15, "75.00");
+        values.set(16, "75.00");
+        values.set(18, "0.00");
+        values.set(19, "测试供应商");
+        values.set(20, "自建商品");
+        values.set(21, "超时未发货");
+        values.set(30, "自动完成订单");
+        values.set(31, sourceOrderRef);
+        values.set(33, sourceOrderRef + "-LINE");
+        values.set(35, "TEST-PRODUCT-ID");
+        values.set(43, "100.00");
+        values.set(44, sourceBundleRef);
+        values.set(45, productName);
+        values.set(48, "25.00");
+        values.set(49, "0.25");
+        values.set(50, "销售订单");
+        values.set(51, "支持");
         try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             var sheet = workbook.createSheet("订单");
             var header = sheet.createRow(0);
