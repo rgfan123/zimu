@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
@@ -375,16 +376,85 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                         (case_no, case_type, status, responsible_team, reason_code,
                          order_id, order_line_id, fulfillment_id, import_batch_id, detail)
                     VALUES (?, 'FULFILLMENT_EXPORT', 'OPEN', 'SKU_OPS', 'PROVIDER_SKU_MAPPING_REQUIRED',
-                            ?, ?, ?, ?, jsonb_build_object(
-                                'message', '第三方礼包组件缺少履约方 SKU 映射'))
+                            ?, ?, ?, ?, ?::jsonb)
                     ON CONFLICT (case_no) DO NOTHING
                     """,
                     "RC-PROVIDER-SKU-" + hold.orderLineId(),
                     hold.orderId(),
                     hold.orderLineId(),
                     hold.fulfillmentId(),
-                    sourceBatchId);
+                    sourceBatchId,
+                    json(providerSkuReviewDetail(sourceBatchId, hold)));
         }
+    }
+
+    /** 为履约方 SKU 缺失生成可行动的商品证据，并保留来源文件位置。 */
+    private Map<String, Object> providerSkuReviewDetail(long sourceBatchId, ProviderSkuHold hold) {
+        Map<String, Object> line = jdbc.queryForMap(
+                """
+                SELECT product_name_snapshot, specification_snapshot, unit_snapshot, requested_quantity
+                FROM app.order_lines WHERE id=?
+                """,
+                hold.orderLineId());
+        List<Map<String, Object>> evidenceItems = jdbc.query(
+                """
+                SELECT s.sku_code, p.product_name, s.specification, s.unit,
+                       ol.requested_quantity * olc.quantity_per_bundle AS quantity
+                FROM app.order_line_components olc
+                JOIN app.order_lines ol ON ol.id=olc.order_line_id
+                JOIN app.skus s ON s.id=olc.sku_id
+                JOIN app.products p ON p.id=s.product_id
+                JOIN app.fulfillments f ON f.id=? AND f.order_line_id=ol.id
+                WHERE olc.order_line_id=?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM app.provider_skus ps
+                      WHERE ps.fulfillment_provider_id=f.fulfillment_provider_id
+                        AND ps.sku_id=olc.sku_id AND ps.active)
+                ORDER BY olc.id
+                """,
+                (resultSet, rowNum) -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("source_sku_ref", resultSet.getString("sku_code"));
+                    item.put("product_name", resultSet.getString("product_name"));
+                    item.put("specification", resultSet.getString("specification"));
+                    item.put("unit", resultSet.getString("unit"));
+                    item.put(
+                            "quantity",
+                            resultSet.getBigDecimal("quantity").setScale(3, RoundingMode.HALF_UP).toPlainString());
+                    return item;
+                },
+                hold.fulfillmentId(),
+                hold.orderLineId());
+
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("message", "第三方礼包组件缺少履约方 SKU 映射");
+        detail.put("source_product_name", line.get("product_name_snapshot"));
+        detail.put("source_specification", line.get("specification_snapshot"));
+        detail.put("source_unit", line.get("unit_snapshot"));
+        detail.put("source_quantity", ((BigDecimal) line.get("requested_quantity")).toPlainString());
+        detail.put(
+                "missing_source_sku_refs",
+                evidenceItems.stream().map(item -> item.get("source_sku_ref")).toList());
+        detail.put("evidence_items", evidenceItems);
+
+        List<Map<String, Object>> sourceRows = jdbc.queryForList(
+                """
+                SELECT rir.sheet_name, rir.row_index
+                FROM app.raw_import_rows rir
+                LEFT JOIN app.raw_import_row_order_lines rirol ON rirol.raw_import_row_id=rir.id
+                WHERE rir.import_batch_id=?
+                  AND (rir.order_line_id=? OR rirol.order_line_id=?)
+                ORDER BY rir.sheet_index, rir.row_index
+                LIMIT 1
+                """,
+                sourceBatchId,
+                hold.orderLineId(),
+                hold.orderLineId());
+        if (!sourceRows.isEmpty()) {
+            detail.put("source_sheet_name", sourceRows.getFirst().get("sheet_name"));
+            detail.put("source_row_index", sourceRows.getFirst().get("row_index"));
+        }
+        return detail;
     }
 
     @Override

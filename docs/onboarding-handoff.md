@@ -173,7 +173,7 @@ wayfinder/         早期决策地图（历史票，已关闭的决策仍权威�
 
 ---
 
-## 6. 数据库要点（55 业务表 + 4 分析视图 + 1 操作视图）
+## 6. 数据库要点（63 业务表 + 4 分析视图 + 2 操作视图）
 
 - Flyway 管理（V1 基线 + V2–V45 增量）；**禁 ddl-auto 改表**；枚举用 VARCHAR+CHECK，事件类型用目录表；
 - 时间全 TIMESTAMPTZ / Java Instant；Excel 无时区时间按 Asia/Shanghai 解释；

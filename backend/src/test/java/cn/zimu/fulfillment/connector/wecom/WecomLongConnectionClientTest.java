@@ -268,6 +268,30 @@ class WecomLongConnectionClientTest {
     }
 
     @Test
+    void fragmentedAckIsReassembledBeforeRequestIdCorrelation() throws Exception {
+        startClient();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        server.autoSendMessageAck(false);
+
+        try (var sender = Executors.newSingleThreadExecutor()) {
+            Future<WecomSendResult> pending =
+                    sender.submit(() -> client.send(WecomOutboundMessage.text("user-fragment", "分片应答")));
+            String outbound = server.awaitFrame("aibot_send_msg", 2_000);
+            assertThat(outbound).isNotNull();
+            String requestId = MAPPER.readTree(outbound).path("headers").path("req_id").asText();
+            String ack = "{\"headers\":{\"req_id\":\"" + requestId
+                    + "\"},\"errcode\":0,\"errmsg\":\"ok\"}";
+            int split = ack.length() / 2;
+
+            server.sendFragmentedText(ack.substring(0, split), ack.substring(split));
+
+            WecomSendResult result = pending.get(4, TimeUnit.SECONDS);
+            assertThat(result.status()).isEqualTo(WecomSendStatus.SUCCESS);
+            assertThat(result.requestId()).isEqualTo(requestId);
+        }
+    }
+
+    @Test
     void sendFutureTimeoutReconnectsBeforeNextBusinessMessage() {
         WecomProperties properties = configuredProperties();
         AtomicBoolean timeOutFirstBusinessFrame = new AtomicBoolean(true);

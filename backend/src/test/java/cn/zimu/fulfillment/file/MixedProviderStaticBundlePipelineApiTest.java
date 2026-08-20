@@ -281,6 +281,10 @@ class MixedProviderStaticBundlePipelineApiTest {
         String bundleRef = "WQ-MIXED-HOLD-BUNDLE-001";
         Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
         Map<String, Object> tpSku = createThirdPartySkuFixtureWithoutProviderMapping();
+        String tpSkuCode = jdbc.queryForObject(
+                "SELECT sku_code FROM app.skus WHERE id=?",
+                String.class,
+                Long.parseLong(tpSku.get("id").toString()));
         String bundleId = createMixedBundle(
                 "BUNDLE-MIXED-HOLD-001", "羊蝎子鸵鸟待映射礼包",
                 jdSku.get("id").toString(), tpSku.get("id").toString(), "mix-bundle-hold-001");
@@ -323,6 +327,31 @@ class MixedProviderStaticBundlePipelineApiTest {
                 """,
                 Integer.class,
                 Long.parseLong(orderId))).isEqualTo(1);
+        String reviewDetailJson = jdbc.queryForObject(
+                """
+                SELECT detail::text FROM app.review_cases
+                WHERE order_id=? AND status='OPEN' AND reason_code='PROVIDER_SKU_MAPPING_REQUIRED'
+                """,
+                String.class,
+                Long.parseLong(orderId));
+        Map<String, Object> reviewDetail = objectMapper.readValue(reviewDetailJson, new TypeReference<>() {});
+        assertThat(reviewDetail)
+                .containsEntry("source_product_name", "羊蝎子鸵鸟待映射礼包")
+                .containsEntry("source_specification", "规格:1080g;")
+                .containsEntry("source_unit", "件")
+                .containsEntry("source_quantity", "1.000")
+                .containsEntry("source_sheet_name", "订单")
+                .containsEntry("source_row_index", 2);
+        assertThat(reviewDetail.get("missing_source_sku_refs"))
+                .isEqualTo(List.of(tpSkuCode));
+        assertThat((List<?>) reviewDetail.get("evidence_items")).singleElement().satisfies(item -> {
+            assertThat(castMap(item))
+                    .containsEntry("source_sku_ref", tpSkuCode)
+                    .containsEntry("product_name", "鸵鸟80g待映射组件")
+                    .containsEntry("specification", "80g/袋")
+                    .containsEntry("unit", "袋")
+                    .containsEntry("quantity", "1.000");
+        });
         List<?> returns = http.getForObject(
                 "/api/v1/import-batches/" + batchId + "/source-return-exports", List.class);
         assertThat(returns).isEmpty();

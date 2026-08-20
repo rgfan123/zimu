@@ -115,6 +115,23 @@ final class Rfc6455TestServer implements AutoCloseable {
         sendFrame(socket.getOutputStream(), new Frame(0x1, payload.getBytes(StandardCharsets.UTF_8)));
     }
 
+    /** 服务端以 RFC6455 continuation frames 发送一条分片文本消息。 */
+    void sendFragmentedText(String... fragments) throws IOException {
+        if (fragments.length < 2) {
+            throw new IllegalArgumentException("fragmented text requires at least two fragments");
+        }
+        Socket socket = currentConnection.get();
+        if (socket == null || socket.isClosed()) {
+            throw new IOException("no current connection");
+        }
+        OutputStream out = socket.getOutputStream();
+        for (int index = 0; index < fragments.length; index++) {
+            int opcode = index == 0 ? 0x1 : 0x0;
+            boolean last = index == fragments.length - 1;
+            sendFrame(out, new Frame(opcode, fragments[index].getBytes(StandardCharsets.UTF_8)), last);
+        }
+    }
+
     void sendAck(String requestId, int errcode) throws IOException {
         sendText("{\"headers\":{\"req_id\":\""
                 + requestId
@@ -351,8 +368,12 @@ final class Rfc6455TestServer implements AutoCloseable {
     }
 
     private static void sendFrame(OutputStream out, Frame frame) throws IOException {
+        sendFrame(out, frame, true);
+    }
+
+    private static void sendFrame(OutputStream out, Frame frame, boolean last) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        buffer.write(0x80 | (frame.opcode & 0x0F));
+        buffer.write((last ? 0x80 : 0x00) | (frame.opcode & 0x0F));
         int length = frame.payload.length;
         if (length < 126) {
             buffer.write(length);

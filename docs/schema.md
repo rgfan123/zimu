@@ -13,7 +13,7 @@
 ## 1. 设计结论
 
 - PostgreSQL 使用 `app` 业务 schema 与 `analytics` 分析 schema。
-- 当前权威快照共 53 张业务表、4 个分析视图和 1 个操作视图。
+- 当前权威快照共 63 张业务表、4 个分析视图和 2 个操作视图。
 - 有限且仍可能演进的状态值使用 `VARCHAR + CHECK`；可扩展的 OrderEvent 类型使用目录表。
 - 所有业务时间使用 `TIMESTAMPTZ`；Java 使用 `Instant`。来源 Excel 的无时区时间按 `Asia/Shanghai` 解释，分析视图也按上海自然日分桶。
 - 所有数量使用 `NUMERIC(18,3)`；应用写入前必须拒绝超过三位小数的输入，不能依赖数据库隐式舍入。
@@ -251,7 +251,7 @@ P0 不等待客户签收或妥投，Shipment 可以停留在 SHIPPED，且履约
 DDL 必须通过以下门槛：
 
 1. PostgreSQL 16 空库先执行 `docs/schema.sql`；应用启动时由 Flyway 按版本顺序执行全部增量 migration。
-2. `information_schema` 实测 55 张 `app` 基础表、1 个 `app` 操作视图和 4 个 `analytics` 分析视图。
+2. `information_schema` 实测 63 张 `app` 基础表、2 个 `app` 操作视图和 4 个 `analytics` 分析视图。
 3. 执行 `docs/schema-smoke.sql`，覆盖：上海业务日出库单号原子流水、运单回传与原 FulfillmentExport/provider 关联、已发货但未提供实际发货时间、非已发货状态的不一致时间拒绝、第三方库存写入拒绝、错误修订链拒绝、跨 provider/非整份礼包拒绝、重复待出库批次拒绝、跨订单导出/回填拒绝、Demo 业务隔离、京东金额非 0 拒绝、Shipment 超发拒绝、Tracking 冲突拒绝、最终回填含等待项拒绝、已导出订单字段冻结、分析视图排除 Demo 和未知实际发货日数据，以及渠道/商品实发量的乘数换算与礼包组件展开。
 4. `git diff --check` 无空白错误。
 5. `SchemaSnapshotMigrationEquivalenceTest`（Testcontainers，`mvn test` 默认阶段运行）：分别用

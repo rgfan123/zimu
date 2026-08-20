@@ -826,6 +826,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private final class FrameListener implements WebSocket.Listener {
 
         private final long id;
+        private final StringBuilder textFragments = new StringBuilder();
 
         FrameListener(long id) {
             this.id = id;
@@ -840,11 +841,14 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             if (isStale()) {
                 return null;
             }
+            textFragments.append(data);
             if (last) {
-                handleText(ws, data.toString());
-                // 覆盖 onText 后默认实现的 request(1) 不再生效：显式续订下一条消息，否则投递会停在第一条。
-                ws.request(1);
+                String completeMessage = textFragments.toString();
+                textFragments.setLength(0);
+                handleText(ws, completeMessage);
             }
+            // demand 按 onText 回调计数；分片消息也必须逐片续订，否则永远收不到 last=true。
+            ws.request(1);
             return null;
         }
 
