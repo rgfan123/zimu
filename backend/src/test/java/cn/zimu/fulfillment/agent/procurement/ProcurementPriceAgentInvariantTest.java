@@ -62,7 +62,7 @@ class ProcurementPriceAgentInvariantTest {
         AgentDefinition definition = holder.current().bySlug(ProcurementPriceAgent.AGENT_SLUG);
         assertThat(definition).as("注册表必须含采购比价 Agent 定义").isNotNull();
         assertThat(definition.enabled()).isTrue();
-        assertThat(definition.promptVersion()).isEqualTo("procurement-price-v1");
+        assertThat(definition.promptVersion()).isEqualTo("procurement-price-v2");
         assertThat(definition.modelRef()).isEqualTo("app.agent");
         assertThat(definition.toolNames())
                 .containsExactlyElementsOf(AgentSeedFixtures.PROCUREMENT_TOOL_NAMES);
