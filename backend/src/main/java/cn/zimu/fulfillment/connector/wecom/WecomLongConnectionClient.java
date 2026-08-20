@@ -14,6 +14,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
@@ -49,6 +50,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private static final long SEND_TIMEOUT_MILLIS = 3_000L;
     private static final long ACK_TIMEOUT_MILLIS = 5_000L;
     private static final int MAX_QUEUED_FRAMES = 64;
+    private static final int MAX_QUEUED_HEARTBEATS = 4;
 
     private final WecomProperties properties;
     private final ObjectMapper objectMapper;
@@ -61,16 +63,20 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private final long watchdogMillis;
     private final long heartbeatMillis;
     private final long ackTimeoutMillis;
+    private final FrameWriter frameWriter;
 
     private final AtomicReference<WebSocket> socket = new AtomicReference<>();
     private final AtomicLong attemptCounter = new AtomicLong();
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean();
     private final AtomicInteger subscribeFailures = new AtomicInteger();
     private final AtomicInteger backoffAttempt = new AtomicInteger();
-    private final AtomicInteger queuedFrames = new AtomicInteger();
+    private final AtomicInteger queuedBusinessFrames = new AtomicInteger();
+    private final AtomicInteger queuedHeartbeatFrames = new AtomicInteger();
+    private final AtomicLong frameSequence = new AtomicLong();
     private final ConcurrentMap<String, CompletableFuture<ReceivedAck>> pendingAcks = new ConcurrentHashMap<>();
-    private final Object sendOrderLock = new Object();
-    private CompletableFuture<Void> sendTail = CompletableFuture.completedFuture(null);
+    private final PriorityBlockingQueue<FrameSubmission> outboundFrames = new PriorityBlockingQueue<>();
+    private final AtomicBoolean frameSenderRunning = new AtomicBoolean(true);
+    private final Thread frameSenderThread;
 
     private volatile WecomFrameHandler frameHandler = WecomFrameHandler.EMPTY;
     private volatile boolean running;
@@ -96,7 +102,8 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 DEFAULT_MAX_BACKOFF_MILLIS,
                 true,
                 -1L,
-                ACK_TIMEOUT_MILLIS);
+                ACK_TIMEOUT_MILLIS,
+                (socket, payload) -> socket.sendText(payload, true));
     }
 
     /**
@@ -123,7 +130,8 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 maxBackoffMillis,
                 jitterEnabled,
                 watchdogMillisOverride,
-                ACK_TIMEOUT_MILLIS);
+                ACK_TIMEOUT_MILLIS,
+                (socket, payload) -> socket.sendText(payload, true));
     }
 
     WecomLongConnectionClient(
@@ -137,6 +145,32 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             boolean jitterEnabled,
             long watchdogMillisOverride,
             long ackTimeoutMillis) {
+        this(
+                properties,
+                objectMapper,
+                stateHolder,
+                httpClient,
+                scheduler,
+                initialBackoffMillis,
+                maxBackoffMillis,
+                jitterEnabled,
+                watchdogMillisOverride,
+                ackTimeoutMillis,
+                (socket, payload) -> socket.sendText(payload, true));
+    }
+
+    WecomLongConnectionClient(
+            WecomProperties properties,
+            ObjectMapper objectMapper,
+            WecomConnectionStateHolder stateHolder,
+            HttpClient httpClient,
+            ScheduledExecutorService scheduler,
+            long initialBackoffMillis,
+            long maxBackoffMillis,
+            boolean jitterEnabled,
+            long watchdogMillisOverride,
+            long ackTimeoutMillis,
+            FrameWriter frameWriter) {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.stateHolder = stateHolder;
@@ -153,6 +187,10 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 ? watchdogMillisOverride
                 : Math.max(derivedWatchdog, heartbeatMillis * 3 / 2);
         this.ackTimeoutMillis = Math.max(1, ackTimeoutMillis);
+        this.frameWriter = frameWriter;
+        this.frameSenderThread = new Thread(this::frameSendLoop, "wecom-frame-sender");
+        this.frameSenderThread.setDaemon(true);
+        this.frameSenderThread.start();
     }
 
     /** 启动连接（幂等）。配置不完整时不建连，状态保持 DISCONNECTED，由 readiness 标记不可用。 */
@@ -262,9 +300,11 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     /** 应用关闭时优雅断开：不触发重连，也不构成服务端踢线告警。 */
     public synchronized void shutdown() {
         if (!running) {
+            stopFrameSender();
             return;
         }
         running = false;
+        stopFrameSender();
         failPendingAcks("CONNECTION_LOST_AFTER_SUBMIT");
         cancelHeartbeatTask();
         cancelWatchdogTask();
@@ -490,7 +530,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         frame.put("cmd", "ping");
         frame.putObject("headers").put("req_id", newReqId());
         frame.set("body", objectMapper.createObjectNode());
-        enqueueRaw(frame).thenAccept(status -> {
+        enqueueRaw(frame, FramePriority.HEARTBEAT).thenAccept(status -> {
             if (status == FrameSendStatus.SENT) {
                 stateHolder.recordHeartbeat();
             }
@@ -560,51 +600,105 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     }
 
     /**
-     * 按调用顺序提交帧，但不占用心跳调度线程等待上一帧的 JDK send future；队列有界，避免业务突发无限吃内存。
+     * 业务帧进入有界队列；心跳使用独立保留容量并具有更高优先级，避免业务背压饿死连接保活。
      */
     private CompletableFuture<FrameSendStatus> enqueueRaw(ObjectNode frame) {
+        return enqueueRaw(frame, FramePriority.BUSINESS);
+    }
+
+    private CompletableFuture<FrameSendStatus> enqueueRaw(ObjectNode frame, FramePriority priority) {
         WebSocket ws = socket.get();
         if (!running || ws == null || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
             return CompletableFuture.completedFuture(FrameSendStatus.NOT_READY);
         }
-        if (queuedFrames.incrementAndGet() > MAX_QUEUED_FRAMES) {
-            queuedFrames.decrementAndGet();
+        AtomicInteger counter = priority == FramePriority.HEARTBEAT
+                ? queuedHeartbeatFrames
+                : queuedBusinessFrames;
+        int limit = priority == FramePriority.HEARTBEAT ? MAX_QUEUED_HEARTBEATS : MAX_QUEUED_FRAMES;
+        if (counter.incrementAndGet() > limit) {
+            counter.decrementAndGet();
             return CompletableFuture.completedFuture(FrameSendStatus.BACKPRESSURE);
         }
 
-        String payload = frame.toString();
-        synchronized (sendOrderLock) {
-            CompletableFuture<FrameSendStatus> submission = sendTail.handle((ignored, failure) -> null)
-                    .thenCompose(ignored -> submitToSocket(ws, payload));
-            sendTail = submission.handle((ignored, failure) -> {
-                queuedFrames.decrementAndGet();
-                return null;
-            });
-            return submission;
+        FrameSubmission submission = new FrameSubmission(
+                priority,
+                frameSequence.incrementAndGet(),
+                ws,
+                frame.toString(),
+                new CompletableFuture<>());
+        if (!outboundFrames.offer(submission)) {
+            counter.decrementAndGet();
+            return CompletableFuture.completedFuture(FrameSendStatus.BACKPRESSURE);
+        }
+        return submission.result();
+    }
+
+    private void frameSendLoop() {
+        while (frameSenderRunning.get()) {
+            try {
+                FrameSubmission submission = outboundFrames.take();
+                decrementQueueCount(submission.priority());
+                submission.result().complete(submitToSocket(submission.expectedSocket(), submission.payload()));
+            } catch (InterruptedException ex) {
+                if (!frameSenderRunning.get()) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
         }
     }
 
-    private CompletableFuture<FrameSendStatus> submitToSocket(WebSocket expectedSocket, String payload) {
+    private FrameSendStatus submitToSocket(WebSocket expectedSocket, String payload) {
         if (!running
                 || socket.get() != expectedSocket
                 || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
-            return CompletableFuture.completedFuture(FrameSendStatus.NOT_READY);
+            return FrameSendStatus.NOT_READY;
         }
         try {
-            return expectedSocket
-                    .sendText(payload, true)
-                    .orTimeout(SEND_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
-                    .handle((ignored, failure) -> {
-                        if (failure != null) {
-                            log.warn("企业微信长连接发送帧失败: {}", rootCauseSimpleName(failure));
-                            return FrameSendStatus.FAILED;
-                        }
-                        return FrameSendStatus.SENT;
-                    });
-        } catch (RuntimeException ex) {
+            frameWriter.send(expectedSocket, payload).get(SEND_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+            return FrameSendStatus.SENT;
+        } catch (java.util.concurrent.TimeoutException ex) {
+            log.warn("企业微信长连接发送帧超时，中止当前连接以恢复发送队列");
+            recoverFromSendTimeout(expectedSocket);
+            return FrameSendStatus.FAILED;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return FrameSendStatus.FAILED;
+        } catch (Exception ex) {
             log.warn("企业微信长连接发送帧失败: {}", rootCauseSimpleName(ex));
-            return CompletableFuture.completedFuture(FrameSendStatus.FAILED);
+            return FrameSendStatus.FAILED;
         }
+    }
+
+    private void stopFrameSender() {
+        if (!frameSenderRunning.compareAndSet(true, false)) {
+            return;
+        }
+        frameSenderThread.interrupt();
+        FrameSubmission submission;
+        while ((submission = outboundFrames.poll()) != null) {
+            decrementQueueCount(submission.priority());
+            submission.result().complete(FrameSendStatus.NOT_READY);
+        }
+    }
+
+    private void recoverFromSendTimeout(WebSocket timedOutSocket) {
+        if (!socket.compareAndSet(timedOutSocket, null)) {
+            timedOutSocket.abort();
+            return;
+        }
+        closeHandled = true;
+        cancelHeartbeatTask();
+        stateHolder.transitionTo(WecomConnectionState.DISCONNECTED);
+        stateHolder.recordError("发送帧超时，主动重连");
+        failPendingAcks("CONNECTION_LOST_AFTER_SUBMIT");
+        timedOutSocket.abort();
+        scheduleReconnect();
+    }
+
+    private void decrementQueueCount(FramePriority priority) {
+        (priority == FramePriority.HEARTBEAT ? queuedHeartbeatFrames : queuedBusinessFrames)
+                .decrementAndGet();
     }
 
     private static FrameSendStatus awaitSubmission(CompletableFuture<FrameSendStatus> submission) {
@@ -689,6 +783,37 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     }
 
     private record ReceivedAck(JsonNode frame, Instant receivedAt) {}
+
+    @FunctionalInterface
+    interface FrameWriter {
+        CompletableFuture<WebSocket> send(WebSocket socket, String payload);
+    }
+
+    private record FrameSubmission(
+            FramePriority priority,
+            long sequence,
+            WebSocket expectedSocket,
+            String payload,
+            CompletableFuture<FrameSendStatus> result)
+            implements Comparable<FrameSubmission> {
+
+        @Override
+        public int compareTo(FrameSubmission other) {
+            int byPriority = Integer.compare(priority.order, other.priority.order);
+            return byPriority != 0 ? byPriority : Long.compare(sequence, other.sequence);
+        }
+    }
+
+    private enum FramePriority {
+        HEARTBEAT(0),
+        BUSINESS(1);
+
+        private final int order;
+
+        FramePriority(int order) {
+            this.order = order;
+        }
+    }
 
     private enum FrameSendStatus {
         SENT,
