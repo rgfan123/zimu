@@ -6,7 +6,7 @@
 
 import { useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Alert, Button, Card, Col, Empty, Row, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, Col, Empty, Row, Typography } from 'antd';
 import { AlertOutlined, CarOutlined, InboxOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { EChartsOption } from 'echarts';
@@ -20,7 +20,9 @@ import { attentionCardUrl, reviewsQueueUrl } from '@/pages/shared/reviewQueueUrl
 import { saasChartPalette, saasVisualTokens } from '@/theme/saasTheme';
 import { useAsync } from '@/hooks/useAsync';
 import Chart from '@/components/Chart';
+import DataTable from '@/components/DataTable';
 import KpiCard from '@/components/KpiCard';
+import PageShell from '@/components/PageShell';
 
 function trendOption(dates: string[], orders: number[], shipped: number[]): EChartsOption {
   const [orderColor, shippedColor] = saasChartPalette.categorical;
@@ -210,7 +212,7 @@ export default function DashboardPage() {
   }, [summary]);
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <PageShell title="工作台">
       {error ? (
         <Alert
           type="error"
@@ -285,7 +287,7 @@ export default function DashboardPage() {
         </Col>
         <Col xs={24} xl={8}>
           <Card size="small" title="待人工介入明细">
-            <Table<ReviewCase>
+            <DataTable<ReviewCase>
               rowKey="id"
               size="small"
               columns={issueColumns}
@@ -301,9 +303,9 @@ export default function DashboardPage() {
                   navigate(issueTargetUrl(item));
                 },
               })}
-              locale={{ emptyText: issuesError
+              emptyText={issuesError
                 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="明细加载失败，请刷新重试" />
-                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前无待人工介入" /> }}
+                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前无待人工介入" />}
             />
           </Card>
         </Col>
@@ -312,6 +314,6 @@ export default function DashboardPage() {
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         业务日：{summary?.business_date ?? '—'}（Asia/Shanghai）
       </Typography.Text>
-    </Space>
+    </PageShell>
   );
 }

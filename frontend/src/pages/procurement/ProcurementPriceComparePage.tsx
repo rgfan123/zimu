@@ -14,7 +14,6 @@ import {
   Empty,
   Input,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd';
@@ -27,6 +26,9 @@ import type {
   ProcurementPriceExclusionReason,
   ProcurementPriceRunResult,
 } from '@/api/types';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import { AdminEmpty, AdminFailureAlert, AdminLoading } from '@/pages/shared/AdminVisualComponents';
 import { adminPageState } from '@/pages/shared/adminVisual';
 import '@/pages/shared/adminSurface.css';
@@ -107,48 +109,12 @@ export default function ProcurementPriceComparePage() {
   ];
 
   return (
-    <div className="admin-page">
-      <div className="admin-page__intro">
-        <Typography.Text className="admin-page__intro-copy" type="secondary">
-          按采购工单或 SKU 发起比价：被剔除的不可比候选（价格离群 / 价格缺失 / 映射失效）降级展示并说明理由，绝不静默消失。
-        </Typography.Text>
-      </div>
-
-      <div className="admin-surface">
-        <Space wrap style={{ marginBottom: 16 }}>
-          <Space size={8}>
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>SKU 编码</Typography.Text>
-            <Input
-              aria-label="SKU 编码"
-              placeholder="如 SKU-1001"
-              style={{ width: 180 }}
-              value={skuId}
-              onChange={(event) => setSkuId(event.target.value)}
-              onPressEnter={compare}
-            />
-          </Space>
-          <Space size={8}>
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>采购工单</Typography.Text>
-            <Input
-              aria-label="采购工单 ID"
-              placeholder="如 9001"
-              style={{ width: 140 }}
-              value={ticketId}
-              onChange={(event) => setTicketId(event.target.value)}
-              onPressEnter={compare}
-            />
-          </Space>
-          <Space size={8}>
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>数量</Typography.Text>
-            <Input
-              aria-label="数量（可选）"
-              placeholder="可选"
-              style={{ width: 110 }}
-              value={quantity}
-              onChange={(event) => setQuantity(event.target.value)}
-              onPressEnter={compare}
-            />
-          </Space>
+    <PageShell
+      title="采购比价"
+      description="按采购工单或 SKU 发起比价：被剔除的不可比候选（价格离群 / 价格缺失 / 映射失效）降级展示并说明理由，绝不静默消失。"
+    >
+      <FilterBar
+        actions={
           <Button
             type="primary"
             icon={<SearchOutlined />}
@@ -158,8 +124,42 @@ export default function ProcurementPriceComparePage() {
           >
             开始比价
           </Button>
+        }
+      >
+        <Space size={8}>
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>SKU 编码</Typography.Text>
+          <Input
+            aria-label="SKU 编码"
+            placeholder="如 SKU-1001"
+            style={{ width: 180 }}
+            value={skuId}
+            onChange={(event) => setSkuId(event.target.value)}
+            onPressEnter={compare}
+          />
         </Space>
-      </div>
+        <Space size={8}>
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>采购工单</Typography.Text>
+          <Input
+            aria-label="采购工单 ID"
+            placeholder="如 9001"
+            style={{ width: 140 }}
+            value={ticketId}
+            onChange={(event) => setTicketId(event.target.value)}
+            onPressEnter={compare}
+          />
+        </Space>
+        <Space size={8}>
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>数量</Typography.Text>
+          <Input
+            aria-label="数量（可选）"
+            placeholder="可选"
+            style={{ width: 110 }}
+            value={quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+            onPressEnter={compare}
+          />
+        </Space>
+      </FilterBar>
 
       {state === 'loading' ? <AdminLoading description="正在运行采购比价…" /> : null}
 
@@ -224,14 +224,14 @@ export default function ProcurementPriceComparePage() {
             <Typography.Text className="admin-detail-section__heading" strong>
               可比候选（{recommendation.candidates.length}）
             </Typography.Text>
-            <Table<ProcurementPriceCandidate>
+            <DataTable<ProcurementPriceCandidate>
               rowKey={(candidate) => candidate.provider_code}
               size="small"
               style={{ marginTop: 8 }}
               pagination={false}
               columns={comparableColumns}
               dataSource={recommendation.candidates}
-              locale={{ emptyText: <AdminEmpty description="无可比候选" /> }}
+              emptyText={<AdminEmpty description="无可比候选" />}
             />
           </div>
 
@@ -239,14 +239,14 @@ export default function ProcurementPriceComparePage() {
             <Typography.Text className="admin-detail-section__heading" strong>
               被剔除候选（{recommendation.excluded_candidates.length} · 降级展示，不是删除）
             </Typography.Text>
-            <Table<ProcurementPriceExcludedCandidate>
+            <DataTable<ProcurementPriceExcludedCandidate>
               rowKey={(candidate) => candidate.provider_code}
               size="small"
               style={{ marginTop: 8 }}
               pagination={false}
               columns={excludedColumns}
               dataSource={recommendation.excluded_candidates}
-              locale={{ emptyText: <AdminEmpty description="无被剔除候选" /> }}
+              emptyText={<AdminEmpty description="无被剔除候选" />}
             />
           </div>
         </Space>
@@ -257,6 +257,6 @@ export default function ProcurementPriceComparePage() {
           <Empty description="输入 SKU 编码或采购工单 ID 后开始比价" />
         </div>
       ) : null}
-    </div>
+    </PageShell>
   );
 }

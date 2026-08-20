@@ -5,7 +5,7 @@
 
 import { useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Button, Card, Col, DatePicker, Input, Progress, Row, Select, Space, Table, Typography } from 'antd';
+import { Alert, Button, Card, DatePicker, Input, Progress, Select, Space, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import type { ColumnsType } from 'antd/es/table';
@@ -16,17 +16,22 @@ import { CHANNEL_LABELS, ORDER_STATUS_LABELS, PROCESSING_HEALTH_LABELS, PROCESSI
 import { usePagedOrders } from '@/hooks/usePagedOrders';
 import { useAsync } from '@/hooks/useAsync';
 import StatusTag from '@/components/StatusTag';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 
 const { RangePicker } = DatePicker;
 
 export interface OrderListViewProps {
+  /** 页面标题（PageShell 页头，取自导航标签） */
+  title: string;
   /** 页面级默认筛选（进入页面时生效，可被用户修改） */
   defaultFilters?: Partial<OrderListQuery>;
   /** 页面说明提示 */
   tip?: ReactNode;
 }
 
-export default function OrderListView({ defaultFilters = {}, tip }: OrderListViewProps) {
+export default function OrderListView({ title, defaultFilters = {}, tip }: OrderListViewProps) {
   const navigate = useNavigate();
   const { data, loading, error, page, size, setPage, setSize, applyFilters, reload } = usePagedOrders(defaultFilters);
 
@@ -175,21 +180,8 @@ export default function OrderListView({ defaultFilters = {}, tip }: OrderListVie
   };
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <PageShell title={title}>
       {tip ? <Alert type="info" showIcon message={tip} /> : null}
-      {error ? (
-        <Alert
-          type="error"
-          showIcon
-          message="订单列表加载失败"
-          description={errorMessage(error)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={reload}>
-              重试
-            </Button>
-          }
-        />
-      ) : null}
       {providers.error ? (
         <Alert
           type="warning"
@@ -204,94 +196,82 @@ export default function OrderListView({ defaultFilters = {}, tip }: OrderListVie
         />
       ) : null}
 
-      <Card size="small">
-        <Row gutter={[12, 12]} align="middle">
-          <Col>
-            <Select
-              allowClear
-              aria-label="履约方"
-              placeholder="履约方"
-              style={{ width: 160 }}
-              value={providerId}
-              onChange={setProviderId}
-              loading={providers.loading}
-              disabled={providers.error !== null}
-              options={(providers.data ?? []).map((provider) => ({
-                value: provider.id,
-                label: provider.provider_name,
-              }))}
-            />
-          </Col>
-          <Col>
-            <Select
-              allowClear
-              placeholder="来源渠道"
-              style={{ width: 130 }}
-              value={channel}
-              onChange={setChannel}
-              options={Object.entries(CHANNEL_LABELS).map(([value, label]) => ({ value, label }))}
-            />
-          </Col>
-          <Col>
-            <Select
-              allowClear
-              placeholder="订单状态"
-              style={{ width: 140 }}
-              value={status}
-              onChange={setStatus}
-              options={Object.entries(ORDER_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
-            />
-          </Col>
-          <Col>
-            <Select
-              allowClear
-              placeholder="处理阶段"
-              style={{ width: 150 }}
-              value={stage}
-              onChange={setStage}
-              options={Object.entries(PROCESSING_STAGE_LABELS).map(([value, label]) => ({ value, label }))}
-            />
-          </Col>
-          <Col>
-            <Select
-              allowClear
-              placeholder="健康度"
-              style={{ width: 120 }}
-              value={health}
-              onChange={setHealth}
-              options={Object.entries(PROCESSING_HEALTH_LABELS).map(([value, label]) => ({ value, label }))}
-            />
-          </Col>
-          <Col>
-            <RangePicker
-              value={dateRange}
-              presets={datePresets}
-              onChange={(range) => handleDateChange(range as [Dayjs | null, Dayjs | null] | null)}
-              placeholder={['创建起始日', '创建结束日']}
-            />
-          </Col>
-          <Col flex="auto">
-            <Input.Search
-              allowClear
-              placeholder="订单号 / 来源单号 / 客户名"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              onSearch={handleSearch}
-              enterButton={<SearchOutlined />}
-            />
-          </Col>
-          <Col>
-            <Button onClick={handleReset}>重置</Button>
-          </Col>
-        </Row>
-      </Card>
+      <FilterBar>
+        <Select
+          allowClear
+          aria-label="履约方"
+          placeholder="履约方"
+          style={{ width: 160 }}
+          value={providerId}
+          onChange={setProviderId}
+          loading={providers.loading}
+          disabled={providers.error !== null}
+          options={(providers.data ?? []).map((provider) => ({
+            value: provider.id,
+            label: provider.provider_name,
+          }))}
+        />
+        <Select
+          allowClear
+          placeholder="来源渠道"
+          style={{ width: 130 }}
+          value={channel}
+          onChange={setChannel}
+          options={Object.entries(CHANNEL_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+        <Select
+          allowClear
+          placeholder="订单状态"
+          style={{ width: 140 }}
+          value={status}
+          onChange={setStatus}
+          options={Object.entries(ORDER_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+        <Select
+          allowClear
+          placeholder="处理阶段"
+          style={{ width: 150 }}
+          value={stage}
+          onChange={setStage}
+          options={Object.entries(PROCESSING_STAGE_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+        <Select
+          allowClear
+          placeholder="健康度"
+          style={{ width: 120 }}
+          value={health}
+          onChange={setHealth}
+          options={Object.entries(PROCESSING_HEALTH_LABELS).map(([value, label]) => ({ value, label }))}
+        />
+        <RangePicker
+          value={dateRange}
+          presets={datePresets}
+          onChange={(range) => handleDateChange(range as [Dayjs | null, Dayjs | null] | null)}
+          placeholder={['创建起始日', '创建结束日']}
+        />
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <Input.Search
+            allowClear
+            placeholder="订单号 / 来源单号 / 客户名"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onSearch={handleSearch}
+            enterButton={<SearchOutlined />}
+            style={{ width: '100%' }}
+          />
+        </div>
+        <Button onClick={handleReset}>重置</Button>
+      </FilterBar>
 
       <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
-        <Table<OrderSummary>
+        <DataTable<OrderSummary>
           rowKey="id"
           columns={columns}
           dataSource={data?.items ?? []}
           loading={loading}
+          error={error}
+          onRetry={reload}
+          errorTitle="订单列表加载失败"
           size="middle"
           scroll={{ x: 1240 }}
           onRow={(record) => ({
@@ -312,6 +292,6 @@ export default function OrderListView({ defaultFilters = {}, tip }: OrderListVie
           }}
         />
       </Card>
-    </Space>
+    </PageShell>
   );
 }

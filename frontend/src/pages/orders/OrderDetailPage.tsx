@@ -6,7 +6,7 @@
 
 import { useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Alert, Button, Card, Col, Descriptions, Empty, Result, Row, Skeleton, Space, Steps, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Descriptions, Empty, Result, Row, Skeleton, Space, Steps, Table, Tag } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -16,6 +16,7 @@ import type { OrderLine, OrderShipment, OrderStatus } from '@/api/types';
 import { reasonLabel } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import OrderTimeline from '@/components/OrderTimeline';
+import PageShell from '@/components/PageShell';
 import StatusTag from '@/components/StatusTag';
 import { reviewCaseSummary } from '@/presentation/publicReady';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
@@ -187,22 +188,22 @@ export default function OrderDetailPage() {
   }
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Space size={12}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>
-          返回
-        </Button>
-        <Typography.Title level={5} style={{ margin: 0 }}>
-          {detail?.order_no ?? '订单详情'}
-        </Typography.Title>
-        {detail ? (
-          <>
-            <StatusTag kind="orderStatus" value={detail.order_status} />
-            <StatusTag kind="health" value={detail.processing_health} />
-          </>
-        ) : null}
-      </Space>
-
+    <PageShell
+      title={detail?.order_no ?? '订单详情'}
+      actions={
+        <>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>
+            返回
+          </Button>
+          {detail ? (
+            <>
+              <StatusTag kind="orderStatus" value={detail.order_status} />
+              <StatusTag kind="health" value={detail.processing_health} />
+            </>
+          ) : null}
+        </>
+      }
+    >
       <Card
         size="small"
         title="订单信息"
@@ -389,6 +390,6 @@ export default function OrderDetailPage() {
           </div>
         </Col>
       </Row>
-    </Space>
+    </PageShell>
   );
 }

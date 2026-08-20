@@ -12,7 +12,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -24,6 +23,8 @@ import { providersApi } from '@/api/endpoints';
 import type { FulfillmentProvider } from '@/api/types';
 import { PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import DataTable from '@/components/DataTable';
+import PageShell from '@/components/PageShell';
 import {
   AdminCategoryTag,
   AdminEmpty,
@@ -221,24 +222,23 @@ export default function FulfillmentProvidersPage() {
 
   return (
     <div className="admin-page">
-      <div className="admin-page__intro">
-        <Typography.Text className="admin-page__intro-copy" type="secondary">
-          统一维护京东云仓与第三方履约方。缺货采购完成后，订单仍回到原履约方继续处理。
-        </Typography.Text>
-        <Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>
-      </div>
-
-      <div className="admin-surface">
-        <Table<FulfillmentProvider>
-          rowKey="id"
-          columns={columns}
-          dataSource={rows}
-          size="middle"
-          scroll={{ x: 1000 }}
-          pagination={{ pageSize: 10, showTotal: (total) => `共 ${total} 条` }}
-          locale={{ emptyText: <AdminEmpty description="暂无履约方配置" /> }}
-        />
-      </div>
+      <PageShell
+        title="履约方配置"
+        description="统一维护京东云仓与第三方履约方。缺货采购完成后，订单仍回到原履约方继续处理。"
+        actions={<Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>}
+      >
+        <div className="admin-surface">
+          <DataTable<FulfillmentProvider>
+            rowKey="id"
+            columns={columns}
+            dataSource={rows}
+            size="middle"
+            scroll={{ x: 1000 }}
+            pagination={{ pageSize: 10, showTotal: (total) => `共 ${total} 条` }}
+            emptyText={<AdminEmpty description="暂无履约方配置" />}
+          />
+        </div>
+      </PageShell>
 
       <Modal
         title={`编辑履约方 ${editing?.provider_code ?? ''}`}

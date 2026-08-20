@@ -156,6 +156,9 @@ export async function createRouteHarness(initialUrl: string): Promise<RouteHarne
   const { createRoot } = await import('react-dom/client');
   const { act, createElement, Fragment } = await import('react');
   const { MemoryRouter, useLocation } = await import('react-router-dom');
+  const { App: AntApp, ConfigProvider } = await import('antd');
+  const zhCN = (await import('antd/locale/zh_CN.js')).default;
+  const { saasTheme } = await import('../src/theme/saasTheme.ts');
   const { createServer } = await import('vite');
   const vite = await createServer({
     root: frontendRoot,
@@ -181,11 +184,21 @@ export async function createRouteHarness(initialUrl: string): Promise<RouteHarne
       const container = document.querySelector<HTMLDivElement>('#root');
       if (!container) throw new Error('test root must exist');
       mountedRoot = createRoot(container);
+      // 与 main.tsx 一致：ConfigProvider(zh_CN + saasTheme) + antd App 包裹，
+      // 让 message/notification 上下文与中文 locale（如表格默认「暂无数据」）在测试中与生产一致。
       await act(async () => {
         mountedRoot?.render(createElement(
-          MemoryRouter,
-          { initialEntries, future: { v7_startTransition: true, v7_relativeSplatPath: true } },
-          createElement(Fragment, null, createElement(App), createElement(LocationProbe)),
+          ConfigProvider,
+          { locale: zhCN, theme: saasTheme },
+          createElement(
+            AntApp,
+            null,
+            createElement(
+              MemoryRouter,
+              { initialEntries, future: { v7_startTransition: true, v7_relativeSplatPath: true } },
+              createElement(Fragment, null, createElement(App), createElement(LocationProbe)),
+            ),
+          ),
         ));
       });
     },

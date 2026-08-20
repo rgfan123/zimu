@@ -143,3 +143,28 @@ test('无待办时明确显示「当前无待人工介入」，不是通用空�
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /当前无待人工介入/));
 });
+
+test('工作台 page header renders and KPI stays readable when the issues detail fails', async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (/^\/api\/v1\/dashboard\/summary\?business_date=\d{4}-\d{2}-\d{2}$/.test(url)) {
+      return jsonResponse(summary());
+    }
+    if (url.startsWith('/api/v1/review-cases?')) {
+      return jsonResponse({ message: 'raw issue stack' }, 500);
+    }
+    if (url === '/api/v1/operational-alerts?page=0&size=20&status=OPEN') {
+      return jsonResponse(page([]));
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/dashboard']);
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /明细加载失败，请刷新重试/));
+  // KPI 卡不受明细失败影响
+  assert.match(harness.bodyText(), /今日订单数/);
+  assert.doesNotMatch(harness.bodyText(), /raw issue stack/);
+  // 侧边栏菜单 + PageShell 页头各渲染一次「工作台」
+  assert.ok((harness.bodyText().match(/工作台/g) ?? []).length >= 2, 'page header must render the nav title');
+});
