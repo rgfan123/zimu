@@ -9,7 +9,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -107,6 +109,9 @@ class WecomLongConnectionClientTest {
         String subscribe = server.awaitFrame("aibot_subscribe", 2_000);
         assertThat(subscribe).isNotNull();
         assertThat(subscribe).contains("\"bot_id\":\"" + BOT_ID + "\"").contains("\"secret\":\"" + SECRET + "\"");
+        JsonNode subscribeFrame = MAPPER.readTree(subscribe);
+        assertThat(subscribeFrame.path("headers").path("req_id").asText()).isNotBlank();
+        assertThat(subscribeFrame.has("req_id")).isFalse();
 
         // 心跳持续期间不重复订阅（连接存活期内只发一次）
         awaitTrue(() -> stateHolder.heartbeatCount() >= 2);
@@ -130,7 +135,8 @@ class WecomLongConnectionClientTest {
         for (String ping : pings) {
             JsonNode frame = MAPPER.readTree(ping);
             assertThat(frame.path("cmd").asText()).isEqualTo("ping");
-            assertThat(frame.path("req_id").asText()).isNotBlank();
+            assertThat(frame.path("headers").path("req_id").asText()).isNotBlank();
+            assertThat(frame.has("req_id")).isFalse();
             assertThat(frame.path("body").isMissingNode() || frame.path("body").isObject()).isTrue();
         }
     }
@@ -155,7 +161,8 @@ class WecomLongConnectionClientTest {
                 .filter(f -> f != null && "aibot_respond_msg".equals(f.path("cmd").asText()))
                 .findFirst()
                 .orElseThrow();
-        assertThat(frame.path("req_id").asText()).isEqualTo("req-001");
+        assertThat(frame.path("headers").path("req_id").asText()).isEqualTo("req-001");
+        assertThat(frame.has("req_id")).isFalse();
         assertThat(frame.path("body").path("msgtype").asText()).isEqualTo("text");
     }
 
@@ -164,16 +171,39 @@ class WecomLongConnectionClientTest {
         startClient();
         awaitState(WecomConnectionState.SUBSCRIBED);
 
-        server.sendText("{\"cmd\":\"aibot_msg_callback\",\"req_id\":\"cb-1\",\"body\":{\"msgtype\":\"text\"}}");
+        server.sendText(
+                "{\"cmd\":\"aibot_msg_callback\",\"headers\":{\"req_id\":\"cb-1\"},\"body\":{\"msgtype\":\"text\"}}");
         server.sendText(
                 "{\"cmd\":\"aibot_event_callback\",\"req_id\":\"ev-1\",\"body\":{\"event_type\":\"enter_chat\"}}");
 
         awaitTrue(() -> dispatchedFrames.size() >= 2);
         assertThat(dispatchedFrames.get(0).path("cmd").asText()).isEqualTo("aibot_msg_callback");
-        assertThat(dispatchedFrames.get(0).path("req_id").asText()).isEqualTo("cb-1");
+        assertThat(dispatchedFrames.get(0).path("headers").path("req_id").asText()).isEqualTo("cb-1");
         assertThat(dispatchedFrames.get(1).path("cmd").asText()).isEqualTo("aibot_event_callback");
+        assertThat(dispatchedFrames.get(1).path("req_id").asText()).isEqualTo("ev-1");
         assertThat(stateHolder.lastEventType()).isEqualTo("enter_chat");
         assertThat(stateHolder.lastEventTime()).isNotNull();
+    }
+
+    @Test
+    void pendingBusinessAckDoesNotBlockHeartbeat() throws Exception {
+        startClient();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        server.autoSendMessageAck(false);
+        long heartbeatBefore = stateHolder.heartbeatCount();
+
+        try (var sender = Executors.newSingleThreadExecutor()) {
+            Future<WecomSendResult> pending =
+                    sender.submit(() -> client.send(WecomOutboundMessage.markdown("group-001", "**待确认**")));
+            JsonNode frame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
+
+            org.awaitility.Awaitility.await()
+                    .atMost(Duration.ofSeconds(2))
+                    .untilAsserted(() -> assertThat(stateHolder.heartbeatCount()).isGreaterThan(heartbeatBefore));
+
+            server.sendAck(frame.path("headers").path("req_id").asText(), 0);
+            assertThat(pending.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+        }
     }
 
     // ---- 断线重连 ----

@@ -9,7 +9,10 @@ import java.net.http.WebSocket;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -33,7 +36,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p>凭据纪律：secret 只出现在订阅帧体内，绝不进入日志、错误摘要或 readiness 投影。
  */
-public final class WecomLongConnectionClient implements AutoCloseable {
+public final class WecomLongConnectionClient implements AutoCloseable, WecomOutboundTransport {
 
     private static final Logger log = LoggerFactory.getLogger(WecomLongConnectionClient.class);
 
@@ -44,6 +47,7 @@ public final class WecomLongConnectionClient implements AutoCloseable {
     static final int SUBSCRIBE_FAILURE_LIMIT = 3;
     private static final long CONNECT_TIMEOUT_MILLIS = 10_000L;
     private static final long SEND_TIMEOUT_MILLIS = 3_000L;
+    private static final long ACK_TIMEOUT_MILLIS = 5_000L;
 
     private final WecomProperties properties;
     private final ObjectMapper objectMapper;
@@ -55,12 +59,14 @@ public final class WecomLongConnectionClient implements AutoCloseable {
     private final boolean jitterEnabled;
     private final long watchdogMillis;
     private final long heartbeatMillis;
+    private final long ackTimeoutMillis;
 
     private final AtomicReference<WebSocket> socket = new AtomicReference<>();
     private final AtomicLong attemptCounter = new AtomicLong();
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean();
     private final AtomicInteger subscribeFailures = new AtomicInteger();
     private final AtomicInteger backoffAttempt = new AtomicInteger();
+    private final ConcurrentMap<String, CompletableFuture<ReceivedAck>> pendingAcks = new ConcurrentHashMap<>();
 
     private volatile WecomFrameHandler frameHandler = WecomFrameHandler.EMPTY;
     private volatile boolean running;
@@ -85,7 +91,8 @@ public final class WecomLongConnectionClient implements AutoCloseable {
                 DEFAULT_INITIAL_BACKOFF_MILLIS,
                 DEFAULT_MAX_BACKOFF_MILLIS,
                 true,
-                -1L);
+                -1L,
+                ACK_TIMEOUT_MILLIS);
     }
 
     /**
@@ -102,6 +109,30 @@ public final class WecomLongConnectionClient implements AutoCloseable {
             long maxBackoffMillis,
             boolean jitterEnabled,
             long watchdogMillisOverride) {
+        this(
+                properties,
+                objectMapper,
+                stateHolder,
+                httpClient,
+                scheduler,
+                initialBackoffMillis,
+                maxBackoffMillis,
+                jitterEnabled,
+                watchdogMillisOverride,
+                ACK_TIMEOUT_MILLIS);
+    }
+
+    WecomLongConnectionClient(
+            WecomProperties properties,
+            ObjectMapper objectMapper,
+            WecomConnectionStateHolder stateHolder,
+            HttpClient httpClient,
+            ScheduledExecutorService scheduler,
+            long initialBackoffMillis,
+            long maxBackoffMillis,
+            boolean jitterEnabled,
+            long watchdogMillisOverride,
+            long ackTimeoutMillis) {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.stateHolder = stateHolder;
@@ -117,6 +148,7 @@ public final class WecomLongConnectionClient implements AutoCloseable {
         this.watchdogMillis = watchdogMillisOverride > 0
                 ? watchdogMillisOverride
                 : Math.max(derivedWatchdog, heartbeatMillis * 3 / 2);
+        this.ackTimeoutMillis = Math.max(1, ackTimeoutMillis);
     }
 
     /** 启动连接（幂等）。配置不完整时不建连，状态保持 DISCONNECTED，由 readiness 标记不可用。 */
@@ -144,7 +176,7 @@ public final class WecomLongConnectionClient implements AutoCloseable {
     public boolean respond(String reqId, JsonNode body) {
         ObjectNode frame = objectMapper.createObjectNode();
         frame.put("cmd", "aibot_respond_msg");
-        frame.put("req_id", reqId);
+        frame.putObject("headers").put("req_id", reqId);
         frame.set("body", body == null ? objectMapper.createObjectNode() : body);
         return sendRaw(frame);
     }
@@ -153,9 +185,51 @@ public final class WecomLongConnectionClient implements AutoCloseable {
     public boolean sendFrame(String cmd, JsonNode body) {
         ObjectNode frame = objectMapper.createObjectNode();
         frame.put("cmd", cmd);
-        frame.put("req_id", newReqId());
+        frame.putObject("headers").put("req_id", newReqId());
         frame.set("body", body == null ? objectMapper.createObjectNode() : body);
         return sendRaw(frame);
+    }
+
+    @Override
+    public WecomSendResult send(WecomOutboundMessage message) {
+        if (!running || stateHolder.state() != WecomConnectionState.SUBSCRIBED || socket.get() == null) {
+            return WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true);
+        }
+
+        String requestId = "aibot_send_msg-" + newReqId();
+        ObjectNode frame = objectMapper.createObjectNode();
+        frame.put("cmd", "aibot_send_msg");
+        frame.putObject("headers").put("req_id", requestId);
+        ObjectNode body = frame.putObject("body");
+        body.put("chatid", message.chatId());
+        body.put("msgtype", message.type().protocolValue());
+        body.putObject(message.type().protocolValue()).put("content", message.content());
+
+        CompletableFuture<ReceivedAck> pending = new CompletableFuture<>();
+        pendingAcks.put(requestId, pending);
+        if (!sendRaw(frame)) {
+            pendingAcks.remove(requestId, pending);
+            return WecomSendResult.failed(requestId, null, "TRANSPORT_SEND_FAILED", true);
+        }
+        try {
+            ReceivedAck ack = pending.get(ackTimeoutMillis, TimeUnit.MILLISECONDS);
+            int errorCode = errcode(ack.frame());
+            if (errorCode == 0) {
+                return WecomSendResult.success(requestId, ack.receivedAt());
+            }
+            return WecomSendResult.failed(requestId, errorCode, text(ack.frame(), "errmsg"), false);
+        } catch (java.util.concurrent.TimeoutException ex) {
+            return WecomSendResult.timeout(requestId);
+        } catch (java.util.concurrent.ExecutionException ex) {
+            if (ex.getCause() instanceof PendingAckFailure failure) {
+                return WecomSendResult.failed(requestId, null, failure.getMessage(), true);
+            }
+            return WecomSendResult.failed(requestId, null, "ACK_WAIT_FAILED", true);
+        } catch (Exception ex) {
+            return WecomSendResult.failed(requestId, null, "ACK_WAIT_FAILED", true);
+        } finally {
+            pendingAcks.remove(requestId, pending);
+        }
     }
 
     /** 注入业务帧分发钩子（接收链路实现）；可随时替换。 */
@@ -173,6 +247,7 @@ public final class WecomLongConnectionClient implements AutoCloseable {
             return;
         }
         running = false;
+        failPendingAcks("CONNECTION_LOST");
         cancelHeartbeatTask();
         cancelWatchdogTask();
         scheduler.shutdownNow();
@@ -249,12 +324,12 @@ public final class WecomLongConnectionClient implements AutoCloseable {
     private void sendSubscribe(WebSocket ws) {
         ObjectNode frame = objectMapper.createObjectNode();
         frame.put("cmd", "aibot_subscribe");
-        frame.put("req_id", newReqId());
+        frame.putObject("headers").put("req_id", newReqId());
         ObjectNode body = frame.putObject("body");
         body.put("bot_id", properties.getBotId());
         body.put("secret", properties.getSecret());
         // 订阅帧含 secret，绝不打印帧内容；只以 req_id 关联日志。
-        log.info("企业微信长连接发送订阅帧 req_id={}", frame.path("req_id").asText());
+        log.info("企业微信长连接发送订阅帧 req_id={}", requestId(frame));
         ws.sendText(frame.toString(), true)
                 .exceptionally(ex -> {
                     log.warn("企业微信长连接订阅帧发送失败: {}", rootCauseSimpleName(ex));
@@ -301,6 +376,7 @@ public final class WecomLongConnectionClient implements AutoCloseable {
         cancelHeartbeatTask();
         stateHolder.recordError("被新连接抢占（disconnected_event），停止自动重连");
         stateHolder.transitionTo(WecomConnectionState.KICKED);
+        failPendingAcks("CONNECTION_LOST");
         log.error("企业微信长连接被新连接抢占，已停止自动重连，需人工介入");
         ws.abort();
     }
@@ -314,6 +390,13 @@ public final class WecomLongConnectionClient implements AutoCloseable {
             log.warn("企业微信长连接收到非 JSON 帧，忽略");
             return;
         }
+        String requestId = requestId(frame);
+        CompletableFuture<ReceivedAck> pending = pendingAcks.get(requestId);
+        if (pending != null && (text(frame, "cmd") == null || text(frame, "cmd").isBlank())) {
+            pending.complete(new ReceivedAck(frame, Instant.now()));
+            return;
+        }
+
         String cmd = text(frame, "cmd");
         if (cmd == null || cmd.isBlank()) {
             // 企微响应帧（订阅应答 / 心跳 pong 应答）不带 cmd，只含 errcode/headers：按当前状态路由。
@@ -411,6 +494,8 @@ public final class WecomLongConnectionClient implements AutoCloseable {
         closeHandled = true;
         cancelHeartbeatTask();
         WebSocket ws = socket.getAndSet(null);
+        stateHolder.transitionTo(WecomConnectionState.DISCONNECTED);
+        failPendingAcks("CONNECTION_LOST");
         if (ws != null && !ws.isOutputClosed()) {
             ws.abort();
         }
@@ -446,7 +531,7 @@ public final class WecomLongConnectionClient implements AutoCloseable {
         return ThreadLocalRandom.current().nextLong(exponential + 1);
     }
 
-    private boolean sendRaw(ObjectNode frame) {
+    private synchronized boolean sendRaw(ObjectNode frame) {
         WebSocket ws = socket.get();
         if (ws == null || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
             return false;
@@ -458,6 +543,14 @@ public final class WecomLongConnectionClient implements AutoCloseable {
             log.warn("企业微信长连接发送帧失败: {}", rootCauseSimpleName(ex));
             return false;
         }
+    }
+
+    private void failPendingAcks(String reason) {
+        pendingAcks.forEach((requestId, pending) -> {
+            if (pendingAcks.remove(requestId, pending)) {
+                pending.completeExceptionally(new PendingAckFailure(reason));
+            }
+        });
     }
 
     private static String newReqId() {
@@ -496,6 +589,12 @@ public final class WecomLongConnectionClient implements AutoCloseable {
         return value == null || value.isNull() || !value.isValueNode() ? null : value.asText();
     }
 
+    /** 官方帧使用 headers.req_id；兼容早期测试/历史帧的顶层 req_id。 */
+    private static String requestId(JsonNode frame) {
+        String requestId = text(frame.path("headers"), "req_id");
+        return requestId == null ? text(frame, "req_id") : requestId;
+    }
+
     /** 异常根因类名（稳定、不泄密）。 */
     private static String rootCauseSimpleName(Throwable error) {
         Throwable cause = error;
@@ -508,6 +607,15 @@ public final class WecomLongConnectionClient implements AutoCloseable {
     private static long elapsedMillis(Instant since) {
         return Duration.between(since, Instant.now()).toMillis();
     }
+
+    private static final class PendingAckFailure extends RuntimeException {
+
+        PendingAckFailure(String message) {
+            super(message);
+        }
+    }
+
+    private record ReceivedAck(JsonNode frame, Instant receivedAt) {}
 
     /** 单连接监听器：以代际 id（每次 connect 递增）判定过期，防止旧连接事件干扰新连接。 */
     private final class FrameListener implements WebSocket.Listener {
@@ -541,6 +649,8 @@ public final class WecomLongConnectionClient implements AutoCloseable {
                 return null;
             }
             socket.compareAndSet(ws, null);
+            stateHolder.transitionTo(WecomConnectionState.DISCONNECTED);
+            failPendingAcks("CONNECTION_LOST");
             cancelHeartbeatTask();
             log.info("企业微信长连接关闭: code={}", statusCode);
             scheduleReconnect();
@@ -553,6 +663,8 @@ public final class WecomLongConnectionClient implements AutoCloseable {
                 return;
             }
             socket.compareAndSet(ws, null);
+            stateHolder.transitionTo(WecomConnectionState.DISCONNECTED);
+            failPendingAcks("CONNECTION_LOST");
             cancelHeartbeatTask();
             stateHolder.recordError("连接异常: " + rootCauseSimpleName(error));
             log.warn("企业微信长连接异常: {}", rootCauseSimpleName(error));
