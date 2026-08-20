@@ -21,12 +21,14 @@ import {
   Select,
   Skeleton,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd';
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import { ApiError, errorMessage } from '@/api/client';
 import { outboundReconApi } from '@/api/endpoints';
 import type {
@@ -220,14 +222,14 @@ function ReconResult({ queryType, queryValue }: { queryType: OutboundReconQueryT
           <Card size="small" title="系统内部事实" extra={<Tag color="blue">业务系统</Tag>}>
             <Descriptions size="small" column={1} items={internal.items} />
             <Typography.Title level={5} style={{ marginTop: 16, fontSize: 14 }}>内部明细</Typography.Title>
-            <Table<Record<string, unknown>>
+            <DataTable<Record<string, unknown>>
               rowKey={(row) => `${row.order_line}-${row.goods_no ?? row.goods_name}`}
               columns={internalItemColumns}
               dataSource={view.internal.items}
               size="small"
               pagination={false}
               scroll={{ x: 560 }}
-              locale={{ emptyText: '无明细' }}
+              emptyText="无明细"
             />
             {view.internal.tracking ? (
               <>
@@ -255,14 +257,14 @@ function ReconResult({ queryType, queryValue }: { queryType: OutboundReconQueryT
               <>
                 <Descriptions size="small" column={1} items={jd.items} />
                 <Typography.Title level={5} style={{ marginTop: 16, fontSize: 14 }}>京东明细（deliveryItemList）</Typography.Title>
-                <Table<Record<string, unknown>>
+                <DataTable<Record<string, unknown>>
                   rowKey={(row) => `${row.order_line}-${row.goods_no ?? ''}`}
                   columns={jdItemColumns}
                   dataSource={view.jd.items}
                   size="small"
                   pagination={false}
                   scroll={{ x: 480 }}
-                  locale={{ emptyText: '京东未返回明细' }}
+                  emptyText="京东未返回明细"
                 />
               </>
             )}
@@ -271,7 +273,7 @@ function ReconResult({ queryType, queryValue }: { queryType: OutboundReconQueryT
       </Row>
 
       <Card size="small" title="逐字段差异对照">
-        <Table<OutboundReconComparisonRow>
+        <DataTable<OutboundReconComparisonRow>
           rowKey={(row) => row.key}
           columns={comparisonColumns}
           dataSource={view.comparisons}
@@ -279,7 +281,7 @@ function ReconResult({ queryType, queryValue }: { queryType: OutboundReconQueryT
           pagination={false}
           scroll={{ x: 860 }}
           rowClassName={comparisonRowClassName}
-          locale={{ emptyText: '无对齐字段' }}
+          emptyText="无对齐字段"
         />
       </Card>
     </Space>
@@ -304,35 +306,30 @@ export default function OutboundReconPage() {
   };
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" styles={{ body: { padding: '16px 18px' } }}>
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <div>
-            <Typography.Title level={5} style={{ margin: 0 }}>出库信息对账</Typography.Title>
-            <Typography.Text type="secondary">
-              输入系统出库单号 / 京东单号 / 订单号，把系统内部事实与京东侧事实并排对照；不一致只标记不自动处置，由运营判断。
-            </Typography.Text>
-          </div>
-          <Space.Compact style={{ width: '100%', maxWidth: 760 }}>
-            <Select<OutboundReconQueryType>
-              value={type}
-              onChange={setType}
-              options={QUERY_TYPES.map((item) => ({ value: item.value, label: item.label }))}
-              style={{ width: 150 }}
-            />
-            <Input
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-              onPressEnter={submitQuery}
-              placeholder={activeTypeMeta.placeholder}
-              allowClear
-            />
-            <Button type="primary" icon={<SearchOutlined />} disabled={!value.trim()} onClick={submitQuery}>
-              查询
-            </Button>
-          </Space.Compact>
-        </Space>
-      </Card>
+    <PageShell
+      title="出库信息对账"
+      description="输入系统出库单号 / 京东单号 / 订单号，把系统内部事实与京东侧事实并排对照；不一致只标记不自动处置，由运营判断。"
+    >
+      <FilterBar>
+        <Space.Compact style={{ width: '100%', maxWidth: 760 }}>
+          <Select<OutboundReconQueryType>
+            value={type}
+            onChange={setType}
+            options={QUERY_TYPES.map((item) => ({ value: item.value, label: item.label }))}
+            style={{ width: 150 }}
+          />
+          <Input
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onPressEnter={submitQuery}
+            placeholder={activeTypeMeta.placeholder}
+            allowClear
+          />
+          <Button type="primary" icon={<SearchOutlined />} disabled={!value.trim()} onClick={submitQuery}>
+            查询
+          </Button>
+        </Space.Compact>
+      </FilterBar>
 
       {hasQuery ? (
         <ReconResult queryType={activeType} queryValue={urlValue.trim()} />
@@ -341,6 +338,6 @@ export default function OutboundReconPage() {
           <Empty description="输入单号开始查询；查询条件保存在链接中，刷新或分享即可复现同一视图" />
         </Card>
       )}
-    </Space>
+    </PageShell>
   );
 }

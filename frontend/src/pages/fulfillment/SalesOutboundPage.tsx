@@ -9,6 +9,9 @@ import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Popconf
 import { CloudSyncOutlined, DownloadOutlined, FileExcelOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { Link, useSearchParams } from 'react-router-dom';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import { ApiError, errorMessage } from '@/api/client';
 import { fileOperationsApi, fulfillmentExportsApi, platformOrdersApi, providersApi } from '@/api/endpoints';
 import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, ImportBatch, PlatformOrderRefreshResult, TrackingImportBatch } from '@/api/types';
@@ -765,43 +768,31 @@ export default function SalesOutboundPage() {
   const err = list.error || providers.error;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <PageShell
+      title="销售出库"
+      description="履约导出 = 发货前交给履约方（京东/第三方）的发货指令文件；下载后进入回传闭环，文件一旦生成即形成履约承诺。"
+      actions={<Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>}
+    >
       <SourceImportPanel onCompleted={list.reload} />
 
-      {err ? (
-        <Alert
-          type="error"
-          showIcon
-          message="销售出库加载失败"
-          description={errorMessage(err)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={list.reload}>
-              重试
-            </Button>
-          }
-        />
-      ) : null}
-
-      <Card size="small">
-        <Space wrap>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>履约方</Typography.Text>
-          <Select style={{ width: 200 }} placeholder="全部履约方" allowClear value={providerId} onChange={setProviderId}
-            options={(providers.data ?? []).map((p) => ({ value: p.id, label: p.provider_name }))} />
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>使用状态</Typography.Text>
-          <Select style={{ width: 160 }} placeholder="全部" allowClear value={usage} onChange={setUsage}
-            options={(Object.keys(USAGE_LABELS) as ExportUsageStatus[]).map((k) => ({ value: k, label: USAGE_LABELS[k] }))} />
-          <Button icon={<ReloadOutlined />} onClick={list.reload}>
-            刷新
-          </Button>
-        </Space>
-      </Card>
+      <FilterBar>
+        <Typography.Text type="secondary" style={{ fontSize: 13 }}>履约方</Typography.Text>
+        <Select style={{ width: 200 }} placeholder="全部履约方" allowClear value={providerId} onChange={setProviderId}
+          options={(providers.data ?? []).map((p) => ({ value: p.id, label: p.provider_name }))} />
+        <Typography.Text type="secondary" style={{ fontSize: 13 }}>使用状态</Typography.Text>
+        <Select style={{ width: 160 }} placeholder="全部" allowClear value={usage} onChange={setUsage}
+          options={(Object.keys(USAGE_LABELS) as ExportUsageStatus[]).map((k) => ({ value: k, label: USAGE_LABELS[k] }))} />
+      </FilterBar>
 
       <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
-        <Table<FulfillmentExport>
+        <DataTable<FulfillmentExport>
           rowKey="id"
           columns={columns}
           dataSource={list.data?.items ?? []}
           loading={list.loading}
+          error={err}
+          onRetry={list.reload}
+          errorTitle="销售出库加载失败"
           size="middle"
           scroll={{ x: 1300 }}
           pagination={{
@@ -863,6 +854,6 @@ export default function SalesOutboundPage() {
         onClose={() => setTrackingTarget(null)}
         onCompleted={list.reload}
       />
-    </Space>
+    </PageShell>
   );
 }

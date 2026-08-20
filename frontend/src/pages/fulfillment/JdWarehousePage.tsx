@@ -1,15 +1,17 @@
 /** 京东工具 · 连接与出库查询：只读检查授权、仓库权限与出库事实。 */
 
 import { useEffect, useState } from 'react';
-import { App as AntApp, Alert, Button, Card, DatePicker, Descriptions, Input, Pagination, Space, Table, Tag, Typography } from 'antd';
+import { App as AntApp, Alert, Button, Card, DatePicker, Descriptions, Input, Pagination, Space, Tag, Typography } from 'antd';
 import { CloudServerOutlined, DownloadOutlined, SearchOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import { ApiError, apiRequest, errorMessage } from '@/api/client';
 import { jdWarehouseApi } from '@/api/endpoints';
 import type { ApiErrorBody, JdQueryResult } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
 import { jdConnectionSemantic } from '@/pages/shared/semanticStatus';
-import { saasVisualTokens } from '@/theme/saasTheme';
 import dayjs from 'dayjs';
 import { jdQueryPresentation } from '@/presentation/publicReady';
 
@@ -240,28 +242,26 @@ export default function JdWarehousePage() {
   ];
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" styles={{ body: { padding: '16px 18px' } }}>
+    <PageShell
+      icon={<CloudServerOutlined />}
+      title="京东仓配连接检查"
+      description="只读检查账号权限并查询发货事实；不会在此页面创建或取消出库单。"
+      actions={
+        <Tag color={jdConnectionSemantic(Boolean(sdkStatus.data?.live_ready), sdkStatus.data?.client_mode)}>
+          {sdkStatus.loading
+            ? '正在确认连接状态'
+            : sdkStatus.data?.live_ready
+              ? '真实连接已就绪'
+              : sdkStatus.data?.client_mode === 'REAL'
+                ? '真实连接未就绪'
+                : sdkStatus.data?.client_mode === 'MOCK'
+                  ? '模拟模式（不代表真实权限）'
+                  : '连接状态未知'}
+        </Tag>
+      }
+    >
+      <Card size="small">
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
-          <Space align="start" size={12} style={{ width: '100%' }}>
-            <CloudServerOutlined style={{ color: saasVisualTokens.brand.primary, fontSize: 20, marginTop: 3 }} />
-            <div>
-              <Typography.Title level={5} style={{ margin: 0 }}>京东仓配连接检查</Typography.Title>
-              <Typography.Text type="secondary">只读检查账号权限并查询发货事实；不会在此页面创建或取消出库单。</Typography.Text>
-            </div>
-            <div style={{ flex: 1 }} />
-            <Tag color={jdConnectionSemantic(Boolean(sdkStatus.data?.live_ready), sdkStatus.data?.client_mode)}>
-              {sdkStatus.loading
-                ? '正在确认连接状态'
-                : sdkStatus.data?.live_ready
-                  ? '真实连接已就绪'
-                  : sdkStatus.data?.client_mode === 'REAL'
-                    ? '真实连接未就绪'
-                    : sdkStatus.data?.client_mode === 'MOCK'
-                      ? '模拟模式（不代表真实权限）'
-                      : '连接状态未知'}
-            </Tag>
-          </Space>
           {sdkStatus.error ? (
             <Alert
               type="error"
@@ -324,6 +324,34 @@ export default function JdWarehousePage() {
         </Space>
       </Card>
 
+      <FilterBar
+        actions={<Button type="primary" icon={<SearchOutlined />} loading={orderListLoading} onClick={applyOrderListFilter}>查询</Button>}
+      >
+        <DatePicker.RangePicker
+          value={
+            listFilter.startDate && listFilter.endDate
+              ? [dayjs(listFilter.startDate), dayjs(listFilter.endDate)]
+              : null
+          }
+          onChange={(dates) =>
+            setListFilter((prev) => ({
+              ...prev,
+              startDate: dates?.[0] ? dates[0].format('YYYY-MM-DD') : '',
+              endDate: dates?.[1] ? dates[1].format('YYYY-MM-DD') : '',
+            }))
+          }
+          placeholder={['开始日期', '结束日期']}
+        />
+        <Input
+          value={listFilter.status}
+          onChange={(event) => setListFilter((prev) => ({ ...prev, status: event.target.value }))}
+          onPressEnter={applyOrderListFilter}
+          placeholder="出库单状态（可选，如 10）"
+          style={{ width: 220 }}
+          allowClear
+        />
+      </FilterBar>
+
       <Card
         size="small"
         title="出库单列表"
@@ -339,42 +367,14 @@ export default function JdWarehousePage() {
         }
       >
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Space wrap>
-            <DatePicker.RangePicker
-              value={
-                listFilter.startDate && listFilter.endDate
-                  ? [dayjs(listFilter.startDate), dayjs(listFilter.endDate)]
-                  : null
-              }
-              onChange={(dates) =>
-                setListFilter((prev) => ({
-                  ...prev,
-                  startDate: dates?.[0] ? dates[0].format('YYYY-MM-DD') : '',
-                  endDate: dates?.[1] ? dates[1].format('YYYY-MM-DD') : '',
-                }))
-              }
-              placeholder={['开始日期', '结束日期']}
-            />
-            <Input
-              value={listFilter.status}
-              onChange={(event) => setListFilter((prev) => ({ ...prev, status: event.target.value }))}
-              onPressEnter={applyOrderListFilter}
-              placeholder="出库单状态（可选，如 10）"
-              style={{ width: 220 }}
-              allowClear
-            />
-            <Button type="primary" icon={<SearchOutlined />} loading={orderListLoading} onClick={applyOrderListFilter}>
-              查询
-            </Button>
-          </Space>
-          <Table<OrderNoRow>
+          <DataTable<OrderNoRow>
             rowKey={(row) => row.orderNo || row.erpOrderNo}
             columns={orderNosColumns}
             dataSource={orderNosPage?.rows ?? []}
             loading={orderListLoading}
             size="middle"
             pagination={false}
-            locale={{ emptyText: '暂无出库单数据' }}
+            emptyText="暂无出库单数据"
           />
           <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
             <Pagination
@@ -389,6 +389,6 @@ export default function JdWarehousePage() {
           </Space>
         </Space>
       </Card>
-    </Space>
+    </PageShell>
   );
 }

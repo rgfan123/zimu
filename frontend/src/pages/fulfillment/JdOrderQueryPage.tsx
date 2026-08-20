@@ -22,10 +22,10 @@ import {
   Typography,
 } from 'antd';
 import { FileSearchOutlined, SearchOutlined } from '@ant-design/icons';
+import PageShell from '@/components/PageShell';
 import { apiRequest, errorMessage, type QueryValue } from '@/api/client';
 import type { JdQueryResult } from '@/api/types';
 import { READ_ONLY_TAG_COLOR, TOOL_CATEGORY_TAG_COLOR } from '@/pages/shared/semanticStatus';
-import { saasVisualTokens } from '@/theme/saasTheme';
 
 type QueryKind =
   | 'adjustment'
@@ -366,24 +366,19 @@ export default function JdOrderQueryPage() {
   const mockMode = result?.business_code === 'MOCK_SUCCESS';
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" styles={{ body: { padding: '16px 18px' } }}>
+    <PageShell
+      icon={<FileSearchOutlined />}
+      title="京东专业单据查询"
+      description="调整单 / 销毁单 / 异常单 / 采购单 / 加工单 / 作业关联 / 配送时效 / 同城轨迹；全部为只读渠道查询，不计入公司总订单，也不产生任何写操作。"
+      actions={
+        <Space size={4}>
+          <Tag color={TOOL_CATEGORY_TAG_COLOR}>系统渠道工具</Tag>
+          <Tag color={READ_ONLY_TAG_COLOR}>只读</Tag>
+        </Space>
+      }
+    >
+      <Card size="small">
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
-          <Space align="start" size={12} style={{ width: '100%' }}>
-            <FileSearchOutlined style={{ color: saasVisualTokens.brand.primary, fontSize: 20, marginTop: 3 }} />
-            <div>
-              <Typography.Title level={5} style={{ margin: 0 }}>京东专业单据查询</Typography.Title>
-              <Typography.Text type="secondary">
-                调整单 / 销毁单 / 异常单 / 采购单 / 加工单 / 作业关联 / 配送时效 / 同城轨迹；全部为只读渠道查询，不计入公司总订单，也不产生任何写操作。
-              </Typography.Text>
-            </div>
-            <div style={{ flex: 1 }} />
-            <Space size={4}>
-              <Tag color={TOOL_CATEGORY_TAG_COLOR}>系统渠道工具</Tag>
-              <Tag color={READ_ONLY_TAG_COLOR}>只读</Tag>
-            </Space>
-          </Space>
-
           <Space.Compact style={{ width: '100%', maxWidth: 720 }}>
             <Select
               value={kind}
@@ -480,6 +475,6 @@ export default function JdOrderQueryPage() {
           结果仅展示白名单业务字段，收件人、电话、地址等个人数据不会出现；页面为调试与对账用，业务调用请走受审计的履约用例。
         </Typography.Text>
       </Card>
-    </Space>
+    </PageShell>
   );
 }
