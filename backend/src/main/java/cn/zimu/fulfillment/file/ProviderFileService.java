@@ -597,8 +597,17 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 JOIN app.order_lines ol ON ol.id=rir.order_line_id AND ol.processing_stage='READY_TO_EXPORT'
                 JOIN app.fulfillments f ON f.order_line_id=ol.id
                 JOIN app.fulfillment_providers fp ON fp.id=f.fulfillment_provider_id AND fp.active
-                JOIN app.provider_skus ps ON ps.fulfillment_provider_id=fp.id AND ps.sku_id=ol.sku_id AND ps.active
+                LEFT JOIN app.provider_skus ps
+                  ON ps.fulfillment_provider_id=fp.id AND ps.sku_id=ol.sku_id AND ps.active
                 WHERE rir.import_batch_id=? AND rir.status='ACCEPTED'
+                  AND (
+                    (ol.line_type='SINGLE' AND ps.id IS NOT NULL)
+                    OR (
+                      ol.line_type='CUSTOM_BUNDLE'
+                      AND fp.provider_type='JD_WAREHOUSE'
+                      AND fp.config->>'outboundMode'='SDK'
+                    )
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM app.review_cases rc
                     WHERE rc.order_id=o.id AND rc.status='OPEN'

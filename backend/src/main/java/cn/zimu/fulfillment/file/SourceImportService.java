@@ -15,6 +15,7 @@ import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundService;
 import cn.zimu.fulfillment.order.OrderCreateService;
 import cn.zimu.fulfillment.order.domain.LineType;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
+import cn.zimu.fulfillment.order.dto.BundleComponentInput;
 import cn.zimu.fulfillment.order.dto.CanonicalOrderInput;
 import cn.zimu.fulfillment.order.dto.CustomerInput;
 import cn.zimu.fulfillment.order.dto.OrderDetailDto;
@@ -648,16 +649,7 @@ public class SourceImportService {
         CustomerInput customer = importedCustomers.resolve(
                 parsed.sourceChannel(), first.receiverName(), first.receiverPhone());
         List<OrderItemInput> items = rows.stream()
-                .map(row -> new OrderItemInput(
-                        row.sourceLineRef(),
-                        LineType.SINGLE,
-                        null,
-                        row.sourceSkuRef(),
-                        row.productName(),
-                        row.specification(),
-                        row.unit(),
-                        new BigDecimal(row.quantity()).setScale(3).toPlainString(),
-                        null))
+                .map(row -> canonicalItem(parsed.sourceChannel(), row))
                 .toList();
         Instant settlementAt = rows.stream().map(ParsedSourceRow::orderedAt).filter(Objects::nonNull)
                 .min(Comparator.naturalOrder()).orElse(Instant.now());
@@ -673,6 +665,111 @@ public class SourceImportService {
                 new Settlement(SettlementMethod.valueOf(first.settlementMethod()), settlementAt),
                 first.remark(),
                 rows.stream().map(row -> "import://" + batchNo + "/" + row.sheetIndex() + "/" + row.rowIndex()).toList());
+    }
+
+    /**
+     * 万齐显式礼包映射优先于普通来源 SKU 映射；其他渠道和非礼包万齐行保持既有 SINGLE 语义。
+     *
+     * <p>组件仍走 {@link OrderCreateService} 的公共礼包用例：bundle_items 中冻结的 EMG 编码作为
+     * WANGQI sourceSkuRef，经 source_channel_skus 精确解析。EMG 为空或映射缺失时，该用例会按
+     * 现有 SKU_MAPPING_REQUIRED 分支把整条礼包行留在 NEED_REVIEW，而不是绕过门禁直接使用 sku_id。
+     */
+    private OrderItemInput canonicalItem(SourceChannel channel, ParsedSourceRow row) {
+        StaticSourceBundle sourceBundle = activeSourceBundle(channel, row.sourceSkuRef());
+        if (sourceBundle == null) {
+            if (channel == SourceChannel.WANGQI && looksLikeBundle(row.productName())) {
+                return unresolvedBundleItem(row);
+            }
+            return singleItem(row);
+        }
+        List<BundleComponentInput> components = jdbc.query(
+                """
+                SELECT bi.emg_code_snapshot, s.sku_code, p.product_name, s.specification, s.unit,
+                       bi.quantity_per_bundle
+                FROM app.bundle_items bi
+                JOIN app.skus s ON s.id=bi.sku_id
+                JOIN app.products p ON p.id=s.product_id
+                WHERE bi.bundle_id=?
+                ORDER BY bi.sort_no
+                """,
+                (resultSet, rowNum) -> new BundleComponentInput(
+                        resultSet.getString("sku_code"),
+                        resultSet.getString("emg_code_snapshot"),
+                        resultSet.getString("product_name"),
+                        resultSet.getString("specification"),
+                        resultSet.getString("unit"),
+                        resultSet.getBigDecimal("quantity_per_bundle").toPlainString()),
+                sourceBundle.bundleId());
+        return new OrderItemInput(
+                row.sourceLineRef(),
+                LineType.CUSTOM_BUNDLE,
+                null,
+                row.sourceSkuRef(),
+                row.productName(),
+                row.specification(),
+                row.unit(),
+                quantity(row),
+                Long.toString(sourceBundle.bundleId()),
+                List.copyOf(components));
+    }
+
+    /**
+     * 万齐名称明确表示礼包/组合但未命中 ACTIVE 主数据时，构造一个必然未映射的组件候选，
+     * 复用订单应用层 SKU_MAPPING_REQUIRED 分支进入人工复核；禁止降级 SINGLE 后误命中普通 SKU。
+     */
+    private OrderItemInput unresolvedBundleItem(ParsedSourceRow row) {
+        String ref = "__BUNDLE_MAPPING_REQUIRED__:" + row.sourceSkuRef();
+        BundleComponentInput unresolved = new BundleComponentInput(
+                null, ref, row.productName(), row.specification(), row.unit(), "1");
+        return new OrderItemInput(
+                row.sourceLineRef(),
+                LineType.CUSTOM_BUNDLE,
+                null,
+                row.sourceSkuRef(),
+                row.productName(),
+                row.specification(),
+                row.unit(),
+                quantity(row),
+                List.of(unresolved));
+    }
+
+    private boolean looksLikeBundle(String productName) {
+        return productName != null
+                && (productName.contains("礼包") || productName.contains("礼盒") || productName.contains("组合"));
+    }
+
+    private StaticSourceBundle activeSourceBundle(SourceChannel channel, String sourceSkuRef) {
+        if (channel != SourceChannel.WANGQI || sourceSkuRef == null || sourceSkuRef.isBlank()) {
+            return null;
+        }
+        List<StaticSourceBundle> matches = jdbc.query(
+                """
+                SELECT scb.bundle_id
+                FROM app.source_channel_bundles scb
+                JOIN app.product_bundles pb ON pb.id=scb.bundle_id AND pb.status='ACTIVE'
+                WHERE scb.source_channel='WANGQI' AND scb.source_bundle_ref=?
+                  AND scb.active AND scb.quantity_multiplier=1
+                """,
+                (resultSet, rowNum) -> new StaticSourceBundle(resultSet.getLong("bundle_id")),
+                sourceSkuRef);
+        return matches.isEmpty() ? null : matches.getFirst();
+    }
+
+    private OrderItemInput singleItem(ParsedSourceRow row) {
+        return new OrderItemInput(
+                row.sourceLineRef(),
+                LineType.SINGLE,
+                null,
+                row.sourceSkuRef(),
+                row.productName(),
+                row.specification(),
+                row.unit(),
+                quantity(row),
+                null);
+    }
+
+    private String quantity(ParsedSourceRow row) {
+        return new BigDecimal(row.quantity()).setScale(3).toPlainString();
     }
 
     @Transactional
@@ -1001,4 +1098,5 @@ public class SourceImportService {
 
     private record ParentBatch(String sourceChannel, int revisionNo) {}
     private record RowKey(int sheetIndex, int rowIndex) {}
+    private record StaticSourceBundle(long bundleId) {}
 }

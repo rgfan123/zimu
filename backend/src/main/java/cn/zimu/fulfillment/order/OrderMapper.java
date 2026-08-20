@@ -111,6 +111,7 @@ public class OrderMapper {
                 String.valueOf(line.getId()),
                 line.getLineNo(),
                 line.getLineType().name(),
+                line.getBundleId() == null ? null : String.valueOf(line.getBundleId()),
                 line.getSkuId() == null ? null : String.valueOf(line.getSkuId()),
                 skuCodes.get(line.getSkuId()),
                 line.getFulfillmentProviderId() == null ? null : String.valueOf(line.getFulfillmentProviderId()),
@@ -265,6 +266,7 @@ public class OrderMapper {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("line_no", line.getLineNo());
         snapshot.put("line_type", line.getLineType().name());
+        snapshot.put("bundle_id", line.getBundleId());
         snapshot.put("sku_id", line.getSkuId());
         snapshot.put("sku_code", skuCodes.get(line.getSkuId()));
         snapshot.put("provider_id", line.getFulfillmentProviderId());

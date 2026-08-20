@@ -87,6 +87,9 @@ class SourceFileParser {
                 if (candidate.channel() == SourceChannel.JUFUBAO && isJufubaoSummary(cells)) {
                     break;
                 }
+                if (candidate.channel() == SourceChannel.WANGQI && isWangqiPurchaseTotal(cells)) {
+                    continue;
+                }
                 rows.add(map(candidate.channel(), candidate.sheet().getSheetName(), candidate.sheetIndex(), index + 1, cells));
             }
             return parsed(candidate.channel(), candidate.headers(), false, "v1", rows);
@@ -147,6 +150,7 @@ class SourceFileParser {
             case JUFUBAO -> jufubao(sheetName, sheetIndex, rowIndex, cells);
             case FEIXIANG -> feixiang(sheetName, sheetIndex, rowIndex, cells);
             case ZHONGHUI -> zhonghui(sheetName, sheetIndex, rowIndex, cells);
+            case WANGQI -> wangqi(sheetName, sheetIndex, rowIndex, cells);
             case WECOM -> throw new IllegalArgumentException("WECOM is not a file source adapter");
         };
     }
@@ -228,6 +232,20 @@ class SourceFileParser {
                 value(cells, "包装规格"), value(cells, "单位"),
                 value(cells, "件数"), parseTime(value(cells, "下单时间")), "OTHER",
                 value(cells, "用户留言"), true);
+    }
+
+    private ParsedSourceRow wangqi(String sheet, int sheetIndex, int row, Map<String, String> cells) {
+        String paidAt = value(cells, "渠道支付时间");
+        return row(
+                sheet, sheetIndex, row, cells,
+                value(cells, "渠道订单号"), value(cells, "主商品编码"),
+                "", "",
+                value(cells, "收货人"), value(cells, "收货人手机"), value(cells, "收货人详细地址"),
+                "", "", "",
+                value(cells, "主商品编码"), value(cells, "商品名称"),
+                "", "件",
+                value(cells, "商品数量"), parseTime(first(cells, "渠道支付时间", "渠道下单时间")),
+                paidAt.isBlank() ? "OTHER" : "IMMEDIATE", "", true);
     }
 
     private ParsedSourceRow row(
@@ -328,6 +346,7 @@ class SourceFileParser {
             case JUFUBAO -> "sheet1".equals(name);
             case FEIXIANG -> index == 0;
             case ZHONGHUI -> index == 0;
+            case WANGQI -> index == 0;
             case WECOM -> false;
         };
     }
@@ -335,6 +354,13 @@ class SourceFileParser {
     private boolean isJufubaoSummary(Map<String, String> cells) {
         return cells.values().stream().map(String::strip)
                 .anyMatch(value -> "供应商汇总".equals(value) || "汇总".equals(value));
+    }
+
+    private boolean isWangqiPurchaseTotal(Map<String, String> cells) {
+        return !value(cells, "采购单价(元)").isBlank()
+                && cells.entrySet().stream()
+                        .filter(cell -> !"采购单价(元)".equals(cell.getKey()))
+                        .allMatch(cell -> cell.getValue().isBlank());
     }
 
     private BusinessException fingerprintError(int matches) {
@@ -369,7 +395,7 @@ class SourceFileParser {
         return new DecodedCsv(text, encoding, newline);
     }
 
-    private String normalizeHeader(String value) {
+    String normalizeHeader(String value) {
         String normalized = Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFKC);
         return normalized.replace("\uFEFF", "").strip();
     }
@@ -440,6 +466,10 @@ class SourceFileParser {
         map.put(SourceChannel.FEIXIANG, Set.of("订单号", "订单商品ID", "可发货数量", "物流状态", "物流公司", "物流单号"));
         map.put(SourceChannel.ZHONGHUI, Set.of(
                 "订单号", "商品编号", "商品名称", "件数", "收件人", "收件电话", "收件地址", "包装规格", "单位"));
+        map.put(SourceChannel.WANGQI, Set.of(
+                "渠道订单号", "主商品编码", "供应商商品名称", "商品名称", "订单商品状态",
+                "采购单价(元)", "商品数量", "收货人", "收货人手机", "收货人详细地址",
+                "预计到货时间", "渠道下单时间", "渠道支付时间", "快递单号", "快递公司"));
         return map;
     }
 

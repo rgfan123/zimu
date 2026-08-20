@@ -11,6 +11,7 @@ import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.version.OrderVersionService;
 import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.common.web.WriteCommands;
 import cn.zimu.fulfillment.customer.CustomerSourceRef;
 import cn.zimu.fulfillment.customer.CustomerSourceRefRepository;
 import cn.zimu.fulfillment.fulfillment.Fulfillment;
@@ -31,6 +32,8 @@ import cn.zimu.fulfillment.order.dto.CorrectionOrderCommand;
 import cn.zimu.fulfillment.order.dto.OrderDetailDto;
 import cn.zimu.fulfillment.order.dto.OrderItemInput;
 import cn.zimu.fulfillment.order.dto.OrderRevisionInput;
+import cn.zimu.fulfillment.product.BundleItem;
+import cn.zimu.fulfillment.product.BundleItemRepository;
 import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
@@ -67,6 +70,7 @@ public class OrderCreateService {
     private final CustomerSourceRefRepository customerSourceRefRepository;
     private final SourceChannelSkuRepository sourceChannelSkuRepository;
     private final SkuRepository skuRepository;
+    private final BundleItemRepository bundleItemRepository;
     private final OrderEventRepository eventRepository;
     private final OrderEventService eventService;
     private final OrderVersionService versionService;
@@ -85,6 +89,7 @@ public class OrderCreateService {
             CustomerSourceRefRepository customerSourceRefRepository,
             SourceChannelSkuRepository sourceChannelSkuRepository,
             SkuRepository skuRepository,
+            BundleItemRepository bundleItemRepository,
             OrderEventRepository eventRepository,
             OrderEventService eventService,
             OrderVersionService versionService,
@@ -101,6 +106,7 @@ public class OrderCreateService {
         this.customerSourceRefRepository = customerSourceRefRepository;
         this.sourceChannelSkuRepository = sourceChannelSkuRepository;
         this.skuRepository = skuRepository;
+        this.bundleItemRepository = bundleItemRepository;
         this.eventRepository = eventRepository;
         this.eventService = eventService;
         this.versionService = versionService;
@@ -523,6 +529,9 @@ public class OrderCreateService {
             throw BusinessException.badRequest("BUNDLE_COMPONENTS_REQUIRED", "礼包行必须携带当单明确组件清单");
         }
         OrderLine line = baseLine(item, lineNo, requested);
+        if (item.bundleId() != null) {
+            line.setBundleId(WriteCommands.parseIdentifier(item.bundleId()));
+        }
         List<ComponentResolution> resolutions = new ArrayList<>();
         List<String> missingRefs = new ArrayList<>();
         String reviewReasonCode = null;
@@ -544,6 +553,7 @@ public class OrderCreateService {
             line.setExceptionReason("礼包组件存在缺失或冲突的来源 SKU: " + String.join(", ", missingRefs));
             return new LineResult(line, List.of(), missingRefs, reviewReasonCode);
         }
+        validateStaticBundleSnapshot(item.bundleId(), resolutions);
         Long providerId = resolutions.getFirst().sku().getFulfillmentProviderId();
         for (ComponentResolution resolution : resolutions) {
             if (!Objects.equals(resolution.sku().getFulfillmentProviderId(), providerId)) {
@@ -568,6 +578,35 @@ public class OrderCreateService {
             components.add(component);
         }
         return new LineResult(line, components, List.of(), null);
+    }
+
+    /** 静态礼包必须完整、逐项等量命中当前主数据；定制礼包（bundleId=null）保持原有语义。 */
+    private void validateStaticBundleSnapshot(String bundleId, List<ComponentResolution> resolutions) {
+        if (bundleId == null) {
+            return;
+        }
+        long parsedBundleId = WriteCommands.parseIdentifier(bundleId);
+        List<BundleItem> expected = bundleItemRepository.findByBundleIdOrderBySortNo(parsedBundleId);
+        if (expected.size() != resolutions.size()) {
+            throw BusinessException.unprocessable(
+                    "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包组件数量与主数据 BOM 不一致");
+        }
+        Map<Long, BigDecimal> expectedQuantities = new LinkedHashMap<>();
+        for (BundleItem item : expected) {
+            expectedQuantities.put(item.getSkuId(), item.getQuantityPerBundle());
+        }
+        for (ComponentResolution resolution : resolutions) {
+            BigDecimal expectedQuantity = expectedQuantities.remove(resolution.sku().getId());
+            BigDecimal actualQuantity = parseQuantity(resolution.input().quantityPerBundle());
+            if (expectedQuantity == null || expectedQuantity.compareTo(actualQuantity) != 0) {
+                throw BusinessException.unprocessable(
+                        "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包组件与主数据 BOM 不一致");
+            }
+        }
+        if (!expectedQuantities.isEmpty()) {
+            throw BusinessException.unprocessable(
+                    "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包缺少主数据 BOM 组件");
+        }
     }
 
     private OrderLine baseLine(OrderItemInput item, int lineNo, BigDecimal requestedQuantity) {

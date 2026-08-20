@@ -330,6 +330,11 @@ public class TrackingFileService {
                     // 平台模板未提供承运商列，不新增「物流公司」列。
                     cells.put("物流单号", fill.trackingNo());
                 }
+                case "WANGQI" -> {
+                    cells.put("订单商品状态", "已发货");
+                    cells.put("快递单号", fill.trackingNo());
+                    cells.put("快递公司", fill.sourceCarrier());
+                }
                 default -> throw new IllegalStateException("unsupported source return channel");
             }
             return copyWithCells(row, cells);
@@ -470,7 +475,7 @@ public class TrackingFileService {
                 var data = sheet.getRow(parsed.rowIndex() - 1);
                 java.util.Set<String> known = new java.util.HashSet<>();
                 for (int column = 0; column < header.getLastCellNum(); column++) {
-                    known.add(formatter.formatCellValue(header.getCell(column)).strip());
+                    known.add(sourceFileParser.normalizeHeader(formatter.formatCellValue(header.getCell(column))));
                 }
                 Map<String, Integer> appended = appendedBySheet.computeIfAbsent(
                         parsed.sheetIndex(), ignored -> new LinkedHashMap<>());
@@ -485,7 +490,7 @@ public class TrackingFileService {
                     }
                 }
                 for (int column = 0; column < header.getLastCellNum(); column++) {
-                    String name = formatter.formatCellValue(header.getCell(column)).strip();
+                    String name = sourceFileParser.normalizeHeader(formatter.formatCellValue(header.getCell(column)));
                     if (parsed.rawCells().containsKey(name)) {
                         if (data.getCell(column) == null) data.createCell(column);
                         data.getCell(column).setCellValue(parsed.rawCells().get(name));
