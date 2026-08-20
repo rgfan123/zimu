@@ -47,7 +47,7 @@ function priceBasisLabel(basis?: string | null): string {
   return basis ? (PRICE_BASIS_LABEL[basis] ?? basis) : '—';
 }
 
-function num(v?: string | number | null): string {
+function formatDecimal(v?: string | number | null): string {
   if (v === undefined || v === null || v === '') return '—';
   const n = typeof v === 'number' ? v : parseFloat(v);
   return Number.isFinite(n) ? n.toLocaleString('zh-CN') : String(v);
@@ -85,14 +85,14 @@ export default function ProcurementPriceComparePage() {
 
   const comparableColumns: ColumnsType<ProcurementPriceCandidate> = [
     { title: '履约方', dataIndex: 'provider_code', width: 140, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
-    { title: '价格（元）', dataIndex: 'price', width: 120, align: 'right', render: num },
+    { title: '价格（元）', dataIndex: 'price', width: 120, align: 'right', render: formatDecimal },
     { title: '价格依据', dataIndex: 'price_basis', width: 160, render: priceBasisLabel },
     { title: '说明', dataIndex: 'note', render: (v?: string | null) => v || '—' },
   ];
 
   const excludedColumns: ColumnsType<ProcurementPriceExcludedCandidate> = [
     { title: '履约方', dataIndex: 'provider_code', width: 140, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
-    { title: '价格（元）', dataIndex: 'price', width: 120, align: 'right', render: num },
+    { title: '价格（元）', dataIndex: 'price', width: 120, align: 'right', render: formatDecimal },
     { title: '价格依据', dataIndex: 'price_basis', width: 160, render: priceBasisLabel },
     {
       title: '剔除理由',
@@ -199,12 +199,12 @@ export default function ProcurementPriceComparePage() {
               column={{ xs: 1, md: 3 }}
               items={[
                 { key: 'sku', label: '目标 SKU', children: recommendation.target_sku || '—' },
-                { key: 'qty', label: '数量', children: num(recommendation.requested_quantity) },
+                { key: 'qty', label: '数量', children: formatDecimal(recommendation.requested_quantity) },
                 {
                   key: 'inventory',
                   label: '库存',
                   children: recommendation.inventory
-                    ? `可用 ${num(recommendation.inventory.available)} / 缺口 ${num(recommendation.inventory.shortage)}`
+                    ? `可用 ${formatDecimal(recommendation.inventory.available)} / 缺口 ${formatDecimal(recommendation.inventory.shortage)}`
                     : '—',
                 },
                 { key: 'conf', label: '置信度', children: `${Math.round(recommendation.confidence * 100)}%` },
