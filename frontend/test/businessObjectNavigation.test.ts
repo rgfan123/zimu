@@ -27,6 +27,7 @@ test('production navigation keeps the two demoted query tools registered under t
     workbench?.children?.map(({ path, label, hideInMenu }) => ({ path, label, hideInMenu: hideInMenu ?? false })),
     [
       { path: '/workbench/reviews', label: '人工复核', hideInMenu: false },
+      { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       { path: '/workbench/channel-messages', label: '渠道消息', hideInMenu: false },
       { path: '/fulfillment/tasks', label: '履约任务', hideInMenu: false },
       { path: '/procurement/tickets', label: '采购协同', hideInMenu: false },
@@ -61,7 +62,7 @@ test('demoted workbench tools stay routable and keep their workbench context', (
   const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
   const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
 
-  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon']) {
+  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts']) {
     const node = findNavigationNode(appNavigation, path);
     assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
     assert.equal(visiblePaths.includes(path), false, `${path} 不得出现在可见菜单`);
@@ -74,6 +75,11 @@ test('demoted workbench tools stay routable and keep their workbench context', (
   assert.deepEqual(navigationContext('/fulfillment/outbound-recon', ''), {
     section: '作业中心',
     page: '出库信息对账',
+  });
+  // Issue #64：运营提醒是独立路由但按 #98 规则不增加作业中心可见叶子。
+  assert.deepEqual(navigationContext('/workbench/alerts', ''), {
+    section: '作业中心',
+    page: '运营提醒',
   });
 });
 

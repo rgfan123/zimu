@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, before, test } from 'node:test';
 import {
+  control,
   createRouteHarness,
   jsonResponse,
   page,
@@ -37,7 +38,7 @@ function operationalAlert(id: string) {
   };
 }
 
-/** 复核队列页 mock：按收到的筛选参数返回对应队列。 */
+/** 复核队列页 mock：按收到的筛选参数返回对应队列；提醒列表按状态返回（兼容重定向测试）。 */
 function reviewsFetch(requests: string[]) {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -52,8 +53,10 @@ function reviewsFetch(requests: string[]) {
         : [];
       return jsonResponse(page(items, Number(params.get('size') ?? 20)));
     }
-    if (url === '/api/v1/operational-alerts?page=0&size=20&status=OPEN') {
-      return jsonResponse(page([operationalAlert('9')]));
+    if (url.startsWith('/api/v1/operational-alerts?')) {
+      const params = new URLSearchParams(url.split('?')[1]);
+      const status = params.get('status') ?? 'OPEN';
+      return jsonResponse(page(status === 'RESOLVED' ? [] : [operationalAlert('9')]));
     }
     throw new Error(`unexpected request: ${url}`);
   };
@@ -108,30 +111,78 @@ test('非法 status 值回退到默认 OPEN，不把坏链接当筛选', async (
   ));
 });
 
-test('view=alerts 直达运营提醒队列，URL 可恢复', async () => {
+test('旧 view=alerts 分享链接重定向到 /workbench/alerts，不静默落在复核队列', async () => {
   const requests: string[] = [];
   globalThis.fetch = reviewsFetch(requests);
 
   await harness.mount(['/workbench/reviews?view=alerts']);
 
+  await harness.waitFor(() => assert.equal(harness.location(), '/workbench/alerts'));
   await harness.waitFor(() => assert.match(harness.bodyText(), /ALERT-Q-9/));
   assert.match(harness.bodyText(), /运营提醒/);
-  assert.ok(requests.includes('GET /api/v1/operational-alerts?page=0&size=20&status=OPEN'));
+  assert.ok(requests.includes('GET /api/v1/operational-alerts?page=0&size=20&status=OPEN'),
+    '重定向后必须实际拉取运营提醒列表');
 });
 
-test('切换到运营提醒视图时 view 参数写入 URL，可分享', async () => {
+test('旧 view=alerts 链接保留批次/状态等其他参数，只剥离 view', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = reviewsFetch(requests);
+
+  await harness.mount(['/workbench/reviews?view=alerts&import_batch=7&status=OPEN']);
+
+  await harness.waitFor(() => assert.equal(
+    harness.location(),
+    '/workbench/alerts?import_batch=7&status=OPEN',
+    '除 view 外其余参数必须原样保留',
+  ));
+  await harness.waitFor(() => assert.ok(
+    requests.includes('GET /api/v1/operational-alerts?page=0&size=20&status=OPEN'),
+    '保留的 status 参数必须实际影响提醒列表请求',
+  ));
+});
+
+test('旧 view=alerts&status=RESOLVED 链接把状态语义交给提醒页（只落在提醒队列，不落复核队列）', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = reviewsFetch(requests);
+
+  await harness.mount(['/workbench/reviews?view=alerts&status=RESOLVED']);
+
+  await harness.waitFor(() => assert.equal(harness.location(), '/workbench/alerts?status=RESOLVED'));
+  await harness.waitFor(() => assert.ok(
+    requests.includes('GET /api/v1/operational-alerts?page=0&size=20&status=RESOLVED'),
+    '提醒页必须按保留的 status 拉取已恢复提醒列表',
+  ));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /当前没有运营提醒/));
+  assert.equal(requests.filter((r) => r.startsWith('GET /api/v1/review-cases')).length, 0,
+    '重定向后绝不请求复核队列');
+});
+
+test('view=reviews 显式旧参数仍落在复核队列页（不重写 URL）', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = reviewsFetch(requests);
+
+  await harness.mount(['/workbench/reviews?view=reviews&status=OPEN&reason_code=SKU_MAPPING_REQUIRED']);
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /RC-FIXTURE-1/));
+  assert.equal(
+    harness.location(),
+    '/workbench/reviews?view=reviews&status=OPEN&reason_code=SKU_MAPPING_REQUIRED',
+  );
+});
+
+test('复核页提供「运营提醒」上下文链接，点击进入提醒路由', async () => {
   const requests: string[] = [];
   globalThis.fetch = reviewsFetch(requests);
 
   await harness.mount(['/workbench/reviews']);
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /阻断复核/));
-  const alertsTab = [...document.querySelectorAll<HTMLElement>('.ant-segmented-item')]
-    .find((candidate) => candidate.textContent?.includes('运营提醒'));
-  assert.ok(alertsTab, '缺少运营提醒分段');
-  await harness.dispatchEvent(alertsTab, new MouseEvent('click', { bubbles: true }));
+  const alertsLink = control('运营提醒');
+  assert.ok(alertsLink.tagName === 'A' && (alertsLink.getAttribute('href') ?? '') === '/workbench/alerts',
+    '上下文切换必须是直达新提醒路由的链接');
+  await harness.dispatchEvent(alertsLink, new MouseEvent('click', { bubbles: true }));
 
-  await harness.waitFor(() => assert.equal(harness.location(), '/workbench/reviews?view=alerts'));
+  await harness.waitFor(() => assert.equal(harness.location(), '/workbench/alerts'));
   await harness.waitFor(() => assert.match(harness.bodyText(), /ALERT-Q-9/));
 });
 

@@ -1,15 +1,17 @@
 /**
- * 工作台两页（Issue #97 批次 B 迁移后）的用户可观察契约：
- * - ManualReviewPage：PageShell 页头 + FilterBar 筛选 + DataTable 队列/提醒表；
+ * 工作台页面（Issue #97 批次 B 迁移 + Issue #64 路由拆分后）的用户可观察契约：
+ * - ManualReviewPage（/workbench/reviews）：PageShell 页头 + FilterBar 筛选 + DataTable 队列表；
  *   空态 / 错误态统一走 DataTable 默认行为，文案与迁移前逐字一致。
+ * - AlertsQueuePage（/workbench/alerts）：运营提醒独立路由页，同样采用共享队列承载结构；
+ *   空态 / 错误态文案与拆分前提醒视图逐字一致。
  * - ChannelMessagesPage：PageShell 页头（刷新动作）+ DataTable 列表（错误态带重试），
  *   抽屉中的消息证据与解释历史保持可读。
  *
- * 迁移只换承载结构，本文件用 public-route 行为固定可见结果（页头文案、空态、错误条、
+ * 迁移/拆分只换承载结构，本文件用 public-route 行为固定可见结果（页头文案、空态、错误条、
  * 重试、详情抽屉），避免未来重构把文案/空态/重试悄悄改掉。
- * #95/#96 的 URL 契约（import_batch fail-closed、status/reason/team 唯一事实源、
- * 视图切换）已由 importBatchReviewRoute / manualReviewQueueRoute / dashboardDispatchRoute
- * 固定，本文件不重复。
+ * #95/#96/#64 的 URL 契约（import_batch fail-closed、status/reason/team 唯一事实源、
+ * 旧 view=alerts 重定向）已由 importBatchReviewRoute / manualReviewQueueRoute /
+ * dashboardDispatchRoute / alertsQueueRoute 固定，本文件不重复。
  */
 
 import assert from 'node:assert/strict';
@@ -38,7 +40,7 @@ after(async () => {
   await harness.close();
 });
 
-/** 复核队列页 mock：队列 + 运营提醒两条数据源（alerts 的 useAsync 在 reviews 视图也会挂载）。 */
+/** 复核队列页 mock：队列 + 运营提醒两条数据源（提醒由独立路由页拉取）。 */
 function reviewPagesFetch(overrides: {
   queue?: () => Response;
   alerts?: () => Response;
@@ -83,16 +85,17 @@ test('manual review queue failure uses the shared table banner and keeps the emp
   assert.match(harness.bodyText(), /当前没有复核事项/, '错误条下方表格仍渲染空态（DataTable 默认行为）');
 });
 
-test('manual review alerts view keeps its filter, empty state and failure banner', async () => {
+test('alerts page keeps its filter, empty state and failure banner on its own route', async () => {
   globalThis.fetch = reviewPagesFetch({
     alerts: () => apiErrorResponse(500, 'INTERNAL', 'alerts exploded'),
   });
 
-  await harness.mount(['/workbench/reviews?view=alerts']);
+  await harness.mount(['/workbench/alerts']);
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /运营提醒加载失败/));
   assert.match(harness.bodyText(), /服务暂时不可用，请稍后重试/);
   assert.match(harness.bodyText(), /当前没有运营提醒/, '提醒空态文案必须保留');
+  assert.match(harness.bodyText(), /运营提醒只记录知晓，不推进业务状态/, '提醒页页头说明必须保留');
   assert.ok(control('刷新'));
 });
 

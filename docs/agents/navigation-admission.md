@@ -54,6 +54,7 @@
 
 | 入口 | 路径 | 处置 | 原因（代码/动线证据） |
 |---|---|---|---|
+| 运营提醒 | `/workbench/alerts` | 降级为上下文二级入口（`hideInMenu: true`，路由与 routeElements 保留） | Issue #64 把运营提醒拆成独立路由页：提醒只记录知晓、不推进业务状态，属低频待办视图而非每日动线；复核页 / 提醒页互为上下文切换入口（PageShell actions Link，href 指向原路径），不占作业中心可见菜单位。 |
 | 采购比价 | `/procurement/price-compare` | 降级为上下文二级入口（`hideInMenu: true`，路由与 routeElements 保留） | 低频专用查询：仅缺货补货时按采购工单或 SKU 发起比价的 Agent 工具（POST `/api/v1/procurement-price-agent/compare`），不是每日动线；其查询输入来自采购协同工单上下文 → 上下文入口放在采购协同页（FilterBar actions，href 指向原路径）。 |
 | 出库信息对账 | `/fulfillment/outbound-recon` | 同上 | 低频专用查询：按出库单号/京东单号/订单号核对单笔出库的系统内部事实与京东侧事实，属专项核对工具，不是每日动线；查询主键（系统出库单号）由发货记录的行/抽屉承载 → 上下文入口放在发货记录页（页头 actions，与既有刷新按钮同排，href 指向原路径）。文件作业（销售出库）页的导出明细虽含出库单号，但属履约指令文件侧，不重复放置，避免同一入口散落多处。 |
 
@@ -64,6 +65,7 @@
 证据（git 历史）：`7005fd5` 时点的 `navigation.ts` 作业中心即为 6 个高频入口（
 business-object-navigation 01 验收口径）；`00e1e6c` 加入出库信息对账 → 7；
 `29ed999` 加入采购比价 → 8。Issue #98 现状即 8 个可见叶子，超过设计口径 6。
+Issue #64 的 `/workbench/alerts` 是隐藏叶子，不改变可见计数。
 
 ## 3. 前后计数（按当前代码实时重算）
 
@@ -75,7 +77,7 @@ business-object-navigation 01 验收口径）；`00e1e6c` 加入出库信息对�
 |---|---|---|
 | 一级板块（顶级菜单项） | 10 | 10 |
 | 可见入口（可见叶子，含外链） | 31 | **29** |
-| 可路由叶子（不含外链，全部生产路由） | 38 | 38（不变） |
+| 可路由叶子（不含外链，全部生产路由） | 38 | **39**（Issue #64 新增 `/workbench/alerts` 隐藏可路由叶子） |
 | 作业中心可见叶子 | 8 | **6** |
 
 > Issue 记录的「9 个一级板块 / 34 可见入口」是记录时点口径，与当前代码不一致（此后新增了
@@ -100,11 +102,13 @@ business-object-navigation 01 验收口径）；`00e1e6c` 加入出库信息对�
 - `frontend/test/businessObjectNavigation.test.ts`：
   - 作业中心高频可见叶子固定为 6 个设计名单并断言 ≤ 6 上限；
   - 被降级入口 `hideInMenu === true`、不出现在可见菜单、**仍在 routable 叶子中**（旧路径不 404）、
-    `navigationContext` 仍解析出作业中心归属；
+    `navigationContext` 仍解析出作业中心归属（含 Issue #64 的 `/workbench/alerts`）；
   - 无重复叶子路径。
 - `frontend/test/procurementTicketsRoute.test.ts`：采购协同页上下文入口存在、`href` 正确，
   点击可达采购比价页。
 - `frontend/test/fulfillmentPagesRoute.test.ts`：发货记录页上下文入口存在、`href` 正确，
   点击可达出库信息对账页。
+- `frontend/test/alertsQueueRoute.test.ts` + `manualReviewQueueRoute.test.ts`：运营提醒 /
+  复核两路由互为上下文切换入口；旧 `?view=alerts` 链接重定向到 `/workbench/alerts`。
 - 全量门禁：`cd frontend && npm run typecheck && npm test && npm run build`，
   `git diff --check`。

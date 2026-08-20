@@ -21,6 +21,9 @@ export const appNavigation = [
     label: '作业中心',
     children: [
       { path: '/workbench/reviews', label: '人工复核' },
+      // Issue #64 运营提醒独立路由：按 #98 准入规则降级为上下文二级入口（复核页 ↔ 提醒页互为切换），
+      // 保留路由与上下文归属，不占作业中心可见菜单位。
+      { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       { path: '/workbench/channel-messages', label: '渠道消息' },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },

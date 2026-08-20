@@ -120,6 +120,13 @@ orderDraftMasterData / orderDraftReview / trackingDraftReview / 各 `*Api`）不
 > 承载结构样板与 batch A 同量级；ChannelMessagesPage 本身已较精简，净 −6 行。
 > 两页行数净减幅度与 batch A 各页（−3 ~ −9）一致。
 
+> 后续（Issue #64）：ManualReviewPage 已拆为两个路由页——`/workbench/reviews`
+> （ManualReviewPage 复核队列，保留批次上下文与 fail-closed）+ `/workbench/alerts`
+> （AlertsQueuePage 运营提醒，隐藏可路由叶子）；两页共用 `QueueTable` 承载结构、
+> 处理表单拆到 ReviewCaseDrawer / AlertDrawer，标签常量集中到 queuePresentation。
+> 旧 `?view=alerts` 分享链接由 ReviewQueueCompatRoute 重定向到新提醒路由。度量见
+> Issue #64 交付说明，本表记录的是 #97 迁移时点的行数口径。
+
 ### 本批无法套用共享组件的文件（逐页原因）
 
 FilterBar / DataTable 采用口径沿用 batch A：存在独立于工具面板的常驻筛选/查询行时用

@@ -76,7 +76,7 @@ test('待人工介入 KPI 数字可点击，直达 OPEN 完整列表，且不带
   assert.doesNotMatch(kpiLink.getAttribute('href') ?? '', /date/, 'KPI 链接不得携带时间参数');
 });
 
-test('attention 原因卡：复核原因卡直达 reason 预筛列表，提醒专用卡直达提醒队列', async () => {
+test('attention 原因卡：复核原因卡直达 reason 预筛列表，提醒专用卡直达提醒路由', async () => {
   globalThis.fetch = dashboardFetch([]);
 
   await harness.mount(['/dashboard']);
@@ -86,11 +86,27 @@ test('attention 原因卡：复核原因卡直达 reason 预筛列表，提醒�
     'a[href="/workbench/reviews?status=OPEN&reason_code=SKU_MAPPING_REQUIRED"]');
   assert.ok(reviewCard, '复核原因 attention 卡必须是链接');
   const alertCard = document.querySelector<HTMLAnchorElement>(
-    'a[href="/workbench/reviews?view=alerts"]');
-  assert.ok(alertCard, '提醒专用 attention 卡必须直达提醒队列');
+    'a[href="/workbench/alerts"]');
+  assert.ok(alertCard, '提醒专用 attention 卡必须直达运营提醒路由');
   for (const link of document.querySelectorAll<HTMLAnchorElement>('.ant-card a[href^="/workbench/reviews"]')) {
     assert.doesNotMatch(link.getAttribute('href') ?? '', /date/, 'attention 卡链接不得携带时间参数');
   }
+});
+
+test('点击提醒专用 attention 卡落在 /workbench/alerts 提醒页并拉取提醒列表', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = dashboardFetch(requests);
+
+  await harness.mount(['/dashboard']);
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /待人工介入/));
+  const alertCard = document.querySelector<HTMLAnchorElement>('a[href="/workbench/alerts"]');
+  assert.ok(alertCard, '提醒专用 attention 卡必须指向新提醒路由');
+  await harness.dispatchEvent(alertCard, new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.equal(harness.location(), '/workbench/alerts'));
+  assert.ok(requests.includes('GET /api/v1/operational-alerts?page=0&size=20&status=OPEN'),
+    '提醒页必须实际拉取提醒列表');
 });
 
 test('待人工介入明细每行可点击直达按该行上下文预筛的复核队列', async () => {
