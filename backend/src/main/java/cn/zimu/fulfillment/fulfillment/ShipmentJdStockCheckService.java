@@ -46,7 +46,7 @@ public class ShipmentJdStockCheckService {
     private static final String SOURCE_TYPE = "JD_ISC_QUERY_STOCK";
     private static final String QUANTITY_UNIT = "JD_PIECE";
 
-    private final ShipmentJdOutboundService outbound;
+    private final ShipmentJdOutboundPreparer preparer;
     private final ShipmentJdSkuMappingGateService skuGate;
     private final JDWarehouseService jdWarehouse;
     private final IdempotencyService idempotency;
@@ -57,7 +57,7 @@ public class ShipmentJdStockCheckService {
     private final ObjectMapper objectMapper;
 
     public ShipmentJdStockCheckService(
-            ShipmentJdOutboundService outbound,
+            ShipmentJdOutboundPreparer preparer,
             ShipmentJdSkuMappingGateService skuGate,
             JDWarehouseService jdWarehouse,
             IdempotencyService idempotency,
@@ -66,7 +66,7 @@ public class ShipmentJdStockCheckService {
             OrderVersionService versions,
             AuditLogService audits,
             ObjectMapper objectMapper) {
-        this.outbound = outbound;
+        this.preparer = preparer;
         this.skuGate = skuGate;
         this.jdWarehouse = jdWarehouse;
         this.idempotency = idempotency;
@@ -83,7 +83,7 @@ public class ShipmentJdStockCheckService {
                 SCOPE,
                 idempotencyKey,
                 200,
-                () -> outbound.preparePreview(shipmentId),
+                () -> preparer.preparePreview(shipmentId),
                 preview -> Map.of(
                         "shipment_id", shipmentId,
                         "shipment_version", preview.shipmentVersion(),
@@ -144,7 +144,7 @@ public class ShipmentJdStockCheckService {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("JD stock result persistence requires a database transaction");
         }
-        ShipmentJdOutboundPreviewSnapshot current = outbound.preparePreview(prepared.shipmentId());
+        ShipmentJdOutboundPreviewSnapshot current = preparer.preparePreview(prepared.shipmentId());
         if (current.shipmentVersion() != prepared.shipmentVersion()
                 || !Objects.equals(current.requestHash(), prepared.requestHash())
                 || !current.submittable()) {
