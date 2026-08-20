@@ -191,7 +191,9 @@ class SourceFileParser {
         putIfPresent(projection, "quantity", parsed.quantity());
         putIfPresent(projection, "specification", parsed.specification());
         putIfPresent(projection, "source_sku_ref", parsed.sourceSkuRef());
-        putIfPresent(projection, "source_line_ref", parsed.sourceLineRef());
+        if (channel == SourceChannel.WANQI) {
+            putIfPresent(projection, "source_line_ref", parsed.sourceLineRef());
+        }
         return projection;
     }
 

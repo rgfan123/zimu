@@ -896,7 +896,9 @@ public class SourceImportService {
                           )
                           AND NOT EXISTS (
                             SELECT 1 FROM app.review_cases rc
-                            WHERE rc.order_line_id=rll.order_line_id AND rc.status='OPEN'
+                            WHERE rc.order_line_id=rll.order_line_id
+                              AND rc.status='OPEN'
+                              AND rc.reason_code='PROVIDER_SKU_MAPPING_REQUIRED'
                           )
                         """,
                         Integer.class,
