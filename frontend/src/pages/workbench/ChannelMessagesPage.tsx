@@ -13,6 +13,8 @@ import {
 } from 'antd';
 import { ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import DataTable from '@/components/DataTable';
+import PageShell from '@/components/PageShell';
 import { errorMessage } from '@/api/client';
 import { channelMessagesApi, messageSubmissionsApi } from '@/api/endpoints';
 import type { ChannelMessageSummary, MessageSubmissionDetail } from '@/api/types';
@@ -77,27 +79,19 @@ export default function ChannelMessagesPage() {
   ];
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {list.error ? (
-        <Alert
-          type="error"
-          showIcon
-          message="消息记录加载失败"
-          description={errorMessage(list.error)}
-          action={<Button size="small" icon={<ReloadOutlined />} onClick={list.reload}>重试</Button>}
-        />
-      ) : null}
-      <Card
-        size="small"
-        title="企业微信消息"
-        extra={<Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>}
-        styles={{ body: { padding: '4px 8px' } }}
-      >
-        <Table<ChannelMessageSummary>
+    <PageShell
+      title="企业微信消息"
+      actions={<Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>}
+    >
+      <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
+        <DataTable<ChannelMessageSummary>
           rowKey="id"
           columns={columns}
           dataSource={list.data?.items ?? []}
           loading={list.loading}
+          error={list.error}
+          errorTitle="消息记录加载失败"
+          onRetry={list.reload}
           scroll={{ x: 980 }}
           pagination={{
             current: page + 1,
@@ -154,7 +148,7 @@ export default function ChannelMessagesPage() {
           <Alert type="error" showIcon message="消息详情加载失败" description={errorMessage(detail.error)} />
         ) : null}
       </Drawer>
-    </Space>
+    </PageShell>
   );
 }
 

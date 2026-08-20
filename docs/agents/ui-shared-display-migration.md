@@ -18,11 +18,11 @@
 | 批次 | 范围 | 状态 |
 |---|---|---|
 | A | `frontend/src/pages/fulfillment`（10 个生产页面，页面最多、最长） | ✅ 本批完成（Issue #97 第 1 批） |
-| B | `frontend/src/pages/workbench`（含 880 行的 ManualReviewPage） | 待后续批次 |
+| B | `frontend/src/pages/workbench`（基线 ManualReviewPage 1020 行，#95/#96 合入后实测） | ✅ 本批完成（Issue #97 第 2 批） |
 | C | `frontend/src/pages/product` 与其余页面（orders / inventory / procurement / system / dashboard / demo / analytics / agents 存量） | 待后续批次 |
 | D | 全仓最终审计：逐页核对采纳情况、更新本文件累计度量 | 待后续批次 |
 
-批次 B/C/D 开工时把实际 before/after 行数追加到下方「累计度量」并逐页登记。
+批次 C/D 开工时把实际 before/after 行数追加到下方「累计度量」并逐页登记。
 
 ## 批次 A：fulfillment（本批）
 
@@ -98,6 +98,70 @@ Descriptions 白名单结果与视图级三态不套。
     滚动（修复窄屏撑破容器，DataTable 组件设计目的之一）。
   - JdWarehousePage SDK 工具段从原头部大卡拆为独立 Card（信息分组不变）。
 
+## 批次 B：workbench（本批）
+
+### 逐页 before/after
+
+行数为本批改动前后 `wc -l` 实测（含 import 与注释）。workbench 目录实际路由页面只有
+两个（`routes.tsx` 挂载 ManualReviewPage / ChannelMessagesPage）；`index.ts` 仅 1 行
+再导出，OrderDraftReviewPanel / TrackingDraftReviewPanel 是复核抽屉内的业务表单面板，
+helper/presentation 文件（channelMessageView / manualReviewActions / jdSkuMappingReview /
+orderDraftMasterData / orderDraftReview / trackingDraftReview / 各 `*Api`）不是页面，
+均不入采纳率计数、本批零改动。
+
+| 页面 | before | after | Δ | 采用组件 | 说明 |
+|---|---|---|---|---|---|
+| ManualReviewPage | 1020 | 1013 | −7 | PageShell + FilterBar + DataTable | 页头卡 → PageShell（title/说明/图标原样，Segmented 视图切换进 actions）；复核/提醒两个筛选卡 → FilterBar（刷新按钮进 actions 右对齐）；两张列表 Table → DataTable（`scroll`/分页/空态文案原样透传）；两个列表错误 Alert → DataTable `error/errorTitle`（原无重试按钮，不新增 onRetry） |
+| ChannelMessagesPage | 240 | 234 | −6 | PageShell + DataTable | 表格 Card 的 title「企业微信消息」+ extra 刷新 → PageShell（文案不变，刷新进 actions）；列表 Table → DataTable（错误 Alert 原带重试 → `onRetry` 保留；`scroll={{ x: 980 }}`/分页原样）；FilterBar 未采用（见下） |
+| **合计** | **1260** | **1247** | **−13** | — | 2 个页面文件，净 −13 行；删掉的都是页头卡 / 错误 Alert / 筛选卡 / 表格 locale 样板，页面主体（列定义、抽屉、确认动作、批次上下文）原样保留 |
+
+> 行数说明：ManualReviewPage 是双视图作业页，业务逻辑（批次上下文卡、fail-closed
+> 校验、六个解决动作、两张抽屉、运营提醒 ACK、主数据分页加载）占绝对主体，删掉的
+> 承载结构样板与 batch A 同量级；ChannelMessagesPage 本身已较精简，净 −6 行。
+> 两页行数净减幅度与 batch A 各页（−3 ~ −9）一致。
+
+### 本批无法套用共享组件的文件（逐页原因）
+
+FilterBar / DataTable 采用口径沿用 batch A：存在独立于工具面板的常驻筛选/查询行时用
+FilterBar；存在真正的列表数据源时用 DataTable；抽屉/弹窗内明细子表与视图级三态不强套。
+
+| 页面/文件 | 组件 | 原因 |
+|---|---|---|
+| ChannelMessagesPage | FilterBar | 页面无常驻筛选/查询行：消息列表仅分页（page/size 进 query），无筛选控件；套 FilterBar 会造出空壳筛选卡。 |
+| ManualReviewPage 批次上下文 | — | 无例外：`?import_batch=` 批次上下文卡与非法标识 fail-closed Alert（#95）是业务状态承载（加载/不存在/已确认/复核中四态 + 返回链接），不是列表三态，保持原 Card/Alert；队列隐藏逻辑（非法批次整块隐藏）零改动。 |
+| ManualReviewPage 抽屉内明细子表 | DataTable | SKU 映射证据表 / 京东阻断发货明细表：抽屉内嵌套小表（pagination=false、尺寸/空文案各异），batch A 口径即「页面特写，不强套」。 |
+| OrderDraftReviewPanel / TrackingDraftReviewPanel | — | 非路由页面：复核抽屉内的业务表单面板（原始证据 + 候选映射 + 确认命令），不入采纳率计数。 |
+
+### 本批保留的自定义三态（有意为之）
+
+- ManualReviewPage 批次上下文卡（加载中 / 批次不存在 / 本批次已确认 / 正在复核导入批次）
+  与非法批次 fail-closed Alert：业务语义状态，DataTable 错误态只承载系统错误。
+- 抽屉内提交错误 Alert（`submitError` / `alertSubmitError`）：动作失败反馈，位置在表单区，
+  非列表错误态。
+
+### 可见行为核对（本批）
+
+- 既有文案零改动：页头「人工作业中心」与说明、「企业微信消息」、筛选标签（状态/事项类型/
+  责任团队）、空态（「当前没有复核事项」/「当前没有运营提醒」）、错误条标题（「复核队列
+  加载失败」/「运营提醒加载失败」/「消息记录加载失败」）、分页统计（「共 N 项」/「共 N 条」）
+  与迁移前逐字一致。
+- URL / API 零改动：#95 `?import_batch=` 批次筛选、fail-closed、批次上下文/返回路径；
+  #96 status/reason_code/responsible_team/view 的 URL 唯一事实源与 Dashboard 落地预筛；
+  ManualReview 全部业务表单/抽屉/确认动作（含运营提醒 ACK「确认已知晓」语义——
+  不推进业务状态）；ChannelMessages 消息证据/媒体读取（抽屉白名单字段与原文）/重新解释。
+  均由既有 route 测试（importBatchReviewRoute / manualReviewQueueRoute /
+  manualReviewDraftRoute / dashboardDispatchRoute）与本批新增 6 个测试固定。
+- 表格 scroll 保留原值（x: 900 / x: 980）而非 DataTable 默认 x=960：原页面即显式配置，
+  避免横向滚动行为改变。
+- 重试按钮有无与迁移前一致：ManualReviewPage 两个列表错误条原无重试 → 不传 `onRetry`
+  （不新增可见按钮）；ChannelMessagesPage 错误 Alert 原带重试 → `onRetry` 保留。
+- 有意的承载变化（与 batch A 同口径）：
+  - ManualReviewPage 页头卡换为 PageShell 渲染（图标/标题/说明/视图切换外观一致）；
+    刷新按钮从筛选行内移至 FilterBar actions 右对齐；错误条从筛选行上方移入表格上方
+    （DataTable 错误条位置）。
+  - ChannelMessagesPage 表格 Card 的 title/extra 换为 PageShell 页头（文案与按钮不变，
+    刷新按钮仍在右上角）；错误条位置同 batch A（列表上方）。
+
 ## 累计度量（供后续批次追加）
 
 以固定基线 e3e6b87（#96 合入后）为准：`frontend/src/pages` 共 54 个页面文件。
@@ -107,8 +171,8 @@ Issue #97 立项时采纳数为 PageShell 5/53、DataTable 4/53、FilterBar 3/53
 | 批次 | PageShell | FilterBar | DataTable | 备注 |
 |---|---|---|---|---|
 | 基线（e3e6b87） | 6/54 | 3/54 | 5/54 | 试点页 + Agent 中心 |
-| A fulfillment（本批） | **15/54** | **8/54** | **10/54** | +9 页 PageShell，+5 页 FilterBar/DataTable |
-| B workbench | 待追加 | 待追加 | 待追加 | ManualReviewPage 880 行为最大目标 |
+| A fulfillment（第 1 批） | **15/54** | **8/54** | **10/54** | +9 页 PageShell，+5 页 FilterBar/DataTable |
+| B workbench（第 2 批） | **17/54** | **9/54** | **12/54** | +2 页 PageShell / +2 页 DataTable（ManualReviewPage + ChannelMessagesPage），+1 页 FilterBar（ManualReviewPage 双视图筛选；ChannelMessagesPage 无常驻筛选行不套） |
 | C product + 其余 | 待追加 | 待追加 | 待追加 | |
 | D 最终审计 | 待追加 | 待追加 | 待追加 | 全仓逐页核对并收敛口径 |
 

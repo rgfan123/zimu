@@ -19,6 +19,9 @@ import {
 } from 'antd';
 import { CheckSquareOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import dayjs from 'dayjs';
 import { ApiError, errorMessage } from '@/api/client';
 import {
@@ -42,7 +45,6 @@ import {
   reviewCaseStatusSemantic,
   severitySemantic,
 } from '@/pages/shared/semanticStatus';
-import { saasVisualTokens } from '@/theme/saasTheme';
 import {
   fileJobUrlForBatch,
   invalidBatchIdMessage,
@@ -572,24 +574,19 @@ export default function ManualReviewPage() {
     : [];
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <PageShell
+      title="人工作业中心"
+      description="阻断复核需要明确解决；运营提醒只记录知晓，不推进业务状态。"
+      icon={<CheckSquareOutlined />}
+      actions={
+        <Segmented
+          value={view}
+          onChange={(value) => switchView(value as ReviewQueueView)}
+          options={[{ value: 'reviews', label: '阻断复核' }, { value: 'alerts', label: '运营提醒' }]}
+        />
+      }
+    >
       {messageContext}
-      <Card size="small" styles={{ body: { padding: '16px 18px' } }}>
-        <Space align="start" style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Space align="start" size={12}>
-            <CheckSquareOutlined style={{ color: saasVisualTokens.brand.primary, fontSize: 20, marginTop: 3 }} />
-            <div>
-              <Typography.Title level={5} style={{ margin: 0 }}>人工作业中心</Typography.Title>
-              <Typography.Text type="secondary">阻断复核需要明确解决；运营提醒只记录知晓，不推进业务状态。</Typography.Text>
-            </div>
-          </Space>
-          <Segmented
-            value={view}
-            onChange={(value) => switchView(value as ReviewQueueView)}
-            options={[{ value: 'reviews', label: '阻断复核' }, { value: 'alerts', label: '运营提醒' }]}
-          />
-        </Space>
-      </Card>
 
       {view === 'reviews' ? (
         <>
@@ -636,46 +633,44 @@ export default function ManualReviewPage() {
               ) : null}
             </Card>
           ) : null}
-          {queue.error && queueVisible ? <Alert type="error" showIcon message="复核队列加载失败" description={errorMessage(queue.error)} /> : null}
           {queueVisible ? (
-            <Card size="small">
-              <Space wrap>
-                <Typography.Text type="secondary">状态</Typography.Text>
-                <Select<ReviewCaseStatus>
-                  id="review-status-filter"
-                  value={status} style={{ width: 130 }}
-                  onChange={(value) => updateQueueFilters({ status: value })}
-                  options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value: value as ReviewCaseStatus, label }))}
-                />
-                <Typography.Text type="secondary">事项类型</Typography.Text>
-                <Select
-                  id="review-reason-filter"
-                  allowClear
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="全部事项"
-                  value={reasonCode} style={{ width: 200 }}
-                  onChange={(value) => updateQueueFilters({ reasonCode: value ?? null })}
-                  options={Object.entries(REASON_LABELS).map(([value, label]) => ({ value, label }))}
-                />
-                <Typography.Text type="secondary">责任团队</Typography.Text>
-                <Select
-                  id="review-team-filter"
-                  allowClear placeholder="全部团队"
-                  value={team} style={{ width: 160 }}
-                  onChange={(value) => updateQueueFilters({ team: value ?? null })}
-                  options={TEAM_OPTIONS}
-                />
-                <Button icon={<ReloadOutlined />} onClick={queue.reload}>刷新</Button>
-                <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{queue.data?.total_elements ?? 0} 项</Typography.Text>
-              </Space>
-            </Card>
+            <FilterBar actions={<Button icon={<ReloadOutlined />} onClick={queue.reload}>刷新</Button>}>
+              <Typography.Text type="secondary">状态</Typography.Text>
+              <Select<ReviewCaseStatus>
+                id="review-status-filter"
+                value={status} style={{ width: 130 }}
+                onChange={(value) => updateQueueFilters({ status: value })}
+                options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value: value as ReviewCaseStatus, label }))}
+              />
+              <Typography.Text type="secondary">事项类型</Typography.Text>
+              <Select
+                id="review-reason-filter"
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                placeholder="全部事项"
+                value={reasonCode} style={{ width: 200 }}
+                onChange={(value) => updateQueueFilters({ reasonCode: value ?? null })}
+                options={Object.entries(REASON_LABELS).map(([value, label]) => ({ value, label }))}
+              />
+              <Typography.Text type="secondary">责任团队</Typography.Text>
+              <Select
+                id="review-team-filter"
+                allowClear placeholder="全部团队"
+                value={team} style={{ width: 160 }}
+                onChange={(value) => updateQueueFilters({ team: value ?? null })}
+                options={TEAM_OPTIONS}
+              />
+              <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{queue.data?.total_elements ?? 0} 项</Typography.Text>
+            </FilterBar>
           ) : null}
           {queueVisible ? (
             <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
-              <Table<ReviewCase>
+              <DataTable<ReviewCase>
                 rowKey="id" loading={queue.loading} columns={reviewColumns} dataSource={items} scroll={{ x: 900 }}
-                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有复核事项" /> }}
+                error={queue.error}
+                errorTitle="复核队列加载失败"
+                emptyText={<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有复核事项" />}
                 pagination={{
                   current: page + 1, pageSize: size, total: queue.data?.total_elements ?? 0, showSizeChanger: true,
                   showTotal: (total) => `共 ${total} 项`, onChange: (nextPage, nextSize) => { setPage(nextPage - 1); setSize(nextSize); },
@@ -686,23 +681,21 @@ export default function ManualReviewPage() {
         </>
       ) : (
         <>
-          {alerts.error ? <Alert type="error" showIcon message="运营提醒加载失败" description={errorMessage(alerts.error)} /> : null}
-          <Card size="small">
-            <Space wrap>
-              <Typography.Text type="secondary">状态</Typography.Text>
-              <Select<OperationalAlertStatus>
-                value={alertStatus} style={{ width: 130 }}
-                onChange={(value) => { setAlertStatus(value); setAlertPage(0); }}
-                options={Object.entries(ALERT_STATUS_LABELS).map(([value, label]) => ({ value: value as OperationalAlertStatus, label }))}
-              />
-              <Button icon={<ReloadOutlined />} onClick={alerts.reload}>刷新</Button>
-              <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{alerts.data?.total_elements ?? 0} 项</Typography.Text>
-            </Space>
-          </Card>
+          <FilterBar actions={<Button icon={<ReloadOutlined />} onClick={alerts.reload}>刷新</Button>}>
+            <Typography.Text type="secondary">状态</Typography.Text>
+            <Select<OperationalAlertStatus>
+              value={alertStatus} style={{ width: 130 }}
+              onChange={(value) => { setAlertStatus(value); setAlertPage(0); }}
+              options={Object.entries(ALERT_STATUS_LABELS).map(([value, label]) => ({ value: value as OperationalAlertStatus, label }))}
+            />
+            <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{alerts.data?.total_elements ?? 0} 项</Typography.Text>
+          </FilterBar>
           <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
-            <Table<OperationalAlert>
+            <DataTable<OperationalAlert>
               rowKey="id" loading={alerts.loading} columns={alertColumns} dataSource={alertItems} scroll={{ x: 900 }}
-              locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有运营提醒" /> }}
+              error={alerts.error}
+              errorTitle="运营提醒加载失败"
+              emptyText={<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有运营提醒" />}
               pagination={{
                 current: alertPage + 1, pageSize: alertSize, total: alerts.data?.total_elements ?? 0, showSizeChanger: true,
                 showTotal: (total) => `共 ${total} 项`, onChange: (nextPage, nextSize) => { setAlertPage(nextPage - 1); setAlertSize(nextSize); },
@@ -1015,6 +1008,6 @@ export default function ManualReviewPage() {
           </Space>
         ) : null}
       </Drawer>
-    </Space>
+    </PageShell>
   );
 }
