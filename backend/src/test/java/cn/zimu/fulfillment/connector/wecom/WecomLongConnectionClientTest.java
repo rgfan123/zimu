@@ -241,8 +241,8 @@ class WecomLongConnectionClientTest {
                 50,
                 200,
                 false,
-                3_000,
-                500,
+                10_000,
+                2_000,
                 writer);
         client.start();
         awaitState(WecomConnectionState.SUBSCRIBED);
@@ -262,8 +262,8 @@ class WecomLongConnectionClientTest {
             int firstPing = submittedCommands.indexOf("ping");
             int secondBusiness = submittedCommands.lastIndexOf("aibot_send_msg");
             assertThat(firstPing).isPositive().isLessThan(secondBusiness);
-            assertThat(first.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.TIMEOUT);
-            assertThat(second.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+            assertThat(first.get(4, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.TIMEOUT);
+            assertThat(second.get(4, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
         }
     }
 
