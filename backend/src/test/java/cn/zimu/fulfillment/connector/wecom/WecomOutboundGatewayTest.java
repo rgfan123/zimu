@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.connector.wecom;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -12,7 +13,10 @@ import cn.zimu.fulfillment.common.audit.AuditLogService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.EntityManager;
+import java.io.IOException;
 import java.net.http.HttpClient;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -23,8 +27,12 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class WecomOutboundGatewayTest {
+
+    @TempDir
+    Path tempDir;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -203,6 +211,80 @@ class WecomOutboundGatewayTest {
             assertThat(second.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
             assertThat(storedAudits).hasSize(2);
         }
+    }
+
+
+    // ---- 素材上传（Issue #82）----
+
+    @Test
+    void uploadReturnsDeepResultAndAuditsWithoutContentOrMediaIdLeak() throws Exception {
+        byte[] content = new byte[700_000];
+        for (int i = 0; i < content.length; i++) {
+            content[i] = (byte) (i * 7);
+        }
+        Path file = Files.write(tempDir.resolve("export.xlsx"), content);
+
+        WecomUploadResult result = gateway.upload(file, "export.xlsx", WecomMediaType.FILE);
+
+        assertThat(result.status()).isEqualTo(WecomUploadStatus.SUCCESS);
+        assertThat(result.mediaId()).isNotBlank();
+        assertThat(result.mediaType()).isEqualTo("file");
+        assertThat(result.createdAt()).isNotNull();
+        assertThat(result.acknowledgedAt()).isNotNull();
+        assertThat(result.uploadId()).isNotBlank();
+        assertThat(result.requestId()).isNotBlank();
+
+        AuditLog audit = storedAudits.getLast();
+        assertThat(audit.getActorType()).isEqualTo(AuditActorType.SYSTEM);
+        assertThat(audit.getService()).isEqualTo("wecom-outbound");
+        assertThat(audit.getOperation()).isEqualTo("wecom.media.upload");
+        assertThat(audit.getBusinessCode()).isEqualTo("WECOM_UPLOAD_SUCCESS");
+        assertThat(audit.getRequestPayload())
+                .containsEntry("media_type", "file")
+                .containsEntry("file_bytes", (long) content.length);
+        assertThat(audit.getResponsePayload())
+                .containsEntry("status", "SUCCESS")
+                .containsEntry("step", "FINISH")
+                .containsEntry("retryable", false)
+                .containsEntry("upload_id", result.uploadId());
+
+        // 审计不落文件内容与 media_id（结果携带 media_id，审计投影不携带）
+        String requestJson = MAPPER.writeValueAsString(audit.getRequestPayload());
+        String responseJson = MAPPER.writeValueAsString(audit.getResponsePayload());
+        assertThat(requestJson).doesNotContain("export.xlsx").doesNotContain("base64");
+        assertThat(responseJson).doesNotContain(result.mediaId()).doesNotContain("base64");
+    }
+
+    @Test
+    void uploadValidationRejectsBeforeAnyFrameAndWritesNoAudit() throws Exception {
+        Path file = Files.write(tempDir.resolve("tiny.xlsx"), new byte[] {1, 2, 3, 4});
+
+        assertThatThrownBy(() -> gateway.upload(file, "tiny.xlsx", WecomMediaType.FILE))
+                .isInstanceOf(WecomUploadValidationException.class)
+                .hasMessageContaining("5")
+                .satisfies(ex -> assertThat(((WecomUploadValidationException) ex).code())
+                        .isEqualTo("UPLOAD_FILE_TOO_SMALL"));
+        assertThat(server.textFrames().stream().filter(frame -> frame.contains("aibot_upload_media_init")))
+                .isEmpty();
+        assertThat(storedAudits).isEmpty();
+    }
+
+    @Test
+    void uploadOnDisconnectedGatewayFailsFastWithoutFrames() throws Exception {
+        client.shutdown();
+        Path file = Files.write(tempDir.resolve("export.xlsx"), new byte[] {1, 2, 3, 4, 5, 6, 7, 8});
+
+        WecomUploadResult result = gateway.upload(file, "export.xlsx", WecomMediaType.FILE);
+
+        assertThat(result.status()).isEqualTo(WecomUploadStatus.FAILED);
+        assertThat(result.step()).isEqualTo("INIT");
+        assertThat(result.errorMessage()).isEqualTo("CONNECTION_NOT_READY");
+        assertThat(result.retryable()).isTrue();
+        assertThat(result.mediaId()).isNull();
+        assertThat(server.textFrames().stream().filter(frame -> frame.contains("aibot_upload_media_init")))
+                .isEmpty();
+        assertThat(storedAudits).hasSize(1);
+        assertThat(storedAudits.getLast().getBusinessCode()).isEqualTo("WECOM_UPLOAD_FAILED");
     }
 
     private List<JsonNode> sendMessageFrames() {

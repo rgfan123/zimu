@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
@@ -64,6 +65,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private final long heartbeatMillis;
     private final long ackTimeoutMillis;
     private final FrameWriter frameWriter;
+    private final WecomMediaUploader uploader;
 
     private final AtomicReference<WebSocket> socket = new AtomicReference<>();
     private final AtomicLong attemptCounter = new AtomicLong();
@@ -188,6 +190,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 : Math.max(derivedWatchdog, heartbeatMillis * 3 / 2);
         this.ackTimeoutMillis = Math.max(1, ackTimeoutMillis);
         this.frameWriter = frameWriter;
+        this.uploader = new WecomMediaUploader(this, objectMapper);
         this.frameSenderThread = new Thread(this::frameSendLoop, "wecom-frame-sender");
         this.frameSenderThread.setDaemon(true);
         this.frameSenderThread.start();
@@ -234,7 +237,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
 
     @Override
     public WecomSendResult send(WecomOutboundMessage message) {
-        if (!running || stateHolder.state() != WecomConnectionState.SUBSCRIBED || socket.get() == null) {
+        if (!outboundReady()) {
             return WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true);
         }
 
@@ -247,42 +250,92 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         body.put("msgtype", message.type().protocolValue());
         body.putObject(message.type().protocolValue()).put("content", message.content());
 
+        AckOutcome outcome = awaitAck(frame, requestId, ackTimeoutMillis);
+        return switch (outcome.kind()) {
+            case ACKED -> {
+                int errorCode = outcome.errcode();
+                if (errorCode == 0) {
+                    yield WecomSendResult.success(requestId, outcome.ack().receivedAt());
+                }
+                String errorMessage = text(outcome.ack().frame(), "errmsg");
+                yield WecomSendResult.failed(
+                        requestId,
+                        errorCode,
+                        errorMessage == null || errorMessage.isBlank() ? "WECOM_REJECTED" : errorMessage,
+                        false);
+            }
+            case TIMEOUT -> WecomSendResult.timeout(requestId);
+            case LOST -> WecomSendResult.failed(requestId, null, outcome.reason(), false);
+            case NOT_READY -> WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true);
+            case BACKPRESSURE -> WecomSendResult.failed(null, null, "OUTBOUND_BACKPRESSURE", true);
+            case SEND_FAILED -> WecomSendResult.failed(requestId, null, "TRANSPORT_SEND_FAILED", false);
+        };
+    }
+
+    /**
+     * 三步分片素材上传（委托内部 {@link WecomMediaUploader} 执行 init/chunk/finish 状态机；
+     * 上传帧走本客户端的有界发送队列与心跳优先级，ack 复用 {@link #awaitAck} 关联）。
+     */
+    @Override
+    public WecomUploadResult upload(Path file, String filename, WecomMediaType type) {
+        return uploader.upload(file, filename, type);
+    }
+
+    /**
+     * 当前是否可提交出站帧（运行中、已订阅且有 socket）。
+     *
+     * @return 可提交返回 true
+     */
+    boolean outboundReady() {
+        return running && stateHolder.state() == WecomConnectionState.SUBSCRIBED && socket.get() != null;
+    }
+
+    /**
+     * 测试观察 seam（只读，package-private）：当前排队中（已入队未写出）的心跳帧数。
+     * 发送线程被单个 send 阻塞时该计数只增不减，供事件驱动测试替代固定睡眠。
+     */
+    int queuedHeartbeatFrameCount() {
+        return queuedHeartbeatFrames.get();
+    }
+
+    /** 测试观察 seam（只读）：当前排队中的业务帧数。 */
+    int queuedBusinessFrameCount() {
+        return queuedBusinessFrames.get();
+    }
+
+    /**
+     * 通用 request/ack seam（#81 抽取）：注册 pending、入队发送、等待按 req_id 关联的应答。
+     * 断线/关闭/发送超时导致的 pending 由 {@link #failPendingAcks} 确定性失败为 LOST；
+     * ack 超时返回 TIMEOUT。send 与 upload 共用同一套竞态逻辑。
+     */
+    AckOutcome awaitAck(ObjectNode frame, String requestId, long timeoutMillis) {
         CompletableFuture<ReceivedAck> pending = new CompletableFuture<>();
         pendingAcks.put(requestId, pending);
         FrameSendStatus submission = awaitSubmission(enqueueRaw(frame));
         if (submission != FrameSendStatus.SENT) {
             pendingAcks.remove(requestId, pending);
             return switch (submission) {
-                case NOT_READY -> WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true);
-                case BACKPRESSURE -> WecomSendResult.failed(null, null, "OUTBOUND_BACKPRESSURE", true);
-                case FAILED -> WecomSendResult.failed(requestId, null, "TRANSPORT_SEND_FAILED", false);
+                case NOT_READY -> AckOutcome.notReady();
+                case BACKPRESSURE -> AckOutcome.backpressure();
+                case FAILED -> AckOutcome.sendFailed();
                 case SENT -> throw new IllegalStateException("handled above");
             };
         }
         try {
-            ReceivedAck ack = pending.get(ackTimeoutMillis, TimeUnit.MILLISECONDS);
-            int errorCode = errcode(ack.frame());
-            if (errorCode == 0) {
-                return WecomSendResult.success(requestId, ack.receivedAt());
-            }
-            String errorMessage = text(ack.frame(), "errmsg");
-            return WecomSendResult.failed(
-                    requestId,
-                    errorCode,
-                    errorMessage == null || errorMessage.isBlank() ? "WECOM_REJECTED" : errorMessage,
-                    false);
+            ReceivedAck ack = pending.get(timeoutMillis, TimeUnit.MILLISECONDS);
+            return AckOutcome.acked(ack);
         } catch (java.util.concurrent.TimeoutException ex) {
-            return WecomSendResult.timeout(requestId);
+            return AckOutcome.timeout();
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            return WecomSendResult.failed(requestId, null, "ACK_WAIT_INTERRUPTED", false);
+            return AckOutcome.lost("ACK_WAIT_INTERRUPTED");
         } catch (java.util.concurrent.ExecutionException ex) {
             if (ex.getCause() instanceof PendingAckFailure failure) {
-                return WecomSendResult.failed(requestId, null, failure.getMessage(), false);
+                return AckOutcome.lost(failure.getMessage());
             }
-            return WecomSendResult.failed(requestId, null, "ACK_WAIT_FAILED", false);
+            return AckOutcome.lost("ACK_WAIT_FAILED");
         } catch (Exception ex) {
-            return WecomSendResult.failed(requestId, null, "ACK_WAIT_FAILED", false);
+            return AckOutcome.lost("ACK_WAIT_FAILED");
         } finally {
             pendingAcks.remove(requestId, pending);
         }
@@ -725,7 +778,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     }
 
     /** errcode 判定：优先 body.errcode，其次顶层 errcode；缺失视为失败（fail closed）。 */
-    private static int errcode(JsonNode frame) {
+    static int errcode(JsonNode frame) {
         JsonNode body = frame.path("body");
         JsonNode value = body.isObject() && !body.path("errcode").isMissingNode()
                 ? body.path("errcode")
@@ -748,7 +801,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         return type;
     }
 
-    private static String text(JsonNode node, String field) {
+    static String text(JsonNode node, String field) {
         if (node == null || node.isMissingNode() || node.isNull()) {
             return null;
         }
@@ -782,7 +835,64 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         }
     }
 
-    private record ReceivedAck(JsonNode frame, Instant receivedAt) {}
+    record ReceivedAck(JsonNode frame, Instant receivedAt) {}
+
+    /**
+     * request/ack 结局：ACKED 携带按 req_id 关联的应答；TIMEOUT 为 ack 超时（发送已提交，
+     * 结局未知）；LOST 为断线/关闭导致的确定性失败（pending 被 {@link #failPendingAcks} 完成）；
+     * NOT_READY/BACKPRESSURE 表示帧未进入发送队列（可安全重试）；SEND_FAILED 表示 socket 发送失败。
+     */
+    record AckOutcome(Kind kind, ReceivedAck ack, String reason) {
+
+        enum Kind {
+            ACKED,
+            TIMEOUT,
+            LOST,
+            NOT_READY,
+            BACKPRESSURE,
+            SEND_FAILED
+        }
+
+        AckOutcome {
+            if ((kind == Kind.ACKED) != (ack != null)) {
+                throw new IllegalArgumentException("ACKED requires an ack and only ACKED carries one");
+            }
+        }
+
+        static AckOutcome acked(ReceivedAck ack) {
+            return new AckOutcome(Kind.ACKED, ack, null);
+        }
+
+        static AckOutcome timeout() {
+            return new AckOutcome(Kind.TIMEOUT, null, null);
+        }
+
+        static AckOutcome lost(String reason) {
+            return new AckOutcome(Kind.LOST, null, reason);
+        }
+
+        static AckOutcome notReady() {
+            return new AckOutcome(Kind.NOT_READY, null, null);
+        }
+
+        static AckOutcome backpressure() {
+            return new AckOutcome(Kind.BACKPRESSURE, null, null);
+        }
+
+        static AckOutcome sendFailed() {
+            return new AckOutcome(Kind.SEND_FAILED, null, null);
+        }
+
+        /** ACKED 应答的 errcode（fail closed：缺失视为失败）。 */
+        int errcode() {
+            return WecomLongConnectionClient.errcode(ack.frame());
+        }
+
+        /** ACKED 应答 body 字段文本。 */
+        String bodyText(String field) {
+            return WecomLongConnectionClient.text(ack.frame().path("body"), field);
+        }
+    }
 
     @FunctionalInterface
     interface FrameWriter {

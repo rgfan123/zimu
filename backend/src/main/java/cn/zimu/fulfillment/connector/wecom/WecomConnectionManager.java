@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import java.nio.file.Path;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
@@ -84,6 +85,14 @@ public class WecomConnectionManager implements WecomOutboundTransport {
         return current == null
                 ? WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true)
                 : current.send(message);
+    }
+
+    @Override
+    public WecomUploadResult upload(Path file, String filename, WecomMediaType type) {
+        WecomLongConnectionClient current = client;
+        return current == null
+                ? WecomUploadResult.failed(null, "INIT", "CONNECTION_NOT_READY", true, null, null)
+                : current.upload(file, filename, type);
     }
 
     public WecomConnectionStateHolder stateHolder() {
