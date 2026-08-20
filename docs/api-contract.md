@@ -115,6 +115,7 @@
 | POST | `/api/v1/import-batches/source-orders` | `multipart/form-data` 上传来源表；必须显式选 `NEW` 或 `REVISION` |
 | POST | `/api/v1/import-batches/{batch_id}/confirm` | 对一个已识别且无阻断问题的来源批次作一次整体确认，并生成履约指令 |
 | GET | `/api/v1/import-batches/{batch_id}` | 导入批次结果、渠道指纹、行统计、复核数与自动生成的履约导出 |
+| POST | `/api/v1/import-batches/{batch_id}/source-attribution-corrections` | 追加来源渠道归因纠正；不改写原批次、订单、原始行、文件、审计或幂等快照 |
 | GET | `/api/v1/import-batches/{batch_id}/rows` | 逐行查看原值、解析结果、订单/行血缘和错误 |
 | GET | `/api/v1/import-batches/{batch_id}/source-return-exports` | 阶段性/最终来源回填版本 |
 | GET | `/api/v1/source-return-exports/{export_id}/file` | 下载指定来源回填版本并写 AuditLog |

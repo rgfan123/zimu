@@ -48,12 +48,9 @@ public class AnalyticsController {
                 """);
         List<Object> args = new ArrayList<>();
         addDateFilters(sql, args, dateFrom, dateTo);
-        if (sourceChannel != null) {
-            sql.append(" AND source_channel = ?");
-            args.add(sourceChannel.name());
-        }
+        addSourceChannelFilter(sql, args, "source_channel", sourceChannel);
         sql.append(" ORDER BY metric_date, source_channel");
-        return jdbc.queryForList(sql.toString(), args.toArray());
+        return normalizeHistoricalSourceChannel(jdbc.queryForList(sql.toString(), args.toArray()));
     }
 
     @GetMapping("/products")
@@ -109,16 +106,14 @@ public class AnalyticsController {
                 """);
         List<Object> args = new ArrayList<>();
         addDateFilters(sql, args, dateFrom, dateTo);
-        if (sourceChannel != null) {
-            sql.append(" AND source_channel = ?");
-            args.add(sourceChannel.name());
-        }
+        addSourceChannelFilter(sql, args, "v.source_channel", sourceChannel);
         addEqualFilter(sql, args, "product_id", productId);
         addEqualFilter(sql, args, "sku_id", skuId);
         addEqualFilter(sql, args, "category_id", categoryId);
         sql.append(" ORDER BY metric_date, source_channel, product_id, sku_id");
         List<Map<String, Object>> rows = jdbc.queryForList(sql.toString(), args.toArray());
         rows.forEach(row -> {
+            normalizeHistoricalSourceChannel(row);
             row.put("source_mappings", parseJsonArray((String) row.remove("source_mappings_json")));
             row.put("jd_sku_codes", parseJsonArray((String) row.remove("jd_sku_codes_json")));
         });
@@ -175,16 +170,39 @@ public class AnalyticsController {
                 """);
         List<Object> args = new ArrayList<>();
         addDateFilters(sql, args, dateFrom, dateTo, "v.metric_date");
-        if (sourceChannel != null) {
-            sql.append(" AND v.source_channel = ?");
-            args.add(sourceChannel.name());
-        }
+        addSourceChannelFilter(sql, args, "v.source_channel", sourceChannel);
         if (providerId != null) {
             sql.append(" AND fp.id = ?");
             args.add(providerId);
         }
         sql.append(" ORDER BY v.metric_date, v.source_channel, v.provider_code");
-        return jdbc.queryForList(sql.toString(), args.toArray());
+        return normalizeHistoricalSourceChannel(jdbc.queryForList(sql.toString(), args.toArray()));
+    }
+
+    private static void addSourceChannelFilter(
+            StringBuilder sql, List<Object> args, String column, SourceChannel sourceChannel) {
+        if (sourceChannel == null) {
+            return;
+        }
+        if (sourceChannel == SourceChannel.DAZHE) {
+            sql.append(" AND ").append(column).append(" IN (?, ?)");
+            args.add(SourceChannel.DAZHE.name());
+            args.add(SourceChannel.WANGQI.name());
+            return;
+        }
+        sql.append(" AND ").append(column).append(" = ?");
+        args.add(sourceChannel.name());
+    }
+
+    private static List<Map<String, Object>> normalizeHistoricalSourceChannel(List<Map<String, Object>> rows) {
+        rows.forEach(AnalyticsController::normalizeHistoricalSourceChannel);
+        return rows;
+    }
+
+    private static void normalizeHistoricalSourceChannel(Map<String, Object> row) {
+        if (SourceChannel.WANGQI.name().equals(row.get("source_channel"))) {
+            row.put("source_channel", SourceChannel.DAZHE.name());
+        }
     }
 
     private static void addDateFilters(

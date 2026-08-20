@@ -34,6 +34,10 @@ public class OrderLine extends AuditableEntity {
     @Column(name = "sku_id")
     private Long skuId;
 
+    /** 静态礼包主数据引用；当单定制礼包与普通 SKU 行为 null。 */
+    @Column(name = "bundle_id")
+    private Long bundleId;
+
     @Column(name = "fulfillment_provider_id")
     private Long fulfillmentProviderId;
 
@@ -105,6 +109,14 @@ public class OrderLine extends AuditableEntity {
 
     public void setSkuId(Long skuId) {
         this.skuId = skuId;
+    }
+
+    public Long getBundleId() {
+        return bundleId;
+    }
+
+    public void setBundleId(Long bundleId) {
+        this.bundleId = bundleId;
     }
 
     public Long getFulfillmentProviderId() {

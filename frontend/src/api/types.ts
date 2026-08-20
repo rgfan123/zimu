@@ -5,7 +5,7 @@
 
 // ---------- 枚举 ----------
 
-export type SourceChannel = 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG' | 'ZHONGHUI' | 'WECOM';
+export type SourceChannel = 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG' | 'ZHONGHUI' | 'WANGQI' | 'DAZHE' | 'WANQI' | 'WECOM';
 
 export type OrderStatus =
   | 'RECEIVED'
@@ -82,8 +82,8 @@ export interface Receiver {
 }
 
 export interface Settlement {
-  method: string;
-  settlement_time?: string;
+  method: string | null;
+  settlement_time?: string | null;
 }
 
 export interface OrderSummary {
@@ -700,6 +700,9 @@ export interface ImportBatch {
   parent_import_batch_id?: string;
   revision_no: number;
   source_channel?: SourceChannel;
+  recorded_source_channel_display_name?: string | null;
+  effective_source_channel_display_name?: string | null;
+  source_channel_display_name?: string | null;
   fulfillment_provider_id?: string;
   source_fulfillment_export_id?: string;
   template_family: string;
@@ -710,6 +713,7 @@ export interface ImportBatch {
   status: string;
   confirmed_at?: string | null;
   confirmed_by?: string | null;
+  settlement_missing: boolean;
   row_counts: ImportRowCounts;
   generated_fulfillment_export_ids?: string[];
   generated_source_return_export_ids?: string[];

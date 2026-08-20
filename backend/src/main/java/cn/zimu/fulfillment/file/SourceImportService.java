@@ -4,6 +4,7 @@ import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
+import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
@@ -15,6 +16,7 @@ import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundService;
 import cn.zimu.fulfillment.order.OrderCreateService;
 import cn.zimu.fulfillment.order.domain.LineType;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
+import cn.zimu.fulfillment.order.dto.BundleComponentInput;
 import cn.zimu.fulfillment.order.dto.CanonicalOrderInput;
 import cn.zimu.fulfillment.order.dto.CustomerInput;
 import cn.zimu.fulfillment.order.dto.OrderDetailDto;
@@ -100,13 +102,13 @@ public class SourceImportService {
         long started = System.nanoTime();
         String mode = normalizeMode(importMode, parentBatchId);
         ParsedSourceFile parsed = parser.parse(bytes);
+        ParentBatch parent = validateParent(mode, parentBatchId, parsed);
+        parsed = effectiveRevisionSource(parsed, parent);
         String sha256 = sha256(bytes);
         Long existing = existing(parsed, sha256, mode, parentBatchId);
         if (existing != null) {
             return get(existing);
         }
-
-        ParentBatch parent = validateParent(mode, parentBatchId, parsed);
         String batchNo = "IMP-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
         String safeFilename = safeFilename(originalFilename);
         Path retained = retain(bytes, sha256, parsed.csv() ? ".csv" : ".xlsx");
@@ -116,8 +118,8 @@ public class SourceImportService {
                 INSERT INTO app.import_batches
                     (batch_no, batch_type, import_mode, parent_import_batch_id, revision_no,
                      source_channel, template_family, template_version, template_fingerprint,
-                     original_file_name, content_sha256, file_ref, status, uploaded_by)
-                VALUES (?, 'SOURCE_ORDER', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING', ?)
+                     original_file_name, content_sha256, file_ref, status, uploaded_by, settlement_missing)
+                VALUES (?, 'SOURCE_ORDER', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING', ?, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -132,7 +134,8 @@ public class SourceImportService {
                 safeFilename,
                 sha256,
                 retained.toString(),
-                context.operator());
+                context.operator(),
+                parsed.sourceChannel() == SourceChannel.WANQI);
 
         Map<RowKey, Long> rawIds = new LinkedHashMap<>();
         for (ParsedSourceRow row : parsed.rows()) {
@@ -164,17 +167,27 @@ public class SourceImportService {
                 group.forEach(row -> markReview(batchId, row, "IMPORT_VALIDATION", "同一来源订单的收货人快照不一致"));
                 continue;
             }
-            CanonicalOrderInput orderInput = canonical(parsed, batchNo, entry.getKey(), group);
+            CanonicalizedGroup canonical = canonical(parsed, batchNo, entry.getKey(), group);
             OrderDetailDto order = orderCreateService.createImported(
-                            orderInput,
+                            canonical.order(),
                             batchId,
                             "import-" + batchId + "-" + sha256(entry.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8)),
                             context)
                     .result();
+            int lineCursor = 0;
             for (int index = 0; index < group.size(); index++) {
                 ParsedSourceRow row = group.get(index);
-                OrderLineDto line = order.lines().get(index);
-                String errorCode = importErrorCode(line.exceptionCode());
+                int partitionCount = canonical.partitionCounts().get(index);
+                List<OrderLineDto> partitionLines = order.lines().subList(lineCursor, lineCursor + partitionCount);
+                lineCursor += partitionCount;
+                OrderLineDto primaryLine = partitionLines.getFirst();
+                String errorCode = partitionLines.stream()
+                        .map(OrderLineDto::exceptionCode)
+                        .filter(Objects::nonNull)
+                        .map(this::importErrorCode)
+                        .filter(Objects::nonNull)
+                        .findFirst()
+                        .orElse(null);
                 jdbc.update(
                         """
                         UPDATE app.raw_import_rows
@@ -183,12 +196,25 @@ public class SourceImportService {
                         """,
                         errorCode == null ? "ACCEPTED" : "NEED_REVIEW",
                         errorCode,
-                        errorCode == null ? null : json(Map.of("order_line_exception", line.exceptionCode())),
+                        errorCode == null ? null : json(Map.of(
+                                "order_line_exceptions",
+                                partitionLines.stream().map(OrderLineDto::exceptionCode).filter(Objects::nonNull).toList())),
                         Long.valueOf(order.id()),
-                        Long.valueOf(line.id()),
+                        Long.valueOf(primaryLine.id()),
                         batchId,
                         row.sheetIndex(),
                         row.rowIndex());
+                Long rawId = rawIds.get(new RowKey(row.sheetIndex(), row.rowIndex()));
+                for (int partitionNo = 0; partitionNo < partitionLines.size(); partitionNo++) {
+                    jdbc.update(
+                            """
+                            INSERT INTO app.raw_import_row_order_lines(raw_import_row_id, order_line_id, partition_no)
+                            VALUES (?, ?, ?)
+                            """,
+                            rawId,
+                            Long.valueOf(partitionLines.get(partitionNo).id()),
+                            partitionNo + 1);
+                }
             }
         }
 
@@ -198,7 +224,8 @@ public class SourceImportService {
                         "idempotency_key", idempotencyKey,
                         "original_file_name", safeFilename,
                         "content_sha256", sha256,
-                        "import_mode", mode));
+                        "import_mode", mode,
+                        "settlement_missing", parsed.sourceChannel() == SourceChannel.WANQI));
     }
 
     /** 批次收尾共享：counts → 状态（NEED_REVIEW 阻断 confirm 语义不变）→ SYSTEM/HUMAN 审计。 */
@@ -374,13 +401,15 @@ public class SourceImportService {
             Long orderLineId,
             String errorCode,
             String errorDetail) {
-        jdbc.update(
+        Long rawId = jdbc.queryForObject(
                 """
                 INSERT INTO app.raw_import_rows
                     (import_batch_id, sheet_name, sheet_index, row_index, raw_cells,
                      source_order_ref, status, error_code, error_detail, order_id, order_line_id)
                 VALUES (?, 'STRUCTURED', 0, ?, ?::jsonb, ?, ?, ?, ?::jsonb, ?, ?)
+                RETURNING id
                 """,
+                Long.class,
                 batchId,
                 rowIndex,
                 json(rowCells(order, itemIndex)),
@@ -390,6 +419,15 @@ public class SourceImportService {
                 errorDetail,
                 orderId,
                 orderLineId);
+        if (orderLineId != null) {
+            jdbc.update(
+                    """
+                    INSERT INTO app.raw_import_row_order_lines(raw_import_row_id, order_line_id, partition_no)
+                    VALUES (?, ?, 1)
+                    """,
+                    rawId,
+                    orderLineId);
+        }
     }
 
     /** 结构化导入的内容哈希幂等查询；与 uq_import_content_scope（batch_type+sha+channel+provider+export）语义对齐。 */
@@ -455,12 +493,16 @@ public class SourceImportService {
     Map<String, Object> get(long batchId) {
         List<Map<String, Object>> rows = jdbc.query(
                 """
-                SELECT id, batch_no, batch_type, import_mode, parent_import_batch_id, revision_no,
-                       source_channel, fulfillment_provider_id, source_fulfillment_export_id,
-                       template_family, template_version, template_fingerprint, original_file_name,
-                       content_sha256, status, error_detail::text error_detail, received_at, processed_at,
-                       confirmed_at, confirmed_by
-                FROM app.import_batches WHERE id=?
+                SELECT ib.id, ib.batch_no, ib.batch_type, ib.import_mode, ib.parent_import_batch_id, ib.revision_no,
+                       ib.source_channel, source.recorded_source_channel, source.effective_source_channel,
+                       ib.fulfillment_provider_id, ib.source_fulfillment_export_id,
+                       ib.template_family, ib.template_version, ib.template_fingerprint, ib.original_file_name,
+                       ib.content_sha256, ib.status, ib.error_detail::text error_detail,
+                       ib.received_at, ib.processed_at, ib.confirmed_at, ib.confirmed_by,
+                       ib.settlement_missing
+                FROM app.import_batches ib
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
+                WHERE ib.id=?
                 """,
                 (resultSet, rowNum) -> {
                     Map<String, Object> value = new LinkedHashMap<>();
@@ -471,6 +513,14 @@ public class SourceImportService {
                     value.put("parent_import_batch_id", nullableId(resultSet.getObject("parent_import_batch_id")));
                     value.put("revision_no", resultSet.getInt("revision_no"));
                     value.put("source_channel", resultSet.getString("source_channel"));
+                    String recordedSource = resultSet.getString("recorded_source_channel");
+                    String effectiveSource = resultSet.getString("effective_source_channel");
+                    value.put("recorded_source_channel_display_name",
+                            SourceChannelDisplayNames.displayName(recordedSource));
+                    value.put("effective_source_channel_display_name",
+                            SourceChannelDisplayNames.displayName(effectiveSource));
+                    value.put("source_channel_display_name",
+                            SourceChannelDisplayNames.displayName(effectiveSource));
                     value.put("fulfillment_provider_id", nullableId(resultSet.getObject("fulfillment_provider_id")));
                     value.put("source_fulfillment_export_id", nullableId(resultSet.getObject("source_fulfillment_export_id")));
                     value.put("template_family", resultSet.getString("template_family"));
@@ -486,6 +536,7 @@ public class SourceImportService {
                     value.put("confirmed_at", resultSet.getTimestamp("confirmed_at") == null
                             ? null : resultSet.getTimestamp("confirmed_at").toInstant());
                     value.put("confirmed_by", resultSet.getString("confirmed_by"));
+                    value.put("settlement_missing", resultSet.getBoolean("settlement_missing"));
                     return value;
                 },
                 batchId);
@@ -642,26 +693,22 @@ public class SourceImportService {
         }
     }
 
-    private CanonicalOrderInput canonical(
+    private CanonicalizedGroup canonical(
             ParsedSourceFile parsed, String batchNo, String groupKey, List<ParsedSourceRow> rows) {
         ParsedSourceRow first = rows.getFirst();
         CustomerInput customer = importedCustomers.resolve(
                 parsed.sourceChannel(), first.receiverName(), first.receiverPhone());
-        List<OrderItemInput> items = rows.stream()
-                .map(row -> new OrderItemInput(
-                        row.sourceLineRef(),
-                        LineType.SINGLE,
-                        null,
-                        row.sourceSkuRef(),
-                        row.productName(),
-                        row.specification(),
-                        row.unit(),
-                        new BigDecimal(row.quantity()).setScale(3).toPlainString(),
-                        null))
-                .toList();
+        List<OrderItemInput> items = new ArrayList<>();
+        List<Integer> partitionCounts = new ArrayList<>();
+        for (ParsedSourceRow row : rows) {
+            List<OrderItemInput> rowItems = canonicalItems(parsed.sourceChannel(), row);
+            items.addAll(rowItems);
+            partitionCounts.add(rowItems.size());
+        }
         Instant settlementAt = rows.stream().map(ParsedSourceRow::orderedAt).filter(Objects::nonNull)
-                .min(Comparator.naturalOrder()).orElse(Instant.now());
-        return new CanonicalOrderInput(
+                .min(Comparator.naturalOrder()).orElseGet(
+                        () -> parsed.sourceChannel() == SourceChannel.WANQI ? null : Instant.now());
+        CanonicalOrderInput order = new CanonicalOrderInput(
                 parsed.sourceChannel(),
                 first.sourceOrderRef() == null ? groupKey : first.sourceOrderRef(),
                 batchNo,
@@ -670,9 +717,131 @@ public class SourceImportService {
                         first.receiverName(), first.receiverPhone(), first.receiverProvince(), first.receiverCity(),
                         first.receiverDistrict(), null, first.receiverAddress()),
                 items,
-                new Settlement(SettlementMethod.valueOf(first.settlementMethod()), settlementAt),
+                "UNSPECIFIED".equals(first.settlementMethod())
+                        ? Settlement.unspecifiedSourceFact()
+                        : new Settlement(SettlementMethod.valueOf(first.settlementMethod()), settlementAt),
                 first.remark(),
                 rows.stream().map(row -> "import://" + batchNo + "/" + row.sheetIndex() + "/" + row.rowIndex()).toList());
+        return new CanonicalizedGroup(order, List.copyOf(partitionCounts));
+    }
+
+    /**
+     * 大者/万齐显式礼包映射优先于普通来源 SKU 映射；其他渠道和非礼包行保持既有 SINGLE 语义。
+     *
+     * <p>显式命中权威礼包后，组件按所属履约方稳定分组为多个同质订单行。组件身份使用内部
+     * sku_code 快照；EMG 是京东履约编码，不能冒充来源渠道 SKU 映射。
+     */
+    private List<OrderItemInput> canonicalItems(SourceChannel channel, ParsedSourceRow row) {
+        StaticSourceBundle sourceBundle = activeSourceBundle(channel, row.sourceSkuRef());
+        if (sourceBundle == null) {
+            if (bundleSourceChannel(channel) && looksLikeBundle(row.productName())) {
+                return List.of(unresolvedBundleItem(row));
+            }
+            return List.of(singleItem(row));
+        }
+        List<StaticBundleComponent> components = jdbc.query(
+                """
+                SELECT s.fulfillment_provider_id, s.sku_code, p.product_name, s.specification, s.unit,
+                       bi.quantity_per_bundle
+                FROM app.bundle_items bi
+                JOIN app.skus s ON s.id=bi.sku_id
+                JOIN app.products p ON p.id=s.product_id
+                WHERE bi.bundle_id=?
+                ORDER BY bi.sort_no
+                """,
+                (resultSet, rowNum) -> new StaticBundleComponent(
+                        resultSet.getLong("fulfillment_provider_id"),
+                        new BundleComponentInput(
+                                resultSet.getString("sku_code"),
+                                null,
+                                resultSet.getString("product_name"),
+                                resultSet.getString("specification"),
+                                resultSet.getString("unit"),
+                                resultSet.getBigDecimal("quantity_per_bundle").toPlainString())),
+                sourceBundle.bundleId());
+        Map<Long, List<BundleComponentInput>> byProvider = new LinkedHashMap<>();
+        for (StaticBundleComponent component : components) {
+            byProvider.computeIfAbsent(component.providerId(), ignored -> new ArrayList<>()).add(component.input());
+        }
+        return byProvider.values().stream()
+                .map(providerComponents -> new OrderItemInput(
+                        row.sourceLineRef(),
+                        LineType.CUSTOM_BUNDLE,
+                        null,
+                        row.sourceSkuRef(),
+                        row.productName(),
+                        row.specification(),
+                        row.unit(),
+                        quantity(row),
+                        Long.toString(sourceBundle.bundleId()),
+                        List.copyOf(providerComponents)))
+                .toList();
+    }
+
+    /**
+     * 大者/万齐名称明确表示礼包/组合但未命中 ACTIVE 主数据时，构造一个必然未映射的组件候选，
+     * 复用订单应用层 SKU_MAPPING_REQUIRED 分支进入人工复核；禁止降级 SINGLE 后误命中普通 SKU。
+     */
+    private OrderItemInput unresolvedBundleItem(ParsedSourceRow row) {
+        String ref = "__BUNDLE_MAPPING_REQUIRED__:" + row.sourceSkuRef();
+        BundleComponentInput unresolved = new BundleComponentInput(
+                null, ref, row.productName(), row.specification(), row.unit(), "1");
+        return new OrderItemInput(
+                row.sourceLineRef(),
+                LineType.CUSTOM_BUNDLE,
+                null,
+                row.sourceSkuRef(),
+                row.productName(),
+                row.specification(),
+                row.unit(),
+                quantity(row),
+                List.of(unresolved));
+    }
+
+    private boolean looksLikeBundle(String productName) {
+        return productName != null
+                && (productName.contains("礼包") || productName.contains("礼盒") || productName.contains("组合"));
+    }
+
+    private StaticSourceBundle activeSourceBundle(SourceChannel channel, String sourceSkuRef) {
+        if (!bundleSourceChannel(channel) || sourceSkuRef == null || sourceSkuRef.isBlank()) {
+            return null;
+        }
+        List<StaticSourceBundle> matches = jdbc.query(
+                """
+                SELECT scb.bundle_id
+                FROM app.source_channel_bundles scb
+                JOIN app.product_bundles pb ON pb.id=scb.bundle_id AND pb.status='ACTIVE'
+                WHERE scb.source_channel=? AND scb.source_bundle_ref=?
+                  AND scb.active AND scb.quantity_multiplier=1
+                """,
+                (resultSet, rowNum) -> new StaticSourceBundle(resultSet.getLong("bundle_id")),
+                channel.name(),
+                sourceSkuRef);
+        return matches.isEmpty() ? null : matches.getFirst();
+    }
+
+    private boolean bundleSourceChannel(SourceChannel channel) {
+        return channel == SourceChannel.DAZHE
+                || channel == SourceChannel.WANGQI
+                || channel == SourceChannel.WANQI;
+    }
+
+    private OrderItemInput singleItem(ParsedSourceRow row) {
+        return new OrderItemInput(
+                row.sourceLineRef(),
+                LineType.SINGLE,
+                null,
+                row.sourceSkuRef(),
+                row.productName(),
+                row.specification(),
+                row.unit(),
+                quantity(row),
+                null);
+    }
+
+    private String quantity(ParsedSourceRow row) {
+        return new BigDecimal(row.quantity()).setScale(3).toPlainString();
     }
 
     @Transactional
@@ -702,20 +871,39 @@ public class SourceImportService {
                 List<Long> sdkShipments = (List<Long>) routing.get("jd_sdk_shipment_ids");
                 Integer uncoveredAcceptedRows = jdbc.queryForObject(
                         """
+                        WITH raw_line_links AS (
+                            SELECT rir.id raw_row_id, rir.order_line_id
+                            FROM app.raw_import_rows rir
+                            WHERE rir.import_batch_id=? AND rir.order_line_id IS NOT NULL
+                            UNION
+                            SELECT rirol.raw_import_row_id, rirol.order_line_id
+                            FROM app.raw_import_row_order_lines rirol
+                            JOIN app.raw_import_rows rir ON rir.id=rirol.raw_import_row_id
+                            WHERE rir.import_batch_id=?
+                        )
                         SELECT count(*)
                         FROM app.raw_import_rows rir
+                        JOIN raw_line_links rll ON rll.raw_row_id=rir.id
                         WHERE rir.import_batch_id=? AND rir.status='ACCEPTED'
                           AND NOT EXISTS (
                             SELECT 1 FROM app.fulfillment_export_items fei
-                            WHERE fei.raw_import_row_id=rir.id
+                            WHERE fei.raw_import_row_id=rir.id AND fei.order_line_id=rll.order_line_id
                           )
                           AND NOT EXISTS (
                             SELECT 1 FROM app.shipment_items si
                             JOIN app.fulfillments f ON f.id=si.fulfillment_id
-                            WHERE f.order_line_id=rir.order_line_id
+                            WHERE f.order_line_id=rll.order_line_id
+                          )
+                          AND NOT EXISTS (
+                            SELECT 1 FROM app.review_cases rc
+                            WHERE rc.order_line_id=rll.order_line_id
+                              AND rc.status='OPEN'
+                              AND rc.reason_code='PROVIDER_SKU_MAPPING_REQUIRED'
                           )
                         """,
                         Integer.class,
+                        batchId,
+                        batchId,
                         batchId);
                 if (uncoveredAcceptedRows != null && uncoveredAcceptedRows > 0) {
                     throw BusinessException.conflict(
@@ -883,18 +1071,55 @@ public class SourceImportService {
             return null;
         }
         List<ParentBatch> parents = jdbc.query(
-                "SELECT source_channel, revision_no FROM app.import_batches WHERE id=? AND batch_type='SOURCE_ORDER'",
+                """
+                SELECT source.recorded_source_channel, source.effective_source_channel,
+                       source.effective_template_family, source.effective_template_fingerprint,
+                       ib.revision_no
+                FROM app.import_batches ib
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
+                WHERE ib.id=? AND ib.batch_type='SOURCE_ORDER'
+                """,
                 (resultSet, rowNum) -> new ParentBatch(
-                        resultSet.getString("source_channel"), resultSet.getInt("revision_no")),
+                        resultSet.getString("recorded_source_channel"),
+                        resultSet.getString("effective_source_channel"),
+                        resultSet.getString("effective_template_family"),
+                        resultSet.getString("effective_template_fingerprint"),
+                        resultSet.getInt("revision_no")),
                 parentBatchId);
         if (parents.isEmpty()) {
             throw BusinessException.unprocessable("REVISION_PARENT_NOT_FOUND", "REVISION 父批次不存在");
         }
         ParentBatch parent = parents.getFirst();
-        if (!parent.sourceChannel().equals(parsed.sourceChannel().name())) {
+        boolean exactEffectiveChannel = parent.effectiveSourceChannel().equals(parsed.sourceChannel().name());
+        boolean correctedLegacyIdentity = parent.recordedSourceChannel().equals(parsed.sourceChannel().name())
+                && sameTemplateIdentity(parent.effectiveTemplateFamily(), parsed.templateFamily())
+                && sameTemplateIdentity(parent.effectiveTemplateFingerprint(), parsed.templateFingerprint());
+        if (!exactEffectiveChannel && !correctedLegacyIdentity) {
             throw BusinessException.unprocessable("REVISION_CHANNEL_MISMATCH", "REVISION 必须与父批次属于同一来源渠道");
         }
         return parent;
+    }
+
+    private ParsedSourceFile effectiveRevisionSource(ParsedSourceFile parsed, ParentBatch parent) {
+        if (parent == null || parent.effectiveSourceChannel().equals(parsed.sourceChannel().name())) {
+            return parsed;
+        }
+        return new ParsedSourceFile(
+                SourceChannel.valueOf(parent.effectiveSourceChannel()),
+                parent.effectiveTemplateFamily(),
+                parsed.templateVersion(),
+                parent.effectiveTemplateFingerprint(),
+                parsed.csv(),
+                parsed.rows());
+    }
+
+    private boolean sameTemplateIdentity(String left, String right) {
+        return templateSuffix(left).equals(templateSuffix(right));
+    }
+
+    private String templateSuffix(String value) {
+        int separator = value.indexOf(value.contains("-") ? '-' : '_');
+        return separator < 0 ? value : value.substring(separator);
     }
 
     private String normalizeMode(String importMode, Long parentBatchId) {
@@ -911,10 +1136,12 @@ public class SourceImportService {
     private Long existing(ParsedSourceFile parsed, String hash, String mode, Long parentBatchId) {
         List<Long> ids = jdbc.query(
                 """
-                SELECT id FROM app.import_batches
-                WHERE batch_type='SOURCE_ORDER' AND source_channel=? AND content_sha256=? AND import_mode=?
-                  AND parent_import_batch_id IS NOT DISTINCT FROM ?
-                ORDER BY id LIMIT 1
+                SELECT ib.id FROM app.import_batches ib
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
+                WHERE ib.batch_type='SOURCE_ORDER' AND source.effective_source_channel=?
+                  AND ib.content_sha256=? AND ib.import_mode=?
+                  AND ib.parent_import_batch_id IS NOT DISTINCT FROM ?
+                ORDER BY ib.id LIMIT 1
                 """,
                 (resultSet, rowNum) -> resultSet.getLong(1),
                 parsed.sourceChannel().name(),
@@ -999,6 +1226,14 @@ public class SourceImportService {
         }
     }
 
-    private record ParentBatch(String sourceChannel, int revisionNo) {}
+    private record ParentBatch(
+            String recordedSourceChannel,
+            String effectiveSourceChannel,
+            String effectiveTemplateFamily,
+            String effectiveTemplateFingerprint,
+            int revisionNo) {}
     private record RowKey(int sheetIndex, int rowIndex) {}
+    private record StaticSourceBundle(long bundleId) {}
+    private record StaticBundleComponent(long providerId, BundleComponentInput input) {}
+    private record CanonicalizedGroup(CanonicalOrderInput order, List<Integer> partitionCounts) {}
 }
