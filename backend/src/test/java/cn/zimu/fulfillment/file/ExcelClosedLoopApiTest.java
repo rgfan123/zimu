@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -13,6 +14,7 @@ import java.util.Map;
 import java.util.zip.ZipInputStream;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -319,6 +321,16 @@ class ExcelClosedLoopApiTest {
                 .contains("attachment", ".xlsx");
         byte[] instruction = instructionResponse.getBody();
         assertThat(instruction).startsWith((byte) 'P', (byte) 'K');
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(instruction))) {
+            DataFormatter formatter = new DataFormatter();
+            var sheet = workbook.getSheetAt(0);
+            Map<String, Integer> columns = new LinkedHashMap<>();
+            for (int index = 0; index < sheet.getRow(0).getLastCellNum(); index++) {
+                columns.put(formatter.formatCellValue(sheet.getRow(0).getCell(index)), index);
+            }
+            assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(columns.get("来源渠道"))))
+                    .isEqualTo("飞象");
+        }
 
         byte[] returned = fillThirdPartyTracking(instruction);
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();

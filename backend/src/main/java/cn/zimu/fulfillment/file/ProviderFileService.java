@@ -3,6 +3,7 @@ package cn.zimu.fulfillment.file;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
@@ -622,7 +623,8 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     private ExportRow continuationRow(long fulfillmentId, BigDecimal instructedQuantity, String continuationRemark) {
         List<ExportRow> rows = jdbc.query(
                 """
-                SELECT rir.id raw_row_id, o.id order_id, o.order_no, o.source_channel, o.source_ref,
+                SELECT rir.id raw_row_id, o.id order_id, o.order_no,
+                       source.effective_source_channel source_channel, o.source_ref,
                        o.settlement_time ordered_at, o.remark,
                        o.receiver_name, o.receiver_phone, o.receiver_address,
                        ol.id order_line_id, ol.line_no, ol.product_name_snapshot, ol.specification_snapshot,
@@ -635,6 +637,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 JOIN app.fulfillment_providers fp ON fp.id=f.fulfillment_provider_id AND fp.active
                 JOIN app.provider_skus ps ON ps.fulfillment_provider_id=fp.id AND ps.sku_id=ol.sku_id AND ps.active
                 JOIN app.raw_import_rows rir ON rir.order_line_id=ol.id AND rir.status='ACCEPTED'
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=rir.import_batch_id
                 WHERE f.id=? ORDER BY rir.id LIMIT 1
                 """,
                 (resultSet, rowNum) -> new ExportRow(
@@ -675,7 +678,8 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     JOIN app.raw_import_rows rir ON rir.id=rirol.raw_import_row_id
                     WHERE rir.import_batch_id=?
                 )
-                SELECT rir.id raw_row_id, o.id order_id, o.order_no, o.source_channel, o.source_ref,
+                SELECT rir.id raw_row_id, o.id order_id, o.order_no,
+                       source.effective_source_channel source_channel, o.source_ref,
                        o.settlement_time ordered_at, o.remark,
                        o.receiver_name, o.receiver_phone, o.receiver_address,
                        ol.id order_line_id, ol.line_no,
@@ -691,6 +695,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                        ps.provider_sku_code
                 FROM app.raw_import_rows rir
                 JOIN raw_line_links rll ON rll.raw_row_id=rir.id
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=rir.import_batch_id
                 JOIN app.orders o ON o.id=rir.order_id AND o.data_scope='BUSINESS'
                 JOIN app.order_lines ol ON ol.id=rll.order_line_id AND ol.processing_stage='READY_TO_EXPORT'
                 JOIN app.fulfillments f ON f.order_line_id=ol.id
@@ -786,7 +791,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
         cells.put("履约方编码", source.providerCode());
         cells.put("履约方名称", source.providerName());
         cells.put("内部订单号", source.orderNo());
-        cells.put("来源渠道", sourceChannelDisplayName(source.sourceChannel()));
+        cells.put("来源渠道", SourceChannelDisplayNames.displayName(source.sourceChannel()));
         cells.put("来源订单号", source.sourceRef());
         cells.put("订单行号", source.lineNo());
         if (source.orderLineComponentId() != null) {
@@ -801,19 +806,6 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
         cells.put("单位", source.unit());
         cells.put("请求发货数量", source.requestedQuantity().toPlainString());
         return cells;
-    }
-
-    private String sourceChannelDisplayName(String sourceChannel) {
-        return switch (sourceChannel) {
-            case "CAISHIXIAN" -> "彩食鲜";
-            case "JUFUBAO" -> "聚福宝";
-            case "FEIXIANG" -> "飞象";
-            case "ZHONGHUI" -> "中汇";
-            case "DAZHE", "WANGQI" -> "大者";
-            case "WANQI" -> "万齐";
-            case "WECOM" -> "企业微信";
-            default -> throw new IllegalStateException("unsupported source channel: " + sourceChannel);
-        };
     }
 
     PageResponse<Map<String, Object>> list(int page, int size, Long providerId, String usageStatus) {

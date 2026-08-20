@@ -35,6 +35,12 @@ ALTER TABLE app.source_channel_bundles ADD CONSTRAINT source_channel_bundles_sou
 INSERT INTO app.connector_configs (source_channel, config) VALUES
     ('WANQI', '{"carrier_mappings":{}}'::JSONB);
 
+ALTER TABLE app.source_attribution_corrections
+    DROP CONSTRAINT source_attribution_corrections_channel_check;
+ALTER TABLE app.source_attribution_corrections
+    ADD CONSTRAINT source_attribution_corrections_channel_check
+    CHECK (attributed_source_channel IN ('DAZHE', 'WANGQI', 'WANQI'));
+
 -- 万齐 52 列源文件没有结账方式/时间。缺失事实只允许该文件来源使用；
 -- 其他入口仍由 DTO @NotNull 校验，并由本约束要求非空时间。
 ALTER TABLE app.orders DROP CONSTRAINT orders_settlement_method_check;

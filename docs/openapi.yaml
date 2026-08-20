@@ -664,6 +664,29 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ImportBatch' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/import-batches/{batch_id}/source-attribution-corrections:
+    parameters:
+      - $ref: '#/components/parameters/BatchId'
+    post:
+      tags: [Imports]
+      operationId: correctSourceAttribution
+      summary: 追加来源渠道归因纠正
+      description: 原批次、订单、原始行、文件、审计和幂等快照均不改写。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceAttributionCorrectionWrite' }
+      responses:
+        '201':
+          description: 新增的归因纠正及回填文件处置结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceAttributionCorrection' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/import-batches/{batch_id}/confirm:
     parameters:
       - $ref: '#/components/parameters/BatchId'
@@ -3478,6 +3501,9 @@ components:
         parent_import_batch_id: { $ref: '#/components/schemas/Identifier' }
         revision_no: { type: integer, minimum: 1 }
         source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        source_channel_display_name: { type: string, example: 大者 }
+        recorded_source_channel_display_name: { type: string, example: 万齐 }
+        effective_source_channel_display_name: { type: string, example: 大者 }
         fulfillment_provider_id: { $ref: '#/components/schemas/Identifier' }
         source_fulfillment_export_id: { $ref: '#/components/schemas/Identifier' }
         template_family: { type: string }
@@ -4119,6 +4145,37 @@ components:
         tracking_cutoff_at: { type: string, format: date-time }
         file_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         generated_at: { type: string, format: date-time }
+        valid: { type: boolean }
+        invalidation_reason: { type: string, nullable: true }
+        push_status: { type: string, enum: [NOT_PUSHED, PUSHING, SUCCESS, FAILED] }
+    SourceAttributionCorrectionWrite:
+      type: object
+      required: [source_channel_display_name, reason]
+      properties:
+        source_channel_display_name:
+          type: string
+          enum: [大者, 万齐]
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        evidence: { type: object, additionalProperties: true }
+    SourceAttributionCorrection:
+      type: object
+      required:
+        - id
+        - import_batch_id
+        - correction_no
+        - recorded_source_channel_display_name
+        - effective_source_channel_display_name
+        - reason
+        - invalidated_source_return_count
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        import_batch_id: { $ref: '#/components/schemas/Identifier' }
+        correction_no: { type: integer, minimum: 1 }
+        recorded_source_channel_display_name: { type: string, example: 万齐 }
+        effective_source_channel_display_name: { type: string, example: 大者 }
+        reason: { type: string }
+        invalidated_source_return_count: { type: integer, minimum: 0 }
+        successor_source_return_export_id: { $ref: '#/components/schemas/Identifier' }
     ReviewCase:
       type: object
       required: [id, case_no, case_type, responsible_team, reason_code, status, detail, allowed_actions, version, created_at]

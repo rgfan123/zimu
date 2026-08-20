@@ -3,6 +3,7 @@ package cn.zimu.fulfillment.file;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingCommand;
@@ -270,7 +271,14 @@ public class TrackingFileService {
                 Long.class,
                 sourceBatchId);
         List<Long> existingFinal = jdbc.queryForList(
-                "SELECT id FROM app.source_return_exports WHERE import_batch_id=? AND is_final ORDER BY id",
+                """
+                SELECT sre.id FROM app.source_return_exports sre
+                WHERE sre.import_batch_id=? AND sre.is_final
+                  AND NOT EXISTS (
+                      SELECT 1 FROM app.source_return_export_invalidations invalidation
+                      WHERE invalidation.source_return_export_id=sre.id)
+                ORDER BY sre.id
+                """,
                 Long.class,
                 sourceBatchId);
         if (!existingFinal.isEmpty()) {
@@ -541,9 +549,13 @@ public class TrackingFileService {
     List<Map<String, Object>> listSourceReturns(long sourceBatchId) {
         return jdbc.query(
                 """
-                SELECT id, import_batch_id, version_no, is_final, template_version,
-                       tracking_cutoff_at, file_sha256, generated_at
-                FROM app.source_return_exports WHERE import_batch_id=? ORDER BY version_no
+                SELECT sre.id, sre.import_batch_id, sre.version_no, sre.is_final, sre.template_version,
+                       sre.tracking_cutoff_at, sre.file_sha256, sre.generated_at, sre.push_status,
+                       invalidation.reason_code invalidation_reason
+                FROM app.source_return_exports sre
+                LEFT JOIN app.source_return_export_invalidations invalidation
+                  ON invalidation.source_return_export_id=sre.id
+                WHERE sre.import_batch_id=? ORDER BY sre.version_no
                 """,
                 (resultSet, rowNum) -> {
                     Map<String, Object> result = new LinkedHashMap<>();
@@ -555,6 +567,10 @@ public class TrackingFileService {
                     result.put("tracking_cutoff_at", resultSet.getTimestamp("tracking_cutoff_at").toInstant());
                     result.put("file_sha256", resultSet.getString("file_sha256"));
                     result.put("generated_at", resultSet.getTimestamp("generated_at").toInstant());
+                    String invalidationReason = resultSet.getString("invalidation_reason");
+                    result.put("valid", invalidationReason == null);
+                    result.put("invalidation_reason", invalidationReason);
+                    result.put("push_status", resultSet.getString("push_status"));
                     return result;
                 }, sourceBatchId);
     }
@@ -562,12 +578,19 @@ public class TrackingFileService {
     ProviderFileService.FileDownload downloadSourceReturn(long returnId, CommandContext context) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 """
-                SELECT sre.file_ref, sre.template_version, ib.source_channel
-                FROM app.source_return_exports sre JOIN app.import_batches ib ON ib.id=sre.import_batch_id
+                SELECT sre.file_ref, sre.template_version, source.effective_source_channel,
+                       invalidation.id invalidation_id
+                FROM app.source_return_exports sre
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=sre.import_batch_id
+                LEFT JOIN app.source_return_export_invalidations invalidation
+                  ON invalidation.source_return_export_id=sre.id
                 WHERE sre.id=?
                 """, returnId);
         if (rows.isEmpty()) throw BusinessException.notFound("来源回填文件不存在");
-        String channel = rows.getFirst().get("source_channel").toString();
+        if (rows.getFirst().get("invalidation_id") != null) {
+            throw BusinessException.conflict("SOURCE_RETURN_INVALIDATED", "该来源回填文件已因来源归因纠正而失效");
+        }
+        String channel = rows.getFirst().get("effective_source_channel").toString();
         String templateVersion = rows.getFirst().get("template_version").toString();
         String suffix = "FEIXIANG".equals(channel) ? ".csv" : ".xlsx";
         String contentType = "FEIXIANG".equals(channel)
@@ -581,7 +604,7 @@ public class TrackingFileService {
                 .service("source-return-export").operation("file.download")
                 .requestPayload(Map.of("export_id", returnId)).httpStatus(200).businessCode("FILE_DOWNLOADED"));
         return new ProviderFileService.FileDownload(
-                "source-return-" + returnId + suffix,
+                SourceChannelDisplayNames.displayName(channel) + "-来源回填-" + returnId + suffix,
                 fileStore.read(rows.getFirst().get("file_ref").toString()),
                 contentType);
     }
@@ -639,11 +662,30 @@ public class TrackingFileService {
     private SourceBatch sourceBatch(long sourceBatchId) {
         return jdbc.queryForObject(
                 """
-                SELECT source_channel, template_version, file_ref FROM app.import_batches WHERE id=?
+                SELECT source.effective_source_channel, ib.template_version, ib.file_ref
+                FROM app.import_batches ib
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
+                WHERE ib.id=?
                 """,
                 (resultSet, rowNum) -> new SourceBatch(
-                        resultSet.getString("source_channel"), resultSet.getString("template_version"),
+                        resultSet.getString("effective_source_channel"), resultSet.getString("template_version"),
                         resultSet.getString("file_ref")), sourceBatchId);
+    }
+
+    Long regenerateSourceReturnAfterAttributionCorrection(long sourceBatchId, String operator) {
+        List<Long> trackingBatchIds = jdbc.queryForList(
+                """
+                SELECT generated_from_tracking_batch_id
+                FROM app.source_return_exports
+                WHERE import_batch_id=? AND generated_from_tracking_batch_id IS NOT NULL
+                ORDER BY version_no DESC LIMIT 1
+                """,
+                Long.class,
+                sourceBatchId);
+        return generateSourceReturn(
+                sourceBatchId,
+                trackingBatchIds.isEmpty() ? null : trackingBatchIds.getFirst(),
+                operator);
     }
 
     private List<ReturnRow> returnRows(long sourceBatchId) {
@@ -660,8 +702,8 @@ public class TrackingFileService {
                 JOIN app.shipment_items si ON si.fulfillment_id=f.id AND si.shipped_quantity>0
                 JOIN app.shipments s ON s.id=si.shipment_id
                 JOIN app.trackings t ON t.shipment_id=s.id
-                JOIN app.import_batches ib ON ib.id=rir.import_batch_id
-                JOIN app.connector_configs cc ON cc.source_channel=ib.source_channel
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=rir.import_batch_id
+                JOIN app.connector_configs cc ON cc.source_channel=source.effective_source_channel
                 WHERE rir.import_batch_id=? AND rir.status='ACCEPTED'
                   AND s.shipment_sequence=(SELECT MIN(s2.shipment_sequence) FROM app.shipments s2
                                            JOIN app.shipment_items si2 ON si2.shipment_id=s2.id

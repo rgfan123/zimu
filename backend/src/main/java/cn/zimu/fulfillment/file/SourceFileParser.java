@@ -98,7 +98,8 @@ class SourceFileParser {
                 if (candidate.channel() == SourceChannel.JUFUBAO && isJufubaoSummary(cells)) {
                     break;
                 }
-                if (candidate.channel() == SourceChannel.WANGQI && isWangqiPurchaseTotal(cells)) {
+                if ((candidate.channel() == SourceChannel.DAZHE || candidate.channel() == SourceChannel.WANGQI)
+                        && isWangqiPurchaseTotal(cells)) {
                     continue;
                 }
                 rows.add(map(candidate.channel(), candidate.sheet().getSheetName(), candidate.sheetIndex(), index + 1, cells));
@@ -162,10 +163,10 @@ class SourceFileParser {
             SourceChannel channel, String sheetName, int sheetIndex, int rowIndex, Map<String, String> cells) {
         return switch (channel) {
             case CAISHIXIAN -> caishixian(sheetName, sheetIndex, rowIndex, cells);
+            case DAZHE -> wangqi(sheetName, sheetIndex, rowIndex, cells);
             case JUFUBAO -> jufubao(sheetName, sheetIndex, rowIndex, cells);
             case FEIXIANG -> feixiang(sheetName, sheetIndex, rowIndex, cells);
             case ZHONGHUI -> zhonghui(sheetName, sheetIndex, rowIndex, cells);
-            case DAZHE -> wangqi(sheetName, sheetIndex, rowIndex, cells);
             case WANGQI -> wangqi(sheetName, sheetIndex, rowIndex, cells);
             case WANQI -> wanqi52(sheetName, sheetIndex, rowIndex, cells);
             case WECOM -> throw new IllegalArgumentException("WECOM is not a file source adapter");
@@ -448,10 +449,10 @@ class SourceFileParser {
     private boolean eligibleSheet(SourceChannel channel, int index, String name) {
         return switch (channel) {
             case CAISHIXIAN -> index == 0;
+            case DAZHE -> index == 0;
             case JUFUBAO -> "sheet1".equals(name);
             case FEIXIANG -> index == 0;
             case ZHONGHUI -> index == 0;
-            case DAZHE -> index == 0;
             case WANGQI -> index == 0;
             case WANQI -> index == 0;
             case WECOM -> false;
@@ -573,7 +574,7 @@ class SourceFileParser {
         map.put(SourceChannel.FEIXIANG, Set.of("订单号", "订单商品ID", "可发货数量", "物流状态", "物流公司", "物流单号"));
         map.put(SourceChannel.ZHONGHUI, Set.of(
                 "订单号", "商品编号", "商品名称", "件数", "收件人", "收件电话", "收件地址", "包装规格", "单位"));
-        map.put(SourceChannel.WANGQI, Set.of(
+        map.put(SourceChannel.DAZHE, Set.of(
                 "渠道订单号", "主商品编码", "供应商商品名称", "商品名称", "订单商品状态",
                 "采购单价(元)", "商品数量", "收货人", "收货人手机", "收货人详细地址",
                 "预计到货时间", "渠道下单时间", "渠道支付时间", "快递单号", "快递公司"));
