@@ -22,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p><b>异步闭环</b>：每个写动作在入队事务内落一条 {@code agent_runs} 行
  * （run_mode=PREVIEW，12 决策 3：隔离草稿试跑，轮询复用 T12 的 {@code GET /api/agent-runs}）
- * 并入队一条 {@code app.async_tasks} 任务（载荷 JSON 存 payload_ref，V40 放宽为 TEXT）；
+ * 并入队一条 {@code app.async_tasks} 任务（载荷 JSON 存 payload_ref，V44 放宽为 TEXT）；
  * 任务执行期把门禁结果/确认影响范围等明细经 {@code agent_tool_calls} 合成行落库——T12 的
  * run 详情（含工具调用序列）即轮询面，不另建任务查询端点。任务 maxAttempts=1：业务失败
  * 重试无意义，幂等由「目标状态幂等」承担（confirm 已 active 同版本 → 200 同步重放、并发

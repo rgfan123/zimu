@@ -29,7 +29,7 @@
 
 ### 202 → 轮询闭环（复用 agent_runs，不另建任务查询面）
 
-- 每个写动作在入队事务内原子落：`agent_runs` 行（`run_mode=PREVIEW`，status RUNNING，含 slug/version/input_digest/业务实体关联）+ `async_tasks` 行（载荷 JSON 存 `payload_ref`——V40 迁移把该列放宽为 TEXT，草稿全量 JSON 放得下；任务幂等键每次请求唯一：任务级去重会把「失败后重试」锁死，幂等由目标状态承担）。
+- 每个写动作在入队事务内原子落：`agent_runs` 行（`run_mode=PREVIEW`，status RUNNING，含 slug/version/input_digest/业务实体关联）+ `async_tasks` 行（载荷 JSON 存 `payload_ref`——V44 迁移把该列放宽为 TEXT，草稿全量 JSON 放得下；任务幂等键每次请求唯一：任务级去重会把「失败后重试」锁死，幂等由目标状态承担）。
 - `AgentDefinitionWorker`（@Scheduled 轮询，按类型领取不抢消息/QUALITY 任务，租约式，maxAttempts=1）执行后收口运行行 SUCCESS/FAILED（`error_type` 稳定码），门禁明细/影响范围经 `agent_tool_calls` 合成行落库（`agent_gate` / `agent_invariant_eval` / `agent_draft_persist` / `agent_confirm` / `agent_reject` / `agent_set_enabled` / `agent_rollback`）——T12 的 `GET /api/agent-runs/{runId}` 详情含工具调用序列（12 票已列明），轮询一次即拿「能否确认」全貌。
 - **表达不了的**：门禁 blockers 列表在 `agent_runs` 自身列放不下（error_type 是 VARCHAR(64) 稳定码），用 `agent_tool_calls` 合成行承载；若 T12 详情实现时未含 tool_calls，需在 12 侧补。除此之外任务状态（提交即 RUNNING、终态 SUCCESS/FAILED + 稳定码）完全由 agent_runs 表达，未扩任何查询面。
 - 两处任务入口行为一致：人工建草稿（本票）与 Meta-Agent run（13）共享同一任务存储/载荷形态/PREVIEW 运行行与轮询面（13 票建在本票基建之上）。
@@ -63,7 +63,7 @@
 
 ### 其他
 
-- V40 迁移：`async_tasks.payload_ref` VARCHAR(512) → TEXT（草稿全量载荷）。不新增表/列。
+- V44 迁移（部署兼容修复前原编号 V40）：`async_tasks.payload_ref` VARCHAR(512) → TEXT（草稿全量载荷）。不新增表/列。
 - `AgentDraftService.insertDefinition` 改包可见（rollback 复制复用同一落库 SQL），无行为变化。
 - 门禁引擎与工具注册表懒解析（`ObjectProvider`，与 AgentDraftService 同款语义）：`AgentDefinitionWriteService` 经 `ObjectProvider<AgentGateEngine>`、`AgentInvariantEval` 经 `ObjectProvider<McpToolRegistry>` 取依赖——McpToolRegistry → McpWriteTools → ShipmentJdOutboundService → JdWriteOpsClient（`@ConditionalOnProperty app.jd.client-mode=REAL` 条件装配）这条链只在任务真正执行时拉起，避免无 JD 配置的上下文（client-mode 缺失/为空时两个客户端 bean 都不装配）启动即失败。
 - 已知口径：rollback 复制的草稿携带目标版本当时的 enabled 值（全量复制语义，启停是正交运维动作，确认前可再 set-enabled）。

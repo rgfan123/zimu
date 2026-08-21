@@ -1,4 +1,5 @@
--- 11（异步任务基建 + 定义域写端点）：async_tasks.payload_ref 承载任务载荷。
+-- V44: 异步任务基建（原规划编号 V40，部署兼容修复后追加为 V44）：
+-- async_tasks.payload_ref 承载任务载荷。
 --
 -- 既有 message-worker 的 payload_ref 是引用（submission:123 / slug:version:runId），
 -- VARCHAR(512) 足够；T11 的 AGENT_DRAFT_CREATE 任务需要把完整草稿 JSON（system_prompt

@@ -4675,20 +4675,9 @@ CREATE INDEX idx_bundle_aliases_value ON app.bundle_aliases(alias_type, alias_va
 CREATE INDEX idx_order_lines_bundle ON app.order_lines(bundle_id) WHERE bundle_id IS NOT NULL;
 -- END V39__add_static_bundle_master.sql
 
--- BEGIN V40__widen_async_task_payload.sql
--- 11（异步任务基建 + 定义域写端点）：async_tasks.payload_ref 承载任务载荷。
---
--- 既有 message-worker 的 payload_ref 是引用（submission:123 / slug:version:runId），
--- VARCHAR(512) 足够；T11 的 AGENT_DRAFT_CREATE 任务需要把完整草稿 JSON（system_prompt
--- 上限 32000 字符，05 门禁长度）随任务传递（12 决策 5：建草稿 = 202 任务内闭环，
--- 草稿落库发生在任务执行中，落库前无引用可指），512 字符放不下 → 放宽为 TEXT。
--- 不新增列、不改表结构其余部分；claim/succeed/fail 的查询不受列宽影响。
-ALTER TABLE app.async_tasks
-    ALTER COLUMN payload_ref TYPE TEXT;
--- END V40__widen_async_task_payload.sql
 
--- BEGIN V41__add_wangqi_source_bundle_mappings.sql
--- V41: 万齐来源渠道 + 静态礼包显式映射。
+-- BEGIN V40__add_wangqi_source_bundle_mappings.sql
+-- V40: 万齐来源渠道 + 静态礼包显式映射。
 -- 万齐订单表是独立来源渠道；来源礼包编号只能显式指向已 ACTIVE 的静态礼包。
 
 ALTER TABLE app.customer_source_refs DROP CONSTRAINT customer_source_refs_source_channel_check;
@@ -4769,9 +4758,9 @@ FOR EACH ROW EXECUTE FUNCTION app.validate_source_channel_bundle();
 CREATE TRIGGER trg_source_channel_bundles_updated_at
 BEFORE UPDATE ON app.source_channel_bundles
 FOR EACH ROW EXECUTE FUNCTION app.set_updated_at();
--- END V41__add_wangqi_source_bundle_mappings.sql
+-- END V40__add_wangqi_source_bundle_mappings.sql
 
--- BEGIN V42__add_source_attribution_corrections.sql
+-- BEGIN V41__add_source_attribution_corrections.sql
 -- 追加式来源归因纠正：历史批次/订单/原始行不改写，有效归因取最新纠正。
 
 ALTER TABLE app.customer_source_refs DROP CONSTRAINT customer_source_refs_source_channel_check;
@@ -5113,9 +5102,9 @@ $$;
 
 INSERT INTO app.order_event_types (code, display_name) VALUES
     ('SOURCE_ATTRIBUTION_CORRECTED', '来源归因已纠正');
--- END V42__add_source_attribution_corrections.sql
+-- END V41__add_source_attribution_corrections.sql
 
--- BEGIN V43__add_wanqi_52_source_channel.sql
+-- BEGIN V42__add_wanqi_52_source_channel.sql
 -- 真实万齐订单管理导出使用独立 52 列来源渠道。
 -- 既有 WANGQI 技术值承载的是大者 15 列历史事实，禁止覆盖或改写。
 
@@ -5178,9 +5167,9 @@ ALTER TABLE app.import_batches
     ADD CONSTRAINT import_batches_settlement_missing_source_check CHECK (
         NOT settlement_missing OR (batch_type = 'SOURCE_ORDER' AND source_channel = 'WANQI')
     );
--- END V43__add_wanqi_52_source_channel.sql
+-- END V42__add_wanqi_52_source_channel.sql
 
--- BEGIN V44__mixed_provider_static_bundle_partitions.sql
+-- BEGIN V43__mixed_provider_static_bundle_partitions.sql
 -- 静态礼包允许跨履约方；下单时按履约方拆成多个同质 CUSTOM_BUNDLE OrderLine。
 -- V39/V40 已部署，所有调整只能追加在本迁移中。
 
@@ -5379,7 +5368,20 @@ BEGIN
     RETURN NEW;
 END;
 $$;
--- END V44__mixed_provider_static_bundle_partitions.sql
+-- END V43__mixed_provider_static_bundle_partitions.sql
+
+-- BEGIN V44__widen_async_task_payload.sql
+-- V44: 异步任务基建（原规划编号 V40，部署兼容修复后追加为 V44）：
+-- async_tasks.payload_ref 承载任务载荷。
+--
+-- 既有 message-worker 的 payload_ref 是引用（submission:123 / slug:version:runId），
+-- VARCHAR(512) 足够；T11 的 AGENT_DRAFT_CREATE 任务需要把完整草稿 JSON（system_prompt
+-- 上限 32000 字符，05 门禁长度）随任务传递（12 决策 5：建草稿 = 202 任务内闭环，
+-- 草稿落库发生在任务执行中，落库前无引用可指），512 字符放不下 → 放宽为 TEXT。
+-- 不新增列、不改表结构其余部分；claim/succeed/fail 的查询不受列宽影响。
+ALTER TABLE app.async_tasks
+    ALTER COLUMN payload_ref TYPE TEXT;
+-- END V44__widen_async_task_payload.sql
 
 -- BEGIN V45__procurement_price_excluded_candidates.sql
 -- Agent 平台化补丁（procurement-price-outliers 01 票：采购比价不可比候选三规则）。
