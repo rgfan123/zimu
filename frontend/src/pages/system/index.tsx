@@ -4,4 +4,5 @@
 export { default as ConnectorsPage } from './ConnectorsPage';
 export { default as AuditLogsPage } from './AuditLogsPage';
 export { default as FulfillmentProvidersPage } from './FulfillmentProvidersPage';
+export { default as OperatorsPage } from './OperatorsPage';
 export { default as SystemConfigPage } from './SystemConfigPage';

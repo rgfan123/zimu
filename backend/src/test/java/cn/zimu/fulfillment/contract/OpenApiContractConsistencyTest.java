@@ -101,6 +101,7 @@ class OpenApiContractConsistencyTest {
             Map.entry("GET /api/v1/import-batches/{}/rows", Map.of("PageResponseMapStringObject", "RawImportRowPage")),
             Map.entry("GET /api/v1/message-submissions/tasks", Map.of("PageResponseAsyncTaskSummary", "MessageTaskPage")),
             Map.entry("GET /api/v1/operational-alerts", Map.of("PageResponseOperationalAlertDto", "OperationalAlertPage")),
+            Map.entry("GET /api/v1/operators", Map.of("PageResponseOperatorDto", "OperatorPage")),
             Map.entry("GET /api/v1/order-drafts", Map.of("PageResponseOrderDraftDetailDto", "OrderDraftPage")),
             Map.entry("GET /api/v1/orders", Map.of("PageResponseOrderSummaryDto", "OrderPage")),
             Map.entry("GET /api/v1/procurement-tickets", Map.of("PageResponseMapStringObject", "ProcurementTicketPage")),
@@ -144,6 +145,30 @@ class OpenApiContractConsistencyTest {
         Path out = Path.of("target", "generated-openapi.yaml");
         Files.createDirectories(out.getParent());
         Files.writeString(out, body, StandardCharsets.UTF_8);
+    }
+
+    /** PATCH wecom_userid 必须显式允许空串（清除绑定），非空仍匹配官方保守字符集。 */
+    @Test
+    void operatorPatchWecomUseridPatternAllowsEmptyStringToClear() throws Exception {
+        Map<String, Object> handwritten = parse(readHandwrittenContract());
+        Map<String, Object> schemas = map(map(handwritten.get("components")).get("schemas"));
+        Map<String, Object> operatorPatch = map(schemas.get("OperatorPatch"));
+        Map<String, Object> properties = map(operatorPatch.get("properties"));
+        Map<String, Object> wecomUserid = map(properties.get("wecom_userid"));
+        String pattern = String.valueOf(wecomUserid.get("pattern"));
+
+        assertThat(Pattern.compile(pattern).matcher("").matches())
+                .as("PATCH wecom_userid 空串必须被 pattern 接受（显式清除绑定）")
+                .isTrue();
+        assertThat(Pattern.compile(pattern).matcher("zhangsan").matches())
+                .as("非空合法 userid 仍须匹配官方保守字符集")
+                .isTrue();
+        assertThat(Pattern.compile(pattern).matcher("zhang san").matches())
+                .as("含空格等非法字符仍须被拒绝")
+                .isFalse();
+        assertThat(Pattern.compile(pattern).matcher("-abc").matches())
+                .as("首字符非数字/字母仍须被拒绝")
+                .isFalse();
     }
 
     /** 门禁本体：生成契约与手写评审契约的结构化比对，漂移即失败并打印差异。 */

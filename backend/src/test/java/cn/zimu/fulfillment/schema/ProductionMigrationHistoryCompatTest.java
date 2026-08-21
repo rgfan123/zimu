@@ -29,22 +29,21 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * checksum/description/version 冲突。生产数据库历史不得 repair/改写，正确原则是
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
- * <p>本测试把该原则固化为门禁：① 先只迁移到 V43（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V47）升级，Flyway validate（默认开启）必须成功且只追加
- * V44..V47（widen_async_task_payload / procurement_price_excluded_candidates /
- * wecom_export_outbound_send / wecom_export_alert_scoping）；③ 升级后前 43 行历史
- * 逐行不变，V40–V43 的 version/script/description/checksum 必须与生产已应用序列逐字节
- * 一致——checksum 常量取自线性化提交 10bd599 之前的原始文件内容（当前文件与其逐字节
- * 相同），任何未来的改号/改内容都会让本测试变红。不读真实库、不依赖 mock schema，
+ * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
+ * migration set（V1..V48）升级，Flyway validate（默认开启）必须成功且只追加
+ * V48（internal_operators，Issue #89）；③ 升级后前 47 行历史
+ * 逐行不变，V40–V47 的 version/script/description/checksum 必须与生产已应用序列逐字节
+ * 一致——checksum 常量直接取自生产 `flyway_schema_history` 真实行（不按当前迁移文件
+ * 重新计算），任何未来的改号/改内容都会让本测试变红。不读真实库、不依赖 mock schema，
  * 纯 Testcontainers + Flyway 现有接缝。
  *
- * <p>冻结范围：本测试只钉死已发生冲突的 V40–V43 四行生产常量；V1–V39 不在本测试冻结
- * 范围内，它们由 SchemaSnapshotMigrationEquivalenceTest（docs/schema.sql 空库快照
- * 与 Flyway 全链结构等价）与「已发布迁移不可变」约定兜底——前者证明结构等价，后者约束
- * 历史不可改写，均非本测试的断言职责。
+ * <p>冻结范围：本测试钉死 V40–V47 八行生产历史常量（version/script/description/checksum）；
+ * V1–V39 不在本测试冻结范围内，它们由 SchemaSnapshotMigrationEquivalenceTest
+ * （docs/schema.sql 空库快照与 Flyway 全链结构等价）与「已发布迁移不可变」约定兜底——
+ * 前者证明结构等价，后者约束历史不可改写，均非本测试的断言职责。
  *
- * <p>演进约定：未来追加 V48+ 时，把阶段一的模拟目标（当前 43）推进到当时生产所处版本、
- * 同步更新阶段二「只追加」断言——但 V40–V43 常量段是生产不可变序列，永远不得改动；
+ * <p>演进约定：未来追加 V49+ 时，把阶段一的模拟目标（当前 47）推进到当时生产所处版本、
+ * 同步更新阶段二「只追加」断言——但 V40–V47 常量段是生产不可变序列，永远不得改动；
  * 该段变红即意味着有人再次改号或改了已发布内容。
  */
 @Testcontainers
@@ -54,13 +53,14 @@ class ProductionMigrationHistoryCompatTest {
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     /**
-     * 生产已应用序列：V40–V43 的 (version, script, description, checksum)。
+     * 生产已应用序列：V40–V47 的 (version, script, description, checksum)。
      *
      * <p>checksum 为 Flyway 11 的 SQL 迁移校验和——逐行读取（剔除行终结符、过滤 BOM）后对
      * 每行 UTF-8 字节做 CRC32（与 flyway-core 11.7.2 ChecksumCalculator 逐字节一致，见
-     * {@link #crc32Of(String)}）。常量由线性化提交 10bd599 之前的原始文件内容计算得出，
-     * 即真实库 `flyway_schema_history` 中已记录的值；任何未来的改号/改内容都会让校验和
-     * 偏离常量，本测试立即变红。
+     * {@link #crc32Of(String)}）。常量直接取自生产 `flyway_schema_history` 真实行（V44–V47
+     * 为 2026-08-21 从 zimu-fulfillment-postgres-1 读取的权威事实，V40–V43 与生产已应用
+     * 序列一致），不按当前迁移文件重新计算——任何未来的改号/改内容都会让校验和偏离常量，
+     * 本测试立即变红。
      */
     private static final HistoryRow V40_PRODUCTION = new HistoryRow(
             "40", "V40__add_wangqi_source_bundle_mappings.sql",
@@ -74,50 +74,57 @@ class ProductionMigrationHistoryCompatTest {
     private static final HistoryRow V43_PRODUCTION = new HistoryRow(
             "43", "V43__mixed_provider_static_bundle_partitions.sql",
             "mixed provider static bundle partitions", 1023805107L);
+    private static final HistoryRow V44_PRODUCTION = new HistoryRow(
+            "44", "V44__widen_async_task_payload.sql",
+            "widen async task payload", 1904086128L);
+    private static final HistoryRow V45_PRODUCTION = new HistoryRow(
+            "45", "V45__procurement_price_excluded_candidates.sql",
+            "procurement price excluded candidates", 3249626052L);
+    private static final HistoryRow V46_PRODUCTION = new HistoryRow(
+            "46", "V46__wecom_export_outbound_send.sql",
+            "wecom export outbound send", 3215994199L);
+    private static final HistoryRow V47_PRODUCTION = new HistoryRow(
+            "47", "V47__wecom_export_alert_scoping.sql",
+            "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v43DatabaseUpgradesByAppendingOnlyV44ThroughV47() throws Exception {
-        // 阶段一：模拟当前真实库——只迁移到 V43（V40–V43 文件与生产已应用内容逐字节一致）。
-        flyway(MigrationVersion.fromVersion("43")).migrate();
+    void v47DatabaseUpgradesByAppendingOnlyV48() throws Exception {
+        // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
+        flyway(MigrationVersion.fromVersion("47")).migrate();
 
         List<HistoryRow> historyBefore = readHistory();
         assertThat(historyBefore)
-                .as("模拟真实库：迁移到 V43 后应恰有 43 条历史")
-                .hasSize(43);
-        assertThat(historyBefore.subList(39, 43))
-                .as("V40–V43 必须保持生产已应用序列（version/script/description/checksum 不可再被改号/改内容）")
-                .containsExactly(V40_PRODUCTION, V41_PRODUCTION, V42_PRODUCTION, V43_PRODUCTION);
+                .as("模拟真实库：迁移到 V47 后应恰有 47 条历史")
+                .hasSize(47);
+        assertThat(historyBefore.subList(39, 47))
+                .as("V40–V47 必须保持生产已应用序列（version/script/description/checksum 不可再被改号/改内容）")
+                .containsExactly(
+                        V40_PRODUCTION, V41_PRODUCTION, V42_PRODUCTION, V43_PRODUCTION,
+                        V44_PRODUCTION, V45_PRODUCTION, V46_PRODUCTION, V47_PRODUCTION);
 
-        // 阶段二：完整当前 migration set（V1..V47）升级——Flyway validate 默认开启，
-        // V40–V43 校验通过后只追加 V44..V47，任何 repair/改写历史都会在此失败。
+        // 阶段二：完整当前 migration set（V1..V48）升级——Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加 V48，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 47 条历史")
-                .hasSize(47);
-        assertThat(historyAfter.subList(0, 43))
+                .as("完整升级后应恰有 48 条历史")
+                .hasSize(48);
+        assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        assertThat(historyAfter.subList(43, 47))
-                .as("升级只追加 V44..V47（widen_async_task_payload / "
-                        + "procurement_price_excluded_candidates / wecom_export_outbound_send / "
-                        + "wecom_export_alert_scoping）")
+        // V48 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
+        // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
+        // V40–V47 未被改写）。
+        assertThat(historyAfter.subList(47, 48))
+                .as("升级只追加 V48（internal_operators，Issue #89 运营人员与企微 userid 映射）")
                 .containsExactly(
-                        new HistoryRow("44", "V44__widen_async_task_payload.sql",
-                                "widen async task payload",
-                                crc32Of("V44__widen_async_task_payload.sql")),
-                        new HistoryRow("45", "V45__procurement_price_excluded_candidates.sql",
-                                "procurement price excluded candidates",
-                                crc32Of("V45__procurement_price_excluded_candidates.sql")),
-                        new HistoryRow("46", "V46__wecom_export_outbound_send.sql",
-                                "wecom export outbound send",
-                                crc32Of("V46__wecom_export_outbound_send.sql")),
-                        new HistoryRow("47", "V47__wecom_export_alert_scoping.sql",
-                                "wecom export alert scoping",
-                                crc32Of("V47__wecom_export_alert_scoping.sql")));
+                        new HistoryRow("48", "V48__internal_operators.sql",
+                                "internal operators",
+                                crc32Of("V48__internal_operators.sql")));
 
-        // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效。
+        // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
+        // V48 用内部运营人员表的真实结构证明生效。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -170,6 +177,24 @@ class ProductionMigrationHistoryCompatTest {
                             + "谓词限定（=）企微导出类型且只锁 OPEN/ACKNOWLEDGED",
                     "CREATE UNIQUE INDEX", "COALESCE(shipment_id", "export_id",
                     "= 'FULFILLMENT_EXPORT_WECOM'", "'OPEN'", "'ACKNOWLEDGED'");
+            // V48：内部运营人员表（Issue #89）必须存在且列齐备；企微 userid 唯一索引必须为
+            // active 的唯一 partial index（未绑定行为 NULL，不互相冲突）。
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema = 'app' AND table_name = 'internal_operators'
+                      AND column_name IN ('id', 'display_name', 'responsible_team',
+                                          'wecom_userid', 'active', 'lock_version',
+                                          'created_at', 'updated_at')
+                    """)))
+                    .as("V48 生效后 internal_operators 必须包含全部 8 个字段")
+                    .isEqualTo("8");
+            assertPartialUniqueIndex(statement, "uq_internal_operators_wecom_userid",
+                    "V48：企微 userid 唯一索引必须是 active 的唯一 partial index（未绑定不冲突）",
+                    "CREATE UNIQUE INDEX", "wecom_userid", "IS NOT NULL");
+            assertIndex(statement, "idx_internal_operators_team_active",
+                    "V48：责任团队 + 启用状态索引支撑解析查询",
+                    "responsible_team", "active");
         }
     }
 
@@ -290,6 +315,19 @@ class ProductionMigrationHistoryCompatTest {
                 .isTrue();
         assertThat(state.hasPredicate())
                 .as(factLabel + "：%s 必须为 partial index", indexName)
+                .isTrue();
+        assertThat(state.definition())
+                .as(factLabel)
+                .contains(definitionFragments);
+    }
+
+    /** 断言某索引存在且 active（非唯一普通索引），定义包含给定列片段。 */
+    private static void assertIndex(
+            Statement statement, String indexName, String factLabel, String... definitionFragments)
+            throws Exception {
+        IndexState state = indexState(statement, indexName);
+        assertThat(state.valid())
+                .as(factLabel + "：%s 必须 active（indisvalid）", indexName)
                 .isTrue();
         assertThat(state.definition())
                 .as(factLabel)

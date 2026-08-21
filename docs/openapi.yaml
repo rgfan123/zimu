@@ -2171,6 +2171,105 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/FulfillmentProvider' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/operators:
+    get:
+      tags: [MasterData]
+      operationId: listOperators
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: responsible_team
+          in: query
+          description: 责任团队精确筛选；服务端统一 trim + 大写归一（如 ORDER_OPS）。
+          schema: { type: string, maxLength: 32 }
+        - name: query
+          in: query
+          description: 姓名/企微 userid 模糊检索。
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: 运营人员登记簿（Issue #89）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperatorPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [MasterData]
+      operationId: createOperator
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OperatorWrite' }
+      responses:
+        '201':
+          description: 运营人员已登记；wecom_userid 重复 → 409 WECOM_USERID_EXISTS
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operator' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/operators/{operator_id}:
+    parameters:
+      - { name: operator_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    get:
+      tags: [MasterData]
+      operationId: getOperator
+      responses:
+        '200':
+          description: 运营人员详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operator' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [MasterData]
+      operationId: updateOperator
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OperatorPatch' }
+      responses:
+        '200':
+          description: 运营人员已更新（expected_version 乐观锁；过期版本 → 409 VERSION_CONFLICT）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operator' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/operator-team-resolutions:
+    get:
+      tags: [MasterData]
+      operationId: resolveOperatorTeam
+      parameters:
+        - name: responsible_team
+          in: query
+          required: true
+          description: 责任团队（服务端 trim + 大写归一）；空白 → 422 OPERATOR_TEAM_REQUIRED。
+          schema: { type: string, maxLength: 32 }
+        - name: require_pushable
+          in: query
+          required: false
+          description: >-
+            true 时走 fail-closed 语义：团队存在未绑定 userid 人员或暂无人员等不可全员推送
+            情形直接返回 422 OPERATOR_TEAM_NOT_PUSHABLE（消息含未绑定人员名单与运营应对），
+            不静默跳过；默认 false = 只读结构化诊断（200）。
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: >-
+            责任团队 → active 运营人员/可推送 userid 的只读诊断（Issue #89）：未绑定 userid
+            的人员显式列出（unbound_member_names），pushable=false 表示不可全员推送，
+            绝不静默过滤；团队无人员为结构化 NO_MEMBERS，不是异常。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperatorTeamResolution' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/connectors:
     get:
       tags: [Connectors]
@@ -6077,6 +6176,99 @@ components:
                 oneOf:
                   - { type: string }
                   - { type: boolean }
+    Operator:
+      type: object
+      required: [id, display_name, responsible_team, active, version]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        display_name: { type: string, minLength: 1, maxLength: 64 }
+        responsible_team: { type: string, minLength: 1, maxLength: 32 }
+        wecom_userid:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_@.\-]{0,63}$'
+          description: 企微 userid；null = 未绑定。非空时全局唯一（409 WECOM_USERID_EXISTS）。
+        active: { type: boolean }
+        version: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    OperatorPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Operator' }
+    OperatorWrite:
+      type: object
+      required: [display_name, responsible_team]
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 64 }
+        responsible_team:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: >-
+            所属责任团队；服务端 trim + 大写归一（ORDER_OPS / CUSTOMER_OPS / SKU_OPS 等）。
+            纯空白 → 422 OPERATOR_TEAM_INVALID（字段 responsible_team）。
+        wecom_userid:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_@.\-]{0,63}$'
+          description: >-
+            企微 userid（可空 = 未绑定，推送时会由解析 seam 明确提示，不静默跳过）；
+            先 trim；非法字符/超长 → 422 OPERATOR_WECOM_USERID_INVALID（字段 wecom_userid）。
+        active:
+          type: boolean
+          description: 缺省 true；停用后解析 seam 不再返回该人员（不做物理删除）。
+    OperatorPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        display_name: { type: string, minLength: 1, maxLength: 64 }
+        responsible_team: { type: string, minLength: 1, maxLength: 32 }
+        wecom_userid:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^$|^[A-Za-z0-9][A-Za-z0-9_@.\-]{0,63}$'
+          description: >-
+            null = 不改动绑定；空串 = 显式清除绑定（pattern 显式允许空串）；
+            非空仍须匹配官方保守字符集，先 trim 再查重（同一企微 userid 只映射一个人，
+            409 WECOM_USERID_EXISTS）。
+        active: { type: boolean }
+      minProperties: 2
+    OperatorTeamResolution:
+      type: object
+      required: [responsible_team, members, pushable_user_ids, unbound_member_names, status, pushable]
+      properties:
+        responsible_team: { type: string }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/OperatorResolutionMember' }
+        pushable_user_ids:
+          type: array
+          items: { type: string }
+          description: >-
+            按 members 顺序列出仅已绑定企微 userid 的 active 人员的 userid；
+            未绑定人员的姓名在 unbound_member_names。
+        unbound_member_names:
+          type: array
+          items: { type: string }
+          description: 未绑定 userid 的人员姓名（显式诊断，绝不静默跳过）。
+        status: { type: string, enum: [PUSHABLE, PARTIALLY_BOUND, ALL_UNBOUND, NO_MEMBERS] }
+        pushable: { type: boolean, description: false 表示不可全员推送（PUSHABLE 以外状态）。 }
+    OperatorResolutionMember:
+      type: object
+      required: [display_name, wecom_userid]
+      properties:
+        display_name: { type: string }
+        wecom_userid: { type: string, nullable: true }
     FulfillmentProviderPatch:
       type: object
       required: [expected_version]

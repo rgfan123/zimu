@@ -45,7 +45,7 @@ import {
 import ProcurementTicketsPage, { ProcurementPriceComparePage } from '@/pages/procurement';
 import { ReviewQueueCompatRoute, AlertsQueuePage } from '@/pages/workbench';
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
-import { ConnectorsPage, FulfillmentProvidersPage, SystemConfigPage } from '@/pages/system';
+import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage } from '@/pages/system';
 import {
   AgentDetailPage,
   AgentRunsPage,
@@ -95,6 +95,7 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/system/audit-logs': <AuditLogsPage />,
   '/system/config': <SystemConfigPage />,
   '/system/fulfillment-providers': <FulfillmentProvidersPage />,
+  '/system/operators': <OperatorsPage />,
   '/fulfillment/jd-warehouse': <JdWarehousePage />,
   '/fulfillment/jd-basicinfo': <JdBasicInfoQueryPage />,
   '/fulfillment/jd-stock': <JdStockQueryPage />,

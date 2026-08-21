@@ -129,6 +129,7 @@ test('system menu exposes each connector and provider configuration capability o
       { path: '/system/connectors', label: '渠道接入' },
       { path: '/system/audit-logs', label: '操作审计' },
       { path: '/system/fulfillment-providers', label: '履约方配置' },
+      { path: '/system/operators', label: '运营人员' },
       { path: '/system/jd-tools', label: '京东工具' },
     ],
   );

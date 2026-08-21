@@ -584,6 +584,34 @@ export interface FulfillmentProvider {
   wecom_reminder_interval_minutes: number | null;
 }
 
+/** 内部运营人员（Issue #89）：姓名、企微 userid、所属责任团队；只做映射与责任归属，不做登录/权限。 */
+export interface Operator {
+  id: string;
+  display_name: string;
+  /** 责任团队（服务端 trim + 大写归一，如 ORDER_OPS / CUSTOMER_OPS / SKU_OPS）。 */
+  responsible_team: string;
+  /** 企微 userid；null = 未绑定（需要推送时由解析 seam 明确提示，不静默跳过）。 */
+  wecom_userid: string | null;
+  active: boolean;
+  version: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface OperatorPage extends PageMeta {
+  items: Operator[];
+}
+
+/** 责任团队解析结果（Issue #89）：active 人员、可推送 userid 与未绑定人员的显式诊断。 */
+export interface OperatorTeamResolution {
+  responsible_team: string;
+  members: Array<{ display_name: string; wecom_userid: string | null }>;
+  pushable_user_ids: string[];
+  unbound_member_names: string[];
+  status: 'PUSHABLE' | 'PARTIALLY_BOUND' | 'ALL_UNBOUND' | 'NO_MEMBERS';
+  pushable: boolean;
+}
+
 export interface ConnectorConfig {
   source_channel: SourceChannel;
   client_mode: 'MOCK' | 'REAL';

@@ -59,6 +59,8 @@ import type {
   OrderEvent,
   OrderPage,
   OrderVersion,
+  Operator,
+  OperatorPage,
   OperationalAlert,
   OperationalAlertPage,
   ProcurementTicket,
@@ -379,6 +381,34 @@ export const providerSkuMappingReferencesApi = {
     form.append('source_file', sourceFile);
     return multipartRequest<ProviderSkuReferencePreview>('/api/v1/provider-sku-mapping-references/preview', form);
   },
+};
+
+/** 内部运营人员登记（Issue #89）：GET/POST /api/v1/operators，GET/PATCH /api/v1/operators/{id}。 */
+export interface OperatorListQuery extends PageQuery {
+  /** 责任团队精确筛选（服务端 trim + 大写归一）。 */
+  responsible_team?: string;
+  /** 姓名/企微 userid 模糊检索。 */
+  query?: string;
+}
+
+export const operatorsApi = {
+  list: (query: OperatorListQuery = {}) =>
+    apiRequest<OperatorPage>('/api/v1/operators', { params: query as Record<string, QueryValue> }),
+  create: (body: {
+    display_name: string;
+    responsible_team: string;
+    /** 可空 = 未绑定；空串/纯空白视为未绑定。 */
+    wecom_userid?: string | null;
+    active?: boolean;
+  }) => apiRequest<Operator>('/api/v1/operators', { method: 'POST', body, headers: writeHeaders() }),
+  update: (id: string, body: {
+    expected_version: number;
+    display_name?: string;
+    responsible_team?: string;
+    /** null = 不改动绑定；空串 = 显式清除绑定。 */
+    wecom_userid?: string | null;
+    active?: boolean;
+  }) => apiRequest<Operator>(`/api/v1/operators/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
 
 /** GET /api/v1/fulfillment-providers —— 履约方目录（京东仓 + 第三方）。 */

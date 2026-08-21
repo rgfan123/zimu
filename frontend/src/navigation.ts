@@ -84,6 +84,8 @@ export const appNavigation = [
       { path: '/system/audit-logs', label: '操作审计' },
       { path: '/system/config', label: '系统配置', hideInMenu: true },
       { path: '/system/fulfillment-providers', label: '履约方配置' },
+      // Issue #89：内部运营人员登记（姓名、企微 userid、所属责任团队）——系统管理配置主线入口
+      { path: '/system/operators', label: '运营人员' },
       {
         path: '/system/jd-tools',
         label: '京东工具',
