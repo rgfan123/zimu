@@ -276,6 +276,81 @@ class MixedProviderStaticBundlePipelineApiTest {
     }
 
     @Test
+    void importRowsExposeJdBundlePartitionCargosAndFavorFrozenSubmittedValues() throws Exception {
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-CARGO-OSTRICH", "鸵鸟测试组件", "TP-CARGO-OSTRICH-001");
+        Map<String, Object> secondTpSku = createThirdPartySkuFixture(
+                "PROD-TP-CARGO-SAUCE", "测试礼包配料", "TP-CARGO-SAUCE-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-CARGO-001", "羊蝎子鸵鸟测试礼包",
+                List.of(jdSku.get("id").toString(), tpSku.get("id").toString(), secondTpSku.get("id").toString()),
+                "mix-bundle-cargo-001");
+        createSourceBundleMapping(
+                "WQ-MIXED-CARGO-BUNDLE-001", "羊蝎子鸵鸟测试礼包", bundleId, "mix-source-bundle-cargo-001");
+
+        ResponseEntity<Map> uploaded = upload(
+                workbook("WQ-MIXED-CARGO-ORDER-001", "WQ-MIXED-CARGO-BUNDLE-001", "羊蝎子鸵鸟测试礼包"),
+                "mix-upload-cargo-001");
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String batchId = uploaded.getBody().get("id").toString();
+        assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+
+        // 混合履约方礼包按 provider 分片：行投影只暴露京东分片的货品（数量 = 购买 1 ×
+        // quantity_per_bundle 1 × jd_pieces_per_unit 1），第三方组件不得出现
+        Map<String, Object> rows = get("/api/v1/import-batches/" + batchId + "/rows?page=0&size=20&status=ACCEPTED");
+        Map<String, Object> row = castMap(castList(rows.get("items")).getFirst());
+        List<Map<String, Object>> cargos = castList(row.get("jd_cargos"));
+        assertThat(cargos).singleElement().satisfies(cargo -> assertThat(cargo)
+                .containsEntry("provider_sku_code", "JD-SKU-000001")
+                .containsEntry("plan_quantity", 1)
+                .containsKey("product_name"));
+
+        // 确认 → 地址确认 → 提交建单：提交后行投影优先冻结实际提交值
+        ResponseEntity<Map> confirmed = confirm(batchId, "mix-confirm-cargo-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        List<?> jdShipmentIds = (List<?>) castMap(confirmed.getBody().get("outbound_routing"))
+                .get("jd_sdk_shipment_ids");
+        assertThat(jdShipmentIds).hasSize(1);
+        String shipmentId = jdShipmentIds.getFirst().toString();
+        jdbc.update(
+                "UPDATE app.customers SET profile=jsonb_set(COALESCE(profile,'{}'::jsonb),"
+                        + "'{jd_customer_code}','\"CUST-MIX-CARGO-001\"'::jsonb,true) "
+                        + "WHERE id=(SELECT customer_id FROM app.orders "
+                        + "WHERE id=(SELECT order_id FROM app.shipments WHERE id=?))",
+                Long.parseLong(shipmentId));
+        ResponseEntity<Map> address = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-receiver-address",
+                HttpMethod.PUT,
+                new HttpEntity<>(Map.of(
+                        "expected_version", 0,
+                        "province", "上海市",
+                        "city", "上海市",
+                        "county", "浦东新区",
+                        "detail_address", "测试路1号"), writeHeaders("mix-cargo-address-001")),
+                Map.class);
+        assertThat(address.getStatusCode()).isEqualTo(HttpStatus.OK);
+        ResponseEntity<Map> submitted = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders("mix-cargo-submit-001")),
+                Map.class);
+        assertThat(submitted.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        // 映射漂移（jd_pieces_per_unit 1→5）后行投影仍展示冻结的实际提交值 1 件
+        jdbc.update(
+                "UPDATE app.provider_skus SET external_codes=jsonb_set(external_codes,"
+                        + "'{jd_pieces_per_unit}','5'::jsonb,true) WHERE provider_sku_code='JD-SKU-000001'");
+        Map<String, Object> rowsAfterSubmit = get(
+                "/api/v1/import-batches/" + batchId + "/rows?page=0&size=20&status=ACCEPTED");
+        List<Map<String, Object>> frozenCargos =
+                castList(castList(rowsAfterSubmit.get("items")).getFirst().get("jd_cargos"));
+        assertThat(frozenCargos).singleElement().satisfies(cargo -> assertThat(cargo)
+                .containsEntry("provider_sku_code", "JD-SKU-000001")
+                .containsEntry("plan_quantity", 1));
+    }
+
+    @Test
     void missingThirdPartyProviderSkuLeavesOnlyThatPartitionInReviewAndStillRoutesJd() throws Exception {
         String orderRef = "WQ-MIXED-HOLD-ORDER-001";
         String bundleRef = "WQ-MIXED-HOLD-BUNDLE-001";
@@ -356,12 +431,21 @@ class MixedProviderStaticBundlePipelineApiTest {
     }
 
     private Map<String, Object> createThirdPartySkuFixture() {
+        return createThirdPartySkuFixture(
+                "PROD-TP-OSTRICH-FIXTURE", "鸵鸟测试组件", THIRD_PARTY_SKU_CODE);
+    }
+
+    /** 每个用例必须使用独立的商品/编码，避免跨用例主数据唯一约束冲突。 */
+    private Map<String, Object> createThirdPartySkuFixture(
+            String productCode, String productName, String providerSkuCode) {
         long providerId = jdbc.queryForObject(
                 "SELECT id FROM app.fulfillment_providers WHERE provider_type='THIRD_PARTY' ORDER BY id LIMIT 1",
                 Long.class);
         long productId = jdbc.queryForObject(
-                "INSERT INTO app.products(product_code,product_name) VALUES ('PROD-TP-OSTRICH-FIXTURE','鸵鸟测试组件') RETURNING id",
-                Long.class);
+                "INSERT INTO app.products(product_code,product_name) VALUES (?,?) RETURNING id",
+                Long.class,
+                productCode,
+                productName);
         long skuId = jdbc.queryForObject(
                 "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit) "
                         + "VALUES (?,?,'80g/袋','袋') RETURNING id",
@@ -373,7 +457,7 @@ class MixedProviderStaticBundlePipelineApiTest {
                         + "VALUES (?,?,?,true)",
                 providerId,
                 skuId,
-                THIRD_PARTY_SKU_CODE);
+                providerSkuCode);
         return get("/api/v1/skus/" + skuId);
     }
 

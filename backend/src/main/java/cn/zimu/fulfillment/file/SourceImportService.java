@@ -65,6 +65,7 @@ public class SourceImportService {
     private final ProviderFileService providerFileService;
     private final ImportedCustomerService importedCustomers;
     private final ShipmentJdOutboundService shipmentJdOutboundService;
+    private final ImportRowJdCargoProjectionService jdCargoProjectionService;
     private final IdempotencyService idempotency;
     private final Path fileRoot;
 
@@ -77,6 +78,7 @@ public class SourceImportService {
             ProviderFileService providerFileService,
             ImportedCustomerService importedCustomers,
             ShipmentJdOutboundService shipmentJdOutboundService,
+            ImportRowJdCargoProjectionService jdCargoProjectionService,
             IdempotencyService idempotency,
             @Value("${app.file-store.root:${java.io.tmpdir}/zimu-fulfillment-files}") String fileRoot) {
         this.parser = parser;
@@ -87,6 +89,7 @@ public class SourceImportService {
         this.providerFileService = providerFileService;
         this.importedCustomers = importedCustomers;
         this.shipmentJdOutboundService = shipmentJdOutboundService;
+        this.jdCargoProjectionService = jdCargoProjectionService;
         this.idempotency = idempotency;
         this.fileRoot = Path.of(fileRoot).toAbsolutePath().normalize();
     }
@@ -622,6 +625,17 @@ public class SourceImportService {
             item.put("sku_fulfillment", ref instanceof String text && !text.isBlank()
                     ? skuFulfillment.get(text)
                     : null);
+        }
+        // 京东发货数量：与 SDK 建单预览/提交共用同一纯裁决单元（JdCargoPlanner），
+        // 逐行投影到 jd_cargos（已提交的行优先冻结实际提交值）。
+        Map<Long, List<ImportRowJdCargoProjectionService.JdCargoProjection>> jdCargos =
+                jdCargoProjectionService.jdCargosByRawRowId(
+                        items.stream()
+                                .map(item -> Long.parseLong(String.valueOf(item.get("id"))))
+                                .toList());
+        for (Map<String, Object> item : items) {
+            item.put("jd_cargos", jdCargos.getOrDefault(
+                    Long.parseLong(String.valueOf(item.get("id"))), List.of()));
         }
         int totalPages = total == 0 ? 0 : (int) ((total + size - 1) / size);
         return new PageResponse<>(items, page, size, total, totalPages);

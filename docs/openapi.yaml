@@ -4366,6 +4366,20 @@ components:
             sku_specification:
               type: string
               description: 内部 SKU 主数据规格（来源文件未提供规格时的默认值）。
+        jd_cargos:
+          type: array
+          description: >-
+            该来源行将/已发送京东 SDK cargoInfos[].planQuantity 的精确货品清单
+            （与建单预览/提交共用同一纯数量换算，不四舍五入不向上取整）；第三方/无京东
+            履约行为空数组。血缘遍历 raw_import_row_order_lines 全量分片与礼包组件；
+            已提交（shipment_jd_outbounds.submitted_cargo_snapshot）时优先展示冻结的实际提交值。
+          items:
+            type: object
+            required: [product_name, provider_sku_code, plan_quantity]
+            properties:
+              product_name: { type: string }
+              provider_sku_code: { type: string }
+              plan_quantity: { type: integer, minimum: 1 }
     RawImportRowPage:
       allOf:
         - $ref: '#/components/schemas/PageMeta'

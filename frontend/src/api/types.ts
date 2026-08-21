@@ -857,6 +857,15 @@ export interface RawImportRow {
     provider_name: string;
     sku_specification?: string | null;
   } | null;
+  /**
+   * 该来源行将/已发送京东 SDK cargoInfos 的精确发货数量（与建单预览/提交共用同一换算）；
+   * 第三方/无京东履约行为空数组。product_name 即 SDK goodsName 口径的来源商品名快照。
+   */
+  jd_cargos?: Array<{
+    product_name: string;
+    provider_sku_code: string;
+    plan_quantity: number;
+  }>;
 }
 
 export interface RawImportRowPage extends PageMeta {

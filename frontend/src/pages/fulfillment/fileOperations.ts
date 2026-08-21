@@ -35,8 +35,15 @@ export interface ImportRowView {
   fulfillmentType: 'JD_WAREHOUSE' | 'THIRD_PARTY' | null;
   reason: string;
   status: RawRowStatus;
+  /** 系统订单关联仅用于「查看系统订单」操作链接，不再作为独立展示列 */
   orderId: string;
   orderLineId: string;
+  /** 将/已发送京东 SDK 的精确发货数量（后端 jd_cargos 白名单投影）；第三方/无京东行为空数组 */
+  jdCargos: Array<{
+    productName: string;
+    providerSkuCode: string;
+    planQuantity: number;
+  }>;
 }
 
 const SOURCE_SKU_HEADERS = ['商品编号', '商品ID', '商品编码', '商品条码', '订单商品ID', 'SKU', 'SKU编码'];
@@ -94,6 +101,7 @@ function importIssueReason(row: RawImportRow): string {
 export function presentImportRow(row: RawImportRow): ImportRowView {
   const cells = objectCells(row.raw_cells);
   const parsed = row.parsed ?? {};
+  const cargos = Array.isArray(row.jd_cargos) ? row.jd_cargos : [];
   return {
     id: row.id,
     sheet: row.sheet_name || `Sheet ${row.sheet_index + 1}`,
@@ -116,7 +124,19 @@ export function presentImportRow(row: RawImportRow): ImportRowView {
     status: row.status,
     orderId: row.order_id ?? '—',
     orderLineId: row.order_line_id ?? '—',
+    jdCargos: cargos.map((cargo) => ({
+      productName: cargo.product_name,
+      providerSkuCode: cargo.provider_sku_code,
+      planQuantity: cargo.plan_quantity,
+    })),
   };
+}
+
+/** 京东「发货数量」单元格文案：单货品直接「N 件」；多货品必须带商品名逐行列出；无京东货品为「—」。 */
+export function presentJdCargos(cargos: ImportRowView['jdCargos']): string {
+  if (cargos.length === 0) return '—';
+  if (cargos.length === 1) return `${cargos[0].planQuantity} 件`;
+  return cargos.map((cargo) => `${cargo.productName}: ${cargo.planQuantity} 件`).join('\n');
 }
 
 export interface TrackingBatchRowView {

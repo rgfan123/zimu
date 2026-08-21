@@ -54,8 +54,6 @@ public class ShipmentJdOutboundPreparer {
     private static final String PASS = "PASS";
     private static final String BLOCKED = "BLOCKED";
     private static final String SOURCE_PROVIDER_CONFIG = "fulfillment_providers.config.";
-    private static final String SOURCE_CONVERSION =
-            "shipment_items.instructed_quantity × provider_skus.external_codes.jd_pieces_per_unit";
 
     /**
      * fulfillment_providers.config JSONB 配置键；京东标识一律来自履约方配置，缺失时阻断建单
@@ -155,26 +153,22 @@ public class ShipmentJdOutboundPreparer {
 
         List<Map<String, Object>> cargos = new ArrayList<>();
         for (Item item : state.items()) {
-            if ("SINGLE".equals(item.lineType())) {
+            // SINGLE 行/礼包组件的展开与数量换算由共享 JdCargoPlanner 一处裁决：
+            // 建单预览/提交与行投影（ImportRowJdCargoProjectionService）同序同量。
+            List<JdCargoPlanner.ComponentCandidate> components = state.componentsByOrderLine()
+                    .getOrDefault(item.orderLineId(), List.of()).stream()
+                    .map(component -> new JdCargoPlanner.ComponentCandidate(
+                            component.componentNo(), component.skuId(), component.productName(),
+                            component.unit(), component.quantityPerBundle()))
+                    .toList();
+            for (JdCargoPlanner.CargoCandidate candidate : JdCargoPlanner.expand(
+                    new JdCargoPlanner.LineCandidate(
+                            item.lineType(), item.lineNo(), item.skuId(), item.productName(),
+                            item.unit(), item.instructedQuantity(), components))) {
                 cargos.add(cargoPreview(
-                        state, item.skuId(), String.valueOf(item.lineNo()), item.productName(),
-                        item.unit(), item.instructedQuantity(), SOURCE_CONVERSION,
+                        state, candidate.skuId(), candidate.orderLine(), candidate.goodsName(),
+                        candidate.unit(), candidate.systemQuantity(), candidate.quantitySource(),
                         cargos.size(), validations, blockers));
-            } else {
-                for (Component component : state.componentsByOrderLine()
-                        .getOrDefault(item.orderLineId(), List.of())) {
-                    BigDecimal componentQuantity = item.instructedQuantity()
-                            .multiply(component.quantityPerBundle());
-                    cargos.add(cargoPreview(
-                            state, component.skuId(),
-                            item.lineNo() + "-" + component.componentNo(),
-                            component.productName(),
-                            component.unit(),
-                            componentQuantity,
-                            "shipment_items.instructed_quantity × order_line_components.quantity_per_bundle "
-                                    + "× provider_skus.external_codes.jd_pieces_per_unit",
-                            cargos.size(), validations, blockers));
-                }
             }
         }
         if (cargos.isEmpty()) {
@@ -314,74 +308,32 @@ public class ShipmentJdOutboundPreparer {
         cargo.put("goodsLevel", "100");
         pass(validations, base + ".goodsLevel", "JD salable-good policy (100)");
 
-        JdGoods goods = skuId == null ? null : state.goodsBySku().get(skuId);
-        if (goods == null) {
+        // 与原始行投影（ImportRowJdCargoProjectionService jd_cargos）共用同一纯裁决单元
+        // JdCargoPlanner：映射解析/单位系数政策/精确正整数 planQuantity 一处裁决，建单
+        // 预览/提交与确认明细的数量口径永不漂移；失败码/消息与 blocker 完全一致。
+        JdCargoPlanner.Result planned = JdCargoPlanner.plan(
+                skuId, orderLine, goodsName, unit, quantity, quantitySource, base,
+                skuId == null ? null : state.goodsBySku().get(skuId));
+        if (planned instanceof JdCargoPlanner.Failure failure) {
             block(
-                    blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_SKU_MAPPING_MISSING", base + ".goodsNo",
-                    "provider_skus.provider_sku_code", "provider SKU mapping",
-                    "SKU " + skuId + " 未配置有效京东商品编码，无法建出库单");
+                    blockers, validations, failure.httpStatus(), failure.code(), failure.path(),
+                    failure.source(), failure.correctionTarget(), failure.message());
             return cargo;
         }
-        cargo.put("goodsNo", goods.goodsNo());
+        JdCargoPlanner.Cargo plannedCargo = (JdCargoPlanner.Cargo) planned;
+        cargo.put("goodsNo", plannedCargo.goodsNo());
         // Internal-only binding removed before the public/submission payload is frozen.
-        cargo.put("skuId", skuId);
+        cargo.put("skuId", plannedCargo.skuId());
         pass(validations, base + ".goodsNo", "provider_skus.provider_sku_code");
-        if (hasText(goods.merchantSkuCode())) {
-            cargo.put("erpGoodsNo", goods.merchantSkuCode());
+        if (hasText(plannedCargo.merchantSkuCode())) {
+            cargo.put("erpGoodsNo", plannedCargo.merchantSkuCode());
             pass(validations, base + ".erpGoodsNo", "provider_skus.merchant_sku_code");
         } else {
             validations.add(new Validation(
                     base + ".erpGoodsNo", "OMITTED", "provider_skus.merchant_sku_code", "可选商家 SKU 编码未配置"));
         }
-
-        BigDecimal factor;
-        if (!goods.externalCodes().containsKey(JdStockUnitConverter.FACTOR_CONFIG_KEY)) {
-            if (JdStockUnitConverter.PIECES_UNIT.equals(unit)) {
-                factor = BigDecimal.ONE;
-            } else {
-                block(
-                        blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_UNIT_CONVERSION_MISSING",
-                        base + ".planQuantity", quantitySource, "provider SKU unit conversion",
-                        "非‘件’单位必须配置显式京东件数换算；系统不默认为 1");
-                return cargo;
-            }
-        } else {
-            factor = JdStockUnitConverter.explicitFactorOrNull(goods.externalCodes());
-            if (factor == null) {
-                block(
-                        blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_UNIT_CONFIG_INVALID",
-                        base + ".planQuantity", quantitySource, "provider SKU unit conversion",
-                        "SKU " + skuId + " 的京东单位换算必须是正数");
-                return cargo;
-            }
-            // jd-real-sdk-switch 03: 换算值必须为正整数件数；小数系数(如 0.5 件/盒)不用于建单
-            if (factor.stripTrailingZeros().scale() > 0) {
-                block(
-                        blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_UNIT_CONFIG_INVALID",
-                        base + ".planQuantity", quantitySource, "provider SKU unit conversion",
-                        "SKU " + skuId + " 的京东件数换算必须是正整数件数（当前 " + factor.toPlainString() + "）");
-                return cargo;
-            }
-        }
-
-        BigDecimal exact = JdStockUnitConverter.exactPiecesOrNull(quantity, factor);
-        if (exact == null) {
-            block(
-                    blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_NON_INTEGRAL_QUANTITY",
-                    base + ".planQuantity", quantitySource, "shipment quantity or provider SKU unit conversion",
-                    "数量与换算系数无法得到精确正整数件数（" + quantity + " × " + factor
-                            + "）；系统不四舍五入也不向上取整");
-            return cargo;
-        }
-        try {
-            cargo.put("planQuantity", exact.intValueExact());
-            pass(validations, base + ".planQuantity", quantitySource);
-        } catch (ArithmeticException exception) {
-            block(
-                    blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_QUANTITY_OUT_OF_RANGE",
-                    base + ".planQuantity", quantitySource, "shipment quantity",
-                    "换算后件数超出京东 planQuantity 整数范围");
-        }
+        cargo.put("planQuantity", plannedCargo.planQuantity());
+        pass(validations, base + ".planQuantity", quantitySource);
         return cargo;
     }
 
@@ -559,7 +511,7 @@ public class ShipmentJdOutboundPreparer {
                                     resultSet.getString("processing_stage")),
                             shipmentId);
                     Map<Long, List<Component>> componentsByOrderLine = loadComponents(shipmentId);
-                    Map<Long, JdGoods> goodsBySku = loadGoods(
+                    Map<Long, JdCargoPlanner.Goods> goodsBySku = loadGoods(
                             rs.getLong("fulfillment_provider_id"), shipmentId);
                     return new Context(
                             rs.getLong("id"), rs.getString("shipment_no"), rs.getString("outbound_order_no"),
@@ -623,9 +575,9 @@ public class ShipmentJdOutboundPreparer {
         return Map.copyOf(grouped);
     }
 
-    /** 将本 Shipment 引用的履约方映射一次性加载到快照；未启用行不能成为可提交映射。 */
-    private Map<Long, JdGoods> loadGoods(long providerId, long shipmentId) {
-        List<JdGoods> rows = jdbc.query(
+    /** 将本 Shipment 引用的履约方映射一次性加载到快照；active 门禁由共享 JdCargoPlanner 统一裁决。 */
+    private Map<Long, JdCargoPlanner.Goods> loadGoods(long providerId, long shipmentId) {
+        List<GoodsRow> rows = jdbc.query(
                 """
                 SELECT ps.sku_id, ps.provider_sku_code, ps.merchant_sku_code,
                        ps.external_codes::text AS external_codes, ps.active
@@ -647,20 +599,19 @@ public class ShipmentJdOutboundPreparer {
                 ORDER BY ps.sku_id
                 FOR SHARE OF ps
                 """,
-                (rs, rowNum) -> new JdGoods(
+                (rs, rowNum) -> new GoodsRow(
                         rs.getLong("sku_id"),
-                        rs.getString("provider_sku_code"),
-                        rs.getString("merchant_sku_code"),
-                        parseJsonMap(rs.getString("external_codes")),
-                        rs.getBoolean("active")),
+                        new JdCargoPlanner.Goods(
+                                rs.getString("provider_sku_code"),
+                                rs.getString("merchant_sku_code"),
+                                parseJsonMap(rs.getString("external_codes")),
+                                rs.getBoolean("active"))),
                 providerId, shipmentId, shipmentId);
-        Map<Long, JdGoods> activeBySku = new HashMap<>();
-        for (JdGoods row : rows) {
-            if (row.active()) {
-                activeBySku.put(row.skuId(), row);
-            }
+        Map<Long, JdCargoPlanner.Goods> bySku = new HashMap<>();
+        for (GoodsRow row : rows) {
+            bySku.put(row.skuId(), row.goods());
         }
-        return Map.copyOf(activeBySku);
+        return Map.copyOf(bySku);
     }
 
     private Map<String, Object> parseJsonMap(String json) {
@@ -770,14 +721,10 @@ public class ShipmentJdOutboundPreparer {
             JdOutbound jdOutbound,
             List<Item> items,
             Map<Long, List<Component>> componentsByOrderLine,
-            Map<Long, JdGoods> goodsBySku) {
+            Map<Long, JdCargoPlanner.Goods> goodsBySku) {
     }
 
-    public record JdGoods(
-            long skuId,
-            String goodsNo,
-            String merchantSkuCode,
-            Map<String, Object> externalCodes,
-            boolean active) {
+    /** provider_skus 行（含 sku_id 键）与共享 {@link JdCargoPlanner.Goods} 事实的装载记录。 */
+    private record GoodsRow(long skuId, JdCargoPlanner.Goods goods) {
     }
 }

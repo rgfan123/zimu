@@ -27,6 +27,7 @@ import {
 import {
   canReceiveTracking,
   presentImportRow,
+  presentJdCargos,
   presentTrackingBatchRow,
   summarizeImportBatch,
   type ImportRowView,
@@ -398,7 +399,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
               size="small"
               loading={confirmRowsLoading}
               pagination={false}
-              scroll={{ x: 1720, y: 260 }}
+              scroll={{ x: 1330, y: 260 }}
               dataSource={confirmRows}
               locale={{ emptyText: confirmRowsLoading
                 ? '正在加载导入明细…'
@@ -413,7 +414,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                   render: () => result?.source_channel_display_name
                     ?? (result?.source_channel ? CHANNEL_LABELS[result.source_channel] : '—'),
                 },
-                { title: '来源订单号', dataIndex: 'sourceOrderRef', width: 160 },
                 {
                   title: '收货人',
                   dataIndex: 'receiverName',
@@ -445,11 +445,14 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                   render: (value: string) => value || '—',
                 },
                 {
-                  title: '数量',
-                  dataIndex: 'quantity',
-                  width: 80,
-                  align: 'right',
-                  render: (value: string) => value || '—',
+                  // 发货数量：与京东 SDK cargoInfos[].planQuantity 完全同源；单货品直接「N 件」，
+                  // 多货品逐行「商品名: N 件」；第三方/无京东履约行显示「—」
+                  title: '发货数量',
+                  dataIndex: 'jdCargos',
+                  width: 130,
+                  render: (cargos: ImportRowView['jdCargos']) => (
+                    <span style={{ whiteSpace: 'pre-line' }}>{presentJdCargos(cargos)}</span>
+                  ),
                 },
                 { title: '来源 SKU', dataIndex: 'sourceSkuRef', width: 150 },
                 {
@@ -485,8 +488,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                     : <Typography.Text type="secondary">不参与</Typography.Text>,
                 },
                 { title: '处理结果', dataIndex: 'reason', width: 260 },
-                { title: '系统订单 ID', dataIndex: 'orderId', width: 130 },
-                { title: '系统订单行 ID', dataIndex: 'orderLineId', width: 140 },
                 {
                   title: '操作',
                   key: 'action',

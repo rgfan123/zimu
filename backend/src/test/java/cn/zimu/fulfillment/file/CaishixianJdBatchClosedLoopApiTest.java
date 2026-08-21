@@ -296,6 +296,111 @@ class CaishixianJdBatchClosedLoopApiTest {
     }
 
     @Test
+    void importRowsExposeTheExactJdSdkCargoQuantitiesBeforeConfirmation() throws Exception {
+        jdbc.update(
+                """
+                UPDATE app.source_channel_skus
+                SET quantity_multiplier=2.000
+                WHERE source_channel='CAISHIXIAN' AND source_sku_ref='2047705'
+                """);
+        jdbc.update(
+                """
+                UPDATE app.provider_skus
+                SET external_codes=jsonb_set(external_codes, '{jd_pieces_per_unit}', '3'::jsonb, true)
+                WHERE fulfillment_provider_id=(SELECT id FROM app.fulfillment_providers WHERE provider_code='JD')
+                  AND sku_id=(SELECT sku_id FROM app.source_channel_skus
+                              WHERE source_channel='CAISHIXIAN' AND source_sku_ref='2047705')
+                """);
+
+        ResponseEntity<Map> uploaded = uploadSource(
+                caishixianWorkbook("CSX-JD-CARGO-001", "CSX-JD-CARGO-LINE-001"),
+                "csx-source-upload-jd-cargo-001");
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String batchId = uploaded.getBody().get("id").toString();
+
+        Map<String, Object> rows = http.exchange(
+                "/api/v1/import-batches/" + batchId + "/rows?page=0&size=20&status=ACCEPTED",
+                HttpMethod.GET,
+                new HttpEntity<>(operatorHeaders()),
+                Map.class).getBody();
+        Map<String, Object> row = (Map<String, Object>) ((List<?>) rows.get("items")).getFirst();
+        List<Map<String, Object>> rowCargos = (List<Map<String, Object>>) row.get("jd_cargos");
+        assertThat(rowCargos).singleElement().satisfies(cargo -> assertThat(cargo)
+                .containsEntry("provider_sku_code", "JD-SKU-000001")
+                .containsEntry("plan_quantity", 6));
+
+        // 本用例走京东 SDK 建单闭环：确认前把该批次路由切到 SDK（其余用例保持 FILE 路径）
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config=config || '{"outboundMode":"SDK"}'::jsonb
+                WHERE provider_code='JD'
+                """);
+        // 客户档案 jd_customer_code 回退值：本次导入新建的客户未经过 @BeforeEach 的批量更新，
+        // 提交前为该订单客户补齐（单用例隔离运行时也成立）
+        jdbc.update(
+                "UPDATE app.customers SET profile=jsonb_set(COALESCE(profile,'{}'::jsonb),"
+                        + "'{jd_customer_code}','\"CUST-CSX-001\"'::jsonb,true) "
+                        + "WHERE id=(SELECT customer_id FROM app.orders WHERE id=?)",
+                Long.parseLong(String.valueOf(row.get("order_id"))));
+        ResponseEntity<Map> confirmed = confirm(batchId, "csx-batch-confirm-jd-cargo-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        long shipmentId = Long.parseLong(((List<?>) ((Map<?, ?>) confirmed.getBody()
+                .get("outbound_routing")).get("jd_sdk_shipment_ids")).getFirst().toString());
+        ResponseEntity<Map> addressConfirmed = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-receiver-address",
+                HttpMethod.PUT,
+                new HttpEntity<>(Map.of(
+                        "expected_version", 0,
+                        "province", "上海市",
+                        "city", "上海市",
+                        "county", "浦东新区",
+                        "detail_address", "测试路1号"),
+                        writeHeaders("csx-jd-cargo-address-001", "req-csx-jd-cargo-address-001")),
+                Map.class);
+        assertThat(addressConfirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        ResponseEntity<Map> submitted = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "csx-jd-cargo-submit-001", "req-csx-jd-cargo-submit-001")),
+                Map.class);
+        assertThat(submitted.getStatusCode())
+                .as("submit body: %s", submitted.getBody())
+                .isEqualTo(HttpStatus.CREATED);
+
+        String cargoJson = jdbc.queryForObject(
+                "SELECT submitted_cargo_snapshot::text FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                String.class,
+                shipmentId);
+        List<Map<String, Object>> submittedCargos = objectMapper.readValue(cargoJson, new TypeReference<>() {});
+        assertThat(submittedCargos).singleElement().satisfies(cargo -> assertThat(cargo)
+                .containsEntry("goodsNo", rowCargos.getFirst().get("provider_sku_code"))
+                .containsEntry("planQuantity", rowCargos.getFirst().get("plan_quantity")));
+
+        // 提交后行投影优先冻结实际提交值：映射再变（jd_pieces_per_unit 3→9）也不漂移
+        jdbc.update(
+                """
+                UPDATE app.provider_skus
+                SET external_codes=jsonb_set(external_codes, '{jd_pieces_per_unit}', '9'::jsonb, true)
+                WHERE fulfillment_provider_id=(SELECT id FROM app.fulfillment_providers WHERE provider_code='JD')
+                  AND sku_id=(SELECT sku_id FROM app.source_channel_skus
+                              WHERE source_channel='CAISHIXIAN' AND source_sku_ref='2047705')
+                """);
+        Map<String, Object> rowsAfterSubmit = http.exchange(
+                "/api/v1/import-batches/" + batchId + "/rows?page=0&size=20&status=ACCEPTED",
+                HttpMethod.GET,
+                new HttpEntity<>(operatorHeaders()),
+                Map.class).getBody();
+        Map<String, Object> rowAfterSubmit =
+                (Map<String, Object>) ((List<?>) rowsAfterSubmit.get("items")).getFirst();
+        List<Map<String, Object>> frozenCargos = (List<Map<String, Object>>) rowAfterSubmit.get("jd_cargos");
+        assertThat(frozenCargos).singleElement().satisfies(cargo -> assertThat(cargo)
+                .containsEntry("provider_sku_code", "JD-SKU-000001")
+                .containsEntry("plan_quantity", 6));
+    }
+
+    @Test
     void confirmationRejectsAcceptedRowsWhoseOrdersStillHaveOpenReviewCases() throws Exception {
         ResponseEntity<Map> uploaded = uploadSource(
                 caishixianWorkbook("CSX-IMPORT-BLOCKED-001", "CSX-IMPORT-BLOCKED-LINE-001"),
