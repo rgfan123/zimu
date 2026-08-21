@@ -12,5 +12,6 @@ public record FulfillmentProviderDto(
         boolean active,
         long version,
         Map<String, Object> jdConfig,
-        String wecomGroupChatId) {
+        String wecomGroupChatId,
+        Integer wecomReminderIntervalMinutes) {
 }

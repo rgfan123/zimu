@@ -164,6 +164,41 @@ class FulfillmentProviderWecomGroupChatApiTest {
         assertThat(providerDetail(current("JD"))).containsEntry("wecom_group_chat_id", "wrJgVnTQAAD007");
     }
 
+    @Test
+    void reminderIntervalSharesConfigWithGroupChatAndKeepsOtherKeys() {
+        // 先登记 chatid，再登记提醒间隔：两个 wecom 键共存，其他 config 键不被覆盖
+        ResponseEntity<Map> chat = patch(current("JD"), config("wecomGroupChatId", "wrJgVnTQAAD010"),
+                writeHeaders("wecom-interval-chat-001", "req-wecom-interval-chat-001"));
+        assertThat(chat.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        ResponseEntity<Map> interval = patch(current("JD"),
+                config("wecomReminderIntervalMinutes", 120, "outboundMode", "SDK"),
+                writeHeaders("wecom-interval-set-001", "req-wecom-interval-set-001"));
+        assertThat(interval.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(interval.getBody()).containsEntry("wecom_reminder_interval_minutes", 120);
+        assertThat(interval.getBody()).containsEntry("wecom_group_chat_id", "wrJgVnTQAAD010");
+        Map<String, Object> afterSet = jdConfig(interval.getBody());
+        assertThat(afterSet).containsEntry("outboundMode", Map.of("present", true, "value", "SDK"));
+
+        // 未配置的第三方履约方投影为 null（默认 = SLA，由生成时快照消费侧决定）
+        assertThat(current("TP")).containsEntry("wecom_reminder_interval_minutes", null);
+
+        // 清除（显式 null）恢复默认，chatid 不受影响
+        ResponseEntity<Map> cleared = patch(current("JD"), config("wecomReminderIntervalMinutes", null),
+                writeHeaders("wecom-interval-clear-001", "req-wecom-interval-clear-001"));
+        assertThat(cleared.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(cleared.getBody()).containsEntry("wecom_reminder_interval_minutes", null);
+        assertThat(cleared.getBody()).containsEntry("wecom_group_chat_id", "wrJgVnTQAAD010");
+
+        // 非法值 422 且不落库
+        ResponseEntity<Map> invalid = patch(current("JD"), config("wecomReminderIntervalMinutes", 10081),
+                writeHeaders("wecom-interval-invalid-001", "req-wecom-interval-invalid-001"));
+        assertThat(invalid.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(invalid.getBody())
+                .containsEntry("business_code", "FULFILLMENT_PROVIDER_WECOM_REMINDER_INTERVAL_INVALID");
+        assertThat(providerDetail(current("JD"))).containsEntry("wecom_reminder_interval_minutes", null);
+    }
+
     /** 每次实时取当前版本，避免用例间/连续 patch 间的乐观锁干扰。 */
     private Map<String, Object> current(String code) {
         return Arrays.stream(http.getForObject("/api/v1/fulfillment-providers", Map[].class))

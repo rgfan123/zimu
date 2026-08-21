@@ -8,7 +8,7 @@ public class WecomUploadValidationException extends RuntimeException {
 
     private final String code;
 
-    WecomUploadValidationException(String code, String message) {
+    public WecomUploadValidationException(String code, String message) {
         super(message);
         this.code = code;
     }

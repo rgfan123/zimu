@@ -14,7 +14,7 @@ import FilterBar from '@/components/FilterBar';
 import PageShell from '@/components/PageShell';
 import { ApiError, errorMessage } from '@/api/client';
 import { fileOperationsApi, fulfillmentExportsApi, platformOrdersApi, providersApi } from '@/api/endpoints';
-import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, ImportBatch, PlatformOrderRefreshResult, TrackingImportBatch } from '@/api/types';
+import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportWecomState, ImportBatch, PlatformOrderRefreshResult, TrackingImportBatch } from '@/api/types';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
@@ -38,6 +38,17 @@ const USAGE_LABELS: Record<ExportUsageStatus, string> = {
   DOWNLOADED_WAITING_RETURN: '已下载待回传',
   RETURNED: '已回传',
   RETURN_OVERDUE: '回传超时',
+};
+
+/** 企微出站状态（Issue #84）展示语义。 */
+const WECOM_STATUS_LABELS: Record<FulfillmentExportWecomState['status'], { text: string; color: string }> = {
+  PENDING: { text: '待发送', color: 'processing' },
+  ACTIVE: { text: '已发送', color: 'success' },
+  COMPLETED: { text: '已收齐', color: 'green' },
+  MANUALLY_STOPPED: { text: '已停止提醒', color: 'warning' },
+  FAILED: { text: '发送失败', color: 'error' },
+  UNKNOWN: { text: '发送未知需对账', color: 'error' },
+  LEGACY: { text: '历史导出未纳入', color: 'default' },
 };
 
 function num(v: string | number | undefined | null): string {
@@ -630,6 +641,42 @@ function TrackingUploadModal({
   );
 }
 
+/** 企微出站时间线（#84）：已发送时间/下次提醒/提醒次数/最后错误/停止原因。 */
+function WecomTimeline({ wecom }: { wecom: FulfillmentExportWecomState }) {
+  const semantic = WECOM_STATUS_LABELS[wecom.status];
+  return (
+    <Descriptions size="small" column={2} bordered style={{ marginBottom: 8 }}>
+      <Descriptions.Item label="企微发送状态">
+        <Tag color={semantic.color}>{semantic.text}</Tag>
+        {wecom.chat_id ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+            群 {wecom.chat_id}
+          </Typography.Text>
+        ) : null}
+      </Descriptions.Item>
+      <Descriptions.Item label="已发送时间">{wecom.initial_sent_at ?? '—'}</Descriptions.Item>
+      <Descriptions.Item label="回传截止">{wecom.tracking_due_at ?? '—'}</Descriptions.Item>
+      <Descriptions.Item label="下次提醒">
+        {wecom.next_reminder_at ?? (wecom.status === 'ACTIVE' ? '已暂停' : '—')}
+      </Descriptions.Item>
+      <Descriptions.Item label="提醒次数">{wecom.reminder_count}</Descriptions.Item>
+      <Descriptions.Item label="提醒间隔（分钟）">{wecom.reminder_interval_minutes}</Descriptions.Item>
+      {wecom.status === 'FAILED' || wecom.status === 'UNKNOWN' ? (
+        <Descriptions.Item label="最后错误" span={2}>
+          <Typography.Text type="danger">{wecom.last_error ?? semantic.text}</Typography.Text>
+        </Descriptions.Item>
+      ) : null}
+      {wecom.stopped ? (
+        <Descriptions.Item label="停止原因" span={2}>
+          <Typography.Text type="warning">
+            {wecom.stopped.reason}（{wecom.stopped.by} · {wecom.stopped.at}）
+          </Typography.Text>
+        </Descriptions.Item>
+      ) : null}
+    </Descriptions>
+  );
+}
+
 export default function SalesOutboundPage() {
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(10);
@@ -638,6 +685,51 @@ export default function SalesOutboundPage() {
   const [selected, setSelected] = useState<FulfillmentExport | null>(null);
   const [trackingTarget, setTrackingTarget] = useState<FulfillmentExport | null>(null);
   const [returnDownloading, setReturnDownloading] = useState<string | null>(null);
+  const [resending, setResending] = useState<string | null>(null);
+  const [stopTarget, setStopTarget] = useState<FulfillmentExport | null>(null);
+  const [stopReason, setStopReason] = useState('');
+  const [stopSubmitting, setStopSubmitting] = useState(false);
+
+  /** 人工重发（#84）：只登记新 delivery + 任务，发送由后台 Worker 执行。 */
+  const handleWecomResend = async (record: FulfillmentExport) => {
+    if (!record.wecom) return;
+    setResending(record.id);
+    try {
+      await fulfillmentExportsApi.wecomResend(record.id, {
+        expected_version: record.wecom.version,
+      });
+      message.success('已登记重发，文件将重新发送到该履约方企微群');
+      list.reload();
+    } catch (e) {
+      message.error(errorMessage(e));
+    } finally {
+      setResending(null);
+    }
+  };
+
+  /** 人工停止（#84）：持久化 operator/reason/time，停止后不再自动提醒。 */
+  const handleWecomStop = async () => {
+    if (!stopTarget?.wecom) return;
+    if (!stopReason.trim()) {
+      message.warning('请填写停止理由');
+      return;
+    }
+    setStopSubmitting(true);
+    try {
+      await fulfillmentExportsApi.wecomStop(stopTarget.id, {
+        expected_version: stopTarget.wecom.version,
+        reason: stopReason.trim(),
+      });
+      message.success('已停止该导出的企微发送与周期提醒');
+      setStopTarget(null);
+      setStopReason('');
+      list.reload();
+    } catch (e) {
+      message.error(errorMessage(e));
+    } finally {
+      setStopSubmitting(false);
+    }
+  };
 
   const providers = useAsync(() => providersApi.list(), []);
   const providerName = useMemo(() => {
@@ -730,9 +822,31 @@ export default function SalesOutboundPage() {
       render: (d?: { download_count?: number }) => d?.download_count ?? 0,
     },
     {
+      title: '企微通知',
+      dataIndex: 'wecom',
+      width: 130,
+      render: (wecom?: FulfillmentExportWecomState) => {
+        if (!wecom) {
+          return <Tag>未纳入</Tag>;
+        }
+        const semantic = WECOM_STATUS_LABELS[wecom.status];
+        return (
+          <Tooltip
+            title={
+              wecom.status === 'FAILED' || wecom.status === 'UNKNOWN'
+                ? wecom.last_error ?? semantic.text
+                : undefined
+            }
+          >
+            <Tag color={semantic.color}>{semantic.text}</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: '操作',
       key: 'action',
-      width: 260,
+      width: 330,
       fixed: 'right',
       render: (_, r) => (
         <Space size={4}>
@@ -758,6 +872,35 @@ export default function SalesOutboundPage() {
             >
               来源回填
             </Button>
+          ) : null}
+          {r.wecom && r.wecom.status !== 'LEGACY' ? (
+            <>
+              <Popconfirm
+                title="重新发送该导出文件到企微群？"
+                description={r.wecom.status === 'COMPLETED'
+                  ? '该导出运单已收齐，无需重发。'
+                  : '将重新上传并发送文件消息到该履约方登记的企微群，发送后提醒时间线以新发送时刻重置。'}
+                okText="重新发送"
+                cancelText="取消"
+                disabled={r.wecom.status === 'COMPLETED'}
+                onConfirm={() => handleWecomResend(r)}
+              >
+                <Button
+                  size="small"
+                  type="link"
+                  icon={<CloudSyncOutlined />}
+                  loading={resending === r.id}
+                  disabled={r.wecom.status === 'COMPLETED'}
+                >
+                  重发
+                </Button>
+              </Popconfirm>
+              {r.wecom.status === 'MANUALLY_STOPPED' || r.wecom.status === 'COMPLETED' ? null : (
+                <Button size="small" type="link" danger onClick={() => setStopTarget(r)}>
+                  停止
+                </Button>
+              )}
+            </>
           ) : null}
           <Typography.Link onClick={() => setSelected(r)}>明细</Typography.Link>
         </Space>
@@ -824,6 +967,7 @@ export default function SalesOutboundPage() {
                 履约方：{providerName(detail.data.provider_id)} · 模板 {detail.data.template_version} · 生成 {detail.data.generated_at}
               </Typography.Text>
             </Space>
+            {detail.data.wecom ? <WecomTimeline wecom={detail.data.wecom} /> : null}
             <Table
               rowKey="export_line_no"
               size="small"
@@ -847,6 +991,36 @@ export default function SalesOutboundPage() {
           <Alert type="error" showIcon message={errorMessage(detail.error)} />
         ) : null}
       </Drawer>
+
+      <Modal
+        title={`停止企微通知 · ${stopTarget?.export_batch_no ?? ''}`}
+        open={Boolean(stopTarget)}
+        onCancel={() => {
+          if (stopSubmitting) return;
+          setStopTarget(null);
+          setStopReason('');
+        }}
+        onOk={handleWecomStop}
+        okText="确认停止"
+        cancelText="取消"
+        okButtonProps={{ danger: true, loading: stopSubmitting }}
+        destroyOnClose
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="停止后不再自动发送与周期提醒"
+          description="停止将持久化操作人、理由与时间（可追溯）；已入队的发送/提醒任务会幂等跳过。如需恢复，可对该导出执行「重发」。"
+        />
+        <Input.TextArea
+          rows={3}
+          style={{ marginTop: 12 }}
+          placeholder="请填写停止理由（必填，将随停止记录审计）"
+          value={stopReason}
+          onChange={(event) => setStopReason(event.target.value)}
+          maxLength={500}
+        />
+      </Modal>
 
       <TrackingUploadModal
         target={trackingTarget}

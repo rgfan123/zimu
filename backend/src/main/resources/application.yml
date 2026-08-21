@@ -54,6 +54,21 @@ app:
     poll-ms: ${MESSAGE_WORKER_POLL_MS:500}
     lease-seconds: ${MESSAGE_WORKER_LEASE_SECONDS:30}
     backoff-seconds: ${MESSAGE_WORKER_BACKOFF_SECONDS:5}
+  wecom-export-worker:
+    # Issue #84：履约导出企微发送 Worker（INITIAL/REMINDER 共用 WECOM_EXPORT_DELIVERY 任务）。
+    enabled: ${WECOM_EXPORT_WORKER_ENABLED:true}
+    poll-ms: ${WECOM_EXPORT_WORKER_POLL_MS:1000}
+    # 租约 30 分钟（代码下限，不可调小）：#82 同步分片上传最坏时长有界可达十余分钟，租约必须
+    # 覆盖该上界——真实执行仍活跃时任务绝不被第二实例重新领取误判为 crash（SENDING 只在
+    # 租约过期后的重新领取时转 UNKNOWN 人工对账）。
+    lease-seconds: ${WECOM_EXPORT_WORKER_LEASE_SECONDS:1800}
+    backoff-seconds: ${WECOM_EXPORT_WORKER_BACKOFF_SECONDS:30}
+    claim-error-suppress-seconds: ${WECOM_EXPORT_WORKER_CLAIM_ERROR_SUPPRESS_SECONDS:60}
+  wecom-reminder:
+    # Issue #84：到期未收齐运单的周期提醒扫描器（DB 扫描，无内存延迟链）。
+    enabled: ${WECOM_REMINDER_ENABLED:true}
+    scan-ms: ${WECOM_REMINDER_SCAN_MS:30000}
+    scan-batch-limit: ${WECOM_REMINDER_SCAN_BATCH_LIMIT:20}
   agent-worker:
     # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
     enabled: ${AGENT_WORKER_ENABLED:true}

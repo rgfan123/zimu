@@ -248,7 +248,12 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         ObjectNode body = frame.putObject("body");
         body.put("chatid", message.chatId());
         body.put("msgtype", message.type().protocolValue());
-        body.putObject(message.type().protocolValue()).put("content", message.content());
+        // 文件消息（#84）：msgtype=file + file.media_id；text/markdown 保持 content 语义。
+        if (message.type() == WecomOutboundMessage.Type.FILE) {
+            body.putObject("file").put("media_id", message.mediaId());
+        } else {
+            body.putObject(message.type().protocolValue()).put("content", message.content());
+        }
 
         AckOutcome outcome = awaitAck(frame, requestId, ackTimeoutMillis);
         return switch (outcome.kind()) {

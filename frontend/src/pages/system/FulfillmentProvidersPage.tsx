@@ -98,6 +98,7 @@ export default function FulfillmentProvidersPage() {
       tracking_sla_minutes: record.tracking_sla_minutes,
       active: record.active,
       wecom_group_chat_id: record.wecom_group_chat_id ?? '',
+      wecom_reminder_interval_minutes: record.wecom_reminder_interval_minutes ?? null,
     };
     if (record.provider_type === 'JD_WAREHOUSE') {
       for (const key of JD_STRING_KEYS) {
@@ -125,9 +126,13 @@ export default function FulfillmentProvidersPage() {
       const values = await form.validateFields();
       setSubmitting(true);
       // 所有履约方类型都维护企微群 chatid：空串提交 null（清除登记），其余交给后端 trim/校验
-      const config: Record<string, string | boolean | null> = {};
+      const config: Record<string, string | boolean | number | null> = {};
       const groupChatId = typeof values.wecom_group_chat_id === 'string' ? values.wecom_group_chat_id : '';
       config.wecomGroupChatId = groupChatId.length > 0 ? groupChatId : null;
+      // 回传提醒间隔（Issue #84）：留空提交 null（恢复默认 = 运单回传时限），显式值 1..10080
+      const reminderInterval = values.wecom_reminder_interval_minutes;
+      config.wecomReminderIntervalMinutes =
+        typeof reminderInterval === 'number' && reminderInterval > 0 ? reminderInterval : null;
       if (editing.provider_type === 'JD_WAREHOUSE') {
         for (const key of JD_STRING_KEYS) {
           if (typeof values[key] === 'string' && values[key].length > 0) {
@@ -312,6 +317,24 @@ export default function FulfillmentProvidersPage() {
             rules={[{ validator: validateGroupChatId }]}
           >
             <Input placeholder="请输入企微群 chatid（留空并保存 = 清除登记）" maxLength={128} />
+          </Form.Item>
+          <Form.Item
+            name="wecom_reminder_interval_minutes"
+            label="回传提醒间隔（分钟）"
+            extra="到期未收齐运单时的群提醒间隔；留空并保存 = 默认等于运单回传时限，改动只影响之后新生成的导出"
+            rules={[
+              {
+                validator: (_rule, value: number | null | undefined) => {
+                  if (value == null) return Promise.resolve();
+                  if (!Number.isInteger(value) || value < 1 || value > 10080) {
+                    return Promise.reject(new Error('提醒间隔必须是 1..10080 的整数分钟'));
+                  }
+                  return Promise.resolve();
+                },
+              },
+            ]}
+          >
+            <InputNumber min={1} max={10080} style={{ width: '100%' }} placeholder="留空 = 默认等于运单回传时限" />
           </Form.Item>
           {editing?.provider_type === 'JD_WAREHOUSE' && (
             <>

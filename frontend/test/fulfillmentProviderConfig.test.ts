@@ -319,6 +319,8 @@ test('JD provider shows missing identifier count and the edit form submits confi
       townRequired: true,
       outboundMode: 'FILE',
       wecomGroupChatId: null,
+      // Issue #84：提醒间隔随 config 合并提交；留空 = null（默认等于运单回传时限）
+      wecomReminderIntervalMinutes: null,
     },
   });
   const headers = patchBodies[0].init.headers as Record<string, string>;

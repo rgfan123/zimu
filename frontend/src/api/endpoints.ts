@@ -33,6 +33,7 @@ import type {
   FulfillmentDetail,
   FulfillmentExportDetail,
   FulfillmentExportPage,
+  FulfillmentExportWecomState,
   FulfillmentMetric,
   FulfillmentPage,
   FulfillmentProvider,
@@ -388,8 +389,8 @@ export const providersApi = {
     provider_name?: string;
     tracking_sla_minutes?: number;
     active?: boolean;
-    /** config 合并写入：京东键字符串必须非空，townRequired 只接受布尔，null 清除该键；wecomGroupChatId 为企微群 chatid（空串/留空提交 null 清除）。 */
-    config?: Record<string, string | boolean | null>;
+    /** config 合并写入：京东键字符串必须非空，townRequired 只接受布尔，null 清除该键；wecomGroupChatId 为企微群 chatid（空串/留空提交 null 清除）；wecomReminderIntervalMinutes 为提醒间隔分钟（1..10080，null 恢复默认 = 运单回传时限）。 */
+    config?: Record<string, string | boolean | number | null>;
   }) =>
     apiRequest<FulfillmentProvider>(`/api/v1/fulfillment-providers/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
@@ -504,6 +505,18 @@ export const fulfillmentExportsApi = {
     a.click();
     URL.revokeObjectURL(url);
   },
+  /** 人工停止企微自动发送与周期提醒（#84）：版本 CAS + 理由；已收齐/已停止幂等 no-op。 */
+  wecomStop: (id: string, body: { expected_version: number; reason: string }) =>
+    apiRequest<FulfillmentExportWecomState>(
+      `/api/v1/fulfillment-exports/${id}/wecom-stop`,
+      { method: 'POST', body, headers: { ...trustedWriteHeaders(), 'Content-Type': 'application/json' } },
+    ),
+  /** 人工重发企微文件消息（#84）：只登记新 delivery + 任务，发送异步执行。 */
+  wecomResend: (id: string, body: { expected_version: number; reason?: string }) =>
+    apiRequest<FulfillmentExportWecomState & { resend_delivery_id?: string; resend_sequence?: number }>(
+      `/api/v1/fulfillment-exports/${id}/wecom-resend`,
+      { method: 'POST', body, headers: { ...trustedWriteHeaders(), 'Content-Type': 'application/json' } },
+    ),
 };
 
 async function multipartRequest<T>(path: string, form: FormData): Promise<T> {

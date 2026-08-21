@@ -176,6 +176,117 @@ public class OperationalAlertService {
         });
     }
 
+    /**
+     * 系统侧（Worker）创建运营告警：无 Idempotency-Key/CommandContext 的路径。
+     *
+     * <p>同一 {@code (alert_type, shipment_id, detail.export_id)} 的既有 OPEN/ACKNOWLEDGED
+     * 告警先自动关闭（detail 留 superseded 证据）再插入新告警——同一导出同一 delivery 多次
+     * ensure 只保留一条活动告警，绝不跨导出误关（续发导出可共享 fulfillment/shipment，按
+     * detail 的 export_id 隔离）；并发插入由
+     * {@code uq_operational_alert_active_wecom_export} 唯一索引兜底（冲突时返回既有告警）。
+     */
+    @Transactional
+    public long createSystem(CreateOperationalAlertCommand command) {
+        validateCreate(command);
+        resolveActiveForExport(command.alertType(), command.shipmentId(), exportIdOf(command), "superseded_by_new_delivery");
+        try {
+            Long alertId = jdbc.queryForObject(
+                    """
+                    INSERT INTO app.operational_alerts
+                        (alert_no, alert_type, severity, order_id, order_line_id, fulfillment_id, shipment_id,
+                         message, detail)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb) RETURNING id
+                    """,
+                    Long.class,
+                    "ALERT-" + token(),
+                    command.alertType(),
+                    command.severity().name(),
+                    command.orderId(),
+                    command.orderLineId(),
+                    command.fulfillmentId(),
+                    command.shipmentId(),
+                    command.message(),
+                    writeJson(command.detail() == null ? Map.of() : command.detail()));
+            audits.record(new AuditLogService.AuditCommand()
+                    .dataScope(DataScope.BUSINESS)
+                    .orderId(command.orderId())
+                    .requestId("system:wecom-export")
+                    .operator("system")
+                    .actorType(AuditActorType.SYSTEM)
+                    .service("OperationalAlertService")
+                    .operation("operational_alert.create_system")
+                    .requestPayload(command)
+                    .responsePayload(loadAlert(alertId))
+                    .httpStatus(201)
+                    .businessCode("OPERATIONAL_ALERT_CREATED"));
+            return alertId;
+        } catch (org.springframework.dao.DuplicateKeyException duplicate) {
+            Long existing = jdbc.queryForObject(
+                    """
+                    SELECT id FROM app.operational_alerts
+                    WHERE alert_type=? AND shipment_id=?
+                      AND detail->>'export_id'=?
+                      AND status IN ('OPEN', 'ACKNOWLEDGED')
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    Long.class,
+                    command.alertType(),
+                    command.shipmentId(),
+                    exportIdOf(command));
+            return existing == null ? -1 : existing;
+        }
+    }
+
+    /**
+     * 人工重发成功（新 initial ack）后只关闭**该导出**的活动告警：按
+     * {@code (alert_type, shipment_id, detail.export_id)} 精确隔离，不误关共享同一
+     * fulfillment/shipment 的其他导出告警；detail 留下可追溯关闭证据。
+     */
+    @Transactional
+    public void resolveWecomExportAlerts(Long shipmentId, long exportId, String reason) {
+        if (shipmentId == null) {
+            return;
+        }
+        jdbc.update(
+                """
+                UPDATE app.operational_alerts
+                SET status='RESOLVED', resolved_at=CURRENT_TIMESTAMP,
+                    detail=detail || jsonb_build_object('auto_resolved_reason', ?),
+                    lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
+                WHERE alert_type='FULFILLMENT_EXPORT_WECOM' AND shipment_id=?
+                  AND detail->>'export_id'=?
+                  AND status IN ('OPEN', 'ACKNOWLEDGED')
+                """,
+                reason,
+                shipmentId,
+                String.valueOf(exportId));
+    }
+
+    private void resolveActiveForExport(String alertType, Long shipmentId, String exportId, String reason) {
+        if (shipmentId == null || exportId == null) {
+            return;
+        }
+        jdbc.update(
+                """
+                UPDATE app.operational_alerts
+                SET status='RESOLVED', resolved_at=CURRENT_TIMESTAMP,
+                    detail=detail || jsonb_build_object('auto_resolved_reason', ?),
+                    lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
+                WHERE alert_type=? AND shipment_id=? AND detail->>'export_id'=?
+                  AND status IN ('OPEN', 'ACKNOWLEDGED')
+                """,
+                reason,
+                alertType,
+                shipmentId,
+                exportId);
+    }
+
+    /** 告警 detail 中的 export_id（字符串），缺失时返回 null（调用方按无隔离处理）。 */
+    private static String exportIdOf(CreateOperationalAlertCommand command) {
+        Object exportId = command.detail() == null ? null : command.detail().get("export_id");
+        return exportId == null ? null : String.valueOf(exportId);
+    }
+
     private static void validateCreate(CreateOperationalAlertCommand command) {
         if (command == null || command.alertType() == null || command.alertType().isBlank()) {
             throw BusinessException.unprocessable("ALERT_TYPE_REQUIRED", "运营告警类型不能为空");

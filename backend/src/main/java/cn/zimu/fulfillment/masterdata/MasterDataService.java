@@ -912,7 +912,7 @@ public class MasterDataService {
                 : Map.of();
         return new FulfillmentProviderDto(id(value.getId()), value.getProviderCode(), value.getProviderName(),
                 value.getProviderType().name(), value.getTrackingSlaMinutes(), value.isActive(), value.getLockVersion(),
-                jdConfig, wecomGroupChatId(value.getConfig()));
+                jdConfig, wecomGroupChatId(value.getConfig()), wecomReminderIntervalMinutes(value.getConfig()));
     }
 
     private SkuDetail skuDetail(Sku value) {
@@ -996,18 +996,23 @@ public class MasterDataService {
     }
 
     /**
-     * 履约方 config 合并校验（Issue #83）：京东标识键走 {@link FulfillmentProviderJdConfig}，
-     * 企微群 chatid 走 {@link FulfillmentProviderWecomConfig}；两者之外的键由京东契约以
-     * 未知键拒绝。每个键族只由各自的契约模块解析，不在此处重复实现键规则。
+     * 履约方 config 合并校验（Issue #83/#84）：京东标识键走 {@link FulfillmentProviderJdConfig}，
+     * 企微群 chatid 与回传提醒间隔走 {@link FulfillmentProviderWecomConfig}；两者之外的键由京东
+     * 契约以未知键拒绝。每个键族只由各自的契约模块解析，不在此处重复实现键规则。
      */
     private static Map<String, Object> validateProviderConfig(Map<String, Object> patch) {
         Map<String, Object> jdPatch = new LinkedHashMap<>();
         Object wecomGroupChatId = null;
         boolean hasWecomGroupChatId = false;
+        Object wecomReminderInterval = null;
+        boolean hasWecomReminderInterval = false;
         for (Map.Entry<String, Object> entry : patch.entrySet()) {
             if (FulfillmentProviderWecomConfig.GROUP_CHAT_ID_KEY.equals(entry.getKey())) {
                 wecomGroupChatId = entry.getValue();
                 hasWecomGroupChatId = true;
+            } else if (FulfillmentProviderWecomConfig.REMINDER_INTERVAL_KEY.equals(entry.getKey())) {
+                wecomReminderInterval = entry.getValue();
+                hasWecomReminderInterval = true;
             } else {
                 jdPatch.put(entry.getKey(), entry.getValue());
             }
@@ -1018,6 +1023,11 @@ public class MasterDataService {
                     FulfillmentProviderWecomConfig.GROUP_CHAT_ID_KEY,
                     FulfillmentProviderWecomConfig.validate(wecomGroupChatId));
         }
+        if (hasWecomReminderInterval) {
+            validated.put(
+                    FulfillmentProviderWecomConfig.REMINDER_INTERVAL_KEY,
+                    FulfillmentProviderWecomConfig.validateReminderInterval(wecomReminderInterval));
+        }
         return validated;
     }
 
@@ -1025,6 +1035,16 @@ public class MasterDataService {
     private static String wecomGroupChatId(Map<String, Object> config) {
         Object value = config == null ? null : config.get(FulfillmentProviderWecomConfig.GROUP_CHAT_ID_KEY);
         return FulfillmentProviderWecomConfig.normalizeStored(value);
+    }
+
+    /** 对外投影：回传提醒间隔分钟；未配置/非法存量值投影为 null（前端按 SLA 默认展示）。 */
+    private static Integer wecomReminderIntervalMinutes(Map<String, Object> config) {
+        try {
+            return FulfillmentProviderWecomConfig.validateReminderInterval(
+                    config == null ? null : config.get(FulfillmentProviderWecomConfig.REMINDER_INTERVAL_KEY));
+        } catch (BusinessException ignored) {
+            return null;
+        }
     }
 
     private static String blankToNull(String value) {

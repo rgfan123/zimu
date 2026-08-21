@@ -19,6 +19,13 @@ public final class FulfillmentProviderWecomConfig {
     /** config JSONB 中的企微群 chatid 键（命名明确群聊语义）。 */
     public static final String GROUP_CHAT_ID_KEY = "wecomGroupChatId";
 
+    /** config JSONB 中的回传提醒间隔键（分钟，1..10080；null/缺失 = 默认等于 SLA）。 */
+    public static final String REMINDER_INTERVAL_KEY = "wecomReminderIntervalMinutes";
+
+    /** 提醒间隔最小/最大值（分钟）。 */
+    public static final int REMINDER_INTERVAL_MIN = 1;
+    public static final int REMINDER_INTERVAL_MAX = 10080;
+
     /** chatid 最大长度（字符数）。 */
     public static final int MAX_LENGTH = 128;
 
@@ -27,6 +34,10 @@ public final class FulfillmentProviderWecomConfig {
 
     /** 写入值非法时的业务错误码。 */
     public static final String INVALID_ERROR_CODE = "FULFILLMENT_PROVIDER_WECOM_GROUP_CHAT_ID_INVALID";
+
+    /** 提醒间隔写入值非法时的业务错误码。 */
+    public static final String REMINDER_INTERVAL_INVALID_ERROR_CODE =
+            "FULFILLMENT_PROVIDER_WECOM_REMINDER_INTERVAL_INVALID";
 
     private static final String FIELD = "config." + GROUP_CHAT_ID_KEY;
 
@@ -86,6 +97,53 @@ public final class FulfillmentProviderWecomConfig {
                     "履约方 " + providerCode + " 未登记企微群，请在履约方配置登记企微群后重试");
         }
         return normalized;
+    }
+
+    /**
+     * 提醒间隔写入校验（Issue #84）：null 表示清除（恢复默认 = 等于 tracking_sla_minutes）；
+     * 非 null 必须是 1..10080 的整数分钟。返回归一化后的值（null = 默认 SLA）。
+     */
+    public static Integer validateReminderInterval(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof Number number) || !isIntegral(number)) {
+            throw reminderIntervalInvalid("提醒间隔必须是 1.." + REMINDER_INTERVAL_MAX + " 的整数分钟");
+        }
+        int minutes = number.intValue();
+        if (minutes < REMINDER_INTERVAL_MIN || minutes > REMINDER_INTERVAL_MAX) {
+            throw reminderIntervalInvalid("提醒间隔必须是 1.." + REMINDER_INTERVAL_MAX + " 的整数分钟");
+        }
+        return minutes;
+    }
+
+    /**
+     * 提醒间隔读取（#84 生成时快照消费侧）：未配置/已清除/存量值非法时返回默认值
+     * （= 该履约方 tracking_sla_minutes 快照），不输出非法值。
+     */
+    public static int requireReminderInterval(Map<String, Object> config, int slaDefaultMinutes) {
+        Object value = config == null ? null : config.get(REMINDER_INTERVAL_KEY);
+        Integer normalized;
+        try {
+            normalized = validateReminderInterval(value);
+        } catch (BusinessException ignored) {
+            normalized = null;
+        }
+        return normalized == null ? slaDefaultMinutes : normalized;
+    }
+
+    private static boolean isIntegral(Number number) {
+        double asDouble = number.doubleValue();
+        return !Double.isNaN(asDouble) && !Double.isInfinite(asDouble) && asDouble == number.intValue();
+    }
+
+    private static BusinessException reminderIntervalInvalid(String message) {
+        return new BusinessException(
+                422,
+                REMINDER_INTERVAL_INVALID_ERROR_CODE,
+                "回传提醒间隔无效",
+                List.of(new FieldErrorItem("config." + REMINDER_INTERVAL_KEY, "Pattern", message)),
+                Map.of());
     }
 
     private static BusinessException invalid(String message) {

@@ -28,21 +28,22 @@ pg_dump --schema-only --schema=app --no-owner --no-privileges --no-comments
 
 | 对象 | 数量 |
 |---|---|
-| 业务表 `CREATE TABLE` | 53 |
+| 业务表 `CREATE TABLE` | 55 |
 | 操作视图 `CREATE VIEW` | 1（`v_order_progress_summary`） |
 | 函数 `CREATE FUNCTION` | 36 |
 | 触发器 `CREATE TRIGGER` | 64 |
-| 索引 `CREATE INDEX` | 93 |
+| 索引 `CREATE INDEX` | 94 |
 
 注意：`analytics` 分析 schema 的 4 个视图**不在此导出内**（`--schema=app` 限定）。需要分析库结构时，对 `analytics` 另行导出。
 
 > 定位提醒：本导出是 2026-08-17 的一次性交接基线，早于 V33（缺 `agent_definitions`/`agent_eval_cases`），
-> 与 Flyway 迁移链没有联动机制。当前结构的权威对照是 `docs/schema.sql`（空库快照），等价性由
-> `SchemaSnapshotMigrationEquivalenceTest` 保证；本文件只在需要重新交接基线时按 §5 再导出。
+> 与 Flyway 迁移链没有联动机制；2026-08-21 已手工追加 V46（#84）的两张企微出站表与索引、
+> V47（#84 第二轮）的企微告警隔离索引，文件尾部的追加段与迁移文件保持一致。当前结构的权威对照是 `docs/schema.sql`（空库快照），
+> 等价性由 `SchemaSnapshotMigrationEquivalenceTest` 保证；本文件只在需要重新交接基线时按 §5 再导出。
 
 ## 3. 表按领域分组
 
-导出的 53 张表可归入以下领域（与 `docs/schema.md` §3 的分组对齐，含其未收录的消息链路组）：
+导出的 55 张表可归入以下领域（与 `docs/schema.md` §3 的分组对齐，含其未收录的消息链路组）：
 
 ### 3.1 客户、商品与履约方主数据（10）
 
@@ -56,9 +57,9 @@ pg_dump --schema-only --schema=app --no-owner --no-privileges --no-comments
 
 `fulfillments`、`shipments`、`shipment_items`、`shipment_jd_outbounds`、`trackings`、`shipment_syncs`、`procurement_tickets`、`procurement_ticket_items`、`procurement_receipts`、`procurement_receipt_items`
 
-### 3.4 文件输出与回填（4）
+### 3.4 文件输出与回填（6）
 
-`fulfillment_exports`、`fulfillment_export_items`、`source_return_exports`、`source_return_export_items`
+`fulfillment_exports`、`fulfillment_export_items`、`source_return_exports`、`source_return_export_items`、`fulfillment_export_wecom_states`、`fulfillment_export_wecom_deliveries`（#84：第三方导出企微出站状态与 delivery 证据）
 
 ### 3.5 运营、审计与接入（8）
 
@@ -99,6 +100,9 @@ pg_dump --schema-only --schema=app --no-owner --no-privileges --no-comments
 
 ## 6. 常见问题
 
-- **为什么只有 53 张表，schema.md 之前写 48？** 文档过期。本次已把 `docs/schema.md` 更新为 53，并补齐了消息链路等新表。
+- **为什么这里 55 张表，而 schema.md 说 65 张？** 本导出是 2026-08-17 的一次性交接基线（当时 53 张），
+  手工追加 V46 两张企微出站表后为 55；`docs/schema.md`/`docs/schema.sql` 是 Flyway 全链（V1..V47）的
+  空库权威快照（65 张），两者基线不同，等价性由 `SchemaSnapshotMigrationEquivalenceTest` 对
+  `docs/schema.sql` 与迁移链负责。
 - **analytics 视图在哪？** 在 `analytics` schema，本导出未包含；需要时单独对 `analytics` 执行 `pg_dump --schema-only --schema=analytics`。
 - **函数/触发器为什么这么多？** 只追加表（如订单版本、审计、媒体证据）的写保护、状态机一致性约束等由 DB 触发器承载，属既有设计，不是本次新增。

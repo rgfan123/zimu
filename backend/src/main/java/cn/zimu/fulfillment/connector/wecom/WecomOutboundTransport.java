@@ -2,8 +2,8 @@ package cn.zimu.fulfillment.connector.wecom;
 
 import java.nio.file.Path;
 
-/** 企业微信外部传输 seam；生产适配器是当前长连接。 */
-interface WecomOutboundTransport {
+/** 企业微信外部传输 seam（#82/#84 业务消费方跨包依赖）；生产适配器是当前长连接。 */
+public interface WecomOutboundTransport {
 
     WecomSendResult send(WecomOutboundMessage message);
 

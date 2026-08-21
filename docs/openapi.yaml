@@ -907,6 +907,70 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TrackingImportBatch' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-exports/{export_id}/wecom-stop:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    post:
+      tags: [Exports, WeCom]
+      operationId: stopFulfillmentExportWecom
+      description: >-
+        人工停止该导出的企微自动发送与周期提醒（#84）。版本 CAS（409 VERSION_CONFLICT，
+        expected_version 必填，缺失 400 VALIDATION_ERROR）、理由必填（422
+        WECOM_STOP_REASON_REQUIRED）；已 COMPLETED/MANUALLY_STOPPED 再停
+        幂等 no-op 返回现状；LEGACY 明确拒绝（422 WECOM_EXPORT_LEGACY）。停止持久化
+        operator/reason/time、清 next_reminder，不删除历史 delivery；已入队的发送/提醒
+        任务执行时幂等跳过。认证与幂等沿用既有写接口（Basic Auth + X-Operator 复核 +
+        Idempotency-Key）。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WecomExportStopCommand' }
+      responses:
+        '200':
+          description: 停止成功（或已停止/已收齐的幂等现状），返回完整企微状态投影。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FulfillmentExportWecomState' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-exports/{export_id}/wecom-resend:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    post:
+      tags: [Exports, WeCom]
+      operationId: resendFulfillmentExportWecom
+      description: >-
+        人工重发企微文件消息（#84）：只生成新的可追溯 INITIAL delivery（sequence=max+1）
+        与 async task（202），HTTP 线程不直接发送；发送成功后 sent_at/due/提醒时间线以
+        新 ack 重置，并只关闭该导出（shipment + detail.export_id）的遗留告警，不误关共享
+        同一 shipment 的其他导出。已收齐（422 WECOM_EXPORT_TRACKING_COMPLETE）、
+        LEGACY（422 WECOM_EXPORT_LEGACY）拒绝；版本过期 409；存在进行中的 INITIAL
+        （PENDING/SENDING，含旧自动发送未完成）409 WECOM_RESEND_IN_FLIGHT；同
+        Idempotency-Key 重放返回首次结果。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WecomExportResendCommand' }
+      responses:
+        '202':
+          description: 重发已登记（发送异步执行），返回状态投影 + resend_delivery_id/resend_sequence。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FulfillmentExportWecomState'
+                  - type: object
+                    properties:
+                      resend_delivery_id: { $ref: '#/components/schemas/Identifier' }
+                      resend_sequence: { type: integer, minimum: 1 }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/tracking-imports/{batch_id}:
     parameters:
       - $ref: '#/components/parameters/BatchId'
@@ -4809,11 +4873,21 @@ components:
         export_kind: { type: string, enum: [JD_WAREHOUSE, THIRD_PARTY] }
         template_version: { type: string }
         file_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
-        tracking_due_at: { type: string, format: date-time }
+        tracking_due_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            权威回传截止（#84）：新第三方导出以企微文件消息成功 ack 时刻 + SLA 快照派生，
+            未发送时为 null（UI 不展示假的到期时间）；历史与 JD 导出保持 generated_at 派生语义。
         generated_at: { type: string, format: date-time }
         usage_status: { $ref: '#/components/schemas/ExportUsageStatus' }
         download_audit: { $ref: '#/components/schemas/DownloadAudit' }
         tracking_import_batch_id: { $ref: '#/components/schemas/Identifier' }
+        wecom:
+          allOf:
+            - $ref: '#/components/schemas/FulfillmentExportWecomState'
+            - description: 企微出站状态（#84）；仅第三方导出（含历史 LEGACY）存在状态行，JD 导出无此字段。
     FulfillmentExportDetail:
       allOf:
         - $ref: '#/components/schemas/FulfillmentExport'
@@ -4832,6 +4906,48 @@ components:
             items:
               type: array
               items: { $ref: '#/components/schemas/FulfillmentExport' }
+    FulfillmentExportWecomState:
+      type: object
+      required: [status, tracking_sla_minutes, reminder_interval_minutes, reminder_count, version]
+      properties:
+        status:
+          type: string
+          enum: [PENDING, ACTIVE, COMPLETED, MANUALLY_STOPPED, FAILED, UNKNOWN, LEGACY]
+          description: >-
+            PENDING=initial 已入队未发送；ACTIVE=文件消息已 ack（计时起点）；
+            COMPLETED=运单已收齐；MANUALLY_STOPPED=人工停止；FAILED=确定性失败（总尝试 2 次后）；
+            UNKNOWN=结局未知需人工对账（发送已提交但未获 ack/崩溃遗留）；
+            LEGACY=迁移历史导出（不自动发送、不提醒、不可重发/停止）。
+        chat_id: { type: string, nullable: true, description: initial 成功发送使用的群快照；提醒永远发到该群 }
+        tracking_sla_minutes: { type: integer, minimum: 1 }
+        reminder_interval_minutes: { type: integer, minimum: 1 }
+        initial_sent_at: { type: string, format: date-time, nullable: true, description: 文件消息服务端 ack 接收时刻（计时起点） }
+        tracking_due_at: { type: string, format: date-time, nullable: true }
+        next_reminder_at: { type: string, format: date-time, nullable: true, description: null = 暂停/停止/收齐，不再自动提醒 }
+        last_reminded_at: { type: string, format: date-time, nullable: true }
+        reminder_count: { type: integer, minimum: 0 }
+        last_error: { type: string, nullable: true, description: 稳定错误码/可操作消息，无 media_id/config/secret }
+        version: { type: integer, minimum: 0 }
+        stopped:
+          type: object
+          nullable: true
+          required: [by, reason, at]
+          properties:
+            by: { type: string }
+            reason: { type: string }
+            at: { type: string, format: date-time }
+    WecomExportStopCommand:
+      type: object
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, minimum: 0, description: 版本 CAS 必填；缺失/非整数 400 VALIDATION_ERROR }
+        reason: { type: string, minLength: 1, maxLength: 500, description: 停止理由（必填，随审计持久化） }
+    WecomExportResendCommand:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0, description: 版本 CAS 必填；缺失/非整数 400 VALIDATION_ERROR }
+        reason: { type: string, maxLength: 500, description: 可选重发备注（审计可追溯） }
     TrackingImportBatch:
       allOf:
         - $ref: '#/components/schemas/ImportBatch'
@@ -5922,6 +6038,15 @@ components:
             履约方登记的企业微信群 chatid（Issue #83）。chatid 是标识符不是凭据，
             按既有 Provider 投影回显；未登记/已清除为 null。登记在
             fulfillment_providers.config 的 wecomGroupChatId 键，改完即时生效无需重启。
+        wecom_reminder_interval_minutes:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 10080
+          description: >-
+            到期未收齐运单的群提醒间隔分钟（Issue #84）；null = 未配置（默认等于
+            tracking_sla_minutes）。保存于 fulfillment_providers.config 的
+            wecomReminderIntervalMinutes 键，导出生成时快照，改动不追溯既有导出。
         jd_config:
           type: object
           description: >-
@@ -5965,7 +6090,11 @@ components:
             （422 FULFILLMENT_PROVIDER_WECOM_GROUP_CHAT_ID_INVALID，字段
             config.wecomGroupChatId）；未登记时 #84 发送侧解析 seam 抛
             422 FULFILLMENT_PROVIDER_WECOM_GROUP_CHAT_MISSING（包含
-            「请在履约方配置登记企微群」），不静默不发。
+            「请在履约方配置登记企微群」），不静默不发。wecomReminderIntervalMinutes
+            为回传提醒间隔（#84）：1..10080 的整数分钟，显式 null 恢复默认
+            （= tracking_sla_minutes）
+            （422 FULFILLMENT_PROVIDER_WECOM_REMINDER_INTERVAL_INVALID，字段
+            config.wecomReminderIntervalMinutes）。
           additionalProperties:
             nullable: true
             oneOf:

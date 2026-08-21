@@ -18,6 +18,7 @@ import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -213,6 +214,78 @@ class WecomOutboundGatewayTest {
         }
     }
 
+
+    // ---- 文件消息（Issue #84）----
+
+    @Test
+    void fileMessageUsesExactProtocolShapeAndServerAckReceiveTime() throws Exception {
+        server.autoSendMessageAck(false);
+
+        try (var sender = Executors.newSingleThreadExecutor()) {
+            Future<WecomSendResult> pending = sender.submit(
+                    () -> gateway.send(WecomOutboundMessage.file("group-100", "MEDIA-ABC123")));
+            JsonNode frame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
+
+            // 官方帧：cmd + headers.req_id + body{chatid, msgtype:"file", file:{media_id}}
+            assertThat(frame.path("cmd").asText()).isEqualTo("aibot_send_msg");
+            assertThat(frame.path("headers").path("req_id").asText()).isNotBlank();
+            assertThat(frame.path("body").path("chatid").asText()).isEqualTo("group-100");
+            assertThat(frame.path("body").path("msgtype").asText()).isEqualTo("file");
+            assertThat(frame.path("body").path("file").path("media_id").asText()).isEqualTo("MEDIA-ABC123");
+            // 文件消息不带 content 文本字段
+            assertThat(frame.path("body").path("file").path("content").isMissingNode()).isTrue();
+            assertThat(frame.path("body").path("text").isMissingNode()).isTrue();
+
+            // sent_at 必须是服务端 ack 接收时刻（ack 晚于帧提交，而不是发送/提交时刻）
+            Instant afterFrameSubmitted = Instant.now();
+            String requestId = frame.path("headers").path("req_id").asText();
+            server.sendAck(requestId, 0);
+
+            WecomSendResult result = pending.get(2, TimeUnit.SECONDS);
+            assertThat(result.status()).isEqualTo(WecomSendStatus.SUCCESS);
+            assertThat(result.requestId()).isEqualTo(requestId);
+            assertThat(result.acknowledgedAt()).isNotNull().isAfterOrEqualTo(afterFrameSubmitted);
+            assertThat(result.errorCode()).isNull();
+            assertThat(result.retryable()).isFalse();
+        }
+    }
+
+    @Test
+    void fileMessageAuditStoresOnlyMediaIdDigestAndNeverPlaintext() throws Exception {
+        WecomSendResult result = gateway.send(WecomOutboundMessage.file("group-101", "MEDIA-SECRET-9"));
+
+        assertThat(result.status()).isEqualTo(WecomSendStatus.SUCCESS);
+        AuditLog audit = storedAudits.getLast();
+        assertThat(audit.getOperation()).isEqualTo("wecom.message.send");
+        assertThat(audit.getRequestPayload())
+                .containsEntry("chat_id", "group-101")
+                .containsEntry("message_type", "file");
+        // 审计只存 media_id 摘要（SHA-256），绝不落明文
+        String digest = (String) audit.getRequestPayload().get("media_id_sha256");
+        assertThat(digest).hasSize(64);
+        assertThat(MAPPER.writeValueAsString(audit.getRequestPayload()))
+                .doesNotContain("MEDIA-SECRET-9");
+    }
+
+    @Test
+    void textAndMarkdownFramesKeepContentShapeAfterFileSupport() throws Exception {
+        WecomSendResult textResult = gateway.send(WecomOutboundMessage.text("user-200", "普通文本"));
+        assertThat(textResult.status()).isEqualTo(WecomSendStatus.SUCCESS);
+        JsonNode textFrame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
+        assertThat(textFrame.path("body").path("msgtype").asText()).isEqualTo("text");
+        assertThat(textFrame.path("body").path("text").path("content").asText()).isEqualTo("普通文本");
+        assertThat(textFrame.path("body").path("file").isMissingNode()).isTrue();
+
+        WecomSendResult markdownResult = gateway.send(WecomOutboundMessage.markdown("user-201", "**加粗**"));
+        assertThat(markdownResult.status()).isEqualTo(WecomSendStatus.SUCCESS);
+        org.awaitility.Awaitility.await()
+                .atMost(Duration.ofSeconds(2))
+                .untilAsserted(() -> assertThat(sendMessageFrames()).hasSize(2));
+        JsonNode markdownFrame = sendMessageFrames().get(1);
+        assertThat(markdownFrame.path("body").path("msgtype").asText()).isEqualTo("markdown");
+        assertThat(markdownFrame.path("body").path("markdown").path("content").asText()).isEqualTo("**加粗**");
+        assertThat(markdownFrame.path("body").path("file").isMissingNode()).isTrue();
+    }
 
     // ---- 素材上传（Issue #82）----
 

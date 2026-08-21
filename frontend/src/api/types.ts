@@ -580,6 +580,8 @@ export interface FulfillmentProvider {
   jd_config: Record<string, JdProviderConfigEntry>;
   /** 企微群 chatid（Issue #83）：标识符非凭据，按既有投影回显；未登记/已清除为 null。 */
   wecom_group_chat_id: string | null;
+  /** 回传提醒间隔分钟（Issue #84）：未配置/已清除为 null（默认 = tracking_sla_minutes）。 */
+  wecom_reminder_interval_minutes: number | null;
 }
 
 export interface ConnectorConfig {
@@ -708,6 +710,26 @@ export interface DownloadAudit {
 
 export type ExportUsageStatus = 'GENERATED_NOT_DOWNLOADED' | 'DOWNLOADED_WAITING_RETURN' | 'RETURNED' | 'RETURN_OVERDUE';
 
+/** 履约导出企微出站状态（Issue #84）：状态行存在时返回；JD/未登记导出为 undefined。 */
+export interface FulfillmentExportWecomState {
+  status: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'MANUALLY_STOPPED' | 'FAILED' | 'UNKNOWN' | 'LEGACY';
+  chat_id?: string | null;
+  tracking_sla_minutes: number;
+  reminder_interval_minutes: number;
+  initial_sent_at?: string | null;
+  tracking_due_at?: string | null;
+  next_reminder_at?: string | null;
+  last_reminded_at?: string | null;
+  reminder_count: number;
+  last_error?: string | null;
+  version: number;
+  stopped?: {
+    by: string;
+    reason: string;
+    at: string;
+  };
+}
+
 export interface FulfillmentExport {
   id: string;
   export_batch_no: string;
@@ -715,12 +737,15 @@ export interface FulfillmentExport {
   export_kind: string;
   template_version: string;
   file_sha256?: string;
-  tracking_due_at?: string;
+  /** 权威回传截止：新第三方导出以企微发送 ack 派生，未发送时为 null（不展示假的到期时间）。 */
+  tracking_due_at?: string | null;
   generated_at: string;
   usage_status: ExportUsageStatus;
   download_audit?: DownloadAudit;
   tracking_import_batch_id?: string;
   import_batch_id?: string;
+  /** 企微出站状态（Issue #84）；JD 导出无此字段。 */
+  wecom?: FulfillmentExportWecomState;
 }
 
 export interface FulfillmentExportPage extends PageMeta {

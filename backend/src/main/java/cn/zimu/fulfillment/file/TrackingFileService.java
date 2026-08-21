@@ -52,6 +52,7 @@ public class TrackingFileService {
     private final SourceFileParser sourceFileParser;
     private final AuditLogService auditLogService;
     private final ShipmentTrackingService shipmentTrackingService;
+    private final FulfillmentExportWecomService wecomExportService;
     private final DataFormatter formatter = new DataFormatter(java.util.Locale.ROOT);
 
     TrackingFileService(
@@ -60,13 +61,15 @@ public class TrackingFileService {
             ContentAddressedFileStore fileStore,
             SourceFileParser sourceFileParser,
             AuditLogService auditLogService,
-            ShipmentTrackingService shipmentTrackingService) {
+            ShipmentTrackingService shipmentTrackingService,
+            FulfillmentExportWecomService wecomExportService) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.fileStore = fileStore;
         this.sourceFileParser = sourceFileParser;
         this.auditLogService = auditLogService;
         this.shipmentTrackingService = shipmentTrackingService;
+        this.wecomExportService = wecomExportService;
     }
 
     @Transactional
@@ -166,6 +169,8 @@ public class TrackingFileService {
         jdbc.update(
                 "UPDATE app.import_batches SET status='COMPLETED', processed_at=CURRENT_TIMESTAMP WHERE id=?",
                 batchId);
+        // #84：接收事务内主动做收齐判定；已全部收齐的导出标记 COMPLETED（scanner 发送前也会复查自愈）
+        wecomExportService.markTrackingReceived(exportId);
         Map<String, Object> result = get(batchId);
         result.put("business_results", Map.of("shipped", shipped, "partial", partial, "failed", failed));
         result.put("generated_source_return_export_ids", sourceReturnIds.stream().map(Object::toString).toList());

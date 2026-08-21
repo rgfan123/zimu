@@ -69,16 +69,19 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     private final ObjectMapper objectMapper;
     private final ContentAddressedFileStore fileStore;
     private final AuditLogService auditLogService;
+    private final FulfillmentExportWecomService wecomExportService;
 
     ProviderFileService(
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
             ContentAddressedFileStore fileStore,
-            AuditLogService auditLogService) {
+            AuditLogService auditLogService,
+            FulfillmentExportWecomService wecomExportService) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.fileStore = fileStore;
         this.auditLogService = auditLogService;
+        this.wecomExportService = wecomExportService;
     }
 
     @Transactional
@@ -509,7 +512,8 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 INSERT INTO app.fulfillment_exports
                     (export_batch_no, fulfillment_provider_id, export_kind, template_version,
                      file_ref, file_sha256, tracking_due_at, generated_by)
-                VALUES (?, ?, 'THIRD_PARTY', 'v1-24-columns', ?, ?, CURRENT_TIMESTAMP + (? * INTERVAL '1 minute'), ?)
+                VALUES (?, ?, 'THIRD_PARTY', 'v1-24-columns', ?, ?,
+                        NULL, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -517,8 +521,9 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 providerId,
                 stored.fileRef(),
                 stored.sha256(),
-                first.trackingSlaMinutes(),
                 operator);
+        // #84：同一业务事务内登记企微出站状态 + 入队 initial delivery（JD 路径不调用 = 不入队）
+        wecomExportService.scheduleInitial(exportId, providerId, first.trackingSlaMinutes());
         for (PlannedExportRow row : planned) {
             Map<String, Object> cells = outputCells(batchNo, row);
             jdbc.update(
@@ -574,7 +579,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     (export_batch_no, fulfillment_provider_id, export_kind, template_version,
                      file_ref, file_sha256, tracking_due_at, generated_by)
                 VALUES (?, ?, 'THIRD_PARTY', 'v1-24-columns', ?, ?,
-                        CURRENT_TIMESTAMP + (? * INTERVAL '1 minute'), ?)
+                        NULL, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -582,8 +587,9 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 source.providerId(),
                 stored.fileRef(),
                 stored.sha256(),
-                source.trackingSlaMinutes(),
                 operator);
+        // #84：第三方续发导出同样在同一事务登记出站状态并入队 initial delivery
+        wecomExportService.scheduleInitial(exportId, source.providerId(), source.trackingSlaMinutes());
         Map<String, Object> cells = outputCells(batchNo, planned);
         jdbc.update(
                 """
@@ -1118,9 +1124,9 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     result.put("export_kind", resultSet.getString("export_kind"));
                     result.put("template_version", resultSet.getString("template_version"));
                     result.put("file_sha256", resultSet.getString("file_sha256"));
-                    Instant due = resultSet.getTimestamp("tracking_due_at").toInstant();
-                    result.put("tracking_due_at", due);
                     result.put("generated_at", resultSet.getTimestamp("generated_at").toInstant());
+                    result.put("legacy_tracking_due_at", resultSet.getTimestamp("tracking_due_at") == null
+                            ? null : resultSet.getTimestamp("tracking_due_at").toInstant());
                     result.put("tracking_import_batch_id", nullableId(resultSet.getObject("tracking_import_batch_id")));
                     result.put("import_batch_id", nullableId(resultSet.getObject("import_batch_id")));
                     return result;
@@ -1130,6 +1136,13 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
             throw BusinessException.notFound("履约导出不存在: " + exportId);
         }
         Map<String, Object> result = values.getFirst();
+        // #84：新第三方导出以 sent_at 派生的 due 为权威（未发送时为 null，不展示假到期时间）；
+        // 历史（LEGACY）与 JD 导出保持旧 generated_at 派生语义。
+        Map<String, Object> wecom = wecomExportService.view(exportId);
+        boolean authoritativeDue = wecom != null && !"LEGACY".equals(wecom.get("status"));
+        result.put("tracking_due_at", authoritativeDue ? wecom.get("tracking_due_at") : result.get("legacy_tracking_due_at"));
+        result.remove("legacy_tracking_due_at");
+        result.put("wecom", wecom);
         Map<String, Object> download = downloadAudit(exportId);
         result.put("download_audit", download);
         result.put("usage_status", usageStatus(result, download));
@@ -1211,8 +1224,12 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
         if (((Number) download.get("download_count")).intValue() == 0) {
             return "GENERATED_NOT_DOWNLOADED";
         }
-        return Instant.now().isAfter((Instant) export.get("tracking_due_at"))
-                ? "RETURN_OVERDUE" : "DOWNLOADED_WAITING_RETURN";
+        // #84：未发送的第三方导出没有权威 due（null）→ 不判超时，避免展示假的「回传超时」
+        Object due = export.get("tracking_due_at");
+        if (!(due instanceof Instant dueInstant)) {
+            return "DOWNLOADED_WAITING_RETURN";
+        }
+        return Instant.now().isAfter(dueInstant) ? "RETURN_OVERDUE" : "DOWNLOADED_WAITING_RETURN";
     }
 
     private String nullableId(Object value) {

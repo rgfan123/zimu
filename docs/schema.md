@@ -4,7 +4,7 @@
 依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
-和 `V2`–`V45` 增量迁移；两条路径必须得到等价的当前结构——
+和 `V2`–`V47` 增量迁移；两条路径必须得到等价的当前结构——
 [`SchemaSnapshotMigrationEquivalenceTest`](../backend/src/test/java/cn/zimu/fulfillment/schema/SchemaSnapshotMigrationEquivalenceTest.java)
 用 Testcontainers 分别以空库快照与 Flyway 全链建库，从 `pg_catalog` 比对表/视图/列
 （类型/可空/默认/identity）/主键/唯一键/check 约束/外键/普通索引/触发器/显式序列/
@@ -13,7 +13,7 @@
 ## 1. 设计结论
 
 - PostgreSQL 使用 `app` 业务 schema 与 `analytics` 分析 schema。
-- 当前权威快照共 63 张业务表、4 个分析视图和 2 个操作视图。
+- 当前权威快照共 65 张业务表、4 个分析视图和 2 个操作视图。
 - 有限且仍可能演进的状态值使用 `VARCHAR + CHECK`；可扩展的 OrderEvent 类型使用目录表。
 - 所有业务时间使用 `TIMESTAMPTZ`；Java 使用 `Instant`。来源 Excel 的无时区时间按 `Asia/Shanghai` 解释，分析视图也按上海自然日分桶。
 - 所有数量使用 `NUMERIC(18,3)`；应用写入前必须拒绝超过三位小数的输入，不能依赖数据库隐式舍入。
@@ -107,7 +107,7 @@ erDiagram
 
 第三方回传短发或失败时，系统保存真实 Shipment/Tracking/剩余量并创建 `THIRD_PARTY_FULFILLMENT_EXCEPTION` 复核和提醒；它不触发我方采购，也不修改我方库存。
 
-### 3.4 文件输出与回填（4）
+### 3.4 文件输出与回填（6）
 
 | 表 | 职责 | 关键约束 |
 |---|---|---|
@@ -115,6 +115,8 @@ erDiagram
 | `fulfillment_export_items` | 导出逐行不可变快照 | Fulfillment/OrderLine/Shipment/provider 必须同源；普通 SKU 一行，礼包完整展开全部组件且数量等于本批礼包数×单份用量 |
 | `source_return_exports` | 按来源原格式生成的版本化回填文件 | `(import_batch_id, version_no)` 唯一；阶段版和最终版都永久保留 |
 | `source_return_export_items` | 原始行到 Shipment/运单的回填快照 | 首个关联 Shipment 正常回填；预计或已经存在后续 Shipment 时创建 `MULTI_SHIPMENT_SOURCE_FOLLOWUP` ReviewCase，禁止复制来源行、拼接或覆盖运单；零实发全量取消用 CANCELLED 且不伪造 Shipment |
+| `fulfillment_export_wecom_states` | 每第三方导出一行的企微出站/提醒状态（#84） | `export_id` 唯一；status ∈ PENDING/ACTIVE/COMPLETED/MANUALLY_STOPPED/FAILED/UNKNOWN/LEGACY；ACTIVE 必须携带 `initial_sent_at`/`tracking_due_at`/`chat_id`（ack 派生计时起点 + 快照群）；COMPLETED/人工停止清 `next_reminder_at`；LEGACY = 迁移历史导出，`initial_sent_at` 必空、绝不自动入队；SLA 与提醒间隔生成时快照；`lock_version` 乐观并发 |
+| `fulfillment_export_wecom_deliveries` | 每次 initial/reminder 尝试的证据（#84） | `UNIQUE (export_id, kind, sequence)` 防同一 initial/同一 reminder sequence 重复入队与并发发送；status ∈ PENDING/SENDING/SENT/FAILED/UNKNOWN；SENT ⟺ 携带服务端 ack 接收时刻（计时起点证据）；`attempts <= max_attempts`（默认 2 = 1 次自动重试）；只存 `media_id_sha256` 摘要，不落 media_id 明文或文件内容 |
 
 多 Shipment 的后续发货事实不会丢失：管理后台沿 OrderLine → Fulfillment → ShipmentItem → Shipment → Tracking 展示完整批次序号、实发数量、履约方、出库单号、快递公司、运单号和时间。自动来源回填只处理该 OrderLine/Fulfillment 关联的最早 Shipment，后续由人工跟进；不能把订单+履约方范围的全局 `shipment_sequence=1` 当作每行首批。采购仍进行时保留 `PROCUREMENT_IN_PROGRESS`，由开放 ReviewCase 表达人工责任；全部真实 Shipment 已有 Tracking 且履约达到终局后，OrderLine 才转 NEED_REVIEW 等人工确认。人工在来源平台完成后续处理后，通过后台“已完成后续回传”填写备注，系统在同一事务记录处理人/时间、关闭 ReviewCase、推进 OrderLine 并写事件/版本/审计，不要求再上传文件。
 
@@ -251,11 +253,11 @@ P0 不等待客户签收或妥投，Shipment 可以停留在 SHIPPED，且履约
 DDL 必须通过以下门槛：
 
 1. PostgreSQL 16 空库先执行 `docs/schema.sql`；应用启动时由 Flyway 按版本顺序执行全部增量 migration。
-2. `information_schema` 实测 63 张 `app` 基础表、2 个 `app` 操作视图和 4 个 `analytics` 分析视图。
+2. `information_schema` 实测 65 张 `app` 基础表、2 个 `app` 操作视图和 4 个 `analytics` 分析视图。
 3. 执行 `docs/schema-smoke.sql`，覆盖：上海业务日出库单号原子流水、运单回传与原 FulfillmentExport/provider 关联、已发货但未提供实际发货时间、非已发货状态的不一致时间拒绝、第三方库存写入拒绝、错误修订链拒绝、跨 provider/非整份礼包拒绝、重复待出库批次拒绝、跨订单导出/回填拒绝、Demo 业务隔离、京东金额非 0 拒绝、Shipment 超发拒绝、Tracking 冲突拒绝、最终回填含等待项拒绝、已导出订单字段冻结、分析视图排除 Demo 和未知实际发货日数据，以及渠道/商品实发量的乘数换算与礼包组件展开。
 4. `git diff --check` 无空白错误。
 5. `SchemaSnapshotMigrationEquivalenceTest`（Testcontainers，`mvn test` 默认阶段运行）：分别用
-   `docs/schema.sql` 与 Flyway 全链（V1..V45）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
+   `docs/schema.sql` 与 Flyway 全链（V1..V47）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
 
 ## 11. 快照与迁移链的更新责任
 
