@@ -341,7 +341,10 @@ test('operator completes upload → review → back → confirm without touching
   await harness.waitFor(() => assert.match(harness.bodyText(), /当前没有复核事项/));
 
   // 返回该批次：无需左侧菜单，批次状态已在 URL 中恢复
-  await control('返回该批次').click();
+  await harness.dispatchEvent(
+    control('返回该批次'),
+    new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }),
+  );
   await harness.waitFor(() => assert.equal(harness.location(), '/fulfillment/sales-outbound?import_batch=7'));
   await harness.waitFor(() => assert.match(harness.bodyText(), /确认本批次（已接收 1 行）/));
 
