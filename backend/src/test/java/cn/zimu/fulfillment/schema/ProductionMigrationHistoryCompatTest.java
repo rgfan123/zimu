@@ -232,7 +232,8 @@ class ProductionMigrationHistoryCompatTest {
     /**
      * 在 V47 形状中种入「gen1 initial → gen1 reminder → gen2 initial」历史。外键父表不属于
      * 本迁移门禁关注点，因此仅在当前连接关闭 FK trigger 后写入最小 delivery 事实；CHECK 约束
-     * 仍正常执行。V49 必须从 created_at/id 顺序恢复 reminder 创建时的代际 1。
+     * 仍正常执行。gen2 故意使用更早的 created_at（模拟长事务时间反序），V49 必须只按 identity
+     * id 顺序恢复 reminder 插入时的代际 1。
      */
     private void seedV47MultiGenerationDeliveryHistory() throws Exception {
         try (Connection connection = DriverManager.getConnection(
@@ -254,9 +255,9 @@ class ProductionMigrationHistoryCompatTest {
                              TIMESTAMPTZ '2026-08-20 02:00:00+08',
                              TIMESTAMPTZ '2026-08-20 02:00:00+08'),
                             (900003, 9000, 'INITIAL', 2, 'SENT', 'FINALIZED', 'req-gen2',
-                             TIMESTAMPTZ '2026-08-20 03:00:00+08',
-                             TIMESTAMPTZ '2026-08-20 03:00:00+08',
-                             TIMESTAMPTZ '2026-08-20 03:00:00+08')
+                             TIMESTAMPTZ '2026-08-20 00:30:00+08',
+                             TIMESTAMPTZ '2026-08-20 00:30:00+08',
+                             TIMESTAMPTZ '2026-08-20 00:30:00+08')
                         """);
             } finally {
                 statement.execute("SET session_replication_role = origin");

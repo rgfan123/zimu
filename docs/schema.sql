@@ -5758,16 +5758,15 @@ UPDATE app.fulfillment_export_wecom_deliveries
 SET initial_generation = sequence
 WHERE kind = 'INITIAL';
 
--- REMINDER 行：代际 = 创建该提醒时已经存在的最新 INITIAL sequence。created_at 相同的极窄
--- 情况再以 identity id 排序：创建提醒前已有的 INITIAL id 更小，后续重发 id 更大，绝不把
--- gen1 老提醒误绑到升级时已存在的 gen2。
+-- REMINDER 行：代际 = 插入该提醒前已经存在的最新 INITIAL sequence。同一 export 的 identity id
+-- 是提交到 delivery 表的线性顺序；created_at 使用事务开始时刻，长事务下会反序，不能作为依据。
 UPDATE app.fulfillment_export_wecom_deliveries d
 SET initial_generation = (
     SELECT COALESCE(MAX(i.sequence), 1)
     FROM app.fulfillment_export_wecom_deliveries i
     WHERE i.export_id = d.export_id
       AND i.kind = 'INITIAL'
-      AND (i.created_at < d.created_at OR (i.created_at = d.created_at AND i.id < d.id)))
+      AND i.id < d.id)
 WHERE d.kind = 'REMINDER';
 
 ALTER TABLE app.fulfillment_export_wecom_deliveries

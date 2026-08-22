@@ -299,8 +299,8 @@ ACK + 60s 退避）+ 15s init ACK = 5×(15+60)+15 = **390s**，加 30 分钟会�
   插入当前代际」按 export 串行化，再由唯一索引兜底，因此并发旧/新 ensure 最终只保留新代际
   RED 告警。
 
-**存量回填**：V49 按 reminder `created_at`（同时间再按 identity `id`）选择其创建时已经存在的
-最新 INITIAL sequence，绝不把 gen1 老提醒绑定到升级时已存在的 gen2。
+**存量回填**：V49 按同一 export 的 identity `id` 线性顺序，选择 reminder 插入前已经存在的
+最新 INITIAL sequence；不用事务开始时刻 `created_at`，避免长事务时间反序把 gen1 老提醒误绑到 gen2。
 
 **迁移协调**：组合基线已经包含 #89 的 V48；本加固迁移连续使用 V49，只追加本功能自有的
 `deliveries` 列/约束且绝不修改 V46/V47。#90 尚未进入组合基线，后续集成时必须把其迁移改为
