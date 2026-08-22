@@ -24,6 +24,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -428,6 +432,101 @@ class FulfillmentExportWecomAlertScopingTest {
         assertThat(openAlertFor(exportId).get("detail").toString())
                 .contains("\"delivery_id\": \"" + newerDelivery.get("id") + "\"")
                 .contains("\"initial_generation\": 2");
+    }
+
+    @Test
+    void concurrentOldAndNewGenerationEnsureLeavesNewerAlertActive() throws Exception {
+        String exportId = generateThirdPartyExport("FX-ALERT-CONCURRENT-GENERATION-001");
+        long oldDeliveryId = ((Number) deliveryRow(exportId, "INITIAL", 1).get("id")).longValue();
+        jdbc.update(
+                "UPDATE app.fulfillment_export_wecom_deliveries "
+                        + "SET status='UNKNOWN', stage='FINALIZED', attempts=2, "
+                        + "error_code='OLD', error_message='old generation' WHERE id=?",
+                oldDeliveryId);
+        long newDeliveryId = jdbc.queryForObject(
+                """
+                INSERT INTO app.fulfillment_export_wecom_deliveries
+                    (export_id, kind, sequence, initial_generation, status, attempts, max_attempts,
+                     stage, error_code, error_message)
+                VALUES (?, 'INITIAL', 2, 2, 'UNKNOWN', 2, 2, 'FINALIZED', 'NEW', 'new generation')
+                RETURNING id
+                """,
+                Long.class,
+                Long.parseLong(exportId));
+        Long shipmentId = firstShipmentId(exportId);
+        CreateOperationalAlertCommand oldAlert = generationAlert(exportId, oldDeliveryId, 1, shipmentId, "old");
+        CreateOperationalAlertCommand newAlert = generationAlert(exportId, newDeliveryId, 2, shipmentId, "new");
+
+        // AFTER INSERT 延迟旧代际事务：旧唯一键已写但未提交时启动新代际 ensure。没有 export
+        // 串行锁时，新事务的 UPDATE 看不见旧行，随后唯一键冲突只会返回旧告警；有锁时新事务
+        // 先等待旧事务提交，再 resolve gen1 并把 gen2 置为唯一活动告警。
+        jdbc.execute(
+                """
+                CREATE OR REPLACE FUNCTION app.test_delay_old_wecom_alert() RETURNS trigger
+                LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF NEW.detail->>'delivery_id' = '%d' THEN
+                        PERFORM pg_sleep(5);
+                    END IF;
+                    RETURN NEW;
+                END
+                $$
+                """.formatted(oldDeliveryId));
+        jdbc.execute(
+                """
+                CREATE TRIGGER test_delay_old_wecom_alert
+                AFTER INSERT ON app.operational_alerts
+                FOR EACH ROW EXECUTE FUNCTION app.test_delay_old_wecom_alert()
+                """);
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<Long> oldResult = executor.submit(() -> AlertServiceSpyConfig.failing.createSystem(oldAlert));
+            awaitOldAlertTriggerSleep();
+            Future<Long> newResult = executor.submit(() -> AlertServiceSpyConfig.failing.createSystem(newAlert));
+            assertThat(oldResult.get(15, TimeUnit.SECONDS)).isPositive();
+            assertThat(newResult.get(15, TimeUnit.SECONDS)).isPositive();
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS test_delay_old_wecom_alert ON app.operational_alerts");
+            jdbc.execute("DROP FUNCTION IF EXISTS app.test_delay_old_wecom_alert()");
+        }
+
+        assertThat(openAlertCount(exportId)).isEqualTo(1);
+        assertThat(openAlertFor(exportId).get("detail").toString())
+                .contains("\"delivery_id\": \"" + newDeliveryId + "\"")
+                .contains("\"initial_generation\": 2");
+    }
+
+    private CreateOperationalAlertCommand generationAlert(
+            String exportId, long deliveryId, int generation, Long shipmentId, String label) {
+        return new CreateOperationalAlertCommand(
+                "FULFILLMENT_EXPORT_WECOM",
+                cn.zimu.fulfillment.order.OperationalAlertSeverity.RED,
+                null,
+                null,
+                null,
+                shipmentId,
+                label + " generation alert",
+                Map.of(
+                        "export_id", exportId,
+                        "delivery_id", String.valueOf(deliveryId),
+                        "initial_generation", generation));
+    }
+
+    private void awaitOldAlertTriggerSleep() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            Integer sleeping = jdbc.queryForObject(
+                    """
+                    SELECT count(*) FROM pg_stat_activity
+                    WHERE wait_event = 'PgSleep'
+                      AND query LIKE '%INSERT INTO app.operational_alerts%'
+                    """,
+                    Integer.class);
+            if (sleeping != null && sleeping > 0) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        throw new AssertionError("old generation alert insert never entered deterministic trigger sleep");
     }
 
     // ------------------------------------------------------------------

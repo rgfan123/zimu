@@ -22,13 +22,16 @@ UPDATE app.fulfillment_export_wecom_deliveries
 SET initial_generation = sequence
 WHERE kind = 'INITIAL';
 
--- REMINDER 行：代际 = 创建该提醒时最新的 INITIAL sequence（存量行以当前最新 INITIAL 回填；
--- 本特性尚未发布，存量提醒必然属于当时唯一/最新的 INITIAL 代际，回填语义等价）。
+-- REMINDER 行：代际 = 创建该提醒时已经存在的最新 INITIAL sequence。created_at 相同的极窄
+-- 情况再以 identity id 排序：创建提醒前已有的 INITIAL id 更小，后续重发 id 更大，绝不把
+-- gen1 老提醒误绑到升级时已存在的 gen2。
 UPDATE app.fulfillment_export_wecom_deliveries d
 SET initial_generation = (
     SELECT COALESCE(MAX(i.sequence), 1)
     FROM app.fulfillment_export_wecom_deliveries i
-    WHERE i.export_id = d.export_id AND i.kind = 'INITIAL')
+    WHERE i.export_id = d.export_id
+      AND i.kind = 'INITIAL'
+      AND (i.created_at < d.created_at OR (i.created_at = d.created_at AND i.id < d.id)))
 WHERE d.kind = 'REMINDER';
 
 ALTER TABLE app.fulfillment_export_wecom_deliveries
@@ -45,3 +48,32 @@ ALTER TABLE app.fulfillment_export_wecom_deliveries
 ALTER TABLE app.fulfillment_export_wecom_deliveries
     ADD CONSTRAINT fulfillment_export_wecom_deliveries_status_check
     CHECK (status IN ('PENDING', 'SENDING', 'SENT', 'FAILED', 'UNKNOWN', 'SUPERSEDED'));
+
+-- V46 的匿名 CHECK 要求只有 SENT 可带 ack_sent_at。迟到 reminder 的外部 SUCCESS 会落
+-- SUPERSEDED（不推进新时间线），但仍必须保留真实 ACK 证据，因此替换为显式命名约束：
+-- SENT 必须有 ACK；普通非成功状态不得有 ACK；SUPERSEDED 可有或无 ACK（对应迟到成功/失败）。
+DO $$
+DECLARE
+    ack_constraint TEXT;
+BEGIN
+    SELECT conname INTO ack_constraint
+    FROM pg_constraint
+    WHERE conrelid = 'app.fulfillment_export_wecom_deliveries'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%ack_sent_at%'
+      AND pg_get_constraintdef(oid) LIKE '%SENT%';
+    IF ack_constraint IS NULL THEN
+        RAISE EXCEPTION 'delivery ack/status check constraint not found';
+    END IF;
+    EXECUTE format(
+        'ALTER TABLE app.fulfillment_export_wecom_deliveries DROP CONSTRAINT %I',
+        ack_constraint);
+END
+$$;
+
+ALTER TABLE app.fulfillment_export_wecom_deliveries
+    ADD CONSTRAINT fulfillment_export_wecom_deliveries_ack_status_check
+    CHECK (
+        (status = 'SENT' AND ack_sent_at IS NOT NULL)
+        OR status = 'SUPERSEDED'
+        OR (status IN ('PENDING', 'SENDING', 'FAILED', 'UNKNOWN') AND ack_sent_at IS NULL));

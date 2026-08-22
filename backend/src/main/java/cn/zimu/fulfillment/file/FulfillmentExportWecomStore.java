@@ -290,7 +290,7 @@ public class FulfillmentExportWecomStore {
             return ReminderFinalize.ABORTED;
         }
         if (reminder.initialGeneration() != latestInitialGeneration(reminder.exportId())) {
-            markReminderSuperseded(deliveryId);
+            markReminderSuperseded(deliveryId, requestId, ackSentAt);
             return ReminderFinalize.SUPERSEDED;
         }
         jdbc.update(
@@ -411,13 +411,25 @@ public class FulfillmentExportWecomStore {
 
     /** 提醒 delivery 已被更新 INITIAL 代际取代：同事务落 SUPERSEDED 证据，不改 state/不告警。 */
     private void markReminderSuperseded(long deliveryId) {
+        markReminderSuperseded(deliveryId, null, null);
+    }
+
+    /**
+     * 迟到成功仍必须保留外部 ACK 事实；SUPERSEDED 只表示该结果不得推进当前业务时间线，
+     * 不表示外部发送没有发生。失败/未知路径传 null，保留 delivery 上已有证据。
+     */
+    private void markReminderSuperseded(long deliveryId, String requestId, Instant ackSentAt) {
         jdbc.update(
                 """
                 UPDATE app.fulfillment_export_wecom_deliveries
-                SET status='SUPERSEDED', error_code='WECOM_REMINDER_SUPERSEDED',
+                SET status='SUPERSEDED', stage='FINALIZED',
+                    request_id=COALESCE(?, request_id), ack_sent_at=COALESCE(?, ack_sent_at),
+                    error_code='WECOM_REMINDER_SUPERSEDED',
                     error_message='提醒已被更新的 initial 重发取代', updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
+                requestId,
+                ackSentAt == null ? null : ts(ackSentAt),
                 deliveryId);
     }
 

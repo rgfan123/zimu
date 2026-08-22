@@ -75,7 +75,7 @@ WHERE status='ACTIVE'` 支撑到期扫描。
 | `kind` | `INITIAL`（自动发送/人工重发都是 INITIAL 的新 sequence）或 `REMINDER` |
 | `sequence` | kind 内单调递增（INITIAL 从 1；REMINDER 从 1）；**UNIQUE (export_id, kind, sequence) 是「同一 initial 或同一 reminder sequence 不重复入队/并发发送」的数据库级保证** |
 | `initial_generation` | **代际栅栏**：本 delivery 绑定到的 INITIAL 代际（= 创建时最新的 INITIAL sequence；INITIAL 行 = 自身 sequence，REMINDER 行 = 创建时最新 INITIAL sequence）。代际变化后旧提醒只落 SUPERSEDED，绝不改新时间线/告警 |
-| `status` | `PENDING` →（CAS）`SENDING` → `SENT` / `FAILED` / `UNKNOWN` / `SUPERSEDED`；worker 崩溃落在 SENDING，重启转 UNKNOWN 告警，不盲重发；旧提醒被更新 INITIAL 代际取代 → `SUPERSEDED`（不改 state、不告警） |
+| `status` | `PENDING` →（CAS）`SENDING` → `SENT` / `FAILED` / `UNKNOWN` / `SUPERSEDED`；worker 崩溃落在 SENDING，重启转 UNKNOWN 告警，不盲重发；旧提醒被更新 INITIAL 代际取代 → `SUPERSEDED`（不改 state、不告警；迟到 SUCCESS 仍保留 request_id/ack_sent_at 外部证据） |
 | `attempts` / `max_attempts=2` | delivery 的外部尝试计数与上限（与 async task 的 claim 计数同步；task 总领取上限 3，第 3 次只做告警收口） |
 | `stage` | `SCHEDULED`/`RESOLVE_CHAT`/`UPLOAD`/`SEND`/`FINALIZED`（稳定安全元数据） |
 | `chat_id` / `request_id` / `ack_sent_at` | 路由证据（initial 在 upload 前写入本次实际群；reminder 在发送前写入快照群，UNKNOWN/FAILED 都保留 recipient 证据）+ 服务端 ack 请求 id + ack 接收时刻（= 计时起点） |
@@ -290,12 +290,17 @@ ACK + 60s 退避）+ 15s init ACK = 5×(15+60)+15 = **390s**，加 30 分钟会�
   最新 INITIAL sequence；`prepareReminder` 与 `markReminderSent/Failed/Unknown` 都在 state 行
   锁下复查代际是否仍等于当前最新 INITIAL。代际已变 → delivery 只落 `SUPERSEDED`（
   `WECOM_REMINDER_SUPERSEDED`），**绝不改新时间线 / reminder_count / next_reminder_at /
-  last_reminded_at、绝不创建/关闭任何告警**，任务幂等收口。
+  last_reminded_at、绝不创建/关闭任何告警**，任务幂等收口；若迟到结局是 SUCCESS，仍保留
+  `request_id/ack_sent_at` 证明外部实际发送，`SUPERSEDED` 只表示不得推进当前业务时间线。
 - **Fix C（告警关闭按代际收窄）**：`resolveWecomExportAlerts(shipmentId, exportId,
   maxGeneration, reason)` 经 `detail.delivery_id` 关联 delivery 的 `initial_generation`，只关
   `<=` 成功 delivery 代际的告警——旧 INITIAL phase-2 成功收口绝不误关更新代际 resend 失败的
-  红告警；终态告警补建也只替换 `<=` 当前 delivery 代际的活动告警，旧代际迟到时通过
-  `ON CONFLICT DO NOTHING` 幂等保留并返回新代际 RED 告警。
+  红告警；终态告警补建先锁该导出的 `fulfillment_export_wecom_states` 行，把「关闭旧代际 →
+  插入当前代际」按 export 串行化，再由唯一索引兜底，因此并发旧/新 ensure 最终只保留新代际
+  RED 告警。
+
+**存量回填**：V49 按 reminder `created_at`（同时间再按 identity `id`）选择其创建时已经存在的
+最新 INITIAL sequence，绝不把 gen1 老提醒绑定到升级时已存在的 gen2。
 
 **迁移协调**：组合基线已经包含 #89 的 V48；本加固迁移连续使用 V49，只追加本功能自有的
 `deliveries` 列/约束且绝不修改 V46/V47。#90 尚未进入组合基线，后续集成时必须把其迁移改为

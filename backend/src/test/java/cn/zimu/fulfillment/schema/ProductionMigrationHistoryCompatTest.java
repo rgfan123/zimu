@@ -103,6 +103,8 @@ class ProductionMigrationHistoryCompatTest {
                         V40_PRODUCTION, V41_PRODUCTION, V42_PRODUCTION, V43_PRODUCTION,
                         V44_PRODUCTION, V45_PRODUCTION, V46_PRODUCTION, V47_PRODUCTION);
 
+        seedV47MultiGenerationDeliveryHistory();
+
         // 阶段二：完整当前 migration set（V1..V49）升级——Flyway validate 默认开启，
         // V40–V47 校验通过后只追加 V48/V49，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
@@ -216,6 +218,49 @@ class ProductionMigrationHistoryCompatTest {
                     """)))
                     .as("V49 生效后 delivery 状态约束必须允许 SUPERSEDED")
                     .contains("SUPERSEDED");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT initial_generation
+                    FROM app.fulfillment_export_wecom_deliveries
+                    WHERE id = 900002
+                    """)))
+                    .as("V49 必须把存量 reminder 绑定到其创建时已有的 INITIAL 代际，而非升级时最新代际")
+                    .isEqualTo("1");
+        }
+    }
+
+    /**
+     * 在 V47 形状中种入「gen1 initial → gen1 reminder → gen2 initial」历史。外键父表不属于
+     * 本迁移门禁关注点，因此仅在当前连接关闭 FK trigger 后写入最小 delivery 事实；CHECK 约束
+     * 仍正常执行。V49 必须从 created_at/id 顺序恢复 reminder 创建时的代际 1。
+     */
+    private void seedV47MultiGenerationDeliveryHistory() throws Exception {
+        try (Connection connection = DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            statement.execute("SET session_replication_role = replica");
+            try {
+                statement.executeUpdate(
+                        """
+                        INSERT INTO app.fulfillment_export_wecom_deliveries
+                            (id, export_id, kind, sequence, status, stage, request_id, ack_sent_at,
+                             created_at, updated_at)
+                        VALUES
+                            (900001, 9000, 'INITIAL', 1, 'SENT', 'FINALIZED', 'req-gen1',
+                             TIMESTAMPTZ '2026-08-20 01:00:00+08',
+                             TIMESTAMPTZ '2026-08-20 01:00:00+08',
+                             TIMESTAMPTZ '2026-08-20 01:00:00+08'),
+                            (900002, 9000, 'REMINDER', 1, 'SENDING', 'SEND', NULL, NULL,
+                             TIMESTAMPTZ '2026-08-20 02:00:00+08',
+                             TIMESTAMPTZ '2026-08-20 02:00:00+08'),
+                            (900003, 9000, 'INITIAL', 2, 'SENT', 'FINALIZED', 'req-gen2',
+                             TIMESTAMPTZ '2026-08-20 03:00:00+08',
+                             TIMESTAMPTZ '2026-08-20 03:00:00+08',
+                             TIMESTAMPTZ '2026-08-20 03:00:00+08')
+                        """);
+            } finally {
+                statement.execute("SET session_replication_role = origin");
+            }
         }
     }
 

@@ -188,11 +188,17 @@ public class OperationalAlertService {
     @Transactional
     public long createSystem(CreateOperationalAlertCommand command) {
         validateCreate(command);
+        String exportId = exportIdOf(command);
+        // 同一导出的「关闭旧代际 → 插入当前代际」必须共用串行化点。唯一索引只能防止
+        // 两条活动行同时提交，不能保证并发 gen1/gen2 竞争时较新代际获胜；先锁 state 行后，
+        // 后继事务在 READ COMMITTED 下会看见前驱已提交告警，再按 generation 单调替换。
+        lockWecomExportAlertScope(exportId);
+        Integer initialGeneration = initialGenerationOf(command);
         resolveActiveForExport(
                 command.alertType(),
                 command.shipmentId(),
-                exportIdOf(command),
-                initialGenerationOf(command),
+                exportId,
+                initialGeneration,
                 "superseded_by_new_delivery");
         List<Long> inserted = jdbc.query(
                 """
@@ -225,7 +231,7 @@ public class OperationalAlertService {
                     (rs, row) -> rs.getLong(1),
                     command.alertType(),
                     command.shipmentId(),
-                    exportIdOf(command));
+                    exportId);
             return existing.isEmpty() ? -1 : existing.getFirst();
         }
         long alertId = inserted.getFirst();
@@ -242,6 +248,26 @@ public class OperationalAlertService {
                 .httpStatus(201)
                 .businessCode("OPERATIONAL_ALERT_CREATED"));
         return alertId;
+    }
+
+    /**
+     * 企微导出告警的事务级串行化点：锁对应 state 行直到 createSystem 提交。无合法 export_id
+     * 或旧调用方不存在 state 时保持兼容，由原唯一索引继续兜底。
+     */
+    private void lockWecomExportAlertScope(String exportId) {
+        if (exportId == null) {
+            return;
+        }
+        final long parsed;
+        try {
+            parsed = Long.parseLong(exportId);
+        } catch (NumberFormatException ignored) {
+            return;
+        }
+        jdbc.query(
+                "SELECT export_id FROM app.fulfillment_export_wecom_states WHERE export_id=? FOR UPDATE",
+                (rs, row) -> rs.getLong(1),
+                parsed);
     }
 
     /**

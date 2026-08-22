@@ -497,6 +497,9 @@ class FulfillmentExportWecomReminderScannerTest {
         s.release().countDown();
         s.reminderRun().get(10, TimeUnit.SECONDS);
         assertSupersededNoTimelineChange(s.exportId(), s.timelineBefore());
+        assertThat(deliveryRow(s.exportId(), "REMINDER", 1))
+                .containsEntry("request_id", "resend-ack-2")
+                .doesNotContainEntry("ack_sent_at", null);
     }
 
     @Test
