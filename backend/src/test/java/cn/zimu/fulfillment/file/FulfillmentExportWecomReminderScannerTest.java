@@ -25,6 +25,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -253,6 +254,71 @@ class FulfillmentExportWecomReminderScannerTest {
     }
 
     @Test
+    void reminderTimeoutPreservesRecipientEvidenceOnDeliveryButNotContentOrSnapshot() throws Exception {
+        // markdown 提醒发送 TIMEOUT（已提交未 ack）→ UNKNOWN：delivery 必须保留快照群的 recipient
+        // 证据（发送前已写入 chat_id）；state.chat_id 快照不变（不悄悄换群、不置 NULL）；
+        // 提醒 markdown 内容/批次号绝不落库。
+        String exportId = activeExport("FX-RM-TIMEOUT-EVIDENCE-001");
+        makeDue(exportId);
+        service.scanDueReminders(10);
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.TIMEOUT, "rm-req-timeout-evidence-1", null, null, "ACK_TIMEOUT", false);
+        wecom.sentMessages.clear();
+
+        claimAndRun(exportId, "REMINDER", 1);
+
+        Map<String, Object> delivery = deliveryRow(exportId, "REMINDER", 1);
+        assertThat(delivery.get("status")).isEqualTo("UNKNOWN");
+        assertThat(delivery.get("chat_id")).isEqualTo("wrJgVnTQAAD-RM-001");
+        assertThat(delivery.get("stage")).isEqualTo("SEND");
+        Map<String, Object> state = stateRow(exportId);
+        assertThat(state.get("status")).isEqualTo("ACTIVE"); // reminder 失败不改导出状态
+        assertThat(state.get("chat_id")).isEqualTo("wrJgVnTQAAD-RM-001"); // 快照不变
+        assertThat(state.get("next_reminder_at")).isNull(); // 暂停自动提醒
+        String deliveryJson = jdbc.queryForObject(
+                "SELECT row_to_json(d)::text FROM app.fulfillment_export_wecom_deliveries d WHERE id=?",
+                String.class, delivery.get("id"));
+        assertThat(deliveryJson)
+                .doesNotContain("运单回传提醒")
+                .doesNotContain(exportBatchNo(exportId));
+    }
+
+    @Test
+    void reminderRetryableFailureExhaustedPreservesRecipientEvidenceOnDelivery() throws Exception {
+        // markdown 提醒 retryable 失败（CONNECTION_NOT_READY）耗尽 2 次 → FAILED：delivery 必须
+        // 保留快照群 recipient 证据（第一次尝试发送前已写入 chat_id，重试不丢）；state.chat_id
+        // 快照不变、导出仍 ACTIVE、提醒暂停；提醒 markdown 内容/批次号绝不落库。
+        String exportId = activeExport("FX-RM-FAILED-EVIDENCE-001");
+        makeDue(exportId);
+        service.scanDueReminders(10);
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.FAILED, null, null, null, "CONNECTION_NOT_READY", true);
+        wecom.sentMessages.clear();
+
+        claimAndRun(exportId, "REMINDER", 1); // 第 1 次：安全失败 → 退避
+        assertThat(deliveryRow(exportId, "REMINDER", 1).get("status")).isEqualTo("PENDING");
+        makeTaskDue(exportId, 1);
+        claimAndRun(exportId, "REMINDER", 1); // 第 2 次：总尝试 2 次 → FAILED
+
+        Map<String, Object> delivery = deliveryRow(exportId, "REMINDER", 1);
+        assertThat(delivery.get("status")).isEqualTo("FAILED");
+        assertThat(delivery.get("attempts")).isEqualTo(2);
+        assertThat(delivery.get("chat_id")).isEqualTo("wrJgVnTQAAD-RM-001");
+        assertThat(delivery.get("stage")).isEqualTo("SEND");
+        Map<String, Object> state = stateRow(exportId);
+        assertThat(state.get("status")).isEqualTo("ACTIVE"); // 导出本身不被判失败
+        assertThat(state.get("chat_id")).isEqualTo("wrJgVnTQAAD-RM-001"); // 快照不变
+        assertThat(state.get("next_reminder_at")).isNull(); // 暂停自动提醒
+        assertThat(openAlertCount(exportId)).isEqualTo(1);
+        String deliveryJson = jdbc.queryForObject(
+                "SELECT row_to_json(d)::text FROM app.fulfillment_export_wecom_deliveries d WHERE id=?",
+                String.class, delivery.get("id"));
+        assertThat(deliveryJson)
+                .doesNotContain("运单回传提醒")
+                .doesNotContain(exportBatchNo(exportId));
+    }
+
+    @Test
     void completedExportStopsRemindersAndInFlightReminderBecomesNoOp() throws Exception {
         String exportId = activeExport("FX-RM-COMPLETE-001");
         makeDue(exportId);
@@ -393,6 +459,67 @@ class FulfillmentExportWecomReminderScannerTest {
     }
 
     // ------------------------------------------------------------------
+    // stale-worker fence：reminder prepare 与 owner fence 同事务
+    // ------------------------------------------------------------------
+
+    @Test
+    void staleOwnerLosingLeaseBeforeReminderClaimNeverTransitionsToSendingAndNewOwnerSendsOnce() throws Exception {
+        String exportId = activeExport("FX-RM-STALE-CLAIM-001");
+        makeDue(exportId);
+        service.scanDueReminders(10);
+        wecom.sentMessages.clear();
+        String expected = "export:" + exportId + ":REMINDER:1";
+        var oldTask = claimSpecific(expected, "rm-stale-old", Duration.ofMinutes(30));
+        // 租约过期后第二实例重新领取；旧 Worker 手里仍握着旧 task 对象
+        jdbc.update(
+                "UPDATE app.async_tasks SET lease_until=CURRENT_TIMESTAMP - INTERVAL '1 minute' WHERE id=?",
+                oldTask.id());
+        var newTask = claimSpecific(expected, "rm-stale-new", Duration.ofMinutes(30));
+
+        // 旧 Worker 执行：prepare 与 fence 同事务，租约已丢 → 绝不 PENDING→SENDING、绝不 send
+        runner.execute(oldTask);
+        assertThat(deliveryRow(exportId, "REMINDER", 1).get("status")).isEqualTo("PENDING");
+        assertThat(wecom.sentMessages).isEmpty();
+
+        // 新 owner 合法领取：prepare 成功 → 提醒恰好发送一次
+        runner.execute(newTask);
+        assertThat(deliveryRow(exportId, "REMINDER", 1).get("status")).isEqualTo("SENT");
+        assertThat(wecom.sentMessages).hasSize(1);
+    }
+
+    // ------------------------------------------------------------------
+    // 代际栅栏：新 INITIAL 成功后，旧 reminder 迟到结果必须 SUPERSEDED，绝不改新时间线
+    // ------------------------------------------------------------------
+
+    @Test
+    void lateReminderSuccessAfterNewInitialIsSupersededWithoutTimelineChange() throws Exception {
+        ReminderInterleave s = startReminderThenResendToNewGeneration("FX-RM-SUPERSEDE-SUCCESS-001");
+        s.release().countDown();
+        s.reminderRun().get(10, TimeUnit.SECONDS);
+        assertSupersededNoTimelineChange(s.exportId(), s.timelineBefore());
+    }
+
+    @Test
+    void lateReminderFailedAfterNewInitialIsSupersededWithoutAlert() throws Exception {
+        ReminderInterleave s = startReminderThenResendToNewGeneration("FX-RM-SUPERSEDE-FAILED-001");
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.FAILED, null, null, null, "CONNECTION_NOT_READY", false);
+        s.release().countDown();
+        s.reminderRun().get(10, TimeUnit.SECONDS);
+        assertSupersededNoTimelineChange(s.exportId(), s.timelineBefore());
+    }
+
+    @Test
+    void lateReminderUnknownAfterNewInitialIsSupersededWithoutAlert() throws Exception {
+        ReminderInterleave s = startReminderThenResendToNewGeneration("FX-RM-SUPERSEDE-UNKNOWN-001");
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.TIMEOUT, "rm-req-timeout-late", null, null, "ACK_TIMEOUT", false);
+        s.release().countDown();
+        s.reminderRun().get(10, TimeUnit.SECONDS);
+        assertSupersededNoTimelineChange(s.exportId(), s.timelineBefore());
+    }
+
+    // ------------------------------------------------------------------
     // 工具
     // ------------------------------------------------------------------
 
@@ -467,6 +594,105 @@ class FulfillmentExportWecomReminderScannerTest {
             taskStore.succeed(claimed.id(), claimed.leaseOwner());
         }
         throw new AssertionError("task not claimable: " + expectedPayloadRef);
+    }
+
+    /** 以指定 owner/租约领取目标任务（stale-worker fence 用例需要控制 lease_owner 与租约时长）。 */
+    private AsyncTaskStore.AsyncTask claimSpecific(String expectedPayloadRef, String owner, Duration lease) {
+        for (int i = 0; i < 10; i++) {
+            var claimed = taskStore.claim(FulfillmentExportWecomService.TASK_TYPE, owner, lease)
+                    .orElseThrow(() -> new AssertionError("expected claimable task " + expectedPayloadRef));
+            if (expectedPayloadRef.equals(claimed.payloadRef())) {
+                return claimed;
+            }
+            taskStore.succeed(claimed.id(), claimed.leaseOwner());
+        }
+        throw new AssertionError("task not claimable: " + expectedPayloadRef);
+    }
+
+    /** reminder 与 newer INITIAL 代际竞态的确定性夹具：返回持有线程/释放闩/时间线快照。 */
+    private record ReminderInterleave(
+            Future<?> reminderRun, CountDownLatch release, String exportId, Map<String, Object> timelineBefore) {}
+
+    /**
+     * 制造「reminder 正在外部发送（SENDING）」时，人工重发的新 INITIAL 代际已成功：确定性
+     * 阻塞第一个 send（reminder markdown），放行后续 send（新 INITIAL 文件消息）。
+     */
+    private ReminderInterleave startReminderThenResendToNewGeneration(String orderRef) throws Exception {
+        String exportId = activeExport(orderRef); // INITIAL seq1 已 SENT，代际 1
+        makeDue(exportId);
+        service.scanDueReminders(10);
+        wecom.sentMessages.clear(); // 只看 reminder 与新 INITIAL
+        AsyncTaskStore.AsyncTask task =
+                claimSpecific("export:" + exportId + ":REMINDER:1", "rm-supersede", Duration.ofMinutes(30));
+
+        AtomicInteger sendCount = new AtomicInteger();
+        CountDownLatch reminderEntered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        wecom.sendBlock = () -> {
+            if (sendCount.incrementAndGet() == 1) {
+                reminderEntered.countDown();
+                try {
+                    release.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Future<?> reminderRun = pool.submit(() -> runner.execute(task));
+        assertThat(reminderEntered.await(10, TimeUnit.SECONDS)).as("reminder 必须已进入外部发送").isTrue();
+
+        // 新 INITIAL 代际成功（人工重发）：reminder 已 SENDING、代际已推进到 2
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.SUCCESS, "resend-ack-2", Instant.now().plusSeconds(120), null, null, false);
+        ResponseEntity<Map> resend =
+                resend(exportId, versionOf(exportId), "群内未收到文件，重新发送", "rm-supersede-" + orderRef.toLowerCase());
+        assertThat(resend.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        int sequence = ((Number) resend.getBody().get("resend_sequence")).intValue();
+        claimAndRun(exportId, "INITIAL", sequence);
+        assertThat(stateRow(exportId).get("status")).isEqualTo("ACTIVE");
+        return new ReminderInterleave(reminderRun, release, exportId, timelineSnapshot(exportId));
+    }
+
+    /** 只快照提醒时间线相关列（代际推进后、迟到 reminder 结果应用前的对照基准）。 */
+    private Map<String, Object> timelineSnapshot(String exportId) {
+        Map<String, Object> s = stateRow(exportId);
+        Map<String, Object> t = new LinkedHashMap<>();
+        t.put("initial_sent_at", s.get("initial_sent_at"));
+        t.put("tracking_due_at", s.get("tracking_due_at"));
+        t.put("next_reminder_at", s.get("next_reminder_at"));
+        t.put("last_reminded_at", s.get("last_reminded_at"));
+        t.put("reminder_count", s.get("reminder_count"));
+        return t;
+    }
+
+    /** 迟到 reminder 结果不得改新代际时间线，delivery 为 SUPERSEDED，且不产生/不改任何告警。 */
+    private void assertSupersededNoTimelineChange(String exportId, Map<String, Object> before) {
+        Map<String, Object> state = stateRow(exportId);
+        assertThat(state.get("initial_sent_at")).isEqualTo(before.get("initial_sent_at"));
+        assertThat(state.get("tracking_due_at")).isEqualTo(before.get("tracking_due_at"));
+        assertThat(state.get("next_reminder_at")).isEqualTo(before.get("next_reminder_at"));
+        assertThat(state.get("last_reminded_at")).isEqualTo(before.get("last_reminded_at"));
+        assertThat(state.get("reminder_count")).isEqualTo(before.get("reminder_count"));
+        assertThat(deliveryRow(exportId, "REMINDER", 1).get("status")).isEqualTo("SUPERSEDED");
+        assertThat(openAlertCount(exportId)).isZero();
+    }
+
+    /** 人工重发 REST 写端点（代际栅栏测试需要真实重发创建新 INITIAL delivery + task）。 */
+    private ResponseEntity<Map> resend(String exportId, long version, String reason, String idempotencyKey) {
+        HttpHeaders headers = writeHeaders(idempotencyKey);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("expected_version", version);
+        if (reason != null) {
+            body.put("reason", reason);
+        }
+        return http.exchange(
+                "/api/v1/fulfillment-exports/" + exportId + "/wecom-resend",
+                HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                Map.class);
     }
 
     private void claimAndRun(String exportId, String kind, int sequence) {

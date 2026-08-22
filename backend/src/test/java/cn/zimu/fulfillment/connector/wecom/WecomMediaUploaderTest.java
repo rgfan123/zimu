@@ -240,12 +240,18 @@ class WecomMediaUploaderTest {
 
         assertThatThrownBy(() -> newUploader().upload(missing, "missing.xlsx", WecomMediaType.FILE))
                 .isInstanceOf(WecomUploadValidationException.class)
-                .satisfies(ex -> assertThat(((WecomUploadValidationException) ex).code())
-                        .isEqualTo("UPLOAD_FILE_NOT_FOUND"));
+                .satisfies(ex -> {
+                    assertThat(((WecomUploadValidationException) ex).code())
+                            .isEqualTo("UPLOAD_FILE_NOT_FOUND");
+                    assertThat(ex.getMessage()).doesNotContain(missing.toString());
+                });
         assertThatThrownBy(() -> newUploader().upload(directory, "dir.xlsx", WecomMediaType.FILE))
                 .isInstanceOf(WecomUploadValidationException.class)
-                .satisfies(ex -> assertThat(((WecomUploadValidationException) ex).code())
-                        .isEqualTo("UPLOAD_FILE_NOT_REGULAR"));
+                .satisfies(ex -> {
+                    assertThat(((WecomUploadValidationException) ex).code())
+                            .isEqualTo("UPLOAD_FILE_NOT_REGULAR");
+                    assertThat(ex.getMessage()).doesNotContain(directory.toString());
+                });
         assertThat(server.uploadFrames("aibot_upload_media_init")).isEmpty();
     }
 
@@ -455,6 +461,23 @@ class WecomMediaUploaderTest {
         assertThat(result.requestId()).isNotBlank();
         // 禁止盲目重发 finish：只允许提交一次
         assertThat(server.uploadFrames("aibot_upload_media_finish")).hasSize(1);
+    }
+
+    @Test
+    void defaultStepAckTimeoutFloorIsAtLeastFifteenSeconds() {
+        // 官方 aibot-node-sdk#27：真实多片上传负载下分片 ACK 常 6–8s 才到达，5s 超时会把
+        // 已受理分片误判为超时而重试/拒绝（#82 要求：真实慢 ACK 下绝不误重试、绝不「成功但
+        // 不可用」）。默认单步上传 ACK 等待必须锁定 >= 15s；普通出站消息发送 ACK（5s）不受影响。
+        assertThat(WecomMediaUploader.DEFAULT_STEP_ACK_TIMEOUT_MILLIS).isGreaterThanOrEqualTo(15_000L);
+    }
+
+    @Test
+    void defaultConstructorActuallyInstallsFifteenSecondStepAckTimeout() {
+        // 运行时路径证明：默认构造器实际把 DEFAULT_STEP_ACK_TIMEOUT_MILLIS（15s）装进实例，
+        // 而不只是静态常量断言（防止未来构造器接线回退到 5s/10s 而常量未改）。无睡眠。
+        startClient();
+        WecomMediaUploader uploader = new WecomMediaUploader(client, MAPPER);
+        assertThat(uploader.stepAckTimeoutMillis()).isGreaterThanOrEqualTo(15_000L);
     }
 
     // ---- 断线续传、会话超期与有界预算 ----

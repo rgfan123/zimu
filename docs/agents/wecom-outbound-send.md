@@ -33,6 +33,7 @@
 | `FulfillmentExportWecomStore`（repo） | 唯一读写 `app.fulfillment_export_wecom_states` / `..._deliveries` 两个新表的类；CAS、终态转移、到期扫描、完成判定 SQL | 不调用外部 seam、不拼消息、不写告警 |
 | `FulfillmentExportWecomService`（应用层） | `scheduleInitial`（生成事务内）、`resend`、`stop`、`markTrackingReceived`、`scanDueReminders`、`summary`；短事务编排与审计 | 不直接拼协议 JSON；不持有外部调用期间的长事务 |
 | `FulfillmentExportWecomRunner` | 单个 delivery 的执行状态机：resolve chat → upload → send → finalize；重试/UNKNOWN/崩溃恢复决策 | 不直接碰表结构（经 Store）；不盲重发 |
+| `FulfillmentExportWecomDeliveryFinalizer` | 租约 fence + 事务性 finalize：外部调用前后续租/复查所有权，SUCCESS/FAILED/UNKNOWN 在单事务内 `lockApplicationFence` + delivery CAS + state + `succeedOwned` | 不在外部调用期间持有事务/行锁；不关闭告警除非 finalize 原子成功 |
 | `FulfillmentExportWecomWorker` | `@Scheduled` 轮询领取 `WECOM_EXPORT_DELIVERY` 任务并交给 Runner | 业务规则不在此层 |
 | `WecomTrackingReminderScanner` | `@Scheduled` 扫描到期 ACTIVE 导出，原子创建唯一 reminder delivery + task | 不直接发送 |
 | `WecomOutboundGateway`（#82/#84 扩展） | `file(chatId, mediaId)` 深模块；审计安全投影 | media_id 不进普通日志/审计明文 |
@@ -73,10 +74,11 @@ WHERE status='ACTIVE'` 支撑到期扫描。
 | `id` / `export_id` FK→states | 证据行 |
 | `kind` | `INITIAL`（自动发送/人工重发都是 INITIAL 的新 sequence）或 `REMINDER` |
 | `sequence` | kind 内单调递增（INITIAL 从 1；REMINDER 从 1）；**UNIQUE (export_id, kind, sequence) 是「同一 initial 或同一 reminder sequence 不重复入队/并发发送」的数据库级保证** |
-| `status` | `PENDING` →（CAS）`SENDING` → `SENT` / `FAILED` / `UNKNOWN`；worker 崩溃落在 SENDING，重启转 UNKNOWN 告警，不盲重发 |
+| `initial_generation` | **代际栅栏**：本 delivery 绑定到的 INITIAL 代际（= 创建时最新的 INITIAL sequence；INITIAL 行 = 自身 sequence，REMINDER 行 = 创建时最新 INITIAL sequence）。代际变化后旧提醒只落 SUPERSEDED，绝不改新时间线/告警 |
+| `status` | `PENDING` →（CAS）`SENDING` → `SENT` / `FAILED` / `UNKNOWN` / `SUPERSEDED`；worker 崩溃落在 SENDING，重启转 UNKNOWN 告警，不盲重发；旧提醒被更新 INITIAL 代际取代 → `SUPERSEDED`（不改 state、不告警） |
 | `attempts` / `max_attempts=2` | delivery 的外部尝试计数与上限（与 async task 的 claim 计数同步；task 总领取上限 3，第 3 次只做告警收口） |
 | `stage` | `SCHEDULED`/`RESOLVE_CHAT`/`UPLOAD`/`SEND`/`FINALIZED`（稳定安全元数据） |
-| `chat_id` / `request_id` / `ack_sent_at` | 路由证据 + 服务端 ack 请求 id + ack 接收时刻（= 计时起点） |
+| `chat_id` / `request_id` / `ack_sent_at` | 路由证据（initial 在 upload 前写入本次实际群；reminder 在发送前写入快照群，UNKNOWN/FAILED 都保留 recipient 证据）+ 服务端 ack 请求 id + ack 接收时刻（= 计时起点） |
 | `media_id_sha256` | media_id 的 SHA-256 摘要（可追溯、不存 3 天临时引用明文） |
 | `error_code` / `error_message` | 稳定错误；**不持久化 media_id 明文或文件内容** |
 
@@ -92,6 +94,10 @@ V47（#84 第二轮）：企微导出告警隔离——`uq_operational_alert_act
 按 `(alert_type, shipment_id, detail->>'export_id')` 唯一（同一导出同一 delivery 多次
 ensure 只一条活动告警，续发导出共享 shipment 也互不影响）；非企微导出告警语义不变。
 
+V49（#84 第三轮）：delivery 代际栅栏——`fulfillment_export_wecom_deliveries` 追加
+`initial_generation`（非空、>0，INITIAL 行=自身 sequence、REMINDER 行=创建时最新 INITIAL
+sequence）并扩展 `status` 允许 `SUPERSEDED`；组合基线先含 #89 的 V48，再连续追加本迁移（见 §10.6）。
+
 `docs/schema.sql`（空库快照）同步追加，由 `SchemaSnapshotMigrationEquivalenceTest` 保证与
 Flyway 全链等价。
 
@@ -102,8 +108,9 @@ Flyway 全链等价。
   INSERT fulfillment_exports（tracking_due_at = NULL）
   INSERT state (PENDING, sla/interval 快照)
   INSERT delivery (INITIAL, seq=1, PENDING)
-  enqueue async_tasks WECOM_EXPORT_DELIVERY, key=wecom-export-initial:{exportId}, max=2
-    （同一事务提交；JD 路径一律不执行以上三步）
+  enqueue async_tasks WECOM_EXPORT_DELIVERY, key=wecom-export-initial:{exportId}, max=3
+    （async task 总领取上限 3 = 2 次外部 delivery 尝试 + 1 次告警/收口；同一事务提交；
+    JD 路径一律不执行以上三步）
 
 [Worker 领取] claim(WECOM_EXPORT_DELIVERY) → payload_ref=export:{id}:INITIAL:{seq}
   ── 短事务：读 delivery + state
@@ -111,19 +118,32 @@ Flyway 全链等价。
      · delivery=SENDING（崩溃遗留）→ 转 UNKNOWN + RED 告警 + succeed（绝不重发）
      · delivery=PENDING → CAS PENDING→SENDING（attempts=task.attempts，stage=RESOLVE_CHAT）
         且 state.status IN ('PENDING','ACTIVE','UNKNOWN','FAILED')（停止/收齐后 no-op）
-  ── 外部（无事务）：resolve chat（每次实时解析；未登记 → 可操作错误，安全重试路径）
+  ── 外部（无事务）：resolve chat（仅无快照时实时解析；已有 state.chat_id 快照（人工重发
+     sequence>1）直接复用快照群不重新解析，见 §6；未登记 → 可操作错误，安全重试路径）
+  ── 短事务：markChatResolved（本次实际 chat_id 写入 delivery + stage→UPLOAD，不改 state.chat_id；
+     UNKNOWN/FAILED 也保留「可能发到了哪个群」的 recipient 证据；返回 CAS 命中布尔，未命中放弃）
+  ── 短事务续租：renewLease（上传前复查/续租所有权；丢失 → 旧 Worker 放弃，新 owner 走 SENDING 恢复）
   ── 外部（无事务）：upload(fileStore.openRead(file_ref), batchNo+".xlsx", FILE)
+     本地内容寻址读取失败（file_ref 缺失/不可读/越界）在 upload 前拦截，按安全重试预算
+     （1 次重试，总尝试 2 次）→ FAILED + RED，绝不 UNKNOWN、绝不调用 upload/send；错误不含 file_ref/path
+  ── 短事务续租：renewLease（upload 后 send 前复查；丢失 → 绝不发送）
   ── 外部（无事务）：gateway.send(WecomOutboundMessage.file(chatId, mediaId))
-  ── 短事务 finalize（按结局）：
-     · SUCCESS → delivery SENT(ack, req_id, chat_id, media_id_sha256, stage=FINALIZED)
+  ── 短事务 finalize（按结局，全部 fenced 原子）：
+     · SUCCESS → lockApplicationFence + delivery SENDING→SENT CAS（未命中不动 state）
                   state ACTIVE：initial_sent_at=ack, tracking_due_at=ack+sla,
                   next_reminder_at=同 due, chat_id=快照, last_error=NULL
                   （仅当 state 未被人工停止/收齐，且该 delivery 是 latest INITIAL）
+                  → 阶段 1 **故意不 succeedOwned**（任务保持 RUNNING/owned）
+                  → 阶段 2 同一短事务内先只关闭该导出遗留告警（shipment + detail.export_id
+                     隔离）→ succeedOwned；告警关闭失败 → 整事务回滚，任务可重试
+                  → 阶段 1/2 之间崩溃 → 任务仍 RUNNING，重进见 delivery SENT 走同一收口，
+                     绝不重新 upload/send（根治「任务已 SUCCEEDED 但遗留告警永不再关」的空隙）
      · 可安全重试失败（CONNECTION_NOT_READY/BACKPRESSURE/上传 retryable/群未登记）
          → attempts < max：delivery 回 PENDING（记 error）→ taskStore.fail(backoff)
          → attempts >= max（总尝试 2 次）：delivery FAILED + state FAILED + RED 告警 + succeed
      · 结局未知（send TIMEOUT/LOST/非 retryable FAILED、upload UNKNOWN/非 retryable）
          → delivery UNKNOWN + state UNKNOWN + RED 告警 + succeed（人工对账，绝不盲重发）
+     · fence 丢失/CAS 未命中 → 不改 state、不关告警（新 owner 处理 SENDING 恢复）
 ```
 
 「外部已发成功但本地未落库」由 SENDING 崩溃恢复与 UNKNOWN 分支共同兜底：发送提交后的任何
@@ -147,13 +167,18 @@ Flyway 全链等价。
   · 全部通过才 CAS delivery PENDING→SENDING（与 tracking import 的 markTrackingReceived
     在同一 state 行锁上互斥：import 先提交则本 CAS 必失败绝不发送；本 prepare 先提交则
     发送决策线性化在收齐之前，合法）
+  ── 短事务：markReminderRecipient（快照群写入 reminder delivery 证据 chat_id，不改
+     stage= SEND、不改 state.chat_id；TIMEOUT/UNKNOWN 或失败耗尽→FAILED 也保留 recipient 证据；
+     返回 CAS 命中布尔，未命中放弃）
+  ── 短事务续租：renewLease（提醒发送前复查/续租所有权；丢失 → 旧 Worker 放弃，绝不发送）
   ── 外部（事务外）：send(markdown) 到 **state.chat_id 快照群**（不重新解析、不悄悄换群）
-  ── 短事务 finalize：
-     · SUCCESS → delivery SENT(ack)；state last_reminded_at=ack, reminder_count+1,
-                  next_reminder_at=ack+interval_snapshot（仅当仍 ACTIVE）
+  ── 短事务 finalize（fenced 原子）：
+     · SUCCESS → delivery SENDING→SENT CAS；state last_reminded_at=ack, reminder_count+1,
+                  next_reminder_at=ack+interval_snapshot（仅当仍 ACTIVE）→ succeedOwned
      · 可安全重试（CONNECTION_NOT_READY/BACKPRESSURE）→ 同 initial 的 2 次预算
      · 终态失败/UNKNOWN → delivery FAILED/UNKNOWN + RED 告警 + next_reminder_at=NULL
        （暂停自动提醒，避免重复轰炸）；人工重发成功后可自动 resolve 该导出告警
+     · fence 丢失/CAS 未命中 → 不改 state（新 owner 处理 SENDING 恢复）
 ```
 
 提醒内容（markdown，经 `WecomTrackingReminderMessage` 构建）：导出批次号、履约方名称、
@@ -225,12 +250,56 @@ null/缺失 = 默认等于 `tracking_sla_minutes`）。解析唯一归属
 `FulfillmentProviderWecomConfig`；PATCH 合并写入保留其他 config 键、版本并发与审计沿用；
 Provider 投影新增 `wecom_reminder_interval_minutes`（number|null）。前端配置页同规则校验。
 
-## 10.5 Worker 租约（#82 上传上界）
+## 10.5 Worker 租约与 stale-worker fence（#82 上传上界 + 加固）
 
-`app.wecom-export-worker.lease-seconds` 默认 **1800 秒（30 分钟）且为代码下限**（不可调小，
-只能调大）：#82 同步分片上传最坏时长有界可达十余分钟，租约必须覆盖该上界——真实执行仍活跃
-时任务绝不被第二实例重新领取误判为 crash。SENDING 只在租约确实过期后的重新领取时转 UNKNOWN
-人工对账（崩溃恢复前提，见 §4）。
+`app.wecom-export-worker.lease-seconds` 默认 **2400 秒（40 分钟）且为代码下限**（不可调小，
+只能调大）：必须覆盖 #82 上传器的完整最坏恢复预算 = pre-init 5 次 resume（每次最多 15s 等
+ACK + 60s 退避）+ 15s init ACK = 5×(15+60)+15 = **390s**，加 30 分钟会话 + 15s = **1815s**，
+加最终 `aibot_send_msg` 发送 ACK **5s**，合计 **2210s（36m50s）**；2400s 留约 **190s** 余量
+作为保守下限——租约必须**严格高于**该上界，真实执行仍活跃时任务绝不被第二实例重新领取
+误判为 crash。SENDING 只在租约确实过期后的重新领取时转 UNKNOWN 人工对账（崩溃恢复前提，
+见 §4）。
+
+租约 fence（`AsyncTaskStore.renewLease` + `FulfillmentExportWecomDeliveryFinalizer`）：
+
+- 外部调用前**续租/复查所有权**（仅当前 RUNNING owner 且租约未过期可续租）：initial 上传前、
+  upload 后 send 前、reminder 发送前各一次；丢失即放弃（不 upload/send、不改业务状态），
+  新 owner 走 SENDING 恢复；
+- **INITIAL SUCCESS 两阶段收口**：`lockApplicationFence` 锁任务行复查 owner/租约 →
+  delivery SENDING→SENT CAS（未命中则不动 state、不关告警）→ state 更新（阶段 1，**故意不
+  succeedOwned**）；随后阶段 2 在同一短事务内先只关闭该导出遗留告警 + `succeedOwned`；
+  告警关闭失败整事务回滚，任务保持 RUNNING 可重试，重进见 SENT 走同一收口，绝不重新
+  upload/send；
+- **错误/UNKNOWN finalize 同样先过 fence**：旧 Worker 丢失租约后不得 retryPending /
+  markFailed / markUnknown；markChatResolved 返回 CAS 命中布尔，未命中即放弃；任务耗尽
+  领取预算后若以 FINALIZING owner 恢复遗留 SENDING，改用 finalization fence 单调落
+  UNKNOWN + RED 告警，绝不永久卡住或重发。
+
+## 10.6 代际栅栏（generation fencing）与迁移协调（V49）
+
+三个 HIGH 修复都以「INITIAL 代际」为线性化锚点，用**已有的 INITIAL delivery sequence** 作为
+代际标识（不新增独立 epoch 计数器），只在 `deliveries` 上追加一列 `initial_generation` 持久化
+提醒↔代际绑定（`V49__wecom_export_delivery_generation_fencing.sql`）：
+
+- **Fix A（claim 与 owner fence 同事务）**：INITIAL 的 `beginAttempt` 与 REMINDER 的
+  `prepareReminder` 现在都先在**同一短事务**内 `lockApplicationFence` 复查「仍当前 owner 且
+  租约活跃 + 续租」，再 CAS delivery `PENDING→SENDING`（REMINDER 同时持久化 recipient 证据 +
+  复查代际）。旧 Worker 丢失租约后绝不把 delivery 拉到 SENDING、绝不 upload/send；CAS 未命中
+  区分「终态幂等」与「他方 SENDING」，绝不因他方在途而误 succeed。
+- **Fix B（提醒绑定 INITIAL 代际）**：REMINDER delivery 创建时记录 `initial_generation` =
+  最新 INITIAL sequence；`prepareReminder` 与 `markReminderSent/Failed/Unknown` 都在 state 行
+  锁下复查代际是否仍等于当前最新 INITIAL。代际已变 → delivery 只落 `SUPERSEDED`（
+  `WECOM_REMINDER_SUPERSEDED`），**绝不改新时间线 / reminder_count / next_reminder_at /
+  last_reminded_at、绝不创建/关闭任何告警**，任务幂等收口。
+- **Fix C（告警关闭按代际收窄）**：`resolveWecomExportAlerts(shipmentId, exportId,
+  maxGeneration, reason)` 经 `detail.delivery_id` 关联 delivery 的 `initial_generation`，只关
+  `<=` 成功 delivery 代际的告警——旧 INITIAL phase-2 成功收口绝不误关更新代际 resend 失败的
+  红告警；终态告警补建也只替换 `<=` 当前 delivery 代际的活动告警，旧代际迟到时通过
+  `ON CONFLICT DO NOTHING` 幂等保留并返回新代际 RED 告警。
+
+**迁移协调**：组合基线已经包含 #89 的 V48；本加固迁移连续使用 V49，只追加本功能自有的
+`deliveries` 列/约束且绝不修改 V46/V47。#90 尚未进入组合基线，后续集成时必须把其迁移改为
+下一空闲版本 V50，不能覆盖本 V49。
 
 ## 11. 测试门禁
 
@@ -245,10 +314,24 @@ Provider 投影新增 `wecom_reminder_interval_minutes`（number|null）。前�
   （400）、null body 422、reason 长度、in-flight 阻止重发（409）、并发重发唯一成功、
   COMPLETED 拒绝重发、停止幂等、重发重置时间线。
 - `FulfillmentExportWecomAlertScopingTest`：续发导出共享 fulfillment/shipment 时各自独立告警、
-  重发 ack 只关闭同导出告警、告警创建失败退避并在第 3 次领取收口、持续失败任务 FAILED 可见。
+  重发 ack 只关闭同导出告警、告警创建失败退避并在第 3 次领取收口、持续失败任务 FAILED 可见；
+  旧代际告警补建不关闭/替换新代际 RED 告警；
+  告警关闭失败（INITIAL SENT 两阶段之间）→ 任务未 SUCCEEDED、告警保持 OPEN、下次领取零
+  upload/send 只关该导出告警并 SUCCEEDED、绝不跨导出误关。
+- `FulfillmentExportWecomPipelineApiTest` 加固用例：stale-owner 丢失 fence 后不得 upload/send；
+  upload 与 send 之间丢失租约不得发送；finalize 前丢失 ownership 不得改 state/关告警
+  （新 owner 走 SENDING 恢复为 UNKNOWN、不重复发送）；文件校验路径 sentinel（TOCTOU：
+  openRead 成功但 uploader 抛含 path 的校验异常）→ delivery/state/告警/公开投影均不含
+  path/file_ref；租约默认覆盖 >=40 分钟（配置低于下限时 Worker 与 Finalizer 均钳制到同一
+  40 分钟下限）；FINALIZING owner 能把遗留 SENDING 收口为 UNKNOWN + RED 告警。
 - `FulfillmentExportWecomReminderScannerTest` 并发用例：reminder prepare 与 tracking import
   在同一 state 行锁上互斥（latch/两事务确定性 seam），import 先提交绝不发送、
   prepare 先提交发送证据保留。
+- 代际栅栏加固用例（Fix A/B/C）：INITIAL/REMINDER 旧 owner 在 claim 前丢失租约 → 绝不
+  PENDING→SENDING、新 owner 合法发送恰好一次；reminder SENDING 期间新 INITIAL 成功后，旧
+  reminder 迟到 SUCCESS/FAILED/UNKNOWN → delivery `SUPERSEDED`、新时间线/reminder_count/
+  next_reminder_at 不变、零告警；旧 INITIAL phase-2 恢复不误关更新代际 resend 失败的红告警。
 - 前端：`SalesOutboundPage` 按钮状态/确认弹窗/生产路由载荷；`FulfillmentProvidersPage`
   提醒间隔输入与 config 键共存。
-- `SchemaSnapshotMigrationEquivalenceTest`：V46 与 docs/schema.sql 等价。
+- `SchemaSnapshotMigrationEquivalenceTest`：V46/V47/V48/V49 与 docs/schema.sql 等价；
+  `ProductionMigrationHistoryCompatTest`：V1..V47 后只追加 V48（#89）与 V49（#84）。

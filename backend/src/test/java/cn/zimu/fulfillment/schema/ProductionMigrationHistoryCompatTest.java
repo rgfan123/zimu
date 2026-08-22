@@ -30,8 +30,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V48）升级，Flyway validate（默认开启）必须成功且只追加
- * V48（internal_operators，Issue #89）；③ 升级后前 47 行历史
+ * migration set（V1..V49）升级，Flyway validate（默认开启）必须成功且只追加
+ * V48（internal_operators，Issue #89）与 V49（企微导出 delivery 代际栅栏，Issue #84）；
+ * ③ 升级后前 47 行历史
  * 逐行不变，V40–V47 的 version/script/description/checksum 必须与生产已应用序列逐字节
  * 一致——checksum 常量直接取自生产 `flyway_schema_history` 真实行（不按当前迁移文件
  * 重新计算），任何未来的改号/改内容都会让本测试变红。不读真实库、不依赖 mock schema，
@@ -42,7 +43,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * （docs/schema.sql 空库快照与 Flyway 全链结构等价）与「已发布迁移不可变」约定兜底——
  * 前者证明结构等价，后者约束历史不可改写，均非本测试的断言职责。
  *
- * <p>演进约定：未来追加 V49+ 时，把阶段一的模拟目标（当前 47）推进到当时生产所处版本、
+ * <p>演进约定：未来追加 V50+ 时，把阶段一的模拟目标（当前 47）推进到当时生产所处版本、
  * 同步更新阶段二「只追加」断言——但 V40–V47 常量段是生产不可变序列，永远不得改动；
  * 该段变红即意味着有人再次改号或改了已发布内容。
  */
@@ -88,7 +89,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48AndV49() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -102,29 +103,32 @@ class ProductionMigrationHistoryCompatTest {
                         V40_PRODUCTION, V41_PRODUCTION, V42_PRODUCTION, V43_PRODUCTION,
                         V44_PRODUCTION, V45_PRODUCTION, V46_PRODUCTION, V47_PRODUCTION);
 
-        // 阶段二：完整当前 migration set（V1..V48）升级——Flyway validate 默认开启，
-        // V40–V47 校验通过后只追加 V48，任何 repair/改写历史都会在此失败。
+        // 阶段二：完整当前 migration set（V1..V49）升级——Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加 V48/V49，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 48 条历史")
-                .hasSize(48);
+                .as("完整升级后应恰有 49 条历史")
+                .hasSize(49);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
+        // V48/V49 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 48))
-                .as("升级只追加 V48（internal_operators，Issue #89 运营人员与企微 userid 映射）")
+        assertThat(historyAfter.subList(47, 49))
+                .as("升级只追加 V48（Issue #89）与 V49（Issue #84 delivery 代际栅栏）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
-                                crc32Of("V48__internal_operators.sql")));
+                                crc32Of("V48__internal_operators.sql")),
+                        new HistoryRow("49", "V49__wecom_export_delivery_generation_fencing.sql",
+                                "wecom export delivery generation fencing",
+                                crc32Of("V49__wecom_export_delivery_generation_fencing.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
-        // V48 用内部运营人员表的真实结构证明生效。
+        // V48/V49 分别用内部运营人员表与 delivery 代际约束的真实结构证明生效。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -195,6 +199,23 @@ class ProductionMigrationHistoryCompatTest {
             assertIndex(statement, "idx_internal_operators_team_active",
                     "V48：责任团队 + 启用状态索引支撑解析查询",
                     "responsible_team", "active");
+            // V49：delivery 必须带非空代际，状态约束必须接受 SUPERSEDED。
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT is_nullable FROM information_schema.columns
+                    WHERE table_schema = 'app'
+                      AND table_name = 'fulfillment_export_wecom_deliveries'
+                      AND column_name = 'initial_generation'
+                    """)))
+                    .as("V49 生效后 initial_generation 必须非空")
+                    .isEqualTo("NO");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                    WHERE conname = 'fulfillment_export_wecom_deliveries_status_check'
+                    """)))
+                    .as("V49 生效后 delivery 状态约束必须允许 SUPERSEDED")
+                    .contains("SUPERSEDED");
         }
     }
 

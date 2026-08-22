@@ -304,6 +304,85 @@ class FulfillmentExportWecomResendStopApiTest {
     }
 
     // ------------------------------------------------------------------
+    // 快照群（§6）：initial 成功后 chat_id 快照；履约方改群后人工重发仍发到快照群
+    // ------------------------------------------------------------------
+
+    @Test
+    void resendAfterProviderGroupChangeStillSendsToSnapshotGroup() throws Exception {
+        // 1) 成功发送到群 A（快照建立）
+        String exportId = activeExport("FX-RS-SNAPSHOT-001");
+        assertThat(stateRow(exportId).get("status")).isEqualTo("ACTIVE");
+        assertThat(stateRow(exportId).get("chat_id")).isEqualTo("wrJgVnTQAAD-RS-001");
+        assertThat(wecom.sentMessages).hasSize(1);
+        assertThat(wecom.sentMessages.getFirst().chatId()).isEqualTo("wrJgVnTQAAD-RS-001");
+        long snapshotVersion = versionOf(exportId);
+
+        // 2) 履约方配置改到群 B（真实配置 seam：改完 resolver 立即生效）
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config = config || '{"wecomGroupChatId":"wrJgVnTQAAD-RS-GROUP-B"}'::jsonb
+                WHERE provider_code='TP'
+                """);
+        assertThat(jdbc.queryForObject(
+                "SELECT config->>'wecomGroupChatId' FROM app.fulfillment_providers WHERE provider_code='TP'",
+                String.class)).isEqualTo("wrJgVnTQAAD-RS-GROUP-B");
+
+        // 3) 人工重发并运行其 delivery
+        wecom.sentMessages.clear();
+        ResponseEntity<Map> resend = resend(exportId, snapshotVersion, "群内未收到文件，重发", "rs-snapshot-001");
+        assertThat(resend.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        int sequence = ((Number) resend.getBody().get("resend_sequence")).intValue();
+        assertThat(sequence).isEqualTo(2);
+        claimAndRun(exportId, "INITIAL", sequence);
+
+        // 4) 重发文件消息仍发到快照群 A，而不是新配置的群 B（§6：不重新解析）
+        assertThat(wecom.sentMessages).hasSize(1);
+        WecomOutboundMessage resent = wecom.sentMessages.getFirst();
+        assertThat(resent.type()).isEqualTo(WecomOutboundMessage.Type.FILE);
+        assertThat(resent.chatId()).isEqualTo("wrJgVnTQAAD-RS-001");
+        assertThat(stateRow(exportId).get("chat_id")).isEqualTo("wrJgVnTQAAD-RS-001");
+        assertThat(deliveryRow(exportId, "INITIAL", sequence).get("chat_id"))
+                .isEqualTo("wrJgVnTQAAD-RS-001");
+    }
+
+    @Test
+    void resendWithoutSuccessfulSnapshotResolvesCurrentConfiguredGroup() throws Exception {
+        // 1) 初始发送在 ack 前失败（无快照：state.chat_id 为 NULL）
+        String exportId = generateThirdPartyExport("FX-RS-FALLBACK-001");
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.FAILED, null, null, null, "CONNECTION_NOT_READY", true);
+        claimAndRun(exportId, "INITIAL", 1);
+        runDueTask(exportId, "INITIAL", 1);
+        assertThat(stateRow(exportId).get("status")).isEqualTo("FAILED");
+        assertThat(stateRow(exportId).get("chat_id")).isNull();
+        long failedVersion = versionOf(exportId);
+
+        // 2) 履约方配置改到群 B
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config = config || '{"wecomGroupChatId":"wrJgVnTQAAD-RS-GROUP-B"}'::jsonb
+                WHERE provider_code='TP'
+                """);
+
+        // 3) 安全重发：无快照 → 允许按当前配置正常解析（只影响本次成功后的新快照）
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.SUCCESS, "resend-ack-fallback-1", Instant.now(), null, null, false);
+        wecom.sentMessages.clear();
+        ResponseEntity<Map> resend = resend(exportId, failedVersion, "无快照重发", "rs-fallback-001");
+        assertThat(resend.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        int sequence = ((Number) resend.getBody().get("resend_sequence")).intValue();
+        assertThat(sequence).isEqualTo(2);
+        claimAndRun(exportId, "INITIAL", sequence);
+
+        // 4) 重发按当前配置解析到群 B 并成为新快照
+        assertThat(wecom.sentMessages).hasSize(1);
+        assertThat(wecom.sentMessages.getFirst().chatId()).isEqualTo("wrJgVnTQAAD-RS-GROUP-B");
+        assertThat(stateRow(exportId).get("chat_id")).isEqualTo("wrJgVnTQAAD-RS-GROUP-B");
+    }
+
+    // ------------------------------------------------------------------
     // 契约：expected_version 必填 / null body / reason 长度 / in-flight 阻止 / 并发
     // ------------------------------------------------------------------
 

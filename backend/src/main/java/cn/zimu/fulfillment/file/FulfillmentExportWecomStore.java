@@ -116,29 +116,51 @@ public class FulfillmentExportWecomStore {
 
     /**
      * 提醒发送前的线性化准备（单短事务）：锁 state 行 {@code FOR UPDATE}，在同一事务复查
-     * ACTIVE/due/收齐全量，再 CAS delivery PENDING→SENDING。
+     * ACTIVE/代际/due/收齐全量，再 CAS delivery PENDING→SENDING 并持久化 recipient 证据。
      *
      * <p>与 {@link #markTrackingReceived}（import 事务内锁同一行）互斥：若本方法先提交，
      * 发送决策线性化在收齐之前（允许发送，外部 send 仍在事务外）；若 import 先提交，本方法
-     * 复查必见 COMPLETED（或已收齐）而返回 no-op，绝不发送。返回：
+     * 复查必见 COMPLETED（或已收齐）而返回 no-op，绝不发送。
+     *
+     * <p><b>代际栅栏</b>：提醒 delivery 的 {@code initial_generation} 必须仍等于当前最新
+     * INITIAL sequence；否则说明期间有人工重发的新 INITIAL 已登记/成功，本提醒已过期——同事务
+     * 标 {@code SUPERSEDED}（绝不再发送、绝不阻塞 scanner 生成新代际提醒）。返回：
      * <ul>
-     *   <li>{@link ReminderPrepare#CLAIMED}：已 CAS 到 SENDING，调用方可以外部发送；</li>
+     *   <li>{@link ReminderPrepare#CLAIMED}：已 CAS 到 SENDING（含 recipient 证据），调用方可以外部发送；</li>
      *   <li>{@link ReminderPrepare#COMPLETED}：同事务已复查收齐并标 COMPLETED，调用方 no-op；</li>
+     *   <li>{@link ReminderPrepare#SUPERSEDED}：代际已变，delivery 已标 SUPERSEDED，调用方 no-op；</li>
      *   <li>{@link ReminderPrepare#NOOP}：已停止/暂停/时间线已变/未领取到，调用方 no-op。</li>
      * </ul>
      */
     @Transactional
     public ReminderPrepare prepareReminder(long exportId, int sequence, int attempts, String stage) {
-        List<String> statuses = jdbc.query(
+        List<StateLockRow> rows = jdbc.query(
                 """
-                SELECT status FROM app.fulfillment_export_wecom_states WHERE export_id=? FOR UPDATE
+                SELECT status, chat_id FROM app.fulfillment_export_wecom_states
+                WHERE export_id=? FOR UPDATE
                 """,
-                (rs, row) -> rs.getString(1),
+                (rs, row) -> new StateLockRow(rs.getString(1), rs.getString(2)),
                 exportId);
-        if (statuses.isEmpty() || !"ACTIVE".equals(statuses.getFirst())) {
+        if (rows.isEmpty() || !"ACTIVE".equals(rows.getFirst().status())) {
             return ReminderPrepare.NOOP;
         }
+        String chatId = rows.getFirst().chatId();
         afterStateLock.run();
+        // 代际栅栏（先于 due/收齐判定）：期间有人工重发新 INITIAL → 本提醒过期，标 SUPERSEDED，
+        // 绝不在新代际时间线上发送或阻塞新提醒。
+        List<Long> staleIds = jdbc.query(
+                """
+                SELECT id FROM app.fulfillment_export_wecom_deliveries
+                WHERE export_id=? AND kind='REMINDER' AND sequence=? AND initial_generation <> ?
+                """,
+                (rs, row) -> rs.getLong(1),
+                exportId,
+                sequence,
+                latestInitialGeneration(exportId));
+        if (!staleIds.isEmpty()) {
+            markReminderSuperseded(staleIds.getFirst());
+            return ReminderPrepare.SUPERSEDED;
+        }
         Boolean stillDue = jdbc.queryForObject(
                 """
                 SELECT next_reminder_at IS NOT NULL AND next_reminder_at <= CURRENT_TIMESTAMP
@@ -153,15 +175,17 @@ public class FulfillmentExportWecomStore {
             markCompleted(exportId); // 收齐事实优先：同事务标 COMPLETED，绝不催已收齐
             return ReminderPrepare.COMPLETED;
         }
+        // CAS PENDING→SENDING 并持久化 recipient 证据（快照群；不改 state.chat_id）。
         int updated = jdbc.update(
                 """
                 UPDATE app.fulfillment_export_wecom_deliveries
-                SET status='SENDING', attempts=?, stage=?, error_code=NULL, error_message=NULL,
-                    updated_at=CURRENT_TIMESTAMP
+                SET status='SENDING', attempts=?, stage=?, chat_id=?, error_code=NULL,
+                    error_message=NULL, updated_at=CURRENT_TIMESTAMP
                 WHERE export_id=? AND kind='REMINDER' AND sequence=? AND status='PENDING'
                 """,
                 attempts,
                 stage,
+                chatId,
                 exportId,
                 sequence);
         return updated == 1 ? ReminderPrepare.CLAIMED : ReminderPrepare.NOOP;
@@ -198,9 +222,13 @@ public class FulfillmentExportWecomStore {
                 expectedVersion);
     }
 
-    /** initial 成功 ack finalize：仅当该 delivery 仍是 latest INITIAL 且状态未被人工停止/收齐。 */
+    /**
+     * initial 成功 ack finalize：仅当该 delivery 仍是 latest INITIAL 且状态未被人工停止/收齐。
+     * delivery SENDING→SENT CAS 未命中（返回 false）时**绝不触碰 state**（可能是他方已抢先
+     * finalize/转 UNKNOWN），上层据此回滚任务收口且不关闭告警。
+     */
     @Transactional
-    public void markInitialSent(
+    public boolean markInitialSent(
             long exportId,
             int sequence,
             long deliveryId,
@@ -210,7 +238,7 @@ public class FulfillmentExportWecomStore {
             String mediaIdSha256,
             Instant trackingDueAt,
             Instant nextReminderAt) {
-        jdbc.update(
+        int deliveryUpdated = jdbc.update(
                 """
                 UPDATE app.fulfillment_export_wecom_deliveries
                 SET status='SENT', stage='FINALIZED', chat_id=?, request_id=?, ack_sent_at=?,
@@ -222,6 +250,9 @@ public class FulfillmentExportWecomStore {
                 ts(ackSentAt),
                 mediaIdSha256,
                 deliveryId);
+        if (deliveryUpdated != 1) {
+            return false;
+        }
         jdbc.update(
                 """
                 UPDATE app.fulfillment_export_wecom_states
@@ -241,12 +272,27 @@ public class FulfillmentExportWecomStore {
                 exportId,
                 sequence,
                 deliveryId);
+        return true;
     }
 
-    /** reminder 成功 ack finalize：last_reminded_at=ack、count+1、按快照间隔重排；仅当仍 ACTIVE。 */
+    /**
+     * reminder 成功 ack finalize（代际栅栏）：锁 delivery 行 + state 行，复查该 reminder 的
+     * {@code initial_generation} 是否仍等于当前最新 INITIAL 代际。是 → delivery SENT + state
+     * last_reminded_at/count/next_reminder；否（期间有人工重发新 INITIAL）→ delivery 只落
+     * {@code SUPERSEDED} 证据，绝不改新代际时间线/reminder_count/next_reminder_at。delivery
+     * 已非 SENDING（被他人 finalize）→ {@link ReminderFinalize#ABORTED}。
+     */
     @Transactional
-    public void markReminderSent(
+    public ReminderFinalize markReminderSent(
             long exportId, long deliveryId, String requestId, Instant ackSentAt, Instant nextReminderAt) {
+        LockedReminder reminder = lockReminder(deliveryId);
+        if (reminder == null) {
+            return ReminderFinalize.ABORTED;
+        }
+        if (reminder.initialGeneration() != latestInitialGeneration(reminder.exportId())) {
+            markReminderSuperseded(deliveryId);
+            return ReminderFinalize.SUPERSEDED;
+        }
         jdbc.update(
                 """
                 UPDATE app.fulfillment_export_wecom_deliveries
@@ -267,15 +313,141 @@ public class FulfillmentExportWecomStore {
                 ts(ackSentAt),
                 ts(nextReminderAt),
                 exportId);
+        return ReminderFinalize.APPLIED;
+    }
+
+    /**
+     * reminder 确定性终态失败 finalize（代际栅栏）：锁 delivery + state 行，代际未变 → delivery
+     * FAILED + 暂停提醒（next_reminder_at=NULL）；代际已变 → delivery 只落 SUPERSEDED，绝不改
+     * 新代际时间线/不暂停新提醒。delivery 已非 SENDING → {@link ReminderFinalize#ABORTED}。
+     */
+    @Transactional
+    public ReminderFinalize markReminderFailed(long exportId, long deliveryId, String errorCode, String errorMessage) {
+        LockedReminder reminder = lockReminder(deliveryId);
+        if (reminder == null) {
+            return ReminderFinalize.ABORTED;
+        }
+        if (reminder.initialGeneration() != latestInitialGeneration(reminder.exportId())) {
+            markReminderSuperseded(deliveryId);
+            return ReminderFinalize.SUPERSEDED;
+        }
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_export_wecom_deliveries
+                SET status='FAILED', error_code=?, error_message=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='SENDING'
+                """,
+                errorCode,
+                errorMessage,
+                deliveryId);
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_export_wecom_states
+                SET next_reminder_at=NULL, last_error=?,
+                    lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
+                WHERE export_id=? AND status='ACTIVE'
+                """,
+                errorMessage,
+                exportId);
+        return ReminderFinalize.APPLIED;
+    }
+
+    /**
+     * reminder 结局未知 finalize（代际栅栏）：锁 delivery + state 行，代际未变 → delivery UNKNOWN
+     * + 暂停提醒；代际已变 → delivery 只落 SUPERSEDED，绝不改新代际时间线/不暂停新提醒。
+     * delivery 已非 SENDING → {@link ReminderFinalize#ABORTED}。
+     */
+    @Transactional
+    public ReminderFinalize markReminderUnknown(long exportId, long deliveryId, String errorCode, String errorMessage) {
+        LockedReminder reminder = lockReminder(deliveryId);
+        if (reminder == null) {
+            return ReminderFinalize.ABORTED;
+        }
+        if (reminder.initialGeneration() != latestInitialGeneration(reminder.exportId())) {
+            markReminderSuperseded(deliveryId);
+            return ReminderFinalize.SUPERSEDED;
+        }
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_export_wecom_deliveries
+                SET status='UNKNOWN', error_code=?, error_message=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='SENDING'
+                """,
+                errorCode,
+                errorMessage,
+                deliveryId);
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_export_wecom_states
+                SET next_reminder_at=NULL, last_error=?,
+                    lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
+                WHERE export_id=? AND status='ACTIVE'
+                """,
+                errorMessage,
+                exportId);
+        return ReminderFinalize.APPLIED;
+    }
+
+    /** 锁定 reminder delivery 行（FOR UPDATE）并复查其代际是否仍等于当前最新 INITIAL 代际。 */
+    private LockedReminder lockReminder(long deliveryId) {
+        List<LockedReminder> rows = jdbc.query(
+                """
+                SELECT id, export_id, status, initial_generation
+                FROM app.fulfillment_export_wecom_deliveries
+                WHERE id=? FOR UPDATE
+                """,
+                (rs, row) -> new LockedReminder(
+                        rs.getLong("id"), rs.getLong("export_id"), rs.getString("status"),
+                        rs.getInt("initial_generation")),
+                deliveryId);
+        if (rows.isEmpty() || !"SENDING".equals(rows.getFirst().status())) {
+            return null;
+        }
+        // 锁 state 行：与 resend（lockState + beginResend）串行化，代际读到的 MAX(INITIAL.sequence)
+        // 是稳定快照（无并发新 INITIAL 正在创建）。
+        lockStateRow(rows.getFirst().exportId());
+        return rows.getFirst();
+    }
+
+    /** 提醒 delivery 已被更新 INITIAL 代际取代：同事务落 SUPERSEDED 证据，不改 state/不告警。 */
+    private void markReminderSuperseded(long deliveryId) {
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_export_wecom_deliveries
+                SET status='SUPERSEDED', error_code='WECOM_REMINDER_SUPERSEDED',
+                    error_message='提醒已被更新的 initial 重发取代', updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                deliveryId);
+    }
+
+    /** 锁 state 行（reminder finalize 与 resend/tracking import 的串行化点）。 */
+    private void lockStateRow(long exportId) {
+        jdbc.query(
+                "SELECT export_id FROM app.fulfillment_export_wecom_states WHERE export_id=? FOR UPDATE",
+                (rs, row) -> rs.getLong(1),
+                exportId);
+    }
+
+    private record LockedReminder(long id, long exportId, String status, int initialGeneration) {}
+
+    /** reminder finalize 的代际栅栏结果。 */
+    public enum ReminderFinalize {
+        /** 代际未变：delivery 已转 SENT/FAILED/UNKNOWN + state 已更新，调用方按结局告警/收口。 */
+        APPLIED,
+        /** 代际已变：delivery 只落 SUPERSEDED，绝不改 state/告警。 */
+        SUPERSEDED,
+        /** delivery 已非 SENDING（被他人抢先 finalize）：不改任何业务状态。 */
+        ABORTED
     }
 
     /**
      * 可安全重试的失败：delivery 回到 PENDING 等下次尝试（记录稳定错误）；未达上限时的调用方
-     * 负责以退避重排 async task。返回当前 delivery（含 attempts）。
+     * 负责以退避重排 async task。返回 true 表示 delivery SENDING→PENDING CAS 命中（当前 SENDING）。
      */
     @Transactional
-    public Delivery retryPending(long exportId, String kind, int sequence, String errorCode, String errorMessage) {
-        jdbc.update(
+    public boolean retryPending(long exportId, String kind, int sequence, String errorCode, String errorMessage) {
+        int updated = jdbc.update(
                 """
                 UPDATE app.fulfillment_export_wecom_deliveries
                 SET status='PENDING', error_code=?, error_message=?, updated_at=CURRENT_TIMESTAMP
@@ -286,16 +458,17 @@ public class FulfillmentExportWecomStore {
                 exportId,
                 kind,
                 sequence);
-        return delivery(exportId, kind, sequence).orElseThrow();
+        return updated == 1;
     }
 
     /**
-     * 确定性终态失败：delivery FAILED；initial 把导出置 FAILED，reminder 只暂停提醒
-     * （next_reminder_at=NULL），不改变导出状态。
+     * INITIAL 确定性终态失败：delivery FAILED + 导出置 FAILED。delivery SENDING→FAILED CAS
+     * 未命中（返回 false）时绝不触碰 state。REMINDER 的代际栅栏 finalize 见
+     * {@link #markReminderFailed}。
      */
     @Transactional
-    public void markFailed(long exportId, String kind, int sequence, String errorCode, String errorMessage) {
-        jdbc.update(
+    public boolean markFailed(long exportId, String kind, int sequence, String errorCode, String errorMessage) {
+        int deliveryUpdated = jdbc.update(
                 """
                 UPDATE app.fulfillment_export_wecom_deliveries
                 SET status='FAILED', error_code=?, error_message=?, updated_at=CURRENT_TIMESTAMP
@@ -306,33 +479,29 @@ public class FulfillmentExportWecomStore {
                 exportId,
                 kind,
                 sequence);
-        if (INITIAL.equals(kind)) {
-            jdbc.update(
-                    """
-                    UPDATE app.fulfillment_export_wecom_states
-                    SET status='FAILED', next_reminder_at=NULL, last_error=?,
-                        lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
-                    WHERE export_id=? AND status IN ('PENDING','ACTIVE','UNKNOWN','FAILED')
-                    """,
-                    errorMessage,
-                    exportId);
-        } else {
-            jdbc.update(
-                    """
-                    UPDATE app.fulfillment_export_wecom_states
-                    SET next_reminder_at=NULL, last_error=?,
-                        lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
-                    WHERE export_id=? AND status='ACTIVE'
-                    """,
-                    errorMessage,
-                    exportId);
+        if (deliveryUpdated != 1) {
+            return false;
         }
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_export_wecom_states
+                SET status='FAILED', next_reminder_at=NULL, last_error=?,
+                    lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
+                WHERE export_id=? AND status IN ('PENDING','ACTIVE','UNKNOWN','FAILED')
+                """,
+                errorMessage,
+                exportId);
+        return true;
     }
 
-    /** 结局未知（发送已提交但未获 ack/证据矛盾）：delivery UNKNOWN；initial 置导出 UNKNOWN，reminder 暂停。 */
+    /**
+     * INITIAL 结局未知（发送已提交但未获 ack/证据矛盾）：delivery UNKNOWN + 导出置 UNKNOWN。
+     * delivery SENDING→UNKNOWN CAS 未命中（返回 false）时绝不触碰 state。REMINDER 的代际栅栏
+     * finalize 见 {@link #markReminderUnknown}。
+     */
     @Transactional
-    public void markUnknown(long exportId, String kind, int sequence, String errorCode, String errorMessage) {
-        jdbc.update(
+    public boolean markUnknown(long exportId, String kind, int sequence, String errorCode, String errorMessage) {
+        int deliveryUpdated = jdbc.update(
                 """
                 UPDATE app.fulfillment_export_wecom_deliveries
                 SET status='UNKNOWN', error_code=?, error_message=?, updated_at=CURRENT_TIMESTAMP
@@ -343,56 +512,66 @@ public class FulfillmentExportWecomStore {
                 exportId,
                 kind,
                 sequence);
-        if (INITIAL.equals(kind)) {
-            jdbc.update(
-                    """
-                    UPDATE app.fulfillment_export_wecom_states
-                    SET status='UNKNOWN', next_reminder_at=NULL, last_error=?,
-                        lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
-                    WHERE export_id=? AND status IN ('PENDING','ACTIVE','FAILED')
-                    """,
-                    errorMessage,
-                    exportId);
-        } else {
-            jdbc.update(
-                    """
-                    UPDATE app.fulfillment_export_wecom_states
-                    SET next_reminder_at=NULL, last_error=?,
-                        lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
-                    WHERE export_id=? AND status='ACTIVE'
-                    """,
-                    errorMessage,
-                    exportId);
+        if (deliveryUpdated != 1) {
+            return false;
         }
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_export_wecom_states
+                SET status='UNKNOWN', next_reminder_at=NULL, last_error=?,
+                    lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
+                WHERE export_id=? AND status IN ('PENDING','ACTIVE','FAILED')
+                """,
+                errorMessage,
+                exportId);
+        return true;
     }
 
     // ------------------------------------------------------------------
     // delivery 行
     // ------------------------------------------------------------------
 
-    /** 原子创建 delivery（UNIQUE 冲突 = 已存在，返回 null）：同一 sequence 不可能重复入队。 */
+    /**
+     * 原子创建 delivery（UNIQUE 冲突 = 已存在，返回 null）：同一 sequence 不可能重复入队。
+     * {@code initialGeneration} = 该 delivery 绑定到的 INITIAL 代际（INITIAL 行为自身 sequence；
+     * REMINDER 行为创建时最新的 INITIAL sequence，见 {@link #latestInitialGeneration}）。
+     */
     @Transactional
-    public Optional<Long> createDelivery(long exportId, String kind, int sequence) {
+    public Optional<Long> createDelivery(long exportId, String kind, int sequence, int initialGeneration) {
         List<Long> ids = jdbc.query(
                 """
-                INSERT INTO app.fulfillment_export_wecom_deliveries (export_id, kind, sequence)
-                VALUES (?, ?, ?)
+                INSERT INTO app.fulfillment_export_wecom_deliveries
+                    (export_id, kind, sequence, initial_generation)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT (export_id, kind, sequence) DO NOTHING
                 RETURNING id
                 """,
                 (rs, row) -> rs.getLong(1),
                 exportId,
                 kind,
-                sequence);
+                sequence,
+                initialGeneration);
         return ids.stream().findFirst();
+    }
+
+    /** 该导出当前最新的 INITIAL 代际（= MAX(INITIAL.sequence)，无 INITIAL 时 0）。 */
+    @Transactional(readOnly = true)
+    public int latestInitialGeneration(long exportId) {
+        Integer latest = jdbc.queryForObject(
+                "SELECT COALESCE(MAX(sequence), 0) FROM app.fulfillment_export_wecom_deliveries "
+                        + "WHERE export_id=? AND kind='INITIAL'",
+                Integer.class,
+                exportId);
+        return latest == null ? 0 : latest;
     }
 
     @Transactional(readOnly = true)
     public Optional<Delivery> delivery(long exportId, String kind, int sequence) {
         return jdbc.query(
                 """
-                SELECT id, export_id, kind, sequence, status, attempts, max_attempts, stage,
-                       chat_id, request_id, ack_sent_at, media_id_sha256, error_code, error_message
+                SELECT id, export_id, kind, sequence, initial_generation, status, attempts,
+                       max_attempts, stage, chat_id, request_id, ack_sent_at, media_id_sha256,
+                       error_code, error_message
                 FROM app.fulfillment_export_wecom_deliveries
                 WHERE export_id=? AND kind=? AND sequence=?
                 """,
@@ -406,8 +585,9 @@ public class FulfillmentExportWecomStore {
     public List<Delivery> deliveries(long exportId) {
         return jdbc.query(
                 """
-                SELECT id, export_id, kind, sequence, status, attempts, max_attempts, stage,
-                       chat_id, request_id, ack_sent_at, media_id_sha256, error_code, error_message
+                SELECT id, export_id, kind, sequence, initial_generation, status, attempts,
+                       max_attempts, stage, chat_id, request_id, ack_sent_at, media_id_sha256,
+                       error_code, error_message
                 FROM app.fulfillment_export_wecom_deliveries
                 WHERE export_id=? ORDER BY kind, sequence
                 """,
@@ -427,9 +607,32 @@ public class FulfillmentExportWecomStore {
     }
 
     /**
+     * 上传前把本次实际路由群写入 delivery 证据并推进阶段到 UPLOAD（CAS：仅当 delivery 仍是
+     * SENDING）。不改 state.chat_id（快照只在 initial 成功 ack 时建立）：UNKNOWN/FAILED 的
+     * delivery 因此保留 recipient 证据，运营可据此回答「可能发到了哪个群」。返回 true 表示
+     * 恰好更新了一条当前 SENDING delivery；false 表示 CAS 未命中（delivery 已被他方转移），
+     * 调用方必须放弃后续 upload/send。
+     */
+    @Transactional
+    public boolean markChatResolved(long exportId, String kind, int sequence, String chatId) {
+        int updated = jdbc.update(
+                """
+                UPDATE app.fulfillment_export_wecom_deliveries
+                SET chat_id=?, stage='UPLOAD', updated_at=CURRENT_TIMESTAMP
+                WHERE export_id=? AND kind=? AND sequence=? AND status='SENDING'
+                """,
+                chatId,
+                exportId,
+                kind,
+                sequence);
+        return updated == 1;
+    }
+
+    /**
      * 领取尝试（INITIAL 专用）：CAS delivery PENDING→SENDING（attempts 镜像 async task 的
      * claim 计数），且导出状态仍在可发送集合内。返回 false 表示 no-op（停止/收齐后不应发送）。
-     * REMINDER 的发送前复查由 {@link #prepareReminder} 在单事务线性化完成。
+     * REMINDER 的发送前复查（含 recipient 持久化与代际栅栏）由 {@link #prepareReminder} 在单
+     * 事务线性化完成。
      */
     @Transactional
     public boolean beginAttempt(long exportId, String kind, int sequence, int attempts, String stage) {
@@ -636,6 +839,7 @@ public class FulfillmentExportWecomStore {
                 rs.getLong("export_id"),
                 rs.getString("kind"),
                 rs.getInt("sequence"),
+                rs.getInt("initial_generation"),
                 rs.getString("status"),
                 rs.getInt("attempts"),
                 rs.getInt("max_attempts"),
@@ -682,6 +886,7 @@ public class FulfillmentExportWecomStore {
             long exportId,
             String kind,
             int sequence,
+            int initialGeneration,
             String status,
             int attempts,
             int maxAttempts,
@@ -699,11 +904,16 @@ public class FulfillmentExportWecomStore {
 
     /** {@link #prepareReminder} 的线性化结果。 */
     public enum ReminderPrepare {
-        /** 已 CAS 到 SENDING：调用方可以外部发送。 */
+        /** 已 CAS 到 SENDING（含 recipient 证据）：调用方可以外部发送。 */
         CLAIMED,
         /** 同事务复查已收齐并标 COMPLETED：调用方 no-op。 */
         COMPLETED,
+        /** 代际已变：delivery 已同事务标 SUPERSEDED，调用方 no-op。 */
+        SUPERSEDED,
         /** 已停止/暂停/时间线已变/未领取到：调用方 no-op。 */
         NOOP
     }
+
+    /** {@link #prepareReminder} 锁 state 行时读取的投影。 */
+    private record StateLockRow(String status, String chatId) {}
 }

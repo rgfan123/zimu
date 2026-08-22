@@ -108,11 +108,13 @@ class FulfillmentExportWecomAlertScopingTest {
 
     /**
      * 可注入失败的告警服务（不用 Mockito spy：事务 CGLIB 代理会包裹 mock，reset/stub 落在
-     * 代理上不可靠）。createSystem 可被注入失败；其余方法委托真实实现。
+     * 代理上不可靠）。createSystem / resolveWecomExportAlerts 可被注入失败；其余方法委托
+     * 真实实现（真实代理的 @Transactional 会加入调用方事务）。
      */
     static class FailingAlertService extends OperationalAlertService {
         private final OperationalAlertService delegate;
         private volatile RuntimeException failure;
+        private volatile RuntimeException resolveFailure;
 
         FailingAlertService(
                 OperationalAlertService delegate,
@@ -133,17 +135,32 @@ class FulfillmentExportWecomAlertScopingTest {
             return delegate.createSystem(command);
         }
 
+        @Override
+        public void resolveWecomExportAlerts(Long shipmentId, long exportId, int maxGeneration, String reason) {
+            RuntimeException current = resolveFailure;
+            if (current != null) {
+                throw current;
+            }
+            delegate.resolveWecomExportAlerts(shipmentId, exportId, maxGeneration, reason);
+        }
+
         void failWith(RuntimeException ex) {
             this.failure = ex;
         }
 
+        void failResolveWith(RuntimeException ex) {
+            this.resolveFailure = ex;
+        }
+
         void restore() {
             this.failure = null;
+            this.resolveFailure = null;
         }
     }
 
     static class ControlledWecomTransport implements WecomOutboundTransport {
         final List<WecomOutboundMessage> sentMessages = new CopyOnWriteArrayList<>();
+        final List<String> uploadedFilenames = new CopyOnWriteArrayList<>();
         volatile WecomSendResult sendResult =
                 new WecomSendResult(WecomSendStatus.SUCCESS, "alert-req-1", Instant.now(), null, null, false);
 
@@ -155,6 +172,7 @@ class FulfillmentExportWecomAlertScopingTest {
 
         @Override
         public WecomUploadResult upload(Path file, String filename, WecomMediaType type) {
+            uploadedFilenames.add(filename);
             return new WecomUploadResult(
                     WecomUploadStatus.SUCCESS, "MEDIA-ALERT-1", "file",
                     Instant.now().minusSeconds(10), Instant.now().minusSeconds(5),
@@ -165,6 +183,7 @@ class FulfillmentExportWecomAlertScopingTest {
     @BeforeEach
     void reset() {
         wecom.sentMessages.clear();
+        wecom.uploadedFilenames.clear();
         wecom.sendResult = new WecomSendResult(
                 WecomSendStatus.SUCCESS, "alert-req-1", Instant.now(), null, null, false);
         AlertServiceSpyConfig.failing.restore();
@@ -254,6 +273,55 @@ class FulfillmentExportWecomAlertScopingTest {
     }
 
     @Test
+    void alertResolutionFailureAfterSentKeepsTaskRecoverableAndDoesNotResendOrCrossClose() throws Exception {
+        // A 失败出告警；续发 B（共享 fulfillment、独立 shipment）也失败出告警
+        String exportA = failExport("FX-ALERT-RECOVER-A-001");
+        String exportB = continuationExportOf(exportA, "FX-ALERT-RECOVER-B-001", "alert-recover-cont-001");
+        failExport("FX-ALERT-RECOVER-B-001", exportB);
+        assertThat(openAlertCount(exportA)).isEqualTo(1);
+        assertThat(openAlertCount(exportB)).isEqualTo(1);
+
+        // 成功人工重发 B，但「关闭该导出告警」失败（两阶段之间 crash/异常）：
+        // B delivery 已 SENT、B 任务未 SUCCEEDED、B 告警保持 OPEN、A 告警不受影响
+        ResponseEntity<Map> resend = http.exchange(
+                "/api/v1/fulfillment-exports/" + exportB + "/wecom-resend",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "expected_version", versionOf(exportB),
+                        "reason", "群内未收到文件"),
+                        writeHeaders("alert-recover-resend-001")),
+                Map.class);
+        assertThat(resend.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.SUCCESS, "alert-ack-recover-b-2", Instant.now().plusSeconds(60), null, null, false);
+        AlertServiceSpyConfig.failing.failResolveWith(new IllegalStateException("alert resolve db down"));
+        claimAndRun(exportB, "INITIAL", 2);
+
+        assertThat(deliveryRow(exportB, "INITIAL", 2).get("status")).isEqualTo("SENT");
+        assertThat(taskForPayload(exportB, "INITIAL", 2))
+                .containsEntry("status", "PENDING")
+                .containsEntry("attempts", 1);
+        assertThat(openAlertCount(exportB)).isEqualTo(1); // 告警保持 OPEN（任务可重试，未吞掉）
+        assertThat(openAlertCount(exportA)).isEqualTo(1);
+
+        // 恢复后下一次 worker 领取：见 SENT → 零 upload/send，只关 B 告警 + B 任务 SUCCEEDED；
+        // A 告警保持 OPEN（正确隔离：绝不跨导出误关）
+        AlertServiceSpyConfig.failing.restore();
+        wecom.sentMessages.clear();
+        wecom.uploadedFilenames.clear();
+        runDueResendTask(exportB, "INITIAL", 2);
+        assertThat(wecom.sentMessages).isEmpty(); // 绝不重新 send
+        assertThat(wecom.uploadedFilenames).isEmpty(); // 绝不重新 upload
+        assertThat(openAlertCount(exportB)).isZero();
+        assertThat(resolvedAlertCount(exportB)).isEqualTo(1);
+        assertThat(openAlertCount(exportA)).isEqualTo(1);
+        assertThat(resolvedAlertCount(exportA)).isZero();
+        assertThat(taskForPayload(exportB, "INITIAL", 2))
+                .containsEntry("status", "SUCCEEDED")
+                .containsEntry("attempts", 2);
+    }
+
+    @Test
     void alertCreationFailureBacksOffAndFinalizesOnTheThirdClaimThenSucceeds() throws Exception {
         String exportId = generateThirdPartyExport("FX-ALERT-FINALIZE-001");
         wecom.sendResult = new WecomSendResult(
@@ -296,6 +364,70 @@ class FulfillmentExportWecomAlertScopingTest {
                 .containsEntry("last_error", FulfillmentExportWecomDeliveryRunner.ALERT_FINALIZE_ERROR);
         assertThat(deliveryRow(exportId, "INITIAL", 1).get("status")).isEqualTo("FAILED");
         assertThat(openAlertCount(exportId)).isZero(); // 告警确实未能创建（事实可见，可人工补建）
+    }
+
+    @Test
+    void oldPhase2ResumeAfterNewerResendFailureKeepsNewerRedAlertOpen() throws Exception {
+        // 1) 初次发送成功（phase1 已落 SENT），但 phase2（关告警）崩溃：delivery SENT、state ACTIVE、
+        //    任务未收口（退避 PENDING）。旧代际（seq1）成功绝不能关闭新代际（seq2）失败的红告警。
+        String exportId = generateThirdPartyExport("FX-ALERT-PHASE2-CRASH-001");
+        AlertServiceSpyConfig.failing.failResolveWith(new IllegalStateException("alert resolve db down"));
+        claimAndRun(exportId, "INITIAL", 1);
+        assertThat(deliveryRow(exportId, "INITIAL", 1).get("status")).isEqualTo("SENT");
+        assertThat(stateRow(exportId).get("status")).isEqualTo("ACTIVE");
+        assertThat(taskFor(exportId)).containsEntry("status", "PENDING").containsEntry("attempts", 1);
+        AlertServiceSpyConfig.failing.restore();
+
+        // 2) 人工重发（新代际 seq2）失败 → 新代际 RED 告警
+        ResponseEntity<Map> resend = resend(exportId, versionOf(exportId), "群内未收到文件", "alert-phase2-resend-001");
+        assertThat(resend.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.FAILED, null, null, 60020, "invalid chatid", false);
+        claimAndRun(exportId, "INITIAL", 2);
+        assertThat(deliveryRow(exportId, "INITIAL", 2).get("status")).isEqualTo("UNKNOWN");
+        assertThat(openAlertCount(exportId)).isEqualTo(1); // 新代际 RED
+
+        // 3) 旧任务（seq1）重新领取走 phase2 收口：只关 <= 代际 1 的告警，新代际 RED 保持 OPEN
+        runDueResendTask(exportId, "INITIAL", 1);
+        assertThat(deliveryRow(exportId, "INITIAL", 1).get("status")).isEqualTo("SENT");
+        assertThat(openAlertCount(exportId)).isEqualTo(1); // 新代际 RED 未被旧代际成功误关
+        assertThat(resolvedAlertCount(exportId)).isZero();
+        assertThat(openAlertFor(exportId)).containsEntry("shipment_id", firstShipmentId(exportId));
+    }
+
+    @Test
+    void oldGenerationAlertRetryKeepsNewerGenerationRedAlertOpen() throws Exception {
+        String exportId = generateThirdPartyExport("FX-ALERT-OLD-RETRY-001");
+
+        // gen1 已终态 UNKNOWN，但告警落库失败，任务退避等待幂等补建。
+        wecom.sendResult = new WecomSendResult(
+                WecomSendStatus.FAILED, null, null, 60020, "invalid chatid", false);
+        AlertServiceSpyConfig.failing.failWith(new IllegalStateException("alert db down"));
+        claimAndRun(exportId, "INITIAL", 1);
+        assertThat(deliveryRow(exportId, "INITIAL", 1).get("status")).isEqualTo("UNKNOWN");
+        assertThat(taskForPayload(exportId, "INITIAL", 1))
+                .containsEntry("status", "PENDING")
+                .containsEntry("attempts", 1);
+        assertThat(openAlertCount(exportId)).isZero();
+
+        // gen2 人工重发也失败，但告警服务已恢复，因此新代际 RED 告警成功落库。
+        AlertServiceSpyConfig.failing.restore();
+        ResponseEntity<Map> resend = resend(
+                exportId, versionOf(exportId), "群内未收到文件", "alert-old-generation-resend-001");
+        assertThat(resend.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        claimAndRun(exportId, "INITIAL", 2);
+        Map<String, Object> newerDelivery = deliveryRow(exportId, "INITIAL", 2);
+        assertThat(newerDelivery.get("status")).isEqualTo("UNKNOWN");
+        assertThat(openAlertCount(exportId)).isEqualTo(1);
+
+        // gen1 终态任务重入只能把自身任务收口；不得关闭或替换 gen2 的活动告警。
+        runDueResendTask(exportId, "INITIAL", 1);
+        assertThat(taskForPayload(exportId, "INITIAL", 1)).containsEntry("status", "SUCCEEDED");
+        assertThat(openAlertCount(exportId)).isEqualTo(1);
+        assertThat(resolvedAlertCount(exportId)).isZero();
+        assertThat(openAlertFor(exportId).get("detail").toString())
+                .contains("\"delivery_id\": \"" + newerDelivery.get("id") + "\"")
+                .contains("\"initial_generation\": 2");
     }
 
     // ------------------------------------------------------------------
@@ -395,10 +527,44 @@ class FulfillmentExportWecomAlertScopingTest {
                 "wecom-export-initial:" + exportId);
     }
 
+    /** 按 payload_ref 读取指定 delivery（含人工重发）的 async task 状态。 */
+    private Map<String, Object> taskForPayload(String exportId, String kind, int sequence) {
+        return jdbc.queryForMap(
+                "SELECT status, attempts, max_attempts, last_error FROM app.async_tasks "
+                        + "WHERE task_type=? AND payload_ref=?",
+                FulfillmentExportWecomService.TASK_TYPE,
+                FulfillmentExportWecomService.payloadRef(Long.parseLong(exportId), kind, sequence));
+    }
+
+    /** 把已退避的重发任务置为到期并重新领取执行（重发 idempotency_key 含 deliveryId，按 payload_ref 定位）。 */
+    private void runDueResendTask(String exportId, String kind, int sequence) {
+        jdbc.update(
+                "UPDATE app.async_tasks SET next_run_at=CURRENT_TIMESTAMP WHERE task_type=? AND payload_ref=?",
+                FulfillmentExportWecomService.TASK_TYPE,
+                FulfillmentExportWecomService.payloadRef(Long.parseLong(exportId), kind, sequence));
+        claimAndRun(exportId, kind, sequence);
+    }
+
     private long versionOf(String exportId) {
         return jdbc.queryForObject(
                 "SELECT lock_version FROM app.fulfillment_export_wecom_states WHERE export_id=?",
                 Long.class, Long.parseLong(exportId));
+    }
+
+    /** 人工重发 REST 写端点（代际栅栏测试需要真实重发创建新 INITIAL delivery + task）。 */
+    private ResponseEntity<Map> resend(String exportId, long version, String reason, String idempotencyKey) {
+        HttpHeaders headers = writeHeaders(idempotencyKey);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("expected_version", version);
+        if (reason != null) {
+            body.put("reason", reason);
+        }
+        return http.exchange(
+                "/api/v1/fulfillment-exports/" + exportId + "/wecom-resend",
+                HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                Map.class);
     }
 
     private int openAlertCount(String exportId) {
@@ -417,7 +583,7 @@ class FulfillmentExportWecomAlertScopingTest {
 
     private Map<String, Object> openAlertFor(String exportId) {
         return jdbc.queryForMap(
-                "SELECT fulfillment_id, shipment_id FROM app.operational_alerts "
+                "SELECT fulfillment_id, shipment_id, detail::text AS detail FROM app.operational_alerts "
                         + "WHERE alert_type='FULFILLMENT_EXPORT_WECOM' AND status='OPEN' "
                         + "AND detail->>'export_id'=?",
                 exportId);

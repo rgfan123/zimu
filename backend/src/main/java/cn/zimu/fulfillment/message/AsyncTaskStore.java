@@ -107,6 +107,27 @@ public class AsyncTaskStore {
     }
 
     /**
+     * 续租/所有权复查（外部调用前 fence seam）：仅当该任务仍是当前 {@code owner} 持有的
+     * RUNNING 且租约未过期时，原子延长租约。返回 false 表示租约/所有权已丢失（被第二实例
+     * 重新领取），调用方必须放弃后续外部提交与业务状态变更，让新 owner 走 SENDING 恢复。
+     */
+    @Transactional
+    public boolean renewLease(long taskId, String owner, Duration lease) {
+        int updated = jdbc.update(
+                """
+                UPDATE app.async_tasks
+                SET lease_until = statement_timestamp() + (? || ' seconds')::interval,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'RUNNING' AND lease_owner = ?
+                  AND lease_until > statement_timestamp()
+                """,
+                lease.toSeconds(),
+                taskId,
+                owner);
+        return updated == 1;
+    }
+
+    /**
      * 在已有业务事务中锁定任务租约，并判断它是否仍是该载荷的最新一代。
      *
      * <p>必须先锁 {@code MessageSubmission}，再调用本方法；这与重新解释的

@@ -58,10 +58,12 @@ app:
     # Issue #84：履约导出企微发送 Worker（INITIAL/REMINDER 共用 WECOM_EXPORT_DELIVERY 任务）。
     enabled: ${WECOM_EXPORT_WORKER_ENABLED:true}
     poll-ms: ${WECOM_EXPORT_WORKER_POLL_MS:1000}
-    # 租约 30 分钟（代码下限，不可调小）：#82 同步分片上传最坏时长有界可达十余分钟，租约必须
-    # 覆盖该上界——真实执行仍活跃时任务绝不被第二实例重新领取误判为 crash（SENDING 只在
+    # 租约 40 分钟（代码下限，不可调小）：必须覆盖 #82 上传器完整最坏恢复预算 =
+    # pre-init 5 次 resume (每次最多 15s 等 ACK + 60s 退避) + 15s init ACK = 5×(15+60)+15 = 390s
+    # + 30 分钟会话 + 15s = 1815s + 最终 send ACK 5s = 2210s (36m50s)，2400s 留约 190s 余量
+    # 作为保守下限——真实执行仍活跃时任务绝不被第二实例重新领取误判为 crash（SENDING 只在
     # 租约过期后的重新领取时转 UNKNOWN 人工对账）。
-    lease-seconds: ${WECOM_EXPORT_WORKER_LEASE_SECONDS:1800}
+    lease-seconds: ${WECOM_EXPORT_WORKER_LEASE_SECONDS:2400}
     backoff-seconds: ${WECOM_EXPORT_WORKER_BACKOFF_SECONDS:30}
     claim-error-suppress-seconds: ${WECOM_EXPORT_WORKER_CLAIM_ERROR_SUPPRESS_SECONDS:60}
   wecom-reminder:

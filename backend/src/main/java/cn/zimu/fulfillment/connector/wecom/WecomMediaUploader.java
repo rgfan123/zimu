@@ -61,8 +61,13 @@ final class WecomMediaUploader {
     static final long MAX_FILENAME_BYTES = 256;
     /** 上传会话有效期（官方 30 分钟）。 */
     static final long DEFAULT_SESSION_TTL_MILLIS = 30 * 60 * 1000L;
-    /** 单步 ack 等待上限。 */
-    static final long DEFAULT_STEP_ACK_TIMEOUT_MILLIS = 10_000;
+    /**
+     * 单步 ack 等待上限（默认 15s）。官方 SDK 的 5s 超时在真实多片上传负载下会把 6–8s 才
+     * 到达的分片 ACK 误判超时，导致已受理分片被重试/拒绝（WeComTeam/aibot-node-sdk#27，
+     * 官方验证的安全默认 15s）。仅影响上传 init/chunk/finish 的 ack 等待；普通出站消息
+     * 发送 ACK 仍由 {@link WecomLongConnectionClient} 使用 5s 语义，二者互不影响。
+     */
+    static final long DEFAULT_STEP_ACK_TIMEOUT_MILLIS = 15_000;
     /** 断线恢复/未获 ack 重发的有界预算（次）。 */
     static final int DEFAULT_MAX_RESUME_ATTEMPTS = 5;
     /** 每次等待重连 SUBSCRIBED 的有界等待上限。 */
@@ -124,6 +129,11 @@ final class WecomMediaUploader {
         this.stepAckTimeoutMillis = Math.max(1, stepAckTimeoutMillis);
         this.maxResumeAttempts = Math.max(0, maxResumeAttempts);
         this.waitForSubscribedMillis = Math.max(1, waitForSubscribedMillis);
+    }
+
+    /** 测试观察 seam：默认构造实际安装的单步 ACK 等待上限（毫秒）。 */
+    long stepAckTimeoutMillis() {
+        return stepAckTimeoutMillis;
     }
 
     /**
@@ -506,19 +516,20 @@ final class WecomMediaUploader {
             throw new WecomUploadValidationException("UPLOAD_FILE_REQUIRED", "上传文件不能为空");
         }
         if (!Files.exists(file)) {
-            throw new WecomUploadValidationException("UPLOAD_FILE_NOT_FOUND", "上传文件不存在: " + file);
+            // 绝对 Path 绝不出现在异常消息里（防御 path 泄露：消息可能被上层落库/告警）
+            throw new WecomUploadValidationException("UPLOAD_FILE_NOT_FOUND", "上传文件不存在");
         }
         if (!Files.isRegularFile(file)) {
-            throw new WecomUploadValidationException("UPLOAD_FILE_NOT_REGULAR", "上传路径不是普通文件: " + file);
+            throw new WecomUploadValidationException("UPLOAD_FILE_NOT_REGULAR", "上传路径不是普通文件");
         }
         if (!Files.isReadable(file)) {
-            throw new WecomUploadValidationException("UPLOAD_FILE_NOT_READABLE", "上传文件不可读: " + file);
+            throw new WecomUploadValidationException("UPLOAD_FILE_NOT_READABLE", "上传文件不可读");
         }
         long size;
         try {
             size = Files.size(file);
         } catch (IOException ex) {
-            throw new WecomUploadValidationException("UPLOAD_FILE_SIZE_UNREADABLE", "无法读取文件大小: " + file);
+            throw new WecomUploadValidationException("UPLOAD_FILE_SIZE_UNREADABLE", "无法读取文件大小");
         }
         if (size < MIN_TOTAL_SIZE) {
             throw new WecomUploadValidationException(

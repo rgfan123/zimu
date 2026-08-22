@@ -51,6 +51,10 @@ WecomUploadResult result = wecom.upload(path, filename, WecomMediaType.FILE);
 - **不要**在 #84 拼协议 JSON、不直接触碰 `aibot_upload_media_*` 帧；
 - 前置校验失败抛 `WecomUploadValidationException`（`code()` 稳定码 + 中文可读消息），
   该异常**不创建 upload_id、不写审计**，无需重试语义；
+- 文件/路径类校验码（`UPLOAD_FILE_NOT_FOUND`/`UPLOAD_FILE_NOT_REGULAR`/
+  `UPLOAD_FILE_NOT_READABLE`/`UPLOAD_FILE_SIZE_UNREADABLE`）的异常消息**绝不嵌入绝对
+  Path**（防御 path 泄露——消息可能被上层落库/告警）；#84 Runner 侧对这些码再映射固定安全
+  文案（defense in depth），公开投影与告警永不含 path/file_ref；
 - 其余结局统一返回 `WecomUploadResult`（见 §4），业务侧按 `status()` 分支。
 
 `WecomUploadResult` 字段：
@@ -69,6 +73,12 @@ WecomUploadResult result = wecom.upload(path, filename, WecomMediaType.FILE);
 上传器（`WecomMediaUploader`）内维护：`upload_id`、下一个待确认 `chunk_index`、
 30 分钟会话期限。全部等待/重试都有界：
 
+- **单步 ACK 超时默认 15s**（`DEFAULT_STEP_ACK_TIMEOUT_MILLIS`）：上传 init/chunk/finish
+  每一步的 ACK 等待默认 **15 秒**，这是**区别于普通出站消息发送 ACK 的 5 秒**——多片上传
+  真实负载下分片 ACK 常 6–8 秒才到达，官方 SDK 的 5 秒超时会把已受理分片误判超时而重试/拒绝
+  （[WeComTeam/aibot-node-sdk#27](https://github.com/WeComTeam/aibot-node-sdk/issues/27)，
+  官方验证的安全默认 15 秒）。注意：这只是客户端等待参数，**不替代真实企微上传验收**——
+  即便 15 秒内收到 `errcode=0` 的 ACK，最终仍以 finish 应答的 media_id 证据为准（§7）；
 - **断线（LOST）**：分片已提交但未获 ack → 等待重连 `SUBSCRIBED`（每次有界等待
   60s）→ 以**相同 chunk_index** 重发（服务端幂等）→ 继续；
 - **ack 超时（TIMEOUT，连接存活）**：以相同 chunk_index 重发，同样消耗预算；

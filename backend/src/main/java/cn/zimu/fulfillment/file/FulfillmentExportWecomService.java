@@ -73,7 +73,7 @@ public class FulfillmentExportWecomService {
     public void scheduleInitial(long exportId, long providerId, int slaMinutes) {
         int intervalMinutes = reminderIntervalSnapshot(providerId, slaMinutes);
         store.createState(exportId, providerId, slaMinutes, intervalMinutes);
-        store.createDelivery(exportId, FulfillmentExportWecomStore.INITIAL, 1);
+        store.createDelivery(exportId, FulfillmentExportWecomStore.INITIAL, 1, 1);
         taskStore.enqueue(
                 TASK_TYPE,
                 payloadRef(exportId, FulfillmentExportWecomStore.INITIAL, 1),
@@ -155,7 +155,7 @@ public class FulfillmentExportWecomService {
             }
             int sequence = store.nextSequence(exportId, FulfillmentExportWecomStore.INITIAL);
             Optional<Long> deliveryId = store.createDelivery(
-                    exportId, FulfillmentExportWecomStore.INITIAL, sequence);
+                    exportId, FulfillmentExportWecomStore.INITIAL, sequence, sequence);
             if (deliveryId.isEmpty()) {
                 throw BusinessException.conflict(
                         "WECOM_RESEND_IN_FLIGHT", "该导出已有进行中的重发任务，请勿重复提交");
@@ -205,7 +205,8 @@ public class FulfillmentExportWecomService {
         int created = 0;
         for (long exportId : store.dueReminderCandidates(limit)) {
             int sequence = store.nextSequence(exportId, FulfillmentExportWecomStore.REMINDER);
-            if (store.createDelivery(exportId, FulfillmentExportWecomStore.REMINDER, sequence).isPresent()) {
+            int generation = store.latestInitialGeneration(exportId);
+            if (store.createDelivery(exportId, FulfillmentExportWecomStore.REMINDER, sequence, generation).isPresent()) {
                 taskStore.enqueue(
                         TASK_TYPE,
                         payloadRef(exportId, FulfillmentExportWecomStore.REMINDER, sequence),

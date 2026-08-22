@@ -17,17 +17,20 @@ import org.springframework.stereotype.Component;
  * REMINDER 共用），重启后从持久化 delivery 证据恢复；领取失败（数据库不可达）时退避抑制，
  * 不空转刷屏。
  *
- * <p>租约时长：默认 30 分钟（{@code app.wecom-export-worker.lease-seconds}）——#82 同步
- * 分片上传的最坏时长有界可达十余分钟，租约必须覆盖该上界，保证真实执行仍活跃时任务绝不被
- * 第二实例重新领取误判为 crash（SENDING 只在租约过期后的重新领取时转 UNKNOWN 人工对账）。
+ * <p>租约时长：默认 40 分钟（{@code app.wecom-export-worker.lease-seconds}）——必须覆盖
+ * #82 上传器的完整最坏恢复预算 = pre-init 5 次 resume（每次最多 15s 等 ACK + 60s 退避）+
+ * 15s init ACK = 5×(15+60)+15 = 390s + 30 分钟会话 + 15s = 1815s + 最终 send ACK 5s =
+ * 2210s（36m50s），2400s 留约 190s 余量作为保守下限。租约必须严格高于该上界，保证真实执行
+ * 仍活跃时任务绝不被第二实例重新领取误判为 crash（SENDING 只在租约过期后的重新领取时转
+ * UNKNOWN 人工对账）。
  */
 @Component
 public class FulfillmentExportWecomWorker {
 
     private static final Logger log = LoggerFactory.getLogger(FulfillmentExportWecomWorker.class);
 
-    /** 默认租约（秒）：覆盖 #82 同步上传的有界最坏时长（十余分钟），见类注释。 */
-    static final long DEFAULT_LEASE_SECONDS = 1800;
+    /** 默认/下限租约（秒）= 40 分钟：5×(15+60)+15 + 1800+15 + 5 = 2210s，2400s 留约 190s，见类注释。 */
+    static final long DEFAULT_LEASE_SECONDS = 2400;
 
     private final AsyncTaskStore taskStore;
     private final FulfillmentExportWecomDeliveryRunner runner;
@@ -43,20 +46,20 @@ public class FulfillmentExportWecomWorker {
             AsyncTaskStore taskStore,
             FulfillmentExportWecomDeliveryRunner runner,
             @Value("${app.wecom-export-worker.enabled:true}") boolean enabled,
-            @Value("${app.wecom-export-worker.lease-seconds:1800}") long leaseSeconds,
+            @Value("${app.wecom-export-worker.lease-seconds:2400}") long leaseSeconds,
             @Value("${app.wecom-export-worker.backoff-seconds:30}") long backoffSeconds,
             @Value("${app.wecom-export-worker.claim-error-suppress-seconds:60}") long claimErrorSuppressSeconds) {
         this.taskStore = taskStore;
         this.runner = runner;
         this.enabled = enabled;
-        // 租约下限 = 默认值：上传有界最坏时长（十余分钟）内真实执行必须绝不被重新领取，
-        // 显式配置更小值也不得突破该安全下限（仅可调大）。
+        // 租约下限 = 默认值（40 分钟）：pre-init 390s + session 1815s + send ACK 5s = 2210s，
+        // 真实执行必须绝不被重新领取，显式配置更小值也不得突破该安全下限（仅可调大）。
         this.lease = Duration.ofSeconds(Math.max(DEFAULT_LEASE_SECONDS, leaseSeconds));
         this.backoff = Duration.ofSeconds(Math.max(1, backoffSeconds));
         this.claimErrorSuppressWindow = Duration.ofSeconds(claimErrorSuppressSeconds);
     }
 
-    /** 租约时长（测试观察 seam：断言默认配置覆盖上传有界上界）。 */
+    /** 租约时长（测试观察 seam：断言配置低于下限时被钳制到 40 分钟）。 */
     Duration lease() {
         return lease;
     }
