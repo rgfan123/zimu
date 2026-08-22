@@ -25,6 +25,8 @@ export const appNavigation = [
       // 保留路由与上下文归属，不占作业中心可见菜单位。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       { path: '/workbench/channel-messages', label: '渠道消息' },
+      // Issue #107 今日发货工作台：先 hideInMenu 注册并诚实呈现渠道结果，01 再露出为可见入口。
+      { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: true },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },
       // 低频专用查询（Issue #98 准入规则）：隐藏菜单、保留路由与上下文入口，见 docs/agents/navigation-admission.md。
