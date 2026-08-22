@@ -20,7 +20,7 @@ function findNavigationNode(routes: readonly NavigationNode[], path: string): Na
   return undefined;
 }
 
-test('production navigation keeps the two demoted query tools registered under the workbench', () => {
+test('production navigation keeps the demoted workbench query tools registered under the workbench', () => {
   const workbench = findNavigationNode(appNavigation, '/workbench');
 
   assert.deepEqual(
@@ -30,6 +30,8 @@ test('production navigation keeps the two demoted query tools registered under t
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       { path: '/workbench/channel-messages', label: '渠道消息', hideInMenu: false },
       { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: true },
+      // Issue #111：出库信息对账的工作台入口，隐藏但可路由；旧 /fulfillment/outbound-recon 保留。
+      { path: '/workbench/recon', label: '出库信息对账', hideInMenu: true },
       { path: '/fulfillment/tasks', label: '履约任务', hideInMenu: false },
       { path: '/procurement/tickets', label: '采购协同', hideInMenu: false },
       { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
@@ -63,7 +65,7 @@ test('demoted workbench tools stay routable and keep their workbench context', (
   const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
   const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
 
-  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts', '/workbench/shipping']) {
+  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts', '/workbench/shipping', '/workbench/recon']) {
     const node = findNavigationNode(appNavigation, path);
     assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
     assert.equal(visiblePaths.includes(path), false, `${path} 不得出现在可见菜单`);
@@ -74,6 +76,11 @@ test('demoted workbench tools stay routable and keep their workbench context', (
     page: '采购比价',
   });
   assert.deepEqual(navigationContext('/fulfillment/outbound-recon', ''), {
+    section: '作业中心',
+    page: '出库信息对账',
+  });
+  // Issue #111：工作台对账入口是隐藏但可路由的上下文工具，与旧路径同属作业中心归属。
+  assert.deepEqual(navigationContext('/workbench/recon', ''), {
     section: '作业中心',
     page: '出库信息对账',
   });

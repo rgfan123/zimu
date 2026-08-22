@@ -56,7 +56,7 @@
 |---|---|---|---|
 | 运营提醒 | `/workbench/alerts` | 降级为上下文二级入口（`hideInMenu: true`，路由与 routeElements 保留） | Issue #64 把运营提醒拆成独立路由页：提醒只记录知晓、不推进业务状态，属低频待办视图而非每日动线；复核页 / 提醒页互为上下文切换入口（PageShell actions Link，href 指向原路径），不占作业中心可见菜单位。 |
 | 采购比价 | `/procurement/price-compare` | 降级为上下文二级入口（`hideInMenu: true`，路由与 routeElements 保留） | 低频专用查询：仅缺货补货时按采购工单或 SKU 发起比价的 Agent 工具（POST `/api/v1/procurement-price-agent/compare`），不是每日动线；其查询输入来自采购协同工单上下文 → 上下文入口放在采购协同页（FilterBar actions，href 指向原路径）。 |
-| 出库信息对账 | `/fulfillment/outbound-recon` | 同上 | 低频专用查询：按出库单号/京东单号/订单号核对单笔出库的系统内部事实与京东侧事实，属专项核对工具，不是每日动线；查询主键（系统出库单号）由发货记录的行/抽屉承载 → 上下文入口放在发货记录页（页头 actions，与既有刷新按钮同排，href 指向原路径）。文件作业（销售出库）页的导出明细虽含出库单号，但属履约指令文件侧，不重复放置，避免同一入口散落多处。 |
+| 出库信息对账 | `/workbench/recon`（旧 `/fulfillment/outbound-recon` 保留直达） | 同上 | 低频专用查询：按出库单号/京东单号/订单号核对单笔出库的系统内部事实与京东侧事实，属专项核对工具，不是每日动线；查询主键（系统出库单号）由发货记录的行/抽屉承载 → 上下文入口放在发货记录页（页头 actions，与既有刷新按钮同排，href 指向 `/workbench/recon`）。Issue #111 新增作业中心隐藏入口 `/workbench/recon`（复用出库对账展示并注入「金额对账未纳入本期」口径横幅），旧 `/fulfillment/outbound-recon` 继续可用、不注入金额口径横幅。文件作业（销售出库）页的导出明细虽含出库单号，但属履约指令文件侧，不重复放置，避免同一入口散落多处。 |
 | 今日发货工作台 | `/workbench/shipping` | 降级为上下文二级入口（`hideInMenu: true`，路由与 routeElements 保留） | Issue #107：发货员从一次订单同步开始今天的工作，如实呈现三平台订单刷新结果（OK/FAILED/SKIPPED、聚福宝「仅报告未入库」）。属每日动线起点，但按 Issue #103 分期交付——本步先隐藏注册并诚实呈现渠道结果，后续 01 再露出为可见入口；生产入口放在文件作业（销售出库）页 PageShell actions（href 指向原路径），不占作业中心可见菜单位。 |
 
 **不动的一级入口及其符合准入的依据**：作业中心 6 个高频入口（人工复核/渠道消息/履约任务/
@@ -72,6 +72,7 @@
 business-object-navigation 01 验收口径）；`00e1e6c` 加入出库信息对账 → 7；
 `29ed999` 加入采购比价 → 8。Issue #98 现状即 8 个可见叶子，超过设计口径 6。
 Issue #64 的 `/workbench/alerts` 是隐藏叶子，不改变可见计数。
+Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作业中心仍为 6 个可见叶子）。
 
 ## 3. 前后计数（按当前代码实时重算）
 
@@ -83,7 +84,7 @@ Issue #64 的 `/workbench/alerts` 是隐藏叶子，不改变可见计数。
 |---|---|---|
 | 一级板块（顶级菜单项） | 10 | 10 |
 | 可见入口（可见叶子，含外链） | 31 | **30**（Issue #89 新增 `/system/operators` 运营人员可见叶子） |
-| 可路由叶子（不含外链，全部生产路由） | 38 | **41**（Issue #64 新增 `/workbench/alerts` 隐藏叶子；Issue #89 新增 `/system/operators`；Issue #107 新增 `/workbench/shipping` 隐藏叶子） |
+| 可路由叶子（不含外链，全部生产路由） | 38 | **42**（Issue #64 新增 `/workbench/alerts` 隐藏叶子；Issue #89 新增 `/system/operators`；Issue #107 新增 `/workbench/shipping` 隐藏叶子；Issue #111 新增 `/workbench/recon` 隐藏叶子） |
 | 作业中心可见叶子 | 8 | **6** |
 
 > Issue 记录的「9 个一级板块 / 34 可见入口」是记录时点口径，与当前代码不一致（此后新增了

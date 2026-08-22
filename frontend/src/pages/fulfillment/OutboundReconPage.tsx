@@ -6,7 +6,7 @@
  * 可复现同一视图；加载态 / 空态 / 错误态分开呈现；表格配 scroll 防止窄屏撑破容器。
  */
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -288,7 +288,12 @@ function ReconResult({ queryType, queryValue }: { queryType: OutboundReconQueryT
   );
 }
 
-export default function OutboundReconPage() {
+export interface OutboundReconPageProps {
+  /** 页面正文顶部额外横幅（如 /workbench/recon 入口注入的「金额对账未纳入本期」口径说明）。 */
+  notice?: ReactNode;
+}
+
+export default function OutboundReconPage({ notice }: OutboundReconPageProps = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlType = searchParams.get('query_type');
   const urlValue = searchParams.get('query_value') ?? '';
@@ -310,6 +315,7 @@ export default function OutboundReconPage() {
       title="出库信息对账"
       description="输入系统出库单号 / 京东单号 / 订单号，把系统内部事实与京东侧事实并排对照；不一致只标记不自动处置，由运营判断。"
     >
+      {notice}
       <FilterBar>
         <Space.Compact style={{ width: '100%', maxWidth: 760 }}>
           <Select<OutboundReconQueryType>

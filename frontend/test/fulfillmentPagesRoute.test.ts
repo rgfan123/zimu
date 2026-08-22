@@ -109,7 +109,7 @@ test('jd warehouse page keeps the outbound list empty state and export action', 
   assert.ok(control('查询'));
 });
 
-test('shipments page exposes the contextual entry to outbound recon (demoted tool stays discoverable)', async () => {
+test('shipments page exposes the contextual entry to the workbench recon tool (demoted tool stays discoverable)', async () => {
   globalThis.fetch = async (input) => {
     const url = String(input);
     if (url.startsWith('/api/v1/shipments/jd-receiver-address-candidates')) return jsonResponse([]);
@@ -124,11 +124,12 @@ test('shipments page exposes the contextual entry to outbound recon (demoted too
   const reconLink = [...document.querySelectorAll<HTMLAnchorElement>('a')]
     .find((link) => link.textContent?.includes('出库信息对账'));
   assert.ok(reconLink, '发货记录必须提供指向出库信息对账的上下文入口');
-  assert.equal(reconLink.getAttribute('href'), '/fulfillment/outbound-recon', '上下文入口 href 必须指向原路径');
+  assert.equal(reconLink.getAttribute('href'), '/workbench/recon', '上下文入口 href 必须指向工作台对账入口');
 
   await harness.dispatchEvent(reconLink, new MouseEvent('click', { bubbles: true }));
-  await harness.waitFor(() => assert.match(harness.location(), /\/fulfillment\/outbound-recon/));
+  await harness.waitFor(() => assert.match(harness.location(), /\/workbench\/recon/));
   await harness.waitFor(() => assert.match(harness.bodyText(), /输入单号开始查询/));
+  assert.match(harness.bodyText(), /金额对账未纳入本期/, '工作台入口必须注入金额口径横幅');
 });
 
 test('outbound recon page writes the query into the URL and shows a readable failure', async () => {

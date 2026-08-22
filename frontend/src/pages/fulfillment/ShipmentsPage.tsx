@@ -396,8 +396,8 @@ export default function ShipmentsPage() {
       description="一次出库/发货批次，可包含同一订单、同一履约方、同一收货地址下的多条订单行；缺货后的后续批次生成新 Shipment / 出库单号 / 运单。"
       actions={
         <Space size={12}>
-          {/* 低频专用查询的上下文入口（Issue #98）：出库信息对账已从菜单隐藏，由发货记录承载发现路径。 */}
-          <Link to="/fulfillment/outbound-recon">出库信息对账</Link>
+          {/* 低频专用查询的上下文入口（Issue #98/#111）：出库信息对账已从菜单隐藏，由发货记录承载发现路径，指向工作台对账入口；旧 /fulfillment/outbound-recon 仍可直达。 */}
+          <Link to="/workbench/recon">出库信息对账</Link>
           <Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>
         </Space>
       }

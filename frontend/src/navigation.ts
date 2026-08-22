@@ -27,6 +27,9 @@ export const appNavigation = [
       { path: '/workbench/channel-messages', label: '渠道消息' },
       // Issue #107 今日发货工作台：先 hideInMenu 注册并诚实呈现渠道结果，01 再露出为可见入口。
       { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: true },
+      // Issue #111：出库信息对账的作业中心入口，复用 /fulfillment/outbound-recon 展示，
+      // 按 #98 准入规则隐藏菜单、保留路由与上下文入口（金额口径说明由页面注入）。
+      { path: '/workbench/recon', label: '出库信息对账', hideInMenu: true },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },
       // 低频专用查询（Issue #98 准入规则）：隐藏菜单、保留路由与上下文入口，见 docs/agents/navigation-admission.md。
