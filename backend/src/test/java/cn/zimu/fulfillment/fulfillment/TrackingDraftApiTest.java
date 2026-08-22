@@ -340,6 +340,69 @@ class TrackingDraftApiTest {
     }
 
     @Test
+    void stuckTrackingDraftCanBeRejectedAndClosedWithReason() throws Exception {
+        createThirdPartyOrder("TRK-REJECT-001", "王五", "1.000");
+        Map<String, Object> missing = sendTracking(
+                "MSG-REJECT-01",
+                1,
+                lines(line("王五", "SF123456010", "FL-REJECT-NOPE", null, null)));
+        Map<String, Object> draft = singleDraft(missing);
+        assertThat((List<String>) draft.get("validation_issues")).contains("TASK_NOT_FOUND");
+
+        ResponseEntity<Map> confirmAttempt = confirm(
+                draft, "confirm-reject-draft-001", Map.of("task_no", "FL-REJECT-NOPE"));
+        assertThat(confirmAttempt.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(confirmAttempt.getBody().get("business_code")).isEqualTo("TASK_NOT_FOUND");
+
+        long rejectCaseVersion = caseVersion(draft);
+        ResponseEntity<Map> rejected = rejectDraft(
+                draft, "reject-draft-001", rejectCaseVersion, "任务号不存在，来源信息有误，退回");
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(rejected.getBody().get("status")).isEqualTo("REJECTED");
+        assertThat(rejected.getBody().get("review_case_id")).isNull();
+
+        Map<String, Object> reviewCase = caseOf(draft);
+        assertThat(reviewCase.get("status")).isEqualTo("DISMISSED");
+        assertThat(reviewCase.get("resolved_by")).isEqualTo(OPERATOR);
+        Map<?, ?> resolution = (Map<?, ?>) reviewCase.get("resolution");
+        assertThat(resolution.get("resolution_type")).isEqualTo("TRACKING_DRAFT_REJECTED");
+        assertThat(resolution.get("reason")).isEqualTo("任务号不存在，来源信息有误，退回");
+
+        ResponseEntity<Map> replayed = rejectDraft(
+                draft, "reject-draft-001", rejectCaseVersion, "任务号不存在，来源信息有误，退回");
+        assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(replayed.getBody()).isEqualTo(rejected.getBody());
+
+        ResponseEntity<Map> again = rejectDraft(
+                draft, "reject-draft-again-001", caseVersion(draft), "再次拒绝");
+        assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(again.getBody().get("business_code")).isEqualTo("DRAFT_NOT_OPEN");
+
+        createThirdPartyOrder("TRK-REJECT-002", "赵六", "1.000");
+        Map<String, Object> missingReason = sendTracking(
+                "MSG-REJECT-02",
+                2,
+                lines(line("赵六", "SF123456011", "FL-REJECT-NOPE-2", null, null)));
+        Map<String, Object> draftNoReason = singleDraft(missingReason);
+        HttpHeaders noReasonHeaders = writeHeaders("reject-no-reason-001", "req-reject-no-reason-001");
+        ResponseEntity<Map> noReason = http.exchange(
+                "/api/v1/tracking-drafts/" + draftNoReason.get("id") + "/reject",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "expected_draft_revision", ((Number) draftNoReason.get("revision")).longValue(),
+                        "expected_case_version", caseVersion(draftNoReason)),
+                        noReasonHeaders),
+                Map.class);
+        assertThat(noReason.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+
+        Map<?, ?> rejectAudit = auditDetail("reject-draft-001", "tracking_draft.reject");
+        assertThat(rejectAudit.get("business_code")).isEqualTo("TRACKING_DRAFT_REJECTED");
+        Map<?, ?> requestPayload = (Map<?, ?>) rejectAudit.get("request_payload");
+        assertThat(requestPayload.get("reason_present")).isEqualTo(true);
+        assertThat(requestPayload.containsKey("reason")).isFalse();
+    }
+
+    @Test
     void readyToExportTaskWithoutAnExistingShipmentCannotBeLinkedOrConfirmed() throws Exception {
         createUnexportedThirdPartyOrder("TRK-TASK-NOT-EXPORTED-001", "未导出客户", "2.000");
         Map<String, Object> facts = fulfillmentFacts("TRK-TASK-NOT-EXPORTED-001");
@@ -1101,7 +1164,7 @@ class TrackingDraftApiTest {
             assertThat(reviewCase.get("subject_id")).isEqualTo(draft.get("id"));
             assertThat(reviewCase.get("reason_code")).isEqualTo("WECOM_TRACKING_DRAFT");
             assertThat(((List<?>) reviewCase.get("allowed_actions")).stream().map(String::valueOf).toList())
-                    .containsExactly("CONFIRM_TRACKING_DRAFT");
+                    .containsExactlyInAnyOrder("CONFIRM_TRACKING_DRAFT", "REJECT_TRACKING_DRAFT");
             assertThat(reviewCase.get("status")).isEqualTo("OPEN");
         }
 
@@ -1897,6 +1960,19 @@ class TrackingDraftApiTest {
                 "/api/v1/tracking-drafts/" + draft.get("id") + "/confirm",
                 HttpMethod.POST,
                 new HttpEntity<>(body, headers),
+                Map.class);
+    }
+
+    private ResponseEntity<Map> rejectDraft(
+            Map<String, Object> draft, String key, long caseVersion, String reason) {
+        HttpHeaders headers = writeHeaders(key, "req-" + key);
+        return http.exchange(
+                "/api/v1/tracking-drafts/" + draft.get("id") + "/reject",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "expected_draft_revision", ((Number) draft.get("revision")).longValue(),
+                        "expected_case_version", caseVersion,
+                        "reason", reason), headers),
                 Map.class);
     }
 

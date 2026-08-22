@@ -6,4 +6,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface BundleItemRepository extends JpaRepository<BundleItem, Long> {
 
     List<BundleItem> findByBundleIdOrderBySortNo(Long bundleId);
+
+    void deleteByBundleId(Long bundleId);
 }

@@ -498,6 +498,9 @@ public class TrackingFileService {
                 case "ZHONGHUI" -> {
                     // 中汇回填模板：原表最后新增一列「物流单号」，回填京东物流单号；
                     // 平台模板未提供承运商列，不新增「物流公司」列。
+                    if (cells.containsKey("发货状态")) {
+                        cells.put("发货状态", "已发货");
+                    }
                     cells.put("物流单号", fill.trackingNo());
                 }
                 case "WANGQI", "DAZHE" -> {

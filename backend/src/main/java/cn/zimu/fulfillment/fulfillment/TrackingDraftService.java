@@ -12,6 +12,7 @@ import cn.zimu.fulfillment.common.web.WriteCommands;
 import cn.zimu.fulfillment.fulfillment.dto.ProviderTrackingDraftDetailDto;
 import cn.zimu.fulfillment.fulfillment.dto.TrackingDraftBatchConfirmCommand;
 import cn.zimu.fulfillment.fulfillment.dto.TrackingDraftConfirmCommand;
+import cn.zimu.fulfillment.fulfillment.dto.TrackingDraftRejectCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionCompletionService;
 import cn.zimu.fulfillment.message.WecomTrackingDraftFactory;
 import cn.zimu.fulfillment.order.ReviewCaseRepository;
@@ -52,6 +53,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class TrackingDraftService {
 
     private static final String CONFIRM_SCOPE = "tracking_draft.confirm";
+    private static final String REJECT_SCOPE = "tracking_draft.reject";
     private static final String BATCH_SCOPE = "tracking_draft.batch_confirm";
     private static final String SHIPMENT_JUDGMENT_INVALID = "SHIPMENT_JUDGMENT_INVALID";
     private static final Set<String> TRACKING_UNIQUE_CONSTRAINTS = Set.of(
@@ -166,6 +168,97 @@ public class TrackingDraftService {
             recordRejectionAudit(ex, rejectionAuditPayload, context);
             throw ex;
         }
+    }
+
+    @Transactional
+    public IdempotentResult<ProviderTrackingDraftDetailDto> reject(
+            long draftId,
+            TrackingDraftRejectCommand command,
+            String idempotencyKey,
+            CommandContext context) {
+        Map<String, Object> idempotencyPayload = Map.of("draft_id", draftId, "command", command);
+        Map<String, Object> auditPayload = auditPayload(draftId, command);
+        requireAuthenticatedOperator("tracking_draft.reject", auditPayload, context);
+        return idempotency.execute(
+                REJECT_SCOPE,
+                idempotencyKey,
+                idempotencyPayload,
+                200,
+                () -> rejectWithAudit(draftId, command, context, auditPayload));
+    }
+
+    private ProviderTrackingDraftDetailDto rejectWithAudit(
+            long draftId,
+            TrackingDraftRejectCommand command,
+            CommandContext context,
+            Map<String, Object> payload) {
+        try {
+            return doReject(draftId, command, context);
+        } catch (BusinessException exception) {
+            recordRejectionAudit("tracking_draft.reject", exception, payload, context);
+            throw exception;
+        }
+    }
+
+    private ProviderTrackingDraftDetailDto doReject(
+            long draftId, TrackingDraftRejectCommand command, CommandContext context) {
+        long submissionId = drafts
+                .findSubmissionIdById(draftId)
+                .orElseThrow(() -> BusinessException.notFound("运单草稿不存在"));
+        submissionCompletion.lock(submissionId);
+        ProviderTrackingDraft draft = drafts
+                .findByIdForUpdate(draftId)
+                .orElseThrow(() -> BusinessException.notFound("运单草稿不存在"));
+        if (draft.getStatus() != ProviderTrackingDraft.Status.OPEN) {
+            throw BusinessException.conflict("DRAFT_NOT_OPEN", "运单草稿已确认或已拒绝，不能重复拒绝");
+        }
+        if (!Objects.equals(draft.getRevision(), command.expectedDraftRevision())) {
+            throw BusinessException.conflict("VERSION_CONFLICT", "运单草稿已被其他操作修改，请刷新后重试");
+        }
+        ReviewCase reviewCase = requireOpenCase(draftId, command.expectedCaseVersion());
+
+        draft.setStatus(ProviderTrackingDraft.Status.REJECTED);
+        draft.setConfirmedBy(context.operator());
+        draft.setConfirmedAt(Instant.now());
+        drafts.saveAndFlush(draft);
+
+        reviewCase.setStatus(ReviewCaseStatus.DISMISSED);
+        reviewCase.setResolution(Map.of(
+                "resolution_type", "TRACKING_DRAFT_REJECTED",
+                "draft_no", draft.getDraftNo(),
+                "reason", command.reason()));
+        reviewCase.setResolvedBy(context.operator());
+        reviewCase.setResolvedAt(Instant.now());
+        reviewCases.saveAndFlush(reviewCase);
+
+        submissionCompletion.reconcile(submissionId);
+
+        ProviderTrackingDraftDetailDto result = toDetail(draft);
+        audits.record(new AuditLogService.AuditCommand()
+                .dataScope(DataScope.BUSINESS)
+                .requestId(context.requestId())
+                .traceId(context.traceId())
+                .operator(context.operator())
+                .actorType(AuditActorType.HUMAN)
+                .service("tracking-draft")
+                .operation("tracking_draft.reject")
+                .requestPayload(auditPayload(draftId, command))
+                .responsePayload(Map.of(
+                        "draft_no", draft.getDraftNo(),
+                        "status", draft.getStatus().name(),
+                        "resolution_type", "TRACKING_DRAFT_REJECTED"))
+                .httpStatus(200)
+                .businessCode("TRACKING_DRAFT_REJECTED"));
+        return result;
+    }
+
+    private static Map<String, Object> auditPayload(
+            long draftId, TrackingDraftRejectCommand command) {
+        return Map.of(
+                "draft_id", String.valueOf(draftId),
+                "expected_draft_revision", command.expectedDraftRevision(),
+                "expected_case_version", command.expectedCaseVersion(),
+                "reason_present", command.reason() != null && !command.reason().isBlank());
     }
 
     // ------------------------------------------------------------------

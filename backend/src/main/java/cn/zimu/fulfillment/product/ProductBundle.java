@@ -74,6 +74,10 @@ public class ProductBundle extends AuditableEntity {
         return categoryId;
     }
 
+    public void setCategoryId(Long categoryId) {
+        this.categoryId = categoryId;
+    }
+
     public String getBarcode() {
         return barcode;
     }
@@ -94,8 +98,16 @@ public class ProductBundle extends AuditableEntity {
         return taxRate;
     }
 
+    public void setTaxRate(BigDecimal taxRate) {
+        this.taxRate = taxRate;
+    }
+
     public BigDecimal getSettlementCost() {
         return settlementCost;
+    }
+
+    public void setSettlementCost(BigDecimal settlementCost) {
+        this.settlementCost = settlementCost;
     }
 
     public Long getFulfillmentProviderId() {

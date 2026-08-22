@@ -432,6 +432,20 @@ class ShipmentJdTrackingBackfillApiTest {
         assertThat(jd.queries).hasValue(2);
         assertSingleAcceptedFacts(fixture);
         assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.review_cases WHERE shipment_id=? AND status='OPEN' "
+                        + "AND reason_code='JD_TRACKING_BACKFILLED_PENDING_REVIEW'",
+                Long.class,
+                fixture.shipmentId())).isEqualTo(1L);
+        assertThat(jdbc.queryForMap(
+                "SELECT responsible_team, detail->>'erp_delivery_no' erp_delivery_no, "
+                        + "detail->>'waybill_no' waybill_no FROM app.review_cases "
+                        + "WHERE shipment_id=? AND status='OPEN' "
+                        + "AND reason_code='JD_TRACKING_BACKFILLED_PENDING_REVIEW'",
+                fixture.shipmentId()))
+                .containsEntry("responsible_team", "FULFILLMENT_OPS")
+                .containsEntry("erp_delivery_no", fixture.erpDeliveryNo())
+                .containsEntry("waybill_no", "JD-WAYBILL-REPLAY-001");
+        assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.audit_logs WHERE order_id=? "
                         + "AND request_id='req-jd-tracking-replay-same' "
                         + "AND operation='shipment.jd_tracking.backfill' "
@@ -1293,7 +1307,13 @@ class ShipmentJdTrackingBackfillApiTest {
                     .containsEntry("retryable", true)
                     .containsEntry("business_code", "SYNTHETIC_LATE_FAILURE");
             assertThat(jdbc.queryForObject(
-                    "SELECT count(*) FROM app.review_cases WHERE shipment_id=? AND status='OPEN'",
+                    "SELECT count(*) FROM app.review_cases WHERE shipment_id=? AND status='OPEN' "
+                            + "AND reason_code='JD_TRACKING_BACKFILLED_PENDING_REVIEW'",
+                    Long.class,
+                    fixture.shipmentId())).isEqualTo(1L);
+            assertThat(jdbc.queryForObject(
+                    "SELECT count(*) FROM app.review_cases WHERE shipment_id=? AND status='OPEN' "
+                            + "AND reason_code='MULTIPLE_TRACKINGS_FOR_OUTBOUND'",
                     Long.class,
                     fixture.shipmentId())).isZero();
         } else {
@@ -1384,7 +1404,8 @@ class ShipmentJdTrackingBackfillApiTest {
                 fixture.shipmentId())).isEqualTo(1L);
         assertThat(jdbc.queryForMap(
                 "SELECT reason_code, detail->>'jd_status' jd_status FROM app.review_cases "
-                        + "WHERE shipment_id=? AND status='OPEN'",
+                        + "WHERE shipment_id=? AND status='OPEN' "
+                        + "AND reason_code='JD_TRACKING_TERMINAL_EXCEPTION'",
                 fixture.shipmentId()))
                 .containsEntry("reason_code", "JD_TRACKING_TERMINAL_EXCEPTION")
                 .containsEntry("jd_status", jdStatus);

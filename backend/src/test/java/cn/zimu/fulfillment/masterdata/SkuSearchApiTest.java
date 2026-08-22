@@ -58,7 +58,8 @@ class SkuSearchApiTest {
                 .orElseThrow();
 
         String jdSkuId = createSku(jdProvider, productId, "500g*2袋", "sku-search-jd-001", "req-sku-search-jd-001");
-        createSku(tpProvider, productId, "标准箱", "sku-search-tp-001", "req-sku-search-tp-001");
+        String tpSkuId = createSku(
+                tpProvider, productId, "标准箱", "sku-search-tp-001", "req-sku-search-tp-001");
 
         // 按商品名称模糊搜索：两条 SKU 都命中
         Map<String, Object> byName = page("/api/v1/skus?query=" + "搜索测试");
@@ -76,6 +77,71 @@ class SkuSearchApiTest {
         assertThat((List<Map<String, Object>>) byNameAndJd.get("items"))
                 .anySatisfy(item -> assertThat(item.get("id")).isEqualTo(jdSkuId));
         assertThat(byNameAndJd.get("total_elements")).isEqualTo(1);
+
+        // 京东履约方映射的 EMG 编号在档案投影中透出；无京东映射的 SKU 为 null
+        ResponseEntity<Map> mapping = http.exchange(
+                "/api/v1/provider-sku-mappings",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "provider_id", jdProvider.get("id"),
+                        "sku_id", jdSkuId,
+                        "provider_sku_code", "EMG-SEARCH-0001"),
+                        writeHeaders("sku-search-mapping-001", "req-sku-search-mapping-001")),
+                Map.class);
+        assertThat(mapping.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        Map<String, Object> withEmg = page("/api/v1/skus?query=" + "搜索测试");
+        List<Map<String, Object>> projected = (List<Map<String, Object>>) withEmg.get("items");
+        Map<String, Object> jdProjected = projected.stream()
+                .filter(item -> jdSkuId.equals(item.get("id")))
+                .findFirst()
+                .orElseThrow();
+        Map<String, Object> tpProjected = projected.stream()
+                .filter(item -> tpSkuId.equals(item.get("id")))
+                .findFirst()
+                .orElseThrow();
+        assertThat(attributes(jdProjected)).containsEntry("jd_emg_no", "EMG-SEARCH-0001");
+        assertThat(attributes(tpProjected)).containsEntry("jd_emg_no", null);
+        for (Map<String, Object> item : List.of(jdProjected, tpProjected)) {
+            assertThat(attributes(item).get("product_version")).isInstanceOf(Number.class);
+            assertThat(attributes(item)).containsEntry("product_purchase_price", null);
+            assertThat(attributes(item)).containsEntry("product_retail_price", null);
+            assertThat(attributes(item)).containsEntry("product_other_cost", null);
+        }
+
+        ResponseEntity<Map> inactiveMapping = http.exchange(
+                "/api/v1/provider-sku-mappings/" + mapping.getBody().get("id"),
+                HttpMethod.PATCH,
+                new HttpEntity<>(Map.of(
+                        "expected_version", mapping.getBody().get("version"),
+                        "active", false),
+                        writeHeaders("sku-search-mapping-disable-001", "req-sku-search-mapping-disable-001")),
+                Map.class);
+        assertThat(inactiveMapping.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(attributes(projectedSku(jdSkuId))).containsEntry("jd_emg_no", null);
+
+        ResponseEntity<Map> reactivatedMapping = http.exchange(
+                "/api/v1/provider-sku-mappings/" + mapping.getBody().get("id"),
+                HttpMethod.PATCH,
+                new HttpEntity<>(Map.of(
+                        "expected_version", inactiveMapping.getBody().get("version"),
+                        "active", true),
+                        writeHeaders("sku-search-mapping-enable-001", "req-sku-search-mapping-enable-001")),
+                Map.class);
+        assertThat(reactivatedMapping.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(attributes(projectedSku(jdSkuId)))
+                .containsEntry("jd_emg_no", "EMG-SEARCH-0001");
+
+        ResponseEntity<Map> inactiveProvider = http.exchange(
+                "/api/v1/fulfillment-providers/" + jdProvider.get("id"),
+                HttpMethod.PATCH,
+                new HttpEntity<>(Map.of(
+                        "expected_version", jdProvider.get("version"),
+                        "active", false),
+                        writeHeaders("sku-search-provider-disable-001", "req-sku-search-provider-disable-001")),
+                Map.class);
+        assertThat(inactiveProvider.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(attributes(projectedSku(jdSkuId))).containsEntry("jd_emg_no", null);
 
         // 无命中返回空页；空白关键词退化为全量列表
         assertThat((List<Map<String, Object>>) page("/api/v1/skus?query=不存在的商品名").get("items")).isEmpty();
@@ -102,6 +168,15 @@ class SkuSearchApiTest {
         return http.getForObject("/api/v1/skus/" + skuId, Map.class).get("code").toString();
     }
 
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> projectedSku(String skuId) {
+        return ((List<Map<String, Object>>) page("/api/v1/skus?query=搜索测试").get("items"))
+                .stream()
+                .filter(item -> skuId.equals(item.get("id")))
+                .findFirst()
+                .orElseThrow();
+    }
+
     private Map<String, Object> skuReferences() {
         Map<String, Object> categoryPage = http.getForObject("/api/v1/categories?page=0&size=20", Map.class);
         Map<String, Object> category = ((List<Map<String, Object>>) categoryPage.get("items")).get(0);
@@ -120,6 +195,11 @@ class SkuSearchApiTest {
                 : http.getForEntity(url, Map.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         return response.getBody();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> attributes(Map<String, Object> record) {
+        return (Map<String, Object>) record.get("attributes");
     }
 
     private static HttpHeaders writeHeaders(String idempotencyKey, String requestId) {

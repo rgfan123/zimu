@@ -58,6 +58,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -549,7 +550,10 @@ public class MasterDataService {
         } else {
             result = skus.findByFulfillmentProviderId(WriteCommands.parseIdentifier(providerId), page(page, size));
         }
-        return PageResponse.of(result.stream().map(this::sku).toList(), result);
+        Map<Long, String> jdEmgCodes = jdEmgCodes(result.stream().map(Sku::getId).toList());
+        return PageResponse.of(
+                result.stream().map(sku -> sku(sku, jdEmgCodes.get(sku.getId()))).toList(),
+                result);
     }
 
     @Transactional(readOnly = true)
@@ -862,6 +866,10 @@ public class MasterDataService {
     }
 
     private MasterDataRecord sku(Sku value) {
+        return sku(value, jdEmgNo(value.getId()));
+    }
+
+    private MasterDataRecord sku(Sku value, String jdEmgNo) {
         Product product = products.findById(value.getProductId()).orElse(null);
         Map<String, Object> attributes = map(
                 "product_id", id(value.getProductId()),
@@ -872,7 +880,9 @@ public class MasterDataService {
                 "barcode", value.getBarcode());
         attributes.put("purchase_price", SkuCommercialPrice.text(value.getPurchasePrice()));
         attributes.put("retail_price", SkuCommercialPrice.text(value.getRetailPrice()));
+        attributes.put("jd_emg_no", jdEmgNo);
         if (product != null) {
+            attributes.put("product_version", product.getLockVersion());
             attributes.put("product_tags", product.getTags());
             attributes.put("product_ingredients", product.getIngredients());
             attributes.put("product_listed_from",
@@ -881,10 +891,32 @@ public class MasterDataService {
                     product.getListedUntil() == null ? null : product.getListedUntil().toString());
             attributes.put("product_lead_time_hours", product.getLeadTimeHours());
             attributes.put("product_main_image_ref", product.getMainImageRef());
+            attributes.put("product_purchase_price", SkuCommercialPrice.text(product.getPurchasePrice()));
+            attributes.put("product_retail_price", SkuCommercialPrice.text(product.getRetailPrice()));
+            attributes.put("product_other_cost", SkuCommercialPrice.text(product.getOtherCost()));
             attributes.put("margin", marginText(product.getRetailPrice(), product.getPurchasePrice(), product.getOtherCost()));
         }
         return record(value.getId(), value.getSkuCode(), product == null ? value.getSkuCode() : product.getProductName(),
                 value.isActive(), value.getLockVersion(), attributes, value);
+    }
+
+    /** 单个 SKU 的京东 EMG 编号（单条读取/写后投影用）。 */
+    private String jdEmgNo(long skuId) {
+        List<ProviderSkuRepository.JdProviderSkuCode> rows =
+                providerMappings.findJdProviderSkuCodes(List.of(skuId));
+        return rows.isEmpty() ? null : rows.getFirst().getProviderSkuCode();
+    }
+
+    /** 批量 SKU 的京东 EMG 编号；无京东映射的 SKU 不出现在结果中。 */
+    private Map<Long, String> jdEmgCodes(Collection<Long> skuIds) {
+        if (skuIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, String> codes = new LinkedHashMap<>();
+        for (ProviderSkuRepository.JdProviderSkuCode row : providerMappings.findJdProviderSkuCodes(skuIds)) {
+            codes.putIfAbsent(row.getSkuId(), row.getProviderSkuCode());
+        }
+        return codes;
     }
 
     private MasterDataRecord sourceMapping(SourceChannelSku value) {

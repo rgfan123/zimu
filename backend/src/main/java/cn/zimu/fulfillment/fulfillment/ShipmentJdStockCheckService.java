@@ -183,8 +183,9 @@ public class ShipmentJdStockCheckService {
         }
 
         boolean passed = probe.blockers().isEmpty();
-        Long reviewCaseId = reconcileCase(current, probe, passed, context.operator());
-        Map<String, Object> response = response(current, probe, passed, reviewCaseId);
+        Map<Long, SkuLabel> skuLabels = loadSkuLabels(probe.observations());
+        Long reviewCaseId = reconcileCase(current, probe, skuLabels, passed, context.operator());
+        Map<String, Object> response = response(current, probe, skuLabels, passed, reviewCaseId);
         Map<String, Object> eventPayload = new LinkedHashMap<>();
         eventPayload.put("shipment_id", String.valueOf(current.shipmentId()));
         eventPayload.put("preview_hash", current.requestHash());
@@ -355,6 +356,7 @@ public class ShipmentJdStockCheckService {
     private Long reconcileCase(
             ShipmentJdOutboundPreviewSnapshot preview,
             Probe probe,
+            Map<Long, SkuLabel> skuLabels,
             boolean passed,
             String operator) {
         List<Long> existing = jdbc.queryForList(
@@ -388,7 +390,9 @@ public class ShipmentJdStockCheckService {
                 "shipment_id", String.valueOf(preview.shipmentId()),
                 "preview_hash", preview.requestHash(),
                 "blockers", probe.blockers(),
-                "observations", probe.observations().stream().map(this::observationMap).toList(),
+                "observations", probe.observations().stream()
+                        .map(row -> observationMap(row, skuLabels))
+                        .toList(),
                 "not_reserved", true,
                 "maintenance_action", Map.of(
                         "action", "RERUN_JD_STOCK_CHECK",
@@ -426,6 +430,7 @@ public class ShipmentJdStockCheckService {
     private Map<String, Object> response(
             ShipmentJdOutboundPreviewSnapshot preview,
             Probe probe,
+            Map<Long, SkuLabel> skuLabels,
             boolean passed,
             Long reviewCaseId) {
         Map<String, Object> response = new LinkedHashMap<>();
@@ -438,7 +443,9 @@ public class ShipmentJdStockCheckService {
         response.put("observed_at", probe.observedAt());
         response.put("not_reserved", true);
         response.put("blockers", probe.blockers());
-        response.put("items", probe.observations().stream().map(this::observationMap).toList());
+        response.put("items", probe.observations().stream()
+                .map(row -> observationMap(row, skuLabels))
+                .toList());
         if (reviewCaseId != null) {
             response.put("review_case", Map.of(
                     "id", String.valueOf(reviewCaseId),
@@ -448,9 +455,14 @@ public class ShipmentJdStockCheckService {
         return response;
     }
 
-    private Map<String, Object> observationMap(StockObservation row) {
+    private Map<String, Object> observationMap(StockObservation row, Map<Long, SkuLabel> skuLabels) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("sku_id", String.valueOf(row.skuId()));
+        SkuLabel label = skuLabels.get(row.skuId());
+        if (label != null) {
+            value.put("sku_code", label.skuCode());
+            value.put("product_name", label.productName());
+        }
         value.put("goods_no", row.goodsNo());
         value.put("warehouse_code", row.warehouseCode());
         value.put("required_quantity", String.valueOf(row.requiredPieces()));
@@ -461,6 +473,36 @@ public class ShipmentJdStockCheckService {
             value.put("usable_quantity", decimal(row.usable()));
         }
         return value;
+    }
+
+    private Map<Long, SkuLabel> loadSkuLabels(List<StockObservation> observations) {
+        if (observations.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> skuIds = observations.stream()
+                .map(StockObservation::skuId)
+                .distinct()
+                .toList();
+        String placeholders = String.join(", ", java.util.Collections.nCopies(skuIds.size(), "?"));
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                """
+                SELECT sku.id sku_id, sku.sku_code, p.product_name
+                FROM app.skus sku
+                JOIN app.products p ON p.id = sku.product_id
+                WHERE sku.id IN (%s)
+                ORDER BY sku.id
+                """.formatted(placeholders),
+                skuIds.toArray());
+        Map<Long, SkuLabel> labels = new LinkedHashMap<>();
+        for (Map<String, Object> found : rows) {
+            labels.put(((Number) found.get("sku_id")).longValue(), new SkuLabel(
+                    text(found.get("sku_code")),
+                    text(found.get("product_name"))));
+        }
+        return labels;
+    }
+
+    private record SkuLabel(String skuCode, String productName) {
     }
 
     private Map<String, Object> orderSnapshot(long orderId) {

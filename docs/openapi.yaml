@@ -374,6 +374,32 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/tracking-drafts/{draft_id}/reject:
+    parameters:
+      - $ref: '#/components/parameters/TrackingDraftId'
+    post:
+      tags: [TrackingDrafts]
+      operationId: rejectTrackingDraft
+      description: >-
+        Idempotently reject an open tracking draft, dismiss its open ReviewCase, preserve the
+        operator reason, and leave Shipment/Tracking facts unchanged. The expected draft revision
+        and ReviewCase version are revalidated under the same submission-first lock order used by
+        confirmation.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrackingDraftRejectCommand' }
+      responses:
+        '200':
+          description: Rejected draft; an identical idempotency replay returns the same representation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrackingDraftDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/carrier-prefix-mappings:
     get:
       tags: [CarrierMappings]
@@ -2336,10 +2362,12 @@ paths:
       operationId: refreshPlatformOrders
       description: >-
         Manually triggers a one-shot refresh of CAISHIXIAN / JUFUBAO / FEIXIANG order data.
-        Reuses the phase-0 fetch scripts in-process: produced files enter the existing
-        ImportBatch manual-confirm loop instead of bypassing batch semantics. JUFUBAO
-        JSON direct-connect lacks receiver fields and is reported without auto-import.
+        Only enabled REAL + API connectors may claim a rate-limited attempt. Java connectors
+        run first and safely supported script fallbacks still enter the existing ImportBatch
+        manual-confirm loop. JUFUBAO onlinePull is capability-skipped before claiming or login
+        until its captured receiver contract is complete.
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/Operator'
       requestBody:
         required: false
@@ -2868,12 +2896,11 @@ paths:
               "$ref": "#/components/schemas/SourceBundleMappingWrite"
         required: true
       responses:
-        '200':
-          description: OK
+        '201':
+          description: Created source bundle mapping
           content:
-            "*/*":
-              schema:
-                type: object
+            application/json:
+              schema: { $ref: '#/components/schemas/MasterDataRecord' }
   "/api/v1/product-bundles":
     get:
       tags:
@@ -2897,6 +2924,12 @@ paths:
           default: 20
           maximum: 200
           minimum: 1
+      - name: query
+        in: query
+        required: false
+        description: 按礼包编码或名称大小写不敏感模糊搜索
+        schema:
+          type: string
       responses:
         '200':
           description: OK
@@ -2926,12 +2959,11 @@ paths:
               "$ref": "#/components/schemas/BundleWrite"
         required: true
       responses:
-        '200':
-          description: OK
+        '201':
+          description: Created product bundle
           content:
-            "*/*":
-              schema:
-                type: object
+            application/json:
+              schema: { $ref: '#/components/schemas/MasterDataRecord' }
   "/api/agents/{slug}/set-enabled":
     post:
       tags:
@@ -3224,6 +3256,39 @@ paths:
             "*/*":
               schema:
                 "$ref": "#/components/schemas/MasterDataRecord"
+    patch:
+      tags:
+      - bundle-master-data-controller
+      operationId: patchProductBundle
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: X-Operator
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/BundlePatch"
+        required: true
+      responses:
+        '200':
+          description: Updated product bundle
+          content:
+            "*/*":
+              schema:
+                type: object
   "/api/v1/agents":
     get:
       tags:
@@ -4055,6 +4120,14 @@ components:
             - $ref: '#/components/schemas/PositiveDecimalQuantity'
           nullable: true
         remark: { type: string, maxLength: 2000, nullable: true }
+    TrackingDraftRejectCommand:
+      type: object
+      additionalProperties: false
+      required: [expected_draft_revision, expected_case_version, reason]
+      properties:
+        expected_draft_revision: { type: integer, format: int64, minimum: 0 }
+        expected_case_version: { type: integer, format: int64, minimum: 0 }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
     CarrierPrefixMappingEntry:
       type: object
       additionalProperties: false
@@ -5408,6 +5481,14 @@ components:
         retail_price:
           allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
           description: null means the retail price is not yet known; it never means zero.
+        jd_emg_no:
+          type: string
+          nullable: true
+          description: 当前启用的京东履约方 SKU 映射编码；映射或履约方停用时为 null。
+        product_version: { type: integer, format: int64, minimum: 0 }
+        product_purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        product_retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        product_other_cost: { $ref: '#/components/schemas/NullableCommercialPrice' }
     SkuRecord:
       allOf:
         - $ref: '#/components/schemas/MasterDataRecord'
@@ -5683,6 +5764,85 @@ components:
         purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         active: { type: boolean, default: true }
+    BundleItemInput:
+      type: object
+      additionalProperties: false
+      required: [sku_id, quantity_per_bundle]
+      properties:
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        quantity_per_bundle:
+          type: string
+          pattern: '^[1-9][0-9]*$'
+          description: 每份礼包所需的正整数 SKU 件数。
+        emg_code_snapshot: { type: string, maxLength: 64, nullable: true }
+        source_text_snapshot: { type: string, maxLength: 255, nullable: true }
+    BundleWrite:
+      type: object
+      additionalProperties: false
+      required: [bundle_code, bundle_name, items]
+      properties:
+        bundle_code: { type: string, minLength: 1, maxLength: 64 }
+        bundle_name: { type: string, minLength: 1, maxLength: 200 }
+        category_id: { $ref: '#/components/schemas/Identifier' }
+        barcode: { type: string, maxLength: 64, nullable: true }
+        description: { type: string, nullable: true }
+        tax_rate:
+          type: string
+          nullable: true
+          pattern: '^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$'
+          description: 0 到 100 的 decimal string；null 或缺省表示未设置。
+        settlement_cost: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        status: { type: string, enum: [DRAFT, ACTIVE, INACTIVE], default: DRAFT }
+        items:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/BundleItemInput' }
+    BundlePatch:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 0 }
+        bundle_name:
+          type: string
+          maxLength: 200
+          nullable: true
+          description: null 或缺省均表示不修改。
+        category_id:
+          allOf: [{ $ref: '#/components/schemas/Identifier' }]
+          nullable: true
+          description: null 或缺省均表示不修改。
+        barcode:
+          type: string
+          maxLength: 64
+          nullable: true
+          description: 空字符串清空；null 或缺省均表示不修改。
+        description:
+          type: string
+          nullable: true
+          description: 空字符串清空；null 或缺省均表示不修改。
+        tax_rate:
+          type: string
+          nullable: true
+          pattern: '^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$'
+          description: 0 到 100 的 decimal string；null 或缺省均表示不修改。
+        settlement_cost:
+          type: string
+          nullable: true
+          pattern: '^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$'
+          description: null 或缺省均表示不修改；当前接口不提供清空操作。
+        status:
+          type: string
+          enum: [DRAFT, ACTIVE, INACTIVE]
+          nullable: true
+          description: null 或缺省均表示不修改。
+        items:
+          type: array
+          minItems: 1
+          nullable: true
+          description: 非空数组表示整表替换组件；null 或缺省表示不修改。
+          items: { $ref: '#/components/schemas/BundleItemInput' }
+      minProperties: 2
     SkuPatch:
       type: object
       required: [expected_version]
@@ -5882,6 +6042,8 @@ components:
       required: [sku_id, goods_no, warehouse_code, required_quantity, quantity_unit, observation_status]
       properties:
         sku_id: { $ref: '#/components/schemas/Identifier' }
+        sku_code: { type: string, minLength: 1 }
+        product_name: { type: string, minLength: 1 }
         goods_no: { type: string, minLength: 1 }
         warehouse_code: { type: string, minLength: 1 }
         required_quantity:

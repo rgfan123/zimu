@@ -115,6 +115,64 @@ class ExcelClosedLoopApiTest {
     }
 
     @Test
+    void zhonghuiSourceReturnMarksTheOriginalShippingStatusAsShipped() throws Exception {
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                SELECT 'ZHONGHUI', 'ZH-TP-STATUS-001', '中汇回填状态测试商品', '500g',
+                       1.000, sku_id, true
+                FROM app.source_channel_skus
+                WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-TP-001'
+                ON CONFLICT (source_channel, source_sku_ref) DO UPDATE
+                SET sku_id=EXCLUDED.sku_id, quantity_multiplier=EXCLUDED.quantity_multiplier,
+                    source_product_name=EXCLUDED.source_product_name,
+                    source_specification=EXCLUDED.source_specification, active=true
+                """);
+        ResponseEntity<Map> uploaded = uploadRaw(
+                "中汇订单.xlsx", zhonghuiStatusWorkbook(), "source-import-zhonghui-status-001");
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String batchId = uploaded.getBody().get("id").toString();
+        ResponseEntity<Map> confirmed = confirmBatch(batchId, "confirm-zhonghui-status-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String exportId = ((List<?>) confirmed.getBody().get("generated_fulfillment_export_ids"))
+                .getFirst().toString();
+        String waybillNo = "JDVA-ZHONGHUI-STATUS-001";
+        ResponseEntity<Map> tracked = uploadTracking(
+                exportId,
+                fillThirdPartyTracking(downloadExport(exportId), "SHIPPED", "1.000", waybillNo),
+                "tracking-import-zhonghui-status-001");
+        assertThat(tracked.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String returnId = ((List<?>) tracked.getBody().get("generated_source_return_export_ids"))
+                .getFirst().toString();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT DISTINCT ol.processing_stage
+                        FROM app.raw_import_rows rir
+                        JOIN app.order_lines ol ON ol.id=rir.order_line_id
+                        WHERE rir.import_batch_id=? AND rir.order_line_id IS NOT NULL
+                        """,
+                        String.class,
+                        Long.parseLong(batchId)))
+                .isEqualTo("RETURN_FILE_READY");
+
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(downloadSourceReturn(returnId)))) {
+            var header = workbook.getSheetAt(0).getRow(0);
+            var row = workbook.getSheetAt(0).getRow(1);
+            DataFormatter formatter = new DataFormatter();
+            Map<String, Integer> columns = new LinkedHashMap<>();
+            for (int index = 0; index < header.getLastCellNum(); index++) {
+                columns.put(formatter.formatCellValue(header.getCell(index)), index);
+            }
+            assertThat(formatter.formatCellValue(row.getCell(columns.get("发货状态"))))
+                    .isEqualTo("已发货");
+            assertThat(formatter.formatCellValue(row.getCell(columns.get("物流单号"))))
+                    .isEqualTo(waybillNo);
+        }
+    }
+
+    @Test
     void feixiangCsvRetainsRowsCreatesCanonicalOrderAndReplaysByContentHash() {
         byte[] file = feixiangCsv(true);
         Map<String, Object> first = upload("batch.csv", file, "source-import-fx-001");
@@ -976,6 +1034,31 @@ class ExcelClosedLoopApiTest {
             var row = workbook.createSheet(sheetName).createRow(0);
             for (int index = 0; index < headers.size(); index++) {
                 row.createCell(index).setCellValue(headers.get(index));
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] zhonghuiStatusWorkbook() throws Exception {
+        List<String> headers = List.of(
+                "订单号", "下单时间", "支付时间", "完成时间", "商品编号", "商品名称", "税率",
+                "一级分类", "二级分类", "三级分类", "订单状态", "商品状态", "件数", "商家单价",
+                "商家金额", "上游成本价", "商家结算金额", "商家优惠", "商家运费", "收件人",
+                "收件电话", "收件地址", "发货状态", "包装规格", "单位");
+        List<String> values = List.of(
+                "S-ZHONGHUI-STATUS-001", "2026-08-21 10:00:00", "2026-08-21 10:00:01", "",
+                "ZH-TP-STATUS-001", "中汇回填状态测试商品", "9", "生鲜食品", "猪牛羊肉", "牛肉",
+                "待发货", "正常", "1", "100", "100", "60", "60", "0", "0", "状态测试客户",
+                "13800000001", "北京市丰台区测试路1号", "未发货", "500g", "份");
+        try (XSSFWorkbook workbook = new XSSFWorkbook();
+                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("Sheet1");
+            var header = sheet.createRow(0);
+            var row = sheet.createRow(1);
+            for (int index = 0; index < headers.size(); index++) {
+                header.createCell(index).setCellValue(headers.get(index));
+                row.createCell(index).setCellValue(values.get(index));
             }
             workbook.write(output);
             return output.toByteArray();

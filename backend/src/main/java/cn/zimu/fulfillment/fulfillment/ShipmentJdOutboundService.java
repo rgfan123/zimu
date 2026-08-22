@@ -65,6 +65,7 @@ public class ShipmentJdOutboundService {
     private final ShipmentJdOutboundPreparer preparer;
     private final ShipmentJdOutboundExecutor executor;
     private final ShipmentJdOutboundAuditService auditService;
+    private final JdReceiverAddressNormalizer addressNormalizer;
     private final Set<String> authorizedOperators;
     private final String clientMode;
 
@@ -78,6 +79,7 @@ public class ShipmentJdOutboundService {
             ShipmentJdOutboundPreparer preparer,
             ShipmentJdOutboundExecutor executor,
             ShipmentJdOutboundAuditService auditService,
+            JdReceiverAddressNormalizer addressNormalizer,
             @Value("${app.jd.outbound-authorized-operators:}") String authorizedOperators,
             @Value("${app.jd.client-mode:MOCK}") String clientMode) {
         this.jdbc = jdbc;
@@ -89,6 +91,7 @@ public class ShipmentJdOutboundService {
         this.preparer = preparer;
         this.executor = executor;
         this.auditService = auditService;
+        this.addressNormalizer = addressNormalizer;
         this.authorizedOperators = java.util.Arrays.stream(authorizedOperators.split(","))
                 .map(String::trim)
                 .filter(value -> !value.isEmpty())
@@ -217,8 +220,9 @@ public class ShipmentJdOutboundService {
 
     /**
      * 只读生成京东结构化收货地址候选（jd-real-sdk-switch 04）。
-     * 候选来自来源表格原始单元格（彩食鲜的省/市/区/详细地址列），只用于人工确认；
-     * 未确认前不参与建单。非彩食鲜或缺少结构化列时 candidate 为 null。
+     * 优先取来源表格结构化单元格（彩食鲜的省/市/区/详细地址列）；缺少结构化列时，
+     * 用确定性行政区划词典拆分自由文本快照作为候选。候选只用于人工确认，
+     * 未确认前不参与建单；任一路径无法唯一解析时 candidate 为 null，落到人工。
      */
     @Transactional(readOnly = true)
     public List<Map<String, Object>> receiverAddressCandidates(
@@ -270,20 +274,53 @@ public class ShipmentJdOutboundService {
             row.put("county", rs.getString("jd_receiver_county"));
             row.put("town", rs.getString("jd_receiver_town"));
             row.put("detail_address", rs.getString("jd_receiver_detail_address"));
-            Map<String, Object> candidate = new LinkedHashMap<>();
-            candidate.put("province", rs.getString("source_province"));
-            candidate.put("city", rs.getString("source_city"));
-            candidate.put("county", rs.getString("source_county"));
-            candidate.put("town", null);
-            candidate.put("detail_address", rs.getString("source_detail_address"));
-            boolean complete = ShipmentJdOutboundPreparer.hasText(rs.getString("source_province"))
-                    && ShipmentJdOutboundPreparer.hasText(rs.getString("source_city"))
-                    && ShipmentJdOutboundPreparer.hasText(rs.getString("source_county"))
-                    && ShipmentJdOutboundPreparer.hasText(rs.getString("source_detail_address"));
-            row.put("candidate", complete ? candidate : null);
-            row.put("candidate_incomplete", !complete);
+            Map<String, Object> candidate = candidateFromSourceColumns(
+                    rs.getString("source_province"),
+                    rs.getString("source_city"),
+                    rs.getString("source_county"),
+                    rs.getString("source_detail_address"));
+            if (candidate == null) {
+                candidate = candidateFromFreeText(rs.getString("receiver_address_snapshot"));
+            }
+            row.put("candidate", candidate);
+            row.put("candidate_incomplete", candidate == null);
             return row;
         }, params.toArray());
+    }
+
+    private Map<String, Object> candidateFromSourceColumns(
+            String province, String city, String county, String detailAddress) {
+        if (!ShipmentJdOutboundPreparer.hasText(province)
+                || !ShipmentJdOutboundPreparer.hasText(city)
+                || !ShipmentJdOutboundPreparer.hasText(county)
+                || !ShipmentJdOutboundPreparer.hasText(detailAddress)) {
+            return null;
+        }
+        return candidateMap(province, city, county, detailAddress);
+    }
+
+    private Map<String, Object> candidateFromFreeText(String freeText) {
+        if (!ShipmentJdOutboundPreparer.hasText(freeText)) {
+            return null;
+        }
+        return addressNormalizer.normalize(freeText)
+                .map(normalized -> candidateMap(
+                        normalized.province(),
+                        normalized.city(),
+                        normalized.county(),
+                        normalized.detailAddress()))
+                .orElse(null);
+    }
+
+    private Map<String, Object> candidateMap(
+            String province, String city, String county, String detailAddress) {
+        Map<String, Object> candidate = new LinkedHashMap<>();
+        candidate.put("province", province);
+        candidate.put("city", city);
+        candidate.put("county", county);
+        candidate.put("town", null);
+        candidate.put("detail_address", detailAddress);
+        return candidate;
     }
 
     private Map<String, Object> doConfirmReceiverAddress(

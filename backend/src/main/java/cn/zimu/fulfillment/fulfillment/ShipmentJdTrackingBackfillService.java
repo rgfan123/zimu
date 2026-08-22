@@ -382,6 +382,9 @@ public class ShipmentJdTrackingBackfillService {
         persistDiagnostic(current, "TRACKED", null, null, result);
         audit(current, context, parsed, result, 200,
                 accepted.replayed() ? "JD_TRACKING_ALREADY_RECORDED" : "JD_TRACKING_BACKFILLED");
+        if (!accepted.replayed()) {
+            openBackfilledPendingReviewCase(current, parsed);
+        }
         Map<String, Object> response = response(current, "TRACKED", parsed.waybillNo(), false, null);
         response.put(
                 "generated_source_return_export_ids",
@@ -391,6 +394,33 @@ public class ShipmentJdTrackingBackfillService {
                         .map(String::valueOf)
                         .toList());
         return response;
+    }
+
+    private void openBackfilledPendingReviewCase(Prepared current, Parsed parsed) {
+        String reasonCode = "JD_TRACKING_BACKFILLED_PENDING_REVIEW";
+        String caseNo = "RC-JD-TRACK-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+        String detail = json(Map.of(
+                "message", "京东运单回填完成，待人工确认发货信息",
+                "erp_delivery_no", current.erpDeliveryNo(),
+                "waybill_no", nullToEmpty(parsed.waybillNo()),
+                "carrier_code", nullToEmpty(parsed.carrierCode()),
+                "carrier_name", nullToEmpty(parsed.carrierName())));
+        jdbc.update(
+                """
+                INSERT INTO app.review_cases
+                    (case_no, case_type, status, responsible_team, reason_code,
+                     order_id, shipment_id, detail)
+                VALUES (?, 'JD_TRACKING', 'OPEN', 'FULFILLMENT_OPS',
+                        ?, ?, ?, ?::jsonb)
+                ON CONFLICT DO NOTHING
+                """,
+                caseNo, reasonCode, current.orderId(), current.shipmentId(), detail);
+        jdbc.update(
+                """
+                UPDATE app.review_cases SET detail=?::jsonb, updated_at=CURRENT_TIMESTAMP
+                WHERE shipment_id=? AND status='OPEN' AND reason_code=?
+                """,
+                detail, current.shipmentId(), reasonCode);
     }
 
     private Map<String, Object> completeConflict(
