@@ -7,7 +7,7 @@
  */
 
 import { useState, type ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Button,
@@ -42,6 +42,7 @@ import { shipmentTimeLabel } from '@/presentation/shipment';
 import { CHANNEL_LABELS } from '@/constants/labels';
 import {
   cellText,
+  internalOrderId,
   jdStatusPresentation,
   queryTypeLabel,
   reconSummary,
@@ -149,7 +150,16 @@ function comparisonRowClassName(row: OutboundReconComparisonRow): string {
   return '';
 }
 
-function ReconResult({ queryType, queryValue }: { queryType: OutboundReconQueryType; queryValue: string }) {
+function ReconResult({
+  queryType,
+  queryValue,
+  enableOrderDrilldown,
+}: {
+  queryType: OutboundReconQueryType;
+  queryValue: string;
+  enableOrderDrilldown: boolean;
+}) {
+  const location = useLocation();
   const result = useAsync<OutboundReconView>(
     () => outboundReconApi.query({ query_type: queryType, query_value: queryValue }),
     [queryType, queryValue],
@@ -194,6 +204,35 @@ function ReconResult({ queryType, queryValue }: { queryType: OutboundReconQueryT
   const jdBanner = jdStatusPresentation(view.jd.status, view.jd.message);
   const internal = internalDescriptions(view);
   const jd = jdDescriptions(view.jd);
+  const orderId = enableOrderDrilldown ? internalOrderId(view.internal.summary) : null;
+  const orderHref = orderId
+    ? `/orders/${encodeURIComponent(orderId)}?return_to=${encodeURIComponent(`${location.pathname}${location.search}`)}`
+    : null;
+  const internalFactsCard = (
+    <Card size="small" title="系统内部事实" extra={<Tag color="blue">业务系统</Tag>} hoverable={Boolean(orderHref)}>
+      <Descriptions size="small" column={1} items={internal.items} />
+      <Typography.Title level={5} style={{ marginTop: 16, fontSize: 14 }}>内部明细</Typography.Title>
+      <DataTable<Record<string, unknown>>
+        rowKey={(row) => `${row.order_line}-${row.goods_no ?? row.goods_name}`}
+        columns={internalItemColumns}
+        dataSource={view.internal.items}
+        size="small"
+        pagination={false}
+        scroll={{ x: 560 }}
+        emptyText="无明细"
+      />
+      {view.internal.tracking ? (
+        <>
+          <Typography.Title level={5} style={{ marginTop: 16, fontSize: 14 }}>运单</Typography.Title>
+          <Descriptions size="small" column={1} items={[{
+            key: 'tracking',
+            label: `${cellText(view.internal.tracking.logistics_company_name)}`,
+            children: cellText(view.internal.tracking.tracking_number),
+          }]} />
+        </>
+      ) : null}
+    </Card>
+  );
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -219,29 +258,11 @@ function ReconResult({ queryType, queryValue }: { queryType: OutboundReconQueryT
 
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={12}>
-          <Card size="small" title="系统内部事实" extra={<Tag color="blue">业务系统</Tag>}>
-            <Descriptions size="small" column={1} items={internal.items} />
-            <Typography.Title level={5} style={{ marginTop: 16, fontSize: 14 }}>内部明细</Typography.Title>
-            <DataTable<Record<string, unknown>>
-              rowKey={(row) => `${row.order_line}-${row.goods_no ?? row.goods_name}`}
-              columns={internalItemColumns}
-              dataSource={view.internal.items}
-              size="small"
-              pagination={false}
-              scroll={{ x: 560 }}
-              emptyText="无明细"
-            />
-            {view.internal.tracking ? (
-              <>
-                <Typography.Title level={5} style={{ marginTop: 16, fontSize: 14 }}>运单</Typography.Title>
-                <Descriptions size="small" column={1} items={[{
-                  key: 'tracking',
-                  label: `${cellText(view.internal.tracking.logistics_company_name)}`,
-                  children: cellText(view.internal.tracking.tracking_number),
-                }]} />
-              </>
-            ) : null}
-          </Card>
+          {orderHref ? (
+            <Link to={orderHref} style={{ display: 'block' }}>
+              {internalFactsCard}
+            </Link>
+          ) : internalFactsCard}
         </Col>
         <Col xs={24} lg={12}>
           <Card
@@ -291,9 +312,11 @@ function ReconResult({ queryType, queryValue }: { queryType: OutboundReconQueryT
 export interface OutboundReconPageProps {
   /** 页面正文顶部额外横幅（如 /workbench/recon 入口注入的「金额对账未纳入本期」口径说明）。 */
   notice?: ReactNode;
+  /** 仅 /workbench/recon 显式开启：有真实 order_id 时「系统内部事实」整卡可下钻订单详情。 */
+  enableOrderDrilldown?: boolean;
 }
 
-export default function OutboundReconPage({ notice }: OutboundReconPageProps = {}) {
+export default function OutboundReconPage({ notice, enableOrderDrilldown = false }: OutboundReconPageProps = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlType = searchParams.get('query_type');
   const urlValue = searchParams.get('query_value') ?? '';
@@ -338,7 +361,7 @@ export default function OutboundReconPage({ notice }: OutboundReconPageProps = {
       </FilterBar>
 
       {hasQuery ? (
-        <ReconResult queryType={activeType} queryValue={urlValue.trim()} />
+        <ReconResult queryType={activeType} queryValue={urlValue.trim()} enableOrderDrilldown={enableOrderDrilldown} />
       ) : (
         <Card size="small">
           <Empty description="输入单号开始查询；查询条件保存在链接中，刷新或分享即可复现同一视图" />

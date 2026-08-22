@@ -849,6 +849,8 @@ export interface PlatformOrderRefreshResult {
   channels: Array<{
     channel: SourceChannel;
     status: 'OK' | 'FAILED' | 'SKIPPED';
+    /** finish() 总会写入；前端只按 business_code+status 封闭映射展示，不得直接渲染 message。 */
+    business_code?: string;
     message?: string;
     /** 已生成导入批次（彩食鲜/飞象） */
     batch_no?: string;

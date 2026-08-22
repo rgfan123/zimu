@@ -116,3 +116,13 @@ export function cellText(value: unknown): string {
   if (Array.isArray(value)) return value.length === 0 ? '—' : value.map((item) => String(item)).join('、');
   return String(value);
 }
+
+const ORDER_ID_PATTERN = /^[1-9][0-9]*$/;
+
+/** 保守投影：internal.summary.order_id trim 后必须符合 OpenAPI Identifier 才视为可证订单身份。 */
+export function internalOrderId(summary: Record<string, unknown> | null | undefined): string | null {
+  const orderId = summary?.order_id;
+  if (typeof orderId !== 'string') return null;
+  const trimmed = orderId.trim();
+  return ORDER_ID_PATTERN.test(trimmed) ? trimmed : null;
+}

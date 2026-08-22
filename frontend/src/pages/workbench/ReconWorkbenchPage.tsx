@@ -3,9 +3,9 @@
  * 复用 /fulfillment/outbound-recon 的三种 query_type/query_value URL 契约与全部七态，
  * 仅在此入口注入「金额对账未纳入本期」的口径横幅，其余展示逻辑零复制。
  *
- * 详情跳转本轮明确不做：OutboundReconView DTO 只暴露业务订单号 order_no，没有可证映射到
- * 内部 /orders/:id 的 order_id，渲染 Link 就是假点击；证据链留待 #112 补齐后再接
- * React Router Link 到 /orders/:id 并以 return_to 保留当前查询。
+ * 订单下钻仅在此入口显式 opt-in：internal.summary.order_id 为非空字符串时，
+ * 「系统内部事实」整卡变为 /orders/:orderId?return_to=<当前 pathname+search>。
+ * 不实现 #112 的 Shipment/运单/审计全证据链。
  */
 
 import { Alert } from 'antd';
@@ -14,6 +14,7 @@ import OutboundReconPage from '@/pages/fulfillment/OutboundReconPage';
 export default function ReconWorkbenchPage() {
   return (
     <OutboundReconPage
+      enableOrderDrilldown
       notice={
         <Alert
           type="info"

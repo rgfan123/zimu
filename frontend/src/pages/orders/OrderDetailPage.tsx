@@ -5,7 +5,7 @@
  */
 
 import { useMemo } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Card, Col, Descriptions, Empty, Result, Row, Skeleton, Space, Steps, Table, Tag } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -21,6 +21,7 @@ import StatusTag from '@/components/StatusTag';
 import { reviewCaseSummary } from '@/presentation/publicReady';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
 import { jdFulfillmentPresentation, orderShipmentPublicFields } from './orderJdFulfillment';
+import { safeOrderReturnLocation } from './orderReturnLocation';
 
 /** 主线状态（CONTEXT.md OrderStatus 主线），异常分支不在此列。 */
 const MAINLINE: OrderStatus[] = ['RECEIVED', 'VALIDATED', 'SKU_MAPPED', 'FULFILLING', 'SHIPPED', 'SYNCED'];
@@ -69,6 +70,8 @@ const lineColumns: ColumnsType<OrderLine> = [
 export default function OrderDetailPage() {
   const { orderId = '' } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const returnTo = safeOrderReturnLocation(searchParams.get('return_to'));
 
   const detailQuery = useAsync(() => ordersApi.detail(orderId), [orderId]);
   const timelineQuery = useAsync(() => ordersApi.timeline(orderId), [orderId]);
@@ -192,9 +195,22 @@ export default function OrderDetailPage() {
       title={detail?.order_no ?? '订单详情'}
       actions={
         <>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>
-            返回
-          </Button>
+          {returnTo ? (
+            <Button
+              icon={<ArrowLeftOutlined />}
+              href={returnTo}
+              onClick={(event) => {
+                event.preventDefault();
+                navigate(returnTo);
+              }}
+            >
+              返回出库对账
+            </Button>
+          ) : (
+            <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>
+              返回
+            </Button>
+          )}
           {detail ? (
             <>
               <StatusTag kind="orderStatus" value={detail.order_status} />
