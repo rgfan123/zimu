@@ -7,6 +7,7 @@ import {
   reviewCaseFixture,
   type RouteHarness,
 } from './routeHarness.ts';
+import { saasVisualTokens } from '../src/theme/saasTheme.ts';
 
 let harness: RouteHarness;
 
@@ -40,12 +41,16 @@ function summary(overrides: { attention?: unknown[] } = {}) {
 }
 
 /** 工作台 mock：summary + OPEN 复核事项；跳转后继续服务复核队列页的请求。 */
-function dashboardFetch(requests: string[], queueItems: unknown[] = []) {
+function dashboardFetch(
+  requests: string[],
+  queueItems: unknown[] = [],
+  summaryOverrides: { attention?: unknown[] } = {},
+) {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     requests.push(`${init?.method ?? 'GET'} ${url}`);
     if (/^\/api\/v1\/dashboard\/summary\?business_date=\d{4}-\d{2}-\d{2}$/.test(url)) {
-      return jsonResponse(summary());
+      return jsonResponse(summary(summaryOverrides));
     }
     if (url === '/api/v1/review-cases?page=0&size=200&status=OPEN') {
       return jsonResponse(page(queueItems, 200));
@@ -60,7 +65,24 @@ function dashboardFetch(requests: string[], queueItems: unknown[] = []) {
   };
 }
 
-test('待人工介入 KPI 数字可点击，直达 OPEN 完整列表，且不带伪造时间参数', async () => {
+function actionableCardLink(href: string): HTMLAnchorElement {
+  const link = document.querySelector<HTMLAnchorElement>(`a[href="${href}"]`);
+  assert.ok(link, `缺少指向 ${href} 的链接`);
+  assert.equal(link.tagName, 'A', '必须是真实锚点，键盘可聚焦');
+  assert.ok(link.querySelector('.ant-card'), 'actionable Link 内必须包含 .ant-card');
+  return link;
+}
+
+/** jsdom 把 inline `style.color` 序列化为 `rgb(r, g, b)`，与 token hex 对照时先规范化。 */
+function cssRgb(hex: string): string {
+  const n = hex.replace('#', '');
+  const r = Number.parseInt(n.slice(0, 2), 16);
+  const g = Number.parseInt(n.slice(2, 4), 16);
+  const b = Number.parseInt(n.slice(4, 6), 16);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+test('待人工介入 KPI 整张 Card 可点击，直达 OPEN 完整列表，且不带伪造时间参数', async () => {
   const requests: string[] = [];
   globalThis.fetch = dashboardFetch(requests, [
     reviewCaseFixture('1', { reasonCode: 'SKU_MAPPING_REQUIRED', team: 'SKU_OPS' }),
@@ -70,10 +92,11 @@ test('待人工介入 KPI 数字可点击，直达 OPEN 完整列表，且不带
   await harness.mount(['/dashboard']);
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /待人工介入/));
-  const kpiLink = document.querySelector<HTMLAnchorElement>('a[href="/workbench/reviews?status=OPEN"]');
-  assert.ok(kpiLink, 'KPI 数字必须是链接');
-  assert.match(kpiLink.textContent ?? '', /3/, 'KPI 链接文本是待介入数量');
+  const kpiLink = actionableCardLink('/workbench/reviews?status=OPEN');
+  assert.match(kpiLink.textContent ?? '', /3/, 'KPI 链接文本包含待介入数量');
   assert.doesNotMatch(kpiLink.getAttribute('href') ?? '', /date/, 'KPI 链接不得携带时间参数');
+  await harness.dispatchEvent(kpiLink, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.equal(harness.location(), '/workbench/reviews?status=OPEN'));
 });
 
 test('attention 原因卡：复核原因卡直达 reason 预筛列表，提醒专用卡直达提醒路由', async () => {
@@ -82,13 +105,9 @@ test('attention 原因卡：复核原因卡直达 reason 预筛列表，提醒�
   await harness.mount(['/dashboard']);
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /待人工介入/));
-  const reviewCard = document.querySelector<HTMLAnchorElement>(
-    'a[href="/workbench/reviews?status=OPEN&reason_code=SKU_MAPPING_REQUIRED"]');
-  assert.ok(reviewCard, '复核原因 attention 卡必须是链接');
-  const alertCard = document.querySelector<HTMLAnchorElement>(
-    'a[href="/workbench/alerts"]');
-  assert.ok(alertCard, '提醒专用 attention 卡必须直达运营提醒路由');
-  for (const link of document.querySelectorAll<HTMLAnchorElement>('.ant-card a[href^="/workbench/reviews"]')) {
+  const reviewCard = actionableCardLink('/workbench/reviews?status=OPEN&reason_code=SKU_MAPPING_REQUIRED');
+  const alertCard = actionableCardLink('/workbench/alerts');
+  for (const link of [reviewCard, alertCard]) {
     assert.doesNotMatch(link.getAttribute('href') ?? '', /date/, 'attention 卡链接不得携带时间参数');
   }
 });
@@ -100,8 +119,7 @@ test('点击提醒专用 attention 卡落在 /workbench/alerts 提醒页并拉�
   await harness.mount(['/dashboard']);
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /待人工介入/));
-  const alertCard = document.querySelector<HTMLAnchorElement>('a[href="/workbench/alerts"]');
-  assert.ok(alertCard, '提醒专用 attention 卡必须指向新提醒路由');
+  const alertCard = actionableCardLink('/workbench/alerts');
   await harness.dispatchEvent(alertCard, new MouseEvent('click', { bubbles: true }));
 
   await harness.waitFor(() => assert.equal(harness.location(), '/workbench/alerts'));
@@ -183,4 +201,59 @@ test('工作台 page header renders and KPI stays readable when the issues detai
   assert.doesNotMatch(harness.bodyText(), /raw issue stack/);
   // 侧边栏菜单 + PageShell 页头各渲染一次「工作台」
   assert.ok((harness.bodyText().match(/工作台/g) ?? []).length >= 2, 'page header must render the nav title');
+});
+
+test('OUT_OF_STOCK + severity=YELLOW 仍走 YELLOW，不走旧原因表；明细原因列不派生严重/关注标记', async () => {
+  globalThis.fetch = dashboardFetch(
+    [],
+    [reviewCaseFixture('1', { reasonCode: 'OUT_OF_STOCK', team: 'ORDER_OPS' })],
+    { attention: [{ reason_code: 'OUT_OF_STOCK', count: 4, severity: 'YELLOW' }] },
+  );
+
+  await harness.mount(['/dashboard']);
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /缺货/));
+  const stockCard = actionableCardLink('/workbench/alerts');
+  const iconWrap = stockCard.querySelector('.anticon-warning')?.parentElement;
+  assert.equal(
+    iconWrap?.style.color,
+    cssRgb(saasVisualTokens.semantic.warning),
+    '后端 YELLOW 必须映射 waiting，而不是 CRITICAL_REASONS 的红',
+  );
+  assert.notEqual(iconWrap?.style.color, cssRgb(saasVisualTokens.semantic.error));
+
+  const reasonCell = document.querySelector<HTMLElement>('.ant-table-tbody td');
+  assert.ok(reasonCell, '明细必须有原因列');
+  assert.match(reasonCell.textContent ?? '', /缺货/, '原因列只显示 reasonLabel');
+  assert.doesNotMatch(reasonCell.textContent ?? '', /严重|关注/, '原因列不得出现前端派生的严重/关注标记');
+  assert.equal(reasonCell.querySelector('[title="严重"], [title="关注"]'), null);
+});
+
+test('OUT_OF_STOCK + severity=RED 走 error；未知 reason_code 仍整卡链到真实预筛 URL', async () => {
+  globalThis.fetch = dashboardFetch(
+    [],
+    [],
+    {
+      attention: [
+        { reason_code: 'OUT_OF_STOCK', count: 4, severity: 'RED' },
+        { reason_code: 'FUTURE_REASON', count: 2, severity: 'YELLOW' },
+      ],
+    },
+  );
+
+  await harness.mount(['/dashboard']);
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /缺货/));
+  const stockCard = actionableCardLink('/workbench/alerts');
+  const iconWrap = stockCard.querySelector('.anticon-warning')?.parentElement;
+  assert.equal(
+    iconWrap?.style.color,
+    cssRgb(saasVisualTokens.semantic.error),
+    '后端 RED 必须映射 error，证明不是总显示 YELLOW',
+  );
+
+  const unknownHref = '/workbench/reviews?status=OPEN&reason_code=FUTURE_REASON';
+  const unknownCard = actionableCardLink(unknownHref);
+  await harness.dispatchEvent(unknownCard, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.equal(harness.location(), unknownHref));
 });

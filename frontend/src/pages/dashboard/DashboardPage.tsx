@@ -91,27 +91,6 @@ function trendOption(dates: string[], orders: number[], shipped: number[]): ECha
   };
 }
 
-/**
- * 阻断/异常类原因 → 严重（红）；其余待关注（琥珀）。与工作台 attention 的 RED/YELLOW 语义对齐。
- *
- * 注意：这是 reason → severity 的前端派生表（后端 ReviewCase 契约未携带 severity）。
- * 新增严重原因码时需与本表同步；attention 聚合卡仍消费后端自带 severity，两者口径需保持一致。
- */
-const CRITICAL_REASONS = new Set([
-  'OUT_OF_STOCK',
-  'PROCUREMENT_FAILED',
-  'FULFILLMENT_EXCEPTION',
-  'JD_SUBMIT_FAILED',
-  'SYNC_FAILED',
-  'TRACKING_OVERDUE',
-  'RETURN_OVERDUE',
-]);
-
-function issueSeverity(reasonCode: string): { color: string; label: string } {
-  const severe = CRITICAL_REASONS.has(reasonCode);
-  return { color: severe ? ATTENTION_COLORS.severe : ATTENTION_COLORS.waiting, label: severe ? '严重' : '关注' };
-}
-
 /** 停留时长：自复核事项创建至今（小时/天）。 */
 function ageText(createdAt: string): string {
   const hours = Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 3_600_000));
@@ -145,26 +124,7 @@ const issueColumns: ColumnsType<ReviewCase> = [
   {
     title: '原因',
     dataIndex: 'reason_code',
-    render: (v: string) => {
-      const sev = issueSeverity(v);
-      return (
-        <span>
-          <span
-            style={{
-              display: 'inline-block',
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: sev.color,
-              marginRight: 8,
-              verticalAlign: 'middle',
-            }}
-            title={sev.label}
-          />
-          {reasonLabel(v)}
-        </span>
-      );
-    },
+    render: (v: string) => reasonLabel(v),
   },
   {
     title: '复核单号',
@@ -253,28 +213,36 @@ export default function DashboardPage() {
           />
         </Col>
         <Col xs={24} sm={12} xl={6}>
-          <KpiCard
-            title="待人工介入"
-            value={summary?.pending_review_count}
-            unit="项"
-            color={ATTENTION_COLORS.waiting}
-            icon={<AlertOutlined />}
-            loading={loading}
-            tooltip="待人工介入事项（复核/缺货/异常等）"
-            valueHref={reviewsQueueUrl({ status: 'OPEN' })}
-          />
+          <Link
+            to={reviewsQueueUrl({ status: 'OPEN' })}
+            style={{ display: 'block', color: 'inherit', textDecoration: 'none' }}
+          >
+            <KpiCard
+              title="待人工介入"
+              value={summary?.pending_review_count}
+              unit="项"
+              color={ATTENTION_COLORS.waiting}
+              icon={<AlertOutlined />}
+              loading={loading}
+              tooltip="待人工介入事项（复核/缺货/异常等）"
+            />
+          </Link>
         </Col>
         {summary?.attention.map((item) => (
           <Col key={item.reason_code} xs={24} sm={12} xl={6}>
-            <KpiCard
-              title={reasonLabel(item.reason_code)}
-              value={item.count}
-              unit="单"
-              color={item.severity === 'RED' ? ATTENTION_COLORS.severe : ATTENTION_COLORS.waiting}
-              icon={<WarningOutlined />}
-              loading={loading}
-              valueHref={attentionCardUrl(item.reason_code)}
-            />
+            <Link
+              to={attentionCardUrl(item.reason_code)}
+              style={{ display: 'block', color: 'inherit', textDecoration: 'none' }}
+            >
+              <KpiCard
+                title={reasonLabel(item.reason_code)}
+                value={item.count}
+                unit="单"
+                color={item.severity === 'RED' ? ATTENTION_COLORS.severe : ATTENTION_COLORS.waiting}
+                icon={<WarningOutlined />}
+                loading={loading}
+              />
+            </Link>
           </Col>
         ))}
       </Row>
