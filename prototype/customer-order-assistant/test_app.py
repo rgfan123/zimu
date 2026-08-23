@@ -1,8 +1,10 @@
 import json
+import os
 import threading
 import unittest
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 from urllib import error, request
 
 from app import ApiError, AssistantService, Config, Handler, OrderApiClient, SessionStore
@@ -109,6 +111,7 @@ class OrderApiClientAuthTest(unittest.TestCase):
             order_api_path="/demo/v1/extracted-orders",
             order_api_service_name="trusted-order-assistant",
             order_api_bearer_token="internal-service-token",
+            builtin_order_api_enabled=False,
             order_api_extra_headers={
                 "authorization": "Basic forged-admin-secret",
                 "x-OPERATOR": "forged-browser-operator",
@@ -147,6 +150,7 @@ class OrderApiClientAuthTest(unittest.TestCase):
             order_api_base_url=self.base_url,
             order_api_service_name="",
             order_api_bearer_token="",
+            builtin_order_api_enabled=False,
         )
 
         with self.assertRaises(ApiError) as raised:
@@ -155,6 +159,79 @@ class OrderApiClientAuthTest(unittest.TestCase):
         self.assertEqual(raised.exception.status, 503)
         self.assertEqual(raised.exception.code, "ORDER_API_INTERNAL_AUTH_REQUIRED")
         self.assertIsNone(CapturingOrderApiHandler.captured_headers)
+
+
+class BuiltinOrderAssistantHttpTest(unittest.TestCase):
+    def setUp(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            default_config = Config.from_env()
+        self.assertTrue(default_config.builtin_order_api_enabled)
+        self.assertEqual(default_config.order_api_service_name, "")
+        self.assertEqual(default_config.order_api_bearer_token, "")
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        config = replace(
+            default_config,
+            host="127.0.0.1",
+            port=self.server.server_port,
+            order_api_base_url=f"http://127.0.0.1:{self.server.server_port}",
+        )
+        store = SessionStore()
+        Handler.config = config
+        Handler.store = store
+        Handler.assistant = AssistantService(
+            store,
+            FakeExtractor(),
+            FakeInsightAgent(),
+            OrderApiClient(config),
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+    def request_json(self, path, method="GET", body=None):
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        req = request.Request(
+            self.base_url + path,
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        with request.urlopen(req, timeout=2) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+
+    def test_default_config_confirms_through_the_builtin_handler_without_service_credentials(self):
+        status, session = self.request_json(
+            "/customer/v1/order-assistant/sessions", method="POST", body={}
+        )
+        self.assertEqual(status, 201)
+        status, session = self.request_json(
+            f"/customer/v1/order-assistant/sessions/{session['session_id']}/messages",
+            method="POST",
+            body={"message": "上海子牧团餐要两盒羊小腿，送到演示路 8 号"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(session["status"], "READY_TO_CONFIRM")
+
+        status, confirmed = self.request_json(
+            f"/customer/v1/order-assistant/sessions/{session['session_id']}/confirm",
+            method="POST",
+            body={},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(confirmed["status"], "CONFIRMED")
+        self.assertTrue(confirmed["order_result"]["mock"])
+        self.assertEqual(confirmed["order_result"]["source"], "WECOM")
+        self.assertRegex(
+            confirmed["order_result"]["order_id"],
+            r"^ORD-[0-9]{8}-[0-9A-F]{6}$",
+        )
 
 
 class OrderAssistantHttpTest(unittest.TestCase):

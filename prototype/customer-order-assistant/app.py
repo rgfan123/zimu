@@ -680,27 +680,30 @@ class OrderApiClient:
         self.config = config
 
     def submit(self, draft: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
-        service_name = self.config.order_api_service_name.strip()
-        bearer_token = self.config.order_api_bearer_token.strip()
-        if not service_name or not bearer_token:
-            raise ApiError(
-                503,
-                "ORDER_API_INTERNAL_AUTH_REQUIRED",
-                "订单接口内部服务身份未配置，已阻止提交。",
-            )
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Idempotency-Key": idempotency_key,
         }
         reserved_identity_headers = {"authorization", "x-operator"}
-        headers.update({
-            str(k): str(v)
-            for k, v in self.config.order_api_extra_headers.items()
-            if str(k).lower() not in reserved_identity_headers
-        })
-        headers["X-Operator"] = service_name
-        headers["Authorization"] = "Bearer " + bearer_token
+        headers.update(
+            {
+                str(k): str(v)
+                for k, v in self.config.order_api_extra_headers.items()
+                if str(k).lower() not in reserved_identity_headers
+            }
+        )
+        if not self.config.builtin_order_api_enabled:
+            service_name = self.config.order_api_service_name.strip()
+            bearer_token = self.config.order_api_bearer_token.strip()
+            if not service_name or not bearer_token:
+                raise ApiError(
+                    503,
+                    "ORDER_API_INTERNAL_AUTH_REQUIRED",
+                    "订单接口内部服务身份未配置，已阻止提交。",
+                )
+            headers["X-Operator"] = service_name
+            headers["Authorization"] = "Bearer " + bearer_token
         req = request.Request(
             join_url(self.config.order_api_base_url, self.config.order_api_path),
             data=json.dumps(draft, ensure_ascii=False).encode("utf-8"),
