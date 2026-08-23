@@ -208,3 +208,59 @@ test('改变责任团队筛选后 URL 同步更新（可分享/刷新恢复）',
   await harness.waitFor(() => assert.match(harness.location(), /responsible_team=ORDER_OPS/));
   await harness.waitFor(() => assert.ok(requests.some((r) => r.includes('responsible_team=ORDER_OPS'))));
 });
+
+// ---------- Issue #106：岗位默认团队预筛（URL 优先、看全部、写回 URL） ----------
+
+test('#106 有岗位且 URL 无团队参数时，默认按岗位团队预筛并写回 URL', async () => {
+  window.localStorage.setItem('zimu.workbench-role', 'FULFILLMENT_OPS');
+  const requests: string[] = [];
+  globalThis.fetch = reviewsFetch(requests);
+
+  await harness.mount(['/workbench/reviews?status=OPEN']);
+
+  await harness.waitFor(() => assert.ok(
+    requests.some((r) => r.includes('/api/v1/review-cases?') && r.includes('responsible_team=FULFILLMENT_OPS')),
+    '默认预筛必须实际影响队列请求',
+  ));
+  assert.match(harness.location(), /responsible_team=FULFILLMENT_OPS/, '默认团队写进 URL（URL 唯一事实源）');
+  assert.match(harness.bodyText(), /已按岗位预筛：履约运营/, '预筛提示必须可见');
+  assert.match(harness.bodyText(), /看全部/, '看全部切换必须可见');
+  window.localStorage.clear();
+});
+
+test('#106 URL 带 responsible_team 时以 URL 为准，忽略岗位默认值', async () => {
+  window.localStorage.setItem('zimu.workbench-role', 'FULFILLMENT_OPS');
+  const requests: string[] = [];
+  globalThis.fetch = reviewsFetch(requests);
+
+  await harness.mount(['/workbench/reviews?status=OPEN&responsible_team=CUSTOMER_OPS']);
+
+  await harness.waitFor(() => assert.ok(
+    requests.some((r) => r.includes('responsible_team=CUSTOMER_OPS')),
+    '队列请求必须用 URL 中的团队',
+  ));
+  // 侧栏徽标（size=1）按岗位计数是它自己的契约；这里只断言队列请求不被岗位覆盖。
+  assert.ok(
+    !requests.some((r) => r.includes('responsible_team=FULFILLMENT_OPS') && !r.includes('size=1')),
+    '岗位默认值不得覆盖分享链接（故事 27）',
+  );
+  assert.doesNotMatch(harness.bodyText(), /已按岗位预筛/, 'URL 显式筛选时不显示岗位预筛提示');
+  window.localStorage.clear();
+});
+
+test('#106 看全部清除预筛且本次挂载内不回填', async () => {
+  window.localStorage.setItem('zimu.workbench-role', 'FULFILLMENT_OPS');
+  const requests: string[] = [];
+  globalThis.fetch = reviewsFetch(requests);
+
+  await harness.mount(['/workbench/reviews?status=OPEN']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /看全部/));
+
+  await harness.dispatchEvent(control('看全部'), new window.MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.doesNotMatch(harness.location(), /responsible_team/));
+  await harness.waitFor(() => assert.ok(
+    requests.some((r) => r.endsWith('/api/v1/review-cases?page=0&size=20&status=OPEN')),
+    '清除后队列请求不带团队参数',
+  ));
+  window.localStorage.clear();
+});
