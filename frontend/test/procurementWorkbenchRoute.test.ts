@@ -73,10 +73,12 @@ test('采购台骨架：四指标真数 + 建议区诚实态 + 工单表真数',
     assert.match(body, new RegExp(label), `指标「${label}」必须在位`);
   }
   assert.match(body, /7/, 'PENDING 计数');
-  assert.match(body, /暂无汇总 · 建议数据层未接入/, '建议指标诚实占位');
 
-  assert.match(body, /价格建议数据层尚未接入/, '建议区保留位置并如实说明（ADR 0001）');
-  assert.match(body, /不自动创建工单/, 'ADR 0010 语义必须写明');
+  // 建议区接已注册的比价 Agent（只读运行，复用 agent console 运行时）
+  assert.match(body, /为缺货工单比价/, '比价入口必须在位');
+  assert.match(body, /procurement-price-agent/, 'Agent slug 留痕可见');
+  assert.match(body, /点上方按钮为缺货工单跑一次比价/, '未运行时如实说明，不伪造建议');
+  assert.match(body, /不创建工单、不改任何价格/, 'ADR 0010 语义必须写明');
   assert.doesNotMatch(body, /创建询价工单|创建采购工单/, '建议区不得出现创建工单动作（ADR 0010）');
 
   assert.match(body, /640/, '请求数量原样展示（十进制字符串不做运算）');

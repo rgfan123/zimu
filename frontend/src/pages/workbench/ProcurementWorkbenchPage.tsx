@@ -1,20 +1,22 @@
 /**
  * 今日采购工作台（Issue #110，ADR 0005/0010，spec #120）：
- * 第一屏是建议与工单数据。建议数据层（价格采集/剔除极值/落库）由后端施工中——
- * 建议区按 ADR 0001 保留位置并如实说明；工单指标与工单表今天就是真数。
+ * 第一屏是建议与工单数据，全部真数：指标与工单表来自 procurement-tickets；
+ * 建议区直接调用已注册的比价 Agent（POST /procurement-price-agent/compare，只读运行，
+ * 复用 agent console 的运行时与留痕），展示可比候选 / 被剔除候选与理由 / 推荐 / 模型留痕。
  * 建议永不创建工单、参考价永不预填（ADR 0010 / 比价价≠订单价）。
  */
 
 import { Link } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
+import { Button } from 'antd';
 import dayjs from 'dayjs';
 import { errorMessage } from '@/api/client';
-import { procurementApi } from '@/api/endpoints';
+import { procurementApi, procurementPriceAgentApi } from '@/api/endpoints';
 import type { ProcurementStatus, ProcurementTicket } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import { presentSuggestion, type SuggestionCardView } from './procurementSuggestion';
+import ProcurementSuggestionCard from './ProcurementSuggestionCard';
 import './workbench.css';
-
-const PLACEHOLDER = '暂无汇总';
 
 const STATUS_TAG_CLASS: Record<ProcurementStatus, string> = {
   PENDING: '',
@@ -66,14 +68,55 @@ function formatCount(value: number | null): string {
   return value === null ? '—' : String(value);
 }
 
+/** 一次为若干缺货工单跑比价 Agent（只读）；每张卡独立成败，一单失败不拖垮整屏。 */
+function useSuggestionRunner() {
+  const [running, setRunning] = useState(false);
+  const [views, setViews] = useState<SuggestionCardView[] | null>(null);
+  const [failed, setFailed] = useState(0);
+
+  const run = async (tickets: ProcurementTicket[]) => {
+    setRunning(true);
+    setFailed(0);
+    const settled = await Promise.allSettled(
+      tickets.map(async (ticket) => {
+        const result = await procurementPriceAgentApi.compare({ procurement_ticket_id: ticket.id });
+        return presentSuggestion({ id: ticket.id, ticket_no: ticket.ticket_no }, result);
+      }),
+    );
+    const ok: SuggestionCardView[] = [];
+    let failures = 0;
+    for (const outcome of settled) {
+      if (outcome.status === 'fulfilled') ok.push(outcome.value);
+      else failures += 1;
+    }
+    setViews(ok);
+    setFailed(failures);
+    setRunning(false);
+  };
+
+  return { running, views, failed, run };
+}
+
 export default function ProcurementWorkbenchPage() {
   const counts = useProcurementCounts();
   const tickets = useAsync(() => procurementApi.list({ page: 0, size: 8 }), []);
   const rows = useMemo(() => tickets.data?.items ?? [], [tickets.data]);
   const total = tickets.data?.total_elements ?? null;
+  const suggestions = useSuggestionRunner();
+  /** 只为「还缺货」的工单比价：已完成/已取消的没有采购决策可做。 */
+  const openTickets = useMemo(
+    () => rows.filter((ticket) => ticket.status === 'PENDING' || ticket.status === 'PARTIAL' || ticket.status === 'FAILED'),
+    [rows],
+  );
 
   const metrics = [
-    { key: 'suggest', cls: 'e', label: '待我确认建议', value: null, note: `${PLACEHOLDER} · 建议数据层未接入` },
+    {
+      key: 'suggest',
+      cls: 'e',
+      label: '待我确认建议',
+      value: suggestions.views ? suggestions.views.filter((view) => !view.errorCode).length : null,
+      note: suggestions.views ? '本次运行 · 均需人工确认' : '点「为缺货工单比价」运行',
+    },
     { key: 'pending', cls: 'b', label: '待处理工单', value: counts.pending, note: '等首次回执' },
     { key: 'partial', cls: 'w', label: '部分到货', value: counts.partial, note: '余量在途' },
     { key: 'today', cls: '', label: '今日新增工单', value: counts.createdToday, note: '缺货触发' },
@@ -104,24 +147,53 @@ export default function ProcurementWorkbenchPage() {
         </div>
       </section>
 
-      <section className="zs-sec">
+      <section className="zs-sec" id="zs-suggest">
         <div className="zs-card">
           <div className="zs-hd">
-            <h3>今日建议</h3>
+            <h3>比价建议</h3>
             <span className="zs-tag m">procurement-price-agent</span>
+            <div className="zs-r">
+              <Button
+                type="primary"
+                size="small"
+                loading={suggestions.running}
+                disabled={openTickets.length === 0}
+                onClick={() => suggestions.run(openTickets)}
+              >
+                为缺货工单比价（{openTickets.length}）
+              </Button>
+            </div>
           </div>
           <div className="zs-bd">
-            <div className="zs-alert i">
-              <span className="zs-ico">i</span>
-              <div className="zs-b">
-                <b>价格建议数据层尚未接入</b>
-                <p>
-                  比价 Agent 已注册（只读、强制人工确认），价格采集与建议落库由后端施工中。
-                  接入后此处每日给出剔除最高最低后的中间价建议，附被剔除报盘与理由；
-                  建议只能被人采纳——不自动创建工单、参考价不进任何价格字段。
-                </p>
+            {suggestions.running ? (
+              <div className="zs-hint">正在为 {openTickets.length} 张缺货工单运行比价 Agent…</div>
+            ) : suggestions.views === null ? (
+              <div className="zs-alert i">
+                <span className="zs-ico">i</span>
+                <div className="zs-b">
+                  <b>点上方按钮为缺货工单跑一次比价</b>
+                  <p>
+                    Agent 只读运行：给出可比候选、被剔除候选与理由、推荐与留痕，全部标记「需人工确认」。
+                    它不创建工单、不改任何价格——工单由履约缺货产生，成交价电话确认后由人手填。
+                  </p>
+                </div>
               </div>
-            </div>
+            ) : suggestions.views.length === 0 ? (
+              <div className="zs-hint">本次没有产生建议（{suggestions.failed} 张工单运行失败）。</div>
+            ) : (
+              <>
+                {suggestions.failed > 0 ? (
+                  <div className="zs-hint" style={{ marginBottom: 10 }}>
+                    {suggestions.failed} 张工单比价请求失败，已跳过；其余结果如下。
+                  </div>
+                ) : null}
+                <div className="zs-pgrid">
+                  {suggestions.views.map((view) => (
+                    <ProcurementSuggestionCard key={view.ticketId} view={view} />
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
       </section>

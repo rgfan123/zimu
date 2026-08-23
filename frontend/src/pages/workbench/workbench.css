@@ -436,3 +436,140 @@
   color: var(--zs-text-2);
   line-height: 1.6;
 }
+
+/* ---------- 建议卡（原型 v-buy .pc/.pr/.box 移植） ---------- */
+.zs-pgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(424px, 1fr));
+  gap: 14px;
+}
+.zs-pc {
+  background: var(--zs-raised);
+  border: 1px solid var(--zs-border-2);
+  border-radius: 10px;
+  box-shadow: var(--zs-sh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.zs-pc-h {
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--zs-border-2);
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.zs-pc-h .nm {
+  flex: 1;
+  min-width: 0;
+}
+.zs-pc-h .nm b {
+  display: block;
+  font-size: 14px;
+  color: var(--zs-heading);
+}
+.zs-pc-h .nm .sk {
+  font-family: var(--zs-mono);
+  font-size: 11px;
+  color: var(--zs-text-3);
+  margin-top: 2px;
+}
+.zs-pc-b {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+}
+.zs-pc-a {
+  padding: 11px 16px;
+  border-top: 1px solid var(--zs-border-2);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* 价格对比行 */
+.zs-pr {
+  display: grid;
+  grid-template-columns: 1fr auto 54px;
+  gap: 0 12px;
+  align-items: center;
+  font-size: 13px;
+}
+.zs-pr .lb {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--zs-text-3);
+  padding-top: 7px;
+  margin-top: 3px;
+  border-top: 1px solid var(--zs-border-2);
+}
+.zs-pr .lb.first {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+.zs-pr .sp {
+  color: var(--zs-text-2);
+  padding: 2px 0;
+}
+.zs-pr .am {
+  font-family: var(--zs-mono);
+  font-size: 13px;
+  text-align: right;
+  color: var(--zs-text);
+}
+.zs-pr .dl {
+  font-family: var(--zs-mono);
+  font-size: 11.5px;
+  text-align: right;
+  color: var(--zs-text-3);
+}
+.zs-pr .best .am {
+  color: var(--zs-success);
+  font-weight: 600;
+}
+.zs-pr .excluded .sp,
+.zs-pr .excluded .am {
+  color: var(--zs-text-3);
+  text-decoration: line-through;
+}
+
+/* 说理框 */
+.zs-box {
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.zs-box b {
+  display: block;
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  margin-bottom: 3px;
+  font-weight: 600;
+}
+.zs-box.why {
+  background: var(--zs-fill-3);
+  border: 1px solid var(--zs-border-2);
+  color: var(--zs-text-2);
+}
+.zs-box.why b {
+  color: var(--zs-text-3);
+}
+.zs-box.sug {
+  background: var(--zs-brand-bg);
+  border: 1px solid var(--zs-brand-focus);
+  color: var(--zs-text);
+}
+.zs-box.sug b {
+  color: var(--zs-brand-active);
+}
+.zs-prov {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
