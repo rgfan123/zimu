@@ -56,7 +56,17 @@ public class OrderDraftCardRunner {
 
         boolean externalStarted = false;
         try {
-            ObjectNode payload = card(drafts.detail(card.orderDraftId()), card.taskId());
+            OrderDraftDetailDto currentDraft = drafts.detail(card.orderDraftId());
+            if (!"OPEN".equals(currentDraft.status()) || currentDraft.revision() != card.draftRevision()) {
+                cards.recordSuperseded(
+                        cardId,
+                        "OPEN".equals(currentDraft.status())
+                                ? "WECOM_ORDER_DRAFT_CARD_REVISION_SUPERSEDED"
+                                : "WECOM_ORDER_DRAFT_CARD_DRAFT_CLOSED");
+                tasks.succeed(task.id(), task.leaseOwner());
+                return;
+            }
+            ObjectNode payload = card(currentDraft, card.taskId());
             WecomOutboundMessage message = WecomOutboundMessage.templateCard(card.chatId(), payload);
             externalStarted = true;
             WecomSendResult result = gateway.send(message);

@@ -22,4 +22,7 @@ public interface OrderDraftCardStore {
     void recordUnknown(long cardId, String errorCode);
 
     void recordFailed(long cardId, String errorCode);
+
+    /** Terminal no-send outcome when current draft facts no longer match the queued card. */
+    void recordSuperseded(long cardId, String reasonCode);
 }

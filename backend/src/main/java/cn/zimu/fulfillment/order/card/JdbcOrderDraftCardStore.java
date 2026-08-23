@@ -181,6 +181,19 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
                 cardId);
     }
 
+    @Override
+    @Transactional
+    public void recordSuperseded(long cardId, String reasonCode) {
+        jdbc.update(
+                """
+                UPDATE app.wecom_order_draft_cards
+                SET status='SUPERSEDED', last_error=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status IN ('PENDING', 'SENDING')
+                """,
+                stable(reasonCode),
+                cardId);
+    }
+
     private void transition(long cardId, String status, String errorCode) {
         jdbc.update(
                 """

@@ -414,6 +414,55 @@ class WecomLongConnectionClientTest {
     }
 
     @Test
+    void concurrentCardCallbacksStartImmediatelyAndEachCompletesItsFastPath() throws Exception {
+        startClient();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        CountDownLatch bothHandlersStarted = new CountDownLatch(2);
+        List<WecomSendResult> results = new CopyOnWriteArrayList<>();
+        client.setFrameHandler(new WecomFrameHandler() {
+            @Override
+            public void onFrame(String cmd, JsonNode frame) {
+                throw new AssertionError("client must pass the listener arrival timestamp");
+            }
+
+            @Override
+            public void onFrame(String cmd, JsonNode frame, long receivedNanos) {
+                bothHandlersStarted.countDown();
+                try {
+                    if (!bothHandlersStarted.await(1, TimeUnit.SECONDS)) {
+                        throw new AssertionError("card callback waited behind another card callback");
+                    }
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("card callback interrupted", ex);
+                }
+                ObjectNode updatedCard = MAPPER.createObjectNode();
+                updatedCard.put("response_type", "update_template_card");
+                updatedCard.putObject("template_card")
+                        .put("card_type", "text_notice")
+                        .put("task_id", frame.path("headers").path("req_id").asText());
+                results.add(client.respondUpdateUntil(
+                        frame.path("headers").path("req_id").asText(),
+                        updatedCard,
+                        receivedNanos + TimeUnit.SECONDS.toNanos(2)));
+            }
+        });
+
+        server.sendText(cardEvent("event-concurrent-1"));
+        server.sendText(cardEvent("event-concurrent-2"));
+
+        assertThat(bothHandlersStarted.await(1, TimeUnit.SECONDS)).isTrue();
+        awaitTrue(() -> results.size() == 2);
+        assertThat(results).extracting(WecomSendResult::status).containsOnly(WecomSendStatus.SUCCESS);
+        assertThat(server.textFrames().stream()
+                        .filter(frame -> frame.contains("\"cmd\":\"aibot_respond_update_msg\""))
+                        .toList())
+                .hasSize(2)
+                .anyMatch(frame -> frame.contains("\"req_id\":\"event-concurrent-1\""))
+                .anyMatch(frame -> frame.contains("\"req_id\":\"event-concurrent-2\""));
+    }
+
+    @Test
     void callbackArrivalTimeIsCapturedBeforeTheOrderedHandlerQueueWait() throws Exception {
         startClient();
         awaitState(WecomConnectionState.SUBSCRIBED);
@@ -448,13 +497,19 @@ class WecomLongConnectionClientTest {
         assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
         server.sendText(
                 "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\"queued-second\"},"
-                        + "\"body\":{\"event\":{\"eventtype\":\"template_card_event\"}}}");
+                        + "\"body\":{\"event\":{\"eventtype\":\"enter_chat\"}}}");
         awaitTrue(() -> client.queuedCallbackCount() == 1);
         Thread.sleep(200);
         releaseFirst.countDown();
 
         assertThat(queuedCallbackAge.get(1, TimeUnit.SECONDS))
                 .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(180));
+    }
+
+    private static String cardEvent(String requestId) {
+        return "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\""
+                + requestId
+                + "\"},\"body\":{\"event\":{\"eventtype\":\"template_card_event\"}}}";
     }
 
     @Test

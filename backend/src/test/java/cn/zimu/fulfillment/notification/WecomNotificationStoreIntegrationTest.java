@@ -175,6 +175,21 @@ class WecomNotificationStoreIntegrationTest {
     }
 
     @Test
+    void plannedShutdownReleaseMakesClaimedBatchImmediatelyRecoverable() {
+        long order = insertOrder("ORD-NOTIFY-SHUTDOWN", "BUSINESS", "notify-shutdown");
+        insertEvent(order, 1, "TRACKING_RECEIVED", "BUSINESS", null);
+
+        NotificationBatch first = store.claim("shutdown-worker-a", Duration.ofMinutes(2), 20).orElseThrow();
+
+        assertThat(store.releaseOwnedForShutdown(first.id(), "shutdown-worker-a")).isTrue();
+        NotificationBatch reclaimed =
+                store.claim("shutdown-worker-b", Duration.ofMinutes(2), 20).orElseThrow();
+        assertThat(reclaimed.id()).isEqualTo(first.id());
+        assertThat(store.releaseOwnedForShutdown(reclaimed.id(), "wrong-owner")).isFalse();
+        assertThat(store.releaseOwnedForShutdown(reclaimed.id(), "shutdown-worker-b")).isTrue();
+    }
+
+    @Test
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void concurrentWorkersDoNotSplitOneTeamWindowIntoTwoDigests() throws Exception {
         long firstOrder = insertOrder("ORD-NOTIFY-CONCURRENT-1", "BUSINESS", "notify-concurrent-1");

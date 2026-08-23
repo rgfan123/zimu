@@ -20,6 +20,7 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -56,6 +57,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private static final int MAX_QUEUED_FRAMES = 64;
     private static final int MAX_QUEUED_HEARTBEATS = 4;
     private static final int MAX_QUEUED_CALLBACKS = 64;
+    private static final int MAX_CONCURRENT_INTERACTIVE_CALLBACKS = 4;
 
     private final WecomProperties properties;
     private final URI webSocketUri;
@@ -85,6 +87,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private final AtomicBoolean frameSenderRunning = new AtomicBoolean(true);
     private final Thread frameSenderThread;
     private final ThreadPoolExecutor frameHandlerExecutor;
+    private final ThreadPoolExecutor interactiveFrameHandlerExecutor;
 
     private volatile WecomFrameHandler frameHandler = WecomFrameHandler.EMPTY;
     private volatile boolean running;
@@ -235,6 +238,22 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 new ArrayBlockingQueue<>(MAX_QUEUED_CALLBACKS),
                 runnable -> {
                     Thread thread = new Thread(runnable, "wecom-frame-handler");
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+        // Template-card callbacks have a platform-origin absolute deadline. They must never wait
+        // behind an ordered callback that may itself spend most of that window waiting for an ACK.
+        // A SynchronousQueue provides zero backlog: up to four callbacks start immediately and any
+        // excess is rejected so the connection can be recycled for platform redelivery.
+        this.interactiveFrameHandlerExecutor = new ThreadPoolExecutor(
+                MAX_CONCURRENT_INTERACTIVE_CALLBACKS,
+                MAX_CONCURRENT_INTERACTIVE_CALLBACKS,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new SynchronousQueue<>(),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "wecom-interactive-frame-handler");
                     thread.setDaemon(true);
                     return thread;
                 },
@@ -679,8 +698,12 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     }
 
     private void dispatchToHandler(String cmd, JsonNode frame, long receivedNanos) {
+        ThreadPoolExecutor executor = "aibot_event_callback".equals(cmd)
+                        && "template_card_event".equals(eventType(frame))
+                ? interactiveFrameHandlerExecutor
+                : frameHandlerExecutor;
         try {
-            frameHandlerExecutor.execute(() -> {
+            executor.execute(() -> {
                 try {
                     frameHandler.onFrame(cmd, frame, receivedNanos);
                 } catch (Exception ex) {
@@ -701,6 +724,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
 
     private void stopFrameHandlerExecutor() {
         frameHandlerExecutor.shutdownNow();
+        interactiveFrameHandlerExecutor.shutdownNow();
     }
 
     private void watchdogCheck() {
@@ -988,10 +1012,13 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 : value.asInt(Integer.MIN_VALUE);
     }
 
-    /** 事件类型判定：兼容 body.event_type / body.event / body.type 三种形状。 */
+    /** 事件类型判定：优先官方 body.event.eventtype，并兼容历史扁平形状。 */
     private static String eventType(JsonNode frame) {
         JsonNode body = frame.path("body");
-        String type = text(body, "event_type");
+        String type = text(body.path("event"), "eventtype");
+        if (type == null) {
+            type = text(body, "event_type");
+        }
         if (type == null) {
             type = text(body, "event");
         }

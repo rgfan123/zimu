@@ -6183,7 +6183,7 @@ CREATE TABLE app.wecom_order_draft_cards (
     route_type          VARCHAR(16) NOT NULL CHECK (route_type IN ('SINGLE', 'GROUP')),
     chat_id             VARCHAR(255) NOT NULL CHECK (btrim(chat_id) <> ''),
     status              VARCHAR(16) NOT NULL DEFAULT 'PENDING'
-                        CHECK (status IN ('PENDING', 'SENDING', 'SENT', 'UNKNOWN', 'FAILED')),
+                        CHECK (status IN ('PENDING', 'SENDING', 'SENT', 'UNKNOWN', 'FAILED', 'SUPERSEDED')),
     attempt_count       INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     request_id          VARCHAR(128),
     last_error          VARCHAR(128),

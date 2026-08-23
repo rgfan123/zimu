@@ -152,6 +152,23 @@ public class JdbcWecomNotificationStore implements WecomNotificationStore {
 
     @Override
     @Transactional
+    public boolean releaseOwnedForShutdown(long batchId, String owner) {
+        requireText(owner, "owner");
+        return jdbc.update(
+                        """
+                        UPDATE app.wecom_notification_batches
+                        SET status='PENDING', next_attempt_at=CURRENT_TIMESTAMP,
+                            lease_until=NULL, lease_owner=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND status='RUNNING' AND lease_owner=?
+                          AND lease_until > statement_timestamp()
+                        """,
+                        batchId,
+                        owner)
+                == 1;
+    }
+
+    @Override
+    @Transactional
     public void reconcileRecipients(long batchId, Set<String> currentRecipientKeys) {
         Objects.requireNonNull(currentRecipientKeys, "currentRecipientKeys");
         currentRecipientKeys.forEach(value -> requireText(value, "recipientKey"));

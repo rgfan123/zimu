@@ -116,6 +116,40 @@ class OrderDraftCardRunnerTest {
         verify(tasks).failTerminal(task.id(), task.leaseOwner(), "WECOM_ORDER_DRAFT_CARD_SEND_FAILED");
     }
 
+    @Test
+    void closedDraftSupersedesQueuedCardWithoutSending() {
+        AsyncTaskStore.AsyncTask task = task(4, 1);
+        when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
+                .thenReturn(true);
+        when(cards.load(7L)).thenReturn(new OrderDraftCard(
+                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
+        when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
+        when(drafts.detail(41L)).thenReturn(draft("CONFIRMED", 0L));
+
+        runner.execute(task);
+
+        verify(cards).recordSuperseded(7L, "WECOM_ORDER_DRAFT_CARD_DRAFT_CLOSED");
+        verify(tasks).succeed(task.id(), task.leaseOwner());
+        verify(gateway, never()).send(any());
+    }
+
+    @Test
+    void newerOpenDraftRevisionSupersedesStaleCardWithoutSending() {
+        AsyncTaskStore.AsyncTask task = task(5, 1);
+        when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
+                .thenReturn(true);
+        when(cards.load(7L)).thenReturn(new OrderDraftCard(
+                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
+        when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
+        when(drafts.detail(41L)).thenReturn(draft("OPEN", 1L));
+
+        runner.execute(task);
+
+        verify(cards).recordSuperseded(7L, "WECOM_ORDER_DRAFT_CARD_REVISION_SUPERSEDED");
+        verify(tasks).succeed(task.id(), task.leaseOwner());
+        verify(gateway, never()).send(any());
+    }
+
     private static AsyncTaskStore.AsyncTask task(long id, int attempts) {
         return new AsyncTaskStore.AsyncTask(
                 id,
@@ -134,13 +168,17 @@ class OrderDraftCardRunnerTest {
     }
 
     private static OrderDraftDetailDto draft() {
+        return draft("OPEN", 0L);
+    }
+
+    private static OrderDraftDetailDto draft(String status, long revision) {
         return new OrderDraftDetailDto(
                 "41",
                 "OD-41",
                 "WECOM-SUB-41",
                 "11",
-                "OPEN",
-                0,
+                status,
+                revision,
                 null,
                 null,
                 null,

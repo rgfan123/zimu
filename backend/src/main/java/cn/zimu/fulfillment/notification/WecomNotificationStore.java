@@ -12,6 +12,9 @@ public interface WecomNotificationStore {
     /** Extends an unexpired lease owned by {@code owner}; false means ownership was lost. */
     boolean renewLease(long batchId, String owner, Duration lease);
 
+    /** Releases a just-claimed batch during planned shutdown so another instance can resume now. */
+    boolean releaseOwnedForShutdown(long batchId, String owner);
+
     /** Terminalizes retry/in-flight rows whose operator/userid generation left current routing. */
     void reconcileRecipients(long batchId, Set<String> currentRecipientKeys);
 
