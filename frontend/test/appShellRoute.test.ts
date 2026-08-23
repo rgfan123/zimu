@@ -48,6 +48,13 @@ test('外壳无顶栏，品牌下方是未选择态的岗位选择器，我的�
   assert.match(body, /今日发货工作台/);
   assert.match(body, /对账工作台/);
   assert.doesNotMatch(body, /模拟下单/, 'Demo 页面不再出现在日常菜单（URL 保留）');
+  // 嵌套分组（京东工具）必须排在其父分组（系统管理）自身条目之后，不得被拍平到前面。
+  assert.ok(
+    body.indexOf('操作审计') !== -1 &&
+      body.indexOf('连接与出库查询') !== -1 &&
+      body.indexOf('操作审计') < body.indexOf('连接与出库查询'),
+    '系统管理的直属条目必须渲染在京东工具分组之前',
+  );
 });
 
 test('选择岗位后跳到该岗位工作台、写入 localStorage，URL 不携带岗位', async () => {

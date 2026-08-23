@@ -32,14 +32,17 @@ function buildMenuItems(routes: AppRoute[]): MenuItems {
   const items: MenuItems = [];
   const pushGroups = (section: AppRoute) => {
     const leaves: MenuItems = [];
+    const nested: AppRoute[] = [];
     for (const child of section.children ?? []) {
       if (child.children?.length) {
-        pushGroups({ ...child, label: `${section.label} · ${child.label}` });
+        nested.push({ ...child, label: `${section.label} · ${child.label}` });
       } else {
         leaves.push({ key: child.path, label: child.label });
       }
     }
+    // 先落父分组自身条目，再落嵌套分组，保证「京东工具」排在「系统管理」之后。
     if (leaves.length) items.push({ type: 'group', key: `group:${section.path}`, label: section.label, children: leaves });
+    for (const child of nested) pushGroups(child);
   };
 
   for (const route of routes) {

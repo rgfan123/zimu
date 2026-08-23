@@ -1,11 +1,15 @@
 /**
  * 岗位选择器（Issue #104，原型 .ws 控件）：品牌下方 34px 下拉。
  * 受控组件：选中即回调，由外壳负责持久化与跳转；本组件不发请求、不写 URL（D1/D3）。
+ * 键盘可达：ArrowUp/Down/Home/End 在选项间移动焦点，Esc 关闭并交还焦点给触发按钮。
  */
 
 import { useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { theme } from 'antd';
 import { WORKBENCH_ROLE_OPTIONS, workbenchRoleLabel } from '@/workbenchRole';
+
+const LISTBOX_ID = 'workbench-role-listbox';
 
 interface WorkbenchRoleSwitcherProps {
   role: string | null;
@@ -16,14 +20,23 @@ export default function WorkbenchRoleSwitcher({ role, onSelect }: WorkbenchRoleS
   const { token } = theme.useToken();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    const selected = listRef.current?.querySelector<HTMLButtonElement>('button[aria-selected="true"]');
+    const first = listRef.current?.querySelector<HTMLButtonElement>('button[role="option"]');
+    (selected ?? first)?.focus();
+
     const onPointerDown = (event: MouseEvent) => {
       if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
@@ -33,14 +46,29 @@ export default function WorkbenchRoleSwitcher({ role, onSelect }: WorkbenchRoleS
     };
   }, [open]);
 
+  const onListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const options = [...(listRef.current?.querySelectorAll<HTMLButtonElement>('button[role="option"]') ?? [])];
+    if (!options.length) return;
+    const current = options.indexOf(document.activeElement as HTMLButtonElement);
+    let next = 0;
+    if (event.key === 'ArrowDown') next = current < 0 ? 0 : (current + 1) % options.length;
+    else if (event.key === 'ArrowUp') next = current <= 0 ? options.length - 1 : current - 1;
+    else if (event.key === 'End') next = options.length - 1;
+    options[next]?.focus();
+  };
+
   const label = workbenchRoleLabel(role);
 
   return (
     <div ref={containerRef} style={{ position: 'relative', padding: '0 12px 10px' }}>
       <button
+        ref={triggerRef}
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? LISTBOX_ID : undefined}
         onClick={() => setOpen((value) => !value)}
         style={{
           width: '100%',
@@ -92,8 +120,11 @@ export default function WorkbenchRoleSwitcher({ role, onSelect }: WorkbenchRoleS
 
       {open ? (
         <div
+          ref={listRef}
+          id={LISTBOX_ID}
           role="listbox"
           aria-label="切换岗位视图"
+          onKeyDown={onListKeyDown}
           style={{
             position: 'absolute',
             left: 12,
@@ -120,6 +151,7 @@ export default function WorkbenchRoleSwitcher({ role, onSelect }: WorkbenchRoleS
                 aria-selected={selected}
                 onClick={() => {
                   setOpen(false);
+                  triggerRef.current?.focus();
                   onSelect(option.value);
                 }}
                 style={{
