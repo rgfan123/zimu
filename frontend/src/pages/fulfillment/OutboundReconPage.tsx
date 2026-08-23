@@ -312,11 +312,13 @@ function ReconResult({
 export interface OutboundReconPageProps {
   /** 页面正文顶部额外横幅（如 /workbench/recon 入口注入的「金额对账未纳入本期」口径说明）。 */
   notice?: ReactNode;
+  /** 横幅之后、点查区之前的扩展区（/workbench/recon 的月度对账骨架经此注入，点查契约不动）。 */
+  prelude?: ReactNode;
   /** 仅 /workbench/recon 显式开启：有真实 order_id 时「系统内部事实」整卡可下钻订单详情。 */
   enableOrderDrilldown?: boolean;
 }
 
-export default function OutboundReconPage({ notice, enableOrderDrilldown = false }: OutboundReconPageProps = {}) {
+export default function OutboundReconPage({ notice, prelude, enableOrderDrilldown = false }: OutboundReconPageProps = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlType = searchParams.get('query_type');
   const urlValue = searchParams.get('query_value') ?? '';
@@ -339,6 +341,7 @@ export default function OutboundReconPage({ notice, enableOrderDrilldown = false
       description="输入系统出库单号 / 京东单号 / 订单号，把系统内部事实与京东侧事实并排对照；不一致只标记不自动处置，由运营判断。"
     >
       {notice}
+      {prelude}
       <FilterBar>
         <Space.Compact style={{ width: '100%', maxWidth: 760 }}>
           <Select<OutboundReconQueryType>

@@ -26,6 +26,7 @@ import {
   type RouteHarness,
 } from './routeHarness.ts';
 
+// 注：Issue #104 外壳后侧栏常驻 /orders/* 导航锚点，订单下钻类断言一律限定 main 内查询。
 let harness: RouteHarness;
 
 before(async () => {
@@ -212,7 +213,7 @@ test('workbench recon does not fabricate an /orders link without a provable orde
   await harness.mount(['/workbench/recon?query_type=ORDER_NO&query_value=SO-20260813']);
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /查询条件：订单号「SO-20260813」/));
-  const detailLinks = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+  const detailLinks = [...document.querySelectorAll<HTMLAnchorElement>('main a')]
     .filter((link) => (link.getAttribute('href') ?? '').startsWith('/orders/') && (link.getAttribute('href') ?? '').includes('return_to'));
   assert.equal(detailLinks.length, 0, '无 order_id 证据链时不得渲染带 return_to 的订单详情跳转');
 });
@@ -243,7 +244,7 @@ test('workbench recon makes the internal-facts card a keyboard-reachable order l
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /系统内部事实/));
   const expectedHref = `/orders/101?return_to=${encodeURIComponent(currentPath)}`;
-  const orderLinks = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+  const orderLinks = [...document.querySelectorAll<HTMLAnchorElement>('main a')]
     .filter((link) => (link.getAttribute('href') ?? '').startsWith('/orders/'));
   assert.equal(orderLinks.length, 1, '有真实 order_id 时整卡必须是单一订单锚点');
   assert.equal(orderLinks[0].getAttribute('href'), expectedHref, 'href 必须落到 /orders/:id 并保留当前查询');
@@ -278,7 +279,7 @@ test('legacy /fulfillment/outbound-recon stays available without the workbench n
   await harness.waitFor(() => assert.match(harness.bodyText(), /查询条件：系统出库单号「202608130001」/));
   assert.match(harness.bodyText(), /逐字段差异对照/, '旧路由必须保留完整七态对照视图');
   assert.doesNotMatch(harness.bodyText(), /金额对账未纳入本期/, '金额口径横幅只属于工作台入口，不污染旧路由');
-  const orderLinks = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+  const orderLinks = [...document.querySelectorAll<HTMLAnchorElement>('main a')]
     .filter((link) => (link.getAttribute('href') ?? '').startsWith('/orders/'));
   assert.equal(orderLinks.length, 0, '旧 /fulfillment/outbound-recon 不得启用订单下钻');
 });
@@ -322,7 +323,7 @@ for (const orderId of REJECTED_ORDER_IDS) {
 
     await harness.mount(['/workbench/recon?query_type=OUTBOUND_ORDER_NO&query_value=202608130001']);
     await harness.waitFor(() => assert.match(harness.bodyText(), /系统内部事实/));
-    const orderLinks = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    const orderLinks = [...document.querySelectorAll<HTMLAnchorElement>('main a')]
       .filter((link) => (link.getAttribute('href') ?? '').includes('/orders/'));
     assert.equal(orderLinks.length, 0, `order_id ${JSON.stringify(orderId)} 不得渲染订单链接`);
     const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
@@ -443,7 +444,8 @@ function reconAndOrderFetch() {
 }
 
 function pageHrefs(): string[] {
-  return [...document.querySelectorAll('a')].map((anchor) => anchor.getAttribute('href') ?? '');
+  // 限定主内容区：侧栏（Issue #104 外壳）常驻 /workbench/recon 等导航锚点，不属被测页面。
+  return [...document.querySelectorAll('main a')].map((anchor) => anchor.getAttribute('href') ?? '');
 }
 
 test('workbench recon order card click-through returns via 返回出库对账 to the original query', async () => {
@@ -453,7 +455,7 @@ test('workbench recon order card click-through returns via 返回出库对账 to
   await harness.waitFor(() => assert.match(harness.bodyText(), /系统内部事实/));
 
   const expectedHref = `/orders/101?return_to=${encodeURIComponent(RECON_QUERY)}`;
-  const orderLink = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+  const orderLink = [...document.querySelectorAll<HTMLAnchorElement>('main a')]
     .find((link) => (link.getAttribute('href') ?? '').startsWith('/orders/'));
   assert.ok(orderLink, '可证 order_id 必须渲染整卡锚点');
   assert.equal(orderLink.getAttribute('href'), expectedHref);
@@ -461,7 +463,7 @@ test('workbench recon order card click-through returns via 返回出库对账 to
 
   await harness.waitFor(() => assert.equal(harness.location(), expectedHref));
   await harness.waitFor(() => assert.match(harness.bodyText(), /ORD-101/));
-  const back = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+  const back = [...document.querySelectorAll<HTMLAnchorElement>('main a')]
     .find((link) => (link.textContent ?? '').includes('返回出库对账'));
   assert.ok(back, '合法 return_to 必须渲染「返回出库对账」锚点');
   assert.equal(back.getAttribute('href'), RECON_QUERY, '返回锚点必须是原出库对账查询');
