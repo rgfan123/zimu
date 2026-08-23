@@ -41,7 +41,7 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Autowired TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
-    @Autowired ShipmentJdOutboundService outboundService;
+    @Autowired ShipmentJdOutboundPreparer planner;
 
     @BeforeEach
     void configureJdProviderAndExplicitBoxConversion() {
@@ -200,14 +200,14 @@ class ShipmentJdOutboundPreviewApiTest {
     }
 
     @Test
-    void applicationPreviewSnapshotKeepsIdentityRequestAndHashStableWithoutSideEffects() {
+    void submissionPlanKeepsInternalRequestAndHashSeparateFromMaskedPreview() {
         Fact fact = createOrder("SNAPSHOT", List.of(item("2.000")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         confirmAddress(shipmentId, "snapshot");
         long auditCountBefore = jdbc.queryForObject("SELECT count(*) FROM app.audit_logs", Long.class);
 
-        ShipmentJdOutboundPreviewSnapshot first = outboundService.preparePreview(shipmentId);
-        ShipmentJdOutboundPreviewSnapshot second = outboundService.preparePreview(shipmentId);
+        JdShipmentSubmissionPlan first = planner.plan(shipmentId);
+        JdShipmentSubmissionPlan second = planner.plan(shipmentId);
 
         long providerId = jdbc.queryForObject(
                 "SELECT fulfillment_provider_id FROM app.shipments WHERE id=?", Long.class, shipmentId);
@@ -226,8 +226,16 @@ class ShipmentJdOutboundPreviewApiTest {
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> castMap(first.request().get("customerInfo")).put("ownerNo", "changed"))
                 .isInstanceOf(UnsupportedOperationException.class);
+
+        Map<String, Object> previewBody = preview(shipmentId, "req-jd-preview-plan-projection").getBody();
+        assertThat(castMap(previewBody.get("request"))).containsEntry("pin", "***");
+        assertThat(previewBody).containsEntry("request_hash", first.requestHash());
+        assertThat(previewBody.toString()).doesNotContain("PIN-API-001");
+        JdShipmentSubmissionPlan afterProjection = planner.plan(shipmentId);
+        assertThat(afterProjection.request()).isEqualTo(first.request());
+        assertThat(afterProjection.requestHash()).isEqualTo(first.requestHash());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM app.audit_logs", Long.class))
-                .isEqualTo(auditCountBefore);
+                .isEqualTo(auditCountBefore + 1);
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.shipment_jd_outbounds WHERE shipment_id=?", Long.class, shipmentId))
                 .isZero();

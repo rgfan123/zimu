@@ -7,18 +7,22 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Shipment 级京东出库请求的稳定、只读应用快照。
+ * Shipment 级京东出库提交的稳定、只读内部计划。
  *
- * <p>预览 HTTP、库存判定和真实建单都必须消费这一份 {@link #request()} 与
- * {@link #requestHash()}，不得另建 SKU/数量/地址映射逻辑。快照本身不执行京东写操作，
- * 也不产生审计记录；审计由具体用例在消费快照时记录。
+ * <p>预览投影、库存判定和真实建单都消费同一份 {@link #request()}、
+ * {@link #stockDemands()}、{@link #blockers()} 与 {@link #requestHash()}，不得各自重建
+ * SKU、数量或地址映射。计划只包含确定性读取与计算结果，不持有操作人、幂等键、审计、
+ * 京东网络调用或提交结果持久化职责。
  */
-public record ShipmentJdOutboundPreviewSnapshot(
+record JdShipmentSubmissionPlan(
         long shipmentId,
         long shipmentVersion,
         long orderId,
         long providerId,
+        String providerType,
         String erpDeliveryNo,
+        PriorSubmission priorSubmission,
+        List<OrderLineState> orderLines,
         Map<String, Object> request,
         String requestHash,
         List<StockDemand> stockDemands,
@@ -26,21 +30,22 @@ public record ShipmentJdOutboundPreviewSnapshot(
         List<Blocker> blockers,
         String manualCorrectionSource) {
 
-    public ShipmentJdOutboundPreviewSnapshot {
+    JdShipmentSubmissionPlan {
         request = immutableMap(request);
+        orderLines = List.copyOf(orderLines);
         stockDemands = List.copyOf(stockDemands);
         validations = List.copyOf(validations);
         blockers = List.copyOf(blockers);
     }
 
-    public boolean submittable() {
+    boolean submittable() {
         return blockers.isEmpty();
     }
 
-    public record Validation(String path, String status, String source, String message) {
+    record Validation(String path, String status, String source, String message) {
     }
 
-    public record Blocker(
+    record Blocker(
             int httpStatus,
             String code,
             String path,
@@ -49,8 +54,25 @@ public record ShipmentJdOutboundPreviewSnapshot(
             String message) {
     }
 
-    /** Stock query input derived from the same cargo mapping as the outbound request. */
-    public record StockDemand(long skuId, String goodsNo, int requiredPieces) {
+    /** 京东库存查询输入，与出库请求的货品展开和件数换算同源。 */
+    record StockDemand(long skuId, String goodsNo, int requiredPieces) {
+    }
+
+    record PriorSubmission(
+            String syncStatus,
+            String requestHash,
+            int retryCount,
+            String lastErrorCode,
+            String clientMode) {
+
+        boolean requiresReconciliation() {
+            return ShipmentJdOutboundPreparer.SYNC_STATUS_SUBMITTING.equals(syncStatus)
+                    || (ShipmentJdOutboundPreparer.SYNC_STATUS_SYNC_FAILED.equals(syncStatus)
+                            && ShipmentJdOutboundPreparer.UNCERTAIN_EXTERNAL_RESULTS.contains(lastErrorCode));
+        }
+    }
+
+    record OrderLineState(long orderLineId, String processingStage) {
     }
 
     private static Map<String, Object> immutableMap(Map<String, Object> source) {

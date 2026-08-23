@@ -70,6 +70,7 @@ class ShipmentJdOutboundSubmitTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper objectMapper;
     @Autowired ShipmentJdOutboundService service;
+    @Autowired ShipmentJdOutboundPreparer planner;
     @Autowired ControlledJdWriteOpsClient controlledJdWrite;
     @Autowired ControlledJdWarehouseClient controlledJdWarehouse;
 
@@ -276,7 +277,7 @@ class ShipmentJdOutboundSubmitTest {
                 singleItem("WECOM-SKU-JD-001", "1.000"),
                 singleItem("WECOM-SKU-JD-001", "2.000")));
         long shipmentId = createShipment(fact);
-        ShipmentJdOutboundPreviewSnapshot preview = service.preparePreview(shipmentId);
+        JdShipmentSubmissionPlan preview = planner.plan(shipmentId);
         assertThat(preview.submittable()).isTrue();
 
         ResponseEntity<Map> response = http.exchange(
@@ -497,7 +498,7 @@ class ShipmentJdOutboundSubmitTest {
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
-        String requestHash = service.preparePreview(shipmentId).requestHash();
+        String requestHash = planner.plan(shipmentId).requestHash();
         jdbc.update(
                 """
                 INSERT INTO app.shipment_jd_outbounds

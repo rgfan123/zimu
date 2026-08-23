@@ -5,7 +5,7 @@ import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.jd.JdResult;
-import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundPreviewSnapshot.Blocker;
+import cn.zimu.fulfillment.fulfillment.JdShipmentSubmissionPlan.Blocker;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
@@ -79,20 +79,20 @@ public class ShipmentJdOutboundAuditService {
 
     /** 幂等注册表在业务 callback 前返回时，也保留本次操作人的重放/冲突事实。 */
     public void auditIdempotencyOutcome(
-            ShipmentJdOutboundPreviewSnapshot preview,
+            JdShipmentSubmissionPlan plan,
             CommandContext context,
             int httpStatus,
             String businessCode,
             String message,
             String clientMode) {
         requiresNew.executeWithoutResult(status -> audits.record(new AuditLogService.AuditCommand()
-                .dataScope(DataScope.BUSINESS).orderId(preview.orderId())
+                .dataScope(DataScope.BUSINESS).orderId(plan.orderId())
                 .requestId(context.requestId()).traceId(context.traceId()).operator(auditOperator(context))
                 .actorType(AuditActorType.HUMAN).service("fulfillment").operation(SCOPE)
                 .requestPayload(Map.of(
-                        "shipment_id", String.valueOf(preview.shipmentId()),
-                        "erp_delivery_no", preview.erpDeliveryNo(),
-                        "request_hash", preview.requestHash(),
+                        "shipment_id", String.valueOf(plan.shipmentId()),
+                        "erp_delivery_no", plan.erpDeliveryNo(),
+                        "request_hash", plan.requestHash(),
                         "client_mode", clientMode))
                 .responsePayload(Map.of("business_code", businessCode, "message", message))
                 .httpStatus(httpStatus)
@@ -134,7 +134,7 @@ public class ShipmentJdOutboundAuditService {
 
     /** 提交意图落盘（独立事务内）随同一事务记录意图审计；由编排单元在意图持久化时调用。 */
     public void recordSubmitIntent(
-            ShipmentJdOutboundPreviewSnapshot current, CommandContext context, int attempt) {
+            JdShipmentSubmissionPlan current, CommandContext context, int attempt) {
         audits.record(new AuditLogService.AuditCommand()
                 .dataScope(DataScope.BUSINESS).orderId(current.orderId())
                 .requestId(context.requestId()).traceId(context.traceId()).operator(context.operator())
@@ -149,10 +149,10 @@ public class ShipmentJdOutboundAuditService {
     }
 
     /** HTTP 预览把瞬时 blocker 同步为一个可处理且可复用的 Shipment 级 ReviewCase。 */
-    public void reconcilePreviewReviewCase(ShipmentJdOutboundPreviewSnapshot preview, String operator) {
+    public void reconcilePreviewReviewCase(JdShipmentSubmissionPlan plan, String operator) {
         // SKU 映射门禁由 Ticket 03 的 JD_SKU_MAPPING_BLOCKED case 独占维护；
         // 此 case 只承载地址、履约配置、数量换算等预览阻断，避免一个原因两张票。
-        List<Blocker> reviewBlockers = preview.blockers().stream()
+        List<Blocker> reviewBlockers = plan.blockers().stream()
                 .filter(blocker -> !"JD_SHIPMENT_OUTBOUND_SKU_MAPPING_MISSING".equals(blocker.code()))
                 .toList();
         if (reviewBlockers.isEmpty()) {
@@ -167,14 +167,14 @@ public class ShipmentJdOutboundAuditService {
                     """,
                     json(Map.of(
                             "reason", "JD outbound preview address/configuration/conversion blockers cleared",
-                            "request_hash", preview.requestHash())),
-                    operator, preview.shipmentId(), PREVIEW_BLOCKED_REASON);
+                            "request_hash", plan.requestHash())),
+                    operator, plan.shipmentId(), PREVIEW_BLOCKED_REASON);
             return;
         }
 
         String detail = json(Map.of(
                 "message", "京东出库请求预览存在阻断项，请修正后重新预览",
-                "request_hash", preview.requestHash(),
+                "request_hash", plan.requestHash(),
                 "blockers", reviewBlockers.stream().map(ShipmentJdOutboundPreparer::blockerMap).toList()));
         List<Long> existing = jdbc.queryForList(
                 """
@@ -182,7 +182,7 @@ public class ShipmentJdOutboundAuditService {
                 WHERE shipment_id=? AND reason_code=? AND status='OPEN'
                 FOR UPDATE
                 """,
-                Long.class, preview.shipmentId(), PREVIEW_BLOCKED_REASON);
+                Long.class, plan.shipmentId(), PREVIEW_BLOCKED_REASON);
         if (existing.isEmpty()) {
             jdbc.update(
                     """
@@ -193,7 +193,7 @@ public class ShipmentJdOutboundAuditService {
                     ON CONFLICT DO NOTHING
                     """,
                     "RC-JD-PREVIEW-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(),
-                    PREVIEW_BLOCKED_REASON, preview.orderId(), preview.shipmentId(), detail);
+                    PREVIEW_BLOCKED_REASON, plan.orderId(), plan.shipmentId(), detail);
         } else {
             jdbc.update(
                     "UPDATE app.review_cases SET detail=?::jsonb, updated_at=CURRENT_TIMESTAMP WHERE id=?",
