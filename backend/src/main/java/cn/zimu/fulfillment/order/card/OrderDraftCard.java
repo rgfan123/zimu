@@ -6,6 +6,7 @@ public record OrderDraftCard(
         long orderDraftId,
         long draftRevision,
         String taskId,
+        String routeType,
         String chatId,
         String status,
         int attemptCount) {}

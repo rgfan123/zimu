@@ -6,7 +6,7 @@
 
 ## 2. 发送与外部效果栅栏
 
-草稿与 `wecom_order_draft_cards`、`WECOM_ORDER_DRAFT_CARD` 异步任务在同一事务创建。卡片固定使用 `task_id=order-draft:{draft_id}`，发送目标来自原渠道消息：群聊使用 `chatid`，单聊使用发送人的 `userid`。
+草稿与 `wecom_order_draft_cards`、`WECOM_ORDER_DRAFT_CARD` 异步任务在同一事务创建。卡片固定使用 `task_id=order-draft:{draft_id}`，并同时固化 `route_type` 与目标：群聊保存 `GROUP + chatid`，单聊保存 `SINGLE + 发送人 userid`，不能仅凭两类标识的字符串恰好相同跨路由授权。
 
 发送状态为 `PENDING → SENDING → SENT`。只有外部调用明确尚未提交时才回到 `PENDING` 重试；平台非零 `errcode` ACK 是明确拒绝，进入 `FAILED`；ACK 超时、缺少合法 `errcode`、提交后断线或进程在 `SENDING` 崩溃都进入 `UNKNOWN`，禁止盲目重发，避免同一草稿重复卡片。
 

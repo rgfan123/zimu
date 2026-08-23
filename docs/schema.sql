@@ -6180,6 +6180,7 @@ CREATE TABLE app.wecom_order_draft_cards (
     order_draft_id      BIGINT NOT NULL UNIQUE REFERENCES app.order_drafts(id) ON DELETE RESTRICT,
     draft_revision      BIGINT NOT NULL CHECK (draft_revision >= 0),
     task_id             VARCHAR(128) NOT NULL UNIQUE CHECK (btrim(task_id) <> ''),
+    route_type          VARCHAR(16) NOT NULL CHECK (route_type IN ('SINGLE', 'GROUP')),
     chat_id             VARCHAR(255) NOT NULL CHECK (btrim(chat_id) <> ''),
     status              VARCHAR(16) NOT NULL DEFAULT 'PENDING'
                         CHECK (status IN ('PENDING', 'SENDING', 'SENT', 'UNKNOWN', 'FAILED')),

@@ -330,6 +330,14 @@ class ProductionMigrationHistoryCompatTest {
                     .isEqualTo("5");
             assertThat(single(statement.executeQuery(
                     """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='wecom_order_draft_cards'
+                      AND column_name IN ('route_type', 'chat_id')
+                    """)))
+                    .as("V52 必须同时保存发送路由类型与目标，防止 single/group 标识碰撞")
+                    .isEqualTo("2");
+            assertThat(single(statement.executeQuery(
+                    """
                     SELECT count(*) FROM information_schema.triggers
                     WHERE trigger_schema='app'
                       AND trigger_name='trg_wecom_card_event_first_facts'

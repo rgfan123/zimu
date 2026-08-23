@@ -44,7 +44,7 @@ class OrderDraftCardRunnerTest {
     void sendsPrivacyMinimizedButtonCardAndCompletesOnlyAfterAck() {
         AsyncTaskStore.AsyncTask task = task(1, 1);
         OrderDraftCard card = new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "group-41", "PENDING", 0);
+                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0);
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(card);
@@ -82,7 +82,7 @@ class OrderDraftCardRunnerTest {
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "group-41", "SENDING", 1));
+                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "SENDING", 1));
         when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SKIP_UNKNOWN, 1));
 
         runner.execute(task);
@@ -98,7 +98,7 @@ class OrderDraftCardRunnerTest {
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "group-41", "PENDING", 0));
+                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
         when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
         when(drafts.detail(41L)).thenReturn(draft());
         when(gateway.send(any())).thenReturn(new WecomSendResult(

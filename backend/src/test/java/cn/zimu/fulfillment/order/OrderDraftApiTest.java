@@ -15,6 +15,9 @@ import cn.zimu.fulfillment.message.MessageInterpreter;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
 import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
+import cn.zimu.fulfillment.order.card.CardSendAction;
+import cn.zimu.fulfillment.order.card.OrderDraftCard;
+import cn.zimu.fulfillment.order.card.OrderDraftCardStore;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -84,6 +87,12 @@ class OrderDraftApiTest {
         registry.add("app.message-worker.poll-ms", () -> "100");
         registry.add("app.message-worker.backoff-seconds", () -> "1");
         registry.add("app.message-worker.lease-seconds", () -> "10");
+        registry.add("app.wecom-tracking-file-worker.enabled", () -> "false");
+        registry.add("app.wecom-export-worker.enabled", () -> "false");
+        registry.add("app.wecom-reminder.enabled", () -> "false");
+        registry.add("app.wecom-notification.enabled", () -> "false");
+        registry.add("app.wecom-order-draft-card.enabled", () -> "false");
+        registry.add("app.agent-worker.enabled", () -> "false");
         registry.add("app.gateway.basic-auth.username", () -> ADMIN_USER);
         registry.add("app.gateway.basic-auth.password", () -> ADMIN_PASSWORD);
     }
@@ -143,6 +152,9 @@ class OrderDraftApiTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private OrderDraftCardStore orderDraftCards;
 
     @BeforeEach
     void resetInterpreter() {
@@ -229,6 +241,12 @@ class OrderDraftApiTest {
         postEncryptedMessage(sourceMessageId, 87);
         Map<String, Object> draft = awaitDraftForMessage(sourceMessageId);
         String draftId = draft.get("id").toString();
+        OrderDraftCard outboundCard = orderDraftCards.create(
+                Long.parseLong(draftId), ((Number) draft.get("revision")).longValue());
+        assertThat(orderDraftCards.beginSend(outboundCard.id()).action())
+                .isEqualTo(CardSendAction.SEND);
+        orderDraftCards.recordSent(
+                outboundCard.id(), "REQ-TICKET-87-OUTBOUND-ACK", Instant.now());
         String cardEvent = "{\"cmd\":\"aibot_event_callback\","
                 + "\"headers\":{\"req_id\":\"REQ-TICKET-88-UPDATE\"},\"body\":{"
                 + "\"msgid\":\"EVT-TICKET-87-CONFIRM\",\"create_time\":1787486400,"

@@ -43,7 +43,7 @@ class WecomOrderDraftCardInteractionServiceTest {
     void nestedOfficialEventUsesCallbackUseridAndStableTaskId() throws Exception {
         CardConfirmationResult confirmed = result(CardConfirmationStatus.CONFIRMED);
         when(cards.findSentByTaskId("order-draft:42"))
-                .thenReturn(Optional.of(card(42L, 7L, "chat-42")));
+                .thenReturn(Optional.of(card(42L, 7L, "GROUP", "chat-42")));
         when(confirmations.confirm(42L, 7L, "EVT-42", "REQ-42", "actor-42"))
                 .thenReturn(confirmed);
         JsonNode frame = json.readTree(
@@ -69,7 +69,7 @@ class WecomOrderDraftCardInteractionServiceTest {
     @Test
     void flatOfficialExampleFieldsRemainCompatibleForSingleChat() throws Exception {
         when(cards.findSentByTaskId("order-draft:43"))
-                .thenReturn(Optional.of(card(43L, 8L, "actor-43")));
+                .thenReturn(Optional.of(card(43L, 8L, "SINGLE", "actor-43")));
         when(confirmations.confirm(43L, 8L, "EVT-43", "REQ-43", "actor-43"))
                 .thenReturn(result(CardConfirmationStatus.CONFIRMED));
         JsonNode frame = json.readTree(
@@ -138,7 +138,7 @@ class WecomOrderDraftCardInteractionServiceTest {
         when(draft.revision()).thenReturn(9L);
         when(drafts.detail(46L)).thenReturn(draft);
         when(cards.findSentByTaskId("order-draft:46"))
-                .thenReturn(Optional.of(card(46L, 9L, "chat-46")));
+                .thenReturn(Optional.of(card(46L, 9L, "GROUP", "chat-46")));
         JsonNode frame = json.readTree(
                 """
                 {"headers":{"req_id":"REQ-46"},"body":{"msgid":"EVT-46","aibotid":"bot",
@@ -158,7 +158,7 @@ class WecomOrderDraftCardInteractionServiceTest {
     void recoveryDoesNotPersistFailureWhileOriginalBusinessLeaseIsStillActive() throws Exception {
         when(events.claim(any())).thenReturn(CardEventClaim.claimed("claim-recovered", 2));
         when(cards.findSentByTaskId("order-draft:47"))
-                .thenReturn(Optional.of(card(47L, 10L, "chat-47")));
+                .thenReturn(Optional.of(card(47L, 10L, "GROUP", "chat-47")));
         when(confirmations.confirm(47L, 10L, "EVT-47", "REQ-47", "actor-47"))
                 .thenThrow(BusinessException.conflict("IDEMPOTENCY_CONFLICT", "仍在执行"));
         when(events.hasActiveBusinessLease(any())).thenReturn(true);
@@ -199,7 +199,7 @@ class WecomOrderDraftCardInteractionServiceTest {
     @Test
     void cardCallbackMustReturnThroughThePersistedOutboundRoute() throws Exception {
         when(cards.findSentByTaskId("order-draft:49"))
-                .thenReturn(Optional.of(card(49L, 11L, "chat-original")));
+                .thenReturn(Optional.of(card(49L, 11L, "GROUP", "chat-original")));
         JsonNode frame = json.readTree(
                 """
                 {"headers":{"req_id":"REQ-49"},"body":{"msgid":"EVT-49","aibotid":"bot",
@@ -215,12 +215,55 @@ class WecomOrderDraftCardInteractionServiceTest {
         verify(confirmations, never()).confirm(anyLong(), anyLong(), any(), any(), any());
     }
 
-    private static OrderDraftCard card(long draftId, long revision, String target) {
+    @Test
+    void singleCardCannotBeAuthorizedByAGroupWithTheSameIdentifierText() throws Exception {
+        when(cards.findSentByTaskId("order-draft:50"))
+                .thenReturn(Optional.of(card(50L, 12L, "SINGLE", "route-collision")));
+        when(confirmations.confirm(50L, 12L, "EVT-50", "REQ-50", "route-collision"))
+                .thenReturn(result(CardConfirmationStatus.CONFIRMED));
+        JsonNode frame = json.readTree(
+                """
+                {"headers":{"req_id":"REQ-50"},"body":{"msgid":"EVT-50","aibotid":"bot",
+                 "chatid":"route-collision","chattype":"group","from":{"userid":"route-collision"},
+                 "event":{"eventtype":"template_card_event","template_card_event":{
+                   "event_key":"confirm_order","task_id":"order-draft:50"}}}}
+                """);
+
+        CardInteractionOutcome outcome = service.handle(frame);
+
+        assertThat(outcome.result().status()).isEqualTo(CardConfirmationStatus.REJECTED);
+        assertThat(outcome.result().businessCode()).isEqualTo("WECOM_ORDER_DRAFT_CARD_ROUTE_MISMATCH");
+        verify(confirmations, never()).confirm(anyLong(), anyLong(), any(), any(), any());
+    }
+
+    @Test
+    void groupCardCannotBeAuthorizedByASingleUserWithTheSameIdentifierText() throws Exception {
+        when(cards.findSentByTaskId("order-draft:51"))
+                .thenReturn(Optional.of(card(51L, 13L, "GROUP", "route-collision")));
+        when(confirmations.confirm(51L, 13L, "EVT-51", "REQ-51", "route-collision"))
+                .thenReturn(result(CardConfirmationStatus.CONFIRMED));
+        JsonNode frame = json.readTree(
+                """
+                {"headers":{"req_id":"REQ-51"},"body":{"msgid":"EVT-51","aibotid":"bot",
+                 "chattype":"single","from":{"userid":"route-collision"},
+                 "event":{"eventtype":"template_card_event","template_card_event":{
+                   "event_key":"confirm_order","task_id":"order-draft:51"}}}}
+                """);
+
+        CardInteractionOutcome outcome = service.handle(frame);
+
+        assertThat(outcome.result().status()).isEqualTo(CardConfirmationStatus.REJECTED);
+        assertThat(outcome.result().businessCode()).isEqualTo("WECOM_ORDER_DRAFT_CARD_ROUTE_MISMATCH");
+        verify(confirmations, never()).confirm(anyLong(), anyLong(), any(), any(), any());
+    }
+
+    private static OrderDraftCard card(long draftId, long revision, String routeType, String target) {
         return new OrderDraftCard(
                 draftId + 1000,
                 draftId,
                 revision,
                 "order-draft:" + draftId,
+                routeType,
                 target,
                 "SENT",
                 1);

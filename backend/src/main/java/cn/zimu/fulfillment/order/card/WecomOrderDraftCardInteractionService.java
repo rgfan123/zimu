@@ -179,7 +179,7 @@ public class WecomOrderDraftCardInteractionService {
                     input.actorUserid(),
                     List.of());
         }
-        if (!card.chatId().equals(input.replyTarget())) {
+        if (!matchesRoute(card, input)) {
             return result(
                     CardConfirmationStatus.REJECTED,
                     null,
@@ -201,6 +201,18 @@ public class WecomOrderDraftCardInteractionService {
                     "WECOM_CARD_EVENT_KEY_UNSUPPORTED",
                     input.actorUserid(),
                     List.of());
+        };
+    }
+
+    private static boolean matchesRoute(OrderDraftCard card, CardEventInput input) {
+        return switch (card.routeType()) {
+            case "SINGLE" -> "single".equals(input.chatType())
+                    && input.chatId().isBlank()
+                    && card.chatId().equals(input.actorUserid());
+            case "GROUP" -> "group".equals(input.chatType())
+                    && !input.chatId().isBlank()
+                    && card.chatId().equals(input.chatId());
+            default -> false;
         };
     }
 

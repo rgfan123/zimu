@@ -191,8 +191,12 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
 
         assertThat(cards.findSentByTaskId(created.taskId()))
                 .get()
-                .extracting(OrderDraftCard::orderDraftId, OrderDraftCard::chatId, OrderDraftCard::status)
-                .containsExactly(firstDraftId, "chat-card-fence", "SENT");
+                .extracting(
+                        OrderDraftCard::orderDraftId,
+                        OrderDraftCard::routeType,
+                        OrderDraftCard::chatId,
+                        OrderDraftCard::status)
+                .containsExactly(firstDraftId, "GROUP", "chat-card-fence", "SENT");
         assertThat(cards.findSentByTaskId("order-draft:999999")).isEmpty();
     }
 

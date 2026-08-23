@@ -24,17 +24,25 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
     @Override
     @Transactional
     public OrderDraftCard create(long draftId, long draftRevision) {
-        List<String> routes = jdbc.query(
+        List<OutboundRoute> routes = jdbc.query(
                 """
-                SELECT CASE WHEN cm.chat_type='single' THEN cm.sender_user_id ELSE cm.chat_id END AS target_chat_id
+                SELECT CASE
+                           WHEN cm.chat_type='single' THEN 'SINGLE'
+                           WHEN cm.chat_type='group' THEN 'GROUP'
+                       END AS route_type,
+                       CASE WHEN cm.chat_type='single' THEN cm.sender_user_id ELSE cm.chat_id END AS target_chat_id
                 FROM app.order_drafts d
                 JOIN app.message_submissions ms ON ms.id=d.submission_id
                 JOIN app.channel_messages cm ON cm.id=ms.source_message_id
                 WHERE d.id=?
                 """,
-                (rs, row) -> rs.getString("target_chat_id"),
+                (rs, row) -> new OutboundRoute(
+                        rs.getString("route_type"), rs.getString("target_chat_id")),
                 draftId);
-        if (routes.size() != 1 || routes.getFirst() == null || routes.getFirst().isBlank()) {
+        if (routes.size() != 1
+                || routes.getFirst().routeType() == null
+                || routes.getFirst().target() == null
+                || routes.getFirst().target().isBlank()) {
             throw BusinessException.unprocessable(
                     "ORDER_DRAFT_CARD_ROUTE_MISSING", "订单草稿缺少唯一的原企微会话，不能发送确认卡片");
         }
@@ -42,17 +50,18 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
         jdbc.update(
                 """
                 INSERT INTO app.wecom_order_draft_cards (
-                    order_draft_id, draft_revision, task_id, chat_id, status
-                ) VALUES (?, ?, ?, ?, 'PENDING')
+                    order_draft_id, draft_revision, task_id, route_type, chat_id, status
+                ) VALUES (?, ?, ?, ?, ?, 'PENDING')
                 ON CONFLICT (order_draft_id) DO NOTHING
                 """,
                 draftId,
                 draftRevision,
                 taskId,
-                routes.getFirst());
+                routes.getFirst().routeType(),
+                routes.getFirst().target());
         return jdbc.queryForObject(
                 """
-                SELECT id, order_draft_id, draft_revision, task_id, chat_id, status, attempt_count
+                SELECT id, order_draft_id, draft_revision, task_id, route_type, chat_id, status, attempt_count
                 FROM app.wecom_order_draft_cards WHERE order_draft_id=?
                 """,
                 JdbcOrderDraftCardStore::map,
@@ -64,7 +73,7 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
     public OrderDraftCard load(long cardId) {
         List<OrderDraftCard> rows = jdbc.query(
                 """
-                SELECT id, order_draft_id, draft_revision, task_id, chat_id, status, attempt_count
+                SELECT id, order_draft_id, draft_revision, task_id, route_type, chat_id, status, attempt_count
                 FROM app.wecom_order_draft_cards WHERE id=?
                 """,
                 JdbcOrderDraftCardStore::map,
@@ -83,7 +92,7 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
         }
         List<OrderDraftCard> rows = jdbc.query(
                 """
-                SELECT id, order_draft_id, draft_revision, task_id, chat_id, status, attempt_count
+                SELECT id, order_draft_id, draft_revision, task_id, route_type, chat_id, status, attempt_count
                 FROM app.wecom_order_draft_cards
                 WHERE task_id=? AND status='SENT'
                 """,
@@ -97,7 +106,7 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
     public CardSendPermit beginSend(long cardId) {
         OrderDraftCard current = jdbc.queryForObject(
                 """
-                SELECT id, order_draft_id, draft_revision, task_id, chat_id, status, attempt_count
+                SELECT id, order_draft_id, draft_revision, task_id, route_type, chat_id, status, attempt_count
                 FROM app.wecom_order_draft_cards WHERE id=? FOR UPDATE
                 """,
                 JdbcOrderDraftCardStore::map,
@@ -190,10 +199,13 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
                 rs.getLong("order_draft_id"),
                 rs.getLong("draft_revision"),
                 rs.getString("task_id"),
+                rs.getString("route_type"),
                 rs.getString("chat_id"),
                 rs.getString("status"),
                 rs.getInt("attempt_count"));
     }
+
+    private record OutboundRoute(String routeType, String target) {}
 
     private static String stable(String value) {
         if (value == null || value.isBlank()) {
