@@ -48,8 +48,8 @@ export const CHANNEL_PUBLIC_MESSAGES: ReadonlyMap<string, string> = new Map([
   ['CONNECTOR_DISABLED', '该渠道已停用，本次未拉取'],
   ['CONNECTOR_CLIENT_MODE_NOT_REAL', '该渠道未处于真实拉取模式，本次未拉取'],
   ['CONNECTOR_TRANSPORT_NOT_API', '该渠道未配置为接口拉取，本次未拉取'],
-  ['PLATFORM_PULL_RATE_LIMITED', '距上次拉取间隔不足，本次已按合规限制跳过'],
-  ['PLATFORM_PULL_CLAIM_CONFLICT', '本次拉取未能领取名额，请稍后重试'],
+  ['PLATFORM_PULL_IN_PROGRESS', '该渠道已有拉取任务进行中，本次未重复发起'],
+  ['PLATFORM_PULL_CLAIM_CONFLICT', '该渠道拉取状态正在变化，请稍后重试'],
   ['PLATFORM_PULL_CLEANUP_FAILED', '拉取已结束，但临时文件清理不完整，请联系管理员处理'],
   ['SCRIPT_FAILED', '该渠道拉取失败，请稍后重试'],
   ['INTERNAL_ERROR', '该渠道刷新出现内部错误，请稍后重试'],
@@ -71,12 +71,6 @@ export interface FailedRefreshChannel {
   status: FailedRefreshStatus;
   business_code?: string;
 }
-
-/**
- * 契约边界（Issue #107）：DTO 不暴露 last_pull_at 或剩余拉取次数，只展示本次结果。
- * 严禁伪造「今日剩 N 次」之类的假配额。
- */
-export const QUOTA_UNAVAILABLE_TEXT = '当前接口未暴露剩余拉取额度';
 
 interface ShippingChannelViewBase {
   channel: string;

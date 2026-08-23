@@ -8,7 +8,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   CHANNEL_PUBLIC_MESSAGES,
-  QUOTA_UNAVAILABLE_TEXT,
   channelPublicMessage,
   failedRefreshChannels,
   presentShippingChannel,
@@ -182,7 +181,6 @@ test('shipping presentation gives a batch channel a destination and a report-onl
   assert.equal(reportOnly.reportOnly, true);
   assert.equal(reportOnly.destination, null);
   assert.equal(reportOnly.orderCount, 41);
-  assert.equal(QUOTA_UNAVAILABLE_TEXT, '当前接口未暴露剩余拉取额度');
 });
 
 test('failed refresh channels reject extra channels, OK status and malformed field types as a whole', () => {
@@ -313,8 +311,8 @@ test('channel public copy derives only from status and business code', () => {
     { status: 'SKIPPED', business_code: 'CONNECTOR_DISABLED', publicCopy: '该渠道已停用，本次未拉取' },
     { status: 'SKIPPED', business_code: 'CONNECTOR_CLIENT_MODE_NOT_REAL', publicCopy: '该渠道未处于真实拉取模式，本次未拉取' },
     { status: 'SKIPPED', business_code: 'CONNECTOR_TRANSPORT_NOT_API', publicCopy: '该渠道未配置为接口拉取，本次未拉取' },
-    { status: 'SKIPPED', business_code: 'PLATFORM_PULL_RATE_LIMITED', publicCopy: '距上次拉取间隔不足，本次已按合规限制跳过' },
-    { status: 'SKIPPED', business_code: 'PLATFORM_PULL_CLAIM_CONFLICT', publicCopy: '本次拉取未能领取名额，请稍后重试' },
+    { status: 'SKIPPED', business_code: 'PLATFORM_PULL_IN_PROGRESS', publicCopy: '该渠道已有拉取任务进行中，本次未重复发起' },
+    { status: 'SKIPPED', business_code: 'PLATFORM_PULL_CLAIM_CONFLICT', publicCopy: '该渠道拉取状态正在变化，请稍后重试' },
     { status: 'FAILED', business_code: 'PLATFORM_PULL_CLEANUP_FAILED', publicCopy: '拉取已结束，但临时文件清理不完整，请联系管理员处理' },
     { status: 'FAILED', business_code: 'SCRIPT_FAILED', publicCopy: '该渠道拉取失败，请稍后重试' },
     { status: 'FAILED', business_code: 'INTERNAL_ERROR', publicCopy: '该渠道刷新出现内部错误，请稍后重试' },

@@ -2362,10 +2362,11 @@ paths:
       operationId: refreshPlatformOrders
       description: >-
         Manually triggers a one-shot refresh of CAISHIXIAN / JUFUBAO / FEIXIANG order data.
-        Only enabled REAL + API connectors may claim a rate-limited attempt. Java connectors
-        run first and safely supported script fallbacks still enter the existing ImportBatch
-        manual-confirm loop. JUFUBAO onlinePull is capability-skipped before claiming or login
-        until its captured receiver contract is complete.
+        Only enabled REAL + API connectors may pull. Concurrent refreshes of the same channel
+        are coalesced so only one reaches the platform; completed attempts impose no frequency
+        limit. Java connectors run first and safely supported script fallbacks still enter the
+        existing ImportBatch manual-confirm loop. JUFUBAO onlinePull is capability-skipped before
+        locking or login until its captured receiver contract is complete.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/Operator'

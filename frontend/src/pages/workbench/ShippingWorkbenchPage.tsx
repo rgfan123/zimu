@@ -6,7 +6,7 @@
  * 视觉只使用页面级 saasTheme / antd 语义 token，不新增 CSS 调色板或共享组件。
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Alert, Button, Card, Space, Spin, Tag, Typography } from 'antd';
 import { CloudSyncOutlined, FileExcelOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
@@ -17,7 +17,6 @@ import type { PlatformOrderRefreshResult } from '@/api/types';
 import {
   failedRefreshChannels,
   presentShippingChannel,
-  QUOTA_UNAVAILABLE_TEXT,
   summarizeShippingResult,
   type ShippingChannelView,
 } from './shippingPresentation';
@@ -40,15 +39,21 @@ function statusTagColor(status: ShippingChannelView['status']): 'success' | 'err
 
 export default function ShippingWorkbenchPage() {
   const [state, setState] = useState<SyncState>({ phase: 'idle' });
+  const syncInFlight = useRef(false);
   const navigate = useNavigate();
 
   const sync = async () => {
+    // 原生 disabled 落到 DOM 前仍可能收到同一事件循环内的第二次触发；ref 是最后一道前端重入门禁。
+    if (syncInFlight.current) return;
+    syncInFlight.current = true;
     setState({ phase: 'loading' });
     try {
       const result = await platformOrdersApi.refresh();
       setState({ phase: 'success', result });
     } catch (error) {
       setState({ phase: 'error', error });
+    } finally {
+      syncInFlight.current = false;
     }
   };
 
@@ -72,6 +77,7 @@ export default function ShippingWorkbenchPage() {
               size="large"
               icon={<CloudSyncOutlined />}
               loading={syncing}
+              disabled={syncing}
               onClick={sync}
             >
               开始今日订单同步
@@ -90,9 +96,6 @@ export default function ShippingWorkbenchPage() {
             </Button>
           </Space>
         </Space>
-        <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12, fontSize: 12 }}>
-          {QUOTA_UNAVAILABLE_TEXT}
-        </Typography.Text>
       </Card>
 
       <SyncResults state={state} onRetry={sync} />

@@ -10,9 +10,7 @@ import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.file.SourceImportService;
-import java.sql.Timestamp;
 import java.time.Duration;
-import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
@@ -26,8 +24,12 @@ class PlatformOrderRefreshBatchReferenceTest {
     @SuppressWarnings("unchecked")
     void successfulConnectorRefreshReturnsTheImportBatchForHumanConfirmation() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        PlatformPullSingleFlight singleFlight = mock(PlatformPullSingleFlight.class);
+        PlatformPullSingleFlight.Lease lease = mock(PlatformPullSingleFlight.Lease.class);
+        when(singleFlight.tryAcquire(anyString())).thenReturn(lease);
+        when(lease.acquired()).thenReturn(true);
         when(jdbc.query(anyString(), any(ResultSetExtractor.class), any(Object[].class)))
-                .thenAnswer(invocation -> Timestamp.from(Instant.now()));
+                .thenReturn(new PlatformOrderRefreshService.ConnectorGateState(true, "REAL", "API"));
 
         PlatformConnector connector = mock(PlatformConnector.class);
         when(connector.channel()).thenReturn(SourceChannel.CAISHIXIAN);
@@ -50,13 +52,13 @@ class PlatformOrderRefreshBatchReferenceTest {
                 mock(SourceImportService.class),
                 mock(AuditLogService.class),
                 jdbc,
+                singleFlight,
                 mock(PlatformScriptRunner.class),
                 List.of(connector),
                 "/tmp/none",
                 "/tmp/none",
                 "/tmp/none",
                 Duration.ofSeconds(1),
-                Duration.ofHours(12),
                 30);
 
         Map<String, Object> response = service.refresh(

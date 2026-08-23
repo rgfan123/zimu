@@ -154,8 +154,6 @@ app:
     script-timeout: ${APP_PLATFORM_PULL_SCRIPT_TIMEOUT:PT10M}
     # 刷新默认拉取窗口（到今天为止的天数）。
     default-days: ${APP_PLATFORM_PULL_DEFAULT_DAYS:30}
-    # 合规红线（每平台每日真实拉取尝试 ≤2 次）：距上次尝试不足该间隔的渠道直接 SKIPPED。
-    min-interval: ${APP_PLATFORM_PULL_MIN_INTERVAL:PT12H}
   seed:
     demo-enabled: ${DEMO_SEED_ENABLED:false}
     reference-date: ${DEMO_SEED_REFERENCE_DATE:}

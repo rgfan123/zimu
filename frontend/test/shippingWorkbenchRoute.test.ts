@@ -2,7 +2,7 @@
  * 今日发货工作台（Issue #107）路由契约：发货员从一次订单同步开始今天的工作，并如实呈现各渠道结果。
  * 覆盖：初始 / 同步中禁用 / 成功多渠道 / 部分失败 / 全零「没有新订单」/ 聚福宝仅报告未入库 /
  * 真实 OK Connector 即使生成 batch 也返回 order_count，reportedOrders 不得误计已入库渠道 /
- * 顶层错误可读且可重试 / 有 batch_id 整卡跳文件作业页 / 手动导入跳文件作业页 / 无假配额 /
+ * 顶层错误可读且可重试 / 有 batch_id 整卡跳文件作业页 / 手动导入跳文件作业页 / 无虚构频控 /
  * 销售出库生产入口。隐藏但可路由的导航断言在 businessObjectNavigation.test.ts。
  */
 
@@ -65,8 +65,10 @@ function anchorWithHref(href: string): HTMLAnchorElement {
   return link;
 }
 
-test('shipping workbench renders the prototype header, lede, hero and no fabricated quota before sync', async () => {
+test('shipping workbench does not request or render a quota because platform pulls are unlimited', async () => {
+  const requests: string[] = [];
   globalThis.fetch = async (input) => {
+    requests.push(String(input));
     throw new Error(`unexpected request: ${String(input)}`);
   };
 
@@ -77,17 +79,21 @@ test('shipping workbench renders the prototype header, lede, hero and no fabrica
   assert.match(harness.bodyText(), /开始今日订单同步/);
   assert.match(harness.bodyText(), /手动导入 Excel/);
   assert.match(harness.bodyText(), /尚未同步/, '初始态必须给出可读提示');
-  assert.match(harness.bodyText(), /当前接口未暴露剩余拉取额度/, '契约边界必须如实说明剩余额度不可见');
-  assert.doesNotMatch(harness.bodyText(), /今日剩/, '严禁伪造剩余次数');
+  assert.deepEqual(requests, [], '页面挂载不得读取不存在的频控配额');
+  assert.doesNotMatch(harness.bodyText(), /配额|今天最多还能拉|下次可拉取/);
 });
 
 test('sync disables the trigger and shows an independent loading block while in flight', async () => {
+  let refreshCalls = 0;
   let resolveRefresh: (r: Response) => void = () => {};
   const gate = new Promise<Response>((resolve) => {
     resolveRefresh = resolve;
   });
   globalThis.fetch = async (input) => {
-    if (String(input) === REFRESH_URL) return gate;
+    if (String(input) === REFRESH_URL) {
+      refreshCalls += 1;
+      return gate;
+    }
     throw new Error(`unexpected request: ${String(input)}`);
   };
 
@@ -99,6 +105,8 @@ test('sync disables the trigger and shows an independent loading block while in 
     .find((b) => b.textContent?.includes('开始今日订单同步'));
   assert.ok(loadingButton, '同步按钮必须在同步中保持挂载');
   await harness.waitFor(() => assert.ok(loadingButton.classList.contains('ant-btn-loading'), '同步中必须禁用触发按钮'));
+  await harness.dispatchEvent(loadingButton, new MouseEvent('click', { bubbles: true }));
+  assert.equal(refreshCalls, 1, '同一次在途同步不得被双击重复发起');
   await harness.waitFor(() => assert.match(harness.bodyText(), /正在同步三平台订单/, '同步中必须有独立的加载块'));
 
   resolveRefresh(jsonResponse(refreshResult([channel()])));
