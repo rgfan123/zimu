@@ -69,6 +69,35 @@ test('选择岗位后跳到该岗位工作台、写入 localStorage，URL 不携
   await harness.waitFor(() => assert.equal(harness.location(), '/workbench/shipping'));
   assert.equal(window.localStorage.getItem('zimu.workbench-role'), 'FULFILLMENT_OPS');
   assert.doesNotMatch(harness.location(), /FULFILLMENT|role|岗位/, '分享 URL 不得携带岗位');
+
+  // ADR 0004：岗位只重排导航分组顺序，绝不隐藏——切岗后全部板块仍可见（D1：岗位 ≠ 权限）。
+  const reordered = harness.bodyText();
+  for (const section of ['主数据', '系统管理', '京东工具', 'Agent 中心', '经营分析']) {
+    assert.match(reordered, new RegExp(section), `切换岗位后「${section}」板块必须仍然可见`);
+  }
+});
+
+test('全局搜索是诚实入口：说明未接入跨对象搜索，回车直达订单查询', async () => {
+  window.localStorage.clear();
+  // 跳转目标 /orders 会拉分页列表与 fulfillment-providers（裸数组），按 URL 分流打桩。
+  globalThis.fetch = async (input: RequestInfo | URL) =>
+    String(input).includes('/fulfillment-providers') ? jsonResponse([]) : jsonResponse(page([]));
+  await harness.mount(['/workbench/reviews']);
+
+  await click(control('搜单号'));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /尚未接入后端/));
+
+  const input = document.querySelector<HTMLInputElement>('.zs-so-input');
+  assert.ok(input, '搜索 overlay 必须渲染输入框');
+  const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+  setValue?.call(input, 'PO-20260823');
+  await harness.dispatchEvent(input, new window.Event('input', { bubbles: true }));
+  await harness.dispatchEvent(
+    input,
+    new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+  );
+
+  await harness.waitFor(() => assert.equal(harness.location(), '/orders?query=PO-20260823'));
 });
 
 test('财务岗位落地对账工作台', async () => {
