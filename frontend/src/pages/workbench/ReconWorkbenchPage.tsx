@@ -166,6 +166,7 @@ function MonthlyReconSkeleton() {
 export default function ReconWorkbenchPage() {
   return (
     <OutboundReconPage
+      hideHeader
       enableOrderDrilldown
       notice={
         <Alert
