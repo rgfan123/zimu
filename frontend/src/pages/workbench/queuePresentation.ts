@@ -34,6 +34,7 @@ export const REASON_LABELS: Record<string, string> = {
   WECOM_ORDER_DRAFT: '企业微信订单草稿待确认',
   WECOM_TRACKING_DRAFT: '企业微信运单草稿待确认',
   WECOM_TRACKING_FILE_REVIEW: '企微运单文件处理失败',
+  JD_SHIPMENT_OUTBOUND_PREVIEW_BLOCKED: '京东出库预览阻断',
   JD_SKU_MAPPING_BLOCKED: '京东 SKU 映射门禁阻断',
   JD_STOCK_BLOCKED: '京东库存不足阻断',
   MULTIPLE_TRACKINGS_FOR_OUTBOUND: '京东多运单待确认',

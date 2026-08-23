@@ -1,0 +1,348 @@
+/* 应用外壳（Issue #104 · ADR 0004 大胆版）：
+   原型 zimu-frontend-prototype.html 壳层 CSS 的 1:1 移植，类名统一 zs- 前缀。
+   颜色一律引用 --zs-* 变量（AppLayout 从 saasTheme.ts 注入），本文件不写死任何色值。 */
+
+.zs-shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--zs-canvas);
+  color: var(--zs-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 侧栏 ---------- */
+.zs-side {
+  width: 244px;
+  flex: none;
+  background: var(--zs-raised);
+  border-right: 1px solid var(--zs-border-2);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.zs-brand {
+  padding: 16px 16px 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--zs-heading);
+  letter-spacing: 0.01em;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.zs-brand img {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid var(--zs-border-2);
+  flex: none;
+}
+
+/* ---------- 岗位选择器（原型 .ws） ---------- */
+.zs-ws {
+  position: relative;
+  padding: 0 12px 10px;
+}
+.zs-ws-btn {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: var(--zs-fill-3);
+  border: 1px solid var(--zs-border-2);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.12s, background 0.12s;
+}
+.zs-ws-btn:hover {
+  border-color: var(--zs-border);
+  background: var(--zs-fill-2);
+}
+.zs-ws-btn .av {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 5px;
+  background: var(--zs-brand-bg);
+  color: var(--zs-brand);
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 600;
+}
+.zs-ws-btn .nm {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--zs-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zs-ws-btn .nm.empty {
+  color: var(--zs-text-3);
+  font-weight: 400;
+}
+.zs-ws-btn .cv {
+  color: var(--zs-text-3);
+  font-size: 10px;
+  flex: none;
+}
+.zs-ws-pop {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: calc(100% - 4px);
+  z-index: 40;
+  background: var(--zs-raised);
+  border: 1px solid var(--zs-border);
+  border-radius: 10px;
+  box-shadow: var(--zs-sh2);
+  padding: 4px;
+}
+.zs-ws-pop .h {
+  font-size: 10.5px;
+  color: var(--zs-text-3);
+  padding: 6px 9px 4px;
+  letter-spacing: 0.06em;
+}
+.zs-ws-pop button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 0;
+  background: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--zs-text-2);
+  text-align: left;
+}
+.zs-ws-pop button:hover {
+  background: var(--zs-fill-3);
+  color: var(--zs-text);
+}
+.zs-ws-pop button[aria-selected='true'] {
+  background: var(--zs-brand-bg);
+  color: var(--zs-brand-active);
+  font-weight: 600;
+}
+.zs-ws-pop .ck {
+  margin-left: auto;
+  font-size: 11px;
+}
+.zs-ws-pop .note {
+  font-size: 11px;
+  color: var(--zs-text-3);
+  padding: 6px 9px 7px;
+  line-height: 1.45;
+}
+
+/* ---------- 全局搜索入口 ---------- */
+.zs-search {
+  margin: 0 12px 6px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: none;
+  border: 1px solid var(--zs-border-2);
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--zs-text-3);
+  font: inherit;
+  font-size: 13px;
+  width: calc(100% - 24px);
+  text-align: left;
+}
+.zs-search:hover {
+  border-color: var(--zs-border);
+  color: var(--zs-text-2);
+}
+.zs-search .kb {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--zs-text-3);
+  border: 1px solid var(--zs-border-2);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* ---------- 分组平铺导航 ---------- */
+.zs-nav {
+  flex: 1;
+  /* flex 子项默认 min-height:auto 不会收缩：没有这行导航不滚动、footer 被顶出 100vh。 */
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px 12px;
+}
+.zs-nav .grp {
+  font-size: 10.5px;
+  color: var(--zs-text-3);
+  padding: 12px 10px 5px;
+  letter-spacing: 0.07em;
+}
+.zs-nav a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--zs-text-2);
+  font-size: 13.5px;
+  text-decoration: none;
+  transition: background 0.12s, color 0.12s;
+}
+.zs-nav a:hover {
+  background: var(--zs-fill-3);
+  color: var(--zs-text);
+}
+.zs-nav a.cur {
+  background: var(--zs-brand-bg);
+  color: var(--zs-brand-active);
+  font-weight: 600;
+}
+.zs-nav a .ic {
+  width: 15px;
+  text-align: center;
+  font-size: 12px;
+  opacity: 0.9;
+  flex: none;
+}
+.zs-nav a .nm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zs-nav a .bg {
+  font-size: 11px;
+  color: var(--zs-text-2);
+  background: var(--zs-fill-2);
+  border-radius: 9px;
+  padding: 0 6px;
+  min-width: 20px;
+  text-align: center;
+  flex: none;
+}
+.zs-nav a.attn .bg {
+  color: var(--zs-error);
+  background: var(--zs-error-bg);
+}
+.zs-navnote {
+  font-size: 11px;
+  color: var(--zs-text-3);
+  line-height: 1.5;
+  padding: 12px 10px 0;
+  margin-top: 8px;
+  border-top: 1px solid var(--zs-border-2);
+}
+
+/* ---------- 共享身份 footer ---------- */
+.zs-user {
+  border-top: 1px solid var(--zs-border-2);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.zs-user .av {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--zs-fill-2);
+  color: var(--zs-text-2);
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.zs-user .who {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+.zs-user .who b {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--zs-text);
+}
+.zs-user .who span {
+  font-size: 11px;
+  color: var(--zs-text-3);
+}
+
+/* ---------- 内容区 ---------- */
+.zs-main {
+  flex: 1;
+  min-width: 0;
+  padding: 26px 30px 72px;
+  max-width: 1420px;
+}
+
+/* ---------- 全局搜索 overlay（诚实版） ----------
+   z-index 契约：壳层弹层（.zs-ws-pop 40 / .zs-so 80）刻意低于 antd portal 默认层（1000+）——
+   页面内容弹出的 Modal/Select 永远盖住壳层弹层，壳层不与页面弹层抢层级。 */
+.zs-so {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--zs-scrim);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14vh;
+}
+.zs-so-panel {
+  width: min(560px, 92vw);
+  background: var(--zs-raised);
+  border: 1px solid var(--zs-border);
+  border-radius: 12px;
+  box-shadow: var(--zs-sh2);
+  overflow: hidden;
+}
+.zs-so-input {
+  width: 100%;
+  border: 0;
+  outline: none;
+  padding: 14px 16px;
+  background: transparent;
+  color: var(--zs-text);
+  font: inherit;
+  font-size: 15px;
+}
+.zs-so-hint {
+  border-top: 1px solid var(--zs-border-2);
+  padding: 10px 16px 12px;
+  font-size: 12px;
+  color: var(--zs-text-3);
+  line-height: 1.6;
+}
+
+/* 原型无折叠态：窄屏直接隐藏侧栏（响应式外壳归 #65，本轮不做适配） */
+@media (max-width: 1080px) {
+  .zs-side {
+    display: none;
+  }
+  .zs-main {
+    padding: 20px 18px 60px;
+  }
+}

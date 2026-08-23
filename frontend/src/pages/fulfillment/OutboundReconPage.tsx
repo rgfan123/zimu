@@ -312,11 +312,15 @@ function ReconResult({
 export interface OutboundReconPageProps {
   /** 页面正文顶部额外横幅（如 /workbench/recon 入口注入的「金额对账未纳入本期」口径说明）。 */
   notice?: ReactNode;
+  /** 横幅之后、点查区之前的扩展区（/workbench/recon 的月度对账骨架经此注入，点查契约不动）。 */
+  prelude?: ReactNode;
+  /** 调用方自带页头时隐藏本页 PageShell 头部，避免同屏双标题（/workbench/recon）。 */
+  hideHeader?: boolean;
   /** 仅 /workbench/recon 显式开启：有真实 order_id 时「系统内部事实」整卡可下钻订单详情。 */
   enableOrderDrilldown?: boolean;
 }
 
-export default function OutboundReconPage({ notice, enableOrderDrilldown = false }: OutboundReconPageProps = {}) {
+export default function OutboundReconPage({ notice, prelude, hideHeader = false, enableOrderDrilldown = false }: OutboundReconPageProps = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlType = searchParams.get('query_type');
   const urlValue = searchParams.get('query_value') ?? '';
@@ -333,12 +337,10 @@ export default function OutboundReconPage({ notice, enableOrderDrilldown = false
     setSearchParams({ query_type: type, query_value: trimmed }, { replace: false });
   };
 
-  return (
-    <PageShell
-      title="出库信息对账"
-      description="输入系统出库单号 / 京东单号 / 订单号，把系统内部事实与京东侧事实并排对照；不一致只标记不自动处置，由运营判断。"
-    >
+  const body = (
+    <>
       {notice}
+      {prelude}
       <FilterBar>
         <Space.Compact style={{ width: '100%', maxWidth: 760 }}>
           <Select<OutboundReconQueryType>
@@ -367,6 +369,18 @@ export default function OutboundReconPage({ notice, enableOrderDrilldown = false
           <Empty description="输入单号开始查询；查询条件保存在链接中，刷新或分享即可复现同一视图" />
         </Card>
       )}
+    </>
+  );
+
+  // 工作台变体自带页头（含账期切换），此处不再渲染 PageShell 头部——同屏只保留一个标题。
+  if (hideHeader) return <Space direction="vertical" size={16} style={{ width: '100%' }}>{body}</Space>;
+
+  return (
+    <PageShell
+      title="出库信息对账"
+      description="输入系统出库单号 / 京东单号 / 订单号，把系统内部事实与京东侧事实并排对照；不一致只标记不自动处置，由运营判断。"
+    >
+      {body}
     </PageShell>
   );
 }

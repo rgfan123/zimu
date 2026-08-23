@@ -1,194 +1,166 @@
 /**
- * 应用框架：侧边栏（PRD §22 导航树）+ 顶栏（页面标题 / 业务日期 / 环境标识）。
- * 菜单与路由共用 routeConfig 单一配置源。
+ * 应用外壳（Issue #104 · ADR 0004 大胆版）：
+ * 原型壳层 1:1 移植——244px 侧栏（品牌 → 岗位选择器 → 全局搜索 → 分组平铺导航带字形与真实徽标 → 共享身份 footer），
+ * 无顶栏。AntD 只承载页面内容区；壳层为手写 CSS（shell.css），颜色全部由 saasTheme 注入。
+ * 岗位只重排导航分组顺序与默认落地页，绝不隐藏任何入口（D1：岗位 ≠ 权限）。
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Button, Layout, Menu, Tag, Typography, theme } from 'antd';
-import type { MenuProps } from 'antd';
-import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
-import dayjs from 'dayjs';
-import { flattenRoutes, routeConfig, useCurrentRoute, type AppRoute } from '@/routes';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Link, Outlet, useNavigate } from 'react-router-dom';
+import { useCurrentRoute } from '@/routes';
+import { saasTheme, saasVisualTokens } from '@/theme/saasTheme';
+import { railGroupsForRole } from '@/components/layout/shellRail';
+import { useReviewsBadge } from '@/components/layout/useRailBadges';
+import WorkbenchRoleSwitcher from '@/components/layout/WorkbenchRoleSwitcher';
+import GlobalSearchOverlay from '@/components/layout/GlobalSearchOverlay';
 import {
-  NAVIGATION_GROUP_SUFFIX,
-  navigationContextFromRoutes,
-  navigationOpenKeys,
-  visibleNavigationTree,
-} from '@/navigation';
+  readStoredWorkbenchRole,
+  storeWorkbenchRole,
+  workbenchRoleLabel,
+  workbenchRoleLanding,
+} from '@/workbenchRole';
 import brandAvatarUrl from '@/assets/zimu-brand-avatar.png';
+import './shell.css';
 
-const { Sider, Header, Content } = Layout;
-
-/** 分组节点 key 与叶子路径可能重名（如 订单管理 组 / 全部订单 叶均为 /orders），
- *  菜单 key 加 '~' 后缀区分，路由选中态仍用叶子路径。 */
-function buildMenuItems(routes: AppRoute[]): NonNullable<MenuProps['items']> {
-  return routes.map((r) => {
-      if (r.external) {
-        return {
-          key: r.path,
-          icon: r.icon,
-          label: (
-            <a href={r.external} target="_blank" rel="noreferrer">
-              {r.label}
-            </a>
-          ),
-        };
-      }
-      if (r.children?.length) {
-        return {
-          key: `${r.path}${NAVIGATION_GROUP_SUFFIX}`,
-          icon: r.icon,
-          label: r.label,
-          children: buildMenuItems(r.children),
-        };
-      }
-      return { key: r.path, icon: r.icon, label: r.label };
-  });
+/** #rrggbb → rgba(r,g,b,alpha)：让遮罩色也从 saasTheme 派生，不手抄 rgba 字面量。 */
+function withAlpha(hex: string, alpha: number): string {
+  const channels = hex.replace('#', '').match(/.{2}/g) ?? [];
+  const [r, g, b] = channels.map((channel) => Number.parseInt(channel, 16));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/** shell.css 的唯一取色入口：全部来自 saasTheme.ts，壳层 CSS 不写死色值。 */
+const shellVars = {
+  '--zs-canvas': saasVisualTokens.surface.canvas,
+  '--zs-raised': saasVisualTokens.surface.raised,
+  '--zs-border': saasVisualTokens.neutral[300],
+  '--zs-border-2': saasTheme.token?.colorBorderSecondary ?? saasVisualTokens.neutral[300],
+  '--zs-fill-2': saasVisualTokens.neutral[100],
+  '--zs-fill-3': saasVisualTokens.neutral[50],
+  '--zs-text': saasVisualTokens.text.primary,
+  '--zs-text-2': saasVisualTokens.text.secondary,
+  '--zs-text-3': saasVisualTokens.text.tertiary,
+  '--zs-heading': saasTheme.token?.colorTextHeading ?? saasVisualTokens.text.primary,
+  '--zs-brand': saasVisualTokens.brand.primary,
+  '--zs-brand-bg': saasVisualTokens.brand.subtle,
+  '--zs-brand-active': saasVisualTokens.brand.active,
+  '--zs-brand-hover': saasVisualTokens.brand.hover,
+  '--zs-brand-focus': saasVisualTokens.brand.focus,
+  '--zs-error': saasVisualTokens.semantic.error,
+  '--zs-error-bg': saasTheme.token?.colorErrorBg ?? saasVisualTokens.brand.subtle,
+  '--zs-error-border': saasTheme.token?.colorErrorBorder ?? saasVisualTokens.semantic.error,
+  '--zs-success': saasVisualTokens.semantic.success,
+  '--zs-success-bg': saasTheme.token?.colorSuccessBg ?? saasVisualTokens.brand.subtle,
+  '--zs-success-border': saasTheme.token?.colorSuccessBorder ?? saasVisualTokens.semantic.success,
+  '--zs-warning': saasVisualTokens.semantic.warning,
+  '--zs-warning-bg': saasTheme.token?.colorWarningBg ?? saasVisualTokens.brand.subtle,
+  '--zs-warning-border': saasTheme.token?.colorWarningBorder ?? saasVisualTokens.semantic.warning,
+  '--zs-info': saasVisualTokens.semantic.info,
+  '--zs-info-bg': saasTheme.token?.colorInfoBg ?? saasVisualTokens.brand.subtle,
+  '--zs-info-border': saasTheme.token?.colorInfoBorder ?? saasVisualTokens.semantic.info,
+  '--zs-fill-4': saasTheme.token?.colorFillQuaternary ?? saasVisualTokens.neutral[50],
+  '--zs-scrim': withAlpha(saasVisualTokens.neutral[900], 0.4),
+  '--zs-sh': saasTheme.token?.boxShadow ?? 'none',
+  '--zs-sh2': saasTheme.token?.boxShadowSecondary ?? 'none',
+  '--zs-mono': "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+} as CSSProperties;
+
 export default function AppLayout() {
-  // 原型决策 D：数据密集型 ERP 默认使用图标窄轨，给 12 列运营看板留出完整宽度。
-  const [collapsed, setCollapsed] = useState(false);
-  const { pathname } = useLocation();
   const navigate = useNavigate();
   const route = useCurrentRoute();
-  const { token } = theme.useToken();
+  const [role, setRole] = useState<string | null>(() => readStoredWorkbenchRole());
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
+  const reviewsBadge = useReviewsBadge(role);
 
-  const menuItems = useMemo(() => buildMenuItems(visibleNavigationTree(routeConfig)), []);
-  const selectedKeys = useMemo(() => [route?.path ?? ''], [route]);
-  const currentNavigation = navigationContextFromRoutes(routeConfig, pathname, route?.label ?? '');
-  const defaultOpenKeys = useMemo(() => navigationOpenKeys(routeConfig, pathname), [pathname]);
-  const [openKeys, setOpenKeys] = useState<string[]>(defaultOpenKeys);
+  const groups = useMemo(() => railGroupsForRole(role), [role]);
+  const roleLabel = workbenchRoleLabel(role);
+
   useEffect(() => {
-    if (defaultOpenKeys.length) setOpenKeys(defaultOpenKeys);
-  }, [defaultOpenKeys]);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen((value) => !value);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const onSelectRole = (value: string) => {
+    setRole(value);
+    storeWorkbenchRole(value);
+    // 岗位切换 = 换一份活干：跳该岗位的默认工作台。岗位绝不写进 URL（D3）。
+    const landing = workbenchRoleLanding(value);
+    if (landing) navigate(landing);
+  };
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider
-        width={216}
-        collapsedWidth={64}
-        collapsed={collapsed}
-        trigger={null}
-        theme="light"
-        style={{
-          borderRight: `1px solid ${token.colorBorderSecondary}`,
-          position: 'sticky',
-          top: 0,
-          height: '100vh',
-          overflow: 'auto',
-        }}
-      >
-        <div
-          style={{
-            height: 56,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '0 16px',
-            borderBottom: `1px solid ${token.colorBorderSecondary}`,
-            overflow: 'hidden',
-          }}
-        >
-          <img
-            src={brandAvatarUrl}
-            alt=""
-            aria-hidden="true"
-            draggable={false}
-            width={32}
-            height={32}
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 9,
-              objectFit: 'cover',
-              boxSizing: 'border-box',
-              flexShrink: 0,
-              border: `1px solid ${token.colorBorderSecondary}`,
-              background: token.colorBgContainer,
-            }}
-          />
-          {!collapsed ? (
-            <div style={{ lineHeight: 1.2, whiteSpace: 'nowrap' }}>
-              <div style={{ fontWeight: 700, fontSize: 15, color: token.colorTextHeading }}>子牧履约中台</div>
-              <div style={{ fontSize: 11, color: token.colorTextTertiary }}>Fulfillment & Logistics Hub</div>
-            </div>
-          ) : null}
+    <div className="zs-shell" style={shellVars}>
+      <aside className="zs-side">
+        <div className="zs-brand">
+          <img src={brandAvatarUrl} alt="" aria-hidden="true" draggable={false} width={28} height={28} />
+          <span>子牧履约中台</span>
         </div>
-        <Menu
-          mode="inline"
-          items={menuItems}
-          selectedKeys={selectedKeys}
-          openKeys={collapsed ? [] : openKeys}
-          onOpenChange={(keys) => setOpenKeys(keys.map(String))}
-          onClick={({ key }) => {
-            // 只对真实存在的叶子路由导航；分组 key（带 ~ 后缀）与外链不导航
-            const target = flattenRoutes(routeConfig).find((r) => r.path === key);
-            if (target) navigate(key);
-          }}
-          style={{ borderInlineEnd: 'none', padding: '8px 0' }}
-        />
-        {!collapsed ? (
-          <div style={{ position: 'absolute', bottom: 12, left: 0, right: 0, textAlign: 'center' }}>
-            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-              子牧订单履约中台
-            </Typography.Text>
-          </div>
-        ) : null}
-      </Sider>
 
-      <Layout>
-        <Header
-          style={{
-            background: token.colorBgContainer,
-            borderBottom: `1px solid ${token.colorBorderSecondary}`,
-            padding: '0 20px',
-            height: 56,
-            lineHeight: '56px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 16,
-            position: 'sticky',
-            top: 0,
-            zIndex: 10,
-          }}
-        >
-          <Button
-            type="text"
-            aria-label={collapsed ? '展开菜单' : '收起菜单'}
-            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            onClick={() => setCollapsed((c) => !c)}
-            style={{ fontSize: 16 }}
-          />
-          <div style={{ flex: 1, lineHeight: 1.25 }}>
-            <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
-              {currentNavigation.section}
-            </Typography.Text>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              {currentNavigation.page}
-            </Typography.Title>
-          </div>
-          <Tag
-            bordered={false}
-            style={{
-              borderRadius: 4,
-              marginInlineEnd: 0,
-              color: token.colorTextSecondary,
-              background: token.colorFillTertiary,
-            }}
-          >
-            业务运营
-          </Tag>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            {dayjs().format('YYYY-MM-DD dddd')}
-          </Typography.Text>
-        </Header>
+        <WorkbenchRoleSwitcher role={role} onSelect={onSelectRole} />
 
-        <Content style={{ padding: 20, background: token.colorBgLayout }}>
-          <Outlet />
-        </Content>
-      </Layout>
-    </Layout>
+        <button ref={searchButtonRef} type="button" className="zs-search" onClick={() => setSearchOpen(true)}>
+          <span>搜单号 / 运单号</span>
+          <span className="kb">⌘K</span>
+        </button>
+
+        <nav className="zs-nav" aria-label="主导航">
+          {groups.map((group) => (
+            <div key={group.key}>
+              <div className="grp">{group.title}</div>
+              {group.items.map((item) => {
+                if (item.external) {
+                  return (
+                    <a key={item.path} href={item.external} target="_blank" rel="noreferrer">
+                      <span className="ic" aria-hidden="true">
+                        {item.glyph}
+                      </span>
+                      <span className="nm">{item.label}</span>
+                    </a>
+                  );
+                }
+                const current = route?.path === item.path;
+                const badge = item.badge === 'reviews-open' && reviewsBadge !== null && reviewsBadge > 0 ? reviewsBadge : null;
+                const className = [current ? 'cur' : '', badge !== null ? 'attn' : ''].filter(Boolean).join(' ') || undefined;
+                return (
+                  <Link key={item.path} to={item.path} className={className} aria-current={current ? 'page' : undefined}>
+                    <span className="ic" aria-hidden="true">
+                      {item.glyph}
+                    </span>
+                    <span className="nm">{item.label}</span>
+                    {badge !== null ? <span className="bg">{badge}</span> : null}
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
+          {role ? <div className="zs-navnote">岗位只影响排序与默认落地页，不构成权限；全部功能对所有人可见。</div> : null}
+        </nav>
+
+        <div className="zs-user">
+          <span className="av" aria-hidden="true">
+            {roleLabel ? roleLabel.slice(0, 1) : '?'}
+          </span>
+          <div className="who">
+            <b>{roleLabel ?? '未选择岗位'}</b>
+            <span>共享网关身份</span>
+          </div>
+        </div>
+      </aside>
+
+      <main className="zs-main">
+        <Outlet />
+      </main>
+
+      <GlobalSearchOverlay open={searchOpen} onClose={closeSearch} returnFocusRef={searchButtonRef} />
+    </div>
   );
 }

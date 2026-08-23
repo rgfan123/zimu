@@ -12,24 +12,28 @@ export interface NavigationNode {
   children?: readonly NavigationNode[];
 }
 
-export const NAVIGATION_GROUP_SUFFIX = '~';
-
 export const appNavigation = [
-  { path: '/dashboard', label: '工作台' },
+  // Issue #104（spec #103 D5/D6）：新增一级板块「我的工作台」排最前，按岗位动线收纳工作台入口。
+  // 采购工作台入口随 Issue #110 交付 /workbench/procurement 后加入。
   {
     path: '/workbench',
+    label: '我的工作台',
+    children: [
+      { path: '/workbench/shipping', label: '今日发货工作台' },
+      { path: '/workbench/reviews', label: '复核收件箱' },
+      // Issue #64 运营提醒独立路由：上下文二级入口（复核页 ↔ 提醒页互为切换），随复核收件箱移入本板块。
+      { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
+      // Issue #110：采购工作台（建议区等 #121/#118 供数，工单区今天即真数）。
+      { path: '/workbench/procurement', label: '采购工作台' },
+      { path: '/workbench/recon', label: '对账工作台' },
+    ],
+  },
+  { path: '/dashboard', label: '调度台' },
+  {
+    path: '/operations',
     label: '作业中心',
     children: [
-      { path: '/workbench/reviews', label: '人工复核' },
-      // Issue #64 运营提醒独立路由：按 #98 准入规则降级为上下文二级入口（复核页 ↔ 提醒页互为切换），
-      // 保留路由与上下文归属，不占作业中心可见菜单位。
-      { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       { path: '/workbench/channel-messages', label: '渠道消息' },
-      // Issue #107 今日发货工作台：先 hideInMenu 注册并诚实呈现渠道结果，01 再露出为可见入口。
-      { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: true },
-      // Issue #111：出库信息对账的作业中心入口，复用 /fulfillment/outbound-recon 展示，
-      // 按 #98 准入规则隐藏菜单、保留路由与上下文入口（金额口径说明由页面注入）。
-      { path: '/workbench/recon', label: '出库信息对账', hideInMenu: true },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },
       // 低频专用查询（Issue #98 准入规则）：隐藏菜单、保留路由与上下文入口，见 docs/agents/navigation-admission.md。
@@ -105,7 +109,8 @@ export const appNavigation = [
       },
     ],
   },
-  { path: '/demo/order', label: '模拟下单' },
+  // Issue #104：Demo 页不再出现在日常菜单（URL 保留可直达，降级 ≠ 删除）。
+  { path: '/demo/order', label: '模拟下单', hideInMenu: true },
   { path: '/bi', label: '管理驾驶舱', external: '/metabase' },
 ] as const satisfies readonly NavigationNode[];
 
@@ -162,13 +167,6 @@ export function navigationTrail(routes: readonly NavigationNode[], pathname: str
 
   walk(routes, []);
   return best?.trail ?? [];
-}
-
-/** 返回当前叶子路由的全部菜单祖先，保证直达深层 URL 时导航层级可见。 */
-export function navigationOpenKeys(routes: readonly NavigationNode[], pathname: string): string[] {
-  return navigationTrail(routes, pathname)
-    .slice(0, -1)
-    .map((route) => `${route.path}${NAVIGATION_GROUP_SUFFIX}`);
 }
 
 /** 菜单可见性只处理 hideInMenu；完整导航仍用于注册隐藏路由。 */

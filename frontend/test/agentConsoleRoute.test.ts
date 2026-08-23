@@ -225,10 +225,10 @@ after(async () => {
   dom.window.close();
 });
 
-// ---------- 路由与菜单装配（~ 后缀机制：分组节点与叶子共用 /agents） ----------
+// ---------- 路由与菜单装配（Issue #104：分组标题平铺导航，无折叠层级） ----------
 
 test('Agent 中心注册为顶级板块：菜单分组 + 可见叶子 + 隐藏下钻路由', async () => {
-  const { appNavigation, navigationContext, navigationOpenKeys } = await import('../src/navigation.ts');
+  const { appNavigation, navigationContext } = await import('../src/navigation.ts');
   const group = appNavigation.find((node) => node.label === 'Agent 中心');
   assert.ok(group, '顶级分组「Agent 中心」必须存在');
   assert.equal(group.path, '/agents');
@@ -240,8 +240,6 @@ test('Agent 中心注册为顶级板块：菜单分组 + 可见叶子 + 隐藏�
     page: '运行详情',
   });
   assert.deepEqual(navigationContext('/agents/some-slug', 'Agent 详情'), { section: 'Agent 中心', page: 'Agent 详情' });
-  // 分组节点与叶子共用 /agents：openKeys 用 ~ 后缀区分（既有机制，不另建）
-  assert.deepEqual(navigationOpenKeys(appNavigation, '/agents/runs'), ['/agents~']);
 
   const routes = await vite.ssrLoadModule('/src/routes.tsx');
   const flattened = routes.flattenRoutes(routes.routeConfig).map((route: { path: string }) => route.path);

@@ -1,49 +1,49 @@
 /**
- * 今日发货工作台（Issue #107）：发货员从一次订单同步开始今天的工作，并如实呈现各渠道结果。
- * 「开始今日订单同步」调用 POST /api/v1/platform-orders/refresh，同步中禁用；
- * 结果按渠道独立呈现 OK/FAILED/SKIPPED，聚福宝「仅报告未入库」作为一等状态；
- * 有 batch_id 的渠道卡整卡可点击跳文件作业页（?import_batch=ID）。
- * 视觉只使用页面级 saasTheme / antd 语义 token，不新增 CSS 调色板或共享组件。
+ * 今日发货工作台（Issue #107 同步动线 + #108 骨架先行，ADR 0005/0006）：
+ * 第一屏即数据——七指标（真数）、八段链路、复核分组预览、运营告警一次全部在位；
+ * 拼不出的口径就地「暂无汇总」诚实态，绝不伪造。计数单一来源 useShippingSummary（#119 接缝）。
+ * 同步动线（POST refresh、逐渠道诚实结果）原样保留在 ShippingSyncResults，契约由既有测试锁定。
  */
 
-import { useRef, useState } from 'react';
-import { Alert, Button, Card, Space, Spin, Tag, Typography } from 'antd';
-import { CloudSyncOutlined, FileExcelOutlined, ReloadOutlined } from '@ant-design/icons';
+import { useMemo, useRef, useState } from 'react';
+import { Button } from 'antd';
+import { CloudSyncOutlined, FileExcelOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
-import PageShell from '@/components/PageShell';
-import { ApiError, errorMessage } from '@/api/client';
 import { platformOrdersApi } from '@/api/endpoints';
-import type { PlatformOrderRefreshResult } from '@/api/types';
-import {
-  failedRefreshChannels,
-  presentShippingChannel,
-  summarizeShippingResult,
-  type ShippingChannelView,
-} from './shippingPresentation';
+import { useAsync } from '@/hooks/useAsync';
+import { errorMessage } from '@/api/client';
+import { readStoredWorkbenchRole } from '@/workbenchRole';
+import { reviewTeamForRole } from '@/components/layout/useRailBadges';
+import { alertsQueueUrl, reviewsQueueUrl } from '../shared/reviewQueueUrl';
+import ShippingSyncResults, { type SyncState } from './ShippingSyncResults';
+import { useShippingSummary } from './useShippingSummary';
+import { groupReviewPreview, JD_GATE_ZERO_COPY, presentAlertRows } from './shippingSkeleton';
+import './workbench.css';
 
-const LEDE = '从一次订单同步开始今天的工作：拉取彩食鲜 / 聚福宝 / 飞象最新待发货订单，落为导入批次，并逐渠道如实显示结果。';
+const PLACEHOLDER = '暂无汇总';
+const REVIEW_PREVIEW_SIZE = 50;
 
-const HERO_DESCRIPTION = '一次动作拉取彩食鲜 / 聚福宝 / 飞象最新待发货订单并落为导入批次；聚福宝 JSON 直连缺收货人字段，只报告拉取数量、不生成导入批次。失败会停在这里等你重试，不会偷偷跳过。';
+function formatCount(value: number | null): string {
+  return value === null ? '—' : String(value);
+}
 
-type SyncState =
-  | { phase: 'idle' }
-  | { phase: 'loading' }
-  | { phase: 'success'; result: PlatformOrderRefreshResult }
-  | { phase: 'error'; error: unknown };
-
-function statusTagColor(status: ShippingChannelView['status']): 'success' | 'error' | 'default' {
-  if (status === 'OK') return 'success';
-  if (status === 'FAILED' || status === 'CONTRACT_ERROR') return 'error';
-  return 'default';
+function jumpTo(anchor: string) {
+  const target = document.querySelector(anchor);
+  if (target && typeof target.scrollIntoView === 'function') {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 export default function ShippingWorkbenchPage() {
   const [state, setState] = useState<SyncState>({ phase: 'idle' });
+  // #115：原生 disabled 落到 DOM 前仍可能收到同一事件循环内的第二次触发；ref 是最后一道前端重入门禁。
+  // 跨浏览器/跨实例的权威并发边界在后端 PlatformPullSingleFlight（advisory lock）。
   const syncInFlight = useRef(false);
   const navigate = useNavigate();
+  const team = reviewTeamForRole(readStoredWorkbenchRole());
+  const counts = useShippingSummary(team);
 
   const sync = async () => {
-    // 原生 disabled 落到 DOM 前仍可能收到同一事件循环内的第二次触发；ref 是最后一道前端重入门禁。
     if (syncInFlight.current) return;
     syncInFlight.current = true;
     setState({ phase: 'loading' });
@@ -59,184 +59,239 @@ export default function ShippingWorkbenchPage() {
 
   const syncing = state.phase === 'loading';
 
+  const metrics = [
+    { key: 'installed', cls: 'b click', label: '已入库订单', value: counts.installedToday, note: '今日新建', jump: '#zs-pipe' },
+    { key: 'reported', cls: 'w', label: '仅报告未入库', value: null, note: `${PLACEHOLDER} · 见本次同步结果`, jump: null },
+    { key: 'review', cls: 'e click', label: '待我人工复核', value: counts.reviewOpen, note: '阻断整批确认', jump: '#zs-review' },
+    { key: 'ready', cls: 'click', label: '待发货', value: counts.readyToExport, note: '已确认待出库', jump: '#zs-pipe' },
+    { key: 'waiting', cls: '', label: '发货中', value: counts.waitingProvider, note: '等运单回填', jump: null },
+    { key: 'shipped', cls: 's', label: '已发货已回填', value: counts.shippedToday, note: '今日建单口径', jump: null },
+    { key: 'backfill-failed', cls: 'e click', label: '回填失败', value: null, note: `${PLACEHOLDER}（全局清单未接入）`, jump: '#zs-fail' },
+  ];
+
+  const segments = [
+    { name: '1 平台拉取', value: null, status: PLACEHOLDER, cls: 'wait' },
+    { name: '2 落导入批次', value: null, status: PLACEHOLDER, cls: 'wait' },
+    {
+      name: '3 SKU / 客户识别',
+      value: counts.needReview,
+      status: counts.needReview === null ? '' : counts.needReview > 0 ? `${counts.needReview} 待人工` : '无待人工',
+      cls: counts.needReview !== null && counts.needReview > 0 ? 'err' : '',
+    },
+    { name: '4 整批确认', value: counts.readyToExport, status: '等整批确认', cls: '' },
+    { name: '5 京东出库提交', value: null, status: PLACEHOLDER, cls: 'wait' },
+    { name: '6 运单回填', value: counts.waitingProvider, status: '等运单回传', cls: '' },
+    { name: '7 来源回填表', value: counts.trackingReceived, status: '待生成', cls: '' },
+    { name: '8 回传来源平台', value: counts.returnFileReady, status: '待回传', cls: '' },
+  ];
+
   return (
-    <PageShell title="今日发货工作台" description={LEDE} icon={<CloudSyncOutlined />}>
-      <Card size="small">
-        <Space align="start" size={16} wrap style={{ width: '100%' }}>
-          <div style={{ flex: 1, minWidth: 240 }}>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              开始今日订单同步
-            </Typography.Title>
-            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
-              {HERO_DESCRIPTION}
-            </Typography.Text>
+    <div>
+      {/* 页头即动作行（ADR 0005）：标题左、同步动作右，没有独立的按钮卡，没有闲置提示 */}
+      <div className="zs-ph">
+        <h1>今日发货工作台</h1>
+        <div className="zs-ph-actions">
+          <Button type="primary" icon={<CloudSyncOutlined />} loading={syncing} disabled={syncing} onClick={sync}>
+            开始今日订单同步
+          </Button>
+          {/* 单一 <a>（Button href），不 Link 包 Button：保留真实 href 与键盘可达性，点击经路由导航。 */}
+          <Button
+            icon={<FileExcelOutlined />}
+            href="/fulfillment/sales-outbound"
+            onClick={(event) => {
+              event.preventDefault();
+              navigate('/fulfillment/sales-outbound');
+            }}
+          >
+            手动导入 Excel
+          </Button>
+        </div>
+      </div>
+
+      {state.phase !== 'idle' ? (
+        <div className="zs-sec">
+          <ShippingSyncResults state={state} onRetry={sync} />
+        </div>
+      ) : null}
+
+      {/* 七指标（#108）：数字全中性，状态点 + 左边框；可点卡滚动到对应区 */}
+      <section className="zs-sec">
+        <h3 className="zs-eyebrow">今天的七个数</h3>
+        <div className="zs-stats">
+          {metrics.map((metric) => (
+            <div
+              key={metric.key}
+              className={`zs-st ${metric.cls}`.trim()}
+              {...(metric.jump
+                ? {
+                    role: 'button',
+                    tabIndex: 0,
+                    onClick: () => jumpTo(metric.jump),
+                    onKeyDown: (event: { key: string }) => {
+                      if (event.key === 'Enter' || event.key === ' ') jumpTo(metric.jump);
+                    },
+                  }
+                : {})}
+            >
+              <div className="zs-k">
+                <i className="zs-d" />
+                {metric.label}
+              </div>
+              <div className="zs-v">{formatCount(metric.value)}</div>
+              <div className="zs-n">{metric.note}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* 八段链路（#108）：可得段位真数，不可得段位诚实占位 */}
+      <section className="zs-sec" id="zs-pipe">
+        <div className="zs-card">
+          <div className="zs-hd">
+            <h3>八段链路 · 今天卡在哪一段</h3>
           </div>
-          <Space wrap>
-            <Button
-              type="primary"
-              size="large"
-              icon={<CloudSyncOutlined />}
-              loading={syncing}
-              disabled={syncing}
-              onClick={sync}
-            >
-              开始今日订单同步
-            </Button>
-            {/* 单一 <a>（Button href），不 Link 包 Button：保留真实 href 与键盘可达性，点击经路由导航。 */}
-            <Button
-              size="large"
-              icon={<FileExcelOutlined />}
-              href="/fulfillment/sales-outbound"
-              onClick={(event) => {
-                event.preventDefault();
-                navigate('/fulfillment/sales-outbound');
-              }}
-            >
-              手动导入 Excel
-            </Button>
-          </Space>
-        </Space>
-      </Card>
+          <div className="zs-bd">
+            <div className="zs-pipe">
+              {segments.map((segment) => (
+                <div key={segment.name} className={`zs-pstep ${segment.cls}`.trim()}>
+                  <div className="zs-n">{segment.name}</div>
+                  <div className="zs-v">{formatCount(segment.value)}</div>
+                  <div className="zs-s">{segment.status}</div>
+                </div>
+              ))}
+            </div>
+            <div className="zs-legend">
+              <span><i style={{ background: 'var(--zs-success)' }} />完成</span>
+              <span><i style={{ background: 'var(--zs-brand)' }} />系统处理中</span>
+              <span><i style={{ background: 'var(--zs-warning)' }} />等人 / 等外部</span>
+              <span><i style={{ background: 'var(--zs-error)' }} />异常需介入</span>
+              <span><i style={{ background: 'var(--zs-border)' }} />未开始 / 暂无汇总</span>
+            </div>
+          </div>
+        </div>
+      </section>
 
-      <SyncResults state={state} onRetry={sync} />
-    </PageShell>
+      <ReviewPreviewSection team={team} reviewOpen={counts.reviewOpen} />
+      <AlertsSection />
+    </div>
   );
 }
 
-function SyncResults({ state, onRetry }: { state: SyncState; onRetry: () => void }) {
-  if (state.phase === 'idle') {
-    return (
-      <Typography.Text type="secondary">
-        尚未同步，点击上方「开始今日订单同步」开始今天的工作。
-      </Typography.Text>
-    );
-  }
+function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; reviewOpen: number | null }) {
+  const preview = useAsync(async () => {
+    const params = new URLSearchParams({ status: 'OPEN', page: '0', size: String(REVIEW_PREVIEW_SIZE) });
+    if (team) params.set('responsible_team', team);
+    const response = await fetch(`/api/v1/review-cases?${params.toString()}`, { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error(`复核清单加载失败（${response.status}）`);
+    return (await response.json()) as { items?: unknown[]; total_elements?: number };
+  }, [team]);
 
-  if (state.phase === 'loading') {
-    return (
-      <Card size="small">
-        <Space>
-          <Spin size="small" />
-          <Typography.Text type="secondary">正在同步三平台订单…</Typography.Text>
-        </Space>
-      </Card>
-    );
-  }
-
-  if (state.phase === 'error') {
-    const channels = state.error instanceof ApiError
-      ? failedRefreshChannels(state.error)?.map(presentShippingChannel)
-      : null;
-    return (
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        <Alert
-          type="error"
-          showIcon
-          message="订单同步失败"
-          description={errorMessage(state.error)}
-          action={<Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>重试</Button>}
-        />
-        {channels?.length ? (
-          <Space wrap size={12} align="start">
-            {channels.map((channel) => <ChannelCard key={channel.channel} channel={channel} />)}
-          </Space>
-        ) : null}
-      </Space>
-    );
-  }
-
-  const summary = summarizeShippingResult(state.result);
-  const channels = state.result.channels.map(presentShippingChannel);
-  const showAllClear = !summary.hasNewOrders
-    && summary.failedCount === 0
-    && summary.skippedCount === 0
-    && summary.contractErrorCount === 0;
-  const showIncompleteAlert = summary.skippedCount > 0
-    || (!summary.hasNewOrders && summary.failedCount > 0);
-  const incompleteDescription = [
-    summary.failedCount > 0 ? `${summary.failedCount} 个渠道失败，请重试` : '',
-    summary.skippedCount > 0 ? `${summary.skippedCount} 个渠道已跳过` : '',
-  ].filter(Boolean).join(' · ');
+  const groups = useMemo(() => groupReviewPreview(preview.data?.items ?? [], team), [preview.data, team]);
+  const total = preview.data?.total_elements ?? null;
+  const partial = total !== null && total > REVIEW_PREVIEW_SIZE;
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
-      {summary.contractErrorCount > 0 ? (
-        <Alert
-          type="error"
-          showIcon
-          message="同步结果格式异常"
-          description="渠道响应格式异常，请联系管理员。"
-        />
-      ) : null}
-      {summary.hasNewOrders ? (
-        <Typography.Text>
-          本次同步：生成 {summary.batchCount} 个导入批次 · 共 {summary.totalRows} 行
-          {summary.reportedOrders > 0 ? ` · 仅报告未入库 ${summary.reportedOrders} 单` : ''}
-          {summary.failedCount > 0 ? ` · ${summary.failedCount} 个渠道失败` : ''}
-          {summary.skippedCount > 0 ? ` · ${summary.skippedCount} 个渠道已跳过` : ''}
-        </Typography.Text>
-      ) : null}
-      {showIncompleteAlert ? (
-        <Alert
-          type="warning"
-          showIcon
-          message="同步未完成"
-          description={incompleteDescription}
-        />
-      ) : showAllClear ? (
-        <Alert
-          type="info"
-          showIcon
-          message="没有新订单"
-          description="三平台已同步完成，本次没有生成新的导入批次，也没有拉到新的待发货订单。"
-        />
-      ) : null}
-      {channels.length > 0 ? (
-        <Space wrap size={12} align="start">
-          {channels.map((channel) => <ChannelCard key={channel.channel} channel={channel} />)}
-        </Space>
-      ) : null}
-    </Space>
+    <section className="zs-sec" id="zs-review">
+      <div className="zs-card">
+        <div className="zs-hd">
+          <h3>待我人工复核</h3>
+          {reviewOpen !== null && reviewOpen > 0 ? <span className="zs-tag err">{reviewOpen} 项阻断整批确认</span> : null}
+          <div className="zs-r">
+            <Link to={reviewsQueueUrl({ status: 'OPEN', team: team ?? undefined })}>去收件箱处理</Link>
+          </div>
+        </div>
+        <div className="zs-bd zs-flush">
+          {preview.loading ? (
+            <div className="zs-hint" style={{ padding: '12px 16px' }}>正在加载复核清单…</div>
+          ) : preview.error ? (
+            <div className="zs-hint" style={{ padding: '12px 16px' }}>
+              复核清单加载失败：{errorMessage(preview.error)}
+            </div>
+          ) : (
+            <div className="zs-rq" style={{ padding: 12 }}>
+              {partial ? (
+                <div className="zs-hint">按前 {REVIEW_PREVIEW_SIZE} 条分组统计，共 {total} 条，完整清单见收件箱。</div>
+              ) : null}
+              {groups.map((group, index) => (
+                <details key={group.reasonCode} className="zs-rqg" open={index === 0 && group.count > 0}>
+                  <summary>
+                    {group.label}
+                    <span className="zs-c">{group.count} 项</span>
+                  </summary>
+                  <div className="zs-rqi">
+                    <div className="zs-w">
+                      {group.count === 0 ? (
+                        <div className="zs-l2 zs-muted">{JD_GATE_ZERO_COPY}</div>
+                      ) : (
+                        <div className="zs-l2">同类事项 {group.count} 项，在收件箱按此类型预筛后逐条处理。</div>
+                      )}
+                    </div>
+                    {group.count > 0 ? (
+                      <div className="zs-a">
+                        <Link to={group.url}>去处理</Link>
+                      </div>
+                    ) : null}
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
-function ChannelCard({ channel }: { channel: ShippingChannelView }) {
-  const card = (
-    <Card size="small" hoverable={Boolean(channel.destination)} style={{ width: 320 }}>
-      <Space direction="vertical" size={6} style={{ width: '100%' }}>
-        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Typography.Text strong>{channel.label}</Typography.Text>
-          <Tag color={statusTagColor(channel.status)}>{channel.statusText}</Tag>
-        </Space>
-        {channel.batchNo ? (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            批次 {channel.batchNo}
-          </Typography.Text>
-        ) : null}
-        {channel.reportOnly ? (
-          <Space>
-            <Tag color="warning">仅报告未入库</Tag>
-            <Typography.Text>拉取 {channel.orderCount} 单</Typography.Text>
-          </Space>
-        ) : null}
-        {channel.rowCounts ? (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            共 {channel.rowCounts.total} 行 · 已接收 {channel.rowCounts.accepted} · 待复核 {channel.rowCounts.need_review} · 拒绝 {channel.rowCounts.rejected}
-          </Typography.Text>
-        ) : null}
-        {channel.message ? (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{channel.message}</Typography.Text>
-        ) : null}
-      </Space>
-    </Card>
-  );
+function AlertsSection() {
+  const alerts = useAsync(async () => {
+    const params = new URLSearchParams({ status: 'OPEN', page: '0', size: '5' });
+    const response = await fetch(`/api/v1/operational-alerts?${params.toString()}`, { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error(`告警加载失败（${response.status}）`);
+    return (await response.json()) as { items?: unknown[]; total_elements?: number };
+  }, []);
 
-  if (channel.destination) {
-    return (
-      <Link to={channel.destination} style={{ display: 'block' }}>
-        {card}
-      </Link>
-    );
-  }
-  return card;
+  const rows = useMemo(() => presentAlertRows(alerts.data?.items ?? []), [alerts.data]);
+  const total = alerts.data?.total_elements ?? null;
+
+  return (
+    <section className="zs-sec" id="zs-fail">
+      <div className="zs-card">
+        <div className="zs-hd">
+          <h3>运营告警</h3>
+          {total !== null && total > 0 ? <span className="zs-tag warn">{total} 条待处理</span> : null}
+          <div className="zs-r">
+            <Link to={alertsQueueUrl()}>去提醒中心</Link>
+          </div>
+        </div>
+        <div className="zs-bd">
+          {alerts.loading ? (
+            <div className="zs-hint">正在加载告警…</div>
+          ) : alerts.error ? (
+            <div className="zs-hint">告警加载失败：{errorMessage(alerts.error)}</div>
+          ) : rows.length === 0 ? (
+            <div className="zs-alert i">
+              <span className="zs-ico">i</span>
+              <div className="zs-b">
+                <b>当前没有打开的运营告警</b>
+              </div>
+            </div>
+          ) : (
+            <div className="zs-stack">
+              {rows.map((row) => (
+                <div key={row.id} className="zs-alert w">
+                  <span className="zs-ico">◷</span>
+                  <div className="zs-b">
+                    <b>
+                      <span className="zs-mono">{row.alertType}</span>
+                    </b>
+                    {row.createdAt ? <p>创建于 {row.createdAt}</p> : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }

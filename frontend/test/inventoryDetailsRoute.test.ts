@@ -327,7 +327,8 @@ test('real details route renders unsupported provider capabilities as not integr
   await waitFor(() => assert.match(bodyText(), /第三方履约方/));
   assert.match(bodyText(), /尚无观测/);
   assert.equal((bodyText().match(/未接入/g) ?? []).length >= 3, true);
-  assert.equal(document.querySelectorAll<HTMLAnchorElement>('a[href^="/fulfillment/jd-"]').length, 0);
+  // Issue #104 外壳后侧栏常驻京东工具导航锚点：只断言页面主内容区不提供 JD 工具深链。
+  assert.equal(document.querySelectorAll<HTMLAnchorElement>('main a[href^="/fulfillment/jd-"]').length, 0);
   assert.doesNotMatch(bodyText(), /在途数量|预留数量|0 件/);
 });
 

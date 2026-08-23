@@ -174,7 +174,8 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
   };
 
   await harness.mount(['/fulfillment/sales-outbound']);
-  await harness.waitFor(() => assert.match(harness.bodyText(), /来源订单导入/));
+  // 全量套件 16 路并行时本文件常最后启动，vite SSR 冷启动可能挤占默认 3s——放宽到 10s（仅时限，断言不变）。
+  await harness.waitFor(() => assert.match(harness.bodyText(), /来源订单导入/), 10_000);
 
   const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.csv"]');
   assert.ok(fileInput, 'missing source import file input');
@@ -183,10 +184,10 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
   });
   Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
   await harness.dispatchEvent(fileInput, new Event('change', { bubbles: true }));
-  await harness.waitFor(() => assert.match(harness.bodyText(), /caishixian\.xlsx/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /caishixian\.xlsx/), 10_000);
   await control('开始导入').click();
 
-  await harness.waitFor(() => assert.match(harness.location(), /import_batch=7/));
+  await harness.waitFor(() => assert.match(harness.location(), /import_batch=7/), 10_000);
   assert.match(harness.bodyText(), /IMP-B7/);
 });
 

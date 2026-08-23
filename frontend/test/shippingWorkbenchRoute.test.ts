@@ -67,20 +67,29 @@ function anchorWithHref(href: string): HTMLAnchorElement {
 
 test('shipping workbench does not request or render a quota because platform pulls are unlimited', async () => {
   const requests: string[] = [];
+  // 骨架挂载会发计数请求（ADR 0006 size=1 拼真数）；这里放行计数、只断言「不存在配额请求」。
   globalThis.fetch = async (input) => {
     requests.push(String(input));
-    throw new Error(`unexpected request: ${String(input)}`);
+    return jsonResponse({ items: [], page: 0, size: 1, total_elements: 0, total_pages: 0 });
   };
 
   await harness.mount(['/workbench/shipping']);
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /今日发货工作台/));
-  assert.match(harness.bodyText(), /落为导入批次/, 'lede 必须还原原型口径');
+  // ADR 0005 密度优先：解释性 lede 与 hero 长段落已删除，第一屏是数据本身（骨架断言见 skeleton 测试）。
+  assert.doesNotMatch(harness.bodyText(), /并逐渠道如实显示结果/, '旧 LEDE 解释句不得回归');
   assert.match(harness.bodyText(), /开始今日订单同步/);
   assert.match(harness.bodyText(), /手动导入 Excel/);
-  assert.match(harness.bodyText(), /尚未同步/, '初始态必须给出可读提示');
-  assert.deepEqual(requests, [], '页面挂载不得读取不存在的频控配额');
-  assert.doesNotMatch(harness.bodyText(), /配额|今天最多还能拉|下次可拉取/);
+  // ADR 0005：闲置态不再占版面（骨架即首屏），同步结果区仅在动作后出现。
+  assert.doesNotMatch(harness.bodyText(), /尚未同步/, '闲置提示文案不得回归');
+  // #115 口径：平台拉单本无每日次数与最小间隔，因此既不请求配额、也不呈现任何配额说法
+  //（包括「未暴露剩余额度」——那本身就在暗示存在配额制度）。
+  assert.equal(
+    requests.some((url) => /quota|last_pull|rate.?limit/i.test(url)),
+    false,
+    '页面挂载不得读取不存在的频控配额',
+  );
+  assert.doesNotMatch(harness.bodyText(), /配额|今天最多还能拉|下次可拉取|今日剩|剩余拉取额度/);
 });
 
 test('sync disables the trigger and shows an independent loading block while in flight', async () => {
@@ -445,7 +454,10 @@ test('manual import is a real link to the file job page', async () => {
   await harness.mount(['/workbench/shipping']);
   await harness.waitFor(() => assert.match(harness.bodyText(), /手动导入 Excel/));
 
-  const manualLink = anchorWithHref('/fulfillment/sales-outbound');
+  // Issue #104 外壳后侧栏也有指向文件作业的导航链接：限定在主内容区找页面按钮。
+  const manualLink = [...document.querySelectorAll<HTMLAnchorElement>('main a')]
+    .find((a) => a.getAttribute('href') === '/fulfillment/sales-outbound');
+  assert.ok(manualLink, 'missing manual import anchor in main content');
   assert.match(manualLink.textContent ?? '', /手动导入 Excel/);
   assert.equal(manualLink.tagName, 'A', '手动导入必须是单一 <a> 锚点');
   assert.equal(manualLink.querySelectorAll('button, a').length, 0, '手动导入锚点内不得嵌套 button/a');

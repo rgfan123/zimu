@@ -9,7 +9,7 @@
  * 路由（除 view 外参数原样保留），其余情况原样渲染本页。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { Alert, Card, Empty, Select, Tag, Typography } from 'antd';
 import { CheckSquareOutlined } from '@ant-design/icons';
@@ -34,6 +34,8 @@ import {
   alertsQueueUrl,
   alertsRouteFromLegacyView,
 } from '@/pages/shared/reviewQueueUrl';
+import { readStoredWorkbenchRole } from '@/workbenchRole';
+import { reviewTeamForRole } from '@/components/layout/useRailBadges';
 import QueueTable from './queueTable';
 import ReviewCaseDrawer from './ReviewCaseDrawer';
 import { useQueuePagination } from './queuePagination';
@@ -62,6 +64,25 @@ export default function ManualReviewPage() {
     : 'OPEN';
   const reasonCode = searchParams.get(REVIEWS_REASON_PARAM) || undefined;
   const team = searchParams.get(REVIEWS_TEAM_PARAM) || undefined;
+
+  /**
+   * Issue #106：进入收件箱时按岗位团队默认预筛。默认值写进 URL（URL 保持唯一事实源、
+   * 分享链接如实反映所见），且只在首挂载、URL 未带 responsible_team 时写入——
+   * URL 已有该参数时以 URL 为准（spec 故事 27）；「看全部」清除后本次挂载内不再回填。
+   * 岗位只是视图（D1）：没有岗位或财务（无团队）时不加任何过滤。
+   */
+  const roleTeam = reviewTeamForRole(readStoredWorkbenchRole());
+  const defaultTeamApplied = useRef(false);
+  useEffect(() => {
+    if (defaultTeamApplied.current) return;
+    defaultTeamApplied.current = true;
+    if (!roleTeam || searchParams.has(REVIEWS_TEAM_PARAM)) return;
+    const next = new URLSearchParams(searchParams);
+    next.set(REVIEWS_TEAM_PARAM, roleTeam);
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅首挂载应用一次默认预筛
+  }, []);
+  const roleFilterActive = Boolean(roleTeam) && team === roleTeam;
   /** URL 筛选变化（含浏览器回退/前进）时回到第一页，避免带着旧页码看新筛选。 */
   const urlFilterKey = `${status}|${reasonCode ?? ''}|${team ?? ''}`;
   const { page, size, setPage, onPageChange } = useQueuePagination(urlFilterKey);
@@ -184,7 +205,17 @@ export default function ManualReviewPage() {
           loading={queue.loading}
           error={queue.error}
           errorTitle="复核队列加载失败"
-          emptyText={<Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有复核事项" />}
+          emptyText={
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={roleFilterActive ? (
+                <>
+                  你这个团队当前没有待办{' '}
+                  <Typography.Link onClick={() => updateQueueFilters({ team: null })}>看全部</Typography.Link>
+                </>
+              ) : '当前没有复核事项'}
+            />
+          }
           total={queue.data?.total_elements ?? 0}
           page={page}
           pageSize={size}
@@ -218,6 +249,12 @@ export default function ManualReviewPage() {
                 onChange={(value) => updateQueueFilters({ team: value ?? null })}
                 options={TEAM_OPTIONS}
               />
+              {roleFilterActive ? (
+                <>
+                  <Tag>已按岗位预筛：{TEAM_LABELS[roleTeam as string] ?? roleTeam}</Tag>
+                  <Typography.Link onClick={() => updateQueueFilters({ team: null })}>看全部</Typography.Link>
+                </>
+              ) : null}
             </>
           }
         />

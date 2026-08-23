@@ -43,7 +43,7 @@ import {
   ShipmentsPage,
 } from '@/pages/fulfillment';
 import ProcurementTicketsPage, { ProcurementPriceComparePage } from '@/pages/procurement';
-import { ReviewQueueCompatRoute, AlertsQueuePage, ShippingWorkbenchPage, ReconWorkbenchPage } from '@/pages/workbench';
+import { ReviewQueueCompatRoute, AlertsQueuePage, ShippingWorkbenchPage, ReconWorkbenchPage, ProcurementWorkbenchPage } from '@/pages/workbench';
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
 import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage } from '@/pages/system';
 import {
@@ -68,6 +68,7 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/workbench/alerts': <AlertsQueuePage />,
   '/workbench/channel-messages': <ChannelMessagesPage />,
   '/workbench/shipping': <ShippingWorkbenchPage />,
+  '/workbench/procurement': <ProcurementWorkbenchPage />,
   '/workbench/recon': <ReconWorkbenchPage />,
   '/fulfillment/tasks': <FulfillmentTasksPage />,
   '/procurement/tickets': <ProcurementTicketsPage />,
