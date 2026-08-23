@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
+import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.order.OrderDraftQueryService;
 import cn.zimu.fulfillment.order.OrderDraftService;
@@ -43,7 +44,7 @@ class OrderDraftCardConfirmationServiceTest {
                         org.mockito.ArgumentMatchers.any()))
                 .thenReturn(IdempotentResult.executed(draft, 200));
 
-        CardConfirmationResult result = service.confirm(41L, "EVT-41", "REQ-41", "zhangsan");
+        CardConfirmationResult result = service.confirm(41L, 0L, "EVT-41", "REQ-41", "zhangsan");
 
         assertThat(result.status()).isEqualTo(CardConfirmationStatus.CONFIRMED);
         assertThat(result.businessCode()).isEqualTo("ORDER_DRAFT_CONFIRMED");
@@ -67,7 +68,7 @@ class OrderDraftCardConfirmationServiceTest {
     void incompleteDraftReturnsSupplementBranchWithoutCallingBusinessConfirmation() {
         when(drafts.detail(41L)).thenReturn(draft(List.of("settlement_time", "line_1_sku")));
 
-        CardConfirmationResult result = service.confirm(41L, "EVT-42", "REQ-42", "zhangsan");
+        CardConfirmationResult result = service.confirm(41L, 0L, "EVT-42", "REQ-42", "zhangsan");
 
         assertThat(result.status()).isEqualTo(CardConfirmationStatus.MISSING_INFORMATION);
         assertThat(result.missingFields()).containsExactly("settlement_time", "line_1_sku");
@@ -76,6 +77,51 @@ class OrderDraftCardConfirmationServiceTest {
                 org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void staleCardRevisionCannotConfirmFactsTheOperatorNeverSaw() {
+        OrderDraftDetailDto current = mock(OrderDraftDetailDto.class);
+        when(current.status()).thenReturn("OPEN");
+        when(current.draftNo()).thenReturn("OD-41");
+        when(current.revision()).thenReturn(2L);
+        when(drafts.detail(41L)).thenReturn(current);
+
+        CardConfirmationResult result = service.confirm(41L, 1L, "EVT-43", "REQ-43", "zhangsan");
+
+        assertThat(result.status()).isEqualTo(CardConfirmationStatus.REJECTED);
+        assertThat(result.businessCode()).isEqualTo("ORDER_DRAFT_CARD_STALE");
+        verify(orderDrafts, never()).confirm(
+                org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void revisionRaceDuringConfirmationReturnsStaleInsteadOfRetryingWithLatestFacts() {
+        OrderDraftDetailDto first = draft(List.of());
+        OrderDraftDetailDto latest = mock(OrderDraftDetailDto.class);
+        when(latest.status()).thenReturn("OPEN");
+        when(latest.draftNo()).thenReturn("OD-41");
+        when(latest.revision()).thenReturn(1L);
+        when(drafts.detail(41L)).thenReturn(first, latest);
+        when(orderDrafts.confirm(
+                        eq(41L),
+                        org.mockito.ArgumentMatchers.any(),
+                        eq("wecom-card-confirm:EVT-44"),
+                        org.mockito.ArgumentMatchers.any()))
+                .thenThrow(BusinessException.conflict("VERSION_CONFLICT", "草稿已修改"));
+
+        CardConfirmationResult result = service.confirm(41L, 0L, "EVT-44", "REQ-44", "zhangsan");
+
+        assertThat(result.status()).isEqualTo(CardConfirmationStatus.REJECTED);
+        assertThat(result.businessCode()).isEqualTo("ORDER_DRAFT_CARD_STALE");
+        verify(orderDrafts).confirm(
+                eq(41L),
+                org.mockito.ArgumentMatchers.any(),
+                eq("wecom-card-confirm:EVT-44"),
                 org.mockito.ArgumentMatchers.any());
     }
 

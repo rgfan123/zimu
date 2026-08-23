@@ -6,6 +6,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -72,6 +73,23 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
             throw BusinessException.notFound("订单草稿卡片不存在: " + cardId);
         }
         return rows.getFirst();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<OrderDraftCard> findSentByTaskId(String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            return Optional.empty();
+        }
+        List<OrderDraftCard> rows = jdbc.query(
+                """
+                SELECT id, order_draft_id, draft_revision, task_id, chat_id, status, attempt_count
+                FROM app.wecom_order_draft_cards
+                WHERE task_id=? AND status='SENT'
+                """,
+                JdbcOrderDraftCardStore::map,
+                taskId);
+        return rows.stream().findFirst();
     }
 
     @Override

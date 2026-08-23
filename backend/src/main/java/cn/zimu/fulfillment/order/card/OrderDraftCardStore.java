@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.order.card;
 
 import java.time.Instant;
+import java.util.Optional;
 
 /** Durable send fence for Issue #87 order-draft cards. */
 public interface OrderDraftCardStore {
@@ -8,6 +9,9 @@ public interface OrderDraftCardStore {
     OrderDraftCard create(long draftId, long draftRevision);
 
     OrderDraftCard load(long cardId);
+
+    /** Only an acknowledged outbound card can authorize a later interaction callback. */
+    Optional<OrderDraftCard> findSentByTaskId(String taskId);
 
     CardSendPermit beginSend(long cardId);
 

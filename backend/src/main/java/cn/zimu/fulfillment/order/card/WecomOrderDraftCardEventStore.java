@@ -80,7 +80,11 @@ class WecomOrderDraftCardEventStore {
         }
         if ("PROCESSING".equals(current.processingStatus())) {
             if ("CONFIRMED".equals(current.draftStatus())) {
-                return reconcileConfirmed(input, current);
+                // The business transaction committed before event completion. Rotate to one new
+                // fenced attempt so the interaction service can reconcile ALREADY_CONFIRMED and
+                // deliver updateCard once; later terminal redeliveries remain read-only.
+                return startAttempt(
+                        input.messageId(), current.processingClaimToken(), current.processingAttempt(), true);
             }
             if (stale(current.processingStartedAt()) && !hasActiveBusinessLease(input)) {
                 return startAttempt(
@@ -126,6 +130,7 @@ class WecomOrderDraftCardEventStore {
                 SET update_status=?, fallback_status=?, update_latency_ms=?,
                     update_error_code=?, fallback_error_code=?
                 WHERE event_type=? AND msgid=? AND processing_claim_token=?::uuid
+                  AND update_status='NOT_ATTEMPTED' AND fallback_status='NOT_ATTEMPTED'
                 """,
                 updateStatus.name(),
                 fallbackStatus.name(),
@@ -179,45 +184,6 @@ class WecomOrderDraftCardEventStore {
             throw new IllegalStateException("template-card event claim changed concurrently");
         }
         return CardEventClaim.claimed(claimToken, attempt);
-    }
-
-    private CardEventClaim reconcileConfirmed(CardEventInput input, StoredEvent current) {
-        String claimToken = UUID.randomUUID().toString();
-        int attempt = current.processingAttempt() + 1;
-        String confirmedBy = current.draftConfirmedBy() == null
-                ? "wecom:" + input.actorUserid()
-                : current.draftConfirmedBy();
-        Instant now = Instant.now();
-        int updated = jdbc.update(
-                """
-                UPDATE app.wecom_events
-                SET processing_status='ALREADY_CONFIRMED',
-                    business_code='ORDER_DRAFT_ALREADY_CONFIRMED',
-                    processed_by=?, processed_at=?, processing_claim_token=?::uuid,
-                    processing_attempt=?, processing_started_at=CURRENT_TIMESTAMP,
-                    update_status='NOT_ATTEMPTED', fallback_status='NOT_ATTEMPTED',
-                    update_latency_ms=NULL, update_error_code=NULL, fallback_error_code=NULL
-                WHERE event_type=? AND msgid=? AND processing_status='PROCESSING'
-                  AND processing_claim_token=?::uuid
-                """,
-                stableActor(confirmedBy),
-                OffsetDateTime.ofInstant(now, ZoneOffset.UTC),
-                claimToken,
-                attempt,
-                EVENT_TYPE,
-                input.messageId(),
-                requireToken(current.processingClaimToken()));
-        if (updated != 1) {
-            throw new IllegalStateException("template-card event reconciliation claim was lost");
-        }
-        StoredEvent completed = current.completed(
-                "ALREADY_CONFIRMED",
-                "ORDER_DRAFT_ALREADY_CONFIRMED",
-                confirmedBy,
-                now,
-                claimToken,
-                attempt);
-        return CardEventClaim.duplicate(duplicateOutcome(input, completed));
     }
 
     @Transactional(readOnly = true)
@@ -383,27 +349,5 @@ class WecomOrderDraftCardEventStore {
                     && Objects.equals(orderDraftId, input.orderDraftId());
         }
 
-        StoredEvent completed(
-                String status, String code, String actor, Instant at, String claimToken, int attempt) {
-            return new StoredEvent(
-                    botId,
-                    chatId,
-                    chatType,
-                    actorUserid,
-                    createTime,
-                    eventKey,
-                    taskId,
-                    orderDraftId,
-                    status,
-                    code,
-                    actor,
-                    processingStartedAt,
-                    at,
-                    claimToken,
-                    attempt,
-                    draftNo,
-                    draftStatus,
-                    draftConfirmedBy);
-        }
     }
 }

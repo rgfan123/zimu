@@ -173,6 +173,13 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
             log.warn("企微卡片事件首次事实不一致，拒绝变形重投 msgid={}", messageId);
             return;
         }
+        if (outcome.duplicate()) {
+            // A completed callback already owns the persisted update/fallback observation. A
+            // platform redelivery must be read-only: resending can duplicate fallback text and a
+            // late timeout/failure could otherwise downgrade an earlier SENT result.
+            log.debug("企微卡片事件已完成，忽略终态重投 msgid={}", messageId);
+            return;
+        }
         String updateErrorCode = null;
         String fallbackErrorCode = null;
         CardUpdateStatus updateStatus;

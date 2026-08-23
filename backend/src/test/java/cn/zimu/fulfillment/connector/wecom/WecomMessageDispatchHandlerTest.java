@@ -53,6 +53,12 @@ class WecomMessageDispatchHandlerTest {
     @DynamicPropertySource
     static void wecomConfiguration(DynamicPropertyRegistry registry) {
         registry.add("app.message-worker.enabled", () -> "false");
+        registry.add("app.wecom-tracking-file-worker.enabled", () -> "false");
+        registry.add("app.wecom-export-worker.enabled", () -> "false");
+        registry.add("app.wecom-reminder.enabled", () -> "false");
+        registry.add("app.wecom-notification.enabled", () -> "false");
+        registry.add("app.wecom-order-draft-card.enabled", () -> "false");
+        registry.add("app.agent-worker.enabled", () -> "false");
     }
 
     @Autowired private WecomMessageDispatchHandler handler;
@@ -352,6 +358,36 @@ class WecomMessageDispatchHandlerTest {
                                 Instant.parse("2026-08-23T00:00:00Z")),
                         true,
                         "claim-in-progress",
+                        1));
+
+        handler.onFrame("aibot_event_callback", frame);
+
+        verify(connectionManager, never()).respondUpdateUntil(any(), any(), anyLong());
+        verify(outboundGateway, never()).send(any());
+        verify(cardInteractions, never())
+                .recordUpdateOutcome(
+                        any(), any(), any(), any(), anyInt(), any(), any());
+    }
+
+    @Test
+    void completedRedeliveryDoesNotResendOrDowngradeTheOriginalUpdateOutcome() {
+        JsonNode frame = cardEvent("EVT-3E", "REQ-11E", "user-card");
+        when(cardInteractions.handle(frame))
+                .thenReturn(new CardInteractionOutcome(
+                        "EVT-3E",
+                        "REQ-11E",
+                        "order-draft:42",
+                        42L,
+                        "chat-card",
+                        new CardConfirmationResult(
+                                CardConfirmationStatus.CONFIRMED,
+                                "OD-42",
+                                List.of(),
+                                "ORDER_DRAFT_CONFIRMED",
+                                "wecom:user-card",
+                                Instant.parse("2026-08-23T00:00:00Z")),
+                        true,
+                        "claim-completed",
                         1));
 
         handler.onFrame("aibot_event_callback", frame);

@@ -21,7 +21,12 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 @SpringBootTest(properties = {
     "app.message-worker.enabled=false",
-    "app.wecom-order-draft-card.enabled=false"
+    "app.wecom-tracking-file-worker.enabled=false",
+    "app.wecom-export-worker.enabled=false",
+    "app.wecom-reminder.enabled=false",
+    "app.wecom-notification.enabled=false",
+    "app.wecom-order-draft-card.enabled=false",
+    "app.agent-worker.enabled=false"
 })
 class WecomOrderDraftCardEventStoreIntegrationTest {
 
@@ -30,6 +35,7 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Autowired private WecomOrderDraftCardEventStore events;
+    @Autowired private OrderDraftCardStore cards;
     @Autowired private JdbcTemplate jdbc;
 
     private long firstDraftId;
@@ -39,6 +45,7 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
     void setUp() {
         jdbc.update("DELETE FROM app.idempotency_registry");
         jdbc.update("DELETE FROM app.wecom_events");
+        jdbc.update("DELETE FROM app.wecom_order_draft_cards");
         jdbc.update("DELETE FROM app.order_drafts");
         jdbc.update("DELETE FROM app.message_submissions");
         jdbc.update("DELETE FROM app.channel_messages");
@@ -151,6 +158,42 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
                 .containsEntry("processing_attempt", 2)
                 .containsEntry("update_status", "SENT")
                 .containsEntry("fallback_status", "NOT_ATTEMPTED");
+
+        assertThatThrownBy(() -> events.recordUpdateOutcome(
+                        input.messageId(),
+                        recovered.claimToken(),
+                        CardUpdateStatus.FAILED,
+                        CardFallbackStatus.SENT,
+                        99,
+                        "LATE_FAILURE",
+                        null))
+                .hasRootCauseInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("claim was lost");
+        assertThat(jdbc.queryForMap(
+                        """
+                        SELECT update_status, update_latency_ms, update_error_code, fallback_status
+                        FROM app.wecom_events
+                        WHERE event_type='template_card_event' AND msgid='EVT-CARD-FENCE-2'
+                        """))
+                .containsEntry("update_status", "SENT")
+                .containsEntry("update_latency_ms", 21)
+                .containsEntry("update_error_code", null)
+                .containsEntry("fallback_status", "NOT_ATTEMPTED");
+    }
+
+    @Test
+    void onlyAcknowledgedOutboundCardCanBeResolvedByTaskId() {
+        OrderDraftCard created = cards.create(firstDraftId, 0L);
+
+        assertThat(cards.findSentByTaskId(created.taskId())).isEmpty();
+        assertThat(cards.beginSend(created.id()).action()).isEqualTo(CardSendAction.SEND);
+        cards.recordSent(created.id(), "REQ-CARD-SENT", Instant.now());
+
+        assertThat(cards.findSentByTaskId(created.taskId()))
+                .get()
+                .extracting(OrderDraftCard::orderDraftId, OrderDraftCard::chatId, OrderDraftCard::status)
+                .containsExactly(firstDraftId, "chat-card-fence", "SENT");
+        assertThat(cards.findSentByTaskId("order-draft:999999")).isEmpty();
     }
 
     @Test
@@ -182,6 +225,53 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
                                 + "WHERE event_type='template_card_event' AND msgid='EVT-CARD-FENCE-3'",
                         Integer.class))
                 .isEqualTo(1);
+    }
+
+    @Test
+    void confirmedBusinessRecoveryGetsOneNewAttemptThenTerminalRedeliveryIsReadOnly() {
+        CardEventInput input = input("EVT-CARD-FENCE-4", firstDraftId);
+        CardEventClaim first = events.claim(input);
+        jdbc.update(
+                "UPDATE app.order_drafts SET status='CONFIRMED', confirmed_by='wecom:operator-card-fence', "
+                        + "confirmed_at=CURRENT_TIMESTAMP WHERE id=?",
+                firstDraftId);
+
+        CardEventClaim recovery = events.claim(input);
+
+        assertThat(recovery.process()).isTrue();
+        assertThat(recovery.claimToken()).isNotEqualTo(first.claimToken());
+        assertThat(recovery.attempt()).isEqualTo(2);
+        CardConfirmationResult alreadyConfirmed = new CardConfirmationResult(
+                CardConfirmationStatus.ALREADY_CONFIRMED,
+                "OD-CARD-FENCE-1",
+                List.of(),
+                "ORDER_DRAFT_ALREADY_CONFIRMED",
+                "wecom:operator-card-fence",
+                Instant.now());
+        events.complete(input, recovery.claimToken(), alreadyConfirmed);
+        events.recordUpdateOutcome(
+                input.messageId(),
+                recovery.claimToken(),
+                CardUpdateStatus.SENT,
+                CardFallbackStatus.NOT_ATTEMPTED,
+                18,
+                null,
+                null);
+
+        CardEventClaim terminalDuplicate = events.claim(input);
+        assertThat(terminalDuplicate.process()).isFalse();
+        assertThat(terminalDuplicate.outcome().duplicate()).isTrue();
+        assertThat(terminalDuplicate.outcome().claimToken()).isEqualTo(recovery.claimToken());
+        assertThat(jdbc.queryForMap(
+                        """
+                        SELECT processing_status, processing_attempt, update_status, update_latency_ms
+                        FROM app.wecom_events
+                        WHERE event_type='template_card_event' AND msgid='EVT-CARD-FENCE-4'
+                        """))
+                .containsEntry("processing_status", "ALREADY_CONFIRMED")
+                .containsEntry("processing_attempt", 2)
+                .containsEntry("update_status", "SENT")
+                .containsEntry("update_latency_ms", 18);
     }
 
     private long insertDraft(long submissionId, String draftNo, String sourceOrderNo) {

@@ -20,14 +20,17 @@ public class WecomOrderDraftCardInteractionService {
     private final WecomOrderDraftCardEventStore events;
     private final OrderDraftCardConfirmationService confirmations;
     private final OrderDraftQueryService drafts;
+    private final OrderDraftCardStore cards;
 
     public WecomOrderDraftCardInteractionService(
             WecomOrderDraftCardEventStore events,
             OrderDraftCardConfirmationService confirmations,
-            OrderDraftQueryService drafts) {
+            OrderDraftQueryService drafts,
+            OrderDraftCardStore cards) {
         this.events = events;
         this.confirmations = confirmations;
         this.drafts = drafts;
+        this.cards = cards;
     }
 
     public CardInteractionOutcome handle(JsonNode frame) {
@@ -167,10 +170,31 @@ public class WecomOrderDraftCardInteractionService {
                     input.actorUserid(),
                     List.of());
         }
+        OrderDraftCard card = cards.findSentByTaskId(input.taskId()).orElse(null);
+        if (card == null || card.orderDraftId() != input.orderDraftId()) {
+            return result(
+                    CardConfirmationStatus.REJECTED,
+                    null,
+                    "WECOM_ORDER_DRAFT_CARD_NOT_SENT",
+                    input.actorUserid(),
+                    List.of());
+        }
+        if (!card.chatId().equals(input.replyTarget())) {
+            return result(
+                    CardConfirmationStatus.REJECTED,
+                    null,
+                    "WECOM_ORDER_DRAFT_CARD_ROUTE_MISMATCH",
+                    input.actorUserid(),
+                    List.of());
+        }
         return switch (input.eventKey()) {
             case "confirm_order" -> confirmations.confirm(
-                    input.orderDraftId(), input.messageId(), input.requestId(), input.actorUserid());
-            case "supplement_order" -> supplement(input);
+                    input.orderDraftId(),
+                    card.draftRevision(),
+                    input.messageId(),
+                    input.requestId(),
+                    input.actorUserid());
+            case "supplement_order" -> supplement(input, card.draftRevision());
             default -> result(
                     CardConfirmationStatus.REJECTED,
                     input.orderDraftId(),
@@ -180,7 +204,7 @@ public class WecomOrderDraftCardInteractionService {
         };
     }
 
-    private CardConfirmationResult supplement(CardEventInput input) {
+    private CardConfirmationResult supplement(CardEventInput input, long cardDraftRevision) {
         OrderDraftDetailDto draft = drafts.detail(input.orderDraftId());
         if ("CONFIRMED".equals(draft.status())) {
             return new CardConfirmationResult(
@@ -197,6 +221,15 @@ public class WecomOrderDraftCardInteractionService {
                     draft.draftNo(),
                     List.of(),
                     "ORDER_DRAFT_NOT_OPEN",
+                    "wecom:" + input.actorUserid(),
+                    Instant.now());
+        }
+        if (draft.revision() != cardDraftRevision) {
+            return new CardConfirmationResult(
+                    CardConfirmationStatus.REJECTED,
+                    draft.draftNo(),
+                    List.of(),
+                    "ORDER_DRAFT_CARD_STALE",
                     "wecom:" + input.actorUserid(),
                     Instant.now());
         }

@@ -31,7 +31,11 @@ public class OrderDraftCardConfirmationService {
     }
 
     public CardConfirmationResult confirm(
-            long draftId, String eventMessageId, String requestId, String actorUserid) {
+            long draftId,
+            long cardDraftRevision,
+            String eventMessageId,
+            String requestId,
+            String actorUserid) {
         OrderDraftDetailDto draft = drafts.detail(draftId);
         String actor = "wecom:" + actorUserid;
         if ("CONFIRMED".equals(draft.status())) {
@@ -48,6 +52,14 @@ public class OrderDraftCardConfirmationService {
                     draft,
                     List.of(),
                     "ORDER_DRAFT_NOT_OPEN",
+                    actor);
+        }
+        if (draft.revision() != cardDraftRevision) {
+            return result(
+                    CardConfirmationStatus.REJECTED,
+                    draft,
+                    List.of(),
+                    "ORDER_DRAFT_CARD_STALE",
                     actor);
         }
 
@@ -106,7 +118,7 @@ public class OrderDraftCardConfirmationService {
         }
 
         ConfirmOrderDraftCommand command = new ConfirmOrderDraftCommand(
-                draft.revision(),
+                cardDraftRevision,
                 draft.reviewCaseVersion(),
                 new ConfirmOrderDraftCommand.CustomerChoice(customerId, null),
                 new Receiver(
@@ -139,6 +151,14 @@ public class OrderDraftCardConfirmationService {
                             latest,
                             List.of(),
                             "ORDER_DRAFT_ALREADY_CONFIRMED",
+                            actor);
+                }
+                if ("VERSION_CONFLICT".equals(ex.getBusinessCode())) {
+                    return result(
+                            CardConfirmationStatus.REJECTED,
+                            latest,
+                            List.of(),
+                            "ORDER_DRAFT_CARD_STALE",
                             actor);
                 }
             }

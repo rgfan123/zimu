@@ -14,7 +14,9 @@
 
 回调按官方企微 AI Bot SDK 的 `body.event.template_card_event` 读取 `event_key/task_id`，并兼容官方旧示例中的扁平字段。`from.userid` 是唯一人工 actor 来源；缺失时事件以 `WECOM_CARD_ACTOR_REQUIRED` 拒绝。事件原始载荷与白名单投影按 `(event_type,msgid)` 幂等保存到 `wecom_events`。
 
-`confirm_order` 重新读取数据库当前事实并调用原人工确认用例，身份记为 `wecom:{userid}`；`supplement_order` 只返回当前缺失字段。并发或重复点击不重复成单：同一事件先持久化带 UUID token 与 attempt 的 `PROCESSING` claim，业务确认另行事务提交；相同确认幂等键为 `wecom-card-confirm:{msgid}`。首次回调的 bot/chat/actor/create_time/event_key/task_id/order_draft_id/raw_payload 由数据库触发器保护为不可变，重投若用同一 msgid 指向另一草稿会被拒绝且不会更新原事件。若确认已提交但事件结果尚未收口，重放会从草稿 `CONFIRMED` 终态恢复为 `ALREADY_CONFIRMED`。若真实租户回调不提供 `from.userid`，替代路径是保留原 ReviewCase，由已认证运营人员在子牧工作台确认；系统不会用 chatid、昵称或配置值伪造人工 actor。
+`confirm_order` 重新读取数据库当前事实并调用原人工确认用例，身份记为 `wecom:{userid}`；`supplement_order` 只返回当前缺失字段。回调只有在 `task_id` 能对应本系统已收到平台成功 ACK 的 `SENT` 卡片、草稿 ID 与持久化记录一致、且回调路由与原发送目标一致时才有业务权限：群聊必须匹配原 `chatid`，单聊必须匹配原接收 `userid`。未知、未 ACK 或跨路由卡片只留证并拒绝。卡片保存的 `draft_revision` 也是确认命令的版本栅栏；草稿在发卡后被修改时，旧卡片不能确认点击人未看见的新事实，须回到工作台复核。
+
+并发或重复点击不重复成单：同一事件先持久化带 UUID token 与 attempt 的 `PROCESSING` claim，业务确认另行事务提交；相同确认幂等键为 `wecom-card-confirm:{msgid}`。首次回调的 bot/chat/actor/create_time/event_key/task_id/order_draft_id/raw_payload 由数据库触发器保护为不可变，重投若用同一 msgid 指向另一草稿会被拒绝且不会更新原事件。若确认已提交但事件结果尚未收口，重放会获得一个新 token 的 fenced reconciliation attempt，并从草稿 `CONFIRMED` 终态恢复为 `ALREADY_CONFIRMED`；该次可收口一次 updateCard，此后的终态重投只读，不再发送卡片/文字，也不能覆盖首次 update/fallback 观测。若真实租户回调不提供 `from.userid`，替代路径是保留原 ReviewCase，由已认证运营人员在子牧工作台确认；系统不会用 chatid、昵称或配置值伪造人工 actor。
 
 同一 `msgid` 在原处理仍为 `PROCESSING` 时发生并发重投，后到请求只写应用日志，不改事件的 update/fallback 观测、不更新卡片、不追发“失败”文字，避免用共享中的 claim token 覆盖仍在执行的原回调结果。超过 90 秒安全恢复窗、草稿仍未确认且 `order_draft.confirm` 原幂等租约已失效时，才以新 token/attempt 恢复；完成业务与记录 update/fallback 结果都用 token CAS，旧 worker 不能覆盖新尝试。
 

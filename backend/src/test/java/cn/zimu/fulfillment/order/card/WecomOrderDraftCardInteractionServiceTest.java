@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -25,6 +26,7 @@ class WecomOrderDraftCardInteractionServiceTest {
     private WecomOrderDraftCardEventStore events;
     private OrderDraftCardConfirmationService confirmations;
     private OrderDraftQueryService drafts;
+    private OrderDraftCardStore cards;
     private WecomOrderDraftCardInteractionService service;
 
     @BeforeEach
@@ -32,14 +34,17 @@ class WecomOrderDraftCardInteractionServiceTest {
         events = mock(WecomOrderDraftCardEventStore.class);
         confirmations = mock(OrderDraftCardConfirmationService.class);
         drafts = mock(OrderDraftQueryService.class);
-        service = new WecomOrderDraftCardInteractionService(events, confirmations, drafts);
+        cards = mock(OrderDraftCardStore.class);
+        service = new WecomOrderDraftCardInteractionService(events, confirmations, drafts, cards);
         when(events.claim(any())).thenReturn(CardEventClaim.claimed("claim-test", 1));
     }
 
     @Test
     void nestedOfficialEventUsesCallbackUseridAndStableTaskId() throws Exception {
         CardConfirmationResult confirmed = result(CardConfirmationStatus.CONFIRMED);
-        when(confirmations.confirm(42L, "EVT-42", "REQ-42", "actor-42"))
+        when(cards.findSentByTaskId("order-draft:42"))
+                .thenReturn(Optional.of(card(42L, 7L, "chat-42")));
+        when(confirmations.confirm(42L, 7L, "EVT-42", "REQ-42", "actor-42"))
                 .thenReturn(confirmed);
         JsonNode frame = json.readTree(
                 """
@@ -53,7 +58,7 @@ class WecomOrderDraftCardInteractionServiceTest {
 
         assertThat(outcome.result()).isEqualTo(confirmed);
         assertThat(outcome.replyTarget()).isEqualTo("chat-42");
-        verify(confirmations).confirm(42L, "EVT-42", "REQ-42", "actor-42");
+        verify(confirmations).confirm(42L, 7L, "EVT-42", "REQ-42", "actor-42");
         ArgumentCaptor<CardEventInput> input = ArgumentCaptor.forClass(CardEventInput.class);
         verify(events).complete(input.capture(), any(), any());
         assertThat(input.getValue().eventKey()).isEqualTo("confirm_order");
@@ -63,7 +68,9 @@ class WecomOrderDraftCardInteractionServiceTest {
 
     @Test
     void flatOfficialExampleFieldsRemainCompatibleForSingleChat() throws Exception {
-        when(confirmations.confirm(43L, "EVT-43", "REQ-43", "actor-43"))
+        when(cards.findSentByTaskId("order-draft:43"))
+                .thenReturn(Optional.of(card(43L, 8L, "actor-43")));
+        when(confirmations.confirm(43L, 8L, "EVT-43", "REQ-43", "actor-43"))
                 .thenReturn(result(CardConfirmationStatus.CONFIRMED));
         JsonNode frame = json.readTree(
                 """
@@ -76,7 +83,7 @@ class WecomOrderDraftCardInteractionServiceTest {
         CardInteractionOutcome outcome = service.handle(frame);
 
         assertThat(outcome.replyTarget()).isEqualTo("actor-43");
-        verify(confirmations).confirm(43L, "EVT-43", "REQ-43", "actor-43");
+        verify(confirmations).confirm(43L, 8L, "EVT-43", "REQ-43", "actor-43");
     }
 
     @Test
@@ -93,7 +100,7 @@ class WecomOrderDraftCardInteractionServiceTest {
 
         assertThat(outcome.result().status()).isEqualTo(CardConfirmationStatus.REJECTED);
         assertThat(outcome.result().businessCode()).isEqualTo("WECOM_CARD_ACTOR_REQUIRED");
-        verify(confirmations, never()).confirm(anyLong(), any(), any(), any());
+        verify(confirmations, never()).confirm(anyLong(), anyLong(), any(), any(), any());
         verify(events).complete(any(), any(), any());
     }
 
@@ -119,7 +126,7 @@ class WecomOrderDraftCardInteractionServiceTest {
                 """);
 
         assertThat(service.handle(frame)).isEqualTo(duplicate);
-        verify(confirmations, never()).confirm(anyLong(), any(), any(), any());
+        verify(confirmations, never()).confirm(anyLong(), anyLong(), any(), any(), any());
         verify(events, never()).complete(any(), any(), any());
     }
 
@@ -128,7 +135,10 @@ class WecomOrderDraftCardInteractionServiceTest {
         OrderDraftDetailDto draft = mock(OrderDraftDetailDto.class);
         when(draft.status()).thenReturn("CONFIRMED");
         when(draft.draftNo()).thenReturn("OD-46");
+        when(draft.revision()).thenReturn(9L);
         when(drafts.detail(46L)).thenReturn(draft);
+        when(cards.findSentByTaskId("order-draft:46"))
+                .thenReturn(Optional.of(card(46L, 9L, "chat-46")));
         JsonNode frame = json.readTree(
                 """
                 {"headers":{"req_id":"REQ-46"},"body":{"msgid":"EVT-46","aibotid":"bot",
@@ -141,13 +151,15 @@ class WecomOrderDraftCardInteractionServiceTest {
 
         assertThat(outcome.result().status()).isEqualTo(CardConfirmationStatus.ALREADY_CONFIRMED);
         assertThat(outcome.result().businessCode()).isEqualTo("ORDER_DRAFT_ALREADY_CONFIRMED");
-        verify(confirmations, never()).confirm(anyLong(), any(), any(), any());
+        verify(confirmations, never()).confirm(anyLong(), anyLong(), any(), any(), any());
     }
 
     @Test
     void recoveryDoesNotPersistFailureWhileOriginalBusinessLeaseIsStillActive() throws Exception {
         when(events.claim(any())).thenReturn(CardEventClaim.claimed("claim-recovered", 2));
-        when(confirmations.confirm(47L, "EVT-47", "REQ-47", "actor-47"))
+        when(cards.findSentByTaskId("order-draft:47"))
+                .thenReturn(Optional.of(card(47L, 10L, "chat-47")));
+        when(confirmations.confirm(47L, 10L, "EVT-47", "REQ-47", "actor-47"))
                 .thenThrow(BusinessException.conflict("IDEMPOTENCY_CONFLICT", "仍在执行"));
         when(events.hasActiveBusinessLease(any())).thenReturn(true);
         JsonNode frame = json.readTree(
@@ -164,6 +176,54 @@ class WecomOrderDraftCardInteractionServiceTest {
         assertThat(outcome.result().businessCode()).isEqualTo("ORDER_DRAFT_CARD_EVENT_IN_PROGRESS");
         assertThat(outcome.claimToken()).isEqualTo("claim-recovered");
         verify(events, never()).complete(any(), any(), any());
+    }
+
+    @Test
+    void unknownOrUnacknowledgedCardCannotAuthorizeAConfirmation() throws Exception {
+        JsonNode frame = json.readTree(
+                """
+                {"headers":{"req_id":"REQ-48"},"body":{"msgid":"EVT-48","aibotid":"bot",
+                 "chatid":"chat-48","chattype":"group","from":{"userid":"actor-48"},
+                 "event":{"eventtype":"template_card_event","template_card_event":{
+                   "event_key":"confirm_order","task_id":"order-draft:48"}}}}
+                """);
+
+        CardInteractionOutcome outcome = service.handle(frame);
+
+        assertThat(outcome.result().status()).isEqualTo(CardConfirmationStatus.REJECTED);
+        assertThat(outcome.result().businessCode()).isEqualTo("WECOM_ORDER_DRAFT_CARD_NOT_SENT");
+        verify(confirmations, never()).confirm(anyLong(), anyLong(), any(), any(), any());
+        verify(events).complete(any(), any(), any());
+    }
+
+    @Test
+    void cardCallbackMustReturnThroughThePersistedOutboundRoute() throws Exception {
+        when(cards.findSentByTaskId("order-draft:49"))
+                .thenReturn(Optional.of(card(49L, 11L, "chat-original")));
+        JsonNode frame = json.readTree(
+                """
+                {"headers":{"req_id":"REQ-49"},"body":{"msgid":"EVT-49","aibotid":"bot",
+                 "chatid":"chat-attacker","chattype":"group","from":{"userid":"actor-49"},
+                 "event":{"eventtype":"template_card_event","template_card_event":{
+                   "event_key":"confirm_order","task_id":"order-draft:49"}}}}
+                """);
+
+        CardInteractionOutcome outcome = service.handle(frame);
+
+        assertThat(outcome.result().status()).isEqualTo(CardConfirmationStatus.REJECTED);
+        assertThat(outcome.result().businessCode()).isEqualTo("WECOM_ORDER_DRAFT_CARD_ROUTE_MISMATCH");
+        verify(confirmations, never()).confirm(anyLong(), anyLong(), any(), any(), any());
+    }
+
+    private static OrderDraftCard card(long draftId, long revision, String target) {
+        return new OrderDraftCard(
+                draftId + 1000,
+                draftId,
+                revision,
+                "order-draft:" + draftId,
+                target,
+                "SENT",
+                1);
     }
 
     private static CardConfirmationResult result(CardConfirmationStatus status) {
