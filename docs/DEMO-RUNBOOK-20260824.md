@@ -75,8 +75,10 @@ rm -f "$CFG"
 - **B. 临时关写门闩**：`.env` 改 `JD_LOP_WRITE_MODE=OFF` → `docker compose up -d --no-deps backend`
   （约 90 秒重启）。演示后改回。
 
-**平台拉取频控**：`APP_PLATFORM_PULL_MIN_INTERVAL=PT12H`，每渠道 12 小时内只能成功拉一次。
-**演示当天早上不要先自己试拉**，否则演示时会被限流跳过（显示 SKIPPED）。
+**平台拉取没有频控**（#115 按用户口径修订）：平台拉单本来就没有每日次数与最小间隔限制。
+原 `APP_PLATFORM_PULL_MIN_INTERVAL=PT12H` 已整个移除，改为 PostgreSQL advisory lock **单飞**——
+同一渠道同一时刻只允许一个请求触达外部，第二个立即返回 `PLATFORM_PULL_IN_PROGRESS`（不等待、不触网）；
+失败不占用次数，可立即重试。**演示前可以放心试拉。**
 
 ---
 
@@ -87,7 +89,8 @@ Codex 的企微主动推送成果（#81 发送+ack / #82 分片上传 / #83 群�
 共 11 个新文件含 `WecomOutboundGateway`）**都在 master，不在当前 8088 后端里**。
 
 - ✅ **不影响本次演示**：四个工作台用的 API 全部是既有接口，已逐个实测 200。
-- ❌ **不能演示企微主动推送**——当前后端没有这个能力。企微卡片（#87/#88）Codex 也还没开工。
+- ✅ **企微主动推送已在本次合并中具备**：#81 发送+ack、#82 分片上传、#84 导出发送、
+  #87/#88 交互卡片、#90 业务通知全部合入（需部署合并后的后端镜像才生效）。
 - 若要合入 master：涉及 V46–V49 四个数据库迁移，**演示前一晚不要做**，风险不对等。
 
 ## 演示动线（建议 8–10 分钟）
@@ -147,6 +150,6 @@ Codex 的企微主动推送成果（#81 发送+ack / #82 分片上传 / #83 群�
 | 症状 | 处置 |
 |---|---|
 | 页面白屏 / 接口 502 | `docker compose ps` 看 backend；unhealthy → 降负载等 2 分钟 |
-| 拉取显示全部 SKIPPED | 12 小时频控生效，说明「今天已拉过」，改讲复核/对账 |
+| 拉取返回 `PLATFORM_PULL_IN_PROGRESS` | 同渠道已有请求在途（单飞保护），等它跑完即可，不是错误 |
 | 前端要回滚旧版 | `docker tag zimu-fulfillment-frontend:rollback-20260823 zimu-fulfillment-frontend:real-current && docker compose up -d --no-deps frontend` |
 | 某区块显示加载失败 | 区块级独立降级，其余照常可演示——直接说「这块接口没起来，其它不受影响」，这本身也是设计 |
