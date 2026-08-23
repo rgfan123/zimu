@@ -23,6 +23,8 @@ export const appNavigation = [
       { path: '/workbench/reviews', label: '复核收件箱' },
       // Issue #64 运营提醒独立路由：上下文二级入口（复核页 ↔ 提醒页互为切换），随复核收件箱移入本板块。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
+      // Issue #110：采购工作台（建议区等 #121/#118 供数，工单区今天即真数）。
+      { path: '/workbench/procurement', label: '采购工作台' },
       { path: '/workbench/recon', label: '对账工作台' },
     ],
   },

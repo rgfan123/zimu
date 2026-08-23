@@ -30,6 +30,8 @@ test('my-workbench section leads the navigation with the role workbenches (Issue
       { path: '/workbench/reviews', label: '复核收件箱', hideInMenu: false },
       // Issue #64 运营提醒：上下文二级入口，随复核收件箱移入我的工作台。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
+      // Issue #110：采购工作台露出，我的工作台可见入口达到 spec D6 的 4 个。
+      { path: '/workbench/procurement', label: '采购工作台', hideInMenu: false },
       { path: '/workbench/recon', label: '对账工作台', hideInMenu: false },
     ],
   );
@@ -69,7 +71,7 @@ test('demoted query tools stay routable and keep their section context', () => {
     assert.equal(routablePaths.includes(path), true, `${path} 必须保持可路由（降级不等于删除，旧路径不 404）`);
   }
   // Issue #104：发货台与对账台从隐藏注册升级为我的工作台可见入口（票面「01 再露出」的落地）。
-  for (const path of ['/workbench/shipping', '/workbench/recon', '/workbench/reviews']) {
+  for (const path of ['/workbench/shipping', '/workbench/procurement', '/workbench/recon', '/workbench/reviews']) {
     assert.equal(visiblePaths.includes(path), true, `${path} 必须是我的工作台可见入口`);
     assert.equal(routablePaths.includes(path), true, `${path} 必须可路由`);
   }

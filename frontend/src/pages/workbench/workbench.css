@@ -336,6 +336,54 @@
   flex: none;
 }
 
+/* ---------- 工作台表格（原型 .tw/table 密度） ---------- */
+.zs-tw {
+  overflow-x: auto;
+}
+.zs-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.zs-tbl th {
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--zs-text-3);
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--zs-border-2);
+  white-space: nowrap;
+}
+.zs-tbl td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--zs-border-2);
+  color: var(--zs-text-2);
+  vertical-align: top;
+}
+.zs-tbl tbody tr:last-child td {
+  border-bottom: 0;
+}
+.zs-tbl tbody tr:hover {
+  background: var(--zs-fill-4);
+}
+.zs-tbl .num {
+  text-align: right;
+  font-family: var(--zs-mono);
+}
+.zs-tbl .neg {
+  color: var(--zs-error);
+}
+.zs-tbl td.na,
+.zs-tbl .na {
+  color: var(--zs-text-3);
+}
+.zs-tbl tfoot td {
+  font-weight: 600;
+  color: var(--zs-heading);
+  border-top: 1px solid var(--zs-border-2);
+  border-bottom: 0;
+}
+
 /* ---------- 告警（唯一保留浅色底的组件） ---------- */
 .zs-stack {
   display: flex;

@@ -22,8 +22,7 @@ export interface WorkbenchRoleOption {
  */
 export const WORKBENCH_ROLE_OPTIONS: readonly WorkbenchRoleOption[] = [
   { value: 'FULFILLMENT_OPS', label: TEAM_LABELS.FULFILLMENT_OPS ?? 'FULFILLMENT_OPS', landing: '/workbench/shipping' },
-  // Issue #110 交付 /workbench/procurement 后，采购岗改指采购工作台
-  { value: 'SKU_OPS', label: TEAM_LABELS.SKU_OPS ?? 'SKU_OPS', landing: '/procurement/tickets' },
+  { value: 'SKU_OPS', label: TEAM_LABELS.SKU_OPS ?? 'SKU_OPS', landing: '/workbench/procurement' },
   { value: 'CUSTOMER_OPS', label: TEAM_LABELS.CUSTOMER_OPS ?? 'CUSTOMER_OPS', landing: '/workbench/reviews' },
   { value: 'ORDER_OPS', label: TEAM_LABELS.ORDER_OPS ?? 'ORDER_OPS', landing: '/workbench/reviews' },
   { value: 'FINANCE', label: '财务', landing: '/workbench/recon' },
