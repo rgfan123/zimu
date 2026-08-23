@@ -67,6 +67,11 @@ public class WecomMediaEvidenceService {
             }
             return process(command, mediaId);
         } catch (RuntimeException exception) {
+            if (Thread.currentThread().isInterrupted()) {
+                // 计划关闭/线程取消不是媒体业务失败；保留 PENDING 证据行，
+                // 由任务 owner 无损回队后重新下载，不能消耗媒体 attempts。
+                throw exception;
+            }
             String reason = errorMessage(exception);
             String status = mediaStore.recordFailure(mediaId, reason, MAX_ATTEMPTS);
             if ("AVAILABLE".equals(status)) {

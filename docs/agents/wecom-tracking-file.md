@@ -13,6 +13,10 @@
 ## 2. 下载、解密与大小门禁
 
 - 回调只保存原始 `file.url` / `file.aeskey` / `file.filename` 证据，不在回调线程下载；
+- `@Scheduled` 只合并触发一个 drain 并立即返回；下载、解密和 POI 解析在专用的有界
+  单线程 daemon executor 中串行执行；应用关闭时停止接单并有界等待/中断，关闭中断
+  不记作媒体或任务业务失败；仍由当前 owner 且租约有效时会原子回到 PENDING、撤销本次
+  claim 增加的 attempts，并清除 lease / owner / last_error，供后续实例正常恢复；
 - `WECOM_TRACKING_FILE` 专用租约任务即时下载短效 URL；只接受 HTTP 200，整个
   connect + headers + body 默认必须在 15 秒内完成；
 - body subscriber 最多接收 **20 MiB** 密文；`Content-Length` 超限时在读 body 前拒绝，

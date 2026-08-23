@@ -107,6 +107,30 @@ public class AsyncTaskStore {
     }
 
     /**
+     * 计划关闭时无损释放本次 RUNNING claim：仅当前 owner 且租约仍有效时回到 PENDING，
+     * 撤销 claim 增加的一次 attempts，并清除租约与历史错误。错误 owner/失租不会修改任务。
+     */
+    @Transactional
+    public boolean releaseOwnedForShutdown(long taskId, String owner) {
+        int updated = jdbc.update(
+                """
+                UPDATE app.async_tasks
+                SET status = 'PENDING',
+                    attempts = GREATEST(attempts - 1, 0),
+                    next_run_at = CURRENT_TIMESTAMP,
+                    lease_until = NULL,
+                    lease_owner = NULL,
+                    last_error = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'RUNNING' AND lease_owner = ?
+                  AND lease_until > statement_timestamp()
+                """,
+                taskId,
+                owner);
+        return updated == 1;
+    }
+
+    /**
      * 续租/所有权复查（外部调用前 fence seam）：仅当该任务仍是当前 {@code owner} 持有的
      * RUNNING 且租约未过期时，原子延长租约。返回 false 表示租约/所有权已丢失（被第二实例
      * 重新领取），调用方必须放弃后续外部提交与业务状态变更，让新 owner 走 SENDING 恢复。

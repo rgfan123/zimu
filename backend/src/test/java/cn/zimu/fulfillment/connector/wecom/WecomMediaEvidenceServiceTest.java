@@ -18,10 +18,11 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Comparator;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
@@ -58,6 +59,9 @@ class WecomMediaEvidenceServiceTest {
     static void mediaConfiguration(DynamicPropertyRegistry registry) {
         registry.add("app.media.dir", () -> MEDIA_DIR.toString());
         registry.add("app.message-worker.enabled", () -> "false");
+        registry.add("app.wecom-tracking-file-worker.enabled", () -> "false");
+        registry.add("app.wecom-export-worker.enabled", () -> "false");
+        registry.add("app.agent-worker.enabled", () -> "false");
     }
 
     @Autowired
@@ -179,6 +183,59 @@ class WecomMediaEvidenceServiceTest {
         assertThat(row.getDownloadStatus()).isEqualTo(MediaDownloadStatus.AVAILABLE);
         assertThat(row.getContentHash()).isEqualTo(sha256Hex(plaintext));
         assertThat(row.getAttempts()).isZero();
+    }
+
+    @Test
+    void interruptedDownloadLeavesMediaPendingWithoutFailureAttempt() throws Exception {
+        CountDownLatch bodyStarted = new CountDownLatch(1);
+        CountDownLatch releaseBody = new CountDownLatch(1);
+        server.createContext("/media/interrupted", exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 1024);
+                exchange.getResponseBody().write(1);
+                exchange.getResponseBody().flush();
+                bodyStarted.countDown();
+                releaseBody.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        long channelMessageId = insertChannelMessage("msg-interrupted-download");
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        CountDownLatch finished = new CountDownLatch(1);
+        Thread downloadThread = new Thread(() -> {
+            try {
+                evidenceService.storeMedia(command(
+                        channelMessageId,
+                        "media-interrupted",
+                        "/media/interrupted"));
+            } catch (Throwable throwable) {
+                observed.set(throwable);
+            } finally {
+                finished.countDown();
+            }
+        }, "test-wecom-media-interrupt");
+
+        try {
+            downloadThread.start();
+            assertThat(bodyStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            downloadThread.interrupt();
+            assertThat(finished.await(5, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            releaseBody.countDown();
+            downloadThread.join(5_000);
+        }
+
+        assertThat(observed.get()).isInstanceOf(WecomMediaDownloader.MediaDownloadException.class);
+        MessageMedia row = mediaRepository
+                .findByChannelMessageIdAndChannelMediaId(channelMessageId, "media-interrupted")
+                .orElseThrow();
+        assertThat(row.getDownloadStatus()).isEqualTo(MediaDownloadStatus.PENDING);
+        assertThat(row.getAttempts()).isZero();
+        assertThat(row.getFailureReason()).isNull();
+        assertThat(countMediaDirFiles()).isZero();
     }
 
     @Test
