@@ -211,6 +211,63 @@ class ZhonghuiPmsBatchUploadApiTest {
     }
 
     @Test
+    void loginRejectsBlankCaptchaFieldsAtTheHttpBoundary() {
+        ResponseEntity<Map> response = http.exchange(
+                "/api/v1/zhonghui-pms/login",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(),
+                        writeHeaders("zhonghui-login-validation-001", "req-zhonghui-login-validation-001")),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).containsEntry("business_code", "VALIDATION_ERROR");
+    }
+
+    @Test
+    void loginRejectsAnIdempotencyKeyThatCannotFitTheRegistry() {
+        Map<String, Object> captcha = http.getForObject("/api/v1/zhonghui-pms/captcha", Map.class);
+        ResponseEntity<Map> response = http.exchange(
+                "/api/v1/zhonghui-pms/login",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("auth_code", "5620", "captcha_no", captcha.get("captcha_no")),
+                        writeHeaders("x".repeat(256), "req-zhonghui-login-long-key-001")),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).containsEntry("business_code", "IDEMPOTENCY_KEY_INVALID");
+    }
+
+    @Test
+    void batchUploadRejectsMoreThanTwentySkusAtTheHttpBoundary() {
+        List<String> skuIds = java.util.stream.LongStream.rangeClosed(1, 21)
+                .mapToObj(String::valueOf)
+                .toList();
+
+        ResponseEntity<Map> response = http.exchange(
+                "/api/v1/zhonghui-pms/batch-uploads",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("sku_ids", skuIds),
+                        writeHeaders("zhonghui-batch-limit-001", "req-zhonghui-batch-limit-001")),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).containsEntry("business_code", "VALIDATION_ERROR");
+    }
+
+    @Test
+    void batchUploadRejectsDuplicateSkusAtTheHttpBoundary() {
+        ResponseEntity<Map> response = http.exchange(
+                "/api/v1/zhonghui-pms/batch-uploads",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("sku_ids", List.of("1", "1")),
+                        writeHeaders("zhonghui-batch-duplicate-001", "req-zhonghui-batch-duplicate-001")),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).containsEntry("business_code", "VALIDATION_ERROR");
+    }
+
+    @Test
     void batchUploadIdempotentReplayReturnsFirstBatchAndConflictOnDifferentPayload() {
         Map<String, Object> category = firstCategory();
         Map<String, Object> provider = firstProvider();

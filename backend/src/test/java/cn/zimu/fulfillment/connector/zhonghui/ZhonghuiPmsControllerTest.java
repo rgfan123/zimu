@@ -117,16 +117,21 @@ class ZhonghuiPmsControllerTest {
     }
 
     @Test
-    void realModeWithWriteModeOffRejectsBatchUploadBeforeCallingService() {
+    void realModeWithWriteModeOffStillAllowsAnIdempotentBatchReplay() {
         ZhonghuiPmsProperties properties = properties("REAL", "https://pms.zhonghuihaotai.com");
         properties.setWriteMode("OFF");
+        BatchUploadCommand command = new BatchUploadCommand(List.of("1"), null);
+        when(batch.upload(command, "idem-00000001"))
+                .thenReturn(IdempotentResult.replayed(
+                        200, JsonNodeFactory.instance.objectNode().put("batch_id", "existing")));
 
-        assertThatThrownBy(() -> controller(properties).batchUploads(
-                new BatchUploadCommand(List.of("1"), null), "idem-00000001", "operator-1"))
-                .isInstanceOfSatisfying(BusinessException.class, exception -> {
-                    assertThat(exception.getHttpStatus()).isEqualTo(403);
-                    assertThat(exception.getBusinessCode()).isEqualTo("ZHONGHUI_PMS_WRITE_MODE_DISABLED");
-                });
+        ResponseEntity<?> response = controller(properties)
+                .batchUploads(command, "idem-00000001", "operator-1");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isEqualTo(
+                JsonNodeFactory.instance.objectNode().put("batch_id", "existing"));
+        verify(batch).upload(command, "idem-00000001");
     }
 
     @Test

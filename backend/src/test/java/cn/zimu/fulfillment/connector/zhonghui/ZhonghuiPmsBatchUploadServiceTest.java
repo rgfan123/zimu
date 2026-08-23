@@ -68,7 +68,13 @@ class ZhonghuiPmsBatchUploadServiceTest {
         Product product = product(sku.getProductId(), "子牧羊小腿", true, null, null);
         ZhonghuiPmsService client = mock(ZhonghuiPmsService.class);
         when(client.authenticated()).thenReturn(true);
-        when(client.createGoods(any())).thenReturn(new GoodsCreateResult(true, "OK", ""));
+        when(client.createGoods(any())).thenAnswer(invocation -> {
+            ZhonghuiPmsUploadBatchItem intent = itemStore.values().iterator().next();
+            assertThat(intent.getStatus()).isEqualTo(ZhonghuiPmsUploadBatchItemStatus.PENDING);
+            assertThat(intent.getSkuCode()).isEqualTo("SKU-TP-000001");
+            assertThat(intent.getGoodsName()).isEqualTo("子牧羊小腿 500g/盒");
+            return new GoodsCreateResult(true, "OK", "");
+        });
         ZhonghuiPmsBatchUploadService service = service(client, sku, product, mock(ProductImageService.class));
 
         BatchUploadView result = service.upload(
@@ -200,6 +206,29 @@ class ZhonghuiPmsBatchUploadServiceTest {
     }
 
     @Test
+    void uncertainCreateTransportResultRequiresReconciliationAndLeavesIntentPending() {
+        Sku sku = sku(true, "500g/盒", "盒", null, new BigDecimal("80"), new BigDecimal("432"));
+        Product product = product(sku.getProductId(), "子牧羊小腿", true, null, null);
+        ZhonghuiPmsService client = mock(ZhonghuiPmsService.class);
+        when(client.authenticated()).thenReturn(true);
+        when(client.createGoods(any()))
+                .thenThrow(new ZhonghuiPmsHttpClient.PmsTransportException("response lost"));
+        ZhonghuiPmsBatchUploadService service = service(client, sku, product, mock(ProductImageService.class));
+
+        assertThatThrownBy(() -> service.upload(
+                        new BatchUploadCommand(List.of(String.valueOf(sku.getId())), null),
+                        "idem-create-transport-unknown-001"))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getBusinessCode()).isEqualTo("RECONCILIATION_REQUIRED"));
+
+        assertThat(itemStore.values()).singleElement().satisfies(item -> {
+            assertThat(item.getStatus()).isEqualTo(ZhonghuiPmsUploadBatchItemStatus.PENDING);
+            assertThat(item.getSkuCode()).isEqualTo("SKU-TP-000001");
+            assertThat(item.getGoodsName()).isEqualTo("子牧羊小腿 500g/盒");
+        });
+    }
+
+    @Test
     void missingRetailPriceFailsItemWithoutAbortingBatchAndKeepsRealSkuCode() {
         Sku sku = sku(true, "500g/盒", "盒", null, new BigDecimal("80"), null);
         Product product = product(sku.getProductId(), "子牧羊小腿", true, null, null);
@@ -281,6 +310,25 @@ class ZhonghuiPmsBatchUploadServiceTest {
     }
 
     @Test
+    void realWriteModeOffStillRejectsANewBatchIntent() {
+        ZhonghuiPmsProperties properties = properties();
+        properties.setClientMode("REAL");
+        properties.setWriteMode("OFF");
+        ZhonghuiPmsService client = mock(ZhonghuiPmsService.class);
+        when(client.authenticated()).thenReturn(true);
+        ZhonghuiPmsBatchUploadService service = new ZhonghuiPmsBatchUploadService(
+                client, properties, mock(SkuRepository.class), mock(ProductRepository.class),
+                mock(ProductImageService.class), batches, items, idempotency);
+
+        assertThatThrownBy(() -> service.upload(
+                        new BatchUploadCommand(List.of("201"), null), "idem-new-write-off-001"))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getHttpStatus()).isEqualTo(403);
+                    assertThat(exception.getBusinessCode()).isEqualTo("ZHONGHUI_PMS_WRITE_MODE_DISABLED");
+                });
+    }
+
+    @Test
     void emptySkuSelectionIsRejected() {
         ZhonghuiPmsService client = mock(ZhonghuiPmsService.class);
         when(client.authenticated()).thenReturn(true);
@@ -291,6 +339,22 @@ class ZhonghuiPmsBatchUploadServiceTest {
         assertThatThrownBy(() -> service.upload(new BatchUploadCommand(List.of(), null), "idem-00000010"))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("至少选择一个");
+    }
+
+    @Test
+    void duplicateSkuSelectionIsRejectedBeforePersistingAnIntent() {
+        ZhonghuiPmsService client = mock(ZhonghuiPmsService.class);
+        ZhonghuiPmsBatchUploadService service = new ZhonghuiPmsBatchUploadService(
+                client, properties(), mock(SkuRepository.class), mock(ProductRepository.class),
+                mock(ProductImageService.class), batches, items, idempotency);
+
+        assertThatThrownBy(() -> service.upload(
+                        new BatchUploadCommand(List.of("201", "0201"), null), "idem-duplicate-sku-001"))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getHttpStatus()).isEqualTo(400);
+                    assertThat(exception.getBusinessCode()).isEqualTo("DUPLICATE_SKU_IDS");
+                });
+        assertThat(itemStore).isEmpty();
     }
 
     @Test
@@ -322,16 +386,22 @@ class ZhonghuiPmsBatchUploadServiceTest {
         ZhonghuiPmsService client = mock(ZhonghuiPmsService.class);
         when(client.authenticated()).thenReturn(true);
         when(client.createGoods(any())).thenReturn(new GoodsCreateResult(true, "OK", ""));
-        ZhonghuiPmsBatchUploadService service = service(client, sku, product, mock(ProductImageService.class));
+        ZhonghuiPmsProperties properties = properties();
+        properties.setClientMode("REAL");
+        properties.setWriteMode("ON");
+        ZhonghuiPmsBatchUploadService service = service(
+                client, properties, sku, product, mock(ProductImageService.class));
 
         BatchUploadView first = service.upload(
                 new BatchUploadCommand(List.of(String.valueOf(sku.getId())), null), "idem-same-key-01").result();
+        properties.setWriteMode("OFF");
+        when(client.authenticated()).thenReturn(false);
         // 幂等注册表命中重放：返回首次结果，不重新执行 intent/external/completion
         // （用 doReturn 避免 when() 参数求值触发既有 stub）
         org.mockito.Mockito.doReturn(IdempotentResult.replayed(
                         200, JsonNodeFactory.instance.objectNode().put("batch_id", "1")))
                 .when(idempotency).executeWithExternalWriteIntent(
-                        anyString(), anyString(), any(), anyInt(), any(), any(), any());
+                        anyString(), anyString(), any(), anyInt(), any(), any(), any(), any());
 
         IdempotentResult<BatchUploadView> replay = service.upload(
                 new BatchUploadCommand(List.of(String.valueOf(sku.getId())), null), "idem-same-key-01");
@@ -339,16 +409,59 @@ class ZhonghuiPmsBatchUploadServiceTest {
         assertThat(replay.replayed()).isTrue();
         assertThat(first.batchId()).isEqualTo("1");
         verify(client, org.mockito.Mockito.times(1)).createGoods(any());
+        verify(client, org.mockito.Mockito.times(1)).authenticated();
+    }
+
+    @Test
+    void writeModeOffAllowsExistingPendingIntentToUseQueryOnlyRecovery() {
+        String key = "idem-query-only-write-off-001";
+        ZhonghuiPmsProperties properties = properties();
+        properties.setClientMode("REAL");
+        properties.setWriteMode("OFF");
+        ZhonghuiPmsService client = mock(ZhonghuiPmsService.class);
+        when(client.authenticated()).thenReturn(true);
+        when(client.queryGoods("SKU-TP-000001", "子牧羊小腿 500g/盒"))
+                .thenReturn(new GoodsVerifyView("560001", "待平台审核", "待上架"));
+        ZhonghuiPmsUploadBatch existing = new ZhonghuiPmsUploadBatch();
+        setId(existing, 1L);
+        existing.setIdempotencyKey(key);
+        when(batches.findByIdempotencyKey(key)).thenReturn(Optional.of(existing));
+        ZhonghuiPmsUploadBatchItem pending = new ZhonghuiPmsUploadBatchItem();
+        pending.setBatchId(1L);
+        pending.setSkuId(201L);
+        pending.setSkuCode("SKU-TP-000001");
+        pending.setGoodsName("子牧羊小腿 500g/盒");
+        pending.setStatus(ZhonghuiPmsUploadBatchItemStatus.PENDING);
+        items.save(pending);
+        ZhonghuiPmsBatchUploadService service = new ZhonghuiPmsBatchUploadService(
+                client, properties, mock(SkuRepository.class), mock(ProductRepository.class),
+                mock(ProductImageService.class), batches, items, idempotency);
+
+        BatchUploadView result = service.upload(
+                new BatchUploadCommand(List.of("201"), null), key).result();
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        verify(client, org.mockito.Mockito.never()).createGoods(any());
+        verify(client).queryGoods("SKU-TP-000001", "子牧羊小腿 500g/盒");
     }
 
     private ZhonghuiPmsBatchUploadService service(
             ZhonghuiPmsService client, Sku sku, Product product, ProductImageService imageService) {
+        return service(client, properties(), sku, product, imageService);
+    }
+
+    private ZhonghuiPmsBatchUploadService service(
+            ZhonghuiPmsService client,
+            ZhonghuiPmsProperties properties,
+            Sku sku,
+            Product product,
+            ProductImageService imageService) {
         SkuRepository skus = mock(SkuRepository.class);
         when(skus.findById(sku.getId())).thenReturn(Optional.of(sku));
         ProductRepository products = mock(ProductRepository.class);
         when(products.findById(product.getId())).thenReturn(Optional.of(product));
         return new ZhonghuiPmsBatchUploadService(
-                client, properties(), skus, products, imageService, batches, items, idempotency);
+                client, properties, skus, products, imageService, batches, items, idempotency);
     }
 
     private ZhonghuiPmsProperties properties() {
@@ -419,20 +532,20 @@ class ZhonghuiPmsBatchUploadServiceTest {
     private IdempotencyService idempotencyService() {
         IdempotencyService idempotency = mock(IdempotencyService.class);
         when(idempotency.executeWithExternalWriteIntent(
-                anyString(), anyString(), any(), anyInt(), any(), any(), any()))
+                anyString(), anyString(), any(), anyInt(), any(), any(), any(), any()))
                 .thenAnswer(this::runExternalWriteFlow);
         return idempotency;
     }
 
     @SuppressWarnings("unchecked")
     private IdempotentResult<BatchUploadView> runExternalWriteFlow(InvocationOnMock invocation) {
-        IdempotencyService.ExternalWriteIntent<Long> intentWork = invocation.getArgument(4);
-        IdempotencyService.ExternalWrite<Long, List<BatchUploadView.ItemView>> external =
-                invocation.getArgument(5);
-        IdempotencyService.ExternalWriteCompletion<Long, List<BatchUploadView.ItemView>, BatchUploadView>
-                completion = invocation.getArgument(6);
-        Long intent = intentWork.persist();
-        List<BatchUploadView.ItemView> externalResult = external.execute(intent);
+        IdempotencyService.ExternalWriteIntent<Object> intentWork = invocation.getArgument(5);
+        IdempotencyService.GuardedExternalWrite<Object, List<BatchUploadView.ItemView>> external =
+                invocation.getArgument(6);
+        IdempotencyService.ExternalWriteCompletion<Object, List<BatchUploadView.ItemView>, BatchUploadView>
+                completion = invocation.getArgument(7);
+        Object intent = intentWork.persist();
+        List<BatchUploadView.ItemView> externalResult = external.execute(intent, () -> {});
         var outcome = completion.execute(intent, externalResult);
         return IdempotentResult.executed(outcome.result(), 200);
     }

@@ -4,7 +4,7 @@
 依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
-和当前增量迁移链（本分支最高 `V51`，`V50` 由并行票预留）；两条路径必须得到等价的当前结构——
+和 `V2`–`V51` 增量迁移；两条路径必须得到等价的当前结构——
 [`SchemaSnapshotMigrationEquivalenceTest`](../backend/src/test/java/cn/zimu/fulfillment/schema/SchemaSnapshotMigrationEquivalenceTest.java)
 用 Testcontainers 分别以空库快照与 Flyway 全链建库，从 `pg_catalog` 比对表/视图/列
 （类型/可空/默认/identity）/主键/唯一键/check 约束/外键/普通索引/触发器/显式序列/
@@ -13,7 +13,7 @@
 ## 1. 设计结论
 
 - PostgreSQL 使用 `app` 业务 schema 与 `analytics` 分析 schema。
-- 当前权威快照共 66 张业务表、4 个分析视图和 2 个操作视图。
+- 当前权威快照共 70 张业务表、4 个分析视图和 2 个操作视图。
 - 有限且仍可能演进的状态值使用 `VARCHAR + CHECK`；可扩展的 OrderEvent 类型使用目录表。
 - 所有业务时间使用 `TIMESTAMPTZ`；Java 使用 `Instant`。来源 Excel 的无时区时间按 `Asia/Shanghai` 解释，分析视图也按上海自然日分桶。
 - 所有数量使用 `NUMERIC(18,3)`；应用写入前必须拒绝超过三位小数的输入，不能依赖数据库隐式舍入。
@@ -174,6 +174,13 @@ Timeline 按订单内 `sequence_no`/`created_at` 排序，不按事件类型字�
 | `wecom_notification_deliveries` | 批次到每个运营收件人的发送 fence 与可追溯原因 | `(batch_id, recipient_key)` 唯一；仅明确未提交的失败可 RETRY_PENDING；SENDING 重启/ack 不明收敛 UNKNOWN，禁止盲重发；未绑定/无人负责显式 BLOCKED |
 | `wecom_notification_alerts` | BLOCKED/FAILED/UNKNOWN 的持久运营告警投影 | `(delivery_id, item_id)` 与 `alert_key` 双重稳定去重；可关联订单/订单行/履约/发货时保存外键，只有草稿/导入/消息主体时仍保留投影；YELLOW=BLOCKED，RED=FAILED/UNKNOWN，重启恢复不重复建告警 |
 
+### 3.9 中汇 PMS 外部写意图（2）
+
+| 表 | 职责 | 关键约束 |
+|---|---|---|
+| `zhonghui_pms_upload_batches` | 中汇商品批量上传的稳定外部写意图与批次汇总 | `idempotency_key` 非空且唯一，同 key 恢复只能复用原批次；状态 PENDING→COMPLETED |
+| `zhonghui_pms_upload_batch_items` | 批次内逐 SKU 的外部写事实 | `(batch_id, sku_id)` 唯一；V50 若发现历史重复会保留全部证据并显式阻断迁移，须人工对账后重跑；状态 PENDING/SUCCESS/FAILED；恢复时 SUCCESS/FAILED 不重写，PENDING 只查询对账，查不到进入 RECONCILIATION_REQUIRED |
+
 ## 4. 状态维度
 
 | 维度 | 存储位置 | V1 值 |
@@ -267,7 +274,7 @@ DDL 必须通过以下门槛：
 3. 执行 `docs/schema-smoke.sql`，覆盖：上海业务日出库单号原子流水、运单回传与原 FulfillmentExport/provider 关联、已发货但未提供实际发货时间、非已发货状态的不一致时间拒绝、第三方库存写入拒绝、错误修订链拒绝、跨 provider/非整份礼包拒绝、重复待出库批次拒绝、跨订单导出/回填拒绝、Demo 业务隔离、京东金额非 0 拒绝、Shipment 超发拒绝、Tracking 冲突拒绝、最终回填含等待项拒绝、已导出订单字段冻结、分析视图排除 Demo 和未知实际发货日数据，以及渠道/商品实发量的乘数换算与礼包组件展开。
 4. `git diff --check` 无空白错误。
 5. `SchemaSnapshotMigrationEquivalenceTest`（Testcontainers，`mvn test` 默认阶段运行）：分别用
-   `docs/schema.sql` 与 Flyway 当前全链（本分支最高 V51）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
+   `docs/schema.sql` 与 Flyway 全链（V1..V51）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
 
 ## 11. 快照与迁移链的更新责任
 

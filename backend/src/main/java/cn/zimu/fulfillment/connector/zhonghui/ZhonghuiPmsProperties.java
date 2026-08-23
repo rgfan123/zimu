@@ -2,17 +2,18 @@ package cn.zimu.fulfillment.connector.zhonghui;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
 import java.math.BigDecimal;
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 /**
- * 中汇好泰 PMS 商品录入客户端配置（接口契约见仓库根目录 {@code pms_openapi.md}）。
+ * 中汇好泰 PMS 商品录入客户端配置（管理面契约见 {@code docs/openapi.yaml}）。
  *
  * <p>凭据只经环境变量注入（{@code ZHONGHUI_PMS_*}，见 {@code .env.example}），绝不出现在日志、
  * 数据库或 API 响应中。`client-mode=MOCK`（默认）使用本地假客户端，不触网；`REAL` 时才连接
  * {@code pms.zhonghuihaotai.com}。
  *
- * <p>{@code defaults} 是创建商品时的全局默认值（对应 pms_openapi.md「当前仍需确认的字段」：
+ * <p>{@code defaults} 是创建商品时的全局默认值（对应供应商创建商品接口中仍需确认的字段：
  * brandId / certificationType / certificationId / thirdId / limitAreaTempId / goodsTax /
  * logisticsCarrier / producingArea 等），每个批次请求仍可按商品覆盖。
  */
@@ -25,6 +26,8 @@ public class ZhonghuiPmsProperties {
     private String baseUrl = "";
     private String username = "";
     private String password = "";
+    private Duration requestTimeout = Duration.ofSeconds(30);
+    private Duration idempotencyLease = Duration.ofMinutes(40);
     private Defaults defaults = new Defaults();
 
     public String getClientMode() {
@@ -65,6 +68,22 @@ public class ZhonghuiPmsProperties {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public Duration getRequestTimeout() {
+        return requestTimeout;
+    }
+
+    public void setRequestTimeout(Duration requestTimeout) {
+        this.requestTimeout = requestTimeout;
+    }
+
+    public Duration getIdempotencyLease() {
+        return idempotencyLease;
+    }
+
+    public void setIdempotencyLease(Duration idempotencyLease) {
+        this.idempotencyLease = idempotencyLease;
     }
 
     public Defaults getDefaults() {

@@ -30,7 +30,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p>流程：REQUIRES_NEW 抢占 IN_PROGRESS 行 → 业务工作与 SUCCEEDED 响应快照在调用方事务内原子提交；
  * 业务失败时 REQUIRES_NEW 标记 FAILED。同 key 同 payload 重放
- * 首次结果；同 key 不同 payload 返回 409；FAILED 允许重跑；租约过期的 IN_PROGRESS 允许接管。
+ * 首次结果；同 key 不同 payload 返回 409；FAILED 允许重跑；普通本地/只读工作的过期租约允许接管，
+ * 启用按 scope 严格策略的外部写则在租约过期时进入 RECONCILIATION_REQUIRED，禁止第二次产生外部效果。
  * 本服务不产生外部副作用，注册表与业务事实在同一事务内提交，无崩溃恢复窗口。
  */
 @Service
@@ -71,6 +72,18 @@ public class IdempotencyService {
         E execute(I intent);
     }
 
+    /** 外部写执行期间的租约围栏；每次不可逆外调前必须验证。 */
+    @FunctionalInterface
+    public interface ExternalWriteClaim {
+        void verifyActive();
+    }
+
+    /** 消费已提交的写意图，并在每次外部写前使用 claim 围栏。 */
+    @FunctionalInterface
+    public interface GuardedExternalWrite<I, E> {
+        E execute(I intent, ExternalWriteClaim claim);
+    }
+
     /** 在一个本地事务中归档外部写结果与业务事实。 */
     @FunctionalInterface
     public interface ExternalWriteCompletion<I, E, T> {
@@ -108,17 +121,19 @@ public class IdempotencyService {
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.required = new TransactionTemplate(transactionManager);
         this.required.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
-        this.lease = Duration.ofSeconds(leaseSeconds);
+        this.defaultLease = Duration.ofSeconds(leaseSeconds);
     }
 
-    private final Duration lease;
+    private final Duration defaultLease;
 
     @Transactional
     public <T> IdempotentResult<T> execute(
             String scope, String idempotencyKey, Object requestPayload, int successStatus, Work<T> work) {
         String payloadHash = sha256Hex(serialize(requestPayload));
         String ownerToken = UUID.randomUUID().toString();
-        ClaimResult claim = claim(scope, idempotencyKey, payloadHash, ownerToken);
+        ClaimResult claim = claim(
+                scope, idempotencyKey, payloadHash, ownerToken,
+                defaultLease, ExpiredClaimPolicy.TAKE_OVER);
         if (claim.replay()) {
             ObjectNode snapshot = (ObjectNode) claim.snapshot();
             return IdempotentResult.replayed(snapshot.get("http_status").asInt(), snapshot.get("body"));
@@ -161,7 +176,9 @@ public class IdempotencyService {
         }
         String payloadHash = sha256Hex(serialize(requestPayload));
         String ownerToken = UUID.randomUUID().toString();
-        ClaimResult claim = claim(scope, idempotencyKey, payloadHash, ownerToken);
+        ClaimResult claim = claim(
+                scope, idempotencyKey, payloadHash, ownerToken,
+                defaultLease, ExpiredClaimPolicy.TAKE_OVER);
         if (claim.replay()) {
             ObjectNode snapshot = (ObjectNode) claim.snapshot();
             return IdempotentResult.replayed(snapshot.get("http_status").asInt(), snapshot.get("body"));
@@ -208,7 +225,9 @@ public class IdempotencyService {
         }
         String payloadHash = sha256Hex(serialize(requestPayload.apply(prepared)));
         String ownerToken = UUID.randomUUID().toString();
-        ClaimResult claim = claim(scope, idempotencyKey, payloadHash, ownerToken);
+        ClaimResult claim = claim(
+                scope, idempotencyKey, payloadHash, ownerToken,
+                defaultLease, ExpiredClaimPolicy.TAKE_OVER);
         if (claim.replay()) {
             ObjectNode snapshot = (ObjectNode) claim.snapshot();
             return IdempotentResult.replayed(snapshot.get("http_status").asInt(), snapshot.get("body"));
@@ -259,12 +278,50 @@ public class IdempotencyService {
             ExternalWriteIntent<I> intentWork,
             ExternalWrite<I, E> externalWork,
             ExternalWriteCompletion<I, E, T> completion) {
+        return executeExternalWrite(
+                scope, idempotencyKey, requestPayload, successStatus, defaultLease,
+                ExpiredClaimPolicy.TAKE_OVER,
+                intentWork, (intent, claim) -> externalWork.execute(intent), completion);
+    }
+
+    /**
+     * 外部写三阶段 seam 的按 scope 租约版本。租约过期代表外部效果已未知：注册表会持久化为
+     * RECONCILIATION_REQUIRED，且不会把执行权交给第二个调用者。
+     */
+    public <I, E, T> IdempotentResult<T> executeWithExternalWriteIntent(
+            String scope,
+            String idempotencyKey,
+            Object requestPayload,
+            int successStatus,
+            Duration scopeLease,
+            ExternalWriteIntent<I> intentWork,
+            GuardedExternalWrite<I, E> externalWork,
+            ExternalWriteCompletion<I, E, T> completion) {
+        return executeExternalWrite(
+                scope, idempotencyKey, requestPayload, successStatus, scopeLease,
+                ExpiredClaimPolicy.REQUIRE_RECONCILIATION,
+                intentWork, externalWork, completion);
+    }
+
+    private <I, E, T> IdempotentResult<T> executeExternalWrite(
+            String scope,
+            String idempotencyKey,
+            Object requestPayload,
+            int successStatus,
+            Duration scopeLease,
+            ExpiredClaimPolicy expiredClaimPolicy,
+            ExternalWriteIntent<I> intentWork,
+            GuardedExternalWrite<I, E> externalWork,
+            ExternalWriteCompletion<I, E, T> completion) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("external write idempotency work must start outside a database transaction");
         }
         String payloadHash = sha256Hex(serialize(requestPayload));
         String ownerToken = UUID.randomUUID().toString();
-        ClaimResult claim = claim(scope, idempotencyKey, payloadHash, ownerToken);
+        ClaimResult claim = claim(
+                scope, idempotencyKey, payloadHash, ownerToken,
+                Objects.requireNonNull(scopeLease, "scopeLease"),
+                expiredClaimPolicy);
         if (claim.replay()) {
             ObjectNode snapshot = (ObjectNode) claim.snapshot();
             return IdempotentResult.replayed(snapshot.get("http_status").asInt(), snapshot.get("body"));
@@ -281,7 +338,9 @@ public class IdempotencyService {
             if (intent == null) {
                 throw new IllegalStateException("external write intent must not be null");
             }
-            E externalResult = externalWork.execute(intent);
+            ExternalWriteClaim activeClaim = () -> verifyActiveClaim(scope, idempotencyKey, ownerToken);
+            activeClaim.verifyActive();
+            E externalResult = externalWork.execute(intent, activeClaim);
             ExternalCompletion<T> outcome = required.execute(status -> {
                 ExternalCompletion<T> value = completion.execute(intent, externalResult);
                 if (value == null) {
@@ -293,17 +352,40 @@ public class IdempotencyService {
                 return value;
             });
             if (!outcome.succeeded()) {
-                markFailed(scope, idempotencyKey, outcome.failure(), ownerToken);
                 throw outcome.failure();
             }
             return IdempotentResult.executed(outcome.result(), successStatus);
         } catch (RuntimeException ex) {
+            // 执行期对账未决仍标记 FAILED，使 same-key 可重新进入稳定 intent 做 query-only 对账；
+            // 只有 claim 租约过期才由 claim() 原子写入不可接管的 RECONCILIATION_REQUIRED 终态。
             markFailed(scope, idempotencyKey, ex, ownerToken);
             throw ex;
         }
     }
 
-    private ClaimResult claim(String scope, String key, String payloadHash, String ownerToken) {
+    private void verifyActiveClaim(String scope, String key, String ownerToken) {
+        Boolean active = requiresNew.execute(status -> jdbc.queryForObject(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM app.idempotency_registry
+                    WHERE scope = ? AND idempotency_key = ? AND owner_token = ?
+                      AND status = 'IN_PROGRESS' AND lease_expires_at > statement_timestamp()
+                )
+                """,
+                Boolean.class, scope, key, ownerToken));
+        if (!Boolean.TRUE.equals(active)) {
+            throw BusinessException.conflict(
+                    "IDEMPOTENCY_CLAIM_LOST", "幂等执行租约已失效，禁止继续产生外部写入");
+        }
+    }
+
+    private ClaimResult claim(
+            String scope,
+            String key,
+            String payloadHash,
+            String ownerToken,
+            Duration claimLease,
+            ExpiredClaimPolicy expiredClaimPolicy) {
         // 首次占用：REQUIRES_NEW 事务内 INSERT，成功即抢到租约
         try {
             requiresNew.executeWithoutResult(status -> jdbc.update(
@@ -313,7 +395,7 @@ public class IdempotencyService {
                     VALUES (?, ?, ?, 'IN_PROGRESS', ?,
                             CURRENT_TIMESTAMP + (? * INTERVAL '1 second'), 1)
                     """,
-                    scope, key, payloadHash, ownerToken, lease.toSeconds()));
+                    scope, key, payloadHash, ownerToken, claimLease.toSeconds()));
             return ClaimResult.proceed();
         } catch (DuplicateKeyException ex) {
             // 内层事务已被 TransactionTemplate 回滚（PG 中失败语句会中止当前事务，不能在同事务内继续读取）；
@@ -350,13 +432,37 @@ public class IdempotencyService {
                                 WHERE scope = ? AND idempotency_key = ?
                                   AND status = 'FAILED'
                                 """,
-                                ownerToken, lease.toSeconds(), scope, key);
+                                ownerToken, claimLease.toSeconds(), scope, key);
                         if (updated != 1) {
                             return ClaimResult.conflict(false);
                         }
                         return ClaimResult.proceed();
                     }
                     case "IN_PROGRESS" -> {
+                        if (expiredClaimPolicy == ExpiredClaimPolicy.REQUIRE_RECONCILIATION) {
+                            int updated = jdbc.update(
+                                    """
+                                    UPDATE app.idempotency_registry
+                                    SET status = 'RECONCILIATION_REQUIRED',
+                                        completed_at = CURRENT_TIMESTAMP,
+                                        lease_expires_at = NULL,
+                                        error_snapshot = jsonb_build_object(
+                                            'business_code', 'RECONCILIATION_REQUIRED',
+                                            'message', 'external write lease expired before durable completion'),
+                                        updated_at = CURRENT_TIMESTAMP
+                                    WHERE scope = ? AND idempotency_key = ?
+                                      AND status = 'IN_PROGRESS' AND lease_expires_at < CURRENT_TIMESTAMP
+                                    """,
+                                    scope, key);
+                            if (updated == 1) {
+                                return ClaimResult.conflict(true);
+                            }
+                            String currentStatus = jdbc.queryForObject(
+                                    "SELECT status FROM app.idempotency_registry "
+                                            + "WHERE scope = ? AND idempotency_key = ?",
+                                    String.class, scope, key);
+                            return ClaimResult.conflict("RECONCILIATION_REQUIRED".equals(currentStatus));
+                        }
                         int updated = jdbc.update(
                                 """
                                 UPDATE app.idempotency_registry
@@ -367,7 +473,7 @@ public class IdempotencyService {
                                 WHERE scope = ? AND idempotency_key = ?
                                   AND status = 'IN_PROGRESS' AND lease_expires_at < CURRENT_TIMESTAMP
                                 """,
-                                ownerToken, lease.toSeconds(), scope, key);
+                                ownerToken, claimLease.toSeconds(), scope, key);
                         if (updated != 1) {
                             return ClaimResult.conflict(false);
                         }
@@ -515,4 +621,10 @@ public class IdempotencyService {
             return snapshot;
         }
     }
+
+    private enum ExpiredClaimPolicy {
+        TAKE_OVER,
+        REQUIRE_RECONCILIATION
+    }
+
 }

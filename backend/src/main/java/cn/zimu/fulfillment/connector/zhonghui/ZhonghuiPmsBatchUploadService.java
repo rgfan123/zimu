@@ -12,11 +12,17 @@ import cn.zimu.fulfillment.product.ProductImageService;
 import cn.zimu.fulfillment.product.ProductRepository;
 import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuRepository;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import org.hibernate.validator.constraints.UniqueElements;
 import org.springframework.stereotype.Service;
 
 /**
@@ -73,13 +79,18 @@ public class ZhonghuiPmsBatchUploadService {
      */
     public IdempotentResult<BatchUploadView> upload(
             BatchUploadCommand command, String idempotencyKey) {
-        properties.requireExternalWritesEnabled();
-        if (!client.authenticated()) {
-            throw BusinessException.unprocessable(
-                    "PMS_LOGIN_REQUIRED", "请先完成中汇 PMS 登录（获取验证码后输入验证码）");
+        if (idempotencyKey != null && idempotencyKey.length() > 255) {
+            throw BusinessException.badRequest(
+                    "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key 长度不能超过 255 个字符");
         }
         if (command.skuIds() == null || command.skuIds().isEmpty()) {
             throw BusinessException.badRequest("EMPTY_SKU_IDS", "请至少选择一个商品档案 SKU");
+        }
+        if (command.skuIds().size() > 20) {
+            throw BusinessException.badRequest("SKU_BATCH_LIMIT_EXCEEDED", "每批最多上传 20 个 SKU");
+        }
+        if (command.skuIds().stream().map(this::parseId).distinct().count() != command.skuIds().size()) {
+            throw BusinessException.badRequest("DUPLICATE_SKU_IDS", "同一批次不能重复选择 SKU");
         }
         return idempotency.executeWithExternalWriteIntent(
                 SCOPE,
@@ -89,10 +100,11 @@ public class ZhonghuiPmsBatchUploadService {
                         "overrides", command.overrides() == null ? Map.of() : command.overrides(),
                         "client_mode", properties.getClientMode()),
                 200,
-                () -> createBatchIntent(command),
-                batchId -> executeBatch(batchId, command),
-                (batchId, items) -> IdempotencyService.ExternalCompletion.succeeded(
-                        completeBatch(batchId, items)));
+                properties.getIdempotencyLease(),
+                () -> createRecoverableBatchIntent(command, idempotencyKey),
+                (intent, claim) -> executeBatch(intent, command, claim),
+                (intent, items) -> IdempotencyService.ExternalCompletion.succeeded(
+                        completeBatch(intent.batchId(), items)));
     }
 
     /** 批次详情（含逐商品结果），用于恢复/审计。 */
@@ -121,9 +133,18 @@ public class ZhonghuiPmsBatchUploadService {
                 item.getWarning());
     }
 
-    /** 幂等意图（独立事务）：批次 PENDING + 逐商品 PENDING 行；返回批次 id。 */
-    private Long createBatchIntent(BatchUploadCommand command) {
+    /** 幂等意图（独立事务）：同 key 先复用既有批次；只有新批次才要求外部写门闩与当前会话。 */
+    private BatchIntent createRecoverableBatchIntent(BatchUploadCommand command, String idempotencyKey) {
+        Optional<ZhonghuiPmsUploadBatch> existing = batchRepository.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            ZhonghuiPmsUploadBatch batch = existing.get();
+            assertSameSkuIntent(batch.getId(), command.skuIds());
+            return new BatchIntent(batch.getId(), true);
+        }
+        properties.requireExternalWritesEnabled();
+        requireAuthenticatedSession();
         ZhonghuiPmsUploadBatch batch = new ZhonghuiPmsUploadBatch();
+        batch.setIdempotencyKey(idempotencyKey);
         batch.setStatus(ZhonghuiPmsUploadBatchStatus.PENDING);
         batch.setTotal(command.skuIds().size());
         RequestContext context = RequestContext.current();
@@ -137,21 +158,111 @@ public class ZhonghuiPmsBatchUploadService {
             item.setBatchId(batch.getId());
             item.setSkuId(parseId(skuId));
             item.setStatus(ZhonghuiPmsUploadBatchItemStatus.PENDING);
+            snapshotIntentIdentity(item);
             itemRepository.save(item);
         }
-        return batch.getId();
+        return new BatchIntent(batch.getId(), false);
     }
 
     /** 逐商品执行外部创建并回写结果（外部调用不在事务内）。 */
-    private List<BatchUploadView.ItemView> executeBatch(Long batchId, BatchUploadCommand command) {
+    private List<BatchUploadView.ItemView> executeBatch(
+            BatchIntent intent,
+            BatchUploadCommand command,
+            IdempotencyService.ExternalWriteClaim claim) {
         Overrides overrides = command.overrides() == null ? Overrides.empty() : command.overrides();
         List<BatchUploadView.ItemView> views = new ArrayList<>();
         for (String skuId : command.skuIds()) {
-            BatchUploadView.ItemView outcome = uploadOne(skuId, overrides);
-            updateItemRow(batchId, parseId(skuId), outcome);
+            claim.verifyActive();
+            long parsedSkuId = parseId(skuId);
+            ZhonghuiPmsUploadBatchItem persisted = itemRepository
+                    .findByBatchIdAndSkuId(intent.batchId(), parsedSkuId)
+                    .orElseThrow(() -> BusinessException.conflict(
+                            "IDEMPOTENCY_CONFLICT", "既有中汇上传批次与本次 SKU 清单不一致"));
+            BatchUploadView.ItemView outcome;
+            if (!intent.reused()) {
+                outcome = uploadOne(skuId, overrides, claim);
+                updateItemRow(intent.batchId(), parsedSkuId, outcome);
+            } else if (persisted.getStatus() == ZhonghuiPmsUploadBatchItemStatus.PENDING) {
+                outcome = reconcilePending(persisted);
+                updateItemRow(intent.batchId(), parsedSkuId, outcome);
+            } else {
+                // SUCCESS/FAILED 都是已归档的确定事实；复用时绝不再次触发外部创建。
+                outcome = toItemView(persisted);
+            }
             views.add(outcome);
         }
         return views;
+    }
+
+    private void assertSameSkuIntent(Long batchId, List<String> skuIds) {
+        List<Long> requested = skuIds.stream().map(this::parseId).sorted().toList();
+        List<Long> persisted = itemRepository.findByBatchIdOrderById(batchId).stream()
+                .map(ZhonghuiPmsUploadBatchItem::getSkuId)
+                .sorted()
+                .toList();
+        if (!requested.equals(persisted)) {
+            throw BusinessException.conflict(
+                    "IDEMPOTENCY_CONFLICT", "既有中汇上传批次与本次 SKU 清单不一致");
+        }
+    }
+
+    /** 对遗留 PENDING 意图只做查询对账；查不到时外部效果未知，禁止再次 createGoods。 */
+    private BatchUploadView.ItemView reconcilePending(ZhonghuiPmsUploadBatchItem item) {
+        requireAuthenticatedSession();
+        try {
+            String skuCode = item.getSkuCode();
+            String persistedGoodsName = item.getGoodsName();
+            if (skuCode == null || skuCode.isBlank() || persistedGoodsName == null || persistedGoodsName.isBlank()) {
+                Sku sku = skus.findById(item.getSkuId())
+                        .orElseThrow(() -> BusinessException.notFound("SKU 不存在"));
+                Product product = products.findById(sku.getProductId())
+                        .orElseThrow(() -> BusinessException.unprocessable(
+                                "PRODUCT_MISSING", "商品档案缺少对应商品"));
+                skuCode = sku.getSkuCode();
+                persistedGoodsName = goodsName(sku, product);
+            }
+            GoodsVerifyView verify = client.queryGoods(skuCode, persistedGoodsName);
+            if (verify == null) {
+                throw reconciliationRequired(item.getSkuId());
+            }
+            return new BatchUploadView.ItemView(
+                    String.valueOf(item.getSkuId()), skuCode, persistedGoodsName,
+                    true, "OK", "", verify.goodsId(), joinStatus(verify), item.getWarning());
+        } catch (BusinessException exception) {
+            if ("RECONCILIATION_REQUIRED".equals(exception.getBusinessCode())) {
+                throw exception;
+            }
+            throw reconciliationRequired(item.getSkuId());
+        } catch (RuntimeException exception) {
+            throw reconciliationRequired(item.getSkuId());
+        }
+    }
+
+    private BusinessException reconciliationRequired(Long skuId) {
+        return BusinessException.conflict(
+                "RECONCILIATION_REQUIRED",
+                "SKU " + skuId + " 的中汇外部写入结果未知，必须人工对账，禁止重复创建商品");
+    }
+
+    private void requireAuthenticatedSession() {
+        if (!client.authenticated()) {
+            throw BusinessException.unprocessable(
+                    "PMS_LOGIN_REQUIRED", "请先完成中汇 PMS 登录（获取验证码后输入验证码）");
+        }
+    }
+
+    /** 在任何外部调用前快照中汇的稳定查询键；本地主数据缺失仍由逐项执行收口为失败。 */
+    private void snapshotIntentIdentity(ZhonghuiPmsUploadBatchItem item) {
+        skus.findById(item.getSkuId()).ifPresent(sku -> {
+            item.setSkuCode(sku.getSkuCode());
+            products.findById(sku.getProductId()).ifPresent(product -> {
+                try {
+                    item.setGoodsName(goodsName(sku, product));
+                } catch (BusinessException ignored) {
+                    // 商品名校验由 uploadOne 形成可见失败；意图行仍须先落库。
+                }
+            });
+        });
     }
 
     /** 批次收尾：置 COMPLETED 并写总数，返回对外响应视图。 */
@@ -168,7 +279,10 @@ public class ZhonghuiPmsBatchUploadService {
                 items.size(), succeeded, items.size() - succeeded, items);
     }
 
-    private BatchUploadView.ItemView uploadOne(String skuId, Overrides overrides) {
+    private BatchUploadView.ItemView uploadOne(
+            String skuId,
+            Overrides overrides,
+            IdempotencyService.ExternalWriteClaim claim) {
         // 失败回写时优先保留已读到的真实编码/名称；读取失败前退化为 skuId 占位。
         String skuCode = skuId;
         String goodsName = skuId;
@@ -182,10 +296,22 @@ public class ZhonghuiPmsBatchUploadService {
             if (!sku.isActive() || !product.isActive()) {
                 throw BusinessException.unprocessable("INACTIVE_SKU", "商品未启用，跳过上传");
             }
-            String mainImageUrl = uploadMainImage(product);
+            String mainImageUrl;
+            try {
+                mainImageUrl = uploadMainImage(product, claim);
+            } catch (ZhonghuiPmsHttpClient.PmsTransportException exception) {
+                throw reconciliationRequired(parseId(skuId));
+            }
             GoodsCreateCommand command = buildCommand(sku, product, mainImageUrl, overrides);
             goodsName = command.goodsName();
-            GoodsCreateResult result = client.createGoods(command);
+            GoodsCreateResult result;
+            try {
+                claim.verifyActive();
+                result = client.createGoods(command);
+            } catch (ZhonghuiPmsHttpClient.PmsTransportException exception) {
+                // 请求可能已到达 PMS 但响应丢失；保留 PENDING 意图，禁止归档为可重试 FAILED。
+                throw reconciliationRequired(parseId(skuId));
+            }
             if (!result.success()) {
                 return new BatchUploadView.ItemView(skuId, skuCode, goodsName,
                         false, result.businessCode(), result.message(), null, null,
@@ -199,6 +325,10 @@ public class ZhonghuiPmsBatchUploadService {
                     verify == null ? null : joinStatus(verify),
                     mainImageUrl == null ? WARNING_NO_MAIN_IMAGE : null);
         } catch (BusinessException business) {
+            if ("RECONCILIATION_REQUIRED".equals(business.getBusinessCode())
+                    || "IDEMPOTENCY_CLAIM_LOST".equals(business.getBusinessCode())) {
+                throw business;
+            }
             return new BatchUploadView.ItemView(skuId, skuCode, goodsName, false,
                     business.getBusinessCode(), business.getMessage(), null, null, null);
         } catch (Exception exception) {
@@ -244,6 +374,9 @@ public class ZhonghuiPmsBatchUploadService {
     }
 
     private long parseId(String value) {
+        if (value == null) {
+            throw BusinessException.badRequest("INVALID_SKU_ID", "SKU 标识非法");
+        }
         try {
             return Long.parseLong(value);
         } catch (NumberFormatException exception) {
@@ -252,12 +385,13 @@ public class ZhonghuiPmsBatchUploadService {
     }
 
     /** 商品主图 → 中汇公网 URL；无主图返回 null（不阻塞上传，但回写 warning）。 */
-    private String uploadMainImage(Product product) {
+    private String uploadMainImage(Product product, IdempotencyService.ExternalWriteClaim claim) {
         String ref = product.getMainImageRef();
         if (ref == null || ref.isBlank()) {
             return null;
         }
         byte[] bytes = productImageService.read(ref);
+        claim.verifyActive();
         return client.uploadImage(bytes, ProductImageService.contentType(ref));
     }
 
@@ -274,13 +408,7 @@ public class ZhonghuiPmsBatchUploadService {
             throw BusinessException.unprocessable("PRICE_MISSING", "商品缺少供货价（SKU/商品档案进货价均未填写）");
         }
         String specification = sku.getSpecification() == null ? "" : sku.getSpecification().strip();
-        String goodsName = product.getProductName() == null ? "" : product.getProductName().strip();
-        if (goodsName.isBlank()) {
-            throw BusinessException.unprocessable("NAME_MISSING", "商品名称为空");
-        }
-        if (!specification.isBlank() && !goodsName.contains(specification)) {
-            goodsName = goodsName + " " + specification;
-        }
+        String goodsName = goodsName(sku, product);
         String description = joinDescription(product.getDescription(), product.getIngredients());
         String details = mainImageUrl == null
                 ? (description.isBlank() ? "" : "<p>" + escapeHtml(description) + "</p>")
@@ -368,8 +496,27 @@ public class ZhonghuiPmsBatchUploadService {
         return value == null || value.isBlank() ? null : value;
     }
 
+    private String goodsName(Sku sku, Product product) {
+        String specification = sku.getSpecification() == null ? "" : sku.getSpecification().strip();
+        String name = product.getProductName() == null ? "" : product.getProductName().strip();
+        if (name.isBlank()) {
+            throw BusinessException.unprocessable("NAME_MISSING", "商品名称为空");
+        }
+        return !specification.isBlank() && !name.contains(specification)
+                ? name + " " + specification
+                : name;
+    }
+
+    private record BatchIntent(Long batchId, boolean reused) {}
+
     /** 批量上传请求；overrides 为可选的每批覆盖字段（优先于配置默认值）。 */
-    public record BatchUploadCommand(List<String> skuIds, Overrides overrides) {}
+    public record BatchUploadCommand(
+            @NotEmpty(message = "请至少选择一个商品档案 SKU")
+            @Size(max = 20, message = "每批最多上传 20 个 SKU")
+            @UniqueElements(message = "同一批次不能重复选择 SKU")
+            List<@NotBlank(message = "SKU 标识不能为空")
+                    @Pattern(regexp = "^[1-9][0-9]*$", message = "SKU 标识必须为正整数") String> skuIds,
+            Overrides overrides) {}
 
     public record Overrides(
             Integer brandId,

@@ -26,6 +26,10 @@ public class ZhonghuiPmsUploadBatch extends CreatedAtEntity {
     @Column(name = "batch_no", nullable = false, unique = true)
     private String batchNo;
 
+    /** 与幂等注册表同值的稳定外部写意图引用；同 key 重试只复用本批次。 */
+    @Column(name = "idempotency_key", nullable = false, unique = true)
+    private String idempotencyKey;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
     private ZhonghuiPmsUploadBatchStatus status = ZhonghuiPmsUploadBatchStatus.PENDING;
@@ -55,6 +59,14 @@ public class ZhonghuiPmsUploadBatch extends CreatedAtEntity {
 
     public void setBatchNo(String batchNo) {
         this.batchNo = batchNo;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public void setIdempotencyKey(String idempotencyKey) {
+        this.idempotencyKey = idempotencyKey;
     }
 
     public ZhonghuiPmsUploadBatchStatus getStatus() {

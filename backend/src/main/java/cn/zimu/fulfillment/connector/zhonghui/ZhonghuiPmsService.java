@@ -4,12 +4,12 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * 中汇好泰 PMS 商品录入客户端应用边界（契约见仓库根目录 {@code pms_openapi.md}）。
+ * 中汇好泰 PMS 商品录入客户端应用边界；供应商线协议由本接口 DTO 与真实 Adapter 共同固化。
  *
  * <p>REAL（{@link ZhonghuiPmsHttpClient}）与 MOCK（{@link MockZhonghuiPmsClient}）实现共用此
  * 边界。领域层只依赖本接口，不接触 PMS 原始 HTTP 细节与登录 token。
  *
- * <p>调用顺序（pms_openapi.md「自动上品建议调用顺序」）：{@link #captcha()} → {@link #login(LoginCommand)}
+ * <p>自动上品调用顺序：{@link #captcha()} → {@link #login(LoginCommand)}
  * → 品牌/资质查询 → {@link #uploadImage(byte[], String)} → {@link #createGoods(GoodsCreateCommand)}。
  * 业务接口（品牌/资质/上传/创建）需要有效登录态，{@link #authenticated()} 用于前置校验。
  */
@@ -74,7 +74,7 @@ public interface ZhonghuiPmsService {
     record GoodsCreateResult(boolean success, String businessCode, String message) {}
 
     /**
-     * 创建商品载荷（字段名与 pms_openapi.md CreateGoodsRequest 一一对应）。
+     * 创建商品载荷（字段名与供应商 CreateGoodsRequest 一一对应）。
      * 业务生成的字段（thirdId / limitAreaTempId / certificationType / certificationId /
      * goodsTax / brandId / logisticsCarrier 等）由配置默认值或批次覆盖值注入。
      */

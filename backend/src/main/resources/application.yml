@@ -156,6 +156,10 @@ app:
     # MOCK（默认）只做本地联调；REAL 仅选择真实 Adapter，外部写仍须第二道 write-mode=ON 门闩。
     client-mode: ${ZHONGHUI_PMS_CLIENT_MODE:MOCK}
     write-mode: ${ZHONGHUI_PMS_WRITE_MODE:OFF}
+    # 每次 PMS HTTP 调用的响应上限；20 SKU 最坏调用预算受此值约束。
+    request-timeout: ${ZHONGHUI_PMS_REQUEST_TIMEOUT:PT30S}
+    # 独立于全局 60s 的外部写租约；20 SKU 名义 30 分钟调用预算外再留 10 分钟收尾余量。
+    idempotency-lease: ${ZHONGHUI_PMS_IDEMPOTENCY_LEASE:PT40M}
     # 凭据只经环境变量注入，绝不写入日志、数据库或 API 响应。
     base-url: ${ZHONGHUI_PMS_BASE_URL:}
     username: ${ZHONGHUI_PMS_USERNAME:}

@@ -103,7 +103,7 @@ pg_dump --schema-only --schema=app --no-owner --no-privileges --no-comments
 
 - **为什么这里 56 张表，而 schema.md 说 66 张？** 本导出是 2026-08-17 的一次性交接基线（当时 53 张），
   手工追加 V46 两张企微出站表、V47 告警隔离索引与 V48 内部运营人员表后为 56；
-  `docs/schema.md`/`docs/schema.sql` 是 Flyway 全链（V1..V48）的空库权威快照（66 张），
+  `docs/schema.md`/`docs/schema.sql` 是 Flyway 全链（V1..V50）的空库权威快照（66 张），
   两者基线不同，等价性由 `SchemaSnapshotMigrationEquivalenceTest` 对
   `docs/schema.sql` 与迁移链负责。
 - **analytics 视图在哪？** 在 `analytics` schema，本导出未包含；需要时单独对 `analytics` 执行 `pg_dump --schema-only --schema=analytics`。

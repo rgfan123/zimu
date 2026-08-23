@@ -9,10 +9,15 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 
 /** 中汇 PMS 批量上传批次的逐商品结果行（PENDING → SUCCESS / FAILED）。 */
 @Entity
-@Table(name = "zhonghui_pms_upload_batch_items")
+@Table(
+        name = "zhonghui_pms_upload_batch_items",
+        uniqueConstraints = @UniqueConstraint(
+                name = "uq_zhonghui_pms_upload_batch_items_batch_sku",
+                columnNames = {"batch_id", "sku_id"}))
 public class ZhonghuiPmsUploadBatchItem extends AuditableEntity {
 
     @Id

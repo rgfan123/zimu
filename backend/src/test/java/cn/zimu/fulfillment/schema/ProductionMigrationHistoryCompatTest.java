@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.schema;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -30,9 +31,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（当前 50 个迁移，最高 V51）升级，Flyway validate（默认开启）必须成功且只追加
- * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）与
- * V51（企微业务通知 outbox，Issue #90；V50 由并行票在聚合分支补入）；
+ * migration set（V1..V51）升级，Flyway validate（默认开启）必须成功且只追加
+ * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）、
+ * V50（中汇稳定上传意图，Issue #116）与 V51（企微业务通知 outbox，Issue #90）；
  * ③ 升级后前 47 行历史
  * 逐行不变，V40–V47 的 version/script/description/checksum 必须与生产已应用序列逐字节
  * 一致——checksum 常量直接取自生产 `flyway_schema_history` 真实行（不按当前迁移文件
@@ -90,7 +91,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48V49AndStandaloneV51() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV51() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -106,22 +107,22 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（50 个迁移，最高 V51）升级——Flyway validate 默认开启，
-        // V40–V47 校验通过后只追加 V48/V49/V51，任何 repair/改写历史都会在此失败。
+        // 阶段二：完整当前 migration set（V1..V51）升级——Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加 V48/V49/V50/V51，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 50 条历史（本分支预留 V50 给并行票）")
-                .hasSize(50);
+                .as("完整升级后应恰有 51 条历史")
+                .hasSize(51);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48/V49/V51 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
+        // V48–V51 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 50))
-                .as("升级只追加 V48（#89）、V49（#84）与 standalone V51（#90）")
+        assertThat(historyAfter.subList(47, 51))
+                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）与 V51（#90）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -129,12 +130,15 @@ class ProductionMigrationHistoryCompatTest {
                         new HistoryRow("49", "V49__wecom_export_delivery_generation_fencing.sql",
                                 "wecom export delivery generation fencing",
                                 crc32Of("V49__wecom_export_delivery_generation_fencing.sql")),
+                        new HistoryRow("50", "V50__zhonghui_pms_stable_upload_intent.sql",
+                                "zhonghui pms stable upload intent",
+                                crc32Of("V50__zhonghui_pms_stable_upload_intent.sql")),
                         new HistoryRow("51", "V51__wecom_business_notification_outbox.sql",
                                 "wecom business notification outbox",
                                 crc32Of("V51__wecom_business_notification_outbox.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
-        // V48/V49/V51 分别用运营人员、delivery 代际与业务通知 outbox 的真实结构证明生效。
+        // V48–V51 分别用内部运营人员、delivery 代际、中汇稳定意图与业务通知结构证明生效。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -230,6 +234,44 @@ class ProductionMigrationHistoryCompatTest {
                     """)))
                     .as("V49 必须把存量 reminder 绑定到其创建时已有的 INITIAL 代际，而非升级时最新代际")
                     .isEqualTo("1");
+            // V50：同一个 HTTP 幂等键只能绑定一个中汇上传批次，且存量批次已完成非空回填。
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT is_nullable FROM information_schema.columns
+                    WHERE table_schema = 'app'
+                      AND table_name = 'zhonghui_pms_upload_batches'
+                      AND column_name = 'idempotency_key'
+                    """)))
+                    .as("V50 生效后中汇批次 idempotency_key 必须非空")
+                    .isEqualTo("NO");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM pg_constraint con
+                    JOIN pg_class rel ON rel.oid = con.conrelid
+                    JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+                    WHERE ns.nspname = 'app'
+                      AND rel.relname = 'zhonghui_pms_upload_batches'
+                      AND con.contype = 'u'
+                      AND pg_get_constraintdef(con.oid) LIKE 'UNIQUE (idempotency_key)%'
+                    """)))
+                    .as("V50 生效后同幂等键只能绑定一个中汇上传批次")
+                    .isEqualTo("1");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM pg_constraint con
+                    JOIN pg_class rel ON rel.oid = con.conrelid
+                    JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+                    WHERE ns.nspname = 'app'
+                      AND rel.relname = 'zhonghui_pms_upload_batch_items'
+                      AND con.contype = 'u'
+                      AND pg_get_constraintdef(con.oid) LIKE 'UNIQUE (batch_id, sku_id)%'
+                    """)))
+                    .as("V50 生效后同一中汇批次内每个 SKU 只能有一条外部写事实")
+                    .isEqualTo("1");
+            assertThat(single(statement.executeQuery(
+                    "SELECT idempotency_key FROM app.zhonghui_pms_upload_batches WHERE id = 900004")))
+                    .as("V50 必须为存量中汇批次生成稳定、非空且不会冒充真实 HTTP key 的引用")
+                    .isEqualTo("legacy-zhonghui-batch-900004");
             // V51：业务通知事实、批次、逐收件人 fence 与持久运营告警投影四张表齐备。
             assertThat(single(statement.executeQuery(
                     """
@@ -260,11 +302,54 @@ class ProductionMigrationHistoryCompatTest {
         }
     }
 
+    @Test
+    void v50RejectsHistoricalDuplicateSkuFactsWithoutDeletingExternalWriteEvidence() throws Exception {
+        String database = "v50_zhonghui_duplicate_guard";
+        try (Connection connection = DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            statement.execute("CREATE DATABASE " + database);
+        }
+        String databaseUrl = "jdbc:postgresql://" + postgres.getHost() + ":"
+                + postgres.getFirstMappedPort() + "/" + database;
+        flyway(databaseUrl, MigrationVersion.fromVersion("49")).migrate();
+        try (Connection connection = DriverManager.getConnection(
+                databaseUrl, postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            statement.executeUpdate(
+                    """
+                    INSERT INTO app.zhonghui_pms_upload_batches
+                        (id, batch_no, status, total, succeeded, failed, created_by)
+                    VALUES (900005, 'PMS-DUPLICATE-900005', 'PENDING', 2, 0, 0, 'migration-test')
+                    """);
+            statement.executeUpdate(
+                    """
+                    INSERT INTO app.zhonghui_pms_upload_batch_items
+                        (batch_id, sku_id, status)
+                    VALUES (900005, 700001, 'PENDING'), (900005, 700001, 'FAILED')
+                    """);
+        }
+
+        assertThatThrownBy(() -> flyway(databaseUrl, null).migrate())
+                .hasStackTraceContaining(
+                        "V50 blocked: duplicate Zhonghui batch SKU facts require manual reconciliation");
+
+        try (Connection connection = DriverManager.getConnection(
+                databaseUrl, postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            assertThat(single(statement.executeQuery(
+                    "SELECT count(*) FROM app.zhonghui_pms_upload_batch_items "
+                            + "WHERE batch_id = 900005 AND sku_id = 700001")))
+                    .as("V50 拒绝升级时不得静默删除任何可能对应外部写的历史证据")
+                    .isEqualTo("2");
+        }
+    }
+
     /**
-     * 在 V47 形状中种入「gen1 initial → gen1 reminder → gen2 initial」历史。外键父表不属于
-     * 本迁移门禁关注点，因此仅在当前连接关闭 FK trigger 后写入最小 delivery 事实；CHECK 约束
+     * 在 V47 形状中种入「gen1 initial → gen1 reminder → gen2 initial」历史和一个存量中汇批次。
+     * 外键父表不属于本迁移门禁关注点，因此仅在当前连接关闭 FK trigger 后写入最小 delivery 事实；CHECK 约束
      * 仍正常执行。gen2 故意使用更早的 created_at（模拟长事务时间反序），V49 必须只按 identity
-     * id 顺序恢复 reminder 插入时的代际 1。
+     * id 顺序恢复 reminder 插入时的代际 1；V50 必须为中汇存量行回填稳定 legacy 引用。
      */
     private void seedV47MultiGenerationDeliveryHistory() throws Exception {
         try (Connection connection = DriverManager.getConnection(
@@ -289,6 +374,13 @@ class ProductionMigrationHistoryCompatTest {
                              TIMESTAMPTZ '2026-08-20 00:30:00+08',
                              TIMESTAMPTZ '2026-08-20 00:30:00+08',
                              TIMESTAMPTZ '2026-08-20 00:30:00+08')
+                        """);
+                statement.executeUpdate(
+                        """
+                        INSERT INTO app.zhonghui_pms_upload_batches
+                            (id, batch_no, status, total, succeeded, failed, created_by)
+                        VALUES
+                            (900004, 'PMS-LEGACY-900004', 'PENDING', 1, 0, 0, 'migration-test')
                         """);
             } finally {
                 statement.execute("SET session_replication_role = origin");
@@ -362,8 +454,12 @@ class ProductionMigrationHistoryCompatTest {
     }
 
     private static Flyway flyway(MigrationVersion target) {
+        return flyway(postgres.getJdbcUrl(), target);
+    }
+
+    private static Flyway flyway(String jdbcUrl, MigrationVersion target) {
         var configuration = Flyway.configure()
-                .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+                .dataSource(jdbcUrl, postgres.getUsername(), postgres.getPassword());
         if (target != null) {
             configuration.target(target);
         }

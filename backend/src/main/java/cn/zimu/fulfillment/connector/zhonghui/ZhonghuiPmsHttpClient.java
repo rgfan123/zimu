@@ -17,12 +17,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 /**
  * 真实中汇好泰 PMS 客户端（JDK HttpClient，无外部依赖）。接口细节来自抓包整理的
- * {@code pms_openapi.md}：
+ * 供应商抓包契约：
  *
  * <ul>
  *   <li>登录态通过自定义请求头 {@code auth: Bearer <JWT>} 传递（不是标准 Authorization）；</li>
@@ -31,14 +32,14 @@ import org.springframework.stereotype.Service;
  *       {@code uploadFile}。</li>
  * </ul>
  *
- * <p>传输层失败抛 {@link PmsTransportException}（由批量上传服务逐商品收口为失败项）；业务失败
- * （HTTP 2xx 但 {@code code != 0}）返回带失败标记的结果对象。登录密码在审计中一律打码。
+ * <p>传输层失败抛 {@link PmsTransportException}；创建/传图结果不确定时由批量上传服务转入人工
+ * 对账，其他确定性业务失败（HTTP 2xx 但 {@code code != 0}）返回带失败标记的结果对象。
+ * 登录密码在审计中一律打码。
  */
 @Service
 @ConditionalOnProperty(name = "app.zhonghui-pms.client-mode", havingValue = "REAL")
 public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
 
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final String AUTH_HEADER = "auth";
     private static final String CAPTCHA_PATH = "/api/a1/cms/captcha";
     private static final String LOGIN_PATH = "/api/a1/cms/login";
@@ -54,19 +55,31 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
     private final AuditLogService auditLogService;
     private final ObjectMapper mapper;
     private final HttpClient client;
+    private final OriginPolicy originPolicy;
 
+    @Autowired
     public ZhonghuiPmsHttpClient(
             ZhonghuiPmsProperties properties,
             ZhonghuiPmsSession session,
             AuditLogService auditLogService,
             ObjectMapper mapper) {
+        this(properties, session, auditLogService, mapper, OriginPolicy.HTTPS_ONLY);
+    }
+
+    ZhonghuiPmsHttpClient(
+            ZhonghuiPmsProperties properties,
+            ZhonghuiPmsSession session,
+            AuditLogService auditLogService,
+            ObjectMapper mapper,
+            OriginPolicy originPolicy) {
         this.properties = properties;
         this.session = session;
         this.auditLogService = auditLogService;
         this.mapper = mapper;
+        this.originPolicy = originPolicy;
         this.client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
-                .followRedirects(HttpClient.Redirect.NORMAL)
+                .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
     }
 
@@ -77,8 +90,7 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
 
     @Override
     public CaptchaView captcha() {
-        JsonNode root = request("captcha", HttpRequest.newBuilder()
-                .uri(uri(CAPTCHA_PATH))
+        JsonNode root = request("captcha", requestBuilder(CAPTCHA_PATH)
                 .GET()
                 .build(), Map.of());
         if (root == null || !codeOk(root)) {
@@ -98,11 +110,10 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
         body.put("PassWord", command.password());
         body.put("AuthCode", command.authCode());
         body.put("CaptchaNo", command.captchaNo());
-        JsonNode root = request("login", HttpRequest.newBuilder()
-                .uri(uri(LOGIN_PATH))
+        JsonNode root = request("login", requestBuilder(LOGIN_PATH)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(json(body)))
-                .build(), sanitizedLoginBody(command));
+                .build(), loginAuditMetadata(command));
         if (root == null || !codeOk(root)) {
             String message = root == null ? "PMS 服务暂时不可用" : msg(root);
             return new LoginView(false, "PMS_LOGIN_FAILED", message);
@@ -117,8 +128,7 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
 
     @Override
     public List<BrandView> usableBrands() {
-        JsonNode root = request("usableBrands", HttpRequest.newBuilder()
-                .uri(uri(BRANDS_PATH))
+        JsonNode root = request("usableBrands", requestBuilder(BRANDS_PATH)
                 .header(AUTH_HEADER, bearer())
                 .GET()
                 .build(), Map.of());
@@ -136,8 +146,7 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
 
     @Override
     public List<CertificationView> certifications() {
-        JsonNode root = request("certifications", HttpRequest.newBuilder()
-                .uri(uri(CERTIFICATIONS_PATH))
+        JsonNode root = request("certifications", requestBuilder(CERTIFICATIONS_PATH)
                 .header(AUTH_HEADER, bearer())
                 .GET()
                 .build(), Map.of());
@@ -159,8 +168,7 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
     public String uploadImage(byte[] bytes, String contentType) {
         properties.requireExternalWritesEnabled();
         String boundary = "----ZimuPms" + Long.toHexString(System.nanoTime());
-        JsonNode root = request("uploadImage", HttpRequest.newBuilder()
-                .uri(uri(UPLOAD_PATH))
+        JsonNode root = request("uploadImage", requestBuilder(UPLOAD_PATH)
                 .header("Content-Type", "multipart/form-data; boundary=" + boundary)
                 .header(AUTH_HEADER, bearer())
                 .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody(boundary, bytes, contentType)))
@@ -179,8 +187,7 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
     public GoodsCreateResult createGoods(GoodsCreateCommand command) {
         properties.requireExternalWritesEnabled();
         Map<String, Object> body = goodsBody(command);
-        JsonNode root = request("createGoods", HttpRequest.newBuilder()
-                .uri(uri(CREATE_GOODS_PATH))
+        JsonNode root = request("createGoods", requestBuilder(CREATE_GOODS_PATH)
                 .header("Content-Type", "application/json")
                 .header(AUTH_HEADER, bearer())
                 .PUT(HttpRequest.BodyPublishers.ofString(json(body)))
@@ -196,8 +203,7 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
 
     @Override
     public List<LogisticsView> logistics() {
-        JsonNode root = request("logistics", HttpRequest.newBuilder()
-                .uri(uri(LOGISTICS_PATH))
+        JsonNode root = request("logistics", requestBuilder(LOGISTICS_PATH)
                 .header(AUTH_HEADER, bearer())
                 .GET()
                 .build(), Map.of());
@@ -224,8 +230,7 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
         body.put("pageSize", 20);
         body.put("orderProperty", "updateDate");
         body.put("orderDirection", "desc");
-        JsonNode root = request("queryGoods", HttpRequest.newBuilder()
-                .uri(uri(GOODS_LIST_PATH))
+        JsonNode root = request("queryGoods", requestBuilder(GOODS_LIST_PATH)
                 .header("Content-Type", "application/json")
                 .header(AUTH_HEADER, bearer())
                 .POST(HttpRequest.BodyPublishers.ofString(json(body)))
@@ -291,16 +296,55 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
             JsonNode root = response.body() == null || response.body().isBlank()
                     ? mapper.createObjectNode()
                     : mapper.readTree(response.body());
-            audit(operation, auditPayload, response.statusCode(), codeOk(root) ? "OK" : "PMS_BUSINESS_ERROR",
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                auditOrThrow(operation, auditPayload, response.statusCode(), "PMS_HTTP_ERROR", root, startedAt);
+                throw new PmsTransportException("PMS 返回非成功 HTTP 状态");
+            }
+            if (!validEnvelope(root)) {
+                auditOrThrow(operation, auditPayload, response.statusCode(), "PMS_HTTP_ERROR", root, startedAt);
+                throw new PmsTransportException("PMS 返回空或不完整的响应信封");
+            }
+            auditOrThrow(operation, auditPayload, response.statusCode(), codeOk(root) ? "OK" : "PMS_BUSINESS_ERROR",
                     root, startedAt);
             return root;
+        } catch (PmsTransportException exception) {
+            throw exception;
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            audit(operation, auditPayload, 502, "PMS_HTTP_ERROR", null, startedAt);
+            auditFailureBestEffort(operation, auditPayload, startedAt);
             throw new PmsTransportException("PMS 请求被中断");
         } catch (Exception exception) {
-            audit(operation, auditPayload, 502, "PMS_HTTP_ERROR", null, startedAt);
+            auditFailureBestEffort(operation, auditPayload, startedAt);
             throw new PmsTransportException("PMS 服务暂时不可用，请稍后重试");
+        }
+    }
+
+    private boolean validEnvelope(JsonNode root) {
+        return root != null
+                && root.isObject()
+                && root.has("code")
+                && root.get("code").isIntegralNumber()
+                && root.has("msg")
+                && root.get("msg").isTextual()
+                && root.has("data");
+    }
+
+    /** 审计是外部写安全闭环的一部分；响应已到达但审计失败时，结果必须保持 unknown。 */
+    private void auditOrThrow(String operation, Object payload, int httpStatus, String businessCode,
+            JsonNode response, Instant startedAt) {
+        try {
+            audit(operation, payload, httpStatus, businessCode, response, startedAt);
+        } catch (RuntimeException exception) {
+            throw new PmsTransportException("PMS 调用审计归档失败");
+        }
+    }
+
+    /** 网络/解析失败的审计不得反向掩盖稳定的传输异常，也不得二次尝试成功响应的审计。 */
+    private void auditFailureBestEffort(String operation, Object payload, Instant startedAt) {
+        try {
+            audit(operation, payload, 502, "PMS_HTTP_ERROR", null, startedAt);
+        } catch (RuntimeException ignored) {
+            // 原始传输分类优先；审计设施故障由自身监控处理。
         }
     }
 
@@ -326,9 +370,49 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
     }
 
     private URI uri(String path) {
-        String base = properties.getBaseUrl();
-        String normalized = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
-        return URI.create(normalized + path);
+        try {
+            String base = properties.getBaseUrl();
+            if (base == null || base.isBlank()) {
+                throw new PmsTransportException("中汇 PMS REAL origin 未配置，必须使用 HTTPS origin");
+            }
+            URI origin = URI.create(base);
+            String scheme = origin.getScheme();
+            String host = origin.getHost();
+            boolean validOrigin = host != null
+                    && origin.getUserInfo() == null
+                    && origin.getQuery() == null
+                    && origin.getFragment() == null
+                    && (origin.getPath() == null || origin.getPath().isEmpty() || "/".equals(origin.getPath()));
+            boolean secure = "https".equalsIgnoreCase(scheme);
+            boolean explicitLoopbackTestSeam = "http".equalsIgnoreCase(scheme)
+                    && originPolicy == OriginPolicy.ALLOW_LOOPBACK_HTTP_FOR_TESTS
+                    && isLoopback(host);
+            if (!validOrigin || (!secure && !explicitLoopbackTestSeam)) {
+                throw new PmsTransportException(
+                        "中汇 PMS REAL origin 必须使用 HTTPS；明文 HTTP 仅允许显式启用的 loopback 测试缝");
+            }
+            String normalized = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+            return URI.create(normalized + path);
+        } catch (IllegalArgumentException exception) {
+            throw new PmsTransportException("中汇 PMS REAL origin 配置非法，必须是 HTTPS origin");
+        }
+    }
+
+    private boolean isLoopback(String host) {
+        return "localhost".equalsIgnoreCase(host)
+                || "127.0.0.1".equals(host)
+                || "::1".equals(host);
+    }
+
+    enum OriginPolicy {
+        HTTPS_ONLY,
+        ALLOW_LOOPBACK_HTTP_FOR_TESTS
+    }
+
+    private HttpRequest.Builder requestBuilder(String path) {
+        return HttpRequest.newBuilder()
+                .uri(uri(path))
+                .timeout(properties.getRequestTimeout());
     }
 
     private String json(Object value) {
@@ -358,14 +442,18 @@ public class ZhonghuiPmsHttpClient implements ZhonghuiPmsService {
         return body;
     }
 
-    /** 登录审计载荷：密码打码，绝不落审计。 */
-    private Map<String, Object> sanitizedLoginBody(LoginCommand command) {
+    /** 登录审计仅记录字段存在性；用户名、密码、验证码及 captcha 编号原值均不得进入审计命令。 */
+    private Map<String, Object> loginAuditMetadata(LoginCommand command) {
         Map<String, Object> safe = new LinkedHashMap<>();
-        safe.put("UserName", command.username());
-        safe.put("PassWord", "********");
-        safe.put("AuthCode", command.authCode());
-        safe.put("CaptchaNo", command.captchaNo());
+        safe.put("username_present", present(command.username()));
+        safe.put("password_present", present(command.password()));
+        safe.put("auth_code_present", present(command.authCode()));
+        safe.put("captcha_no_present", present(command.captchaNo()));
         return safe;
+    }
+
+    private boolean present(String value) {
+        return value != null && !value.isBlank();
     }
 
     private boolean codeOk(JsonNode root) {

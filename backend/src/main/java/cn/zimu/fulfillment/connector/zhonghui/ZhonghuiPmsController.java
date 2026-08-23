@@ -13,6 +13,8 @@ import cn.zimu.fulfillment.connector.zhonghui.ZhonghuiPmsService.CertificationVi
 import cn.zimu.fulfillment.connector.zhonghui.ZhonghuiPmsService.LoginCommand;
 import cn.zimu.fulfillment.connector.zhonghui.ZhonghuiPmsService.LoginView;
 import cn.zimu.fulfillment.connector.zhonghui.ZhonghuiPmsService.LogisticsView;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -26,7 +28,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 中汇 PMS 商品录入管理面（契约见 {@code pms_openapi.md}）：
+ * 中汇 PMS 商品录入管理面（契约见 {@code docs/openapi.yaml}）：
  *
  * <ul>
  *   <li>{@code GET /status} —— 连接模式与登录态（前端据此区分 MOCK/REAL 与是否需要登录）；</li>
@@ -83,7 +85,7 @@ public class ZhonghuiPmsController {
     /** 提交验证码完成登录；用户名/密码来自配置，token 只存在内存会话。 */
     @PostMapping("/login")
     public ResponseEntity<?> login(
-            @RequestBody LoginRequest body,
+            @Valid @RequestBody LoginRequest body,
             @RequestHeader(value = "Idempotency-Key", required = false) String key,
             @RequestHeader(value = "X-Operator", required = false) String operator) {
         WriteCommands.writeContext(operator);
@@ -93,7 +95,7 @@ public class ZhonghuiPmsController {
         // 幂等：同键+同请求重放首次登录结果；payload 不含密码（避免敏感信息入注册表）。
         IdempotentResult<LoginView> result = idempotency.execute(
                 LOGIN_SCOPE,
-                WriteCommands.requireIdempotencyKey(key),
+                registryKey(key),
                 Map.of(
                         "username", command.username(),
                         "auth_code", command.authCode(),
@@ -124,13 +126,12 @@ public class ZhonghuiPmsController {
     /** 从商品档案批量上传商品；幂等：批次意图先落库，逐商品返回成功/失败结果。 */
     @PostMapping("/batch-uploads")
     public ResponseEntity<?> batchUploads(
-            @RequestBody BatchUploadCommand body,
+            @Valid @RequestBody BatchUploadCommand body,
             @RequestHeader(value = "Idempotency-Key", required = false) String key,
             @RequestHeader(value = "X-Operator", required = false) String operator) {
         WriteCommands.writeContext(operator);
-        properties.requireExternalWritesEnabled();
         IdempotentResult<BatchUploadView> result = batchUploadService.upload(
-                body, WriteCommands.requireIdempotencyKey(key));
+                body, registryKey(key));
         return WriteCommands.respond(result);
     }
 
@@ -148,10 +149,21 @@ public class ZhonghuiPmsController {
             boolean liveReady,
             boolean authenticated) {}
 
-    public record LoginRequest(String authCode, String captchaNo) {}
+    public record LoginRequest(
+            @NotBlank String authCode,
+            @NotBlank String captchaNo) {}
 
     public record OptionsView(
             List<BrandView> brands,
             List<CertificationView> certifications,
             List<LogisticsView> logistics) {}
+
+    private static String registryKey(String key) {
+        String value = WriteCommands.requireIdempotencyKey(key);
+        if (value.length() > 255) {
+            throw BusinessException.badRequest(
+                    "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key 长度不能超过 255 个字符");
+        }
+        return value;
+    }
 }
