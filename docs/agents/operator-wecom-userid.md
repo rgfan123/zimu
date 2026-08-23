@@ -52,7 +52,7 @@ userid 字符集按企微官方规则保守校验（`^[A-Za-z0-9][A-Za-z0-9_@.\-
 // backend/.../operator/OperatorResolver.java
 @Autowired OperatorResolver resolver;
 OperatorTeamResolution resolution = resolver.resolve("ORDER_OPS");
-// members=active 人员（含 display_name + 可空 wecom_userid）、pushable_user_ids、
+// members=active 人员（含稳定 operator_id + display_name + 可空 wecom_userid）、pushable_user_ids、
 // unbound_member_names（未绑定人员姓名，显式列出）、status、pushable
 ```
 

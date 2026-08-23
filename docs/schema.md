@@ -4,7 +4,7 @@
 依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
-和 `V2`–`V48` 增量迁移；两条路径必须得到等价的当前结构——
+和当前增量迁移链（本分支最高 `V51`，`V50` 由并行票预留）；两条路径必须得到等价的当前结构——
 [`SchemaSnapshotMigrationEquivalenceTest`](../backend/src/test/java/cn/zimu/fulfillment/schema/SchemaSnapshotMigrationEquivalenceTest.java)
 用 Testcontainers 分别以空库快照与 Flyway 全链建库，从 `pg_catalog` 比对表/视图/列
 （类型/可空/默认/identity）/主键/唯一键/check 约束/外键/普通索引/触发器/显式序列/
@@ -164,11 +164,15 @@ Timeline 按订单内 `sequence_no`/`created_at` 排序，不按事件类型字�
 
 消息链路血缘为 `channel_messages`（§3.5 原始证据）→ `message_submissions` → `message_interpretations`（同一提交多版本）→ 草稿（`order_drafts`/`provider_tracking_drafts`）。`message_media` 只保存证据，不参与解释；`async_tasks` 由 `InterpretationWorker` 以 `SKIP LOCKED` 租约轮询领取，`ApplicationFence.SUPERSEDED` 让被取代版本的任务成为幂等 no-op。
 
-### 3.8 内部运营人员（1）
+### 3.8 内部运营人员与企微业务通知（5）
 
 | 表 | 职责 | 关键约束 |
 |---|---|---|
 | `internal_operators` | 内部运营人员登记：姓名、企微 userid、所属责任团队（Issue #89） | `wecom_userid` 可空（未绑定），非空时全局唯一（partial unique index，同一企微 userid 只映射一个人）；`responsible_team` 非空且大写（ORDER_OPS/CUSTOMER_OPS/SKU_OPS 等）；不做物理删除，停用（active=false）后解析 seam 不再返回；只做映射与责任归属，不做登录/角色/权限 |
+| `wecom_notification_items` | 复核/订单创建/发货完成的隐私最小化 outbox 事实（Issue #90） | `(source_type, source_id, notification_kind)` 唯一；固定 5 分钟窗口；summary 只含业务标识，不复制事件 payload/收件人 PII；DEMO 订单不捕获 |
+| `wecom_notification_batches` | 同责任团队、同窗口的持久化汇总与 Worker 租约 | PENDING/RUNNING 可恢复；终态 SENT/PARTIAL/BLOCKED/UNKNOWN/FAILED；RUNNING 必须携带 lease_owner/lease_until |
+| `wecom_notification_deliveries` | 批次到每个运营收件人的发送 fence 与可追溯原因 | `(batch_id, recipient_key)` 唯一；仅明确未提交的失败可 RETRY_PENDING；SENDING 重启/ack 不明收敛 UNKNOWN，禁止盲重发；未绑定/无人负责显式 BLOCKED |
+| `wecom_notification_alerts` | BLOCKED/FAILED/UNKNOWN 的持久运营告警投影 | `(delivery_id, item_id)` 与 `alert_key` 双重稳定去重；可关联订单/订单行/履约/发货时保存外键，只有草稿/导入/消息主体时仍保留投影；YELLOW=BLOCKED，RED=FAILED/UNKNOWN，重启恢复不重复建告警 |
 
 ## 4. 状态维度
 
@@ -259,11 +263,11 @@ P0 不等待客户签收或妥投，Shipment 可以停留在 SHIPPED，且履约
 DDL 必须通过以下门槛：
 
 1. PostgreSQL 16 空库先执行 `docs/schema.sql`；应用启动时由 Flyway 按版本顺序执行全部增量 migration。
-2. `information_schema` 实测 66 张 `app` 基础表、2 个 `app` 操作视图和 4 个 `analytics` 分析视图。
+2. `information_schema` 实测 70 张 `app` 基础表、2 个 `app` 操作视图和 4 个 `analytics` 分析视图。
 3. 执行 `docs/schema-smoke.sql`，覆盖：上海业务日出库单号原子流水、运单回传与原 FulfillmentExport/provider 关联、已发货但未提供实际发货时间、非已发货状态的不一致时间拒绝、第三方库存写入拒绝、错误修订链拒绝、跨 provider/非整份礼包拒绝、重复待出库批次拒绝、跨订单导出/回填拒绝、Demo 业务隔离、京东金额非 0 拒绝、Shipment 超发拒绝、Tracking 冲突拒绝、最终回填含等待项拒绝、已导出订单字段冻结、分析视图排除 Demo 和未知实际发货日数据，以及渠道/商品实发量的乘数换算与礼包组件展开。
 4. `git diff --check` 无空白错误。
 5. `SchemaSnapshotMigrationEquivalenceTest`（Testcontainers，`mvn test` 默认阶段运行）：分别用
-   `docs/schema.sql` 与 Flyway 全链（V1..V48）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
+   `docs/schema.sql` 与 Flyway 当前全链（本分支最高 V51）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
 
 ## 11. 快照与迁移链的更新责任
 

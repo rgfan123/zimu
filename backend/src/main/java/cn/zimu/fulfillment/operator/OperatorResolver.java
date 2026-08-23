@@ -32,7 +32,7 @@ public class OperatorResolver {
                 operators.findByResponsibleTeamAndActiveTrueOrderByIdAsc(team);
         List<OperatorTeamResolution.OperatorResolutionMember> memberViews = members.stream()
                 .map(value -> new OperatorTeamResolution.OperatorResolutionMember(
-                        value.getDisplayName(), value.getWecomUserid()))
+                        value.getId(), value.getDisplayName(), value.getWecomUserid()))
                 .toList();
         List<String> pushableUserIds = members.stream()
                 .map(InternalOperator::getWecomUserid)

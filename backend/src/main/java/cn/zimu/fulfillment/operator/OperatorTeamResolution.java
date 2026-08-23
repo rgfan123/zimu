@@ -17,6 +17,12 @@ public record OperatorTeamResolution(
         OperatorResolutionStatus status,
         boolean pushable) {
 
-    /** 单个 active 成员：displayName + 可空 wecomUserid。 */
-    public record OperatorResolutionMember(String displayName, String wecomUserid) {}
+    /** 单个 active 成员：稳定 operatorId + displayName + 可空 wecomUserid。 */
+    public record OperatorResolutionMember(long operatorId, String displayName, String wecomUserid) {
+        public OperatorResolutionMember {
+            if (operatorId <= 0) {
+                throw new IllegalArgumentException("operatorId must be positive");
+            }
+        }
+    }
 }

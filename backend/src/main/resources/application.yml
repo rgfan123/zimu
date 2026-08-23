@@ -71,6 +71,13 @@ app:
     enabled: ${WECOM_REMINDER_ENABLED:true}
     scan-ms: ${WECOM_REMINDER_SCAN_MS:30000}
     scan-batch-limit: ${WECOM_REMINDER_SCAN_BATCH_LIMIT:20}
+  wecom-notification:
+    # Issue #90：复核/订单创建/发货完成按责任团队做 5 分钟持久化汇总；仅企微启用时默认启用。
+    enabled: ${WECOM_NOTIFICATION_ENABLED:${WECOM_ENABLED:false}}
+    poll-ms: ${WECOM_NOTIFICATION_POLL_MS:1000}
+    lease-seconds: ${WECOM_NOTIFICATION_LEASE_SECONDS:120}
+    batch-limit: ${WECOM_NOTIFICATION_BATCH_LIMIT:20}
+    claim-error-suppress-seconds: ${WECOM_NOTIFICATION_CLAIM_ERROR_SUPPRESS_SECONDS:60}
   agent-worker:
     # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
     enabled: ${AGENT_WORKER_ENABLED:true}

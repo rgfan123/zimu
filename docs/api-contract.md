@@ -225,6 +225,7 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | 履约方 SKU 映射 | `GET/POST /api/v1/provider-sku-mappings`，`GET/PATCH /api/v1/provider-sku-mappings/{mapping_id}` |
 | FulfillmentProvider | `GET /api/v1/fulfillment-providers`，`GET/PATCH /api/v1/fulfillment-providers/{provider_id}` |
 | 内部运营人员（Issue #89） | `GET/POST /api/v1/operators`，`GET/PATCH /api/v1/operators/{operator_id}`；只读诊断 `GET /api/v1/operator-team-resolutions?responsible_team=...`（返回 active 人员、可推送 userid 与未绑定人员名单，不静默过滤）；`&require_pushable=true` 时不可全员推送直接 422 `OPERATOR_TEAM_NOT_PUSHABLE` |
+| 企微主动通知投递记录（Issue #90） | `GET /api/v1/admin/wecom-notifications/deliveries`；按 `source_type/source_id/status` 过滤，逐源事实 × 收件人返回 SENT/BLOCKED/UNKNOWN/FAILED、尝试次数、req_id、稳定原因及 durable alert id/key/severity；要求 `X-Operator`，不暴露源 payload 或客户 PII |
 | ConnectorConfig | `GET /api/v1/connectors`，`GET/PATCH /api/v1/connectors/{source_channel}` |
 | Connector 连通性 | `POST /api/v1/connectors/{source_channel}/test-connection` |
 

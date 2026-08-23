@@ -30,8 +30,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V49）升级，Flyway validate（默认开启）必须成功且只追加
- * V48（internal_operators，Issue #89）与 V49（企微导出 delivery 代际栅栏，Issue #84）；
+ * migration set（当前 50 个迁移，最高 V51）升级，Flyway validate（默认开启）必须成功且只追加
+ * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）与
+ * V51（企微业务通知 outbox，Issue #90；V50 由并行票在聚合分支补入）；
  * ③ 升级后前 47 行历史
  * 逐行不变，V40–V47 的 version/script/description/checksum 必须与生产已应用序列逐字节
  * 一致——checksum 常量直接取自生产 `flyway_schema_history` 真实行（不按当前迁移文件
@@ -43,7 +44,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * （docs/schema.sql 空库快照与 Flyway 全链结构等价）与「已发布迁移不可变」约定兜底——
  * 前者证明结构等价，后者约束历史不可改写，均非本测试的断言职责。
  *
- * <p>演进约定：未来追加 V50+ 时，把阶段一的模拟目标（当前 47）推进到当时生产所处版本、
+ * <p>演进约定：未来追加迁移时，把阶段一的模拟目标（当前 47）推进到当时生产所处版本、
  * 同步更新阶段二「只追加」断言——但 V40–V47 常量段是生产不可变序列，永远不得改动；
  * 该段变红即意味着有人再次改号或改了已发布内容。
  */
@@ -89,7 +90,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48AndV49() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48V49AndStandaloneV51() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -105,32 +106,35 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V49）升级——Flyway validate 默认开启，
-        // V40–V47 校验通过后只追加 V48/V49，任何 repair/改写历史都会在此失败。
+        // 阶段二：完整当前 migration set（50 个迁移，最高 V51）升级——Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加 V48/V49/V51，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 49 条历史")
-                .hasSize(49);
+                .as("完整升级后应恰有 50 条历史（本分支预留 V50 给并行票）")
+                .hasSize(50);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48/V49 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
+        // V48/V49/V51 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 49))
-                .as("升级只追加 V48（Issue #89）与 V49（Issue #84 delivery 代际栅栏）")
+        assertThat(historyAfter.subList(47, 50))
+                .as("升级只追加 V48（#89）、V49（#84）与 standalone V51（#90）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
                                 crc32Of("V48__internal_operators.sql")),
                         new HistoryRow("49", "V49__wecom_export_delivery_generation_fencing.sql",
                                 "wecom export delivery generation fencing",
-                                crc32Of("V49__wecom_export_delivery_generation_fencing.sql")));
+                                crc32Of("V49__wecom_export_delivery_generation_fencing.sql")),
+                        new HistoryRow("51", "V51__wecom_business_notification_outbox.sql",
+                                "wecom business notification outbox",
+                                crc32Of("V51__wecom_business_notification_outbox.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
-        // V48/V49 分别用内部运营人员表与 delivery 代际约束的真实结构证明生效。
+        // V48/V49/V51 分别用运营人员、delivery 代际与业务通知 outbox 的真实结构证明生效。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -226,6 +230,33 @@ class ProductionMigrationHistoryCompatTest {
                     """)))
                     .as("V49 必须把存量 reminder 绑定到其创建时已有的 INITIAL 代际，而非升级时最新代际")
                     .isEqualTo("1");
+            // V51：业务通知事实、批次、逐收件人 fence 与持久运营告警投影四张表齐备。
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.tables
+                    WHERE table_schema='app' AND table_name IN (
+                        'wecom_notification_batches', 'wecom_notification_items',
+                        'wecom_notification_deliveries', 'wecom_notification_alerts')
+                    """)))
+                    .as("V51 必须完整创建通知 outbox、delivery fence 与 durable alert projection")
+                    .isEqualTo("4");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.triggers
+                    WHERE trigger_schema='app' AND trigger_name IN (
+                        'trg_review_case_wecom_notification', 'trg_order_event_wecom_notification')
+                    """)))
+                    .as("V51 必须在复核事项与订单事件事务内捕获通知事实")
+                    .isEqualTo("2");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM pg_catalog.pg_constraint
+                    WHERE connamespace='app'::regnamespace
+                      AND conrelid='app.wecom_notification_alerts'::regclass
+                      AND contype='u'
+                    """)))
+                    .as("V51 告警投影必须同时按 alert_key 与 delivery/item 稳定去重")
+                    .isEqualTo("2");
         }
     }
 
