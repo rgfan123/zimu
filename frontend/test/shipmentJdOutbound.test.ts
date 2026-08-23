@@ -297,7 +297,7 @@ test('deployment credential tools never place reusable secrets in process argume
   assert.doesNotMatch(acceptance, /--user "\$APP_ADMIN_USER:\$APP_ADMIN_PASSWORD"/);
 });
 
-test('the credential-gated gateway overwrites browser identity at the business API boundary', () => {
+test('the credential-gated gateway overwrites browser identity at every business and demo boundary', () => {
   const nginx = readFileSync(
     fileURLToPath(new URL('../../docker/nginx/default.conf', import.meta.url)),
     'utf8',
@@ -317,6 +317,14 @@ test('the credential-gated gateway overwrites browser identity at the business A
     nginx,
     /location \/api\/ \{[\s\S]*?include \/etc\/nginx\/backend-auth\.inc;/,
   );
+  for (const location of ['location = /demo/v1 {', 'location /demo/v1/ {']) {
+    const start = nginx.indexOf(location);
+    assert.notEqual(start, -1);
+    const end = nginx.indexOf('\n    }', start);
+    const block = nginx.slice(start, end);
+    assert.match(block, /include \/etc\/nginx\/backend-auth\.inc;/);
+    assert.doesNotMatch(block, /local-operator|proxy_set_header Authorization "";/);
+  }
   assert.doesNotMatch(nginx, /proxy_set_header X-Operator \$http_x_operator;/);
   assert.doesNotMatch(nginx, /proxy_set_header Authorization \$http_authorization;/);
   assert.match(gatewayEntrypoint, /proxy_set_header X-Operator "%s";/);

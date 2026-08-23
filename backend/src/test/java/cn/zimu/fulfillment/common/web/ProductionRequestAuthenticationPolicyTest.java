@@ -30,7 +30,9 @@ class ProductionRequestAuthenticationPolicyTest {
 
     @Test
     void prefixMatchingRespectsPathSegmentBoundaries() {
-        // /demo/v1 豁免不带尾斜杠：路径段边界外的近似前缀不能被误豁免（fail-closed 侧从严）。
+        // Demo 写端点的双认证规则不允许近似前缀搭便车。
+        assertThat(requirementFor("/demo/v1/extracted-ordersevil"))
+                .isEqualTo(RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR);
         assertThat(requirementFor("/demo/v10"))
                 .isEqualTo(RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR);
         assertThat(requirementFor("/demo/v1evil"))
@@ -57,13 +59,15 @@ class ProductionRequestAuthenticationPolicyTest {
         // 企业微信回调：靠 msg_signature 自证身份。
         assertThat(requirementFor("/wecom/callbacks/abc123"))
                 .isEqualTo(RequestAuthenticationPolicy.Requirement.NONE);
-        // Demo 入口（含写端点）：保留既有无认证行为（见工单 05 Resolution 的残留风险）。
-        assertThat(requirementFor("/demo/v1")).isEqualTo(RequestAuthenticationPolicy.Requirement.NONE);
+        // Demo 浏览器入口必须经业务操作人认证；仅订单助手写入口额外接受内部服务身份。
+        assertThat(requirementFor("/demo/v1"))
+                .isEqualTo(RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR);
         assertThat(requirementFor("/demo/v1/scenarios"))
-                .isEqualTo(RequestAuthenticationPolicy.Requirement.NONE);
+                .isEqualTo(RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR);
         assertThat(requirementFor("/demo/v1/extracted-orders"))
-                .isEqualTo(RequestAuthenticationPolicy.Requirement.NONE);
-        assertThat(requirementFor("/demo/v1/runs/1")).isEqualTo(RequestAuthenticationPolicy.Requirement.NONE);
+                .isEqualTo(RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR_OR_INTERNAL_SERVICE);
+        assertThat(requirementFor("/demo/v1/runs/1"))
+                .isEqualTo(RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR);
     }
 
     private RequestAuthenticationPolicy.Requirement requirementFor(String uri) {

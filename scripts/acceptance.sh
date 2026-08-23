@@ -48,7 +48,8 @@ export COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 
 if [ -n "${METABASE_ADMIN_EMAIL:-}" ] || [ -n "${METABASE_ADMIN_PASSWORD:-}" ] \
     || [ -n "${APP_ADMIN_USER:-}" ] || [ -n "${APP_ADMIN_PASSWORD:-}" ] \
-    || [ -n "${POSTGRES_USER:-}" ] || [ -n "${POSTGRES_PASSWORD:-}" ]; then
+    || [ -n "${POSTGRES_USER:-}" ] || [ -n "${POSTGRES_PASSWORD:-}" ] \
+    || [ -n "${APP_INTERNAL_SERVICE_NAME:-}" ] || [ -n "${APP_INTERNAL_SERVICE_TOKEN:-}" ]; then
   if [ -z "${METABASE_ADMIN_EMAIL:-}" ] || [ -z "${METABASE_ADMIN_PASSWORD:-}" ]; then
     echo "set both METABASE_ADMIN_EMAIL and METABASE_ADMIN_PASSWORD, or neither" >&2
     exit 1
@@ -61,6 +62,10 @@ if [ -n "${METABASE_ADMIN_EMAIL:-}" ] || [ -n "${METABASE_ADMIN_PASSWORD:-}" ] \
     echo "set both POSTGRES_USER and POSTGRES_PASSWORD, or neither" >&2
     exit 1
   fi
+  if [ -z "${APP_INTERNAL_SERVICE_NAME:-}" ] || [ -z "${APP_INTERNAL_SERVICE_TOKEN:-}" ]; then
+    echo "set both APP_INTERNAL_SERVICE_NAME and APP_INTERNAL_SERVICE_TOKEN, or neither" >&2
+    exit 1
+  fi
   python3 "$repo_root/scripts/acceptance_credentials.py" --validate-environment
   ephemeral_credentials_file="$acceptance_secret_dir/explicit.credentials"
   python3 "$repo_root/scripts/acceptance_credentials.py" --write-environment "$ephemeral_credentials_file"
@@ -68,7 +73,8 @@ if [ -n "${METABASE_ADMIN_EMAIL:-}" ] || [ -n "${METABASE_ADMIN_PASSWORD:-}" ] \
 else
   python3 "$repo_root/scripts/acceptance_credentials.py" "$credentials_file"
 fi
-unset METABASE_ADMIN_EMAIL METABASE_ADMIN_PASSWORD APP_ADMIN_USER APP_ADMIN_PASSWORD POSTGRES_USER POSTGRES_PASSWORD
+unset METABASE_ADMIN_EMAIL METABASE_ADMIN_PASSWORD APP_ADMIN_USER APP_ADMIN_PASSWORD POSTGRES_USER POSTGRES_PASSWORD \
+  APP_INTERNAL_SERVICE_NAME APP_INTERNAL_SERVICE_TOKEN
 
 # 06 边缘认证：为后面的 curl（backend 重启幂等/文件持久化复核）生成 netrc。
 # 凭据只来自私有凭据文件，密码不进入 curl 的 argv（与「密钥不进进程参数」的既有纪律一致）。
@@ -761,7 +767,7 @@ assert jd_tracking["success"] and jd_tracking["business_code"] == "MOCK_SUCCESS"
 audits = get_json("/api/v1/audit-logs?operation=seed.demo-dataset&page=0&size=20")
 assert audits["total_elements"] == 1, audits
 
-# Public AI-demo command gate: reuse a publicly visible WECOM BUSINESS source reference, then prove
+# Authenticated AI-demo command gate: reuse a visible WECOM BUSINESS source reference, then prove
 # the confirmed DEMO order coexists under the same channel/reference without entering BUSINESS reads.
 business_same_ref_page = get_json(
     "/api/v1/orders?" + urllib.parse.urlencode({"source_channel": "WECOM", "page": 0, "size": 1})
@@ -801,7 +807,7 @@ assert extracted_run["data_scope"] == "DEMO" and extracted_run["status"] == "SUC
 assert extracted_run["order"]["order_status"] == "SYNCED", extracted_run
 assert len(extracted_run["order"]["lines"]) == 2, extracted_run
 assert extracted_run["timeline"][-1]["event_type_code"] == "SOURCE_SYNCED", extracted_run
-assert {event["operator"] for event in extracted_run["timeline"]} == {"local-operator"}, extracted_run
+assert {event["operator"] for event in extracted_run["timeline"]} == {credentials["APP_ADMIN_USER"]}, extracted_run
 extracted_business = get_json(
     "/api/v1/orders?" + urllib.parse.urlencode({"query": demo_source_ref, "page": 0, "size": 20})
 )
@@ -855,7 +861,7 @@ assert [event["event_type_code"] for event in run["timeline"]] == [
     "TRACKING_RECEIVED",
     "SOURCE_SYNCED",
 ]
-assert {event["operator"] for event in run["timeline"]} == {"local-operator"}, run["timeline"]
+assert {event["operator"] for event in run["timeline"]} == {credentials["APP_ADMIN_USER"]}, run["timeline"]
 business_lookup = get_json(
     "/api/v1/orders?" + urllib.parse.urlencode({"query": run["order"]["source_ref"], "page": 0, "size": 20})
 )

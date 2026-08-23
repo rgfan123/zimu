@@ -2,10 +2,10 @@ import json
 import threading
 import unittest
 from dataclasses import replace
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import error, request
 
-from app import AssistantService, Config, Handler, SessionStore
+from app import ApiError, AssistantService, Config, Handler, OrderApiClient, SessionStore
 
 
 class FakeExtractor:
@@ -67,6 +67,94 @@ class FakeDemoOrderApi:
             "started_at": "2026-08-12T13:00:00+08:00",
             "finished_at": "2026-08-12T13:00:01+08:00",
         }
+
+
+class CapturingOrderApiHandler(BaseHTTPRequestHandler):
+    captured_headers = None
+    captured_body = None
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        type(self).captured_headers = self.headers
+        type(self).captured_body = json.loads(self.rfile.read(length).decode("utf-8"))
+        payload = json.dumps({"id": "demo-run-1", "data_scope": "DEMO"}).encode("utf-8")
+        self.send_response(201)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format, *args):
+        return
+
+
+class OrderApiClientAuthTest(unittest.TestCase):
+    def setUp(self):
+        CapturingOrderApiHandler.captured_headers = None
+        CapturingOrderApiHandler.captured_body = None
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), CapturingOrderApiHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+    def test_internal_service_identity_overwrites_untrusted_extra_headers(self):
+        config = replace(
+            Config.from_env(),
+            order_api_base_url=self.base_url,
+            order_api_path="/demo/v1/extracted-orders",
+            order_api_service_name="trusted-order-assistant",
+            order_api_bearer_token="internal-service-token",
+            order_api_extra_headers={
+                "authorization": "Basic forged-admin-secret",
+                "x-OPERATOR": "forged-browser-operator",
+                "X-Trace": "trace-1",
+            },
+        )
+
+        result = OrderApiClient(config).submit({"confirmed": True}, "demo-order-auth-001")
+
+        self.assertEqual(result["data_scope"], "DEMO")
+        self.assertEqual(
+            CapturingOrderApiHandler.captured_headers.get("Authorization"),
+            "Bearer internal-service-token",
+        )
+        self.assertEqual(
+            CapturingOrderApiHandler.captured_headers.get_all("Authorization"),
+            ["Bearer internal-service-token"],
+        )
+        self.assertEqual(
+            CapturingOrderApiHandler.captured_headers.get("X-Operator"),
+            "trusted-order-assistant",
+        )
+        self.assertEqual(
+            CapturingOrderApiHandler.captured_headers.get_all("X-Operator"),
+            ["trusted-order-assistant"],
+        )
+        self.assertEqual(CapturingOrderApiHandler.captured_headers.get("X-Trace"), "trace-1")
+        self.assertEqual(
+            CapturingOrderApiHandler.captured_headers.get("Idempotency-Key"),
+            "demo-order-auth-001",
+        )
+
+    def test_missing_internal_service_identity_fails_before_network(self):
+        config = replace(
+            Config.from_env(),
+            order_api_base_url=self.base_url,
+            order_api_service_name="",
+            order_api_bearer_token="",
+        )
+
+        with self.assertRaises(ApiError) as raised:
+            OrderApiClient(config).submit({"confirmed": True}, "demo-order-auth-002")
+
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual(raised.exception.code, "ORDER_API_INTERNAL_AUTH_REQUIRED")
+        self.assertIsNone(CapturingOrderApiHandler.captured_headers)
 
 
 class OrderAssistantHttpTest(unittest.TestCase):

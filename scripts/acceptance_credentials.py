@@ -19,6 +19,8 @@ ENVIRONMENT_FIELDS = (
     "APP_ADMIN_PASSWORD",
     "POSTGRES_USER",
     "POSTGRES_PASSWORD",
+    "APP_INTERNAL_SERVICE_NAME",
+    "APP_INTERNAL_SERVICE_TOKEN",
 )
 
 
@@ -29,18 +31,27 @@ def prepare_credentials(path: Path) -> None:
         existing = None
     if existing is not None:
         values = _read_existing(path, existing)
-        if len(values) not in (4, 6):
-            raise ValueError(f"acceptance credential file must contain four legacy or six current fields: {path}")
+        if len(values) not in (4, 6, 8):
+            raise ValueError(
+                f"acceptance credential file must contain four legacy, six prior, or eight current fields: {path}"
+            )
         _validate_credentials(values, path)
-        if len(values) == 4:
-            database_password = _random_password(set(values[index] for index in (1, 3)))
-            upgraded = (*values, "acceptance-db", database_password)
+        if len(values) < len(ENVIRONMENT_FIELDS):
+            upgraded = values
+            if len(upgraded) == 4:
+                database_password = _random_password(set(upgraded[index] for index in (1, 3)))
+                upgraded = (*upgraded, "acceptance-db", database_password)
+            internal_token = _random_password(
+                set(upgraded[index] for index in range(1, len(upgraded), 2))
+            )
+            upgraded = (*upgraded, "acceptance-order-assistant", internal_token)
             _validate_credentials(upgraded, path)
             _replace_private(path, upgraded)
         return
     metabase_password = _random_password(set())
     application_password = _random_password({metabase_password})
     database_password = _random_password({metabase_password, application_password})
+    internal_token = _random_password({metabase_password, application_password, database_password})
     values = (
         "acceptance@localhost.invalid",
         metabase_password,
@@ -48,6 +59,8 @@ def prepare_credentials(path: Path) -> None:
         application_password,
         "acceptance-db",
         database_password,
+        "acceptance-order-assistant",
+        internal_token,
     )
     _validate_credentials(values, path)
     descriptor = os.open(
@@ -89,7 +102,7 @@ def load_credentials(path: Path) -> dict[str, str]:
         raise PermissionError(f"acceptance credential file does not exist: {path}") from error
     values = _read_existing(path, existing)
     if len(values) != len(ENVIRONMENT_FIELDS):
-        raise ValueError(f"acceptance credential file must contain six current fields: {path}")
+        raise ValueError(f"acceptance credential file must contain eight current fields: {path}")
     _validate_credentials(values, path)
     return dict(zip(ENVIRONMENT_FIELDS, values, strict=True))
 
@@ -97,17 +110,17 @@ def load_credentials(path: Path) -> dict[str, str]:
 def _validate_credentials(values: tuple[str, ...], source: Path | str) -> None:
     if any("\n" in value or "\r" in value for value in values):
         raise ValueError(f"acceptance credential fields must be single-line values: {source}")
-    identity_indices = (0, 2) if len(values) == 4 else (0, 2, 4)
-    password_indices = (1, 3) if len(values) == 4 else (1, 3, 5)
+    identity_indices = range(0, len(values), 2)
+    password_indices = range(1, len(values), 2)
     if any(not values[index].strip() for index in identity_indices):
         raise ValueError(f"acceptance credential identities must be non-empty: {source}")
-    passwords = tuple(values[index] for index in password_indices)
-    if any(len(password) < MINIMUM_PASSWORD_LENGTH or not password.strip() for password in passwords):
+    secrets = tuple(values[index] for index in password_indices)
+    if any(len(secret) < MINIMUM_PASSWORD_LENGTH or not secret.strip() for secret in secrets):
         raise ValueError(
-            f"acceptance passwords must contain at least {MINIMUM_PASSWORD_LENGTH} characters: {source}"
+            f"acceptance secrets must contain at least {MINIMUM_PASSWORD_LENGTH} characters: {source}"
         )
-    if len(set(passwords)) != len(passwords):
-        raise ValueError(f"acceptance passwords must be distinct: {source}")
+    if len(set(secrets)) != len(secrets):
+        raise ValueError(f"acceptance secrets must be distinct: {source}")
 
 
 def _random_password(excluded: set[str]) -> str:

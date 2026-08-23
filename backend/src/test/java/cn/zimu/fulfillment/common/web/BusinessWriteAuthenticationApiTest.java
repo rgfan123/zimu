@@ -324,17 +324,94 @@ class BusinessWriteAuthenticationApiTest {
     }
 
     @Test
-    void whitelistedDemoEntryRemainsReachableWithoutCredentials() {
-        // Demo 入口（含写端点）在豁免白名单内：生产策略下保持既有无认证行为不变。
-        ResponseEntity<List> response = http.exchange(
+    void anonymousAndForgedDemoRequestsAreRejectedBeforeControllerValidation() {
+        HttpHeaders forged = writeHeaders("forged-demo-operator", "demo-auth-forged-001");
+        forged.set("X-Request-Id", "req-demo-auth-forged-001");
+
+        ResponseEntity<Map> read = http.exchange(
                 "/demo/v1/scenarios",
                 HttpMethod.GET,
-                new HttpEntity<>(new HttpHeaders()),
+                new HttpEntity<>(forged),
+                Map.class);
+        ResponseEntity<Map> scenarioWrite = http.exchange(
+                "/demo/v1/scenarios",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), forged),
+                Map.class);
+        ResponseEntity<Map> extractedWrite = http.exchange(
+                "/demo/v1/extracted-orders",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), forged),
+                Map.class);
+
+        assertThat(List.of(read, scenarioWrite, extractedWrite)).allSatisfy(response -> {
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(response.getBody())
+                    .containsEntry("business_code", "AUTHENTICATED_OPERATOR_REQUIRED")
+                    .containsEntry("request_id", "req-demo-auth-forged-001");
+        });
+    }
+
+    @Test
+    void matchingBusinessCredentialsAuthorizeDemoReadAndScenarioWrite() {
+        HttpHeaders readHeaders = authenticatedBusinessHeaders();
+        ResponseEntity<List> scenarios = http.exchange(
+                "/demo/v1/scenarios",
+                HttpMethod.GET,
+                new HttpEntity<>(readHeaders),
                 List.class);
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(response.getBody()).hasSize(1);
-        assertThat((Map) response.getBody().get(0)).containsEntry("scenario_code", "HAPPY_PATH");
+        assertThat(scenarios.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(scenarios.getBody()).hasSize(1);
+        assertThat((Map) scenarios.getBody().get(0)).containsEntry("scenario_code", "HAPPY_PATH");
+
+        HttpHeaders writeHeaders = writeHeaders("business-admin", "demo-auth-browser-001");
+        writeHeaders.setBasicAuth("business-admin", "business-admin-password");
+        ResponseEntity<Map> created = http.exchange(
+                "/demo/v1/scenarios",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("scenario_code", "HAPPY_PATH"), writeHeaders),
+                Map.class);
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(created.getBody()).containsEntry("data_scope", "DEMO");
+        assertThat((Iterable<?>) created.getBody().get("timeline")).allSatisfy(event ->
+                assertThat(((Map<?, ?>) event).get("operator")).isEqualTo("business-admin"));
+
+        HttpHeaders extractedHeaders = writeHeaders("business-admin", "demo-auth-browser-extracted-001");
+        extractedHeaders.setBasicAuth("business-admin", "business-admin-password");
+        ResponseEntity<Map> extracted = http.exchange(
+                "/demo/v1/extracted-orders",
+                HttpMethod.POST,
+                new HttpEntity<>(demoExtractedOrder("demo-auth-browser-source-001"), extractedHeaders),
+                Map.class);
+        assertThat(extracted.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat((Iterable<?>) extracted.getBody().get("timeline")).allSatisfy(event ->
+                assertThat(((Map<?, ?>) event).get("operator")).isEqualTo("business-admin"));
+    }
+
+    @Test
+    void internalServiceCanSubmitExtractedDemoOrderButCannotUseBrowserDemoRoutes() {
+        HttpHeaders internalHeaders = writeHeaders("trusted-order-intake", "demo-auth-internal-001");
+        internalHeaders.setBearerAuth("internal-service-token-for-tests");
+
+        ResponseEntity<Map> created = http.exchange(
+                "/demo/v1/extracted-orders",
+                HttpMethod.POST,
+                new HttpEntity<>(demoExtractedOrder("demo-auth-internal-source-001"), internalHeaders),
+                Map.class);
+        ResponseEntity<Map> browserOnly = http.exchange(
+                "/demo/v1/scenarios",
+                HttpMethod.GET,
+                new HttpEntity<>(internalHeaders),
+                Map.class);
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(created.getBody()).containsEntry("data_scope", "DEMO");
+        assertThat((Iterable<?>) created.getBody().get("timeline")).allSatisfy(event ->
+                assertThat(((Map<?, ?>) event).get("operator")).isEqualTo("trusted-order-intake"));
+        assertThat(browserOnly.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(browserOnly.getBody()).containsEntry("business_code", "AUTHENTICATED_OPERATOR_REQUIRED");
     }
 
     @Test
@@ -363,5 +440,26 @@ class BusinessWriteAuthenticationApiTest {
         headers.set("X-Operator", "business-admin");
         headers.setBasicAuth("business-admin", "business-admin-password");
         return headers;
+    }
+
+    private static Map<String, Object> demoExtractedOrder(String sourceRef) {
+        return Map.of(
+                "confirmed", true,
+                "source", "WECOM",
+                "source_ref", sourceRef,
+                "customer", Map.of("customer_name", "内部订单助手测试客户"),
+                "receiver", Map.of(
+                        "receiver_name", "测试收货人",
+                        "receiver_phone", "13800000000",
+                        "address", "上海市测试路 1 号"),
+                "required_delivery_time", "2026-08-25T16:00:00+08:00",
+                "items", List.of(Map.of(
+                        "product_name", "子牧羊小腿",
+                        "specification", "500g/盒",
+                        "quantity", 1,
+                        "unit", "盒")),
+                "settlement", Map.of(
+                        "settlement_method", "月结",
+                        "settlement_time", "2026-08-31T18:00:00+08:00"));
     }
 }

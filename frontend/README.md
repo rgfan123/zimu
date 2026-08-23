@@ -51,6 +51,6 @@ src/
 ## API 边界约定（contract §2）
 
 - `/api/v1`：业务查询（BUSINESS 数据域）——订单列表 / 详情 / Timeline / 发货 / 工作台；
-- `/demo/v1`：仅「模拟下单」页使用（DEMO 数据域，含 Idempotency-Key 头）；
+- `/demo/v1`：仅「模拟下单」页使用（DEMO 数据域，经管理网关认证，写请求含 Idempotency-Key）；
 - `/internal/v1`：前端**不调用**（受信任内部接入，LangBot / Agent / 部门系统）。
-- 写操作头：`Idempotency-Key`（必填）、`X-Operator`（业务写必填；Demo 默认 demo-ops）。
+- 写操作头：浏览器只生成 `Idempotency-Key`；受信管理网关注入并复验 `X-Operator` 与 Basic 身份。

@@ -127,6 +127,9 @@ services:
       LLM_TRANSPORT: ${LLM_TRANSPORT:-urllib}
       ORDER_API_BASE_URL: http://backend:8080
       ORDER_API_PATH: /demo/v1/extracted-orders
+      # 订单助手直连后端时使用独立内部服务身份；不得复用管理网关 Basic 凭据。
+      APP_INTERNAL_SERVICE_NAME: ${APP_INTERNAL_SERVICE_NAME:?set APP_INTERNAL_SERVICE_NAME in the deployment environment}
+      APP_INTERNAL_SERVICE_TOKEN: ${APP_INTERNAL_SERVICE_TOKEN:?set APP_INTERNAL_SERVICE_TOKEN in the deployment environment}
       BUILTIN_ORDER_API_ENABLED: "false"
       TZ: Asia/Shanghai
     extra_hosts:

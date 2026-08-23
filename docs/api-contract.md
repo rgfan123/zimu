@@ -40,7 +40,7 @@
 |---|---|---|---|
 | `/api/v1` | React 管理后台 | 默认只查 `BUSINESS` | 业务查询、文件操作、人工命令、主数据维护 |
 | `/internal/v1` | 受信任的 LangBot / Agent / 部门系统 | 只写 `BUSINESS` | 创建订单、显式修订、采购回执 |
-| `/demo/v1` | 模拟下单页 | 只读写 `DEMO` | 创建并查看 DemoScenario / DemoRun |
+| `/demo/v1` | 已认证模拟下单页；订单助手仅调用 `/extracted-orders` | 只读写 `DEMO` | 创建并查看 DemoScenario / DemoRun；浏览器使用业务操作人身份，订单助手使用独立内部服务身份 |
 
 `BUSINESS` 与 `DEMO` 不使用查询参数混查；管理后台业务 API 不提供 `include_demo=true`。
 
@@ -57,7 +57,7 @@
 ### 3.2 请求标识、操作人和幂等
 
 - `X-Request-Id`：可选；未传时由服务端生成并在响应回显。
-- `X-Operator`：公共浏览器客户端不得自行提供，受信 Nginx 用服务端主体覆盖该请求头。后端对全部 `/api/` 请求（含读取、预览和下载）复验同一 Basic Auth 凭据，并要求已验证主体与 `X-Operator` 一致；仅伪造该请求头不能授权。全部 `/internal/` 请求使用独立 Bearer 服务身份。仅绕过公共入口的内部 Demo 调用可默认 `demo-ops`，并且只能写 `DEMO` 数据域。
+- `X-Operator`：公共浏览器客户端不得自行提供，受信 Nginx 用服务端主体覆盖该请求头。后端对全部 `/api/` 与浏览器 `/demo/` 请求复验同一 Basic Auth 凭据，并要求已验证主体与 `X-Operator` 一致；仅伪造该请求头不能授权。全部 `/internal/` 请求使用独立 Bearer 服务身份；订单助手调用 `/demo/v1/extracted-orders` 时也只使用这套内部服务身份。
 - `Idempotency-Key`：创建、文件导入、回执、重试、取消和复核命令必填。相同 key + 相同请求返回首次结果；相同 key + 不同请求返回 `409 IDEMPOTENCY_CONFLICT`。
 - 服务端把每个写用例映射为稳定的 `snake_case` 幂等 scope；scope 不是客户端参数，也不是需要随每个新端点修改 DDL 的封闭枚举。
 - `expected_version`：修改已存在业务事实的命令必填；版本不符返回 `409 VERSION_CONFLICT`。
@@ -375,6 +375,9 @@ public interface PlatformConnector {
 3. 对已登记开通的接口，可临时置 `write-mode: ON` 做最小验证（Mock 先行、REAL 后行），验证完成后立即恢复 `OFF`；生产环境默认保持 `OFF`。
 
 ## 7. Demo API
+
+所有 Demo 浏览器入口均要求后端复验通过的业务操作人身份。`POST /demo/v1/extracted-orders`
+额外接受配置的内部服务名与 Bearer token，供订单助手直连；调用方自报 `X-Operator` 不构成授权。
 
 | Method | Path | 用途 |
 |---|---|---|

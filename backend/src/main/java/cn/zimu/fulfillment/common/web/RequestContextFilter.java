@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * 解析请求关联信息，并对 Nginx 已验证的 Basic Auth 凭据做后端复验。
+ * 解析请求关联信息，并复验管理 Basic Auth 或内部服务 Bearer 凭据。
  * 仅复验成功时才产生 authenticatedOperator；客户端自报 X-Operator 不是授权凭证。
  */
 @Component("httpRequestContextFilter")
@@ -110,6 +110,10 @@ public class RequestContextFilter extends OncePerRequestFilter {
             RequestAuthenticationPolicy.Requirement requirement) {
         if (requirement == RequestAuthenticationPolicy.Requirement.INTERNAL_SERVICE) {
             return authenticateInternalService(authorization);
+        }
+        if (requirement == RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR_OR_INTERNAL_SERVICE) {
+            String business = authenticateBusinessOperator(authorization);
+            return business != null ? business : authenticateInternalService(authorization);
         }
         return authenticateBusinessOperator(authorization);
     }

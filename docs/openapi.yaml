@@ -2846,6 +2846,13 @@ paths:
     post:
       tags: [Demo]
       operationId: runExtractedDemoOrder
+      description: >-
+        Creates an isolated DemoRun after human confirmation. Browser callers use the authenticated
+        management operator; the bundled order assistant uses the independently configured internal
+        service identity. Caller-supplied identity without valid credentials is rejected.
+      security:
+        - basicAuth: []
+        - internalServiceBearer: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/Operator'
@@ -3492,7 +3499,11 @@ components:
     basicAuth:
       type: http
       scheme: basic
-      description: Nginx authenticates management, internal, and demo operations; explicitly public connector callbacks use their own signatures.
+      description: Nginx authenticates management and browser demo operations; explicitly public connector callbacks use their own signatures.
+    internalServiceBearer:
+      type: http
+      scheme: bearer
+      description: Internal service credential accepted only on explicitly registered service seams such as the demo order-assistant submission.
   headers:
     RequestId:
       description: Request correlation identifier

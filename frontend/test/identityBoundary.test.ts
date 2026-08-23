@@ -119,6 +119,13 @@ test('internal service identity is independently configurable without a predicta
   assert.match(exampleEnv, /^APP_INTERNAL_SERVICE_NAME=$/m);
   assert.match(exampleEnv, /^APP_INTERNAL_SERVICE_TOKEN=$/m);
   assert.doesNotMatch(compose, /APP_INTERNAL_SERVICE_(?:NAME|TOKEN):\s*(?:wecom|internal|changeme)/i);
+
+  const orderAssistantStart = compose.indexOf('  order-assistant:');
+  const orderAssistantEnd = compose.indexOf('\n  metabase:', orderAssistantStart);
+  const orderAssistant = compose.slice(orderAssistantStart, orderAssistantEnd);
+  assert.match(orderAssistant, /APP_INTERNAL_SERVICE_NAME: \$\{APP_INTERNAL_SERVICE_NAME:\?/);
+  assert.match(orderAssistant, /APP_INTERNAL_SERVICE_TOKEN: \$\{APP_INTERNAL_SERVICE_TOKEN:\?/);
+  assert.doesNotMatch(orderAssistant, /APP_ADMIN_(?:USER|PASSWORD)/);
 });
 
 test('acceptance secrets only enter the Compose child and are file-backed for other consumers', () => {
@@ -133,6 +140,8 @@ test('acceptance secrets only enter the Compose child and are file-backed for ot
     'APP_ADMIN_PASSWORD',
     'POSTGRES_USER',
     'POSTGRES_PASSWORD',
+    'APP_INTERNAL_SERVICE_NAME',
+    'APP_INTERNAL_SERVICE_TOKEN',
   ];
 
   assert.match(
@@ -144,7 +153,7 @@ test('acceptance secrets only enter the Compose child and are file-backed for ot
     /acceptance_credentials\.py" --write-environment "\$ephemeral_credentials_file"/,
   );
   assert.match(acceptance, /^ACCEPTANCE_CREDENTIAL_FILE="\$credentials_file" \\$/m);
-  assert.doesNotMatch(acceptance, /export (?:METABASE_ADMIN|APP_ADMIN|POSTGRES)/);
+  assert.doesNotMatch(acceptance, /export (?:METABASE_ADMIN|APP_ADMIN|POSTGRES|APP_INTERNAL_SERVICE)/);
   const unsetPosition = acceptance.indexOf('unset METABASE_ADMIN_EMAIL METABASE_ADMIN_PASSWORD');
   const firstConsumerPosition = acceptance.indexOf('ACCEPTANCE_CREDENTIAL_FILE="$credentials_file"');
   const cleanupTrapPosition = acceptance.indexOf('trap cleanup_acceptance_secrets EXIT HUP INT TERM');
