@@ -19,6 +19,9 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
@@ -134,6 +137,48 @@ class WecomMediaEvidenceServiceTest {
         assertThat(mediaRepository.count()).isEqualTo(1);
         // 幂等重入不再重新下载（URL 5 分钟有效，不能浪费）
         assertThat(downloadHits.get()).isEqualTo(1);
+    }
+
+    @Test
+    void lateConcurrentFailureCannotDowngradeAvailableEvidence() throws Exception {
+        byte[] plaintext = jpegSample();
+        byte[] ciphertext = encrypt(plaintext, AES_KEY);
+        CountDownLatch lateRequestEntered = new CountDownLatch(1);
+        CountDownLatch releaseLateFailure = new CountDownLatch(1);
+        server.createContext("/media/late-failure", exchange -> {
+            downloadHits.incrementAndGet();
+            lateRequestEntered.countDown();
+            try {
+                if (!releaseLateFailure.await(5, TimeUnit.SECONDS)) {
+                    throw new IOException("test did not release late failure");
+                }
+                respond(exchange, 503, "unavailable".getBytes(StandardCharsets.UTF_8), "text/plain");
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                exchange.close();
+            }
+        });
+        installMedia("/media/concurrent-success", ciphertext, "image/jpeg");
+        long channelMessageId = insertChannelMessage("msg-concurrent-monotonic");
+        String mediaKey = "media-concurrent";
+
+        CompletableFuture<MediaResult> lateFailure = CompletableFuture.supplyAsync(() -> evidenceService.storeMedia(
+                command(channelMessageId, mediaKey, "/media/late-failure")));
+        assertThat(lateRequestEntered.await(5, TimeUnit.SECONDS)).isTrue();
+
+        MediaResult success = evidenceService.storeMedia(
+                command(channelMessageId, mediaKey, "/media/concurrent-success"));
+        releaseLateFailure.countDown();
+        MediaResult staleResult = lateFailure.get(5, TimeUnit.SECONDS);
+
+        assertThat(success.status()).isEqualTo(MediaResultStatus.SUCCEEDED);
+        assertThat(staleResult.status()).isEqualTo(MediaResultStatus.SUCCEEDED);
+        MessageMedia row = mediaRepository
+                .findByChannelMessageIdAndChannelMediaId(channelMessageId, mediaKey)
+                .orElseThrow();
+        assertThat(row.getDownloadStatus()).isEqualTo(MediaDownloadStatus.AVAILABLE);
+        assertThat(row.getContentHash()).isEqualTo(sha256Hex(plaintext));
+        assertThat(row.getAttempts()).isZero();
     }
 
     @Test

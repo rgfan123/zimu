@@ -54,6 +54,13 @@ app:
     poll-ms: ${MESSAGE_WORKER_POLL_MS:500}
     lease-seconds: ${MESSAGE_WORKER_LEASE_SECONDS:30}
     backoff-seconds: ${MESSAGE_WORKER_BACKOFF_SECONDS:5}
+  wecom-tracking-file-worker:
+    # Issue #86：单聊 file 专用确定性解析队列；默认跟随消息 Worker 总开关，且从不调用模型。
+    enabled: ${WECOM_TRACKING_FILE_WORKER_ENABLED:${MESSAGE_WORKER_ENABLED:true}}
+    poll-ms: ${WECOM_TRACKING_FILE_WORKER_POLL_MS:500}
+    lease-seconds: ${WECOM_TRACKING_FILE_WORKER_LEASE_SECONDS:60}
+    backoff-seconds: ${WECOM_TRACKING_FILE_WORKER_BACKOFF_SECONDS:5}
+    claim-error-suppress-seconds: ${WECOM_TRACKING_FILE_WORKER_CLAIM_ERROR_SUPPRESS_SECONDS:60}
   wecom-export-worker:
     # Issue #84：履约导出企微发送 Worker（INITIAL/REMINDER 共用 WECOM_EXPORT_DELIVERY 任务）。
     enabled: ${WECOM_EXPORT_WORKER_ENABLED:true}

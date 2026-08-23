@@ -1,12 +1,19 @@
 package cn.zimu.fulfillment.connector.wecom;
 
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -50,33 +57,54 @@ public class WecomMediaDownloader {
         } catch (IllegalArgumentException exception) {
             throw new MediaDownloadException("媒体下载地址非法: " + exception.getMessage(), exception);
         }
-        HttpResponse<InputStream> response;
+        CompletableFuture<HttpResponse<byte[]>> pending;
         try {
-            response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            pending = client.sendAsync(request, responseInfo -> {
+                if (responseInfo.statusCode() != 200) {
+                    return new FailedBodySubscriber("媒体下载失败 HTTP " + responseInfo.statusCode());
+                }
+                long declaredLength = responseInfo.headers()
+                        .firstValueAsLong("Content-Length")
+                        .orElse(-1L);
+                if (declaredLength > maxBytes) {
+                    return new FailedBodySubscriber("媒体下载超过大小上限 " + maxBytes + " 字节");
+                }
+                return new BoundedBodySubscriber(maxBytes);
+            });
+        } catch (IllegalArgumentException exception) {
+            throw new MediaDownloadException("媒体下载地址非法: " + exception.getMessage(), exception);
+        }
+        HttpResponse<byte[]> response;
+        try {
+            // HttpRequest.timeout 与 future deadline 双重覆盖 connect + headers + 整个 body。
+            // BodySubscriber 只累积 maxBytes，超限立即 cancel，不依赖 Content-Length 诚信。
+            response = pending.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException exception) {
+            pending.cancel(true);
             Thread.currentThread().interrupt();
             throw new MediaDownloadException("媒体下载被中断", exception);
-        } catch (IOException exception) {
-            throw new MediaDownloadException("媒体下载网络错误: " + exception.getMessage(), exception);
-        }
-        if (response.statusCode() != 200) {
-            throw new MediaDownloadException("媒体下载失败 HTTP " + response.statusCode());
-        }
-        try (InputStream body = response.body()) {
-            byte[] bytes = body.readNBytes(maxBytes + 1);
-            if (bytes.length > maxBytes) {
-                throw new MediaDownloadException("媒体下载超过大小上限 " + maxBytes + " 字节");
+        } catch (TimeoutException exception) {
+            pending.cancel(true);
+            throw new MediaDownloadException("媒体下载超时", exception);
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof MediaDownloadException mediaDownloadException) {
+                throw mediaDownloadException;
             }
-            String contentType = response
-                    .headers()
-                    .firstValue("Content-Type")
-                    .map(WecomMediaDownloader::stripParameters)
-                    .filter(value -> !value.isBlank())
-                    .orElse(null);
-            return new DownloadedMedia(bytes, contentType);
-        } catch (IOException exception) {
-            throw new MediaDownloadException("媒体下载读取失败: " + exception.getMessage(), exception);
+            if (cause instanceof java.net.http.HttpTimeoutException) {
+                throw new MediaDownloadException("媒体下载超时", cause);
+            }
+            throw new MediaDownloadException(
+                    "媒体下载网络错误: " + (cause == null ? "unknown" : cause.getClass().getSimpleName()),
+                    cause == null ? exception : cause);
         }
+        String contentType = response
+                .headers()
+                .firstValue("Content-Type")
+                .map(WecomMediaDownloader::stripParameters)
+                .filter(value -> !value.isBlank())
+                .orElse(null);
+        return new DownloadedMedia(response.body(), contentType);
     }
 
     /** 媒体下载失败；URL 或响应内容可能已过期/缺失。 */
@@ -93,5 +121,83 @@ public class WecomMediaDownloader {
     private static String stripParameters(String contentType) {
         int separator = contentType.indexOf(';');
         return separator >= 0 ? contentType.substring(0, separator).trim() : contentType.trim();
+    }
+
+    /** Reactive body consumer with a hard byte cap; no intermediate unbounded byte array is created. */
+    private static final class BoundedBodySubscriber implements HttpResponse.BodySubscriber<byte[]> {
+
+        private final int maxBytes;
+        private final ByteArrayOutputStream output = new ByteArrayOutputStream(8192);
+        private final CompletableFuture<byte[]> body = new CompletableFuture<>();
+        private Flow.Subscription subscription;
+
+        private BoundedBodySubscriber(int maxBytes) {
+            this.maxBytes = maxBytes;
+        }
+
+        @Override
+        public CompletionStage<byte[]> getBody() {
+            return body;
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            this.subscription = subscription;
+            subscription.request(1);
+        }
+
+        @Override
+        public void onNext(List<ByteBuffer> buffers) {
+            if (body.isDone()) {
+                return;
+            }
+            for (ByteBuffer buffer : buffers) {
+                int incoming = buffer.remaining();
+                if (incoming > maxBytes - output.size()) {
+                    subscription.cancel();
+                    body.completeExceptionally(new MediaDownloadException(
+                            "媒体下载超过大小上限 " + maxBytes + " 字节"));
+                    return;
+                }
+                byte[] chunk = new byte[incoming];
+                buffer.get(chunk);
+                output.writeBytes(chunk);
+            }
+            subscription.request(1);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            body.completeExceptionally(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            body.complete(output.toByteArray());
+        }
+    }
+
+    /** Rejects from response headers/status and cancels the network body immediately. */
+    private static final class FailedBodySubscriber implements HttpResponse.BodySubscriber<byte[]> {
+
+        private final CompletableFuture<byte[]> body = new CompletableFuture<>();
+
+        private FailedBodySubscriber(String message) {
+            body.completeExceptionally(new MediaDownloadException(message));
+        }
+
+        @Override
+        public CompletionStage<byte[]> getBody() {
+            return body;
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            subscription.cancel();
+        }
+
+        @Override public void onNext(List<ByteBuffer> item) {}
+        @Override public void onError(Throwable throwable) {}
+        @Override public void onComplete() {}
     }
 }

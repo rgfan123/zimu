@@ -1297,6 +1297,8 @@ export interface AuditLogPage extends PageMeta {
 
 // ---------- 企业微信消息证据 ----------
 
+export type ChannelMessageType = 'text' | 'mixed' | 'image' | 'voice' | 'file' | 'video';
+
 export interface ChannelMessageSummary {
   id: string;
   corp_id: string;
@@ -1306,7 +1308,7 @@ export interface ChannelMessageSummary {
   chat_id: string;
   chat_type: 'group' | 'single';
   sender_user_id: string;
-  message_type: string;
+  message_type: ChannelMessageType;
   content_preview: string;
   received_at: string;
 }
@@ -1336,6 +1338,15 @@ export type MessageFailureCode =
   | 'MODEL_CALL_FAILED'
   | 'MODEL_OUTPUT_INVALID';
 
+export type MessageTaskFailureCode =
+  | MessageFailureCode
+  | 'WECOM_TRACKING_FILE_CHAT_UNSUPPORTED'
+  | 'WECOM_TRACKING_FILE_PAYLOAD_INVALID'
+  | 'WECOM_TRACKING_FILE_DOWNLOAD_FAILED'
+  | 'WECOM_TRACKING_FILE_TOO_LARGE'
+  | 'WECOM_TRACKING_FILE_INVALID'
+  | 'WECOM_TRACKING_FILE_PROCESSING_FAILED';
+
 export interface MessageInterpretation {
   version: number;
   intent: string;
@@ -1359,7 +1370,7 @@ export interface MessageTaskStatus {
   status: MessageTaskStatusCode;
   attempts: number;
   max_attempts: number;
-  last_error?: MessageFailureCode | null;
+  last_error?: MessageTaskFailureCode | null;
   created_at: string;
 }
 

@@ -676,7 +676,8 @@ public class FulfillmentExportWecomStore {
 
     /**
      * 收齐判定：该导出的全部 export_items 的 shipment 都必须已有「已收齐」的 tracking
-     * （tracking 行 + 其 PROVIDER_TRACKING 批次 COMPLETED + 运单号非空）；任一缺失即未完成。
+     * （运单号非空，且 Excel 导入行所属 PROVIDER_TRACKING 批次已 COMPLETED；企微草稿经人工
+     * 确认写入的 tracking 没有 import batch，也视为已收齐）；任一缺失即未完成。
      */
     @Transactional(readOnly = true)
     public boolean isTrackingComplete(long exportId) {
@@ -689,10 +690,10 @@ public class FulfillmentExportWecomStore {
                       AND NOT EXISTS (
                           SELECT 1
                           FROM app.trackings t
-                          JOIN app.import_batches ib ON ib.id=t.provider_tracking_batch_id
-                              AND ib.status='COMPLETED'
+                          LEFT JOIN app.import_batches ib ON ib.id=t.provider_tracking_batch_id
                           WHERE t.shipment_id=fei.shipment_id
                             AND t.tracking_number IS NOT NULL AND btrim(t.tracking_number) <> ''
+                            AND (t.provider_tracking_batch_id IS NULL OR ib.status='COMPLETED')
                       )
                 )
                 """,
@@ -738,10 +739,10 @@ public class FulfillmentExportWecomStore {
                       AND NOT EXISTS (
                           SELECT 1
                           FROM app.trackings t
-                          JOIN app.import_batches ib ON ib.id=t.provider_tracking_batch_id
-                              AND ib.status='COMPLETED'
+                          LEFT JOIN app.import_batches ib ON ib.id=t.provider_tracking_batch_id
                           WHERE t.shipment_id=fei.shipment_id
                             AND t.tracking_number IS NOT NULL AND btrim(t.tracking_number) <> ''
+                            AND (t.provider_tracking_batch_id IS NULL OR ib.status='COMPLETED')
                       )
                 ) missing
                 """,

@@ -101,14 +101,24 @@ const taskCandidates = [
   },
 ];
 
-function trackingDraft(kind: 'MULTI' | 'ZERO' | 'CONFIRMED') {
+const atomicTaskCandidates = [
+  taskCandidates[0],
+  { ...taskCandidates[1], order_id: '12', order_no: 'ORD-A', shipment_id: '55' },
+];
+
+function trackingDraft(kind: 'MULTI' | 'ZERO' | 'CONFIRMED' | 'ATOMIC' | 'PARTIAL') {
   const multi = kind === 'MULTI';
+  const atomic = kind === 'ATOMIC';
+  const partial = kind === 'PARTIAL';
+  const file = atomic || partial;
   return {
     id: '81', draft_no: 'TD-CANDIDATES-81', submission_id: '18', line_no: 1,
     raw_receiver_name: multi ? '张*' : '裴*', masked_receiver_name: multi ? '张*' : '裴*',
-    tracking_no: multi ? 'JDVA123456789' : 'XYZ123456789',
-    carrier_code: kind === 'CONFIRMED' ? 'JDVA_EXPRESS' : null,
-    carrier_candidates: multi ? [
+    tracking_no: multi || file ? 'JDVA123456789' : 'XYZ123456789',
+    carrier_code: kind === 'CONFIRMED' ? 'JDVA_EXPRESS' : file ? 'JD' : null,
+    carrier_candidates: file ? [
+      { code: 'JD', name: '京东物流', source: 'FILE' },
+    ] : multi ? [
       { code: 'JD', name: '京东物流', source: 'PREFIX' },
       { code: 'JDVA_EXPRESS', name: '京东亚洲一号仓配', source: 'PREFIX' },
     ] : [],
@@ -117,10 +127,14 @@ function trackingDraft(kind: 'MULTI' | 'ZERO' | 'CONFIRMED') {
       { code: 'JDVA_EXPRESS', name: '京东亚洲一号仓配' },
       { code: 'SF_EXPRESS', name: '顺丰速运' },
     ],
-    task_id: kind === 'CONFIRMED' ? '45' : null,
-    task_candidates: multi ? taskCandidates : [],
-    shipment_judgment: 'FULL', default_full_shipment: true, actual_quantity: null,
-    validation_issues: multi
+    task_id: kind === 'CONFIRMED' ? '45' : file ? '44' : null,
+    task_candidates: atomic ? atomicTaskCandidates : partial ? [taskCandidates[0]] : multi ? taskCandidates : [],
+    source: file ? 'WECOM_TRACKING_FILE' : 'WECOM_MESSAGE',
+    confirmation_scope: atomic ? 'ATOMIC_SHIPMENT' : 'SINGLE_TASK',
+    shipment_judgment: partial ? 'PARTIAL' : 'FULL',
+    default_full_shipment: !partial,
+    actual_quantity: partial ? '3.000' : null,
+    validation_issues: file ? [] : multi
       ? ['TASK_NAME_MULTI_MATCH', 'CARRIER_MULTI_HIT']
       : ['TASK_NAME_NO_MATCH', 'CARRIER_PREFIX_UNMATCHED'],
     status: kind === 'CONFIRMED' ? 'CONFIRMED' : 'OPEN', revision: kind === 'CONFIRMED' ? 5 : 4,
@@ -308,4 +322,116 @@ test('real review route resolves zero matches with an exact task number and enab
   assert.equal(command.task_no, 'FUL-MANUAL-ZERO-001');
   assert.equal(command.carrier_code, 'SF_EXPRESS');
   assert.equal('shipped_at' in command, false);
+});
+
+test('file atomic shipment shows every required task as one confirmation scope', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url === '/api/v1/review-cases?page=0&size=20&status=OPEN') return jsonResponse(page([reviewCase()]));
+    if (url === '/api/v1/operational-alerts?page=0&size=20&status=OPEN') return jsonResponse(page([]));
+    if (url === '/api/v1/tracking-drafts/81' && (init?.method ?? 'GET') === 'GET') return jsonResponse(trackingDraft('ATOMIC'));
+    if (url === '/api/v1/tracking-drafts/81/confirm' && init?.method === 'POST') {
+      return jsonResponse(trackingDraft('CONFIRMED'));
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await mountRoute();
+  const text = bodyText();
+  assert.match(text, /原子确认同一发货批次的 2 条明细/);
+  assert.match(text, /FUL-MASKED-A/);
+  assert.match(text, /FUL-MASKED-B/);
+  assert.match(text, /这些不是互斥候选/);
+  assert.match(text, /回传文件明确的物流公司/);
+  assert.equal(document.querySelector('input[placeholder="输入完整系统任务号"]'), null);
+
+  await act(async () => control('确认整个发货批次并记录运单').click());
+  await waitFor(() => assert.match(bodyText(), /运单草稿已确认并记录正式运单/));
+  const request = requests.find(({ url, init }) => url.endsWith('/tracking-drafts/81/confirm') && init?.method === 'POST');
+  assert.ok(request);
+  const command = JSON.parse(String(request.init?.body));
+  assert.equal(command.task_id, '44');
+  assert.equal(command.actual_quantity, null);
+});
+
+test('file partial shipment shows and submits the parsed actual quantity', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url === '/api/v1/review-cases?page=0&size=20&status=OPEN') return jsonResponse(page([reviewCase()]));
+    if (url === '/api/v1/operational-alerts?page=0&size=20&status=OPEN') return jsonResponse(page([]));
+    if (url.includes('/api/v1/tracking-drafts?')) return jsonResponse({ items: [trackingDraft('PARTIAL')] });
+    if (url === '/api/v1/tracking-drafts/81' && (init?.method ?? 'GET') === 'GET') return jsonResponse(trackingDraft('PARTIAL'));
+    if (url === '/api/v1/tracking-drafts/81/confirm' && init?.method === 'POST') {
+      return jsonResponse(trackingDraft('CONFIRMED'));
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await mountRoute();
+  assert.match(bodyText(), /回传文件标记为部分发货/);
+  const quantity = [...document.querySelectorAll<HTMLInputElement>('input')]
+    .find((input) => input.value === '3.000');
+  assert.ok(quantity, '必须显示文件解析的实发数量');
+  assert.equal(control('确认并记录运单').getAttribute('disabled'), null);
+  await waitFor(() => {
+    const batchButton = control('批量确认已勾选运单（0）');
+    assert.notEqual(batchButton.getAttribute('disabled'), null);
+  });
+
+  await act(async () => control('确认并记录运单').click());
+  await waitFor(() => assert.match(bodyText(), /运单草稿已确认并记录正式运单/));
+  const request = requests.find(({ url, init }) => url.endsWith('/tracking-drafts/81/confirm') && init?.method === 'POST');
+  assert.ok(request);
+  const command = JSON.parse(String(request.init?.body));
+  assert.equal(command.task_id, '44');
+  assert.equal(command.actual_quantity, '3.000');
+  assert.equal(requests.some(({ url }) => url.endsWith('/tracking-drafts/batch-confirm')), false);
+});
+
+test('confirming a full sibling keeps the current file partial review open', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const partial = trackingDraft('PARTIAL');
+  const fullSibling = {
+    ...trackingDraft('ATOMIC'),
+    id: '82',
+    draft_no: 'TD-CANDIDATES-82',
+    line_no: 2,
+    review_case_id: '100',
+    review_case_version: 3,
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url === '/api/v1/review-cases?page=0&size=20&status=OPEN') return jsonResponse(page([reviewCase()]));
+    if (url === '/api/v1/operational-alerts?page=0&size=20&status=OPEN') return jsonResponse(page([]));
+    if (url.includes('/api/v1/tracking-drafts?')) return jsonResponse({ items: [partial, fullSibling] });
+    if (url === '/api/v1/tracking-drafts/81' && (init?.method ?? 'GET') === 'GET') return jsonResponse(partial);
+    if (url === '/api/v1/tracking-drafts/batch-confirm' && init?.method === 'POST') {
+      return jsonResponse({
+        results: [{ draft_id: '82', success: true, detail: { ...fullSibling, status: 'CONFIRMED' } }],
+        success_count: 1,
+        failure_count: 0,
+      });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await mountRoute();
+  await waitFor(() => assert.equal(control('批量确认已勾选运单（1）').getAttribute('disabled'), null));
+  await act(async () => control('批量确认已勾选运单（1）').click());
+  await waitFor(() => assert.match(bodyText(), /批量确认完成：成功 1 行/));
+
+  assert.match(bodyText(), /回传文件标记为部分发货/);
+  assert.ok([...document.querySelectorAll<HTMLInputElement>('input')]
+    .some((input) => input.value === '3.000'), '当前 PARTIAL 的实发数量和抽屉必须保留');
+  const batchRequest = requests.find(({ url, init }) => (
+    url.endsWith('/tracking-drafts/batch-confirm') && init?.method === 'POST'
+  ));
+  assert.ok(batchRequest);
+  const command = JSON.parse(String(batchRequest.init?.body));
+  assert.deepEqual(command.lines.map((line: { draft_id: string }) => line.draft_id), ['82']);
 });

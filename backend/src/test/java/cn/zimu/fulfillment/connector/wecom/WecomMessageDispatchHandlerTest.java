@@ -159,6 +159,30 @@ class WecomMessageDispatchHandlerTest {
     }
 
     @Test
+    void singleFileMessagePreservesDedicatedDownloadEvidenceInRawPayload() {
+        when(submissionService.submit(any())).thenReturn(1L);
+
+        handler.onFrame(
+                "aibot_msg_callback",
+                json(
+                        "{\"cmd\":\"aibot_msg_callback\",\"headers\":{\"req_id\":\"REQ-FILE\"},\"body\":{"
+                                + "\"msgid\":\"MSG-FILE\",\"aibotid\":\"bot-1\",\"chattype\":\"single\","
+                                + "\"from\":{\"userid\":\"user-file\"},\"msgtype\":\"file\","
+                                + "\"file\":{\"url\":\"https://media.example/tracking\","
+                                + "\"aeskey\":\"file-aes-key\",\"filename\":\"tracking.xlsx\"}}}"));
+
+        ArgumentCaptor<ChannelMessageCommand> commandCaptor = ArgumentCaptor.forClass(ChannelMessageCommand.class);
+        verify(submissionService).submit(commandCaptor.capture());
+        ChannelMessageCommand command = commandCaptor.getValue();
+        assertThat(command.messageType()).isEqualTo("file");
+        assertThat(command.chatType()).isEqualTo("single");
+        assertThat(command.content()).isEmpty();
+        assertThat(command.rawPayload().path("body").path("file").path("url").asText())
+                .isEqualTo("https://media.example/tracking");
+        verify(connectionManager).respond(eq("REQ-FILE"), any());
+    }
+
+    @Test
     void receiptIsRetriedOnceWhenFirstAttemptFails() {
         when(submissionService.submit(any())).thenReturn(1L);
         when(connectionManager.respond(eq("REQ-1"), any())).thenReturn(false, true);

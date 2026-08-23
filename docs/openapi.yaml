@@ -3991,7 +3991,7 @@ components:
         chat_id: { type: string }
         chat_type: { type: string, enum: [group, single] }
         sender_user_id: { type: string }
-        message_type: { type: string, enum: [text, mixed] }
+        message_type: { type: string, enum: [text, mixed, image, voice, file, video] }
         content_preview: { type: string }
         received_at: { type: string, format: date-time }
     ChannelMessageDetail:
@@ -4007,7 +4007,7 @@ components:
         chat_id: { type: string }
         chat_type: { type: string, enum: [group, single] }
         sender_user_id: { type: string }
-        message_type: { type: string, enum: [text, mixed] }
+        message_type: { type: string, enum: [text, mixed, image, voice, file, video] }
         content: { type: string }
         quote_type:
           type: string
@@ -4051,7 +4051,7 @@ components:
         status: { type: string, enum: [PENDING, RUNNING, FINALIZING, SUCCEEDED, FAILED] }
         attempts: { type: integer, minimum: 0 }
         max_attempts: { type: integer, minimum: 1 }
-        last_error: { type: string, enum: [MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID], nullable: true }
+        last_error: { type: string, enum: [MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID, WECOM_TRACKING_FILE_CHAT_UNSUPPORTED, WECOM_TRACKING_FILE_PAYLOAD_INVALID, WECOM_TRACKING_FILE_DOWNLOAD_FAILED, WECOM_TRACKING_FILE_TOO_LARGE, WECOM_TRACKING_FILE_INVALID, WECOM_TRACKING_FILE_PROCESSING_FAILED], nullable: true }
         created_at: { type: string, format: date-time }
     MessageTaskSummary:
       type: object
@@ -4064,7 +4064,7 @@ components:
         attempts: { type: integer, minimum: 0 }
         max_attempts: { type: integer, minimum: 1 }
         next_run_at: { type: string, format: date-time }
-        last_error: { type: string, enum: [MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID], nullable: true }
+        last_error: { type: string, enum: [MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID, WECOM_TRACKING_FILE_CHAT_UNSUPPORTED, WECOM_TRACKING_FILE_PAYLOAD_INVALID, WECOM_TRACKING_FILE_DOWNLOAD_FAILED, WECOM_TRACKING_FILE_TOO_LARGE, WECOM_TRACKING_FILE_INVALID, WECOM_TRACKING_FILE_PROCESSING_FAILED], nullable: true }
         created_at: { type: string, format: date-time }
     MessageTaskPage:
       allOf:
@@ -4275,7 +4275,7 @@ components:
       properties:
         code: { type: string }
         name: { type: string }
-        source: { type: string, enum: [STATED, PREFIX] }
+        source: { type: string, enum: [STATED, PREFIX, FILE] }
     TrackingDraftCarrierOption:
       type: object
       additionalProperties: false
@@ -4324,6 +4324,8 @@ components:
         - manual_carrier_options
         - task_id
         - task_candidates
+        - source
+        - confirmation_scope
         - shipment_judgment
         - default_full_shipment
         - actual_quantity
@@ -4358,6 +4360,14 @@ components:
         task_candidates:
           type: array
           items: { $ref: '#/components/schemas/TrackingDraftTaskCandidate' }
+        source:
+          type: string
+          enum: [WECOM_MESSAGE, WECOM_TRACKING_FILE]
+          description: Evidence source; tracking files are parsed deterministically and never enter the model.
+        confirmation_scope:
+          type: string
+          enum: [SINGLE_TASK, ATOMIC_SHIPMENT]
+          description: ATOMIC_SHIPMENT means every listed task candidate is required and shares one formal tracking.
         shipment_judgment: { $ref: '#/components/schemas/TrackingDraftShipmentJudgment' }
         default_full_shipment: { type: boolean }
         actual_quantity:

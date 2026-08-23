@@ -12,11 +12,18 @@ public final class MessagePublicProjectionSanitizer {
     private static final Set<String> FAILURE_CODES = Set.of(
             InterpretationFailureCode.MODEL_NOT_CONFIGURED.name(),
             InterpretationFailureCode.MODEL_CALL_FAILED.name(),
-            InterpretationFailureCode.MODEL_OUTPUT_INVALID.name());
+            InterpretationFailureCode.MODEL_OUTPUT_INVALID.name(),
+            WecomTrackingFileFailureCode.WECOM_TRACKING_FILE_CHAT_UNSUPPORTED.name(),
+            WecomTrackingFileFailureCode.WECOM_TRACKING_FILE_PAYLOAD_INVALID.name(),
+            WecomTrackingFileFailureCode.WECOM_TRACKING_FILE_DOWNLOAD_FAILED.name(),
+            WecomTrackingFileFailureCode.WECOM_TRACKING_FILE_TOO_LARGE.name(),
+            WecomTrackingFileFailureCode.WECOM_TRACKING_FILE_INVALID.name(),
+            WecomTrackingFileFailureCode.WECOM_TRACKING_FILE_PROCESSING_FAILED.name());
     private static final Set<String> MESSAGE_REVIEW_REASONS = Set.of(
             IntentRouter.REASON_NEED_REVIEW,
             IntentRouter.REASON_ORDER_CHANGE,
-            IntentRouter.REASON_ORDER_CANCEL);
+            IntentRouter.REASON_ORDER_CANCEL,
+            WecomTrackingFileFailureCode.REVIEW_REASON);
     private static final Set<String> MESSAGE_DRAFT_REASONS = Set.of(
             WecomOrderDraftFactory.REASON_CODE,
             WecomTrackingDraftFactory.REASON_TRACKING_DRAFT);
@@ -75,6 +82,13 @@ public final class MessagePublicProjectionSanitizer {
             String reasonCode,
             Map<String, Object> detail,
             MessageModelMetadataRegistry metadataRegistry) {
+        Map<String, Object> source = detail == null ? Map.of() : detail;
+        if (WecomTrackingDraftFactory.REASON_TRACKING_DRAFT.equals(reasonCode)
+                && "WECOM_TRACKING_FILE".equals(source.get("source"))) {
+            // 文件供应方可在失败原因等单元格写任意自由文本；ReviewCase 内部保留原始证据，
+            // 浏览器 DTO 只需来源标记，草稿业务事实由专用 tracking-draft DTO 提供。
+            return Map.of("source", "WECOM_TRACKING_FILE");
+        }
         if (messageSubmissionId == null) {
             if (MESSAGE_DRAFT_REASONS.contains(reasonCode)) {
                 return withPublicMetadata(detail, metadataRegistry);
@@ -85,7 +99,9 @@ public final class MessagePublicProjectionSanitizer {
             return detail == null ? Map.of() : detail;
         }
 
-        Map<String, Object> source = detail == null ? Map.of() : detail;
+        if (WecomTrackingFileFailureCode.REVIEW_REASON.equals(reasonCode)) {
+            return trackingFileFailureDetail(source);
+        }
         Map<String, Object> safe = new LinkedHashMap<>();
         copyKnownValue(safe, "intent", source.get("intent"), 32, INTENTS);
         putPublicMetadata(safe, source, metadataRegistry);
@@ -110,6 +126,19 @@ public final class MessagePublicProjectionSanitizer {
             }
         }
         return safe;
+    }
+
+    private static Map<String, Object> trackingFileFailureDetail(Map<String, Object> source) {
+        WecomTrackingFileFailureCode failure;
+        try {
+            failure = WecomTrackingFileFailureCode.valueOf(String.valueOf(source.get("error_code")));
+        } catch (RuntimeException ignored) {
+            failure = WecomTrackingFileFailureCode.WECOM_TRACKING_FILE_PROCESSING_FAILED;
+        }
+        return Map.of(
+                "source", "WECOM_TRACKING_FILE",
+                "error_code", failure.name(),
+                "message", failure.publicMessage());
     }
 
     private static Map<String, Object> withPublicMetadata(

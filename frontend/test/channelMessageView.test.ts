@@ -189,8 +189,73 @@ test('submission and interpretation views fail closed on unknown historical erro
   assert.doesNotMatch(rendered, /raw provider exception|secret=abc123/);
 });
 
+test('dedicated tracking-file failures stay distinguishable without exposing downloader details', () => {
+  const submission = {
+    id: '12',
+    submission_no: 'SUB-12',
+    status: 'FAILED',
+    source_message_id: '11',
+    current_intent: null,
+    latest_error: null,
+    interpretations: [],
+    latest_task: {
+      id: '6',
+      task_type: 'WECOM_TRACKING_FILE',
+      status: 'FAILED',
+      attempts: 3,
+      max_attempts: 3,
+      last_error: 'WECOM_TRACKING_FILE_TOO_LARGE',
+      created_at: '2026-08-23T08:00:00Z',
+    },
+    created_at: '2026-08-23T08:00:00Z',
+  } as MessageSubmissionDetail;
+
+  const rendered = JSON.stringify(safeSubmissionSummary(submission));
+
+  assert.match(rendered, /WECOM_TRACKING_FILE_TOO_LARGE/);
+  assert.doesNotMatch(rendered, /MODEL_CALL_FAILED|source_url|aeskey/);
+
+  submission.latest_task!.last_error = 'raw downloader exception secret=abc' as never;
+  const unknownRendered = JSON.stringify(safeSubmissionSummary(submission));
+  assert.match(unknownRendered, /WECOM_TRACKING_FILE_PROCESSING_FAILED/);
+  assert.doesNotMatch(unknownRendered, /MODEL_CALL_FAILED|raw downloader exception|secret=abc/);
+});
+
+test('dedicated tracking-file work is never labelled as model interpretation', () => {
+  const submission = {
+    id: '13',
+    submission_no: 'SUB-13',
+    status: 'RECEIVED',
+    source_message_id: '12',
+    current_intent: null,
+    latest_error: null,
+    interpretations: [],
+    latest_task: {
+      id: '7',
+      task_type: 'WECOM_TRACKING_FILE',
+      status: 'PENDING',
+      attempts: 0,
+      max_attempts: 3,
+      last_error: null,
+      created_at: '2026-08-23T08:00:00Z',
+    },
+    created_at: '2026-08-23T08:00:00Z',
+  } as MessageSubmissionDetail;
+
+  const rendered = JSON.stringify(safeSubmissionSummary(submission));
+
+  assert.match(rendered, /已接收（运单文件处理中）/);
+  assert.doesNotMatch(rendered, /解释中|当前意图|待人工判断/);
+});
+
 test('OpenAPI closes message task states and public failure codes', () => {
   const openapi = readFileSync(new URL('../../docs/openapi.yaml', import.meta.url), 'utf8');
+
+  assert.equal(
+    (openapi.match(/message_type: \{ type: string, enum: \[text, mixed, image, voice, file, video\] \}/g) ?? []).length,
+    2,
+    'summary/detail 都必须承认运行时可持久的 file 等消息类型',
+  );
 
   assert.match(
     openapi,
@@ -202,6 +267,6 @@ test('OpenAPI closes message task states and public failure codes', () => {
   );
   assert.match(
     openapi,
-    /last_error: \{ type: string, enum: \[MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID\], nullable: true \}/,
+    /last_error: \{ type: string, enum: \[MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID, WECOM_TRACKING_FILE_CHAT_UNSUPPORTED, WECOM_TRACKING_FILE_PAYLOAD_INVALID, WECOM_TRACKING_FILE_DOWNLOAD_FAILED, WECOM_TRACKING_FILE_TOO_LARGE, WECOM_TRACKING_FILE_INVALID, WECOM_TRACKING_FILE_PROCESSING_FAILED\], nullable: true \}/,
   );
 });

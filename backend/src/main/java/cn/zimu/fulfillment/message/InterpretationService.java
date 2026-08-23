@@ -131,6 +131,17 @@ public class InterpretationService {
             return Optional.empty();
         }
         ChannelMessageDetailDto message = messageQuery.detail(submission.getSourceMessageId());
+        if ("file".equals(message.messageType())) {
+            // #86 fail-closed 兼容门：升级前遗留的 INTERPRET_MESSAGE 文件任务也绝不调用模型，
+            // 原子补排专用确定性文件任务后把旧任务收敛为成功。
+            taskStore.enqueue(
+                    MessageSubmissionService.WECOM_TRACKING_FILE_TASK_TYPE,
+                    "submission:" + submission.getId(),
+                    AsyncTaskStore.key(MessageSubmissionService.WECOM_TRACKING_FILE_KEY_KIND, submission.getId()),
+                    3);
+            taskStore.succeedOwned(task.id(), task.leaseOwner());
+            return Optional.empty();
+        }
         return Optional.of(new InterpretationInput(
                 submission.getId(),
                 message.content(),
@@ -250,7 +261,35 @@ public class InterpretationService {
 
     /** 恢复已耗尽三次模型调用的最终收口；此路径绝不再进入 {@link MessageInterpreter}。 */
     public void resumeFinalization(AsyncTaskStore.AsyncTask task) {
+        Boolean redirected = required.execute(status -> redirectLegacyFileFinalization(task));
+        if (Boolean.TRUE.equals(redirected)) {
+            return;
+        }
         required.executeWithoutResult(status -> finalizeFailure(task, task.lastError()));
+    }
+
+    /** 升级前已进入 FINALIZING 的 file 解释任务也改道专用队列，不能落成伪模型失败。 */
+    private boolean redirectLegacyFileFinalization(AsyncTaskStore.AsyncTask task) {
+        MessageSubmission submission = requireSubmissionForUpdate(task.submissionId());
+        ChannelMessageDetailDto message = messageQuery.detail(submission.getSourceMessageId());
+        if (!"file".equals(message.messageType())) {
+            return false;
+        }
+        AsyncTaskStore.ApplicationFence fence = taskStore.lockFinalizationFence(task.id(), task.leaseOwner());
+        if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
+            return true;
+        }
+        if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED) {
+            taskStore.succeedOwned(task.id(), task.leaseOwner());
+            return true;
+        }
+        taskStore.enqueue(
+                MessageSubmissionService.WECOM_TRACKING_FILE_TASK_TYPE,
+                "submission:" + submission.getId(),
+                AsyncTaskStore.key(MessageSubmissionService.WECOM_TRACKING_FILE_KEY_KIND, submission.getId()),
+                3);
+        taskStore.succeedOwned(task.id(), task.leaseOwner());
+        return true;
     }
 
     private FailureAction prepareFailure(

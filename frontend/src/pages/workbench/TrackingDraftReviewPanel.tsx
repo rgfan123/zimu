@@ -19,7 +19,9 @@ import type { ReviewCase } from '@/api/types';
 import {
   buildTrackingDraftConfirmCommand,
   initialTrackingDraftReviewForm,
+  isAtomicShipmentDraft,
   trackingDraftBlockingIssues,
+  trackingDraftCarrierSourceLabel,
   trackingDraftIssueLabel,
   type TrackingDraftCarrierOption,
   type TrackingDraftDetail,
@@ -111,19 +113,20 @@ export default function TrackingDraftReviewPanel({
     };
   }, [draft, reloadSequence]);
 
+  const selectedBatchDrafts = siblingDrafts.filter((row) => (
+    selectedDraftIds.includes(row.id) && batchConfirmable(row)
+  ));
   const canBatch = reviewCase.status === 'OPEN'
     && siblingDrafts.length > 0
-    && selectedDraftIds.length > 0
+    && selectedBatchDrafts.length > 0
     && !batchSubmitting;
 
   async function confirmBatch() {
-    if (!draft || selectedDraftIds.length === 0) return;
+    if (!draft || selectedBatchDrafts.length === 0) return;
     setBatchSubmitting(true);
     setBatchResult(undefined);
     try {
-      const lines: TrackingDraftBatchLine[] = selectedDraftIds
-        .map((id) => siblingDrafts.find((row) => row.id === id))
-        .filter((row): row is TrackingDraftDetail => Boolean(row))
+      const lines: TrackingDraftBatchLine[] = selectedBatchDrafts
         .map((row) => {
           const command = buildTrackingDraftConfirmCommand(
             row,
@@ -149,7 +152,7 @@ export default function TrackingDraftReviewPanel({
       // 成功行从批量区移除（已解决事项），失败行保留 OPEN 与可执行错误，供重试或单独处理
       setSiblingDrafts((current) => current.filter((row) => !succeededIds.has(row.id)));
       setSelectedDraftIds((current) => current.filter((id) => !succeededIds.has(id)));
-      if (result.failure_count === 0) {
+      if (succeededIds.has(draft.id)) {
         onCompleted(draft);
       }
     } catch (error) {
@@ -210,6 +213,8 @@ export default function TrackingDraftReviewPanel({
   const selectedTask = draft.task_candidates.find((candidate) => candidate.task_id === form.task_id);
   const selectedCarrier = draft.carrier_candidates.find((candidate) => candidate.code === form.carrier_code);
   const selectedManualCarrier = draft.manual_carrier_options.find((candidate) => candidate.code === form.carrier_code);
+  const atomicShipment = isAtomicShipmentDraft(draft);
+  const filePartial = draft.source === 'WECOM_TRACKING_FILE' && draft.shipment_judgment === 'PARTIAL';
 
   return (
     <Space direction="vertical" size={20} style={{ width: '100%' }}>
@@ -253,28 +258,56 @@ export default function TrackingDraftReviewPanel({
 
       <section>
         <Typography.Title level={5} style={{ margin: 0 }}>发货任务</Typography.Title>
-        <Typography.Text type="secondary">候选只展示确定性匹配结果；零命中时可输入完整系统任务号，服务端会重新校验待回传范围。</Typography.Text>
-        <Select<string>
-          value={form.task_id || undefined}
-          disabled={!canWrite || draft.task_candidates.length === 0}
-          onChange={(value) => setForm((current) => current ? { ...current, task_id: value, task_no: '' } : current)}
-          placeholder="未唯一确定发货任务"
-          style={{ width: '100%', marginTop: 12 }}
-          options={draft.task_candidates.map((candidate) => ({
-            value: candidate.task_id,
-            label: taskCandidateLabel(candidate),
-          }))}
-        />
-        <Input
-          value={form.task_no}
-          disabled={!canWrite}
-          onChange={(event) => setForm((current) => current
-            ? { ...current, task_id: '', task_no: event.target.value }
-            : current)}
-          placeholder="输入完整系统任务号"
-          style={{ marginTop: 8 }}
-        />
-        {selectedTask ? (
+        {atomicShipment ? (
+          <>
+            <Alert
+              style={{ marginTop: 12 }}
+              type="info"
+              showIcon
+              message={`将原子确认同一发货批次的 ${draft.task_candidates.length} 条明细`}
+              description="这些不是互斥候选；人工确认后将共用一个正式运单，不可只选其一。"
+            />
+            <Table<TrackingDraftTaskCandidate>
+              rowKey="task_id"
+              size="small"
+              pagination={false}
+              style={{ marginTop: 12 }}
+              dataSource={draft.task_candidates}
+              columns={[
+                { title: '系统任务号', dataIndex: 'fulfillment_no', render: (value: string) => value || '—' },
+                { title: '订单号', dataIndex: 'order_no', render: (value: string) => value || '—' },
+                { title: '收货人快照', dataIndex: 'receiver_name', render: (value: string) => value || '—' },
+                { title: '本批指令数量', dataIndex: 'instructed_quantity' },
+                { title: '待回传发货批次', dataIndex: 'shipment_id' },
+              ]}
+            />
+          </>
+        ) : (
+          <>
+            <Typography.Text type="secondary">候选只展示确定性匹配结果；零命中时可输入完整系统任务号，服务端会重新校验待回传范围。</Typography.Text>
+            <Select<string>
+              value={form.task_id || undefined}
+              disabled={!canWrite || draft.task_candidates.length === 0}
+              onChange={(value) => setForm((current) => current ? { ...current, task_id: value, task_no: '' } : current)}
+              placeholder="未唯一确定发货任务"
+              style={{ width: '100%', marginTop: 12 }}
+              options={draft.task_candidates.map((candidate) => ({
+                value: candidate.task_id,
+                label: taskCandidateLabel(candidate),
+              }))}
+            />
+            <Input
+              value={form.task_no}
+              disabled={!canWrite}
+              onChange={(event) => setForm((current) => current
+                ? { ...current, task_id: '', task_no: event.target.value }
+                : current)}
+              placeholder="输入完整系统任务号"
+              style={{ marginTop: 8 }}
+            />
+          </>
+        )}
+        {!atomicShipment && selectedTask ? (
           <Descriptions
             size="small"
             column={2}
@@ -306,7 +339,7 @@ export default function TrackingDraftReviewPanel({
         />
         {selectedCarrier ? (
           <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
-            匹配依据：{selectedCarrier.source === 'STATED' ? '消息明示物流公司' : '运单前缀主数据'}
+            匹配依据：{trackingDraftCarrierSourceLabel(selectedCarrier.source)}
           </Typography.Paragraph>
         ) : selectedManualCarrier ? (
           <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
@@ -315,14 +348,34 @@ export default function TrackingDraftReviewPanel({
         ) : null}
       </section>
 
-      <Alert
-        type={draft.default_full_shipment ? 'success' : 'warning'}
-        showIcon
-        message={draft.default_full_shipment ? '默认按整项发货' : '不能按整项发货确认'}
-        description={draft.default_full_shipment
-          ? `本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量${selectedTask?.instructed_quantity ? ` ${selectedTask.instructed_quantity}` : ''}。`
-          : '本草稿包含部分发货、缺货、异常或无法识别的判断，请保留在复核队列并由履约运营核对。'}
-      />
+      {filePartial ? (
+        <section>
+          <Alert
+            type="warning"
+            showIcon
+            message="回传文件标记为部分发货"
+            description="请核对文件中的实发数量；确认后将按此数量记录正式运单。"
+          />
+          <Input
+            addonBefore="实发数量"
+            value={form.actual_quantity}
+            disabled={!canWrite}
+            onChange={(event) => setForm((current) => current
+              ? { ...current, actual_quantity: event.target.value }
+              : current)}
+            style={{ marginTop: 8 }}
+          />
+        </section>
+      ) : (
+        <Alert
+          type={draft.default_full_shipment ? 'success' : 'warning'}
+          showIcon
+          message={draft.default_full_shipment ? '默认按整项发货' : '不能按整项发货确认'}
+          description={draft.default_full_shipment
+            ? `本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量${selectedTask?.instructed_quantity ? ` ${selectedTask.instructed_quantity}` : ''}。`
+            : '本草稿包含缺货、异常或无法识别的判断，请保留在复核队列并由履约运营核对。'}
+        />
+      )}
 
       {reviewCase.status === 'OPEN' && draft.status === 'OPEN' && !canWrite ? (
         <Alert
@@ -352,7 +405,7 @@ export default function TrackingDraftReviewPanel({
         <section>
           <Typography.Title level={5} style={{ margin: 0 }}>批量确认同批回传</Typography.Title>
           <Typography.Text type="secondary">
-            同一消息提交的待确认运单草稿；只有已通过校验的行可勾选。逐行独立事务，失败行保持待确认且不影响成功行。
+            同一消息提交的待确认运单草稿；只有整项发货且已通过校验的行可勾选。文件中的部分发货须在上方逐条核对实发数量后确认。
           </Typography.Text>
           {batchLoadError ? (
             <Alert
@@ -388,14 +441,18 @@ export default function TrackingDraftReviewPanel({
                 {
                   title: '发货任务',
                   width: 180,
-                  render: (_: unknown, row) => row.task_candidates[0]
+                  render: (_: unknown, row) => isAtomicShipmentDraft(row)
+                    ? `同一发货批次 · ${row.task_candidates.length} 条明细`
+                    : row.task_candidates[0]
                     ? taskCandidateLabel(row.task_candidates[0])
                     : '未匹配任务',
                 },
                 {
                   title: '指令数量',
                   width: 110,
-                  render: (_: unknown, row) => row.task_candidates[0]?.instructed_quantity ?? '—',
+                  render: (_: unknown, row) => isAtomicShipmentDraft(row)
+                    ? row.task_candidates.map((item) => item.instructed_quantity).join(' + ')
+                    : row.task_candidates[0]?.instructed_quantity ?? '—',
                 },
                 {
                   title: '物流公司',
@@ -487,7 +544,7 @@ export default function TrackingDraftReviewPanel({
               loading={submitting}
               onClick={confirmDraft}
             >
-              确认并记录运单
+              {atomicShipment ? '确认整个发货批次并记录运单' : '确认并记录运单'}
             </Button>
             <Typography.Text type="secondary">确认后发货批次进入已发货，实际发货时间保持为空。</Typography.Text>
           </Space>
@@ -515,10 +572,11 @@ function draftStatusLabel(status: TrackingDraftDetail['status']): string {
   return '待人工确认的运单草稿';
 }
 
-/** 批量可确认：已通过校验、能形成默认整项发货且表单无阻塞问题。 */
+/** 批量可确认：只允许已通过校验的整项发货；文件 PARTIAL 必须逐条展示数量并确认。 */
 function batchConfirmable(draft: TrackingDraftDetail): boolean {
   if (draft.status !== 'OPEN' || draft.validation_issues.length > 0) return false;
   if (draft.review_case_id == null || draft.review_case_version == null) return false;
+  if (draft.source === 'WECOM_TRACKING_FILE' && draft.shipment_judgment === 'PARTIAL') return false;
   return trackingDraftBlockingIssues(draft, initialTrackingDraftReviewForm(draft)).length === 0;
 }
 

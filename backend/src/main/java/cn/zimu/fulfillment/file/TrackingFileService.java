@@ -72,6 +72,34 @@ public class TrackingFileService {
         this.wecomExportService = wecomExportService;
     }
 
+    /**
+     * 企微文件任务的只读解析 seam：复用后台上传的 24 列、不可变指令列、数量与结果校验，
+     * 但只返回草稿输入，绝不创建 import batch、Shipment/Tracking 或来源回填文件。
+     */
+    ParsedTrackingFile parseForDraft(byte[] bytes) {
+        ExportHeader export = identifyThirdPartyExport(bytes);
+        List<TrackingRow> rows = collapseBundleComponentRows(parseAndValidateThirdParty(export, bytes));
+        validateShipmentGroups(rows);
+        List<ParsedTrackingRow> parsed = rows.stream()
+                .map(row -> new ParsedTrackingRow(
+                        row.rowIndex(),
+                        row.shipmentId(),
+                        row.fulfillmentId(),
+                        row.orderLineId(),
+                        row.orderId(),
+                        row.cells().get("收件人"),
+                        row.result(),
+                        row.shippedQuantity(),
+                        row.carrier() == null ? null : internalCarrierCode(row.carrier()),
+                        row.carrier(),
+                        row.trackingNo(),
+                        row.failureReason(),
+                        row.line().instructedQuantity(),
+                        Map.copyOf(row.cells())))
+                .toList();
+        return new ParsedTrackingFile(export.id(), export.batchNo(), parsed);
+    }
+
     @Transactional
     Map<String, Object> upload(
             long exportId,
@@ -309,8 +337,16 @@ public class TrackingFileService {
         }
         List<TrackingRow> result = new ArrayList<>();
         try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            if (workbook.getNumberOfSheets() != 1) {
+                throw BusinessException.unprocessable(
+                        "TRACKING_SHEET_SET_INVALID", "回传文件必须且只能保留一个发货清单工作表");
+            }
             var sheet = workbook.getSheetAt(0);
             var headerRow = sheet.getRow(0);
+            if (headerRow == null
+                    || headerRow.getLastCellNum() != ProviderFileService.THIRD_PARTY_HEADERS.size()) {
+                throw BusinessException.unprocessable("TRACKING_HEADER_INVALID", "回传文件必须保持精确 24 列及顺序");
+            }
             for (int index = 0; index < ProviderFileService.THIRD_PARTY_HEADERS.size(); index++) {
                 if (!ProviderFileService.THIRD_PARTY_HEADERS.get(index)
                         .equals(formatter.formatCellValue(headerRow.getCell(index)).strip())) {
@@ -325,6 +361,10 @@ public class TrackingFileService {
                 var row = sheet.getRow(index + 1);
                 if (row == null) {
                     throw BusinessException.unprocessable("TRACKING_ROW_MISSING", "回传文件存在空行");
+                }
+                if (row.getLastCellNum() > ProviderFileService.THIRD_PARTY_HEADERS.size()) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_ROW_COLUMN_INVALID", "回传文件数据行必须保持精确 24 列");
                 }
                 Map<String, String> cells = new LinkedHashMap<>();
                 for (int column = 0; column < ProviderFileService.THIRD_PARTY_HEADERS.size(); column++) {
@@ -346,6 +386,81 @@ public class TrackingFileService {
             throw exception;
         } catch (Exception exception) {
             throw BusinessException.unprocessable("TRACKING_READ_FAILED", "无法读取履约返回文件");
+        }
+    }
+
+    /** 只读识别导出：先验证精确 24 列，再用首行「导出批次号」定位唯一 THIRD_PARTY 导出。 */
+    private ExportHeader identifyThirdPartyExport(byte[] bytes) {
+        if (bytes == null || bytes.length < 2 || bytes[0] != 'P' || bytes[1] != 'K') {
+            throw BusinessException.unprocessable("TRACKING_CONTAINER_INVALID", "第三方履约返回必须是真实 XLSX");
+        }
+        String batchNo;
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            if (workbook.getNumberOfSheets() != 1) {
+                throw BusinessException.unprocessable(
+                        "TRACKING_SHEET_SET_INVALID", "回传文件必须且只能保留一个发货清单工作表");
+            }
+            var sheet = workbook.getSheetAt(0);
+            var header = sheet.getRow(0);
+            if (header == null || header.getLastCellNum() != ProviderFileService.THIRD_PARTY_HEADERS.size()) {
+                throw BusinessException.unprocessable("TRACKING_HEADER_INVALID", "回传文件必须保持精确 24 列及顺序");
+            }
+            for (int index = 0; index < ProviderFileService.THIRD_PARTY_HEADERS.size(); index++) {
+                if (!ProviderFileService.THIRD_PARTY_HEADERS.get(index)
+                        .equals(formatter.formatCellValue(header.getCell(index)).strip())) {
+                    throw BusinessException.unprocessable("TRACKING_HEADER_INVALID", "回传文件必须保持精确 24 列及顺序");
+                }
+            }
+            var first = sheet.getRow(1);
+            batchNo = first == null ? "" : formatter.formatCellValue(first.getCell(0)).strip();
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw BusinessException.unprocessable("TRACKING_READ_FAILED", "无法读取履约返回文件");
+        }
+        if (batchNo.isBlank()) {
+            throw BusinessException.unprocessable("TRACKING_EXPORT_BATCH_MISSING", "回传文件缺少导出批次号");
+        }
+        List<ExportHeader> exports = jdbc.query(
+                """
+                SELECT id, fulfillment_provider_id, export_batch_no, export_kind
+                FROM app.fulfillment_exports WHERE export_batch_no=?
+                """,
+                (resultSet, rowNum) -> new ExportHeader(
+                        resultSet.getLong("id"),
+                        resultSet.getLong("fulfillment_provider_id"),
+                        resultSet.getString("export_batch_no"),
+                        resultSet.getString("export_kind")),
+                batchNo);
+        if (exports.isEmpty()) {
+            throw BusinessException.unprocessable("TRACKING_EXPORT_NOT_FOUND", "回传文件不属于任何已登记履约导出");
+        }
+        ExportHeader export = exports.getFirst();
+        if (!"THIRD_PARTY".equals(export.exportKind())) {
+            throw BusinessException.unprocessable("JD_TRACKING_TEMPLATE_GATE", "当前缺少京东官方回传 golden 样表");
+        }
+        return export;
+    }
+
+    /** 与正式接收保持同一 Shipment 聚合门禁，但不写任何业务事实。 */
+    private void validateShipmentGroups(List<TrackingRow> rows) {
+        Map<Long, List<TrackingRow>> byShipment = new LinkedHashMap<>();
+        for (TrackingRow row : rows) {
+            byShipment.computeIfAbsent(row.shipmentId(), ignored -> new ArrayList<>()).add(row);
+        }
+        for (List<TrackingRow> shipmentRows : byShipment.values()) {
+            if (shipmentRows.size() == 1) {
+                continue;
+            }
+            if (shipmentRows.stream().anyMatch(row -> !"SHIPPED".equals(row.result()))
+                    || shipmentRows.stream().map(TrackingRow::carrier).distinct().count() != 1
+                    || shipmentRows.stream().map(TrackingRow::trackingNo).distinct().count() != 1
+                    || shipmentRows.stream().map(TrackingRow::shippedAt).distinct().count() != 1
+                    || shipmentRows.stream().map(TrackingRow::orderId).distinct().count() != 1) {
+                throw BusinessException.unprocessable(
+                        "TRACKING_MULTI_ITEM_SHIPMENT_MISMATCH",
+                        "同一 Shipment 的多履约明细必须完整发货并使用同一运单");
+            }
         }
     }
 
@@ -1035,6 +1150,30 @@ public class TrackingFileService {
         long orderLineId() { return line.orderLineId(); }
         long orderId() { return line.orderId(); }
         String outboundOrderNo() { return line.outboundOrderNo(); }
+    }
+    record ParsedTrackingFile(long exportId, String exportBatchNo, List<ParsedTrackingRow> rows) {
+        ParsedTrackingFile {
+            rows = List.copyOf(rows);
+        }
+    }
+    record ParsedTrackingRow(
+            int rowIndex,
+            long shipmentId,
+            long fulfillmentId,
+            long orderLineId,
+            long orderId,
+            String receiverName,
+            String result,
+            BigDecimal shippedQuantity,
+            String carrierCode,
+            String carrierName,
+            String trackingNo,
+            String failureReason,
+            BigDecimal instructedQuantity,
+            Map<String, String> cells) {
+        ParsedTrackingRow {
+            cells = Map.copyOf(cells);
+        }
     }
     private record SourceBatch(String channel, String templateVersion, String fileRef) {}
     private record MultiPartitionSourceRow(long rawRowId, long orderId, int partitionCount) {}

@@ -198,3 +198,20 @@ test('REVISION_AFTER_EXPORT：改动为空时显示「无字段变更」，缺 k
   const [absent] = factGroupRows({}, changeGroup);
   assert.equal(absent.value, SOURCE_NOT_PROVIDED);
 });
+
+test('WECOM_TRACKING_FILE_REVIEW 只展示稳定失败码与服务端文案', () => {
+  const rows = allRows({
+    source: 'WECOM_TRACKING_FILE',
+    error_code: 'WECOM_TRACKING_FILE_TOO_LARGE',
+    message: '运单文件超过 20MB 上限，请拆分后重新发送',
+    source_url: 'https://temporary.example/secret',
+    aeskey: 'must-not-render',
+  }, 'WECOM_TRACKING_FILE_REVIEW');
+
+  assert.deepEqual(rows, [
+    { label: '处理类型', value: '企微运单文件' },
+    { label: '失败代码', value: 'WECOM_TRACKING_FILE_TOO_LARGE' },
+    { label: '处理说明', value: '运单文件超过 20MB 上限，请拆分后重新发送' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(rows), /temporary\.example|must-not-render|aeskey|source_url/);
+});

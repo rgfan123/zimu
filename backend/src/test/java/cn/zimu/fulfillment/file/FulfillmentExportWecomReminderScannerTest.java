@@ -341,6 +341,33 @@ class FulfillmentExportWecomReminderScannerTest {
     }
 
     @Test
+    void confirmedWecomTrackingWithoutImportBatchAlsoStopsReminders() throws Exception {
+        String exportId = activeExport("FX-RM-WECOM-CONFIRMED-001");
+        makeDue(exportId);
+        service.scanDueReminders(10);
+
+        long shipmentId = store.firstShipmentId(Long.parseLong(exportId));
+        jdbc.update(
+                """
+                INSERT INTO app.trackings
+                    (shipment_id, logistics_company_code, logistics_company_name, tracking_number,
+                     provider_tracking_batch_id, raw_payload)
+                VALUES (?, 'JD', '京东物流', ?, NULL, '{"source":"WECOM_TRACKING_DRAFT"}'::jsonb)
+                """,
+                shipmentId,
+                "JDVA-WECOM-" + exportId);
+
+        service.markTrackingReceived(Long.parseLong(exportId));
+        assertThat(stateRow(exportId).get("status")).isEqualTo("COMPLETED");
+        assertThat(store.missingTrackingShipmentCount(Long.parseLong(exportId))).isZero();
+
+        wecom.sentMessages.clear();
+        claimAndRun(exportId, "REMINDER", 1);
+        assertThat(wecom.sentMessages).isEmpty();
+        assertThat(taskStatus("wecom-export-reminder:" + exportId + ":1")).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
     void manuallyStoppedExportBlocksRemindersAndInFlightReminderIsNoOp() throws Exception {
         String exportId = activeExport("FX-RM-STOP-001");
         makeDue(exportId);

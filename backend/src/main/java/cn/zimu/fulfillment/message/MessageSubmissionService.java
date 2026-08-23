@@ -20,6 +20,10 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class MessageSubmissionService {
 
+    public static final String INTERPRET_TASK_TYPE = "INTERPRET_MESSAGE";
+    public static final String WECOM_TRACKING_FILE_TASK_TYPE = "WECOM_TRACKING_FILE";
+    static final String WECOM_TRACKING_FILE_KEY_KIND = "wecom-tracking-file";
+
     private final ChannelMessageIntakeService intakeService;
     private final MessageSubmissionRepository submissions;
     private final AsyncTaskStore taskStore;
@@ -66,10 +70,11 @@ public class MessageSubmissionService {
         } else {
             submissionId = created.getFirst();
         }
+        String taskType = taskType(command.messageType());
         taskStore.enqueue(
-                "INTERPRET_MESSAGE",
+                taskType,
                 "submission:" + submissionId,
-                AsyncTaskStore.key("interpret", submissionId),
+                AsyncTaskStore.key(taskKeyPrefix(taskType), submissionId),
                 3);
         return submissionId;
     }
@@ -123,8 +128,17 @@ public class MessageSubmissionService {
 
         submission.setStatus(MessageSubmission.Status.RECEIVED);
         submissions.save(submission);
+        String messageType = jdbc.queryForObject(
+                """
+                SELECT cm.message_type
+                FROM app.channel_messages cm
+                JOIN app.message_submissions ms ON ms.source_message_id=cm.id
+                WHERE ms.id=?
+                """,
+                String.class,
+                submissionId);
         taskStore.enqueue(
-                "INTERPRET_MESSAGE",
+                taskType(messageType),
                 "submission:" + submissionId,
                 AsyncTaskStore.reinterpretKey(submissionId),
                 3);
@@ -151,5 +165,13 @@ public class MessageSubmissionService {
         return submissions
                 .findByIdForUpdate(submissionId)
                 .orElseThrow(() -> BusinessException.notFound("消息提交不存在: " + submissionId));
+    }
+
+    private static String taskType(String messageType) {
+        return "file".equals(messageType) ? WECOM_TRACKING_FILE_TASK_TYPE : INTERPRET_TASK_TYPE;
+    }
+
+    private static String taskKeyPrefix(String taskType) {
+        return WECOM_TRACKING_FILE_TASK_TYPE.equals(taskType) ? WECOM_TRACKING_FILE_KEY_KIND : "interpret";
     }
 }

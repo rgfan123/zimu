@@ -26,7 +26,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** 人工复核列表 API，仅暴露 BUSINESS 订单关联的复核事项。 */
+/** 人工复核列表 API，仅暴露 BUSINESS 订单或渠道消息链路关联的复核事项。 */
 @RestController
 @RequestMapping("/api/v1/review-cases")
 @Validated
@@ -105,7 +105,7 @@ public class ReviewCaseController {
         return cn.zimu.fulfillment.common.web.WriteCommands.respond(result);
     }
 
-    /** 关闭误建或不再需要的事项；消息链路事项必须走各自生命周期。 */
+    /** 关闭误建或不再需要的事项；未完成的消息解读/草稿事项必须走各自生命周期。 */
     @PostMapping("/{caseId}/dismiss")
     public ResponseEntity<?> dismiss(
             @PathVariable String caseId,

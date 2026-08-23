@@ -103,6 +103,22 @@ function revisionChangesText(detail: Record<string, unknown>): string | null {
   return text.length ? text.join('；') : '无字段变更';
 }
 
+const WECOM_TRACKING_FILE_FAILURE_MESSAGES: Record<string, string> = {
+  WECOM_TRACKING_FILE_CHAT_UNSUPPORTED: '当前仅支持把运单文件单聊直发给机器人',
+  WECOM_TRACKING_FILE_PAYLOAD_INVALID: '企微文件消息缺少可用的下载信息，请重新单聊发送原文件',
+  WECOM_TRACKING_FILE_DOWNLOAD_FAILED: '运单文件下载或解密失败，请重新单聊发送原文件',
+  WECOM_TRACKING_FILE_TOO_LARGE: '运单文件超过 20MB 上限，请拆分后重新发送',
+  WECOM_TRACKING_FILE_INVALID: '回传文件格式或内容不符合精确 24 列模板，请下载原件核对',
+  WECOM_TRACKING_FILE_PROCESSING_FAILED: '运单文件处理失败，请人工复核并重试',
+};
+
+function trackingFileFailureCode(detail: Record<string, unknown>): string {
+  const code = scalarValue(detail.error_code);
+  return code && WECOM_TRACKING_FILE_FAILURE_MESSAGES[code]
+    ? code
+    : 'WECOM_TRACKING_FILE_PROCESSING_FAILED';
+}
+
 /** 数量换算 / 精度家族共用的事实组：来源数量原文、单位、当前乘数、换算后结果、拒绝原因、履约方。 */
 function quantityFactGroups(): FactGroup[] {
   return [{
@@ -181,6 +197,22 @@ const REVIEW_FACT_GROUPS: Record<string, FactGroup[]> = {
   SKU_MAPPING_CONFLICT: [SKU_MAPPING_FACT_GROUP],
   SOURCE_SKU_MAPPING_REQUIRED: [SKU_MAPPING_FACT_GROUP],
   PROVIDER_SKU_MAPPING_REQUIRED: [SKU_MAPPING_FACT_GROUP],
+  WECOM_TRACKING_FILE_REVIEW: [{
+    title: '运单文件处理结果',
+    fields: [
+      {
+        key: 'source',
+        label: '处理类型',
+        value: (detail) => detail.source === 'WECOM_TRACKING_FILE' ? '企微运单文件' : null,
+      },
+      { key: 'error_code', label: '失败代码', value: trackingFileFailureCode },
+      {
+        key: 'message',
+        label: '处理说明',
+        value: (detail) => WECOM_TRACKING_FILE_FAILURE_MESSAGES[trackingFileFailureCode(detail)],
+      },
+    ],
+  }],
   CUSTOMER_MATCH_REQUIRED: [
     {
       title: '来源客户',

@@ -69,6 +69,17 @@ public class WecomMediaEvidenceService {
         } catch (RuntimeException exception) {
             String reason = errorMessage(exception);
             String status = mediaStore.recordFailure(mediaId, reason, MAX_ATTEMPTS);
+            if ("AVAILABLE".equals(status)) {
+                MediaState available = mediaStore.find(command.channelMessageId(), command.channelMediaId())
+                        .filter(state -> "AVAILABLE".equals(state.downloadStatus()))
+                        .orElseThrow(() -> new IllegalStateException("available media row vanished after concurrent success"));
+                return MediaResult.succeeded(
+                        available.id(),
+                        available.contentRef(),
+                        available.contentHash(),
+                        available.contentType(),
+                        available.sizeBytes());
+            }
             return MediaResult.failed(
                     "FAILED".equals(status) ? MediaResultStatus.FAILED : MediaResultStatus.PENDING,
                     mediaId,
@@ -111,7 +122,7 @@ public class WecomMediaEvidenceService {
 
     /**
      * 从企微消息帧（aibot_msg_callback 的 body）提取 image/mixed 的媒体项列表（顺序稳定）。
-     * 供接收链路与解释任务共用；voice/file/video 不在此列（不在下载范围）。
+     * 供接收链路与解释任务共用；voice/file/video 不在此列。
      */
     public static List<MediaRef> extractMediaRefs(JsonNode body) {
         List<MediaRef> refs = new ArrayList<>();
@@ -145,4 +156,24 @@ public class WecomMediaEvidenceService {
         }
         return refs;
     }
+
+    /** 单聊 file 专用提取；文件由确定性运单任务处理，绝不并入模型媒体引用。 */
+    public static FileRef extractFileRef(JsonNode body) {
+        if (body == null || !body.isObject() || !"file".equals(body.path("msgtype").asText())) {
+            return null;
+        }
+        JsonNode file = body.path("file");
+        String url = file.path("url").asText(null);
+        String aeskey = file.path("aeskey").asText(null);
+        if (url == null || url.isBlank() || aeskey == null || aeskey.isBlank()) {
+            return null;
+        }
+        String filename = file.path("filename").asText(null);
+        if (filename == null || filename.isBlank()) {
+            filename = file.path("name").asText(null);
+        }
+        return new FileRef(url, aeskey, filename);
+    }
+
+    public record FileRef(String url, String aeskey, String filename) {}
 }

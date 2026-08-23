@@ -20,8 +20,9 @@ import org.springframework.stereotype.Component;
  * <p>映射决策（04 票）：chattype 区分单聊（无 chatid）与群聊；from.userid 明文直用；msgid 幂等由
  * {@code channel_messages} 的 ON CONFLICT 保证；回执透传回调 req_id，发送失败重试 1 次、仍失败只告警；
  * 媒体（image/mixed）**不在回调线程下载**——仅保存原始载荷并创建解释任务，由解释任务内下载解密
- * （wecom-message-intake 07 票 checkbox 1：不等待下载或识别即可回复「已接收」）；voice/file/video
- * 落证据但不下载；enter_chat / disconnected_event 留档，template_card_event / feedback_event 忽略。
+ * （wecom-message-intake 07 票 checkbox 1：不等待下载或识别即可回复「已接收」）；单聊 file
+ * 进入 {@code WECOM_TRACKING_FILE} 专用任务下载/解析且不进模型；voice/video 只落消息证据；
+ * enter_chat / disconnected_event 留档，template_card_event / feedback_event 忽略。
  * 不设白名单。
  */
 @Component

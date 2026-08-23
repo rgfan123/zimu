@@ -4,6 +4,7 @@ import cn.zimu.fulfillment.common.event.OrderEvent;
 import cn.zimu.fulfillment.common.version.OrderVersion;
 import cn.zimu.fulfillment.message.MessageModelMetadataRegistry;
 import cn.zimu.fulfillment.message.MessagePublicProjectionSanitizer;
+import cn.zimu.fulfillment.message.WecomTrackingFileFailureCode;
 import cn.zimu.fulfillment.order.domain.Order;
 import cn.zimu.fulfillment.order.domain.OrderLine;
 import cn.zimu.fulfillment.order.domain.OrderLineComponent;
@@ -301,6 +302,7 @@ public class OrderMapper {
             case "WECOM_TRACKING_DRAFT" -> List.of("CONFIRM_TRACKING_DRAFT", "REJECT_TRACKING_DRAFT");
             case "WECOM_NEED_REVIEW", "WECOM_ORDER_CHANGE", "WECOM_ORDER_CANCEL" ->
                 List.of("REINTERPRET", "REJECT", "RESOLVE_MANUALLY");
+            case WecomTrackingFileFailureCode.REVIEW_REASON -> List.of("RESOLVE_MANUALLY", "DISMISS");
             case "SKU_MAPPING_CONFLICT", "REVISION_AFTER_EXPORT", "QUANTITY_SCALE",
                     "FULFILLMENT_EXCEPTION", "SYNC_FAILED", "IMPORT_DATA", "CARRIER_MAPPING",
                     "SOURCE_SKU_MAPPING_REQUIRED", "PROVIDER_SKU_MAPPING_REQUIRED" ->

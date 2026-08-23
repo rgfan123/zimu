@@ -60,6 +60,7 @@ class ExcelClosedLoopApiTest {
 
     @Autowired TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
+    @Autowired TrackingFileService trackingFileService;
 
     @BeforeEach
     void addExplicitFeixiangMappings() {
@@ -442,6 +443,39 @@ class ExcelClosedLoopApiTest {
         assertThat(csv.length >= 2 && csv[0] == 'P' && csv[1] == 'K').isFalse();
         String text = new String(csv, StandardCharsets.UTF_8);
         assertThat(text).contains("已发货", "京东物流", "JDVAFX-CLOSED-LOOP-001");
+    }
+
+    @Test
+    void wecomTrackingFileParsingReturnsDraftInputWithoutAcceptingTracking() throws Exception {
+        Map<String, Object> imported = upload(
+                "wecom-file-parse.csv",
+                feixiangSingleCsv("FX-WECOM-FILE-PARSE-001"),
+                "source-import-wecom-file-parse-001");
+        String exportId = ((List<?>) imported.get("generated_fulfillment_export_ids"))
+                .getFirst()
+                .toString();
+        byte[] returned = fillThirdPartyTracking(
+                downloadExport(exportId),
+                "SHIPPED",
+                "3.000",
+                "JDVA-WECOM-FILE-PARSE-001",
+                "");
+
+        TrackingFileService.ParsedTrackingFile parsed = trackingFileService.parseForDraft(returned);
+
+        assertThat(parsed.exportId()).isEqualTo(Long.parseLong(exportId));
+        assertThat(parsed.rows()).singleElement().satisfies(row -> {
+            assertThat(row.fulfillmentId()).isPositive();
+            assertThat(row.shipmentId()).isPositive();
+            assertThat(row.receiverName()).isNotBlank();
+            assertThat(row.result()).isEqualTo("SHIPPED");
+            assertThat(row.trackingNo()).isEqualTo("JDVA-WECOM-FILE-PARSE-001");
+        });
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.trackings WHERE shipment_id=?",
+                        Long.class,
+                        parsed.rows().getFirst().shipmentId()))
+                .isZero();
     }
 
     @Test

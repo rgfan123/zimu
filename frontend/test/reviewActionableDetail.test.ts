@@ -197,6 +197,22 @@ test('REVISION_AFTER_EXPORT：改动明细改前/改后与导出版本可见，�
   assert.doesNotMatch(text, /13800000000|13900000000|internal_secret|receiver_phone/);
 });
 
+test('企微运单文件失败在复核抽屉显示稳定可读原因', async () => {
+  await openDrawer('WECOM_TRACKING_FILE_REVIEW', {
+    source: 'WECOM_TRACKING_FILE',
+    error_code: 'WECOM_TRACKING_FILE_INVALID',
+    message: '回传文件格式或内容不符合精确 24 列模板，请下载原件核对',
+    source_url: 'https://temporary.example/secret',
+    aeskey: 'must-not-render',
+  });
+
+  const text = harness.bodyText();
+  assert.match(text, /企微运单文件/);
+  assert.match(text, /WECOM_TRACKING_FILE_INVALID/);
+  assert.match(text, /精确 24 列模板/);
+  assert.doesNotMatch(text, /temporary\.example|must-not-render|aeskey|source_url/);
+});
+
 test('五家族缺字段时显示「来源未提供」占位，不整行消失', async () => {
   // CUSTOMER_MATCH_REQUIRED 后端只写了渠道：其余字段必须全部以占位呈现。
   await openDrawer('CUSTOMER_MATCH_REQUIRED', { source_channel: 'WECOM' });
