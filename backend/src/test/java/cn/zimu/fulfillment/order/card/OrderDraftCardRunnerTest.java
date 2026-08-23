@@ -29,6 +29,7 @@ class OrderDraftCardRunnerTest {
     private AsyncTaskStore tasks;
     private OrderDraftQueryService drafts;
     private WecomOutboundGateway gateway;
+    private OrderDraftCardFailureCoordinator failures;
     private OrderDraftCardRunner runner;
 
     @BeforeEach
@@ -37,7 +38,8 @@ class OrderDraftCardRunnerTest {
         tasks = mock(AsyncTaskStore.class);
         drafts = mock(OrderDraftQueryService.class);
         gateway = mock(WecomOutboundGateway.class);
-        runner = new OrderDraftCardRunner(cards, tasks, drafts, gateway);
+        failures = mock(OrderDraftCardFailureCoordinator.class);
+        runner = new OrderDraftCardRunner(cards, tasks, drafts, gateway, failures);
     }
 
     @Test
@@ -88,8 +90,7 @@ class OrderDraftCardRunnerTest {
         runner.execute(task);
 
         verify(gateway, never()).send(any());
-        verify(tasks).failTerminal(
-                task.id(), task.leaseOwner(), "WECOM_ORDER_DRAFT_CARD_DELIVERY_UNKNOWN");
+        verify(failures).recordDeliveryUnknown(task, 7L, "WECOM_ORDER_DRAFT_CARD_DELIVERY_UNKNOWN");
     }
 
     @Test
@@ -111,9 +112,47 @@ class OrderDraftCardRunnerTest {
 
         runner.execute(task);
 
-        verify(cards).recordFailed(7L, "WECOM_93000");
-        verify(cards, never()).recordUnknown(7L, "WECOM_93000");
-        verify(tasks).failTerminal(task.id(), task.leaseOwner(), "WECOM_ORDER_DRAFT_CARD_SEND_FAILED");
+        verify(failures).recordKnownFailure(
+                task, 7L, "WECOM_93000", "WECOM_ORDER_DRAFT_CARD_SEND_FAILED");
+    }
+
+    @Test
+    void localPreSubmitFailureIsRetriedThroughAtomicCoordinator() {
+        AsyncTaskStore.AsyncTask task = task(6, 1);
+        when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
+                .thenReturn(true);
+        when(cards.load(7L)).thenReturn(new OrderDraftCard(
+                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
+        when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
+        when(drafts.detail(41L)).thenReturn(draft());
+        when(gateway.send(any())).thenReturn(new WecomSendResult(
+                WecomSendStatus.FAILED,
+                null,
+                null,
+                null,
+                "LOCAL_BACKPRESSURE",
+                true));
+
+        runner.execute(task);
+
+        verify(failures).recordRetryableFailure(task, 7L, "LOCAL_BACKPRESSURE");
+    }
+
+    @Test
+    void exceptionAfterExternalSubmitIsFencedAsUnknown() {
+        AsyncTaskStore.AsyncTask task = task(7, 1);
+        when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
+                .thenReturn(true);
+        when(cards.load(7L)).thenReturn(new OrderDraftCard(
+                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
+        when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
+        when(drafts.detail(41L)).thenReturn(draft());
+        when(gateway.send(any())).thenThrow(new IllegalStateException("connection lost"));
+
+        runner.execute(task);
+
+        verify(failures).recordDeliveryUnknown(
+                task, 7L, "WECOM_ORDER_DRAFT_CARD_SEND_EXCEPTION");
     }
 
     @Test

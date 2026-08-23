@@ -26,6 +26,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -44,6 +45,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * （error_type 稳定码），门禁明细经 agent_tool_calls 合成行可读。
  */
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class AgentDefinitionWriteApiTest {
 
@@ -57,6 +59,8 @@ class AgentDefinitionWriteApiTest {
 
     @DynamicPropertySource
     static void ticketConfiguration(DynamicPropertyRegistry registry) {
+        registry.add("app.scheduling.enabled", () -> "true");
+        registry.add("app.agent-worker.enabled", () -> "true");
         registry.add("app.gateway.basic-auth.username", () -> ADMIN_USER);
         registry.add("app.gateway.basic-auth.password", () -> ADMIN_PASSWORD);
         registry.add("app.agent-worker.poll-ms", () -> "50");

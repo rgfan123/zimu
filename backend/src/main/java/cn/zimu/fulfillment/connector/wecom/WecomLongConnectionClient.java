@@ -20,7 +20,6 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -58,6 +57,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private static final int MAX_QUEUED_HEARTBEATS = 4;
     private static final int MAX_QUEUED_CALLBACKS = 64;
     private static final int MAX_CONCURRENT_INTERACTIVE_CALLBACKS = 4;
+    private static final int MAX_QUEUED_INTERACTIVE_CALLBACKS = 4;
 
     private final WecomProperties properties;
     private final URI webSocketUri;
@@ -244,14 +244,15 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 new ThreadPoolExecutor.AbortPolicy());
         // Template-card callbacks have a platform-origin absolute deadline. They must never wait
         // behind an ordered callback that may itself spend most of that window waiting for an ACK.
-        // A SynchronousQueue provides zero backlog: up to four callbacks start immediately and any
-        // excess is rejected so the connection can be recycled for platform redelivery.
+        // Four workers start callbacks immediately. A second, equally bounded tier can wait only
+        // behind those active callbacks; the listener-origin deadline still applies, so queued
+        // work cannot reset or extend the platform's five-second window.
         this.interactiveFrameHandlerExecutor = new ThreadPoolExecutor(
                 MAX_CONCURRENT_INTERACTIVE_CALLBACKS,
                 MAX_CONCURRENT_INTERACTIVE_CALLBACKS,
                 0L,
                 TimeUnit.MILLISECONDS,
-                new SynchronousQueue<>(),
+                new ArrayBlockingQueue<>(MAX_QUEUED_INTERACTIVE_CALLBACKS),
                 runnable -> {
                     Thread thread = new Thread(runnable, "wecom-interactive-frame-handler");
                     thread.setDaemon(true);
@@ -391,6 +392,11 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     /** 测试观察 seam：已由 listener 接收、正在等待有序业务分发的回调数。 */
     int queuedCallbackCount() {
         return frameHandlerExecutor.getQueue().size();
+    }
+
+    /** 测试观察 seam：等待交互快通道线程、但仍受 listener-origin deadline 约束的回调数。 */
+    int queuedInteractiveCallbackCount() {
+        return interactiveFrameHandlerExecutor.getQueue().size();
     }
 
     /** 测试触发 seam：立即排入一次真实心跳，避免优先级测试依赖墙钟调度。 */
@@ -698,10 +704,9 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     }
 
     private void dispatchToHandler(String cmd, JsonNode frame, long receivedNanos) {
-        ThreadPoolExecutor executor = "aibot_event_callback".equals(cmd)
-                        && "template_card_event".equals(eventType(frame))
-                ? interactiveFrameHandlerExecutor
-                : frameHandlerExecutor;
+        boolean interactive = "aibot_event_callback".equals(cmd)
+                && "template_card_event".equals(eventType(frame));
+        ThreadPoolExecutor executor = interactive ? interactiveFrameHandlerExecutor : frameHandlerExecutor;
         try {
             executor.execute(() -> {
                 try {
@@ -712,12 +717,22 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 }
             });
         } catch (RejectedExecutionException ex) {
-            // 绝不在 WebSocket listener 线程回退执行业务逻辑。运行期队列饱和时主动断线，
-            // 让平台按未完成回调重投；应用关闭期则不再重连。
-            log.warn("企业微信长连接业务回调队列已满或已关闭，中止连接等待重投: cmd={}", cmd);
+            if (interactive) {
+                // Never recycle the shared socket here: doing so would fail ACKs already awaited by
+                // accepted card callbacks and unrelated outbound sends. The excess callback remains
+                // unacknowledged, while accepted work keeps the connection and can complete.
+                log.warn("企业微信交互卡片快通道已满或已关闭，拒绝本次回调且保留已受理回调");
+                if (running) {
+                    stateHolder.recordError("交互卡片快通道已满，本次回调未受理");
+                }
+                return;
+            }
+            // The callback has not been acknowledged, but accepted card updates and unrelated
+            // outbound requests share this socket. Reject only the excess callback; reconnecting
+            // here would turn their already-submitted external effects into false failures.
+            log.warn("企业微信长连接业务回调队列已满或已关闭，拒绝本次回调且保留共享连接: cmd={}", cmd);
             if (running) {
-                stateHolder.recordError("业务回调积压，主动重连等待通道重投");
-                closeAndReconnect();
+                stateHolder.recordError("业务回调队列已满，本次回调未受理");
             }
         }
     }

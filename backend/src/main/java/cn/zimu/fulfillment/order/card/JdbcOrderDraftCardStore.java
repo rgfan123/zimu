@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /** PostgreSQL implementation of the order-draft card outbox and SENDING recovery fence. */
@@ -75,6 +76,22 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
                 """
                 SELECT id, order_draft_id, draft_revision, task_id, route_type, chat_id, status, attempt_count
                 FROM app.wecom_order_draft_cards WHERE id=?
+                """,
+                JdbcOrderDraftCardStore::map,
+                cardId);
+        if (rows.isEmpty()) {
+            throw BusinessException.notFound("订单草稿卡片不存在: " + cardId);
+        }
+        return rows.getFirst();
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public OrderDraftCard lock(long cardId) {
+        List<OrderDraftCard> rows = jdbc.query(
+                """
+                SELECT id, order_draft_id, draft_revision, task_id, route_type, chat_id, status, attempt_count
+                FROM app.wecom_order_draft_cards WHERE id=? FOR UPDATE
                 """,
                 JdbcOrderDraftCardStore::map,
                 cardId);

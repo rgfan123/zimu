@@ -8,7 +8,7 @@
 
 草稿与 `wecom_order_draft_cards`、`WECOM_ORDER_DRAFT_CARD` 异步任务在同一事务创建。卡片固定使用 `task_id=order-draft:{draft_id}`，并同时固化 `route_type` 与目标：群聊保存 `GROUP + chatid`，单聊保存 `SINGLE + 发送人 userid`，不能仅凭两类标识的字符串恰好相同跨路由授权。
 
-发送状态为 `PENDING → SENDING → SENT`。只有外部调用明确尚未提交时才回到 `PENDING` 重试；平台非零 `errcode` ACK 是明确拒绝，进入 `FAILED`；ACK 超时、缺少合法 `errcode`、提交后断线或进程在 `SENDING` 崩溃都进入 `UNKNOWN`，禁止盲目重发，避免同一草稿重复卡片。
+发送状态为 `PENDING → SENDING → SENT`。只有外部调用明确尚未提交时才回到 `PENDING` 重试；平台非零 `errcode` ACK 是明确拒绝，进入 `FAILED`；ACK 超时、缺少合法 `errcode`、提交后断线或进程在 `SENDING` 崩溃都进入 `UNKNOWN`，禁止盲目重发，避免同一草稿重复卡片。真正触网前还会重新读取草稿：只有状态仍为 `OPEN` 且 revision 与卡片固化的 `draft_revision` 相同才发送；草稿已关闭或 revision 已变化时进入 `SUPERSEDED` 并成功终结异步任务，不发送一张点击必然过期的旧卡。
 
 ## 3. 点击事件与 actor
 
@@ -38,7 +38,9 @@
 }
 ```
 
-WebSocket listener 只解析协议与关联 ACK；业务回调进入容量 64 的可关闭单线程队列，保持到达顺序，避免处理器同步等待 update ACK 时堵死 listener。4.5 秒预算从 listener 收到完整帧的单调时钟时刻开始，不因业务队列等待而重置。一个绝对 deadline 覆盖本地排队、socket 提交和平台 ACK；队列里已过期的 update 帧会直接丢弃，绝不在窗口后补发。只有同 `req_id` 的企微 ACK 且 `errcode=0` 才记为 `SENT`，超时记 `TIMED_OUT`，平台拒绝/本地失败记 `FAILED`。update 非成功时发送文字兜底；无论卡片更新或兜底是否成功，都不回滚订单业务结果。
+WebSocket listener 只解析协议与关联 ACK。普通业务回调仍进入容量 64 的可关闭单线程队列并保持到达顺序；`template_card_event` 则进入独立的 4 并发快通道，不会排在普通回调后面。快通道另有最多 4 个等待位，等待中的事件继续使用 listener 原始到达时刻计算 deadline，不能靠排队重置 5 秒预算。任一回调池再饱和时都只拒绝超出的单次事件，不在 listener 线程降级执行业务，也不因本地积压重建共享连接；已经受理的卡片 update ACK 和无关外发 ACK 因此不会被一次普通或交互回调溢出打断。这样处理器可同步等待 update ACK，而 listener 仍能接收并关联该 ACK。
+
+4.5 秒预算从 listener 收到完整帧的单调时钟时刻开始，不因线程切换而重置。一个绝对 deadline 覆盖本地提交、socket 提交和平台 ACK；发送队列里已过期的 update 帧会直接丢弃，绝不在窗口后补发。只有同 `req_id` 的企微 ACK 且 `errcode=0` 才记为 `SENT`，超时记 `TIMED_OUT`，平台拒绝/本地失败记 `FAILED`。update 非成功时发送文字兜底；无论卡片更新或兜底是否成功，都不回滚订单业务结果。
 
 `wecom_events` 分开记录：
 
@@ -48,6 +50,6 @@ WebSocket listener 只解析协议与关联 ACK；业务回调进入容量 64 �
 
 ## 5. 上线验收
 
-本地测试覆盖官方帧形状、扁平兼容、真实 callback→handler→update ACK、回调队列等待、同 `req_id` 更新、绝对 deadline、过期队列帧不补发、文字兜底、真实 PostgreSQL 首次事实不可变、幂等租约与 token CAS。生产启用前仍须在实际企微机器人中完成一次真实点击验收，确认租户回调确实携带 `from.userid`；若缺失，系统会按设计拒绝，不能用 chatid、昵称或配置值代替 actor。
+本地测试覆盖官方帧形状、扁平兼容、真实 callback→handler→update ACK、两张并发卡片各自立即进入快路径、普通或交互回调池溢出时保全已受理 update 与无关外发 ACK、普通回调有序队列的 listener 到达时刻、同 `req_id` 更新、绝对 deadline、过期发送帧不补发、文字兜底、关闭或 revision 已变化的积压卡片不触网、真实 PostgreSQL 首次事实不可变、幂等租约与 token CAS。生产启用前仍须在实际企微机器人中完成一次真实点击验收，确认租户回调确实携带 `from.userid`；若缺失，系统会按设计拒绝，不能用 chatid、昵称或配置值代替 actor。
 
 协议实现依据：[WeCom AI Bot Node SDK](https://github.com/WecomTeam/aibot-node-sdk)。

@@ -4,7 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,6 +25,7 @@ class OrderDraftCardWorkerTest {
     void schedulerReturnsImmediatelyAndRepeatedPollsCannotOverlapOneDrain() throws Exception {
         AsyncTaskStore tasks = mock(AsyncTaskStore.class);
         OrderDraftCardRunner runner = mock(OrderDraftCardRunner.class);
+        OrderDraftCardFailureCoordinator failures = mock(OrderDraftCardFailureCoordinator.class);
         AsyncTaskStore.AsyncTask task = task(1L);
         AtomicInteger claims = new AtomicInteger();
         when(tasks.claim(eq(OrderDraftCardEnqueuer.TASK_TYPE), any(String.class), eq(Duration.ofSeconds(60))))
@@ -36,7 +39,7 @@ class OrderDraftCardWorkerTest {
                 })
                 .when(runner)
                 .execute(task);
-        OrderDraftCardWorker worker = new OrderDraftCardWorker(tasks, runner, true, 60, 60);
+        OrderDraftCardWorker worker = new OrderDraftCardWorker(tasks, runner, failures, true, 60, 60);
         try {
             long before = System.nanoTime();
             worker.poll();
@@ -57,6 +60,7 @@ class OrderDraftCardWorkerTest {
     void shutdownRaceAfterClaimReleasesTaskWithoutRunningIt() throws Exception {
         AsyncTaskStore tasks = mock(AsyncTaskStore.class);
         OrderDraftCardRunner runner = mock(OrderDraftCardRunner.class);
+        OrderDraftCardFailureCoordinator failures = mock(OrderDraftCardFailureCoordinator.class);
         AsyncTaskStore.AsyncTask task = task(2L);
         CountDownLatch claimStarted = new CountDownLatch(1);
         when(tasks.claim(eq(OrderDraftCardEnqueuer.TASK_TYPE), any(String.class), eq(Duration.ofSeconds(60))))
@@ -70,23 +74,96 @@ class OrderDraftCardWorkerTest {
                         return Optional.of(task);
                     }
                 });
-        OrderDraftCardWorker worker = new OrderDraftCardWorker(tasks, runner, true, 60, 60);
+        OrderDraftCardWorker worker = new OrderDraftCardWorker(tasks, runner, failures, true, 60, 60);
 
         worker.poll();
         assertThat(claimStarted.await(1, TimeUnit.SECONDS)).isTrue();
         worker.shutdown();
 
         verify(tasks).releaseOwnedForShutdown(eq(2L), any(String.class));
-        verify(runner, org.mockito.Mockito.never()).execute(any());
+        verify(runner, never()).execute(any());
+    }
+
+    @Test
+    void runnerAndRecoveryFailuresAreIsolatedSoDrainContinues() throws Exception {
+        AsyncTaskStore tasks = mock(AsyncTaskStore.class);
+        OrderDraftCardRunner runner = mock(OrderDraftCardRunner.class);
+        OrderDraftCardFailureCoordinator failures = mock(OrderDraftCardFailureCoordinator.class);
+        AsyncTaskStore.AsyncTask first = task(3L);
+        AsyncTaskStore.AsyncTask second = task(4L);
+        AtomicInteger claims = new AtomicInteger();
+        when(tasks.claim(eq(OrderDraftCardEnqueuer.TASK_TYPE), any(String.class), eq(Duration.ofSeconds(60))))
+                .thenAnswer(invocation -> switch (claims.getAndIncrement()) {
+                    case 0 -> Optional.of(first);
+                    case 1 -> Optional.of(second);
+                    default -> Optional.empty();
+                });
+        doThrow(new IllegalStateException("runner failed")).when(runner).execute(first);
+        doThrow(new IllegalStateException("database still unavailable"))
+                .when(failures)
+                .recoverUnhandledFailure(first, "WECOM_ORDER_DRAFT_CARD_RUNNER_FAILED");
+        CountDownLatch secondProcessed = new CountDownLatch(1);
+        doAnswer(invocation -> {
+                    secondProcessed.countDown();
+                    return null;
+                })
+                .when(runner)
+                .execute(second);
+        OrderDraftCardWorker worker = new OrderDraftCardWorker(
+                tasks, runner, failures, true, 60, 60);
+        try {
+            worker.poll();
+            assertThat(secondProcessed.await(2, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            worker.shutdown();
+        }
+
+        verify(failures).recoverUnhandledFailure(
+                first, "WECOM_ORDER_DRAFT_CARD_RUNNER_FAILED");
+        verify(runner).execute(second);
+    }
+
+    @Test
+    void finalizingTaskIsRecoveredWithoutRunningExternalSendAgain() throws Exception {
+        AsyncTaskStore tasks = mock(AsyncTaskStore.class);
+        OrderDraftCardRunner runner = mock(OrderDraftCardRunner.class);
+        OrderDraftCardFailureCoordinator failures = mock(OrderDraftCardFailureCoordinator.class);
+        AsyncTaskStore.AsyncTask finalizing = task(5L, "FINALIZING");
+        AtomicInteger claims = new AtomicInteger();
+        when(tasks.claim(eq(OrderDraftCardEnqueuer.TASK_TYPE), any(String.class), eq(Duration.ofSeconds(60))))
+                .thenAnswer(invocation -> claims.getAndIncrement() == 0
+                        ? Optional.of(finalizing)
+                        : Optional.empty());
+        CountDownLatch recovered = new CountDownLatch(1);
+        doAnswer(invocation -> {
+                    recovered.countDown();
+                    return null;
+                })
+                .when(failures)
+                .recoverUnhandledFailure(finalizing, "WECOM_ORDER_DRAFT_CARD_RUNNER_FAILED");
+        OrderDraftCardWorker worker = new OrderDraftCardWorker(
+                tasks, runner, failures, true, 60, 60);
+        try {
+            worker.poll();
+            assertThat(recovered.await(2, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            worker.shutdown();
+        }
+
+        verify(runner, never()).execute(finalizing);
     }
 
     private static AsyncTaskStore.AsyncTask task(long id) {
+        return task(id, "RUNNING");
+    }
+
+    private static AsyncTaskStore.AsyncTask task(long id, String status) {
         Instant now = Instant.now();
         return new AsyncTaskStore.AsyncTask(
                 id,
                 OrderDraftCardEnqueuer.TASK_TYPE,
                 "card:7",
-                "RUNNING",
+                status,
                 1,
                 3,
                 now,

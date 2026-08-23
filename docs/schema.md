@@ -155,7 +155,7 @@ Timeline 按订单内 `sequence_no`/`created_at` 排序，不按事件类型字�
 | `wecom_events` | 企微平台事件回调与卡片点击/更新证据 | `(event_type, msgid)` 唯一；首次 bot/chat/actor/event/task/草稿/raw facts 不可变；`processing_claim_token + processing_attempt` 栅栏业务尝试；`update_status` 与 `fallback_status` 分别记录 5 秒快路径和文字补偿 |
 | `order_drafts` | 客户订单草稿（复核对象） | `draft_no` 唯一；OPEN ⟺ `confirmed_by`/`confirmed_at` 均为空，CONFIRMED/REJECTED ⟺ 两者均非空；`revision >= 0`；`customer_candidates`/`missing_fields` 为 array；`settlement_time` 是确认必需事实 |
 | `order_draft_lines` | 订单草稿明细行 | `(order_draft_id, line_no)` 唯一；`line_no >= 1`；`quantity > 0`；`fulfilled_quantity >= 0`；`sku_candidates` 为 array |
-| `wecom_order_draft_cards` | 订单草稿确认卡片发送栅栏 | `order_draft_id`/`task_id` 各自唯一；`route_type + chat_id` 固化原 single/group 路由语义；外部提交中的 `SENDING` 崩溃恢复为 `UNKNOWN`，禁止盲目重发；`SENT` 必须有 `request_id`/`acknowledged_at` |
+| `wecom_order_draft_cards` | 订单草稿确认卡片发送栅栏 | `order_draft_id`/`task_id` 各自唯一；`route_type + chat_id` 固化原 single/group 路由语义；外部提交中的 `SENDING` 崩溃恢复为 `UNKNOWN`，禁止盲目重发；草稿已关闭或 revision 已变化时在触网前进入 `SUPERSEDED`；`SENT` 必须有 `request_id`/`acknowledged_at` |
 | `provider_tracking_drafts` | 运单草稿（含批量确认） | `draft_no` 唯一；status 约束同 `order_drafts`；`shipment_judgment ∈ FULL/PARTIAL/SHORTAGE/EXCEPTION`；`carrier_candidates`/`task_candidates`/`validation_issues` 为 array |
 | `async_tasks` | Worker 后台任务队列 | `idempotency_key` 唯一（幂等收敛）；`task_type`/`payload_ref` 非空；`attempts >= 0`、`max_attempts >= 1`；status ∈ PENDING/RUNNING/FINALIZING/SUCCEEDED/FAILED |
 | `agent_runs` | Agent 运行记录 | `run_id` 形如 `run_[0-9a-f]{32}`；RUNNING ⟺ `finished_at IS NULL`；FAILED ⟺ `error_type IS NOT NULL`；`input_digest` 为 64 位 hex |

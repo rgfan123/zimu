@@ -24,9 +24,11 @@ import org.springframework.stereotype.Component;
 public class OrderDraftCardWorker {
 
     private static final Logger log = LoggerFactory.getLogger(OrderDraftCardWorker.class);
+    private static final String UNHANDLED_ERROR = "WECOM_ORDER_DRAFT_CARD_RUNNER_FAILED";
 
     private final AsyncTaskStore tasks;
     private final OrderDraftCardRunner runner;
+    private final OrderDraftCardFailureCoordinator failures;
     private final boolean enabled;
     private final Duration lease;
     private final Duration claimErrorSuppressWindow;
@@ -40,21 +42,31 @@ public class OrderDraftCardWorker {
     public OrderDraftCardWorker(
             AsyncTaskStore tasks,
             OrderDraftCardRunner runner,
+            OrderDraftCardFailureCoordinator failures,
             @Value("${app.wecom-order-draft-card.enabled:${app.wecom.enabled:false}}") boolean enabled,
             @Value("${app.wecom-order-draft-card.lease-seconds:60}") long leaseSeconds,
             @Value("${app.wecom-order-draft-card.claim-error-suppress-seconds:60}") long claimErrorSuppressSeconds) {
-        this(tasks, runner, enabled, leaseSeconds, claimErrorSuppressSeconds, newDrainExecutor());
+        this(
+                tasks,
+                runner,
+                failures,
+                enabled,
+                leaseSeconds,
+                claimErrorSuppressSeconds,
+                newDrainExecutor());
     }
 
     OrderDraftCardWorker(
             AsyncTaskStore tasks,
             OrderDraftCardRunner runner,
+            OrderDraftCardFailureCoordinator failures,
             boolean enabled,
             long leaseSeconds,
             long claimErrorSuppressSeconds,
             ExecutorService drainExecutor) {
         this.tasks = tasks;
         this.runner = runner;
+        this.failures = failures;
         this.enabled = enabled;
         this.lease = Duration.ofSeconds(Math.max(60, leaseSeconds));
         this.claimErrorSuppressWindow = Duration.ofSeconds(Math.max(1, claimErrorSuppressSeconds));
@@ -111,7 +123,32 @@ public class OrderDraftCardWorker {
                 releaseForShutdown(task.get());
                 return;
             }
-            runner.execute(task.get());
+            process(task.get());
+        }
+    }
+
+    private void process(AsyncTaskStore.AsyncTask task) {
+        if ("FINALIZING".equals(task.status())) {
+            recover(task);
+            return;
+        }
+        try {
+            runner.execute(task);
+        } catch (RuntimeException ex) {
+            recover(task);
+        }
+    }
+
+    private void recover(AsyncTaskStore.AsyncTask task) {
+        try {
+            failures.recoverUnhandledFailure(task, UNHANDLED_ERROR);
+        } catch (RuntimeException recoveryFailure) {
+            // Leave the owned lease intact. Once the database recovers, lease expiry makes the
+            // task claimable again; swallowing here lets this drain continue with unrelated work.
+            log.warn(
+                    "订单草稿卡片任务异常收口失败 taskId={} exceptionType={}",
+                    task.id(),
+                    recoveryFailure.getClass().getSimpleName());
         }
     }
 

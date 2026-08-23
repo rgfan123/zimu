@@ -400,7 +400,7 @@ Agent 可以提建议，但上述终局动作必须由管理后台人员确认�
 
 企微订单草稿卡片属于另一条人工入口，不是 Agent 自动确认：新草稿通过持久化卡片 outbox 异步发送到原会话，`task_id=order-draft:{draft_id}`。`template_card_event` 回调只接受该稳定 task id 与 `confirm_order`/`supplement_order` 键；actor 只能取回调 `from.userid`，缺失时 fail closed，不能从卡片内容或请求参数冒充。确认按钮重新读取当前草稿并调用既有 `OrderDraftService.confirm`，所有缺失字段、唯一 Customer/SKU 候选、草稿版本与开放复核事项仍按原门禁校验。
 
-卡片事件业务结果先独立提交，再以原回调 `req_id` 调用 `update_template_card`。WebSocket listener 把完整帧的单调到达时间随有界、保序业务队列透传；4.5 秒绝对 deadline 覆盖队列、socket 与 ACK，过期队列帧不得事后发送。未确认、超时或异常时改发只含草稿号、操作人和处理时间的文字结果。卡片更新与文字兜底的失败都不得回滚已确认订单；`wecom_events.processing_status/processing_claim_token/processing_attempt`、`update_status/update_latency_ms/update_error_code` 与 `fallback_status/fallback_error_code` 分别保存业务尝试、卡片快路径和补偿结局。同一 `(event_type,msgid)` 的首次 bot/chat/actor/event/task/草稿/raw facts 不可变，变形重投不处理另一草稿；超过安全恢复窗且原业务幂等租约已失效时才轮换 claim token，业务完成及 update/fallback 结果均以 token CAS，旧 worker 无权覆盖。
+卡片事件业务结果先独立提交，再以原回调 `req_id` 调用 `update_template_card`。普通回调走有界保序业务队列；`template_card_event` 立即提交到独立的 4 并发快通道，并只允许最多 4 个仍受原始到达 deadline 约束的等待位。任一回调池溢出都只拒绝超出的事件，不重建共享连接或破坏已经受理的 update/无关外发 ACK。4.5 秒绝对 deadline 从 WebSocket listener 收到完整帧的单调时刻起覆盖线程切换、socket 提交与 ACK，过期发送帧不得事后发送。未确认、超时或异常时改发只含草稿号、操作人和处理时间的文字结果。卡片更新与文字兜底的失败都不得回滚已确认订单；`wecom_events.processing_status/processing_claim_token/processing_attempt`、`update_status/update_latency_ms/update_error_code` 与 `fallback_status/fallback_error_code` 分别保存业务尝试、卡片快路径和补偿结局。同一 `(event_type,msgid)` 的首次 bot/chat/actor/event/task/草稿/raw facts 不可变，变形重投不处理另一草稿；超过安全恢复窗且原业务幂等租约已失效时才轮换 claim token，业务完成及 update/fallback 结果均以 token CAS，旧 worker 无权覆盖。
 
 ### 8.1 预留工具契约
 

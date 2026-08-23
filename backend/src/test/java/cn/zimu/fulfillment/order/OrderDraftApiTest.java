@@ -58,6 +58,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -70,6 +71,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * only the model adapter is replaced.
  */
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class OrderDraftApiTest {
 
@@ -84,6 +86,8 @@ class OrderDraftApiTest {
 
     @DynamicPropertySource
     static void ticketConfiguration(DynamicPropertyRegistry registry) {
+        registry.add("app.scheduling.enabled", () -> "true");
+        registry.add("app.message-worker.enabled", () -> "true");
         registry.add("app.message-worker.poll-ms", () -> "100");
         registry.add("app.message-worker.backoff-seconds", () -> "1");
         registry.add("app.message-worker.lease-seconds", () -> "10");

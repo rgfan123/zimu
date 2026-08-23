@@ -10,6 +10,9 @@ public interface OrderDraftCardStore {
 
     OrderDraftCard load(long cardId);
 
+    /** Locks one card row inside the caller's transaction before a cross-table transition. */
+    OrderDraftCard lock(long cardId);
+
     /** Only an acknowledged outbound card can authorize a later interaction callback. */
     Optional<OrderDraftCard> findSentByTaskId(String taskId);
 

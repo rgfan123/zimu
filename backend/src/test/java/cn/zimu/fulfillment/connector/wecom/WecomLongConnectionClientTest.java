@@ -10,7 +10,9 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -463,6 +465,155 @@ class WecomLongConnectionClientTest {
     }
 
     @Test
+    void interactiveOverflowPreservesAcceptedCallbacksAndAnUnrelatedPendingAck() throws Exception {
+        startClient();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        server.autoSendMessageAck(false);
+        CountDownLatch fourHandlersStarted = new CountDownLatch(4);
+        CountDownLatch releaseHandlers = new CountDownLatch(1);
+        List<WecomSendResult> cardResults = new CopyOnWriteArrayList<>();
+        client.setFrameHandler(new WecomFrameHandler() {
+            @Override
+            public void onFrame(String cmd, JsonNode frame) {
+                throw new AssertionError("client must pass the listener arrival timestamp");
+            }
+
+            @Override
+            public void onFrame(String cmd, JsonNode frame, long receivedNanos) {
+                fourHandlersStarted.countDown();
+                try {
+                    if (!releaseHandlers.await(2, TimeUnit.SECONDS)) {
+                        throw new AssertionError("interactive callback was not released");
+                    }
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("interactive callback interrupted", ex);
+                }
+                String requestId = frame.path("headers").path("req_id").asText();
+                ObjectNode updatedCard = MAPPER.createObjectNode();
+                updatedCard.put("response_type", "update_template_card");
+                updatedCard.putObject("template_card")
+                        .put("card_type", "text_notice")
+                        .put("task_id", requestId);
+                cardResults.add(client.respondUpdateUntil(
+                        requestId,
+                        updatedCard,
+                        receivedNanos + TimeUnit.SECONDS.toNanos(4)));
+            }
+        });
+
+        try (var senders = Executors.newFixedThreadPool(2)) {
+            Future<WecomSendResult> unrelated =
+                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-unrelated", "独立消息")));
+            JsonNode unrelatedFrame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
+
+            for (int index = 1; index <= 4; index++) {
+                server.sendText(cardEvent("event-overflow-" + index));
+            }
+            assertThat(fourHandlersStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            for (int index = 5; index <= 9; index++) {
+                server.sendText(cardEvent("event-overflow-" + index));
+            }
+            awaitTrue(() -> client.queuedInteractiveCallbackCount() == 4);
+            assertThat(server.connectionCount()).isEqualTo(1);
+
+            server.sendAck(unrelatedFrame.path("headers").path("req_id").asText(), 0);
+            assertThat(unrelated.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+
+            Set<String> acknowledgedUpdates = ConcurrentHashMap.newKeySet();
+            Future<?> acknowledger = senders.submit(() -> {
+                while (acknowledgedUpdates.size() < 8) {
+                    for (String raw : server.textFrames()) {
+                        JsonNode frame = MAPPER.readTree(raw);
+                        if (!"aibot_respond_update_msg".equals(frame.path("cmd").asText())) {
+                            continue;
+                        }
+                        String requestId = frame.path("headers").path("req_id").asText();
+                        if (acknowledgedUpdates.add(requestId)) {
+                            server.sendAck(requestId, 0);
+                        }
+                    }
+                    Thread.sleep(10);
+                }
+                return null;
+            });
+            releaseHandlers.countDown();
+
+            awaitTrue(() -> cardResults.size() == 8);
+            acknowledger.get(2, TimeUnit.SECONDS);
+            assertThat(cardResults).extracting(WecomSendResult::status).containsOnly(WecomSendStatus.SUCCESS);
+            assertThat(server.connectionCount()).isEqualTo(1);
+        } finally {
+            releaseHandlers.countDown();
+        }
+    }
+
+    @Test
+    void ordinaryCallbackOverflowPreservesAnInteractiveAndUnrelatedPendingAck() throws Exception {
+        startClient();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        server.autoSendMessageAck(false);
+        CountDownLatch ordinaryHandlerStarted = new CountDownLatch(1);
+        CountDownLatch releaseOrdinaryHandlers = new CountDownLatch(1);
+        CompletableFuture<WecomSendResult> cardResult = new CompletableFuture<>();
+        client.setFrameHandler(new WecomFrameHandler() {
+            @Override
+            public void onFrame(String cmd, JsonNode frame) {
+                throw new AssertionError("client must pass the listener arrival timestamp");
+            }
+
+            @Override
+            public void onFrame(String cmd, JsonNode frame, long receivedNanos) {
+                if ("aibot_event_callback".equals(cmd)) {
+                    ObjectNode updatedCard = MAPPER.createObjectNode();
+                    updatedCard.put("response_type", "update_template_card");
+                    updatedCard.putObject("template_card").put("card_type", "text_notice");
+                    cardResult.complete(client.respondUpdateUntil(
+                            frame.path("headers").path("req_id").asText(),
+                            updatedCard,
+                            receivedNanos + TimeUnit.SECONDS.toNanos(4)));
+                    return;
+                }
+                ordinaryHandlerStarted.countDown();
+                try {
+                    if (!releaseOrdinaryHandlers.await(3, TimeUnit.SECONDS)) {
+                        throw new AssertionError("ordinary callbacks were not released");
+                    }
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("ordinary callback interrupted", ex);
+                }
+            }
+        });
+
+        try (var sender = Executors.newSingleThreadExecutor()) {
+            Future<WecomSendResult> unrelated =
+                    sender.submit(() -> client.send(WecomOutboundMessage.text("user-ordinary-overflow", "独立消息")));
+            JsonNode unrelatedFrame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
+
+            server.sendText(cardEvent("event-ordinary-overflow"));
+            JsonNode updateFrame = MAPPER.readTree(server.awaitFrame("aibot_respond_update_msg", 2_000));
+            server.sendText(ordinaryCallback("ordinary-active"));
+            assertThat(ordinaryHandlerStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            for (int index = 1; index <= 65; index++) {
+                server.sendText(ordinaryCallback("ordinary-overflow-" + index));
+            }
+            awaitTrue(() -> client.queuedCallbackCount() == 64);
+            awaitTrue(() -> stateHolder.lastError() != null
+                    && stateHolder.lastError().contains("业务回调队列已满"));
+            assertThat(server.connectionCount()).isEqualTo(1);
+
+            server.sendAck(unrelatedFrame.path("headers").path("req_id").asText(), 0);
+            server.sendAck(updateFrame.path("headers").path("req_id").asText(), 0);
+            assertThat(unrelated.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+            assertThat(cardResult.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+            assertThat(server.connectionCount()).isEqualTo(1);
+        } finally {
+            releaseOrdinaryHandlers.countDown();
+        }
+    }
+
+    @Test
     void callbackArrivalTimeIsCapturedBeforeTheOrderedHandlerQueueWait() throws Exception {
         startClient();
         awaitState(WecomConnectionState.SUBSCRIBED);
@@ -510,6 +661,12 @@ class WecomLongConnectionClientTest {
         return "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\""
                 + requestId
                 + "\"},\"body\":{\"event\":{\"eventtype\":\"template_card_event\"}}}";
+    }
+
+    private static String ordinaryCallback(String requestId) {
+        return "{\"cmd\":\"aibot_msg_callback\",\"headers\":{\"req_id\":\""
+                + requestId
+                + "\"},\"body\":{\"msgtype\":\"text\"}}";
     }
 
     @Test

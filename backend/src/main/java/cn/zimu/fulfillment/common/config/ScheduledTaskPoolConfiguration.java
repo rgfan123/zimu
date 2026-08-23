@@ -1,12 +1,16 @@
 package cn.zimu.fulfillment.common.config;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 /** Keeps one long-running scheduled worker from starving unrelated ticket workflows. */
 @Configuration
+@EnableScheduling
+@ConditionalOnProperty(name = "app.scheduling.enabled", havingValue = "true", matchIfMissing = true)
 public class ScheduledTaskPoolConfiguration {
 
     /** The application currently has ten independent {@code @Scheduled} trigger streams. */

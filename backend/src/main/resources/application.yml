@@ -29,6 +29,11 @@ server:
   port: ${SERVER_PORT:8080}
 
 app:
+  scheduling:
+    # 生产默认启用；测试可整体关闭，避免缓存的 Spring context 继续轮询已销毁的 Testcontainer。
+    enabled: ${SCHEDULED_TASKS_ENABLED:true}
+    # 当前 10 条 @Scheduled 触发流各有独立 lane；代码将配置值限制在 10..32。
+    pool-size: ${SCHEDULED_TASK_POOL_SIZE:10}
   gateway:
     basic-auth:
       # 全部 /api 请求都会在后端复验 Nginx 提供的 Basic Auth；缺失时默认拒绝。

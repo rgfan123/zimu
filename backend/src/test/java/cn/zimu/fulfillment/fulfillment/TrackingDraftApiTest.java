@@ -45,6 +45,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
@@ -60,6 +61,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 模型只在 {@link MessageInterpreter} 边界替换。测试共享数据库，一律用 before/after 计数或唯一标识断言。
  */
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = "app.file-store.root=${java.io.tmpdir}/zimu-tracking-draft-test")
@@ -97,6 +99,8 @@ class TrackingDraftApiTest {
 
     @DynamicPropertySource
     static void trackingDraftConfiguration(DynamicPropertyRegistry registry) {
+        registry.add("app.scheduling.enabled", () -> "true");
+        registry.add("app.message-worker.enabled", () -> "true");
         registry.add("app.message-worker.poll-ms", () -> "100");
         registry.add("app.message-worker.backoff-seconds", () -> "1");
         registry.add("app.message-worker.lease-seconds", () -> "10");
