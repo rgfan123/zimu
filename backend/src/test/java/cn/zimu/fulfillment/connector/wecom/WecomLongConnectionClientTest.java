@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.connector.wecom;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -696,8 +697,48 @@ class WecomLongConnectionClientTest {
     // ---- 未配置 ----
 
     @Test
+    void productionConstructorRejectsNonOfficialEndpointBeforeCredentialsCanBeSent() {
+        WecomProperties properties = new WecomProperties();
+        properties.setEnabled(true);
+        properties.setBotId(BOT_ID);
+        properties.setSecret(SECRET);
+        properties.setWsUrl(server.wsUrl());
+        AtomicReference<WecomLongConnectionClient> unexpectedlyCreated = new AtomicReference<>();
+
+        try {
+            assertThatThrownBy(() -> unexpectedlyCreated.set(
+                            new WecomLongConnectionClient(properties, MAPPER, stateHolder)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("仅允许官方 WSS 地址")
+                    .hasMessageNotContaining(SECRET)
+                    .hasMessageNotContaining(server.wsUrl());
+        } finally {
+            WecomLongConnectionClient created = unexpectedlyCreated.get();
+            if (created != null) {
+                created.shutdown();
+            }
+        }
+        assertThat(server.connectionCount()).isZero();
+    }
+
+    @Test
+    void productionConstructorAcceptsCanonicalEndpointAndRejectsHostSuffixSpoof() {
+        WecomProperties official = new WecomProperties();
+        WecomLongConnectionClient officialClient =
+                new WecomLongConnectionClient(official, MAPPER, stateHolder);
+        officialClient.shutdown();
+
+        WecomProperties spoofed = new WecomProperties();
+        spoofed.setWsUrl("wss://openws.work.weixin.qq.com.attacker.example");
+        assertThatThrownBy(() -> new WecomLongConnectionClient(spoofed, MAPPER, stateHolder))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("仅允许官方 WSS 地址");
+    }
+
+    @Test
     void missingConfigurationStaysDisconnectedWithoutConnecting() {
         WecomProperties properties = new WecomProperties(); // enabled=false、无凭据
+        properties.setWsUrl(server.wsUrl()); // 包内测试构造器只接受显式 loopback 目标
         client = new WecomLongConnectionClient(
                 properties,
                 MAPPER,

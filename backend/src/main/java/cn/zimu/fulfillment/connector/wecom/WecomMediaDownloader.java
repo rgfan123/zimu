@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -31,13 +32,26 @@ public class WecomMediaDownloader {
 
     private final HttpClient client;
     private final Duration timeout;
+    private final URI testOrigin;
 
+    @Autowired
     public WecomMediaDownloader(@Value("${app.media.download-timeout-ms:15000}") long timeoutMillis) {
+        this(timeoutMillis, null);
+    }
+
+    private WecomMediaDownloader(long timeoutMillis, URI testOrigin) {
         this.timeout = Duration.ofMillis(timeoutMillis);
+        this.testOrigin = testOrigin;
         this.client = HttpClient.newBuilder()
                 .connectTimeout(timeout)
-                .followRedirects(HttpClient.Redirect.NORMAL)
+                .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
+    }
+
+    /** Package-only local HTTP seam; production construction always enforces the official host set. */
+    static WecomMediaDownloader forTest(long timeoutMillis, URI loopbackOrigin) {
+        return new WecomMediaDownloader(
+                timeoutMillis, WecomExternalOriginPolicy.requireLoopbackHttpOrigin(loopbackOrigin));
     }
 
     /** 下载结果：密文字节 + 服务端声明的内容类型（可能为空）。 */
@@ -53,9 +67,14 @@ public class WecomMediaDownloader {
         }
         HttpRequest request;
         try {
-            request = HttpRequest.newBuilder(URI.create(url)).timeout(timeout).GET().build();
+            URI uri = testOrigin == null
+                    ? WecomExternalOriginPolicy.requireOfficialMediaUri(url)
+                    : WecomExternalOriginPolicy.requireUriAtOrigin(url, testOrigin);
+            request = HttpRequest.newBuilder(uri).timeout(timeout).GET().build();
         } catch (IllegalArgumentException exception) {
-            throw new MediaDownloadException("媒体下载地址非法: " + exception.getMessage(), exception);
+            String message = exception.getMessage();
+            throw new MediaDownloadException(
+                    message == null || message.isBlank() ? "媒体下载地址非法" : message, exception);
         }
         CompletableFuture<HttpResponse<byte[]>> pending;
         try {
@@ -72,7 +91,8 @@ public class WecomMediaDownloader {
                 return new BoundedBodySubscriber(maxBytes);
             });
         } catch (IllegalArgumentException exception) {
-            throw new MediaDownloadException("媒体下载地址非法: " + exception.getMessage(), exception);
+            // Do not surface the signed source URL from JDK exception messages.
+            throw new MediaDownloadException("媒体下载请求无法提交", exception);
         }
         HttpResponse<byte[]> response;
         try {

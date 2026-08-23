@@ -88,11 +88,10 @@ Vite 在 <http://localhost:5173> 提供页面；可用 `DEV_MANAGEMENT_GATEWAY_U
 WECOM_ENABLED=true
 WECOM_BOT_ID=智能机器人ID
 WECOM_SECRET=长连接Secret
-WECOM_WS_URL=wss://openws.work.weixin.qq.com
 WECOM_HEARTBEAT_INTERVAL_SECONDS=30
 ```
 
-应用启动后自动连接 `WECOM_WS_URL` 并发送 `aibot_subscribe` 订阅（订阅成功前不重复），之后以 `ping` 业务 JSON 帧维持心跳；断线指数退避重连（1s 起步、翻倍、30s 封顶 + 抖动），被 `disconnected_event` 踢线（说明有外部新连接抢占）时停止自动重连并告警。不要把 Secret 写入仓库、命令历史或聊天记录；代码与日志绝不打印 Secret。缺配置时应用正常启动、连接不建立，readiness 标记不可用。
+应用启动后只连接官方固定地址 `wss://openws.work.weixin.qq.com` 并发送 `aibot_subscribe` 订阅（订阅成功前不重复）；部署配置不能改写凭据发送目标，本地 `ws://loopback` 仅存在于包内测试入口。之后以 `ping` 业务 JSON 帧维持心跳；断线指数退避重连（1s 起步、翻倍、30s 封顶 + 抖动），被 `disconnected_event` 踢线（说明有外部新连接抢占）时停止自动重连并告警。不要把 Secret 写入仓库、命令历史或聊天记录；代码与日志绝不打印 Secret。缺配置时应用正常启动、连接不建立，readiness 标记不可用。
 
 管理员可通过 `GET /api/v1/wecom/readiness`（要求 `X-Operator` 头）查看非秘密门禁与实时连接状态：接口只返回配置项是否存在（checks + missing_requirements）和连接状态维度（DISCONNECTED / CONNECTING / SUBSCRIBED / KICKED / FAILED）、心跳计数与最近事件类型，不返回 BotID 或 Secret。`configuration_ready=true` 只表示配置具备建连条件，`connection_state=SUBSCRIBED` 才表示长连接已订阅成功；真实业务消息验收仍需在企微侧发送消息并到 `/workbench/channel-messages` 核对不可变消息证据。
 

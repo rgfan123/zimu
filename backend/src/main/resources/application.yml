@@ -47,7 +47,7 @@ app:
     enabled: ${WECOM_ENABLED:false}
     bot-id: ${WECOM_BOT_ID:}
     secret: ${WECOM_SECRET:}
-    ws-url: ${WECOM_WS_URL:wss://openws.work.weixin.qq.com}
+    # 长连接目标固定为官方 wss://openws.work.weixin.qq.com；部署配置不可改写凭据发送目标。
     heartbeat-interval-seconds: ${WECOM_HEARTBEAT_INTERVAL_SECONDS:30}
   message-worker:
     enabled: ${MESSAGE_WORKER_ENABLED:true}

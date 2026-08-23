@@ -58,6 +58,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private static final int MAX_QUEUED_CALLBACKS = 64;
 
     private final WecomProperties properties;
+    private final URI webSocketUri;
     private final ObjectMapper objectMapper;
     private final WecomConnectionStateHolder stateHolder;
     private final HttpClient httpClient;
@@ -99,6 +100,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 properties,
                 objectMapper,
                 stateHolder,
+                WecomExternalOriginPolicy.requireOfficialWebSocketUri(properties.getWsUrl()),
                 HttpClient.newBuilder().connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MILLIS)).build(),
                 Executors.newSingleThreadScheduledExecutor(runnable -> {
                     Thread thread = new Thread(runnable, "wecom-long-connection");
@@ -178,7 +180,36 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             long watchdogMillisOverride,
             long ackTimeoutMillis,
             FrameWriter frameWriter) {
+        this(
+                properties,
+                objectMapper,
+                stateHolder,
+                WecomExternalOriginPolicy.requireLoopbackWebSocketUri(properties.getWsUrl()),
+                httpClient,
+                scheduler,
+                initialBackoffMillis,
+                maxBackoffMillis,
+                jitterEnabled,
+                watchdogMillisOverride,
+                ackTimeoutMillis,
+                frameWriter);
+    }
+
+    private WecomLongConnectionClient(
+            WecomProperties properties,
+            ObjectMapper objectMapper,
+            WecomConnectionStateHolder stateHolder,
+            URI webSocketUri,
+            HttpClient httpClient,
+            ScheduledExecutorService scheduler,
+            long initialBackoffMillis,
+            long maxBackoffMillis,
+            boolean jitterEnabled,
+            long watchdogMillisOverride,
+            long ackTimeoutMillis,
+            FrameWriter frameWriter) {
         this.properties = properties;
+        this.webSocketUri = webSocketUri;
         this.objectMapper = objectMapper;
         this.stateHolder = stateHolder;
         this.httpClient = httpClient;
@@ -510,20 +541,11 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         reconnectScheduled.set(false);
         attemptStartedAt = Instant.now();
         stateHolder.transitionTo(WecomConnectionState.CONNECTING);
-        URI uri;
-        try {
-            uri = URI.create(properties.getWsUrl().trim());
-        } catch (RuntimeException ex) {
-            stateHolder.recordError("连接失败: 无效的 WS 地址");
-            log.warn("企业微信长连接 WS 地址无效，等待重试");
-            scheduleReconnect();
-            return;
-        }
         log.info("企业微信长连接建立中 (attempt {})", backoffAttempt.get() + 1);
         httpClient
                 .newWebSocketBuilder()
                 .connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MILLIS))
-                .buildAsync(uri, new FrameListener(id))
+                .buildAsync(webSocketUri, new FrameListener(id))
                 .whenComplete((ws, error) -> {
                     if (id != attemptCounter.get()) {
                         // 已被更新的连接尝试取代
