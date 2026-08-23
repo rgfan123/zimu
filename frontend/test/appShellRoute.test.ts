@@ -75,6 +75,13 @@ test('选择岗位后跳到该岗位工作台、写入 localStorage，URL 不携
   for (const section of ['主数据', '系统管理', '京东工具', 'Agent 中心', '经营分析']) {
     assert.match(reordered, new RegExp(section), `切换岗位后「${section}」板块必须仍然可见`);
   }
+  // 履约运营的分组优先序把库存中心排到主数据之前；未列入优先表的分组保持默认相对顺序，
+  // 京东工具必须仍紧随系统管理（稳定排序 + 嵌套邻接，防止未来编辑悄悄拆散）。
+  assert.ok(reordered.indexOf('库存中心') < reordered.indexOf('主数据'), '履约运营岗位下库存中心应排在主数据之前');
+  assert.ok(
+    reordered.indexOf('操作审计') < reordered.indexOf('连接与出库查询'),
+    '切岗重排后京东工具仍须排在系统管理自身条目之后',
+  );
 });
 
 test('全局搜索是诚实入口：说明未接入跨对象搜索，回车直达订单查询', async () => {
@@ -112,11 +119,29 @@ test('财务岗位落地对账工作台', async () => {
   await harness.waitFor(() => assert.equal(harness.location(), '/workbench/recon'));
 });
 
-test('刷新后岗位保留；未知团队值原样显示而不是崩溃或丢弃', async () => {
+test('刷新后岗位保留；复核徽标显示岗位团队的真实 OPEN 计数；未知团队值原样显示', async () => {
   window.localStorage.setItem('zimu.workbench-role', 'FULFILLMENT_OPS');
-  globalThis.fetch = async () => jsonResponse(page([]));
+  const badgeRequests: string[] = [];
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/api/v1/review-cases') && url.includes('size=1')) {
+      badgeRequests.push(url);
+      return jsonResponse({ ...page([]), total_elements: 7 });
+    }
+    return jsonResponse(page([]));
+  };
   await harness.mount(['/workbench/reviews']);
   assert.match(harness.bodyText(), /履约运营/, '已选岗位在重新挂载后保留');
+
+  // 徽标契约（ADR 0004）：size=1 只取 total_elements、按岗位团队过滤，显示真实计数。
+  await harness.waitFor(() => {
+    const badge = document.querySelector('.zs-nav a .bg');
+    assert.equal(badge?.textContent, '7', '复核收件箱徽标应显示团队 OPEN 总数');
+  });
+  assert.ok(
+    badgeRequests.some((url) => url.includes('responsible_team=FULFILLMENT_OPS')),
+    '徽标计数必须按岗位团队过滤',
+  );
   await harness.unmount();
 
   window.localStorage.setItem('zimu.workbench-role', 'MYSTERY_TEAM');

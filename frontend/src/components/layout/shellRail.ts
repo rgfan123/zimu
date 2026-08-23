@@ -86,15 +86,20 @@ export function buildRailGroups(): RailGroup[] {
     for (const child of nested) pushSection(child.node, child.title);
   };
 
+  let dashboardItem: RailItem | undefined;
   for (const node of tree) {
     if (node.children?.length) {
       pushSection(node, node.label);
     } else if (node.path === '/dashboard') {
-      const myWorkbench = groups.find((group) => group.key === '/workbench');
-      (myWorkbench?.items ?? analyticsItems).push(toItem(node));
+      dashboardItem = toItem(node);
     } else {
       analyticsItems.push(toItem(node));
     }
+  }
+  // 调度台归入我的工作台组：在整棵树遍历完之后落位，不依赖 appNavigation 的节点顺序。
+  if (dashboardItem) {
+    const myWorkbench = groups.find((group) => group.key === '/workbench');
+    (myWorkbench?.items ?? analyticsItems).push(dashboardItem);
   }
   if (analyticsItems.length) groups.push({ key: 'analytics', title: '经营分析', items: analyticsItems });
   return groups;

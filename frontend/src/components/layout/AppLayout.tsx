@@ -5,7 +5,7 @@
  * 岗位只重排导航分组顺序与默认落地页，绝不隐藏任何入口（D1：岗位 ≠ 权限）。
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Link, Outlet, useNavigate } from 'react-router-dom';
 import { useCurrentRoute } from '@/routes';
@@ -22,6 +22,13 @@ import {
 } from '@/workbenchRole';
 import brandAvatarUrl from '@/assets/zimu-brand-avatar.png';
 import './shell.css';
+
+/** #rrggbb → rgba(r,g,b,alpha)：让遮罩色也从 saasTheme 派生，不手抄 rgba 字面量。 */
+function withAlpha(hex: string, alpha: number): string {
+  const channels = hex.replace('#', '').match(/.{2}/g) ?? [];
+  const [r, g, b] = channels.map((channel) => Number.parseInt(channel, 16));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 /** shell.css 的唯一取色入口：全部来自 saasTheme.ts，壳层 CSS 不写死色值。 */
 const shellVars = {
@@ -40,7 +47,7 @@ const shellVars = {
   '--zs-brand-active': saasVisualTokens.brand.active,
   '--zs-error': saasVisualTokens.semantic.error,
   '--zs-error-bg': saasTheme.token?.colorErrorBg ?? saasVisualTokens.brand.subtle,
-  '--zs-scrim': 'rgba(32, 38, 51, 0.4)',
+  '--zs-scrim': withAlpha(saasVisualTokens.neutral[900], 0.4),
   '--zs-sh2': saasTheme.token?.boxShadowSecondary ?? 'none',
 } as CSSProperties;
 
@@ -49,6 +56,8 @@ export default function AppLayout() {
   const route = useCurrentRoute();
   const [role, setRole] = useState<string | null>(() => readStoredWorkbenchRole());
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
   const reviewsBadge = useReviewsBadge(role);
 
   const groups = useMemo(() => railGroupsForRole(role), [role]);
@@ -83,7 +92,7 @@ export default function AppLayout() {
 
         <WorkbenchRoleSwitcher role={role} onSelect={onSelectRole} />
 
-        <button type="button" className="zs-search" onClick={() => setSearchOpen(true)}>
+        <button ref={searchButtonRef} type="button" className="zs-search" onClick={() => setSearchOpen(true)}>
           <span>搜单号 / 运单号</span>
           <span className="kb">⌘K</span>
         </button>
@@ -136,7 +145,7 @@ export default function AppLayout() {
         <Outlet />
       </main>
 
-      <GlobalSearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <GlobalSearchOverlay open={searchOpen} onClose={closeSearch} returnFocusRef={searchButtonRef} />
     </div>
   );
 }

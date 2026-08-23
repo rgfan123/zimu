@@ -185,6 +185,8 @@
 /* ---------- 分组平铺导航 ---------- */
 .zs-nav {
   flex: 1;
+  /* flex 子项默认 min-height:auto 不会收缩：没有这行导航不滚动、footer 被顶出 100vh。 */
+  min-height: 0;
   overflow-y: auto;
   padding: 8px 12px 12px;
 }
@@ -296,7 +298,9 @@
   max-width: 1420px;
 }
 
-/* ---------- 全局搜索 overlay（诚实版） ---------- */
+/* ---------- 全局搜索 overlay（诚实版） ----------
+   z-index 契约：壳层弹层（.zs-ws-pop 40 / .zs-so 80）刻意低于 antd portal 默认层（1000+）——
+   页面内容弹出的 Modal/Select 永远盖住壳层弹层，壳层不与页面弹层抢层级。 */
 .zs-so {
   position: fixed;
   inset: 0;

@@ -97,7 +97,8 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
 - `/dashboard` label 更名「调度台」（与 spec #103 词汇一致）。
 - `/demo/order` 降级为隐藏入口（Demo 不出现在日常菜单，URL 保留直达）。
 - 删除 `NAVIGATION_GROUP_SUFFIX` 分组 hack 与 `navigationOpenKeys`：外壳导航改为
-  「分组标题 + 平铺链接」（原型形态，无折叠层级），分组 key 用 `group:` 前缀，不再与叶子路径冲突。
+  「分组标题 + 平铺链接」（原型形态，无折叠层级）。ADR 0004 后分组由 `shellRail.ts`
+  展示层承载（分组 key 即板块路径，与叶子渲染互不冲突），不再经 antd Menu。
 - 岗位选择器只改默认落地页与（#106）复核默认团队，**全站菜单不按岗位隐藏或加锁**（D1）。
 - **ADR 0004（同日追加）**：外壳导航改为原型壳层 CSS 的 1:1 移植（`shell.css` + `shellRail.ts`
   展示层）；岗位切换**只重排分组顺序、绝不隐藏**；调度台在轨道展示上归入「我的工作台」组
