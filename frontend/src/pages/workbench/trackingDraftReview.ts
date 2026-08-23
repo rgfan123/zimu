@@ -194,6 +194,23 @@ export function isAtomicShipmentDraft(draft: TrackingDraftDetail): boolean {
     && draft.confirmation_scope === 'ATOMIC_SHIPMENT';
 }
 
+export function trackingDraftOpenStateDescription(draft: TrackingDraftDetail): string {
+  return isAtomicShipmentDraft(draft)
+    ? '只有系统确定性解析的同一发货批次全部必选明细与标准物流公司可被确认；确认后不会从企微消息推断实际发货时间。'
+    : '只有系统确定性解析的唯一任务与标准物流公司可被确认；确认后不会从企微消息推断实际发货时间。';
+}
+
+export function trackingDraftFullShipmentDescription(
+  draft: TrackingDraftDetail,
+  selectedTask?: TrackingDraftTaskCandidate,
+): string {
+  if (isAtomicShipmentDraft(draft)) {
+    return `本文件行未明示部分发货或异常，确认时将使用上表全部 ${draft.task_candidates.length} 条必选明细各自的指令数量，不会只取其中一条。`;
+  }
+  const quantity = text(selectedTask?.instructed_quantity);
+  return `本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量${quantity ? ` ${quantity}` : ''}。`;
+}
+
 export function trackingDraftCarrierSourceLabel(
   source: TrackingDraftCarrierCandidate['source'],
 ): string {

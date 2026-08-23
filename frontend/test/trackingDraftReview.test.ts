@@ -7,7 +7,9 @@ import {
   isAtomicShipmentDraft,
   trackingDraftBlockingIssues,
   trackingDraftCarrierSourceLabel,
+  trackingDraftFullShipmentDescription,
   trackingDraftIssueLabel,
+  trackingDraftOpenStateDescription,
   type TrackingDraftDetail,
 } from '../src/pages/workbench/trackingDraftReview.ts';
 
@@ -102,6 +104,27 @@ test('file atomic shipment drafts expose every required task without pretending 
   assert.equal(initialTrackingDraftReviewForm(current).task_id, '44');
   assert.deepEqual(trackingDraftBlockingIssues(current, initialTrackingDraftReviewForm(current)), []);
   assert.equal(trackingDraftCarrierSourceLabel('FILE'), '回传文件明确的物流公司');
+  assert.equal(
+    trackingDraftOpenStateDescription(current),
+    '只有系统确定性解析的同一发货批次全部必选明细与标准物流公司可被确认；确认后不会从企微消息推断实际发货时间。',
+  );
+  assert.equal(
+    trackingDraftFullShipmentDescription(current, current.task_candidates[0]),
+    '本文件行未明示部分发货或异常，确认时将使用上表全部 2 条必选明细各自的指令数量，不会只取其中一条。',
+  );
+});
+
+test('single-task confirmation copy may show only its selected deterministic quantity', () => {
+  const current = draft();
+
+  assert.equal(
+    trackingDraftOpenStateDescription(current),
+    '只有系统确定性解析的唯一任务与标准物流公司可被确认；确认后不会从企微消息推断实际发货时间。',
+  );
+  assert.equal(
+    trackingDraftFullShipmentDescription(current, current.task_candidates[0]),
+    '本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量 8.000。',
+  );
 });
 
 test('confirmation carries both visible versions and never sends a fake shipment time', () => {

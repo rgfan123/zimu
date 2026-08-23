@@ -22,7 +22,9 @@ import {
   isAtomicShipmentDraft,
   trackingDraftBlockingIssues,
   trackingDraftCarrierSourceLabel,
+  trackingDraftFullShipmentDescription,
   trackingDraftIssueLabel,
+  trackingDraftOpenStateDescription,
   type TrackingDraftCarrierOption,
   type TrackingDraftDetail,
   type TrackingDraftReviewForm,
@@ -223,7 +225,7 @@ export default function TrackingDraftReviewPanel({
         showIcon
         message={draftStatusLabel(draft.status)}
         description={draft.status === 'OPEN'
-          ? '只有系统确定性解析的唯一任务与标准物流公司可被确认；确认后不会从企微消息推断实际发货时间。'
+          ? trackingDraftOpenStateDescription(draft)
           : draft.status === 'CONFIRMED'
             ? '该草稿已确认并形成正式运单事实，当前为只读状态。'
             : '该草稿已结束，没有形成新的运单事实。'}
@@ -372,7 +374,7 @@ export default function TrackingDraftReviewPanel({
           showIcon
           message={draft.default_full_shipment ? '默认按整项发货' : '不能按整项发货确认'}
           description={draft.default_full_shipment
-            ? `本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量${selectedTask?.instructed_quantity ? ` ${selectedTask.instructed_quantity}` : ''}。`
+            ? trackingDraftFullShipmentDescription(draft, selectedTask)
             : '本草稿包含缺货、异常或无法识别的判断，请保留在复核队列并由履约运营核对。'}
         />
       )}
