@@ -12,6 +12,11 @@ const ROLE_TEAM: Record<string, string> = {
   ORDER_OPS: 'ORDER_OPS',
 };
 
+/** 岗位 → 复核责任团队。财务无团队（D4）、未知岗位不猜 → null（不过滤）。 */
+export function reviewTeamForRole(role: string | null): string | null {
+  return role ? ROLE_TEAM[role] ?? null : null;
+}
+
 /** 当前岗位团队的 OPEN 复核事项数；size=1 只取 total_elements，不复制跨页拉全量反模式。 */
 export function useReviewsBadge(role: string | null): number | null {
   const [count, setCount] = useState<number | null>(null);
