@@ -8,6 +8,7 @@ import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageInterpreter;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
 import cn.zimu.fulfillment.connector.wecom.WecomMediaEvidenceService;
+import cn.zimu.fulfillment.connector.wecom.LocalMediaDownloaderConfiguration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
@@ -43,6 +44,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -54,6 +56,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 /** Issue #86：单聊 file 的真实下载/解密/解析/草稿/人工确认纵切片。 */
 @Testcontainers
+@Import(LocalMediaDownloaderConfiguration.class)
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {

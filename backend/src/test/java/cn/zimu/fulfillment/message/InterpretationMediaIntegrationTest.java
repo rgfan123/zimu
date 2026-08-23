@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.message.*;
+import cn.zimu.fulfillment.connector.wecom.LocalMediaDownloaderConfiguration;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -31,6 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -44,6 +46,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 纯文字消息保持空媒体引用（回归）。
  */
 @Testcontainers
+@Import(LocalMediaDownloaderConfiguration.class)
 @SpringBootTest
 class InterpretationMediaIntegrationTest {
 
@@ -58,6 +61,10 @@ class InterpretationMediaIntegrationTest {
     @DynamicPropertySource
     static void mediaConfiguration(DynamicPropertyRegistry registry) {
         registry.add("app.message-worker.enabled", () -> "false");
+        registry.add("app.wecom-tracking-file-worker.enabled", () -> "false");
+        registry.add("app.wecom-export-worker.enabled", () -> "false");
+        registry.add("app.wecom-reminder.enabled", () -> "false");
+        registry.add("app.agent-worker.enabled", () -> "false");
         registry.add("app.media.dir", () -> MEDIA_DIR.toString());
     }
 

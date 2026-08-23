@@ -12,7 +12,6 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,11 +32,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -51,7 +47,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @Testcontainers
 @SpringBootTest
-@Import(WecomMediaEvidenceServiceTest.LocalMediaDownloaderConfiguration.class)
+@Import(LocalMediaDownloaderConfiguration.class)
 class WecomMediaEvidenceServiceTest {
 
     private static final String AES_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
@@ -67,6 +63,7 @@ class WecomMediaEvidenceServiceTest {
         registry.add("app.message-worker.enabled", () -> "false");
         registry.add("app.wecom-tracking-file-worker.enabled", () -> "false");
         registry.add("app.wecom-export-worker.enabled", () -> "false");
+        registry.add("app.wecom-reminder.enabled", () -> "false");
         registry.add("app.agent-worker.enabled", () -> "false");
     }
 
@@ -82,25 +79,6 @@ class WecomMediaEvidenceServiceTest {
     private HttpServer server;
     private String baseUrl;
     private final AtomicInteger downloadHits = new AtomicInteger();
-
-    /** Test-only loopback adapter; production construction never exposes this origin override. */
-    @TestConfiguration(proxyBeanMethods = false)
-    static class LocalMediaDownloaderConfiguration {
-
-        @Bean
-        @Primary
-        WecomMediaDownloader loopbackMediaDownloader() {
-            return new WecomMediaDownloader(15_000) {
-                @Override
-                public WecomMediaDownloader.DownloadedMedia download(String url, int maxBytes) {
-                    URI mediaUri = URI.create(url);
-                    URI origin = URI.create(
-                            mediaUri.getScheme() + "://" + mediaUri.getHost() + ":" + mediaUri.getPort());
-                    return WecomMediaDownloader.forTest(15_000, origin).download(url, maxBytes);
-                }
-            };
-        }
-    }
 
     @BeforeEach
     void setUp() throws IOException {
