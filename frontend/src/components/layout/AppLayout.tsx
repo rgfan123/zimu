@@ -1,194 +1,191 @@
 /**
- * 应用框架：侧边栏（PRD §22 导航树）+ 顶栏（页面标题 / 业务日期 / 环境标识）。
- * 菜单与路由共用 routeConfig 单一配置源。
+ * 应用外壳（Issue #104，原型形态契约 ADR 0001/0002）：
+ * 244px 固定侧栏（品牌 → 岗位选择器 → 分组导航 → 共享身份 footer），无顶栏。
+ * 岗位只决定默认落地工作台（D1），全站菜单对所有岗位一致，不隐藏、不加锁。
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { Button, Layout, Menu, Tag, Typography, theme } from 'antd';
+import { useMemo, useState } from 'react';
+import { Outlet, useNavigate } from 'react-router-dom';
+import { Layout, Menu, theme } from 'antd';
 import type { MenuProps } from 'antd';
-import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
-import dayjs from 'dayjs';
 import { flattenRoutes, routeConfig, useCurrentRoute, type AppRoute } from '@/routes';
+import { visibleNavigationTree } from '@/navigation';
 import {
-  NAVIGATION_GROUP_SUFFIX,
-  navigationContextFromRoutes,
-  navigationOpenKeys,
-  visibleNavigationTree,
-} from '@/navigation';
+  readStoredWorkbenchRole,
+  storeWorkbenchRole,
+  workbenchRoleLabel,
+  workbenchRoleLanding,
+} from '@/workbenchRole';
+import WorkbenchRoleSwitcher from '@/components/layout/WorkbenchRoleSwitcher';
 import brandAvatarUrl from '@/assets/zimu-brand-avatar.png';
 
-const { Sider, Header, Content } = Layout;
+const { Sider, Content } = Layout;
 
-/** 分组节点 key 与叶子路径可能重名（如 订单管理 组 / 全部订单 叶均为 /orders），
- *  菜单 key 加 '~' 后缀区分，路由选中态仍用叶子路径。 */
-function buildMenuItems(routes: AppRoute[]): NonNullable<MenuProps['items']> {
-  return routes.map((r) => {
-      if (r.external) {
-        return {
-          key: r.path,
-          icon: r.icon,
-          label: (
-            <a href={r.external} target="_blank" rel="noreferrer">
-              {r.label}
-            </a>
-          ),
-        };
+type MenuItems = NonNullable<MenuProps['items']>;
+
+/**
+ * 原型导航是「分组标题 + 平铺链接」，没有折叠层级：一级板块渲染为 Menu 分组，
+ * 嵌套板块（京东工具）拍平为并列分组。分组 key 加 `group:` 前缀，避免与叶子路径重名
+ * （取代已删除的 NAVIGATION_GROUP_SUFFIX hack）。
+ */
+function buildMenuItems(routes: AppRoute[]): MenuItems {
+  const items: MenuItems = [];
+  const pushGroups = (section: AppRoute) => {
+    const leaves: MenuItems = [];
+    for (const child of section.children ?? []) {
+      if (child.children?.length) {
+        pushGroups({ ...child, label: `${section.label} · ${child.label}` });
+      } else {
+        leaves.push({ key: child.path, label: child.label });
       }
-      if (r.children?.length) {
-        return {
-          key: `${r.path}${NAVIGATION_GROUP_SUFFIX}`,
-          icon: r.icon,
-          label: r.label,
-          children: buildMenuItems(r.children),
-        };
-      }
-      return { key: r.path, icon: r.icon, label: r.label };
-  });
+    }
+    if (leaves.length) items.push({ type: 'group', key: `group:${section.path}`, label: section.label, children: leaves });
+  };
+
+  for (const route of routes) {
+    if (route.external) {
+      items.push({
+        key: route.path,
+        icon: route.icon,
+        label: (
+          <a href={route.external} target="_blank" rel="noreferrer">
+            {route.label}
+          </a>
+        ),
+      });
+    } else if (route.children?.length) {
+      pushGroups(route);
+    } else {
+      items.push({ key: route.path, icon: route.icon, label: route.label });
+    }
+  }
+  return items;
 }
 
 export default function AppLayout() {
-  // 原型决策 D：数据密集型 ERP 默认使用图标窄轨，给 12 列运营看板留出完整宽度。
-  const [collapsed, setCollapsed] = useState(false);
-  const { pathname } = useLocation();
   const navigate = useNavigate();
   const route = useCurrentRoute();
   const { token } = theme.useToken();
+  const [role, setRole] = useState<string | null>(() => readStoredWorkbenchRole());
 
   const menuItems = useMemo(() => buildMenuItems(visibleNavigationTree(routeConfig)), []);
   const selectedKeys = useMemo(() => [route?.path ?? ''], [route]);
-  const currentNavigation = navigationContextFromRoutes(routeConfig, pathname, route?.label ?? '');
-  const defaultOpenKeys = useMemo(() => navigationOpenKeys(routeConfig, pathname), [pathname]);
-  const [openKeys, setOpenKeys] = useState<string[]>(defaultOpenKeys);
-  useEffect(() => {
-    if (defaultOpenKeys.length) setOpenKeys(defaultOpenKeys);
-  }, [defaultOpenKeys]);
+
+  const onSelectRole = (value: string) => {
+    setRole(value);
+    storeWorkbenchRole(value);
+    // 岗位切换 = 换一份活干：跳该岗位的默认工作台。岗位绝不写进 URL（D3）。
+    const landing = workbenchRoleLanding(value);
+    if (landing) navigate(landing);
+  };
+
+  const roleLabel = workbenchRoleLabel(role);
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider
-        width={216}
-        collapsedWidth={64}
-        collapsed={collapsed}
+        width={244}
+        collapsible={false}
         trigger={null}
         theme="light"
+        className="app-shell-sider"
         style={{
           borderRight: `1px solid ${token.colorBorderSecondary}`,
           position: 'sticky',
           top: 0,
           height: '100vh',
-          overflow: 'auto',
         }}
       >
-        <div
-          style={{
-            height: 56,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '0 16px',
-            borderBottom: `1px solid ${token.colorBorderSecondary}`,
-            overflow: 'hidden',
-          }}
-        >
-          <img
-            src={brandAvatarUrl}
-            alt=""
-            aria-hidden="true"
-            draggable={false}
-            width={32}
-            height={32}
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 9,
-              objectFit: 'cover',
-              boxSizing: 'border-box',
-              flexShrink: 0,
-              border: `1px solid ${token.colorBorderSecondary}`,
-              background: token.colorBgContainer,
-            }}
-          />
-          {!collapsed ? (
-            <div style={{ lineHeight: 1.2, whiteSpace: 'nowrap' }}>
-              <div style={{ fontWeight: 700, fontSize: 15, color: token.colorTextHeading }}>子牧履约中台</div>
-              <div style={{ fontSize: 11, color: token.colorTextTertiary }}>Fulfillment & Logistics Hub</div>
-            </div>
-          ) : null}
-        </div>
-        <Menu
-          mode="inline"
-          items={menuItems}
-          selectedKeys={selectedKeys}
-          openKeys={collapsed ? [] : openKeys}
-          onOpenChange={(keys) => setOpenKeys(keys.map(String))}
-          onClick={({ key }) => {
-            // 只对真实存在的叶子路由导航；分组 key（带 ~ 后缀）与外链不导航
-            const target = flattenRoutes(routeConfig).find((r) => r.path === key);
-            if (target) navigate(key);
-          }}
-          style={{ borderInlineEnd: 'none', padding: '8px 0' }}
-        />
-        {!collapsed ? (
-          <div style={{ position: 'absolute', bottom: 12, left: 0, right: 0, textAlign: 'center' }}>
-            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-              子牧订单履约中台
-            </Typography.Text>
+        <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '16px 16px 12px' }}>
+            <img
+              src={brandAvatarUrl}
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+              width={28}
+              height={28}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                objectFit: 'cover',
+                flexShrink: 0,
+                border: `1px solid ${token.colorBorderSecondary}`,
+                background: token.colorBgContainer,
+              }}
+            />
+            <span style={{ fontSize: 15, fontWeight: 600, color: token.colorTextHeading, whiteSpace: 'nowrap' }}>
+              子牧履约中台
+            </span>
           </div>
-        ) : null}
-      </Sider>
 
-      <Layout>
-        <Header
-          style={{
-            background: token.colorBgContainer,
-            borderBottom: `1px solid ${token.colorBorderSecondary}`,
-            padding: '0 20px',
-            height: 56,
-            lineHeight: '56px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 16,
-            position: 'sticky',
-            top: 0,
-            zIndex: 10,
-          }}
-        >
-          <Button
-            type="text"
-            aria-label={collapsed ? '展开菜单' : '收起菜单'}
-            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-            onClick={() => setCollapsed((c) => !c)}
-            style={{ fontSize: 16 }}
-          />
-          <div style={{ flex: 1, lineHeight: 1.25 }}>
-            <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
-              {currentNavigation.section}
-            </Typography.Text>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              {currentNavigation.page}
-            </Typography.Title>
+          <WorkbenchRoleSwitcher role={role} onSelect={onSelectRole} />
+
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 4px 12px' }}>
+            <Menu
+              mode="inline"
+              items={menuItems}
+              selectedKeys={selectedKeys}
+              onClick={({ key }) => {
+                // 只对真实存在的叶子路由导航；分组 key（group: 前缀）与外链不导航
+                const target = flattenRoutes(routeConfig).find((r) => r.path === key);
+                if (target) navigate(key);
+              }}
+              style={{ borderInlineEnd: 'none' }}
+            />
           </div>
-          <Tag
-            bordered={false}
+
+          <div
             style={{
-              borderRadius: 4,
-              marginInlineEnd: 0,
-              color: token.colorTextSecondary,
-              background: token.colorFillTertiary,
+              borderTop: `1px solid ${token.colorBorderSecondary}`,
+              padding: '10px 14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 9,
             }}
           >
-            业务运营
-          </Tag>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            {dayjs().format('YYYY-MM-DD dddd')}
-          </Typography.Text>
-        </Header>
+            <span
+              aria-hidden="true"
+              style={{
+                width: 26,
+                height: 26,
+                flex: 'none',
+                borderRadius: '50%',
+                background: token.colorFillSecondary,
+                color: token.colorTextSecondary,
+                display: 'grid',
+                placeItems: 'center',
+                fontSize: 11.5,
+                fontWeight: 600,
+              }}
+            >
+              {roleLabel ? roleLabel.slice(0, 1) : '?'}
+            </span>
+            <div style={{ flex: 1, minWidth: 0, lineHeight: 1.3 }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: token.colorText,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {roleLabel ?? '未选择岗位'}
+              </div>
+              <div style={{ fontSize: 11, color: token.colorTextTertiary }}>共享网关身份</div>
+            </div>
+          </div>
+        </div>
+      </Sider>
 
-        <Content style={{ padding: 20, background: token.colorBgLayout }}>
+      <Content style={{ background: token.colorBgLayout }}>
+        <div style={{ maxWidth: 1420, padding: '26px 30px 72px' }}>
           <Outlet />
-        </Content>
-      </Layout>
+        </div>
+      </Content>
     </Layout>
   );
 }

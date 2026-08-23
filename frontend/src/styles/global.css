@@ -169,3 +169,10 @@ body {
 .recon-row-only > td {
   background-color: rgba(250, 173, 20, 0.06) !important;
 }
+
+/* Issue #104：原型外壳无折叠态，窄屏直接隐藏侧栏（响应式外壳归 #65，本轮不做适配）。 */
+@media (max-width: 1080px) {
+  .app-shell-sider {
+    display: none;
+  }
+}

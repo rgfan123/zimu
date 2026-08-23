@@ -80,12 +80,25 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
 可见入口 = `flattenNavigationLeaves(visibleNavigationTree(appNavigation))`（含外链）；
 可路由叶子 = `routableNavigationLeaves(appNavigation)`（不含 external）。
 
-| 指标 | 收敛前 | 收敛后 |
-|---|---|---|
-| 一级板块（顶级菜单项） | 10 | 10 |
-| 可见入口（可见叶子，含外链） | 31 | **30**（Issue #89 新增 `/system/operators` 运营人员可见叶子） |
-| 可路由叶子（不含外链，全部生产路由） | 38 | **42**（Issue #64 新增 `/workbench/alerts` 隐藏叶子；Issue #89 新增 `/system/operators`；Issue #107 新增 `/workbench/shipping` 隐藏叶子；Issue #111 新增 `/workbench/recon` 隐藏叶子） |
-| 作业中心可见叶子 | 8 | **6** |
+| 指标 | 收敛前 | #98 收敛后 | **Issue #104 换壳后（当前）** |
+|---|---|---|---|
+| 一级板块（顶级菜单项） | 10 | 10 | **11**（新增「我的工作台」排最前，spec #103 D6） |
+| 可见入口（可见叶子，含外链） | 31 | 30 | **31**（`/workbench/shipping`、`/workbench/recon` 升为可见 +2；`/demo/order` 降级隐藏 −1） |
+| 可路由叶子（不含外链，全部生产路由） | 38 | 42 | **42**（URL 零删改，升可见/降隐藏都不动路由） |
+| 作业中心可见叶子 | 8 | 6 | **5**（复核收件箱移入我的工作台；渠道消息/履约任务/采购协同/文件作业/发货记录） |
+| 我的工作台可见叶子 | — | — | **3**（今日发货工作台/复核收件箱/对账工作台；采购工作台随 Issue #110 加入 → 4） |
+
+**Issue #104 换壳变更记录（2026-08-23）**：
+- 新增一级板块「我的工作台」（`/workbench` 分组）：今日发货工作台、复核收件箱（原「人工复核」
+  随移动更名）、对账工作台（原 `/workbench/recon` 隐藏入口升为可见，label 从「出库信息对账」
+  改为「对账工作台」；旧 `/fulfillment/outbound-recon` 仍为作业中心隐藏入口，不变）；
+  运营提醒（隐藏）随复核收件箱移入。
+- 原「作业中心」分组键改为 `/operations`（纯分组键，非路由），其余成员不变。
+- `/dashboard` label 更名「调度台」（与 spec #103 词汇一致）。
+- `/demo/order` 降级为隐藏入口（Demo 不出现在日常菜单，URL 保留直达）。
+- 删除 `NAVIGATION_GROUP_SUFFIX` 分组 hack 与 `navigationOpenKeys`：外壳导航改为
+  「分组标题 + 平铺链接」（原型形态，无折叠层级），分组 key 用 `group:` 前缀，不再与叶子路径冲突。
+- 岗位选择器只改默认落地页与（#106）复核默认团队，**全站菜单不按岗位隐藏或加锁**（D1）。
 
 > Issue 记录的「9 个一级板块 / 34 可见入口」是记录时点口径，与当前代码不一致（此后新增了
 > 静态礼包等入口），一律以本表实时重算为准。复核命令（frontend 目录下）：

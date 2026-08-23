@@ -4,7 +4,6 @@ import {
   appNavigation,
   flattenNavigationLeaves,
   navigationContext,
-  navigationOpenKeys,
   navigationTrail,
   routableNavigationLeaves,
   visibleNavigationTree,
@@ -20,18 +19,29 @@ function findNavigationNode(routes: readonly NavigationNode[], path: string): Na
   return undefined;
 }
 
-test('production navigation keeps the demoted workbench query tools registered under the workbench', () => {
-  const workbench = findNavigationNode(appNavigation, '/workbench');
+test('my-workbench section leads the navigation with the role workbenches (Issue #104)', () => {
+  const myWorkbench = findNavigationNode(appNavigation, '/workbench');
+
+  assert.equal(appNavigation[0]?.path, '/workbench', '我的工作台必须排在导航最前（spec D6）');
+  assert.deepEqual(
+    myWorkbench?.children?.map(({ path, label, hideInMenu }) => ({ path, label, hideInMenu: hideInMenu ?? false })),
+    [
+      { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: false },
+      { path: '/workbench/reviews', label: '复核收件箱', hideInMenu: false },
+      // Issue #64 运营提醒：上下文二级入口，随复核收件箱移入我的工作台。
+      { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
+      { path: '/workbench/recon', label: '对账工作台', hideInMenu: false },
+    ],
+  );
+});
+
+test('operations section keeps only the daily high-frequency entries within the admission cap', () => {
+  const operations = findNavigationNode(appNavigation, '/operations');
 
   assert.deepEqual(
-    workbench?.children?.map(({ path, label, hideInMenu }) => ({ path, label, hideInMenu: hideInMenu ?? false })),
+    operations?.children?.map(({ path, label, hideInMenu }) => ({ path, label, hideInMenu: hideInMenu ?? false })),
     [
-      { path: '/workbench/reviews', label: '人工复核', hideInMenu: false },
-      { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       { path: '/workbench/channel-messages', label: '渠道消息', hideInMenu: false },
-      { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: true },
-      // Issue #111：出库信息对账的工作台入口，隐藏但可路由；旧 /fulfillment/outbound-recon 保留。
-      { path: '/workbench/recon', label: '出库信息对账', hideInMenu: true },
       { path: '/fulfillment/tasks', label: '履约任务', hideInMenu: false },
       { path: '/procurement/tickets', label: '采购协同', hideInMenu: false },
       { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
@@ -40,36 +50,28 @@ test('production navigation keeps the demoted workbench query tools registered u
       { path: '/fulfillment/outbound-recon', label: '出库信息对账', hideInMenu: true },
     ],
   );
-});
-
-test('workbench menu gate keeps exactly the six daily high-frequency operations visible', () => {
-  const workbench = findNavigationNode(appNavigation, '/workbench');
-  const visibleChildren = workbench?.children?.filter(({ hideInMenu }) => !hideInMenu);
-
-  // 设计口径（business-object-navigation 01 / Issue #98）：作业中心只放日常高频运营入口，上限 6。
-  assert.deepEqual(
-    visibleChildren?.map(({ path, label }) => ({ path, label })),
-    [
-      { path: '/workbench/reviews', label: '人工复核' },
-      { path: '/workbench/channel-messages', label: '渠道消息' },
-      { path: '/fulfillment/tasks', label: '履约任务' },
-      { path: '/procurement/tickets', label: '采购协同' },
-      { path: '/fulfillment/sales-outbound', label: '文件作业' },
-      { path: '/fulfillment/shipments', label: '发货记录' },
-    ],
-  );
+  const visibleChildren = operations?.children?.filter(({ hideInMenu }) => !hideInMenu);
   assert.ok((visibleChildren?.length ?? 0) <= 6, '作业中心可见叶子不得超过高频上限 6');
+  const myWorkbenchVisible = findNavigationNode(appNavigation, '/workbench')?.children?.filter(
+    ({ hideInMenu }) => !hideInMenu,
+  );
+  assert.ok((myWorkbenchVisible?.length ?? 0) <= 6, '我的工作台可见叶子不得超过上限 6');
 });
 
-test('demoted workbench tools stay routable and keep their workbench context', () => {
+test('demoted query tools stay routable and keep their section context', () => {
   const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
   const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
 
-  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts', '/workbench/shipping', '/workbench/recon']) {
+  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts', '/demo/order']) {
     const node = findNavigationNode(appNavigation, path);
     assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
     assert.equal(visiblePaths.includes(path), false, `${path} 不得出现在可见菜单`);
     assert.equal(routablePaths.includes(path), true, `${path} 必须保持可路由（降级不等于删除，旧路径不 404）`);
+  }
+  // Issue #104：发货台与对账台从隐藏注册升级为我的工作台可见入口（票面「01 再露出」的落地）。
+  for (const path of ['/workbench/shipping', '/workbench/recon', '/workbench/reviews']) {
+    assert.equal(visiblePaths.includes(path), true, `${path} 必须是我的工作台可见入口`);
+    assert.equal(routablePaths.includes(path), true, `${path} 必须可路由`);
   }
   assert.deepEqual(navigationContext('/procurement/price-compare', ''), {
     section: '作业中心',
@@ -79,19 +81,16 @@ test('demoted workbench tools stay routable and keep their workbench context', (
     section: '作业中心',
     page: '出库信息对账',
   });
-  // Issue #111：工作台对账入口是隐藏但可路由的上下文工具，与旧路径同属作业中心归属。
   assert.deepEqual(navigationContext('/workbench/recon', ''), {
-    section: '作业中心',
-    page: '出库信息对账',
+    section: '我的工作台',
+    page: '对账工作台',
   });
-  // Issue #64：运营提醒是独立路由但按 #98 规则不增加作业中心可见叶子。
   assert.deepEqual(navigationContext('/workbench/alerts', ''), {
-    section: '作业中心',
+    section: '我的工作台',
     page: '运营提醒',
   });
-  // Issue #107：今日发货工作台先 hideInMenu 注册，保持作业中心归属与可路由，可见计数不变。
   assert.deepEqual(navigationContext('/workbench/shipping', ''), {
-    section: '作业中心',
+    section: '我的工作台',
     page: '今日发货工作台',
   });
 });
@@ -111,10 +110,6 @@ test('production navigation nests the six legacy JD URLs under system tools', ()
       { path: '/fulfillment/jd-return', label: '退货退供查询' },
     ],
   );
-  assert.deepEqual(navigationOpenKeys(appNavigation, '/fulfillment/jd-stock'), [
-    '/system~',
-    '/system/jd-tools~',
-  ]);
   assert.deepEqual(navigationContext('/fulfillment/jd-stock', ''), {
     section: '系统管理 / 京东工具',
     page: '库存原始查询',

@@ -3,9 +3,10 @@ import test from 'node:test';
 import { navigationContext } from '../src/navigation.ts';
 
 test('ERP navigation groups task pages under a stable business section', () => {
-  assert.deepEqual(navigationContext('/workbench/reviews', '人工复核'), {
-    section: '作业中心',
-    page: '人工复核',
+  // Issue #104：复核收件箱随「我的工作台」板块移动（导航归属变更，URL 不变）。
+  assert.deepEqual(navigationContext('/workbench/reviews', '复核收件箱'), {
+    section: '我的工作台',
+    page: '复核收件箱',
   });
   assert.deepEqual(navigationContext('/procurement/tickets', '采购协同'), {
     section: '作业中心',

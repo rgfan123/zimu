@@ -150,6 +150,12 @@ export const saasTheme: ThemeConfig = {
       itemSelectedColor: saasVisualTokens.brand.active,
       subMenuItemBg: saasVisualTokens.surface.raised,
       itemBorderRadius: 6,
+      // Issue #104 外壳密度对齐原型：条目 32px / 13.5px，分组标题 10.5px 弱化。
+      itemHeight: 32,
+      itemMarginBlock: 2,
+      fontSize: 13.5,
+      groupTitleFontSize: 11,
+      groupTitleColor: saasVisualTokens.text.tertiary,
     },
     Table: {
       headerBg: saasVisualTokens.neutral[50],
