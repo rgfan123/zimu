@@ -2,6 +2,8 @@ package cn.zimu.fulfillment.connector.wecom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -10,9 +12,17 @@ import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
+import cn.zimu.fulfillment.order.card.CardConfirmationResult;
+import cn.zimu.fulfillment.order.card.CardConfirmationStatus;
+import cn.zimu.fulfillment.order.card.CardFallbackStatus;
+import cn.zimu.fulfillment.order.card.CardInteractionOutcome;
+import cn.zimu.fulfillment.order.card.CardUpdateStatus;
+import cn.zimu.fulfillment.order.card.WecomOrderDraftCardInteractionService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -51,6 +61,8 @@ class WecomMessageDispatchHandlerTest {
 
     @MockitoBean private MessageSubmissionService submissionService;
     @MockitoBean private WecomConnectionManager connectionManager;
+    @MockitoBean private WecomOrderDraftCardInteractionService cardInteractions;
+    @MockitoBean private WecomOutboundGateway outboundGateway;
 
     @BeforeEach
     void setUp() {
@@ -58,6 +70,8 @@ class WecomMessageDispatchHandlerTest {
         jdbc.update("DELETE FROM app.message_submissions");
         jdbc.update("DELETE FROM app.channel_messages");
         when(connectionManager.respond(any(), any())).thenReturn(true);
+        when(connectionManager.respondUpdateUntil(any(), any(), anyLong()))
+                .thenReturn(WecomSendResult.success("update-req", Instant.parse("2026-08-23T00:00:00Z")));
     }
 
     @Test
@@ -241,13 +255,116 @@ class WecomMessageDispatchHandlerTest {
     }
 
     @Test
-    void templateCardAndFeedbackEventsAreIgnored() {
-        handler.onFrame(
-                "aibot_event_callback",
-                json(
-                        "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\"REQ-11\"},\"body\":{"
-                                + "\"msgid\":\"EVT-3\",\"aibotid\":\"bot-1\",\"msgtype\":\"event\","
-                                + "\"event\":{\"eventtype\":\"template_card_event\"}}}"));
+    void templateCardEventUpdatesTheOriginalCardWithTheSameRequestId() {
+        JsonNode frame = cardEvent("EVT-3", "REQ-11", "user-card");
+        when(cardInteractions.handle(frame))
+                .thenReturn(outcome(CardConfirmationStatus.CONFIRMED));
+
+        handler.onFrame("aibot_event_callback", frame);
+
+        ArgumentCaptor<JsonNode> update = ArgumentCaptor.forClass(JsonNode.class);
+        verify(connectionManager).respondUpdateUntil(eq("REQ-11"), update.capture(), anyLong());
+        assertThat(update.getValue().path("response_type").asText()).isEqualTo("update_template_card");
+        assertThat(update.getValue().path("template_card").path("task_id").asText())
+                .isEqualTo("order-draft:42");
+        assertThat(update.getValue().path("template_card").path("main_title").path("title").asText())
+                .isEqualTo("订单已确认");
+        assertThat(update.getValue().path("template_card").path("main_title").path("desc").asText())
+                .contains("user-card")
+                .contains("2026-08-23");
+        verify(cardInteractions)
+                .recordUpdateOutcome(
+                        eq("EVT-3"),
+                        eq("claim-event"),
+                        eq(CardUpdateStatus.SENT),
+                        eq(CardFallbackStatus.NOT_ATTEMPTED),
+                        anyInt(),
+                        eq(null),
+                        eq(null));
+        verify(outboundGateway, never()).send(any());
+    }
+
+    @Test
+    void failedFastUpdateKeepsBusinessResultAndSendsFallbackText() {
+        JsonNode frame = cardEvent("EVT-3B", "REQ-11B", "user-card");
+        when(cardInteractions.handle(frame))
+                .thenReturn(outcome(CardConfirmationStatus.CONFIRMED));
+        when(connectionManager.respondUpdateUntil(eq("REQ-11B"), any(), anyLong()))
+                .thenReturn(WecomSendResult.failed("REQ-11B", 93000, "rejected", false));
+        when(outboundGateway.send(any()))
+                .thenReturn(WecomSendResult.success("fallback-req", Instant.parse("2026-08-23T00:00:01Z")));
+
+        handler.onFrame("aibot_event_callback", frame);
+
+        ArgumentCaptor<WecomOutboundMessage> fallback = ArgumentCaptor.forClass(WecomOutboundMessage.class);
+        verify(outboundGateway).send(fallback.capture());
+        assertThat(fallback.getValue().chatId()).isEqualTo("chat-card");
+        assertThat(fallback.getValue().content()).contains("订单已确认").contains("user-card");
+        verify(cardInteractions)
+                .recordUpdateOutcome(
+                        eq("EVT-3B"),
+                        eq("claim-event"),
+                        eq(CardUpdateStatus.FAILED),
+                        eq(CardFallbackStatus.SENT),
+                        anyInt(),
+                        eq("WECOM_93000"),
+                        eq(null));
+    }
+
+    @Test
+    void elapsedFastPathSkipsCardUpdateAndRecordsDeadlineReason() {
+        JsonNode frame = cardEvent("EVT-3C", "REQ-11C", "user-card");
+        when(cardInteractions.handle(frame))
+                .thenReturn(outcome(CardConfirmationStatus.MISSING_INFORMATION));
+        when(outboundGateway.send(any()))
+                .thenReturn(WecomSendResult.success("fallback-req", Instant.parse("2026-08-23T00:00:01Z")));
+
+        handler.onFrame("aibot_event_callback", frame, System.nanoTime() - 5_100_000_000L);
+
+        verify(connectionManager, never()).respondUpdateUntil(any(), any(), anyLong());
+        verify(cardInteractions)
+                .recordUpdateOutcome(
+                        eq("EVT-3C"),
+                        eq("claim-event"),
+                        eq(CardUpdateStatus.TIMED_OUT),
+                        eq(CardFallbackStatus.SENT),
+                        anyInt(),
+                        eq("FAST_PATH_DEADLINE_EXCEEDED"),
+                        eq(null));
+    }
+
+    @Test
+    void concurrentRedeliveryDoesNotOverwriteTheCardWhileOriginalCallbackIsProcessing() {
+        JsonNode frame = cardEvent("EVT-3D", "REQ-11D", "user-card");
+        when(cardInteractions.handle(frame))
+                .thenReturn(new CardInteractionOutcome(
+                        "EVT-3D",
+                        "REQ-11D",
+                        "order-draft:42",
+                        42L,
+                        "chat-card",
+                        new CardConfirmationResult(
+                                CardConfirmationStatus.FAILED,
+                                "OD-42",
+                                List.of(),
+                                "ORDER_DRAFT_CARD_EVENT_IN_PROGRESS",
+                                "wecom:user-card",
+                                Instant.parse("2026-08-23T00:00:00Z")),
+                        true,
+                        "claim-in-progress",
+                        1));
+
+        handler.onFrame("aibot_event_callback", frame);
+
+        verify(connectionManager, never()).respondUpdateUntil(any(), any(), anyLong());
+        verify(outboundGateway, never()).send(any());
+        verify(cardInteractions, never())
+                .recordUpdateOutcome(
+                        any(), any(), any(), any(), anyInt(), any(), any());
+    }
+
+    @Test
+    void feedbackEventRemainsIgnored() {
         handler.onFrame(
                 "aibot_event_callback",
                 json(
@@ -257,6 +374,7 @@ class WecomMessageDispatchHandlerTest {
 
         Long count = jdbc.queryForObject("SELECT count(*) FROM app.wecom_events", Long.class);
         assertThat(count).isZero();
+        verify(cardInteractions, never()).handle(any());
     }
 
     @Test
@@ -279,6 +397,40 @@ class WecomMessageDispatchHandlerTest {
                         + (chatId == null ? "" : "\"chatid\":\"" + chatId + "\",")
                         + "\"chattype\":\"" + chatType + "\",\"from\":{\"userid\":\"" + sender + "\"},"
                         + "\"msgtype\":\"text\",\"text\":{\"content\":\"" + content + "\"}}}");
+    }
+
+    private JsonNode cardEvent(String messageId, String requestId, String sender) {
+        return json(
+                "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\"" + requestId
+                        + "\"},\"body\":{"
+                        + "\"msgid\":\"" + messageId + "\",\"aibotid\":\"bot-1\","
+                        + "\"chatid\":\"chat-card\",\"chattype\":\"group\","
+                        + "\"from\":{\"userid\":\"" + sender + "\"},\"msgtype\":\"event\","
+                        + "\"event\":{\"eventtype\":\"template_card_event\","
+                        + "\"template_card_event\":{\"event_key\":\"confirm_order\","
+                        + "\"task_id\":\"order-draft:42\"}}}}"
+        );
+    }
+
+    private static CardInteractionOutcome outcome(CardConfirmationStatus status) {
+        return new CardInteractionOutcome(
+                "EVT-3",
+                "REQ-11",
+                "order-draft:42",
+                42L,
+                "chat-card",
+                new CardConfirmationResult(
+                        status,
+                        "OD-42",
+                        status == CardConfirmationStatus.MISSING_INFORMATION
+                                ? List.of("settlement_time")
+                                : List.of(),
+                        status.name(),
+                        "wecom:user-card",
+                        Instant.parse("2026-08-23T00:00:00Z")),
+                false,
+                "claim-event",
+                1);
     }
 
     private JsonNode json(String raw) {

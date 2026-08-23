@@ -45,6 +45,7 @@ export interface OrderDraftDetail {
   receiver_phone?: string | null;
   receiver_address?: string | null;
   settlement_method?: string | null;
+  settlement_time?: string | null;
   missing_fields: string[];
   lines: OrderDraftLineDetail[];
   review_case_id?: string | null;
@@ -139,7 +140,7 @@ export function initialOrderDraftReviewForm(draft: OrderDraftDetail): OrderDraft
       address: text(draft.receiver_address),
     },
     settlement_method: settlementMethod(draft.settlement_method),
-    settlement_time: '',
+    settlement_time: text(draft.settlement_time),
     items: Object.fromEntries(draft.lines.map((line) => [
       line.line_no,
       {

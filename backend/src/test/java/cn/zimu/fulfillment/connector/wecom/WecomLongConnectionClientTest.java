@@ -4,11 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -101,6 +103,24 @@ class WecomLongConnectionClientTest {
         org.awaitility.Awaitility.await()
                 .atMost(Duration.ofSeconds(8))
                 .until(condition::getAsBoolean);
+    }
+
+    private static int indexOfPrefix(List<String> values, String prefix) {
+        for (int index = 0; index < values.size(); index++) {
+            if (values.get(index).startsWith(prefix)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private static int lastIndexOfPrefix(List<String> values, String prefix) {
+        for (int index = values.size() - 1; index >= 0; index--) {
+            if (values.get(index).startsWith(prefix)) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     // ---- 订阅与心跳 ----
@@ -264,6 +284,232 @@ class WecomLongConnectionClientTest {
             assertThat(firstPing).isPositive().isLessThan(secondBusiness);
             assertThat(first.get(4, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.TIMEOUT);
             assertThat(second.get(4, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+        }
+    }
+
+    @Test
+    void cardUpdateUsesCallbackReqIdAndJumpsAheadOfQueuedBusinessButNotHeartbeat() throws Exception {
+        WecomProperties properties = configuredProperties();
+        List<String> submittedCommands = new CopyOnWriteArrayList<>();
+        AtomicBoolean blockFirstBusinessFrame = new AtomicBoolean(true);
+        AtomicReference<CompletableFuture<java.net.http.WebSocket>> blockedSend = new AtomicReference<>();
+        AtomicReference<java.net.http.WebSocket> blockedSocket = new AtomicReference<>();
+        WecomLongConnectionClient.FrameWriter writer = (webSocket, payload) -> {
+            try {
+                JsonNode submitted = MAPPER.readTree(payload);
+                String cmd = submitted.path("cmd").asText();
+                submittedCommands.add(cmd + ":" + submitted.path("headers").path("req_id").asText());
+                if ("aibot_send_msg".equals(cmd) && blockFirstBusinessFrame.compareAndSet(true, false)) {
+                    CompletableFuture<java.net.http.WebSocket> blocked = new CompletableFuture<>();
+                    blockedSend.set(blocked);
+                    blockedSocket.set(webSocket);
+                    return blocked;
+                }
+                return webSocket.sendText(payload, true);
+            } catch (Exception ex) {
+                return CompletableFuture.failedFuture(ex);
+            }
+        };
+        client = new WecomLongConnectionClient(
+                properties,
+                MAPPER,
+                stateHolder,
+                HttpClient.newHttpClient(),
+                scheduler,
+                50,
+                200,
+                false,
+                10_000,
+                2_000,
+                writer);
+        client.start();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+
+        ObjectNode updatedCard = MAPPER.createObjectNode();
+        updatedCard.put("response_type", "update_template_card");
+        updatedCard.putObject("template_card")
+                .put("card_type", "text_notice")
+                .put("task_id", "order-draft:41");
+        try (var senders = Executors.newFixedThreadPool(3)) {
+            Future<WecomSendResult> first =
+                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-a", "消息 A")));
+            awaitTrue(() -> blockedSend.get() != null);
+            Future<WecomSendResult> second =
+                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-b", "消息 B")));
+            Future<WecomSendResult> update =
+                    senders.submit(() -> client.respondUpdate("event-req-41", updatedCard));
+
+            awaitTrue(() -> client.queuedInteractiveFrameCount() > 0);
+            client.enqueueHeartbeatNowForTest();
+            awaitTrue(() -> client.queuedHeartbeatFrameCount() > 0
+                    && client.queuedInteractiveFrameCount() > 0);
+            blockedSend.get().complete(blockedSocket.get());
+
+            awaitTrue(() -> submittedCommands.stream().anyMatch(value -> value.startsWith("aibot_respond_update_msg:"))
+                    && submittedCommands.stream().filter(value -> value.startsWith("aibot_send_msg:")).count() >= 2
+                    && submittedCommands.stream().anyMatch(value -> value.startsWith("ping:")));
+            int heartbeat = indexOfPrefix(submittedCommands, "ping:");
+            int interactive = indexOfPrefix(submittedCommands, "aibot_respond_update_msg:");
+            int lastBusiness = lastIndexOfPrefix(submittedCommands, "aibot_send_msg:");
+            assertThat(heartbeat).isPositive().isLessThan(interactive);
+            assertThat(interactive).isLessThan(lastBusiness);
+            assertThat(submittedCommands.get(interactive)).isEqualTo("aibot_respond_update_msg:event-req-41");
+            assertThat(update.get(4, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+            assertThat(first.get(4, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.TIMEOUT);
+            assertThat(second.get(4, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+        }
+    }
+
+    @Test
+    void cardUpdateRequiresAConfirmedPlatformAck() throws Exception {
+        startClient();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        ObjectNode updatedCard = MAPPER.createObjectNode();
+        updatedCard.put("response_type", "update_template_card");
+        updatedCard.putObject("template_card")
+                .put("card_type", "text_notice")
+                .put("task_id", "order-draft:42");
+        server.sendMessageErrcode(93000);
+
+        WecomSendResult rejected = client.respondUpdateUntil(
+                "event-req-rejected", updatedCard, WecomLongConnectionClient.deadlineAfterMillis(1_000));
+        assertThat(rejected.status()).isEqualTo(WecomSendStatus.FAILED);
+        assertThat(rejected.errorCode()).isEqualTo(93000);
+
+        server.sendMessageErrcode(0);
+        assertThat(client.respondUpdateUntil(
+                                "event-req-accepted",
+                                updatedCard,
+                                WecomLongConnectionClient.deadlineAfterMillis(1_000))
+                        .status())
+                .isEqualTo(WecomSendStatus.SUCCESS);
+    }
+
+    @Test
+    void callbackHandlerCanAwaitUpdateAckWithoutBlockingTheWebSocketListener() throws Exception {
+        startClient();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        CompletableFuture<WecomSendResult> updateResult = new CompletableFuture<>();
+        client.setFrameHandler((cmd, frame) -> {
+            ObjectNode updatedCard = MAPPER.createObjectNode();
+            updatedCard.put("response_type", "update_template_card");
+            updatedCard.putObject("template_card")
+                    .put("card_type", "text_notice")
+                    .put("task_id", "order-draft:43");
+            updateResult.complete(client.respondUpdateUntil(
+                    frame.path("headers").path("req_id").asText(),
+                    updatedCard,
+                    WecomLongConnectionClient.deadlineAfterMillis(1_000)));
+        });
+
+        server.sendText(
+                "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\"event-req-43\"},"
+                        + "\"body\":{\"msgid\":\"event-msg-43\",\"event\":{\"eventtype\":"
+                        + "\"template_card_event\"}}}");
+
+        assertThat(updateResult.get(2, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.SUCCESS);
+        assertThat(server.awaitFrame("aibot_respond_update_msg", 1_000))
+                .contains("\"req_id\":\"event-req-43\"");
+    }
+
+    @Test
+    void callbackArrivalTimeIsCapturedBeforeTheOrderedHandlerQueueWait() throws Exception {
+        startClient();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CompletableFuture<Long> queuedCallbackAge = new CompletableFuture<>();
+        client.setFrameHandler(new WecomFrameHandler() {
+            @Override
+            public void onFrame(String cmd, JsonNode frame) {
+                throw new AssertionError("client must pass the listener arrival timestamp");
+            }
+
+            @Override
+            public void onFrame(String cmd, JsonNode frame, long receivedNanos) {
+                String requestId = frame.path("headers").path("req_id").asText();
+                if ("queued-first".equals(requestId)) {
+                    firstStarted.countDown();
+                    try {
+                        releaseFirst.await(2, TimeUnit.SECONDS);
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                    }
+                } else if ("queued-second".equals(requestId)) {
+                    queuedCallbackAge.complete(System.nanoTime() - receivedNanos);
+                }
+            }
+        });
+
+        server.sendText(
+                "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\"queued-first\"},"
+                        + "\"body\":{\"event\":{\"eventtype\":\"enter_chat\"}}}");
+        assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
+        server.sendText(
+                "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\"queued-second\"},"
+                        + "\"body\":{\"event\":{\"eventtype\":\"template_card_event\"}}}");
+        awaitTrue(() -> client.queuedCallbackCount() == 1);
+        Thread.sleep(200);
+        releaseFirst.countDown();
+
+        assertThat(queuedCallbackAge.get(1, TimeUnit.SECONDS))
+                .isGreaterThanOrEqualTo(TimeUnit.MILLISECONDS.toNanos(180));
+    }
+
+    @Test
+    void cardUpdateDeadlineExpiresWhileQueuedAndExpiredFrameIsNeverSent() throws Exception {
+        WecomProperties properties = configuredProperties();
+        List<String> submittedCommands = new CopyOnWriteArrayList<>();
+        AtomicBoolean blockFirstBusinessFrame = new AtomicBoolean(true);
+        AtomicReference<CompletableFuture<java.net.http.WebSocket>> blockedSend = new AtomicReference<>();
+        AtomicReference<java.net.http.WebSocket> blockedSocket = new AtomicReference<>();
+        WecomLongConnectionClient.FrameWriter writer = (webSocket, payload) -> {
+            try {
+                String cmd = MAPPER.readTree(payload).path("cmd").asText();
+                submittedCommands.add(cmd);
+                if ("aibot_send_msg".equals(cmd) && blockFirstBusinessFrame.compareAndSet(true, false)) {
+                    CompletableFuture<java.net.http.WebSocket> blocked = new CompletableFuture<>();
+                    blockedSend.set(blocked);
+                    blockedSocket.set(webSocket);
+                    return blocked;
+                }
+                return webSocket.sendText(payload, true);
+            } catch (Exception ex) {
+                return CompletableFuture.failedFuture(ex);
+            }
+        };
+        client = new WecomLongConnectionClient(
+                properties,
+                MAPPER,
+                stateHolder,
+                HttpClient.newHttpClient(),
+                scheduler,
+                50,
+                200,
+                false,
+                10_000,
+                2_000,
+                writer);
+        client.start();
+        awaitState(WecomConnectionState.SUBSCRIBED);
+
+        ObjectNode updatedCard = MAPPER.createObjectNode();
+        updatedCard.put("response_type", "update_template_card");
+        try (var senders = Executors.newFixedThreadPool(2)) {
+            Future<WecomSendResult> blockedBusiness =
+                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-a", "消息 A")));
+            awaitTrue(() -> blockedSend.get() != null);
+            Future<WecomSendResult> update = senders.submit(() -> client.respondUpdateUntil(
+                    "event-deadline",
+                    updatedCard,
+                    WecomLongConnectionClient.deadlineAfterMillis(100)));
+
+            Thread.sleep(250);
+            assertThat(update.isDone()).isTrue();
+            blockedSend.get().complete(blockedSocket.get());
+            assertThat(update.get(1, TimeUnit.SECONDS).status()).isEqualTo(WecomSendStatus.TIMEOUT);
+            assertThat(submittedCommands).doesNotContain("aibot_respond_update_msg");
+            blockedBusiness.get(4, TimeUnit.SECONDS);
         }
     }
 

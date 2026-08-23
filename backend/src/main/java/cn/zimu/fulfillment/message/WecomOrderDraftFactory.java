@@ -11,6 +11,7 @@ import cn.zimu.fulfillment.order.OrderDraftLine;
 import cn.zimu.fulfillment.order.OrderDraftLineRepository;
 import cn.zimu.fulfillment.order.OrderDraftRepository;
 import cn.zimu.fulfillment.order.ReviewCaseRepository;
+import cn.zimu.fulfillment.order.card.OrderDraftCardEnqueuer;
 import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
 import java.math.BigDecimal;
@@ -65,6 +66,7 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
     private final CustomerRepository customers;
     private final CustomerSourceRefRepository customerSourceRefs;
     private final JdbcTemplate jdbc;
+    private final OrderDraftCardEnqueuer cardEnqueuer;
 
     public WecomOrderDraftFactory(
             OrderDraftRepository drafts,
@@ -73,7 +75,8 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
             MessageSubmissionRepository submissions,
             CustomerRepository customers,
             CustomerSourceRefRepository customerSourceRefs,
-            JdbcTemplate jdbc) {
+            JdbcTemplate jdbc,
+            OrderDraftCardEnqueuer cardEnqueuer) {
         this.drafts = drafts;
         this.lines = lines;
         this.cases = cases;
@@ -81,6 +84,7 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
         this.customers = customers;
         this.customerSourceRefs = customerSourceRefs;
         this.jdbc = jdbc;
+        this.cardEnqueuer = cardEnqueuer;
     }
 
     @Override
@@ -119,6 +123,7 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
             draft.setMissingFields(missingFields(draft, draftLineList));
             drafts.save(draft);
             cases.save(buildCase(submission, result, output, draft, draftLineList));
+            cardEnqueuer.enqueue(draft.getId(), draft.getRevision());
             created.add(draft.getId());
         }
         if (!created.isEmpty()) {
@@ -145,6 +150,7 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
         draft.setReceiverPhone(receiver == null ? null : stringValue(receiver.get("phone")));
         draft.setReceiverAddress(receiver == null ? null : stringValue(receiver.get("address")));
         draft.setSettlementMethod(stringValue(output.get("settlement_method")));
+        draft.setSettlementTime(instantValue(output.get("settlement_time")));
         return draft;
     }
 
@@ -248,6 +254,9 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
         }
         if (isBlank(draft.getSettlementMethod())) {
             missing.add("settlement_method");
+        }
+        if (draft.getSettlementTime() == null) {
+            missing.add("settlement_time");
         }
         if (draftLines.isEmpty()) {
             missing.add("items");
@@ -702,5 +711,17 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
         }
         String text = value.toString().trim();
         return text.isEmpty() ? null : text;
+    }
+
+    private static java.time.Instant instantValue(Object value) {
+        String text = stringValue(value);
+        if (text == null) {
+            return null;
+        }
+        try {
+            return java.time.Instant.parse(text);
+        } catch (java.time.format.DateTimeParseException ignored) {
+            return null;
+        }
     }
 }

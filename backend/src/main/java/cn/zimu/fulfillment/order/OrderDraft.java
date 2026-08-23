@@ -68,6 +68,9 @@ public class OrderDraft extends AuditableEntity {
     @Column(name = "settlement_method")
     private String settlementMethod;
 
+    @Column(name = "settlement_time")
+    private Instant settlementTime;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "missing_fields", nullable = false)
     private List<String> missingFields = new ArrayList<>();
@@ -168,6 +171,14 @@ public class OrderDraft extends AuditableEntity {
 
     public void setSettlementMethod(String settlementMethod) {
         this.settlementMethod = settlementMethod;
+    }
+
+    public Instant getSettlementTime() {
+        return settlementTime;
+    }
+
+    public void setSettlementTime(Instant settlementTime) {
+        this.settlementTime = settlementTime;
     }
 
     public List<String> getMissingFields() {

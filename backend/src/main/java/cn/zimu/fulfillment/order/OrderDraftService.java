@@ -238,6 +238,7 @@ public class OrderDraftService {
         draft.setReceiverPhone(command.receiver().phone());
         draft.setReceiverAddress(command.receiver().address());
         draft.setSettlementMethod(command.settlement().method().name());
+        draft.setSettlementTime(command.settlement().settlementTime());
         draft.setMissingFields(List.of());
         for (OrderDraftLine draftLine : draftLines) {
             ConfirmOrderDraftCommand.ConfirmItem confirmedItem = confirmedItems.get(draftLine.getLineNo());
@@ -322,6 +323,9 @@ public class OrderDraftService {
         }
         if (command.settlementMethod() != null) {
             draft.setSettlementMethod(command.settlementMethod().name());
+        }
+        if (command.settlementTime() != null) {
+            draft.setSettlementTime(command.settlementTime());
         }
         List<OrderDraftLine> draftLines = draftLines(draftId);
         if (command.items() != null && !command.items().isEmpty()) {

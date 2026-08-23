@@ -74,6 +74,14 @@ public class WecomOutboundGateway {
                     "message_type", message.type().protocolValue(),
                     "media_id_sha256", sha256(message.mediaId().getBytes(StandardCharsets.UTF_8)));
         }
+        if (message.type() == WecomOutboundMessage.Type.TEMPLATE_CARD) {
+            byte[] card = message.templateCard().toString().getBytes(StandardCharsets.UTF_8);
+            return Map.of(
+                    "chat_id", message.chatId(),
+                    "message_type", message.type().protocolValue(),
+                    "template_card_bytes", card.length,
+                    "template_card_sha256", sha256(card));
+        }
         byte[] content = message.content().getBytes(StandardCharsets.UTF_8);
         return Map.of(
                 "chat_id", message.chatId(),

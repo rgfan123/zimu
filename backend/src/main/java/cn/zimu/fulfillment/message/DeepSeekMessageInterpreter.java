@@ -173,6 +173,7 @@ public class DeepSeekMessageInterpreter implements MessageInterpreter {
               "items": [{"product": "商品名称", "spec": "规格", "unit": "单位", "quantity": 1, "source_sku_ref": null}],
               "customer": {"name": "客户/企业名称", "ref": null},
               "settlement_method": "结账方式",
+              "settlement_time": "消息明确给出的 ISO-8601 结账时间，否则为 null",
               "lines": [{"name": "收货人姓名", "tracking_no": "运单号", "task_no": null, "carrier": "物流公司", "shipment": "全部|部分|缺货|异常", "actual_quantity": null}],
               "names": ["姓名1", "姓名2"],
               "tracking_nos": ["运单号1", "运单号2"]

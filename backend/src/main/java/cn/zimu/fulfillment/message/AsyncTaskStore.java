@@ -267,6 +267,27 @@ public class AsyncTaskStore {
     }
 
     /**
+     * Immediate terminal failure for an external side effect whose delivery is unknown. Such a
+     * task must never be reclaimed because a retry could duplicate the external message.
+     */
+    @Transactional
+    public void failTerminal(long taskId, String owner, String error) {
+        int updated = jdbc.update(
+                """
+                UPDATE app.async_tasks
+                SET status='FAILED', lease_until=NULL, lease_owner=NULL,
+                    last_error=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='RUNNING' AND lease_owner=?
+                """,
+                error,
+                taskId,
+                owner);
+        if (updated != 1) {
+            throw new IllegalStateException("异步任务租约已丢失: " + taskId);
+        }
+    }
+
+    /**
      * 与当前业务事务共用的失败准备。未耗尽时回到 PENDING；第三次失败只进入
      * 可恢复的 FINALIZING，持久化最终错误但不得立即宣称 FAILED。
      */

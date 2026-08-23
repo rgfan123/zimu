@@ -371,10 +371,12 @@ class McpProtocolAcceptanceTest {
                                 "name", "补充收货人",
                                 "phone", "13900000000",
                                 "address", "补充地址"),
-                        "settlement_method", "COD"));
+                        "settlement_method", "COD",
+                        "settlement_time", "2026-08-31T16:00:00Z"));
         assertThat(result.get("receiver_name").asText()).isEqualTo("补充收货人");
         assertThat(result.get("receiver_phone").asText()).isEqualTo("13900000000");
         assertThat(result.get("settlement_method").asText()).isEqualTo("COD");
+        assertThat(result.get("settlement_time").asText()).isEqualTo("2026-08-31T16:00:00Z");
     }
 
     @Test

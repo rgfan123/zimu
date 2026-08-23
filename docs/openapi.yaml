@@ -4163,6 +4163,7 @@ components:
         - receiver_phone
         - receiver_address
         - settlement_method
+        - settlement_time
         - missing_fields
         - lines
         - review_case_id
@@ -4193,6 +4194,7 @@ components:
         receiver_phone: { type: string, nullable: true }
         receiver_address: { type: string, nullable: true }
         settlement_method: { type: string, nullable: true }
+        settlement_time: { type: string, format: date-time, nullable: true }
         missing_fields:
           type: array
           items: { type: string }
@@ -7039,6 +7041,7 @@ components:
         expectedRevision: { type: integer, format: int64, description: 乐观并发守卫：草稿当前版本号 }
         receiver: { $ref: '#/components/schemas/Receiver' }
         settlementMethod: { type: string, enum: [MONTHLY, IMMEDIATE, CREDIT_TERM, PREPAID, COD, OTHER] }
+        settlementTime: { type: string, format: date-time }
         items:
           type: array
           minItems: 0

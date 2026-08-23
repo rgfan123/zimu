@@ -10,15 +10,18 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -52,6 +55,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private static final long ACK_TIMEOUT_MILLIS = 5_000L;
     private static final int MAX_QUEUED_FRAMES = 64;
     private static final int MAX_QUEUED_HEARTBEATS = 4;
+    private static final int MAX_QUEUED_CALLBACKS = 64;
 
     private final WecomProperties properties;
     private final ObjectMapper objectMapper;
@@ -79,6 +83,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private final PriorityBlockingQueue<FrameSubmission> outboundFrames = new PriorityBlockingQueue<>();
     private final AtomicBoolean frameSenderRunning = new AtomicBoolean(true);
     private final Thread frameSenderThread;
+    private final ThreadPoolExecutor frameHandlerExecutor;
 
     private volatile WecomFrameHandler frameHandler = WecomFrameHandler.EMPTY;
     private volatile boolean running;
@@ -191,6 +196,18 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         this.ackTimeoutMillis = Math.max(1, ackTimeoutMillis);
         this.frameWriter = frameWriter;
         this.uploader = new WecomMediaUploader(this, objectMapper);
+        this.frameHandlerExecutor = new ThreadPoolExecutor(
+                1,
+                1,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(MAX_QUEUED_CALLBACKS),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "wecom-frame-handler");
+                    thread.setDaemon(true);
+                    return thread;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
         this.frameSenderThread = new Thread(this::frameSendLoop, "wecom-frame-sender");
         this.frameSenderThread.setDaemon(true);
         this.frameSenderThread.start();
@@ -223,7 +240,28 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         frame.put("cmd", "aibot_respond_msg");
         frame.putObject("headers").put("req_id", reqId);
         frame.set("body", body == null ? objectMapper.createObjectNode() : body);
-        return sendRaw(frame);
+        return awaitSubmission(enqueueRaw(frame, FramePriority.INTERACTIVE)) == FrameSendStatus.SENT;
+    }
+
+    /**
+     * 模板卡片事件 5 秒快路径：透传事件帧 req_id，使用官方
+     * {@code aibot_respond_update_msg} 命令，并在普通业务帧之前提交。
+     */
+    public WecomSendResult respondUpdate(String reqId, JsonNode body) {
+        return respondUpdateUntil(reqId, body, deadlineAfterMillis(ackTimeoutMillis));
+    }
+
+    /**
+     * Same update-card response with a caller-supplied absolute {@link System#nanoTime()} deadline.
+     * The one deadline covers local queueing, socket submission and the platform ACK.
+     */
+    public WecomSendResult respondUpdateUntil(String reqId, JsonNode body, long deadlineNanos) {
+        ObjectNode frame = objectMapper.createObjectNode();
+        frame.put("cmd", "aibot_respond_update_msg");
+        frame.putObject("headers").put("req_id", reqId);
+        frame.set("body", body == null ? objectMapper.createObjectNode() : body);
+        AckOutcome outcome = awaitAckUntil(frame, reqId, deadlineNanos, FramePriority.INTERACTIVE);
+        return sendResult(reqId, outcome);
     }
 
     /** 发送任意业务帧（内部/扩展用）：req_id 由客户端自生成。 */
@@ -248,33 +286,14 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         ObjectNode body = frame.putObject("body");
         body.put("chatid", message.chatId());
         body.put("msgtype", message.type().protocolValue());
-        // 文件消息（#84）：msgtype=file + file.media_id；text/markdown 保持 content 语义。
-        if (message.type() == WecomOutboundMessage.Type.FILE) {
-            body.putObject("file").put("media_id", message.mediaId());
-        } else {
-            body.putObject(message.type().protocolValue()).put("content", message.content());
+        // 文件消息（#84）、模板卡片（#87）与 text/markdown 使用各自官方 body 形状。
+        switch (message.type()) {
+            case FILE -> body.putObject("file").put("media_id", message.mediaId());
+            case TEMPLATE_CARD -> body.set("template_card", message.templateCard());
+            case TEXT, MARKDOWN -> body.putObject(message.type().protocolValue()).put("content", message.content());
         }
 
-        AckOutcome outcome = awaitAck(frame, requestId, ackTimeoutMillis);
-        return switch (outcome.kind()) {
-            case ACKED -> {
-                int errorCode = outcome.errcode();
-                if (errorCode == 0) {
-                    yield WecomSendResult.success(requestId, outcome.ack().receivedAt());
-                }
-                String errorMessage = text(outcome.ack().frame(), "errmsg");
-                yield WecomSendResult.failed(
-                        requestId,
-                        errorCode,
-                        errorMessage == null || errorMessage.isBlank() ? "WECOM_REJECTED" : errorMessage,
-                        false);
-            }
-            case TIMEOUT -> WecomSendResult.timeout(requestId);
-            case LOST -> WecomSendResult.failed(requestId, null, outcome.reason(), false);
-            case NOT_READY -> WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true);
-            case BACKPRESSURE -> WecomSendResult.failed(null, null, "OUTBOUND_BACKPRESSURE", true);
-            case SEND_FAILED -> WecomSendResult.failed(requestId, null, "TRANSPORT_SEND_FAILED", false);
-        };
+        return sendResult(requestId, awaitAck(frame, requestId, ackTimeoutMillis));
     }
 
     /**
@@ -300,12 +319,33 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
      * 发送线程被单个 send 阻塞时该计数只增不减，供事件驱动测试替代固定睡眠。
      */
     int queuedHeartbeatFrameCount() {
-        return queuedHeartbeatFrames.get();
+        return (int) outboundFrames.stream()
+                .filter(frame -> frame.priority() == FramePriority.HEARTBEAT)
+                .count();
     }
 
     /** 测试观察 seam（只读）：当前排队中的业务帧数。 */
     int queuedBusinessFrameCount() {
-        return queuedBusinessFrames.get();
+        return (int) outboundFrames.stream()
+                .filter(frame -> frame.priority() != FramePriority.HEARTBEAT)
+                .count();
+    }
+
+    /** 测试观察 seam（只读）：当前已实际进入队列的交互快路径帧数。 */
+    int queuedInteractiveFrameCount() {
+        return (int) outboundFrames.stream()
+                .filter(frame -> frame.priority() == FramePriority.INTERACTIVE)
+                .count();
+    }
+
+    /** 测试观察 seam：已由 listener 接收、正在等待有序业务分发的回调数。 */
+    int queuedCallbackCount() {
+        return frameHandlerExecutor.getQueue().size();
+    }
+
+    /** 测试触发 seam：立即排入一次真实心跳，避免优先级测试依赖墙钟调度。 */
+    void enqueueHeartbeatNowForTest() {
+        sendPing();
     }
 
     /**
@@ -315,19 +355,63 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
      */
     AckOutcome awaitAck(ObjectNode frame, String requestId, long timeoutMillis) {
         CompletableFuture<ReceivedAck> pending = new CompletableFuture<>();
-        pendingAcks.put(requestId, pending);
-        FrameSendStatus submission = awaitSubmission(enqueueRaw(frame));
+        if (pendingAcks.putIfAbsent(requestId, pending) != null) {
+            return AckOutcome.backpressure();
+        }
+        FrameSendStatus submission = awaitSubmission(enqueueRaw(frame, FramePriority.BUSINESS));
         if (submission != FrameSendStatus.SENT) {
             pendingAcks.remove(requestId, pending);
             return switch (submission) {
                 case NOT_READY -> AckOutcome.notReady();
                 case BACKPRESSURE -> AckOutcome.backpressure();
                 case FAILED -> AckOutcome.sendFailed();
+                case EXPIRED -> AckOutcome.timeout();
                 case SENT -> throw new IllegalStateException("handled above");
             };
         }
         try {
-            ReceivedAck ack = pending.get(timeoutMillis, TimeUnit.MILLISECONDS);
+            return AckOutcome.acked(pending.get(Math.max(1L, timeoutMillis), TimeUnit.MILLISECONDS));
+        } catch (java.util.concurrent.TimeoutException ex) {
+            return AckOutcome.timeout();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return AckOutcome.lost("ACK_WAIT_INTERRUPTED");
+        } catch (java.util.concurrent.ExecutionException ex) {
+            if (ex.getCause() instanceof PendingAckFailure failure) {
+                return AckOutcome.lost(failure.getMessage());
+            }
+            return AckOutcome.lost("ACK_WAIT_FAILED");
+        } catch (Exception ex) {
+            return AckOutcome.lost("ACK_WAIT_FAILED");
+        } finally {
+            pendingAcks.remove(requestId, pending);
+        }
+    }
+
+    private AckOutcome awaitAckUntil(
+            ObjectNode frame, String requestId, long deadlineNanos, FramePriority priority) {
+        CompletableFuture<ReceivedAck> pending = new CompletableFuture<>();
+        if (pendingAcks.putIfAbsent(requestId, pending) != null) {
+            return AckOutcome.backpressure();
+        }
+        FrameSendStatus submission = awaitSubmission(
+                enqueueRaw(frame, priority, deadlineNanos), deadlineNanos);
+        if (submission != FrameSendStatus.SENT) {
+            pendingAcks.remove(requestId, pending);
+            return switch (submission) {
+                case NOT_READY -> AckOutcome.notReady();
+                case BACKPRESSURE -> AckOutcome.backpressure();
+                case FAILED -> AckOutcome.sendFailed();
+                case EXPIRED -> AckOutcome.timeout();
+                case SENT -> throw new IllegalStateException("handled above");
+            };
+        }
+        try {
+            long remainingNanos = remainingNanos(deadlineNanos);
+            if (remainingNanos <= 0) {
+                return AckOutcome.timeout();
+            }
+            ReceivedAck ack = pending.get(remainingNanos, TimeUnit.NANOSECONDS);
             return AckOutcome.acked(ack);
         } catch (java.util.concurrent.TimeoutException ex) {
             return AckOutcome.timeout();
@@ -346,6 +430,33 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         }
     }
 
+    private static WecomSendResult sendResult(String requestId, AckOutcome outcome) {
+        return switch (outcome.kind()) {
+            case ACKED -> {
+                int errorCode = outcome.errcode();
+                if (errorCode == 0) {
+                    yield WecomSendResult.success(requestId, outcome.ack().receivedAt());
+                }
+                if (errorCode == Integer.MIN_VALUE) {
+                    // An ACK without a numeric errcode is not an explicit platform rejection; its
+                    // external effect remains unknown to card-delivery fencing.
+                    yield WecomSendResult.failed(requestId, null, "WECOM_ACK_INVALID", false);
+                }
+                String errorMessage = text(outcome.ack().frame(), "errmsg");
+                yield WecomSendResult.failed(
+                        requestId,
+                        errorCode,
+                        errorMessage == null || errorMessage.isBlank() ? "WECOM_REJECTED" : errorMessage,
+                        false);
+            }
+            case TIMEOUT -> WecomSendResult.timeout(requestId);
+            case LOST -> WecomSendResult.failed(requestId, null, outcome.reason(), false);
+            case NOT_READY -> WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true);
+            case BACKPRESSURE -> WecomSendResult.failed(null, null, "OUTBOUND_BACKPRESSURE", true);
+            case SEND_FAILED -> WecomSendResult.failed(requestId, null, "TRANSPORT_SEND_FAILED", false);
+        };
+    }
+
     /** 注入业务帧分发钩子（接收链路实现）；可随时替换。 */
     public void setFrameHandler(WecomFrameHandler handler) {
         this.frameHandler = handler == null ? WecomFrameHandler.EMPTY : handler;
@@ -359,10 +470,12 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     public synchronized void shutdown() {
         if (!running) {
             stopFrameSender();
+            stopFrameHandlerExecutor();
             return;
         }
         running = false;
         stopFrameSender();
+        stopFrameHandlerExecutor();
         failPendingAcks("CONNECTION_LOST_AFTER_SUBMIT");
         cancelHeartbeatTask();
         cancelWatchdogTask();
@@ -497,7 +610,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         ws.abort();
     }
 
-    private void handleText(WebSocket ws, String text) {
+    private void handleText(WebSocket ws, String text, long receivedNanos) {
         stateHolder.recordInbound();
         JsonNode frame;
         try {
@@ -529,12 +642,12 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             }
             case "aibot_msg_callback" -> {
                 stateHolder.recordEvent("aibot_msg_callback");
-                dispatchToHandler("aibot_msg_callback", frame);
+                dispatchToHandler("aibot_msg_callback", frame, receivedNanos);
             }
             case "aibot_event_callback" -> {
                 String eventType = eventType(frame);
                 stateHolder.recordEvent(eventType == null ? "aibot_event_callback" : eventType);
-                dispatchToHandler("aibot_event_callback", frame);
+                dispatchToHandler("aibot_event_callback", frame, receivedNanos);
                 if ("disconnected_event".equals(eventType)) {
                     handleKicked(ws);
                 }
@@ -543,13 +656,29 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         }
     }
 
-    private void dispatchToHandler(String cmd, JsonNode frame) {
+    private void dispatchToHandler(String cmd, JsonNode frame, long receivedNanos) {
         try {
-            frameHandler.onFrame(cmd, frame);
-        } catch (Exception ex) {
-            // 业务分发异常不得拖垮连接
-            log.warn("企业微信长连接帧分发异常: cmd={}", cmd, ex);
+            frameHandlerExecutor.execute(() -> {
+                try {
+                    frameHandler.onFrame(cmd, frame, receivedNanos);
+                } catch (Exception ex) {
+                    // 业务分发异常不得拖垮连接
+                    log.warn("企业微信长连接帧分发异常: cmd={}", cmd, ex);
+                }
+            });
+        } catch (RejectedExecutionException ex) {
+            // 绝不在 WebSocket listener 线程回退执行业务逻辑。运行期队列饱和时主动断线，
+            // 让平台按未完成回调重投；应用关闭期则不再重连。
+            log.warn("企业微信长连接业务回调队列已满或已关闭，中止连接等待重投: cmd={}", cmd);
+            if (running) {
+                stateHolder.recordError("业务回调积压，主动重连等待通道重投");
+                closeAndReconnect();
+            }
         }
+    }
+
+    private void stopFrameHandlerExecutor() {
+        frameHandlerExecutor.shutdownNow();
     }
 
     private void watchdogCheck() {
@@ -665,9 +794,17 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     }
 
     private CompletableFuture<FrameSendStatus> enqueueRaw(ObjectNode frame, FramePriority priority) {
+        return enqueueRaw(frame, priority, Long.MAX_VALUE);
+    }
+
+    private CompletableFuture<FrameSendStatus> enqueueRaw(
+            ObjectNode frame, FramePriority priority, long deadlineNanos) {
         WebSocket ws = socket.get();
         if (!running || ws == null || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
             return CompletableFuture.completedFuture(FrameSendStatus.NOT_READY);
+        }
+        if (deadlineNanos != Long.MAX_VALUE && remainingNanos(deadlineNanos) <= 0) {
+            return CompletableFuture.completedFuture(FrameSendStatus.EXPIRED);
         }
         AtomicInteger counter = priority == FramePriority.HEARTBEAT
                 ? queuedHeartbeatFrames
@@ -683,6 +820,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
                 frameSequence.incrementAndGet(),
                 ws,
                 frame.toString(),
+                deadlineNanos,
                 new CompletableFuture<>());
         if (!outboundFrames.offer(submission)) {
             counter.decrementAndGet();
@@ -696,7 +834,12 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             try {
                 FrameSubmission submission = outboundFrames.take();
                 decrementQueueCount(submission.priority());
-                submission.result().complete(submitToSocket(submission.expectedSocket(), submission.payload()));
+                if (submission.expired()) {
+                    submission.result().complete(FrameSendStatus.EXPIRED);
+                } else {
+                    submission.result().complete(submitToSocket(
+                            submission.expectedSocket(), submission.payload(), submission.deadlineNanos()));
+                }
             } catch (InterruptedException ex) {
                 if (!frameSenderRunning.get()) {
                     Thread.currentThread().interrupt();
@@ -706,19 +849,31 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         }
     }
 
-    private FrameSendStatus submitToSocket(WebSocket expectedSocket, String payload) {
+    private FrameSendStatus submitToSocket(WebSocket expectedSocket, String payload, long deadlineNanos) {
         if (!running
                 || socket.get() != expectedSocket
                 || stateHolder.state() != WecomConnectionState.SUBSCRIBED) {
             return FrameSendStatus.NOT_READY;
         }
+        long remainingNanos = deadlineNanos == Long.MAX_VALUE
+                ? TimeUnit.MILLISECONDS.toNanos(SEND_TIMEOUT_MILLIS)
+                : Math.min(
+                        TimeUnit.MILLISECONDS.toNanos(SEND_TIMEOUT_MILLIS),
+                        remainingNanos(deadlineNanos));
+        if (remainingNanos <= 0) {
+            return FrameSendStatus.EXPIRED;
+        }
         try {
-            frameWriter.send(expectedSocket, payload).get(SEND_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+            frameWriter.send(expectedSocket, payload).get(remainingNanos, TimeUnit.NANOSECONDS);
             return FrameSendStatus.SENT;
         } catch (java.util.concurrent.TimeoutException ex) {
-            log.warn("企业微信长连接发送帧超时，中止当前连接以恢复发送队列");
+            boolean deadlineExpired = deadlineNanos != Long.MAX_VALUE && remainingNanos(deadlineNanos) <= 0;
+            log.warn(
+                    deadlineExpired
+                            ? "企业微信长连接发送帧超过调用截止时间，中止当前连接"
+                            : "企业微信长连接发送帧超时，中止当前连接以恢复发送队列");
             recoverFromSendTimeout(expectedSocket);
-            return FrameSendStatus.FAILED;
+            return deadlineExpired ? FrameSendStatus.EXPIRED : FrameSendStatus.FAILED;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             return FrameSendStatus.FAILED;
@@ -762,6 +917,24 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
     private static FrameSendStatus awaitSubmission(CompletableFuture<FrameSendStatus> submission) {
         try {
             return submission.get();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return FrameSendStatus.FAILED;
+        } catch (java.util.concurrent.ExecutionException ex) {
+            return FrameSendStatus.FAILED;
+        }
+    }
+
+    private static FrameSendStatus awaitSubmission(
+            CompletableFuture<FrameSendStatus> submission, long deadlineNanos) {
+        long remainingNanos = remainingNanos(deadlineNanos);
+        if (remainingNanos <= 0) {
+            return FrameSendStatus.EXPIRED;
+        }
+        try {
+            return submission.get(remainingNanos, TimeUnit.NANOSECONDS);
+        } catch (java.util.concurrent.TimeoutException ex) {
+            return FrameSendStatus.EXPIRED;
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             return FrameSendStatus.FAILED;
@@ -831,6 +1004,14 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
 
     private static long elapsedMillis(Instant since) {
         return Duration.between(since, Instant.now()).toMillis();
+    }
+
+    static long deadlineAfterMillis(long timeoutMillis) {
+        return System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(1L, timeoutMillis));
+    }
+
+    private static long remainingNanos(long deadlineNanos) {
+        return deadlineNanos - System.nanoTime();
     }
 
     private static final class PendingAckFailure extends RuntimeException {
@@ -909,8 +1090,13 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             long sequence,
             WebSocket expectedSocket,
             String payload,
+            long deadlineNanos,
             CompletableFuture<FrameSendStatus> result)
             implements Comparable<FrameSubmission> {
+
+        boolean expired() {
+            return deadlineNanos != Long.MAX_VALUE && remainingNanos(deadlineNanos) <= 0;
+        }
 
         @Override
         public int compareTo(FrameSubmission other) {
@@ -921,7 +1107,8 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
 
     private enum FramePriority {
         HEARTBEAT(0),
-        BUSINESS(1);
+        INTERACTIVE(1),
+        BUSINESS(2);
 
         private final int order;
 
@@ -934,6 +1121,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         SENT,
         NOT_READY,
         BACKPRESSURE,
+        EXPIRED,
         FAILED
     }
 
@@ -960,7 +1148,7 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
             if (last) {
                 String completeMessage = textFragments.toString();
                 textFragments.setLength(0);
-                handleText(ws, completeMessage);
+                handleText(ws, completeMessage, System.nanoTime());
             }
             // demand 按 onText 回调计数；分片消息也必须逐片续订，否则永远收不到 last=true。
             ws.request(1);

@@ -79,6 +79,22 @@ public class WecomConnectionManager implements WecomOutboundTransport {
         return current != null && current.respond(reqId, body);
     }
 
+    /** 卡片点击事件同步更新；透传事件 req_id，不生成新的请求标识。 */
+    public WecomSendResult respondUpdate(String reqId, JsonNode body) {
+        WecomLongConnectionClient current = client;
+        return current == null
+                ? WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true)
+                : current.respondUpdate(reqId, body);
+    }
+
+    /** 卡片同步更新，共享调用方给出的单调绝对截止时间。 */
+    public WecomSendResult respondUpdateUntil(String reqId, JsonNode body, long deadlineNanos) {
+        WecomLongConnectionClient current = client;
+        return current == null
+                ? WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true)
+                : current.respondUpdateUntil(reqId, body, deadlineNanos);
+    }
+
     @Override
     public WecomSendResult send(WecomOutboundMessage message) {
         WecomLongConnectionClient current = client;

@@ -85,6 +85,11 @@ app:
     lease-seconds: ${WECOM_NOTIFICATION_LEASE_SECONDS:120}
     batch-limit: ${WECOM_NOTIFICATION_BATCH_LIMIT:20}
     claim-error-suppress-seconds: ${WECOM_NOTIFICATION_CLAIM_ERROR_SUPPRESS_SECONDS:60}
+  wecom-order-draft-card:
+    # Issues #87/#88：草稿事务内入队，独立 Worker 发送交互卡；默认跟随企微总开关。
+    enabled: ${WECOM_ORDER_DRAFT_CARD_ENABLED:${WECOM_ENABLED:false}}
+    poll-ms: ${WECOM_ORDER_DRAFT_CARD_POLL_MS:1000}
+    lease-seconds: ${WECOM_ORDER_DRAFT_CARD_LEASE_SECONDS:60}
   agent-worker:
     # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
     enabled: ${AGENT_WORKER_ENABLED:true}

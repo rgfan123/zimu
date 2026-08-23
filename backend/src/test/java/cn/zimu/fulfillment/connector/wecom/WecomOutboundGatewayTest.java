@@ -12,6 +12,7 @@ import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.persistence.EntityManager;
 import java.io.IOException;
 import java.net.http.HttpClient;
@@ -285,6 +286,35 @@ class WecomOutboundGatewayTest {
         assertThat(markdownFrame.path("body").path("msgtype").asText()).isEqualTo("markdown");
         assertThat(markdownFrame.path("body").path("markdown").path("content").asText()).isEqualTo("**加粗**");
         assertThat(markdownFrame.path("body").path("file").isMissingNode()).isTrue();
+    }
+
+    @Test
+    void templateCardMessageUsesOfficialButtonInteractionShapeAndAuditsOnlyDigest() throws Exception {
+        ObjectNode card = MAPPER.createObjectNode();
+        card.put("card_type", "button_interaction");
+        card.putObject("main_title").put("title", "订单草稿待确认").put("desc", "草稿 OD-41");
+        card.putArray("button_list")
+                .addObject().put("text", "确认订单").put("key", "confirm_order").put("style", 1);
+        card.put("task_id", "order-draft:41");
+
+        WecomSendResult result = gateway.send(WecomOutboundMessage.templateCard("group-card", card));
+
+        assertThat(result.status()).isEqualTo(WecomSendStatus.SUCCESS);
+        JsonNode frame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
+        assertThat(frame.path("body").path("chatid").asText()).isEqualTo("group-card");
+        assertThat(frame.path("body").path("msgtype").asText()).isEqualTo("template_card");
+        assertThat(frame.path("body").path("template_card").path("card_type").asText())
+                .isEqualTo("button_interaction");
+        assertThat(frame.path("body").path("template_card").path("task_id").asText())
+                .isEqualTo("order-draft:41");
+        assertThat(frame.path("body").path("template_card").path("button_list").get(0).path("key").asText())
+                .isEqualTo("confirm_order");
+        AuditLog audit = storedAudits.getLast();
+        assertThat(audit.getRequestPayload())
+                .containsEntry("message_type", "template_card")
+                .containsKey("template_card_sha256");
+        assertThat(MAPPER.writeValueAsString(audit.getRequestPayload()))
+                .doesNotContain("OD-41", "order-draft:41", "确认订单");
     }
 
     // ---- 素材上传（Issue #82）----

@@ -410,7 +410,8 @@ final class Rfc6455TestServer implements AutoCloseable {
                                     + (errcode == 0 ? "ok" : "rejected")
                                     + "\"}")
                             .getBytes(StandardCharsets.UTF_8)));
-        } else if ("aibot_send_msg".equals(cmd) && autoSendMessageAck.get()) {
+        } else if (("aibot_send_msg".equals(cmd) || "aibot_respond_update_msg".equals(cmd))
+                && autoSendMessageAck.get()) {
             int errcode = sendMessageErrcode.get();
             sendFrame(out, new Frame(
                     0x1,

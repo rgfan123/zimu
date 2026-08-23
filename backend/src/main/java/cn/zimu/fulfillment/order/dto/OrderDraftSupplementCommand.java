@@ -6,6 +6,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -18,7 +19,16 @@ public record OrderDraftSupplementCommand(
         @NotNull(message = "草稿期望版本不能为空") Long expectedRevision,
         @Valid Receiver receiver,
         SettlementMethod settlementMethod,
+        Instant settlementTime,
         @Valid @Size(max = 100, message = "商品行超量") List<@Valid LineSupplement> items) {
+
+    public OrderDraftSupplementCommand(
+            Long expectedRevision,
+            Receiver receiver,
+            SettlementMethod settlementMethod,
+            List<LineSupplement> items) {
+        this(expectedRevision, receiver, settlementMethod, null, items);
+    }
 
     /** 草稿行补充：数量为正数时修订；sku_id 仅限候选内选择，不作为主数据确认。 */
     public record LineSupplement(

@@ -144,7 +144,7 @@ erDiagram
 
 Timeline 按订单内 `sequence_no`/`created_at` 排序，不按事件类型字典序或定义顺序排序。
 
-### 3.7 渠道消息、草稿复核与后台任务（13）
+### 3.7 渠道消息、草稿复核与后台任务（14）
 
 | 表 | 职责 | 关键约束 |
 |---|---|---|
@@ -152,9 +152,10 @@ Timeline 按订单内 `sequence_no`/`created_at` 排序，不按事件类型字�
 | `message_submissions` | 一条渠道消息的解析提交入口 | `submission_no` 唯一；`status ∈ RECEIVED/INTERPRETED/FAILED/DRAFTED/CONFIRMED/REJECTED`；`source_message_id → channel_messages` ON DELETE RESTRICT |
 | `message_interpretations` | 提交的 AI 解释结果（版本化） | `version >= 1`；`intent ∈ CUSTOMER_ORDER/SUPPLIER_TRACKING/ORDER_CHANGE/ORDER_CANCEL/NON_BUSINESS/NEED_REVIEW`；`structured_output` 必须为 object；`provider/model/prompt_version` 非空 |
 | `message_media` | 消息媒体证据（图片/文件/语音/视频） | 必须关联 `submission_id` 或 `channel_message_id` 至少其一（`num_nonnulls > 0`）；`media_type ∈ image/file/voice/video`；`download_status ∈ PENDING/DOWNLOADING/AVAILABLE/FAILED`；`attempts >= 0` |
-| `wecom_events` | 企微平台事件回调 | `event_type`/`msgid` 非空 |
-| `order_drafts` | 客户订单草稿（复核对象） | `draft_no` 唯一；OPEN ⟺ `confirmed_by`/`confirmed_at` 均为空，CONFIRMED/REJECTED ⟺ 两者均非空；`revision >= 0`；`customer_candidates`/`missing_fields` 为 array |
+| `wecom_events` | 企微平台事件回调与卡片点击/更新证据 | `(event_type, msgid)` 唯一；首次 bot/chat/actor/event/task/草稿/raw facts 不可变；`processing_claim_token + processing_attempt` 栅栏业务尝试；`update_status` 与 `fallback_status` 分别记录 5 秒快路径和文字补偿 |
+| `order_drafts` | 客户订单草稿（复核对象） | `draft_no` 唯一；OPEN ⟺ `confirmed_by`/`confirmed_at` 均为空，CONFIRMED/REJECTED ⟺ 两者均非空；`revision >= 0`；`customer_candidates`/`missing_fields` 为 array；`settlement_time` 是确认必需事实 |
 | `order_draft_lines` | 订单草稿明细行 | `(order_draft_id, line_no)` 唯一；`line_no >= 1`；`quantity > 0`；`fulfilled_quantity >= 0`；`sku_candidates` 为 array |
+| `wecom_order_draft_cards` | 订单草稿确认卡片发送栅栏 | `order_draft_id`/`task_id` 各自唯一；外部提交中的 `SENDING` 崩溃恢复为 `UNKNOWN`，禁止盲目重发；`SENT` 必须有 `request_id`/`acknowledged_at` |
 | `provider_tracking_drafts` | 运单草稿（含批量确认） | `draft_no` 唯一；status 约束同 `order_drafts`；`shipment_judgment ∈ FULL/PARTIAL/SHORTAGE/EXCEPTION`；`carrier_candidates`/`task_candidates`/`validation_issues` 为 array |
 | `async_tasks` | Worker 后台任务队列 | `idempotency_key` 唯一（幂等收敛）；`task_type`/`payload_ref` 非空；`attempts >= 0`、`max_attempts >= 1`；status ∈ PENDING/RUNNING/FINALIZING/SUCCEEDED/FAILED |
 | `agent_runs` | Agent 运行记录 | `run_id` 形如 `run_[0-9a-f]{32}`；RUNNING ⟺ `finished_at IS NULL`；FAILED ⟺ `error_type IS NOT NULL`；`input_digest` 为 64 位 hex |

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -136,6 +137,22 @@ class AsyncTaskStoreTest {
                 "SELECT status FROM app.async_tasks WHERE id = ?", String.class, task.get().id());
         assertThat(finalState).isEqualTo("FAILED");
         assertThat(taskStore.claim("worker-retry", Duration.ofSeconds(30))).isEmpty();
+    }
+
+    @Test
+    void externallyUnknownDeliveryCanBeFailedImmediatelyWithoutAnotherClaim() {
+        taskStore.enqueue("TEST_TASK", "card:1", "test-terminal-fail", 3);
+        AsyncTaskStore.AsyncTask task = taskStore.claim("worker-unknown", Duration.ofSeconds(30)).orElseThrow();
+
+        taskStore.failTerminal(task.id(), "worker-unknown", "DELIVERY_UNKNOWN");
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT status, attempts, last_error FROM app.async_tasks WHERE id=?", task.id());
+        assertThat(row)
+                .containsEntry("status", "FAILED")
+                .containsEntry("attempts", 1)
+                .containsEntry("last_error", "DELIVERY_UNKNOWN");
+        assertThat(taskStore.claim("worker-unknown", Duration.ofSeconds(30))).isEmpty();
     }
 
     private void makeDue(long taskId) {

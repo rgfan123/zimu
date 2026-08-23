@@ -1,0 +1,51 @@
+# 企微订单草稿确认卡片（#87 / #88）
+
+## 1. 业务边界
+
+订单草稿卡片只是既有人工复核入口的快捷方式，不新增自动成单规则。卡片显示草稿号、行数与待补充项数量，不显示收货人电话、地址等敏感字段；点击确认后仍由 `OrderDraftService.confirm` 校验当前草稿版本、唯一开放复核事项、Customer/SKU 确定性候选、收货与结账事实。缺少任何必需事实时只返回“待补充”，不写正式订单。
+
+## 2. 发送与外部效果栅栏
+
+草稿与 `wecom_order_draft_cards`、`WECOM_ORDER_DRAFT_CARD` 异步任务在同一事务创建。卡片固定使用 `task_id=order-draft:{draft_id}`，发送目标来自原渠道消息：群聊使用 `chatid`，单聊使用发送人的 `userid`。
+
+发送状态为 `PENDING → SENDING → SENT`。只有外部调用明确尚未提交时才回到 `PENDING` 重试；平台非零 `errcode` ACK 是明确拒绝，进入 `FAILED`；ACK 超时、缺少合法 `errcode`、提交后断线或进程在 `SENDING` 崩溃都进入 `UNKNOWN`，禁止盲目重发，避免同一草稿重复卡片。
+
+## 3. 点击事件与 actor
+
+回调按官方企微 AI Bot SDK 的 `body.event.template_card_event` 读取 `event_key/task_id`，并兼容官方旧示例中的扁平字段。`from.userid` 是唯一人工 actor 来源；缺失时事件以 `WECOM_CARD_ACTOR_REQUIRED` 拒绝。事件原始载荷与白名单投影按 `(event_type,msgid)` 幂等保存到 `wecom_events`。
+
+`confirm_order` 重新读取数据库当前事实并调用原人工确认用例，身份记为 `wecom:{userid}`；`supplement_order` 只返回当前缺失字段。并发或重复点击不重复成单：同一事件先持久化带 UUID token 与 attempt 的 `PROCESSING` claim，业务确认另行事务提交；相同确认幂等键为 `wecom-card-confirm:{msgid}`。首次回调的 bot/chat/actor/create_time/event_key/task_id/order_draft_id/raw_payload 由数据库触发器保护为不可变，重投若用同一 msgid 指向另一草稿会被拒绝且不会更新原事件。若确认已提交但事件结果尚未收口，重放会从草稿 `CONFIRMED` 终态恢复为 `ALREADY_CONFIRMED`。若真实租户回调不提供 `from.userid`，替代路径是保留原 ReviewCase，由已认证运营人员在子牧工作台确认；系统不会用 chatid、昵称或配置值伪造人工 actor。
+
+同一 `msgid` 在原处理仍为 `PROCESSING` 时发生并发重投，后到请求只写应用日志，不改事件的 update/fallback 观测、不更新卡片、不追发“失败”文字，避免用共享中的 claim token 覆盖仍在执行的原回调结果。超过 90 秒安全恢复窗、草稿仍未确认且 `order_draft.confirm` 原幂等租约已失效时，才以新 token/attempt 恢复；完成业务与记录 update/fallback 结果都用 token CAS，旧 worker 不能覆盖新尝试。
+
+## 4. 5 秒 updateCard 快路径
+
+业务事务返回后，处理器使用原事件 `req_id` 发送：
+
+```json
+{
+  "response_type": "update_template_card",
+  "template_card": {
+    "card_type": "text_notice",
+    "main_title": {
+      "title": "订单已确认",
+      "desc": "OD-... · 操作人：userid · 2026-08-23 20:00:00"
+    },
+    "task_id": "order-draft:123"
+  }
+}
+```
+
+WebSocket listener 只解析协议与关联 ACK；业务回调进入容量 64 的可关闭单线程队列，保持到达顺序，避免处理器同步等待 update ACK 时堵死 listener。4.5 秒预算从 listener 收到完整帧的单调时钟时刻开始，不因业务队列等待而重置。一个绝对 deadline 覆盖本地排队、socket 提交和平台 ACK；队列里已过期的 update 帧会直接丢弃，绝不在窗口后补发。只有同 `req_id` 的企微 ACK 且 `errcode=0` 才记为 `SENT`，超时记 `TIMED_OUT`，平台拒绝/本地失败记 `FAILED`。update 非成功时发送文字兜底；无论卡片更新或兜底是否成功，都不回滚订单业务结果。
+
+`wecom_events` 分开记录：
+
+- `processing_status/business_code/processed_by/processed_at/processing_claim_token/processing_attempt`：业务结果与 fenced attempt；
+- `update_status/update_latency_ms/update_error_code`：卡片快路径结果；
+- `fallback_status/fallback_error_code`：文字补偿结果，因此 update 超时与兜底成功可以同时保留。
+
+## 5. 上线验收
+
+本地测试覆盖官方帧形状、扁平兼容、真实 callback→handler→update ACK、回调队列等待、同 `req_id` 更新、绝对 deadline、过期队列帧不补发、文字兜底、真实 PostgreSQL 首次事实不可变、幂等租约与 token CAS。生产启用前仍须在实际企微机器人中完成一次真实点击验收，确认租户回调确实携带 `from.userid`；若缺失，系统会按设计拒绝，不能用 chatid、昵称或配置值代替 actor。
+
+协议实现依据：[WeCom AI Bot Node SDK](https://github.com/WecomTeam/aibot-node-sdk)。

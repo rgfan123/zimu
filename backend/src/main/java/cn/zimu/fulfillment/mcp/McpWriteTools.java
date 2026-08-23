@@ -139,7 +139,7 @@ public class McpWriteTools {
                         this::submitJdOutbound, false),
                 new McpToolRegistry.SimpleTool(
                         "submit_supplementary_material",
-                        "提交订单草稿补充材料：补充或覆盖收货资料与结账方式；草稿保持 OPEN，由人工最终确认。要求草稿期望版本。",
+                        "提交订单草稿补充材料：补充或覆盖收货资料、结账方式与结账时间；草稿保持 OPEN，由人工最终确认。要求草稿期望版本。",
                         schema(
                                 Map.of(
                                         "draft_id", stringProperty("订单草稿 ID"),
@@ -147,7 +147,9 @@ public class McpWriteTools {
                                         "idempotency_key", stringProperty("幂等键，至少 8 个字符"),
                                         "receiver", receiverSchema(),
                                         "settlement_method",
-                                                stringProperty("结账方式：MONTHLY/IMMEDIATE/CREDIT_TERM/PREPAID/COD/OTHER")),
+                                                stringProperty("结账方式：MONTHLY/IMMEDIATE/CREDIT_TERM/PREPAID/COD/OTHER"),
+                                        "settlement_time",
+                                                stringProperty("结账时间，ISO-8601 格式，如 2026-08-31T16:00:00Z")),
                                 List.of("draft_id", "expected_revision", "idempotency_key")),
                         this::submitSupplementaryMaterial, false),
                 new McpToolRegistry.SimpleTool(
@@ -292,11 +294,13 @@ public class McpWriteTools {
         String idempotencyKey = requireIdempotencyKey(args);
         Receiver receiver = receiver(args);
         SettlementMethod settlementMethod = settlementMethod(args);
+        Instant settlementTime = settlementTime(args);
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("draft_id", draftId);
         payload.put("expected_revision", expectedRevision);
         payload.put("receiver", receiver);
         payload.put("settlement_method", settlementMethod == null ? null : settlementMethod.name());
+        payload.put("settlement_time", settlementTime == null ? null : settlementTime.toString());
         return executeWrite(
                 "submit_supplementary_material",
                 payload,
@@ -306,7 +310,8 @@ public class McpWriteTools {
                 context,
                 () -> orderDraftService.supplement(
                         draftId,
-                        new OrderDraftSupplementCommand(expectedRevision, receiver, settlementMethod, null),
+                        new OrderDraftSupplementCommand(
+                                expectedRevision, receiver, settlementMethod, settlementTime, null),
                         idempotencyKey,
                         context.requireCommandContext()));
     }
@@ -617,6 +622,18 @@ public class McpWriteTools {
         }
         return parseSettlementMethod(
                 value, "settlement_method 必须是 MONTHLY/IMMEDIATE/CREDIT_TERM/PREPAID/COD/OTHER");
+    }
+
+    private static Instant settlementTime(Map<String, Object> args) {
+        String value = optionalString(args, "settlement_time");
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Instant.parse(value);
+        } catch (java.time.format.DateTimeParseException ex) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "settlement_time 必须是 ISO-8601 时间");
+        }
     }
 
     private static String requiredString(Map<String, Object> entry, String key, int maxLength) {

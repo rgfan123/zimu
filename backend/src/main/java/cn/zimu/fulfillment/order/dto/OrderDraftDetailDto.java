@@ -26,6 +26,7 @@ public record OrderDraftDetailDto(
         String receiverPhone,
         String receiverAddress,
         String settlementMethod,
+        Instant settlementTime,
         List<String> missingFields,
         List<OrderDraftLineDto> lines,
         String reviewCaseId,
