@@ -79,7 +79,6 @@ test('骨架一次全部在位：七指标真数、八段链路、占位段诚�
   assert.match(body, /异常需介入/, '五态图例在位');
 
   // 同步动线的锁定文案仍在（骨架不是重写）
-  assert.match(body, /尚未同步/);
   assert.match(body, /未暴露剩余拉取额度/);
   assert.doesNotMatch(body, /今日剩/, '配额数字未接入前严禁伪造');
 

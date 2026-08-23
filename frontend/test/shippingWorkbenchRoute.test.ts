@@ -77,7 +77,8 @@ test('shipping workbench renders the prototype header, lede, hero and no fabrica
   assert.doesNotMatch(harness.bodyText(), /并逐渠道如实显示结果/, '旧 LEDE 解释句不得回归');
   assert.match(harness.bodyText(), /开始今日订单同步/);
   assert.match(harness.bodyText(), /手动导入 Excel/);
-  assert.match(harness.bodyText(), /尚未同步/, '初始态必须给出可读提示');
+  // ADR 0005：闲置态不再占版面（骨架即首屏），同步结果区仅在动作后出现。
+  assert.doesNotMatch(harness.bodyText(), /尚未同步/, '闲置提示文案不得回归');
   assert.match(harness.bodyText(), /当前接口未暴露剩余拉取额度/, '契约边界必须如实说明剩余额度不可见');
   assert.doesNotMatch(harness.bodyText(), /今日剩/, '严禁伪造剩余次数');
 });

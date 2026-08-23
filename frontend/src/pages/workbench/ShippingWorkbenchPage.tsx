@@ -9,7 +9,6 @@ import { useMemo, useState } from 'react';
 import { Button } from 'antd';
 import { CloudSyncOutlined, FileExcelOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
-import PageShell from '@/components/PageShell';
 import { platformOrdersApi } from '@/api/endpoints';
 import { useAsync } from '@/hooks/useAsync';
 import { errorMessage } from '@/api/client';
@@ -81,16 +80,16 @@ export default function ShippingWorkbenchPage() {
   ];
 
   return (
-    <PageShell title="今日发货工作台" icon={<CloudSyncOutlined />}>
-      {/* 同步动线（#107）：密度优先——按钮与配额状态一行，不再有解释段落 */}
-      <div className="zs-card">
-        <div className="zs-bd" style={{ display: 'flex', gap: 9, flexWrap: 'wrap', alignItems: 'center' }}>
-          <Button type="primary" size="large" icon={<CloudSyncOutlined />} loading={syncing} onClick={sync}>
+    <div>
+      {/* 页头即动作行（ADR 0005）：标题左、同步动作右，没有独立的按钮卡，没有闲置提示 */}
+      <div className="zs-ph">
+        <h1>今日发货工作台</h1>
+        <div className="zs-ph-actions">
+          <Button type="primary" icon={<CloudSyncOutlined />} loading={syncing} onClick={sync}>
             开始今日订单同步
           </Button>
           {/* 单一 <a>（Button href），不 Link 包 Button：保留真实 href 与键盘可达性，点击经路由导航。 */}
           <Button
-            size="large"
             icon={<FileExcelOutlined />}
             href="/fulfillment/sales-outbound"
             onClick={(event) => {
@@ -104,9 +103,11 @@ export default function ShippingWorkbenchPage() {
         </div>
       </div>
 
-      <div className="zs-sec">
-        <ShippingSyncResults state={state} onRetry={sync} />
-      </div>
+      {state.phase !== 'idle' ? (
+        <div className="zs-sec">
+          <ShippingSyncResults state={state} onRetry={sync} />
+        </div>
+      ) : null}
 
       {/* 七指标（#108）：数字全中性，状态点 + 左边框；可点卡滚动到对应区 */}
       <section className="zs-sec">
@@ -167,7 +168,7 @@ export default function ShippingWorkbenchPage() {
 
       <ReviewPreviewSection team={team} reviewOpen={counts.reviewOpen} />
       <AlertsSection />
-    </PageShell>
+    </div>
   );
 }
 

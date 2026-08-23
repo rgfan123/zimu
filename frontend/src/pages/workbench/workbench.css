@@ -2,6 +2,27 @@
    原型 v-ship 区块 CSS 的逐条移植（stats/st、pipe、rq、alert、card、tag、eyebrow），
    类名统一 zs- 前缀；颜色只引用 --zs-* 变量（AppLayout 从 saasTheme 注入），本文件零硬编码色值。 */
 
+/* 页头（原型 .ph）：标题左、动作右一行收纳，没有独立的动作卡 */
+.zs-ph {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.zs-ph h1 {
+  font-size: 21px;
+  letter-spacing: -0.01em;
+  margin: 0;
+  color: var(--zs-heading);
+}
+.zs-ph .zs-ph-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .zs-sec {
   margin-top: 20px;
 }

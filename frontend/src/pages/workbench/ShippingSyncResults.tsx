@@ -29,13 +29,8 @@ function statusTagColor(status: ShippingChannelView['status']): 'success' | 'err
 }
 
 export default function ShippingSyncResults({ state, onRetry }: { state: SyncState; onRetry: () => void }) {
-  if (state.phase === 'idle') {
-    return (
-      <Typography.Text type="secondary">
-        尚未同步，点击上方「开始今日订单同步」开始今天的工作。
-      </Typography.Text>
-    );
-  }
+  // ADR 0005：闲置态不占版面——没有同步结果时这里什么都不渲染，第一屏留给数据。
+  if (state.phase === 'idle') return null;
 
   if (state.phase === 'loading') {
     return (
