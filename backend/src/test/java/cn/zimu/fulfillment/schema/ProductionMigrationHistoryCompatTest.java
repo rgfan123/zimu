@@ -31,9 +31,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V51）升级，Flyway validate（默认开启）必须成功且只追加
+ * migration set（V1..V52）升级，Flyway validate（默认开启）必须成功且只追加
  * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）、
- * V50（中汇稳定上传意图，Issue #116）与 V51（企微业务通知 outbox，Issue #90）；
+ * V50（中汇稳定上传意图，Issue #116）、V51（企微业务通知 outbox，Issue #90）与
+ * V52（企微订单草稿卡片，Issues #87/#88）；
  * ③ 升级后前 47 行历史
  * 逐行不变，V40–V47 的 version/script/description/checksum 必须与生产已应用序列逐字节
  * 一致——checksum 常量直接取自生产 `flyway_schema_history` 真实行（不按当前迁移文件
@@ -91,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV51() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV52() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -107,22 +108,22 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V51）升级——Flyway validate 默认开启，
-        // V40–V47 校验通过后只追加 V48/V49/V50/V51，任何 repair/改写历史都会在此失败。
+        // 阶段二：完整当前 migration set（V1..V52）升级——Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加 V48/V49/V50/V51/V52，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 51 条历史")
-                .hasSize(51);
+                .as("完整升级后应恰有 52 条历史")
+                .hasSize(52);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48–V51 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
+        // V48–V52 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 51))
-                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）与 V51（#90）")
+        assertThat(historyAfter.subList(47, 52))
+                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）与 V52（#87/#88）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -135,10 +136,13 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V50__zhonghui_pms_stable_upload_intent.sql")),
                         new HistoryRow("51", "V51__wecom_business_notification_outbox.sql",
                                 "wecom business notification outbox",
-                                crc32Of("V51__wecom_business_notification_outbox.sql")));
+                                crc32Of("V51__wecom_business_notification_outbox.sql")),
+                        new HistoryRow("52", "V52__wecom_order_draft_cards.sql",
+                                "wecom order draft cards",
+                                crc32Of("V52__wecom_order_draft_cards.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
-        // V48–V51 分别用内部运营人员、delivery 代际、中汇稳定意图与业务通知结构证明生效。
+        // V48–V52 分别用内部运营人员、delivery 代际、中汇稳定意图、业务通知与草稿卡片结构证明生效。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -299,6 +303,39 @@ class ProductionMigrationHistoryCompatTest {
                     """)))
                     .as("V51 告警投影必须同时按 alert_key 与 delivery/item 稳定去重")
                     .isEqualTo("2");
+            // V52：草稿结账事实、卡片 outbox、事件 claim/update/fallback 观测与首次事实保护齐备。
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='order_drafts'
+                      AND column_name='settlement_time'
+                    """)))
+                    .as("V52 必须给订单草稿增加 settlement_time 事实")
+                    .isEqualTo("1");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.tables
+                    WHERE table_schema='app' AND table_name='wecom_order_draft_cards'
+                    """)))
+                    .as("V52 必须创建持久化企微订单草稿卡片 outbox")
+                    .isEqualTo("1");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='wecom_events'
+                      AND column_name IN ('processing_claim_token', 'processing_attempt',
+                                          'update_status', 'fallback_status', 'order_draft_id')
+                    """)))
+                    .as("V52 必须保存 fenced attempt 与 update/fallback 独立观测")
+                    .isEqualTo("5");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.triggers
+                    WHERE trigger_schema='app'
+                      AND trigger_name='trg_wecom_card_event_first_facts'
+                    """)))
+                    .as("V52 必须以数据库触发器保护卡片事件首次事实")
+                    .isEqualTo("1");
         }
     }
 
