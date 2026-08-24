@@ -4,20 +4,30 @@
  * 使用状态见 ExportUsageStatus。文件一旦生成即形成履约承诺（CONTEXT.md 履约导出）。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, Upload, message } from 'antd';
 import { CloudSyncOutlined, DownloadOutlined, FileExcelOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { Link } from 'react-router-dom';
-import { errorMessage } from '@/api/client';
-import { fileOperationsApi, fulfillmentExportsApi, platformOrdersApi, providersApi } from '@/api/endpoints';
-import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, ImportBatch, PlatformOrderRefreshResult, TrackingImportBatch } from '@/api/types';
+import { Link, useSearchParams } from 'react-router-dom';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
+import { ApiError, errorMessage } from '@/api/client';
+import { fileOperationsApi, fulfillmentExportsApi, providersApi } from '@/api/endpoints';
+import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportWecomState, ImportBatch, TrackingImportBatch } from '@/api/types';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
 import {
+  FILE_JOB_BATCH_PARAM,
+  invalidBatchIdMessage,
+  parseBatchIdParam,
+  reviewsUrlForBatch,
+} from '@/pages/shared/batchUrl';
+import {
   canReceiveTracking,
   presentImportRow,
+  presentJdCargos,
   presentTrackingBatchRow,
   summarizeImportBatch,
   type ImportRowView,
@@ -31,6 +41,17 @@ const USAGE_LABELS: Record<ExportUsageStatus, string> = {
   RETURN_OVERDUE: '回传超时',
 };
 
+/** 企微出站状态（Issue #84）展示语义。 */
+const WECOM_STATUS_LABELS: Record<FulfillmentExportWecomState['status'], { text: string; color: string }> = {
+  PENDING: { text: '待发送', color: 'processing' },
+  ACTIVE: { text: '已发送', color: 'success' },
+  COMPLETED: { text: '已收齐', color: 'green' },
+  MANUALLY_STOPPED: { text: '已停止提醒', color: 'warning' },
+  FAILED: { text: '发送失败', color: 'error' },
+  UNKNOWN: { text: '发送未知需对账', color: 'error' },
+  LEGACY: { text: '历史导出未纳入', color: 'default' },
+};
+
 function num(v: string | number | undefined | null): string {
   if (v === undefined || v === null || v === '') return '—';
   const n = typeof v === 'number' ? v : parseFloat(v);
@@ -38,6 +59,11 @@ function num(v: string | number | undefined | null): string {
 }
 
 function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const batchParam = parseBatchIdParam(searchParams.get(FILE_JOB_BATCH_PARAM));
+  const urlBatchId = batchParam.kind === 'valid' ? batchParam.id : null;
+  const urlBatchInvalid = batchParam.kind === 'invalid' ? batchParam.raw : null;
+  const [urlBatchError, setUrlBatchError] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState<'NEW' | 'REVISION'>('NEW');
   const [parentBatchId, setParentBatchId] = useState('');
@@ -50,8 +76,45 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const [confirmTotal, setConfirmTotal] = useState(0);
   const [confirmRowsLoading, setConfirmRowsLoading] = useState(false);
   const [confirmRowsError, setConfirmRowsError] = useState<unknown>(null);
-  const [pulling, setPulling] = useState(false);
-  const [pullResult, setPullResult] = useState<PlatformOrderRefreshResult | null>(null);
+
+  /** 批次标识进 URL（Issue #95）：刷新或浏览器回退后按 ?import_batch= 恢复当前批次，不再依赖页面本地 state。 */
+  useEffect(() => {
+    if (urlBatchInvalid !== null) {
+      setUrlBatchError(invalidBatchIdMessage(urlBatchInvalid, '自动恢复该批次'));
+      setResult(null);
+      setConfirmRows([]);
+      setConfirmTotal(0);
+      return;
+    }
+    if (urlBatchId === null) {
+      setUrlBatchError(null);
+      return;
+    }
+    if (result?.id === urlBatchId) {
+      return; // 本批次刚上传/刚确认，页面已有权威结果，无需重复拉取
+    }
+    let active = true;
+    setUrlBatchError(null);
+    fileOperationsApi.getSourceBatch(urlBatchId)
+      .then(async (batch) => {
+        if (!active) return;
+        setResult(batch);
+        await loadConfirmRows(batch);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setResult(null);
+        setConfirmRows([]);
+        setConfirmTotal(0);
+        setUrlBatchError(error instanceof ApiError && error.status === 404
+          ? `批次 ${urlBatchId} 不存在或已被清理，请核对链接或重新上传文件。`
+          : errorMessage(error));
+      });
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlBatchId, urlBatchInvalid, result?.id]);
 
   const loadConfirmRows = async (batch: ImportBatch) => {
     const statuses = [
@@ -90,6 +153,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     try {
       const imported = await fileOperationsApi.uploadSource(file, mode, parentBatchId.trim() || undefined);
       setResult(imported);
+      setSearchParams({ [FILE_JOB_BATCH_PARAM]: imported.id });
       setFile(null);
       message.success('来源订单文件已处理');
       onCompleted();
@@ -151,27 +215,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     ? `待复核 ${result.row_counts.need_review} 行、拒绝 ${result.row_counts.rejected} 行，请先处理后再确认`
     : '';
 
-  /** 一键刷新三平台（彩食鲜/聚福宝/飞象）订单数据：拉取脚本产物自动上传为导入批次。 */
-  const refreshPlatforms = async () => {
-    setPulling(true);
-    setPullResult(null);
-    try {
-      const outcome = await platformOrdersApi.refresh();
-      setPullResult(outcome);
-      const imported = outcome.channels.filter((c) => c.batch_no);
-      if (imported.length > 0) {
-        message.success(`三平台刷新完成：${imported.map((c) => `${CHANNEL_LABELS[c.channel]} ${c.batch_no}`).join('、')}`);
-      } else {
-        message.info('三平台刷新完成，未生成新导入批次（请查看各渠道结果）');
-      }
-      onCompleted();
-    } catch (error) {
-      message.error(errorMessage(error));
-    } finally {
-      setPulling(false);
-    }
-  };
-
   return (
     <Card
       title={<Space><FileExcelOutlined /><span>来源订单导入</span></Space>}
@@ -181,37 +224,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
         <Typography.Text type="secondary">
           上传彩食鲜、聚福宝或飞象的待发货订单文件。商品编号资料不属于订单模板，请前往主数据 → SKU 映射维护。
         </Typography.Text>
-        <Space wrap>
-          <Button icon={<CloudSyncOutlined />} loading={pulling} onClick={refreshPlatforms}>
-            刷新三平台订单
-          </Button>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            一键拉取彩食鲜、聚福宝、飞象最新待发货订单并自动生成导入批次（聚福宝缺收货人字段，仅拉取不导入）。
-          </Typography.Text>
-        </Space>
-        {pullResult ? (
-          <Alert
-            type={pullResult.channels.some((c) => c.status === 'FAILED') ? 'warning' : 'success'}
-            showIcon
-            closable
-            onClose={() => setPullResult(null)}
-            message={`三平台订单刷新完成（${pullResult.date_begin ?? ''} ~ ${pullResult.date_end ?? ''}）`}
-            description={(
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                {pullResult.channels.map((c) => (
-                  <Typography.Text key={c.channel} style={{ display: 'block' }}>
-                    {CHANNEL_LABELS[c.channel] ?? c.channel}：
-                    {c.status === 'OK' && c.batch_no
-                      ? `批次 ${c.batch_no} · 已接收 ${c.row_counts?.accepted ?? 0} 行 / 待复核 ${c.row_counts?.need_review ?? 0} / 拒绝 ${c.row_counts?.rejected ?? 0}`
-                      : c.status === 'OK' && c.order_count != null
-                        ? `已拉取 ${c.order_count} 单（${c.message ?? ''}）`
-                        : c.message ?? (c.status === 'SKIPPED' ? '已跳过' : '失败')}
-                  </Typography.Text>
-                ))}
-              </Space>
-            )}
-          />
-        ) : null}
         <Space wrap>
           <Upload
             accept=".xlsx,.csv"
@@ -223,6 +235,8 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
               setConfirmRows([]);
               setConfirmTotal(0);
               setConfirmRowsError(null);
+              setUrlBatchError(null);
+              setSearchParams({});
               return false;
             }}
           >
@@ -247,11 +261,25 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
             开始导入
           </Button>
         </Space>
+        {urlBatchId !== null && !result && !urlBatchError ? (
+          <Typography.Text type="secondary">正在恢复批次 {urlBatchId} 的导入结果…</Typography.Text>
+        ) : null}
+        {urlBatchError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="批次恢复失败"
+            description={urlBatchError}
+            closable
+            onClose={() => setUrlBatchError(null)}
+            action={<Link to="/fulfillment/sales-outbound">清除批次参数</Link>}
+          />
+        ) : null}
         {result ? (
           <Alert
             type={result.row_counts.need_review > 0 || result.row_counts.rejected > 0 ? 'warning' : 'success'}
             showIcon
-            message={`批次 ${result.batch_no} · ${result.source_channel ?? '来源待确认'}`}
+            message={`批次 ${result.batch_no} · ${result.source_channel_display_name ?? '来源待确认'}`}
             description={result.confirmed_at
               ? `${summarizeImportBatch(result.row_counts)}；批次已确认，生成履约文件 ${result.generated_fulfillment_export_ids?.length ?? 0} 份，已形成履约承诺。`
               : `${summarizeImportBatch(result.row_counts)}；确认后已接收行将写入系统订单，并生成履约文件，形成履约承诺。请核对整个批次后统一确认。`}
@@ -317,7 +345,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
               size="small"
               loading={confirmRowsLoading}
               pagination={false}
-              scroll={{ x: 1720, y: 260 }}
+              scroll={{ x: 1330, y: 260 }}
               dataSource={confirmRows}
               locale={{ emptyText: confirmRowsLoading
                 ? '正在加载导入明细…'
@@ -329,9 +357,9 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                   title: '所属来源',
                   dataIndex: 'sourceChannel',
                   width: 110,
-                  render: () => result?.source_channel ? CHANNEL_LABELS[result.source_channel] : '—',
+                  render: () => result?.source_channel_display_name
+                    ?? (result?.source_channel ? CHANNEL_LABELS[result.source_channel] : '—'),
                 },
-                { title: '来源订单号', dataIndex: 'sourceOrderRef', width: 160 },
                 {
                   title: '收货人',
                   dataIndex: 'receiverName',
@@ -363,11 +391,14 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                   render: (value: string) => value || '—',
                 },
                 {
-                  title: '数量',
-                  dataIndex: 'quantity',
-                  width: 80,
-                  align: 'right',
-                  render: (value: string) => value || '—',
+                  // 发货数量：与京东 SDK cargoInfos[].planQuantity 完全同源；单货品直接「N 件」，
+                  // 多货品逐行「商品名: N 件」；第三方/无京东履约行显示「—」
+                  title: '发货数量',
+                  dataIndex: 'jdCargos',
+                  width: 130,
+                  render: (cargos: ImportRowView['jdCargos']) => (
+                    <span style={{ whiteSpace: 'pre-line' }}>{presentJdCargos(cargos)}</span>
+                  ),
                 },
                 { title: '来源 SKU', dataIndex: 'sourceSkuRef', width: 150 },
                 {
@@ -403,8 +434,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                     : <Typography.Text type="secondary">不参与</Typography.Text>,
                 },
                 { title: '处理结果', dataIndex: 'reason', width: 260 },
-                { title: '系统订单 ID', dataIndex: 'orderId', width: 130 },
-                { title: '系统订单行 ID', dataIndex: 'orderLineId', width: 140 },
                 {
                   title: '操作',
                   key: 'action',
@@ -414,7 +443,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                     ? row.orderId === '—'
                       ? <Typography.Text type="warning">未建立订单关联</Typography.Text>
                       : <Link to={`/orders/${row.orderId}`}>查看系统订单</Link>
-                    : <Link to="/workbench/reviews">前往人工复核</Link>,
+                    : <Link to={reviewsUrlForBatch(result.id)}>前往人工复核</Link>,
                 },
               ]}
             />
@@ -559,6 +588,42 @@ function TrackingUploadModal({
   );
 }
 
+/** 企微出站时间线（#84）：已发送时间/下次提醒/提醒次数/最后错误/停止原因。 */
+function WecomTimeline({ wecom }: { wecom: FulfillmentExportWecomState }) {
+  const semantic = WECOM_STATUS_LABELS[wecom.status];
+  return (
+    <Descriptions size="small" column={2} bordered style={{ marginBottom: 8 }}>
+      <Descriptions.Item label="企微发送状态">
+        <Tag color={semantic.color}>{semantic.text}</Tag>
+        {wecom.chat_id ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+            群 {wecom.chat_id}
+          </Typography.Text>
+        ) : null}
+      </Descriptions.Item>
+      <Descriptions.Item label="已发送时间">{wecom.initial_sent_at ?? '—'}</Descriptions.Item>
+      <Descriptions.Item label="回传截止">{wecom.tracking_due_at ?? '—'}</Descriptions.Item>
+      <Descriptions.Item label="下次提醒">
+        {wecom.next_reminder_at ?? (wecom.status === 'ACTIVE' ? '已暂停' : '—')}
+      </Descriptions.Item>
+      <Descriptions.Item label="提醒次数">{wecom.reminder_count}</Descriptions.Item>
+      <Descriptions.Item label="提醒间隔（分钟）">{wecom.reminder_interval_minutes}</Descriptions.Item>
+      {wecom.status === 'FAILED' || wecom.status === 'UNKNOWN' ? (
+        <Descriptions.Item label="最后错误" span={2}>
+          <Typography.Text type="danger">{wecom.last_error ?? semantic.text}</Typography.Text>
+        </Descriptions.Item>
+      ) : null}
+      {wecom.stopped ? (
+        <Descriptions.Item label="停止原因" span={2}>
+          <Typography.Text type="warning">
+            {wecom.stopped.reason}（{wecom.stopped.by} · {wecom.stopped.at}）
+          </Typography.Text>
+        </Descriptions.Item>
+      ) : null}
+    </Descriptions>
+  );
+}
+
 export default function SalesOutboundPage() {
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(10);
@@ -567,6 +632,51 @@ export default function SalesOutboundPage() {
   const [selected, setSelected] = useState<FulfillmentExport | null>(null);
   const [trackingTarget, setTrackingTarget] = useState<FulfillmentExport | null>(null);
   const [returnDownloading, setReturnDownloading] = useState<string | null>(null);
+  const [resending, setResending] = useState<string | null>(null);
+  const [stopTarget, setStopTarget] = useState<FulfillmentExport | null>(null);
+  const [stopReason, setStopReason] = useState('');
+  const [stopSubmitting, setStopSubmitting] = useState(false);
+
+  /** 人工重发（#84）：只登记新 delivery + 任务，发送由后台 Worker 执行。 */
+  const handleWecomResend = async (record: FulfillmentExport) => {
+    if (!record.wecom) return;
+    setResending(record.id);
+    try {
+      await fulfillmentExportsApi.wecomResend(record.id, {
+        expected_version: record.wecom.version,
+      });
+      message.success('已登记重发，文件将重新发送到该履约方企微群');
+      list.reload();
+    } catch (e) {
+      message.error(errorMessage(e));
+    } finally {
+      setResending(null);
+    }
+  };
+
+  /** 人工停止（#84）：持久化 operator/reason/time，停止后不再自动提醒。 */
+  const handleWecomStop = async () => {
+    if (!stopTarget?.wecom) return;
+    if (!stopReason.trim()) {
+      message.warning('请填写停止理由');
+      return;
+    }
+    setStopSubmitting(true);
+    try {
+      await fulfillmentExportsApi.wecomStop(stopTarget.id, {
+        expected_version: stopTarget.wecom.version,
+        reason: stopReason.trim(),
+      });
+      message.success('已停止该导出的企微发送与周期提醒');
+      setStopTarget(null);
+      setStopReason('');
+      list.reload();
+    } catch (e) {
+      message.error(errorMessage(e));
+    } finally {
+      setStopSubmitting(false);
+    }
+  };
 
   const providers = useAsync(() => providersApi.list(), []);
   const providerName = useMemo(() => {
@@ -659,9 +769,31 @@ export default function SalesOutboundPage() {
       render: (d?: { download_count?: number }) => d?.download_count ?? 0,
     },
     {
+      title: '企微通知',
+      dataIndex: 'wecom',
+      width: 130,
+      render: (wecom?: FulfillmentExportWecomState) => {
+        if (!wecom) {
+          return <Tag>未纳入</Tag>;
+        }
+        const semantic = WECOM_STATUS_LABELS[wecom.status];
+        return (
+          <Tooltip
+            title={
+              wecom.status === 'FAILED' || wecom.status === 'UNKNOWN'
+                ? wecom.last_error ?? semantic.text
+                : undefined
+            }
+          >
+            <Tag color={semantic.color}>{semantic.text}</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
       title: '操作',
       key: 'action',
-      width: 260,
+      width: 330,
       fixed: 'right',
       render: (_, r) => (
         <Space size={4}>
@@ -688,6 +820,35 @@ export default function SalesOutboundPage() {
               来源回填
             </Button>
           ) : null}
+          {r.wecom && r.wecom.status !== 'LEGACY' ? (
+            <>
+              <Popconfirm
+                title="重新发送该导出文件到企微群？"
+                description={r.wecom.status === 'COMPLETED'
+                  ? '该导出运单已收齐，无需重发。'
+                  : '将重新上传并发送文件消息到该履约方登记的企微群，发送后提醒时间线以新发送时刻重置。'}
+                okText="重新发送"
+                cancelText="取消"
+                disabled={r.wecom.status === 'COMPLETED'}
+                onConfirm={() => handleWecomResend(r)}
+              >
+                <Button
+                  size="small"
+                  type="link"
+                  icon={<CloudSyncOutlined />}
+                  loading={resending === r.id}
+                  disabled={r.wecom.status === 'COMPLETED'}
+                >
+                  重发
+                </Button>
+              </Popconfirm>
+              {r.wecom.status === 'MANUALLY_STOPPED' || r.wecom.status === 'COMPLETED' ? null : (
+                <Button size="small" type="link" danger onClick={() => setStopTarget(r)}>
+                  停止
+                </Button>
+              )}
+            </>
+          ) : null}
           <Typography.Link onClick={() => setSelected(r)}>明细</Typography.Link>
         </Space>
       ),
@@ -697,43 +858,37 @@ export default function SalesOutboundPage() {
   const err = list.error || providers.error;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <PageShell
+      title="销售出库"
+      description="履约导出 = 发货前交给履约方（京东/第三方）的发货指令文件；下载后进入回传闭环，文件一旦生成即形成履约承诺。"
+      actions={
+        <Space size={12}>
+          {/* 今日发货工作台的生产入口（Issue #107）：发货员从一次订单同步开始今天的工作。 */}
+          <Link to="/workbench/shipping">今日发货工作台</Link>
+          <Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>
+        </Space>
+      }
+    >
       <SourceImportPanel onCompleted={list.reload} />
 
-      {err ? (
-        <Alert
-          type="error"
-          showIcon
-          message="销售出库加载失败"
-          description={errorMessage(err)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={list.reload}>
-              重试
-            </Button>
-          }
-        />
-      ) : null}
-
-      <Card size="small">
-        <Space wrap>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>履约方</Typography.Text>
-          <Select style={{ width: 200 }} placeholder="全部履约方" allowClear value={providerId} onChange={setProviderId}
-            options={(providers.data ?? []).map((p) => ({ value: p.id, label: p.provider_name }))} />
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>使用状态</Typography.Text>
-          <Select style={{ width: 160 }} placeholder="全部" allowClear value={usage} onChange={setUsage}
-            options={(Object.keys(USAGE_LABELS) as ExportUsageStatus[]).map((k) => ({ value: k, label: USAGE_LABELS[k] }))} />
-          <Button icon={<ReloadOutlined />} onClick={list.reload}>
-            刷新
-          </Button>
-        </Space>
-      </Card>
+      <FilterBar>
+        <Typography.Text type="secondary" style={{ fontSize: 13 }}>履约方</Typography.Text>
+        <Select style={{ width: 200 }} placeholder="全部履约方" allowClear value={providerId} onChange={setProviderId}
+          options={(providers.data ?? []).map((p) => ({ value: p.id, label: p.provider_name }))} />
+        <Typography.Text type="secondary" style={{ fontSize: 13 }}>使用状态</Typography.Text>
+        <Select style={{ width: 160 }} placeholder="全部" allowClear value={usage} onChange={setUsage}
+          options={(Object.keys(USAGE_LABELS) as ExportUsageStatus[]).map((k) => ({ value: k, label: USAGE_LABELS[k] }))} />
+      </FilterBar>
 
       <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
-        <Table<FulfillmentExport>
+        <DataTable<FulfillmentExport>
           rowKey="id"
           columns={columns}
           dataSource={list.data?.items ?? []}
           loading={list.loading}
+          error={err}
+          onRetry={list.reload}
+          errorTitle="销售出库加载失败"
           size="middle"
           scroll={{ x: 1300 }}
           pagination={{
@@ -765,6 +920,7 @@ export default function SalesOutboundPage() {
                 履约方：{providerName(detail.data.provider_id)} · 模板 {detail.data.template_version} · 生成 {detail.data.generated_at}
               </Typography.Text>
             </Space>
+            {detail.data.wecom ? <WecomTimeline wecom={detail.data.wecom} /> : null}
             <Table
               rowKey="export_line_no"
               size="small"
@@ -789,12 +945,42 @@ export default function SalesOutboundPage() {
         ) : null}
       </Drawer>
 
+      <Modal
+        title={`停止企微通知 · ${stopTarget?.export_batch_no ?? ''}`}
+        open={Boolean(stopTarget)}
+        onCancel={() => {
+          if (stopSubmitting) return;
+          setStopTarget(null);
+          setStopReason('');
+        }}
+        onOk={handleWecomStop}
+        okText="确认停止"
+        cancelText="取消"
+        okButtonProps={{ danger: true, loading: stopSubmitting }}
+        destroyOnClose
+      >
+        <Alert
+          type="warning"
+          showIcon
+          message="停止后不再自动发送与周期提醒"
+          description="停止将持久化操作人、理由与时间（可追溯）；已入队的发送/提醒任务会幂等跳过。如需恢复，可对该导出执行「重发」。"
+        />
+        <Input.TextArea
+          rows={3}
+          style={{ marginTop: 12 }}
+          placeholder="请填写停止理由（必填，将随停止记录审计）"
+          value={stopReason}
+          onChange={(event) => setStopReason(event.target.value)}
+          maxLength={500}
+        />
+      </Modal>
+
       <TrackingUploadModal
         target={trackingTarget}
         open={Boolean(trackingTarget)}
         onClose={() => setTrackingTarget(null)}
         onCompleted={list.reload}
       />
-    </Space>
+    </PageShell>
   );
 }

@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.connector.wecom.LocalMediaDownloaderConfiguration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
@@ -37,6 +38,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -53,6 +55,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 使用本地 HttpServer 替身。最终失败与清理路径绝不向原企微群补发消息（无任何出站连接依赖）。
  */
 @Testcontainers
+@Import(LocalMediaDownloaderConfiguration.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class MessagePipelineOperationsApiTest {
 

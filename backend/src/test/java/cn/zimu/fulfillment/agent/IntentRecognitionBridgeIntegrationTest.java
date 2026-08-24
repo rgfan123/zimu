@@ -3,8 +3,6 @@ package cn.zimu.fulfillment.agent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import cn.zimu.fulfillment.common.audit.AuditLog;
-import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.InterpretationInput;
@@ -40,9 +38,10 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * 07 — 意图识别运行桥验收（agent-decision-layer 07，Testcontainers）：真实 PostgreSQL 下，
- * 解释任务执行（既有 InterpretationWorker/InterpretationService 路径）向 Agent 运行记录写入
- * provider/model/prompt_version/intent/error_code 元数据，run_id 与审计 trace_id 双向关联，
+ * 07 — 意图识别运行桥验收（agent-decision-layer 07，T06 适配，Testcontainers）：真实
+ * PostgreSQL 下，解释任务执行（既有 InterpretationWorker/InterpretationService 路径）向
+ * Agent 运行记录写入 provider/model/prompt_version/intent/error_code 元数据（04 差异⑦：
+ * intent/provider 落 agent_runs 列，不再额外落 AGENT 审计），run_id 与业务提交双向关联，
  * 与既有 MessageInterpretation 持久化并存（行为零变化）；Agent 未配置 allowlist 时投影 none；
  * 失败路径落 FAILED 行与稳定错误码。
  */
@@ -113,9 +112,6 @@ class IntentRecognitionBridgeIntegrationTest {
     private MessageInterpretationRepository interpretations;
 
     @Autowired
-    private AuditLogRepository audits;
-
-    @Autowired
     private AgentRegistryHolder holder;
 
     @Autowired
@@ -146,7 +142,7 @@ class IntentRecognitionBridgeIntegrationTest {
     }
 
     @Test
-    void successfulInterpretationWritesAgentRunLinkedToSubmissionAndAudit() {
+    void successfulInterpretationWritesAgentRunLinkedToSubmissionWithIntentAndProvider() {
         long submissionId = submit("BRIDGE-SUCCESS-001");
         AsyncTaskStore.AsyncTask task = claim();
         InterpreterControl.RESULTS.add(successResult(MessageIntent.NON_BUSINESS));
@@ -163,13 +159,18 @@ class IntentRecognitionBridgeIntegrationTest {
             assertThat(item.getPromptVersion()).isEqualTo("test-prompt-v1");
         });
 
-        // Agent 运行记录：run_id 关联 agent_slug/thread_id(任务)/prompt_version/业务提交
+        // Agent 运行记录：run_id 关联 agent_slug/thread_id(任务)/prompt_version/业务提交；
+        // 04 差异⑦：intent/provider 随收口落 agent_runs 列（不再额外落 AGENT 审计）
         Map<String, Object> run = singleRun();
         String runId = (String) run.get("run_id");
         assertThat(run.get("agent_slug")).isEqualTo("intent-recognition");
         assertThat(run.get("thread_id")).isEqualTo(String.valueOf(task.id()));
-        assertThat(run.get("prompt_version")).isEqualTo("intent-recognition-v1");
+        // 实际运行的 prompt_version（allowlist 投影）随收口覆盖定义级配置值
+        assertThat(run.get("prompt_version")).isEqualTo("none");
         assertThat(run.get("model")).isEqualTo("none");
+        // allowlist 未配置 → provider 投影 none；intent 归一化后直落列
+        assertThat(run.get("provider")).isEqualTo("none");
+        assertThat(run.get("intent")).isEqualTo("NON_BUSINESS");
         assertThat(run.get("status")).isEqualTo("SUCCESS");
         assertThat(run.get("error_type")).isNull();
         assertThat(run.get("input_digest")).isEqualTo(sha256(CONTENT));
@@ -180,18 +181,12 @@ class IntentRecognitionBridgeIntegrationTest {
         // 双向追溯：从业务提交可回溯 run_id
         assertThat(runIdsForSubmission(submissionId)).containsExactly(runId);
 
-        // 审计按 run 关联五元组（allowlist 未配置 → provider/model/prompt_version 投影 none）
-        AuditLog audit = auditForOperation("agent.intent-recognition.run");
-        assertThat(audit.getTraceId()).isEqualTo(runId);
-        assertThat(audit.getRequestId()).isEqualTo(runId);
-        assertThat(audit.getActorType()).isEqualTo(cn.zimu.fulfillment.common.audit.AuditActorType.AGENT);
-        Map<String, Object> response = audit.getResponsePayload();
-        assertThat(response.get("intent")).isEqualTo("NON_BUSINESS");
-        assertThat(response.get("provider")).isEqualTo("none");
-        assertThat(response.get("model")).isEqualTo("none");
-        assertThat(response.get("prompt_version")).isEqualTo("none");
-        assertThat(response.get("error_code")).isNull();
-        assertThat(response.get("status")).isEqualTo("SUCCESS");
+        // 重复审计通道已删除：全库不再有 agent.intent-recognition.run 审计
+        assertThat(jdbc.queryForList(
+                        "SELECT count(*) FROM app.audit_logs WHERE operation = 'agent.intent-recognition.run'",
+                        Long.class)
+                .getFirst())
+                .isZero();
     }
 
     @Test
@@ -215,10 +210,9 @@ class IntentRecognitionBridgeIntegrationTest {
         assertThat(run.get("status")).isEqualTo("FAILED");
         assertThat(run.get("error_type")).isEqualTo("MODEL_CALL_FAILED");
         assertThat(run.get("business_entity_id")).isEqualTo(String.valueOf(submissionId));
-
-        Map<String, Object> response = auditForOperation("agent.intent-recognition.run").getResponsePayload();
-        assertThat(response.get("status")).isEqualTo("MODEL_CALL_FAILED");
-        assertThat(response.get("error_code")).isEqualTo("MODEL_CALL_FAILED");
+        // 模型调用失败但仍产出意图：intent 照落（NEED_REVIEW），provider 投影 none
+        assertThat(run.get("intent")).isEqualTo("NEED_REVIEW");
+        assertThat(run.get("provider")).isEqualTo("none");
     }
 
     @Test
@@ -268,8 +262,8 @@ class IntentRecognitionBridgeIntegrationTest {
 
     private Map<String, Object> singleRun() {
         List<Map<String, Object>> runs = jdbc.queryForList(
-                "SELECT run_id, thread_id, agent_slug, prompt_version, model, input_digest,"
-                        + " status, error_type, business_entity_type, business_entity_id"
+                "SELECT run_id, thread_id, agent_slug, prompt_version, model, provider, intent,"
+                        + " input_digest, status, error_type, business_entity_type, business_entity_id"
                         + " FROM app.agent_runs WHERE agent_slug = 'intent-recognition'");
         assertThat(runs).as("agent_runs 应恰好有一条 intent-recognition 运行行").hasSize(1);
         return runs.get(0);
@@ -282,13 +276,6 @@ class IntentRecognitionBridgeIntegrationTest {
                         + "   AND business_entity_id = ?",
                 String.class,
                 String.valueOf(submissionId));
-    }
-
-    private AuditLog auditForOperation(String operation) {
-        return audits.findAll().stream()
-                .filter(log -> operation.equals(log.getOperation()))
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("缺少 " + operation + " 审计"));
     }
 
     private static String sha256(String value) {

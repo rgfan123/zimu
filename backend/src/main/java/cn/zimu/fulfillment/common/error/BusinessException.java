@@ -40,6 +40,11 @@ public class BusinessException extends RuntimeException {
         return new BusinessException(409, code, message);
     }
 
+    /** 权限/目标拒绝（403）：如写工具禁止修改 meta-agent 自身定义（防自改）。 */
+    public static BusinessException forbidden(String code, String message) {
+        return new BusinessException(403, code, message);
+    }
+
     public static BusinessException unprocessable(String code, String message) {
         return new BusinessException(422, code, message);
     }

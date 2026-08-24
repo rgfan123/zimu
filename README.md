@@ -22,9 +22,9 @@ docker compose up -d --build --wait
 - Metabase：<http://localhost:8088/metabase/>，使用部署时写入 `.env` 的独立管理员凭据
 - 健康检查：<http://localhost:8088/actuator/health>
 
-当前应用入口是有意的 **passwordless local** 模式：浏览器无需登录，Nginx 会忽略浏览器自报的 `Authorization` / `X-Operator`，并对 `/api/` 使用 `.env` 中 `APP_ADMIN_USER` / `APP_ADMIN_PASSWORD` 生成的服务端身份。后端对全部 `/api/` 请求（含读取、预览和下载）复验该身份，所以直连 backend 时仅伪造 `X-Operator` 不能读取或写入；全部 `/internal/` 请求则使用独立 service Bearer token。
+当前应用入口的网关边缘 Basic Auth **默认开启**（`GATEWAY_BASIC_AUTH_ENABLED` 未显式关闭时）：浏览器访问任何页面都必须输入 `.env` 中 `APP_ADMIN_USER` / `APP_ADMIN_PASSWORD` 组成的**单一共享 Basic 凭据**（single shared Basic credential）。Nginx 仍会忽略浏览器自报的 `Authorization` / `X-Operator`，并对 `/api/` 使用该服务端身份。后端对全部 `/api/` 请求（含读取、预览和下载）复验该身份，所以直连 backend 时仅伪造 `X-Operator` 不能读取或写入；全部 `/internal/` 请求则使用独立 service Bearer token。仅在受控局域网验收时可用 `GATEWAY_BASIC_AUTH_ENABLED=false` 显式关闭边缘认证（nginx 启动日志会打印警告），这不改变后端的 fail-closed 复验。
 
-这个本地模式只保护“浏览器不能覆盖服务端审计身份”，**does not provide per-user attribution or remote access control**。Compose 因此默认只绑定 `127.0.0.1`；若需对其他主机发布，必须先实施真实用户认证/授权与 HTTPS 终止，再显式调整 `APP_BIND_ADDRESS`。
+这个单账号模式只保护“浏览器不能覆盖服务端审计身份”，**does not provide per-user attribution or remote access control**。Compose 因此默认只绑定 `127.0.0.1`；若需对其他主机发布，必须先实施真实用户认证/授权与 HTTPS 终止，再显式调整 `APP_BIND_ADDRESS`。
 
 京东建出库单默认仍被 `JD_LOP_WRITE_MODE=OFF` 拒绝。仅在已获得真实写入授权并按单独验收流程准备好测试 Shipment 和处置方案后，才可在 `.env` 中显式设置 `JD_LOP_WRITE_MODE=ON`，并将已认证的 `APP_ADMIN_USER` 加入 `JD_OUTBOUND_AUTHORIZED_OPERATORS`。
 
@@ -66,7 +66,7 @@ sh scripts/acceptance.sh
 
 ## 本地开发
 
-先按“一键启动”准备独立凭据并启动完整 Compose 网关。前端热更服务也不直连 Spring Boot，默认把公开路径透传到 `http://127.0.0.1:8088`，由真实 Nginx 在不要求浏览器登录的情况下覆盖服务端操作人并向 backend 提供受信身份：
+先按“一键启动”准备独立凭据并启动完整 Compose 网关。前端热更服务也不直连 Spring Boot，默认把公开路径透传到 `http://127.0.0.1:8088`，由真实 Nginx 要求浏览器提供网关 Basic 凭据、覆盖服务端操作人并向 backend 提供受信身份：
 
 ```bash
 cd frontend
@@ -88,11 +88,10 @@ Vite 在 <http://localhost:5173> 提供页面；可用 `DEV_MANAGEMENT_GATEWAY_U
 WECOM_ENABLED=true
 WECOM_BOT_ID=智能机器人ID
 WECOM_SECRET=长连接Secret
-WECOM_WS_URL=wss://openws.work.weixin.qq.com
 WECOM_HEARTBEAT_INTERVAL_SECONDS=30
 ```
 
-应用启动后自动连接 `WECOM_WS_URL` 并发送 `aibot_subscribe` 订阅（订阅成功前不重复），之后以 `ping` 业务 JSON 帧维持心跳；断线指数退避重连（1s 起步、翻倍、30s 封顶 + 抖动），被 `disconnected_event` 踢线（说明有外部新连接抢占）时停止自动重连并告警。不要把 Secret 写入仓库、命令历史或聊天记录；代码与日志绝不打印 Secret。缺配置时应用正常启动、连接不建立，readiness 标记不可用。
+应用启动后只连接官方固定地址 `wss://openws.work.weixin.qq.com` 并发送 `aibot_subscribe` 订阅（订阅成功前不重复）；部署配置不能改写凭据发送目标，本地 `ws://loopback` 仅存在于包内测试入口。之后以 `ping` 业务 JSON 帧维持心跳；断线指数退避重连（1s 起步、翻倍、30s 封顶 + 抖动），被 `disconnected_event` 踢线（说明有外部新连接抢占）时停止自动重连并告警。不要把 Secret 写入仓库、命令历史或聊天记录；代码与日志绝不打印 Secret。缺配置时应用正常启动、连接不建立，readiness 标记不可用。
 
 管理员可通过 `GET /api/v1/wecom/readiness`（要求 `X-Operator` 头）查看非秘密门禁与实时连接状态：接口只返回配置项是否存在（checks + missing_requirements）和连接状态维度（DISCONNECTED / CONNECTING / SUBSCRIBED / KICKED / FAILED）、心跳计数与最近事件类型，不返回 BotID 或 Secret。`configuration_ready=true` 只表示配置具备建连条件，`connection_state=SUBSCRIBED` 才表示长连接已订阅成功；真实业务消息验收仍需在企微侧发送消息并到 `/workbench/channel-messages` 核对不可变消息证据。
 

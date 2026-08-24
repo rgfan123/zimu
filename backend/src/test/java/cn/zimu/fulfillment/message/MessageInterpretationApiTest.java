@@ -37,6 +37,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -52,6 +53,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * 边界替换。
  */
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @ExtendWith(OutputCaptureExtension.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class MessageInterpretationApiTest {
@@ -67,6 +69,8 @@ class MessageInterpretationApiTest {
 
     @DynamicPropertySource
     static void messagePipelineConfiguration(DynamicPropertyRegistry registry) {
+        registry.add("app.scheduling.enabled", () -> "true");
+        registry.add("app.message-worker.enabled", () -> "true");
         registry.add("app.message-worker.poll-ms", () -> "100");
         registry.add("app.message-worker.backoff-seconds", () -> "1");
         registry.add("app.message-worker.lease-seconds", () -> "10");

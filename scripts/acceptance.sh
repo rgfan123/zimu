@@ -19,6 +19,9 @@ cleanup_acceptance_secrets() {
   if [ -n "$state_file" ]; then
     rm -f "$state_file"
   fi
+  if [ -n "$gateway_netrc_file" ]; then
+    rm -f "$gateway_netrc_file"
+  fi
   if [ -n "$acceptance_secret_dir" ]; then
     rmdir "$acceptance_secret_dir" 2>/dev/null || true
   fi
@@ -28,6 +31,8 @@ trap cleanup_acceptance_secrets EXIT HUP INT TERM
 acceptance_secret_dir="$(mktemp -d "${TMPDIR:-/tmp}/${project_name}-acceptance.XXXXXX")"
 chmod 700 "$acceptance_secret_dir"
 state_file="$acceptance_secret_dir/state.json"
+# 06 边缘认证：重启/持久化复核的 curl 用 netrc 提供凭据，密码不进 argv。
+gateway_netrc_file="$acceptance_secret_dir/gateway.netrc"
 
 compose() {
   python3 "$repo_root/scripts/acceptance_compose.py" "$credentials_file" "$project_name" "$repo_root/docker-compose.yml" "$@"
@@ -43,7 +48,8 @@ export COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 
 if [ -n "${METABASE_ADMIN_EMAIL:-}" ] || [ -n "${METABASE_ADMIN_PASSWORD:-}" ] \
     || [ -n "${APP_ADMIN_USER:-}" ] || [ -n "${APP_ADMIN_PASSWORD:-}" ] \
-    || [ -n "${POSTGRES_USER:-}" ] || [ -n "${POSTGRES_PASSWORD:-}" ]; then
+    || [ -n "${POSTGRES_USER:-}" ] || [ -n "${POSTGRES_PASSWORD:-}" ] \
+    || [ -n "${APP_INTERNAL_SERVICE_NAME:-}" ] || [ -n "${APP_INTERNAL_SERVICE_TOKEN:-}" ]; then
   if [ -z "${METABASE_ADMIN_EMAIL:-}" ] || [ -z "${METABASE_ADMIN_PASSWORD:-}" ]; then
     echo "set both METABASE_ADMIN_EMAIL and METABASE_ADMIN_PASSWORD, or neither" >&2
     exit 1
@@ -56,6 +62,10 @@ if [ -n "${METABASE_ADMIN_EMAIL:-}" ] || [ -n "${METABASE_ADMIN_PASSWORD:-}" ] \
     echo "set both POSTGRES_USER and POSTGRES_PASSWORD, or neither" >&2
     exit 1
   fi
+  if [ -z "${APP_INTERNAL_SERVICE_NAME:-}" ] || [ -z "${APP_INTERNAL_SERVICE_TOKEN:-}" ]; then
+    echo "set both APP_INTERNAL_SERVICE_NAME and APP_INTERNAL_SERVICE_TOKEN, or neither" >&2
+    exit 1
+  fi
   python3 "$repo_root/scripts/acceptance_credentials.py" --validate-environment
   ephemeral_credentials_file="$acceptance_secret_dir/explicit.credentials"
   python3 "$repo_root/scripts/acceptance_credentials.py" --write-environment "$ephemeral_credentials_file"
@@ -63,7 +73,27 @@ if [ -n "${METABASE_ADMIN_EMAIL:-}" ] || [ -n "${METABASE_ADMIN_PASSWORD:-}" ] \
 else
   python3 "$repo_root/scripts/acceptance_credentials.py" "$credentials_file"
 fi
-unset METABASE_ADMIN_EMAIL METABASE_ADMIN_PASSWORD APP_ADMIN_USER APP_ADMIN_PASSWORD POSTGRES_USER POSTGRES_PASSWORD
+unset METABASE_ADMIN_EMAIL METABASE_ADMIN_PASSWORD APP_ADMIN_USER APP_ADMIN_PASSWORD POSTGRES_USER POSTGRES_PASSWORD \
+  APP_INTERNAL_SERVICE_NAME APP_INTERNAL_SERVICE_TOKEN
+
+# 06 边缘认证：为后面的 curl（backend 重启幂等/文件持久化复核）生成 netrc。
+# 凭据只来自私有凭据文件，密码不进入 curl 的 argv（与「密钥不进进程参数」的既有纪律一致）。
+python3 - "$credentials_file" "$gateway_netrc_file" "$repo_root" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[3]) / "scripts"))
+from acceptance_credentials import load_credentials
+
+credentials = load_credentials(Path(sys.argv[1]))
+target = Path(sys.argv[2])
+target.write_text(
+    "machine 127.0.0.1 login {} password {}\n".format(
+        credentials["APP_ADMIN_USER"], credentials["APP_ADMIN_PASSWORD"]
+    )
+)
+target.chmod(0o600)
+PY
 
 echo "[acceptance] build and start $project_name on $base_url"
 if [ "${ACCEPTANCE_SKIP_BUILD:-false}" = "true" ]; then
@@ -78,6 +108,7 @@ REPO_ROOT="$repo_root" \
 ACCEPTANCE_STATE_FILE="$state_file" \
 ACCEPTANCE_CREDENTIAL_FILE="$credentials_file" \
 python3 - <<'PY'
+import base64
 import datetime as dt
 import hashlib
 import io
@@ -102,10 +133,18 @@ from acceptance_credentials import load_credentials
 credentials = load_credentials(Path(os.environ["ACCEPTANCE_CREDENTIAL_FILE"]))
 run_id = os.environ.get("ACCEPTANCE_RUN_ID") or uuid.uuid4().hex[:12]
 
+# 06 网关边缘认证默认开启：公共 seam 要求 Basic 凭据。这里从私有凭据文件派生请求头，
+# 不在源码/argv 中出现明文密码（与「密钥不进进程参数」的既有纪律一致）。
+gateway_basic_auth = base64.b64encode(
+    f'{credentials["APP_ADMIN_USER"]}:{credentials["APP_ADMIN_PASSWORD"]}'.encode()
+).decode()
 
-def request(path, *, method="GET", body=None, headers=None, attempts=1):
+
+def request(path, *, method="GET", body=None, headers=None, attempts=1, authenticated=True):
     payload = None if body is None else body if isinstance(body, bytes) else json.dumps(body).encode()
     request_headers = {"Accept": "application/json", **(headers or {})}
+    if authenticated:
+        request_headers["Authorization"] = "Basic " + gateway_basic_auth
     if payload is not None and not isinstance(body, bytes):
         request_headers["Content-Type"] = "application/json"
     last_error = None
@@ -270,13 +309,29 @@ def tracking_workbook(instruction, result, quantity, tracking_number):
     return output.getvalue()
 
 
-for passwordless_path in (
+# 06 边缘认证冒烟断言：默认配置（未显式设置 GATEWAY_BASIC_AUTH_ENABLED=false）下，
+# 不带凭据访问业务端点必须被网关 401 拒绝（nginx auth_basic 在代理前拦截，未达后端）。
+for edge_guarded_path in (
     "/api/v1/orders?page=0&size=1",
     "/api/v1/channel-messages?page=0&size=1",
     "/dashboard",
 ):
-    status, _, _ = request(passwordless_path)
-    assert status == 200, (passwordless_path, status)
+    status, _, _ = request(edge_guarded_path, authenticated=False)
+    assert status == 401, (edge_guarded_path, status)
+
+# 业务写端点同样必须 401，且响应携带 Basic challenge。
+status, body, edge_headers = request(
+    "/api/v1/customers",
+    method="POST",
+    body={"customer_code": "EDGE-AUTH-SMOKE", "customer_name": "边缘认证冒烟", "active": True},
+    authenticated=False,
+)
+assert status == 401, (status, body[:300])
+assert "basic" in edge_headers.get("WWW-Authenticate", "").lower(), edge_headers
+
+# 带上凭据后同一读端点正常到达后端（证明上面的 401 是认证拦截而不是后端故障）。
+status, _, _ = request("/api/v1/orders?page=0&size=1")
+assert status == 200, status
 
 health = get_json("/actuator/health")
 assert health["status"] == "UP", health
@@ -712,7 +767,7 @@ assert jd_tracking["success"] and jd_tracking["business_code"] == "MOCK_SUCCESS"
 audits = get_json("/api/v1/audit-logs?operation=seed.demo-dataset&page=0&size=20")
 assert audits["total_elements"] == 1, audits
 
-# Public AI-demo command gate: reuse a publicly visible WECOM BUSINESS source reference, then prove
+# Authenticated AI-demo command gate: reuse a visible WECOM BUSINESS source reference, then prove
 # the confirmed DEMO order coexists under the same channel/reference without entering BUSINESS reads.
 business_same_ref_page = get_json(
     "/api/v1/orders?" + urllib.parse.urlencode({"source_channel": "WECOM", "page": 0, "size": 1})
@@ -752,7 +807,7 @@ assert extracted_run["data_scope"] == "DEMO" and extracted_run["status"] == "SUC
 assert extracted_run["order"]["order_status"] == "SYNCED", extracted_run
 assert len(extracted_run["order"]["lines"]) == 2, extracted_run
 assert extracted_run["timeline"][-1]["event_type_code"] == "SOURCE_SYNCED", extracted_run
-assert {event["operator"] for event in extracted_run["timeline"]} == {"local-operator"}, extracted_run
+assert {event["operator"] for event in extracted_run["timeline"]} == {credentials["APP_ADMIN_USER"]}, extracted_run
 extracted_business = get_json(
     "/api/v1/orders?" + urllib.parse.urlencode({"query": demo_source_ref, "page": 0, "size": 20})
 )
@@ -806,7 +861,7 @@ assert [event["event_type_code"] for event in run["timeline"]] == [
     "TRACKING_RECEIVED",
     "SOURCE_SYNCED",
 ]
-assert {event["operator"] for event in run["timeline"]} == {"local-operator"}, run["timeline"]
+assert {event["operator"] for event in run["timeline"]} == {credentials["APP_ADMIN_USER"]}, run["timeline"]
 business_lookup = get_json(
     "/api/v1/orders?" + urllib.parse.urlencode({"query": run["order"]["source_ref"], "page": 0, "size": 20})
 )
@@ -895,11 +950,11 @@ orders = get_json("/api/v1/orders?page=0&size=1")
 print(orders["total_elements"])
 PY
 
-before_restart="$(curl --fail --silent "$base_url/api/v1/orders?page=0&size=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total_elements"])')"
+before_restart="$(curl --fail --silent --netrc-file "$gateway_netrc_file" "$base_url/api/v1/orders?page=0&size=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total_elements"])')"
 echo "[acceptance] restart backend to verify empty-only/idempotent seed"
 compose restart backend >/dev/null
 attempts=0
-until curl --fail --silent "$base_url/actuator/health" | grep -q '"status":"UP"'; do
+until curl --fail --silent --netrc-file "$gateway_netrc_file" "$base_url/actuator/health" | grep -q '"status":"UP"'; do
   attempts=$((attempts + 1))
   if [ "$attempts" -ge 60 ]; then
     echo "backend did not recover after restart" >&2
@@ -907,7 +962,7 @@ until curl --fail --silent "$base_url/actuator/health" | grep -q '"status":"UP"'
   fi
   sleep 2
 done
-after_restart="$(curl --fail --silent "$base_url/api/v1/orders?page=0&size=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total_elements"])')"
+after_restart="$(curl --fail --silent --netrc-file "$gateway_netrc_file" "$base_url/api/v1/orders?page=0&size=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total_elements"])')"
 test "$before_restart" = "$after_restart"
 
 echo "[acceptance] force-recreate backend to verify generated-file durability"

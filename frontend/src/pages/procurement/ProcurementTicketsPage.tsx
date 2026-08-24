@@ -6,6 +6,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { App as AntApp, Alert, Button, Descriptions, Drawer, Input, Modal, Select, Space, Table, Timeline, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -13,6 +14,9 @@ import { errorMessage } from '@/api/client';
 import { procurementApi } from '@/api/endpoints';
 import type { ProcurementStatus, ProcurementTicket } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import { AdminEmpty, AdminFailureAlert, AdminLoading, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
 import { adminPageState, adminStatusPresentation } from '@/pages/shared/adminVisual';
 import '@/pages/shared/adminSurface.css';
@@ -107,43 +111,46 @@ export default function ProcurementTicketsPage() {
 
   return (
     <div className="admin-page">
-      <div className="admin-page__intro">
-        <Typography.Text className="admin-page__intro-copy" type="secondary">
-          查看缺货补齐进度与不可变回执，仅对待处理缺口执行重试或取消。
-        </Typography.Text>
-      </div>
-
-      <div className="admin-toolbar">
-        <Space wrap>
+      <PageShell
+        title="采购协同"
+        description="查看缺货补齐进度与不可变回执，仅对待处理缺口执行重试或取消。"
+      >
+        <FilterBar
+          actions={
+            <Space size={12}>
+              {/* 低频专用查询的上下文入口（Issue #98）：采购比价已从菜单隐藏，由本页承载发现路径。 */}
+              <Link to="/procurement/price-compare">采购比价</Link>
+              <Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>
+            </Space>
+          }
+        >
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>状态</Typography.Text>
           <Select style={{ width: 150 }} placeholder="全部" allowClear value={status} onChange={setStatus}
             options={PROCUREMENT_STATUSES.map((key) => ({ value: key, label: adminStatusPresentation(key).label }))} />
-        </Space>
-        <div className="admin-toolbar__spacer" />
-        <Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>
-      </div>
+        </FilterBar>
 
-      <div className="admin-surface">
-        <Table<ProcurementTicket>
-          rowKey="id"
-          columns={columns}
-          dataSource={tickets}
-          size="middle"
-          scroll={{ x: 1080 }}
-          locale={{ emptyText: <AdminEmpty description="暂无采购工单" /> }}
-          pagination={{
-            current: page + 1,
-            pageSize: size,
-            total: list.data?.total_elements ?? 0,
-            showSizeChanger: true,
-            showTotal: (t) => `共 ${t} 条`,
-            onChange: (p, s) => {
-              setPage(p - 1);
-              setSize(s);
-            },
-          }}
-        />
-      </div>
+        <div className="admin-surface">
+          <DataTable<ProcurementTicket>
+            rowKey="id"
+            columns={columns}
+            dataSource={tickets}
+            size="middle"
+            scroll={{ x: 1080 }}
+            emptyText={<AdminEmpty description="暂无采购工单" />}
+            pagination={{
+              current: page + 1,
+              pageSize: size,
+              total: list.data?.total_elements ?? 0,
+              showSizeChanger: true,
+              showTotal: (t) => `共 ${t} 条`,
+              onChange: (p, s) => {
+                setPage(p - 1);
+                setSize(s);
+              },
+            }}
+          />
+        </div>
+      </PageShell>
 
       <Drawer
         title={`采购工单 ${selected?.ticket_no ?? ''}`}

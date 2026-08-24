@@ -65,6 +65,9 @@ export const CHANNEL_ACCENT: Record<SourceChannel, string> = {
   JUFUBAO: saasVisualTokens.data.cyan,
   FEIXIANG: saasVisualTokens.data.violet,
   ZHONGHUI: saasVisualTokens.data.cyanSoft,
+  WANGQI: saasVisualTokens.data.violetSoft,
+  DAZHE: saasVisualTokens.data.violetSoft,
+  WANQI: saasVisualTokens.data.blueSoft,
   WECOM: saasVisualTokens.data.blueSoft,
 };
 

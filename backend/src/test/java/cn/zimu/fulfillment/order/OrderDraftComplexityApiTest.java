@@ -36,6 +36,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -48,6 +49,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * auto-merge, supplement endpoint, and independent confirm/reject of split drafts.
  */
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class OrderDraftComplexityApiTest {
 
@@ -62,6 +64,8 @@ class OrderDraftComplexityApiTest {
 
     @DynamicPropertySource
     static void ticketConfiguration(DynamicPropertyRegistry registry) {
+        registry.add("app.scheduling.enabled", () -> "true");
+        registry.add("app.message-worker.enabled", () -> "true");
         registry.add("app.message-worker.poll-ms", () -> "100");
         registry.add("app.message-worker.backoff-seconds", () -> "1");
         registry.add("app.message-worker.lease-seconds", () -> "10");
@@ -403,7 +407,7 @@ class OrderDraftComplexityApiTest {
         assertThat(get("/api/v1/order-drafts/" + original.get("id")))
                 .containsEntry("status", "OPEN")
                 .extracting(draft -> ((Number) draft.get("revision")).longValue())
-                .isEqualTo(0L);
+                .isEqualTo(((Number) original.get("revision")).longValue());
     }
 
     @Test
@@ -610,6 +614,7 @@ class OrderDraftComplexityApiTest {
         output.put("customer_ref", "WECOM-CUSTOMER-001");
         output.put("receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"));
         output.put("settlement_method", "MONTHLY");
+        output.put("settlement_time", "2026-08-31T16:00:00Z");
         output.put("items", List.of(item("子牧羊小腿", "2")));
         output.putAll(overrides);
         return new InterpretationResult(

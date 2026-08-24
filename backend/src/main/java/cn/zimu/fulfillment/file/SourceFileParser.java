@@ -45,6 +45,17 @@ class SourceFileParser {
     private static final Set<String> FEIXIANG_V2_FINGERPRINT = Set.of(
             "订单号", "会员名称", "商品名称", "商品ID", "订单商品ID", "商品数量",
             "收货人姓名", "收货人手机号", "收货人地址", "下单时间", "物流状态", "物流单号");
+    /** 万齐订单管理导出的有序 52 列版本；回填依赖原列顺序，增删或换序均视为新模板。 */
+    private static final List<String> WANQI_52_HEADERS = List.of(
+            "收货人姓名", "收货人手机号", "详细地址", "商品名称", "规格信息", "商品类型", "品牌",
+            "一级分类", "二级分类", "三级分类", "一级逻辑分类", "二级逻辑分类", "三级逻辑分类",
+            "售价", "购买数量", "成本价", "结算价", "优惠类型", "优惠金额", "供应商", "商品来源",
+            "子订单状态", "售后状态", "退款类型", "供应商发货时间", "确认收货时间", "申请退款时间",
+            "售后完成时间", "用户备注", "商家/客服备注", "订单处理形式", "订单ID", "聚合ID", "子订单ID",
+            "供应商单号", "商品id", "供应商商品id", "门店id", "供应商sku id", "服务时效", "期望时间",
+            "物流信息", "crm 单号", "订单总金额", "skuid", "sku名称", "不含运毛利额", "不含运毛利率",
+            "含运毛利额", "含运毛利率", "订单类型", "实物售后");
+    private static final Set<String> WANQI_PENDING_STATUSES = Set.of("超时未发货", "待发货");
     private static final Charset GB18030 = Charset.forName("GB18030");
     private final DataFormatter formatter = new DataFormatter(java.util.Locale.ROOT);
 
@@ -72,7 +83,7 @@ class SourceFileParser {
                     if (channel == SourceChannel.WECOM || !eligibleSheet(channel, sheetIndex, sheet.getSheetName())) {
                         continue;
                     }
-                    if (matches(headers, FINGERPRINTS.get(channel))) {
+                    if (matches(channel, headers)) {
                         matches.add(new SheetCandidate(channel, sheet, sheetIndex, headers));
                     }
                 }
@@ -87,9 +98,17 @@ class SourceFileParser {
                 if (candidate.channel() == SourceChannel.JUFUBAO && isJufubaoSummary(cells)) {
                     break;
                 }
+                if ((candidate.channel() == SourceChannel.DAZHE || candidate.channel() == SourceChannel.WANGQI)
+                        && isWangqiPurchaseTotal(cells)) {
+                    continue;
+                }
                 rows.add(map(candidate.channel(), candidate.sheet().getSheetName(), candidate.sheetIndex(), index + 1, cells));
             }
-            return parsed(candidate.channel(), candidate.headers(), false, "v1", rows);
+            List<ParsedSourceRow> validatedRows = candidate.channel() == SourceChannel.WANQI
+                    ? validateWanqi52Identities(rows)
+                    : rows;
+            return parsed(
+                    candidate.channel(), candidate.headers(), false, templateVersion(candidate.channel()), validatedRows);
         }
     }
 
@@ -144,9 +163,12 @@ class SourceFileParser {
             SourceChannel channel, String sheetName, int sheetIndex, int rowIndex, Map<String, String> cells) {
         return switch (channel) {
             case CAISHIXIAN -> caishixian(sheetName, sheetIndex, rowIndex, cells);
+            case DAZHE -> wangqi(sheetName, sheetIndex, rowIndex, cells);
             case JUFUBAO -> jufubao(sheetName, sheetIndex, rowIndex, cells);
             case FEIXIANG -> feixiang(sheetName, sheetIndex, rowIndex, cells);
             case ZHONGHUI -> zhonghui(sheetName, sheetIndex, rowIndex, cells);
+            case WANGQI -> wangqi(sheetName, sheetIndex, rowIndex, cells);
+            case WANQI -> wanqi52(sheetName, sheetIndex, rowIndex, cells);
             case WECOM -> throw new IllegalArgumentException("WECOM is not a file source adapter");
         };
     }
@@ -169,6 +191,9 @@ class SourceFileParser {
         putIfPresent(projection, "quantity", parsed.quantity());
         putIfPresent(projection, "specification", parsed.specification());
         putIfPresent(projection, "source_sku_ref", parsed.sourceSkuRef());
+        if (channel == SourceChannel.WANQI) {
+            putIfPresent(projection, "source_line_ref", parsed.sourceLineRef());
+        }
         return projection;
     }
 
@@ -228,6 +253,94 @@ class SourceFileParser {
                 value(cells, "包装规格"), value(cells, "单位"),
                 value(cells, "件数"), parseTime(value(cells, "下单时间")), "OTHER",
                 value(cells, "用户留言"), true);
+    }
+
+    private ParsedSourceRow wangqi(String sheet, int sheetIndex, int row, Map<String, String> cells) {
+        String paidAt = value(cells, "渠道支付时间");
+        return row(
+                sheet, sheetIndex, row, cells,
+                value(cells, "渠道订单号"), value(cells, "主商品编码"),
+                "", "",
+                value(cells, "收货人"), value(cells, "收货人手机"), value(cells, "收货人详细地址"),
+                "", "", "",
+                value(cells, "主商品编码"), value(cells, "商品名称"),
+                "", "件",
+                value(cells, "商品数量"), parseTime(first(cells, "渠道支付时间", "渠道下单时间")),
+                paidAt.isBlank() ? "OTHER" : "IMMEDIATE", "", true);
+    }
+
+    private ParsedSourceRow wanqi52(String sheet, int sheetIndex, int row, Map<String, String> cells) {
+        ParsedSourceRow parsed = row(
+                sheet, sheetIndex, row, cells,
+                value(cells, "订单ID"), value(cells, "子订单ID"),
+                "", "",
+                value(cells, "收货人姓名"), value(cells, "收货人手机号"), value(cells, "详细地址"),
+                "", "", "",
+                value(cells, "skuid"), value(cells, "商品名称"), value(cells, "规格信息"), "件",
+                value(cells, "购买数量"), null, "UNSPECIFIED", wanqiRemark(cells), true);
+        if (!parsed.valid()) {
+            return parsed;
+        }
+        if (value(cells, "子订单ID").isBlank()) {
+            return withError(parsed, "SOURCE_LINE_REF_REQUIRED", "万齐来源行缺少子订单 ID");
+        }
+        if (!"实体商品".equals(value(cells, "商品类型")) || !"销售订单".equals(value(cells, "订单类型"))) {
+            return withError(parsed, "SOURCE_ORDER_TYPE_BLOCKED", "万齐来源行不是可发货的实体销售订单");
+        }
+        if (!WANQI_PENDING_STATUSES.contains(value(cells, "子订单状态"))) {
+            return withError(parsed, "SOURCE_ORDER_STATUS_BLOCKED", "万齐子订单状态不是明确待发货状态");
+        }
+        if (!value(cells, "供应商发货时间").isBlank()
+                || !value(cells, "确认收货时间").isBlank()
+                || !value(cells, "物流信息").isBlank()) {
+            return withError(parsed, "SOURCE_ORDER_ALREADY_FULFILLED", "万齐来源行已有发货、收货或物流事实");
+        }
+        if (!value(cells, "退款类型").isBlank()
+                || !value(cells, "申请退款时间").isBlank()) {
+            return withError(parsed, "SOURCE_ORDER_REFUND_BLOCKED", "万齐来源行存在退款事实");
+        }
+        if (!value(cells, "售后状态").isBlank()
+                || !value(cells, "售后完成时间").isBlank()) {
+            return withError(parsed, "SOURCE_ORDER_AFTER_SALES_BLOCKED", "万齐来源行存在售后事实");
+        }
+        return parsed;
+    }
+
+    private List<ParsedSourceRow> validateWanqi52Identities(List<ParsedSourceRow> rows) {
+        Map<String, Long> counts = rows.stream()
+                .filter(row -> row.sourceOrderRef() != null && row.sourceLineRef() != null)
+                .collect(java.util.stream.Collectors.groupingBy(
+                        row -> row.sourceOrderRef() + "\u001f" + row.sourceLineRef(),
+                        LinkedHashMap::new,
+                        java.util.stream.Collectors.counting()));
+        return rows.stream().map(row -> {
+            String key = row.sourceOrderRef() + "\u001f" + row.sourceLineRef();
+            return counts.getOrDefault(key, 0L) > 1
+                    ? withError(row, "SOURCE_LINE_REF_DUPLICATE", "同一万齐订单内子订单 ID 重复")
+                    : row;
+        }).toList();
+    }
+
+    private String wanqiRemark(Map<String, String> cells) {
+        return java.util.stream.Stream.of(
+                        labeled("用户备注", value(cells, "用户备注")),
+                        labeled("商家/客服备注", value(cells, "商家/客服备注")),
+                        labeled("crm 单号", value(cells, "crm 单号")))
+                .filter(value -> !value.isBlank())
+                .collect(java.util.stream.Collectors.joining("；"));
+    }
+
+    private String labeled(String label, String value) {
+        return value.isBlank() ? "" : label + "：" + value;
+    }
+
+    private ParsedSourceRow withError(ParsedSourceRow row, String errorCode, String errorMessage) {
+        return new ParsedSourceRow(
+                row.sheetName(), row.sheetIndex(), row.rowIndex(), row.rawCells(), row.sourceOrderRef(), row.sourceLineRef(),
+                row.sourceCustomerRef(), row.customerName(), row.receiverName(), row.receiverPhone(), row.receiverAddress(),
+                row.receiverProvince(), row.receiverCity(), row.receiverDistrict(), row.sourceSkuRef(), row.productName(),
+                row.specification(), row.unit(), row.quantity(), row.orderedAt(), row.settlementMethod(), row.remark(),
+                errorCode, errorMessage);
     }
 
     private ParsedSourceRow row(
@@ -303,8 +416,24 @@ class SourceFileParser {
             throw fingerprintError(matches.size());
         }
         SheetCandidate candidate = matches.getFirst();
-        assertNoDuplicateKeyHeaders(candidate.headers(), FINGERPRINTS.get(candidate.channel()));
+        assertNoDuplicateKeyHeaders(candidate.headers(), keyHeaders(candidate.channel()));
         return candidate;
+    }
+
+    private boolean matches(SourceChannel channel, List<String> headers) {
+        return channel == SourceChannel.WANQI
+                ? WANQI_52_HEADERS.equals(headers)
+                : matches(headers, FINGERPRINTS.get(channel));
+    }
+
+    private Set<String> keyHeaders(SourceChannel channel) {
+        return channel == SourceChannel.WANQI
+                ? new HashSet<>(WANQI_52_HEADERS)
+                : FINGERPRINTS.get(channel);
+    }
+
+    private String templateVersion(SourceChannel channel) {
+        return channel == SourceChannel.WANQI ? "v1-52-columns" : "v1";
     }
 
     private boolean matches(List<String> headers, Set<String> required) {
@@ -325,9 +454,12 @@ class SourceFileParser {
     private boolean eligibleSheet(SourceChannel channel, int index, String name) {
         return switch (channel) {
             case CAISHIXIAN -> index == 0;
+            case DAZHE -> index == 0;
             case JUFUBAO -> "sheet1".equals(name);
             case FEIXIANG -> index == 0;
             case ZHONGHUI -> index == 0;
+            case WANGQI -> index == 0;
+            case WANQI -> index == 0;
             case WECOM -> false;
         };
     }
@@ -335,6 +467,13 @@ class SourceFileParser {
     private boolean isJufubaoSummary(Map<String, String> cells) {
         return cells.values().stream().map(String::strip)
                 .anyMatch(value -> "供应商汇总".equals(value) || "汇总".equals(value));
+    }
+
+    private boolean isWangqiPurchaseTotal(Map<String, String> cells) {
+        return !value(cells, "采购单价(元)").isBlank()
+                && cells.entrySet().stream()
+                        .filter(cell -> !"采购单价(元)".equals(cell.getKey()))
+                        .allMatch(cell -> cell.getValue().isBlank());
     }
 
     private BusinessException fingerprintError(int matches) {
@@ -369,7 +508,7 @@ class SourceFileParser {
         return new DecodedCsv(text, encoding, newline);
     }
 
-    private String normalizeHeader(String value) {
+    String normalizeHeader(String value) {
         String normalized = Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFKC);
         return normalized.replace("\uFEFF", "").strip();
     }
@@ -440,6 +579,10 @@ class SourceFileParser {
         map.put(SourceChannel.FEIXIANG, Set.of("订单号", "订单商品ID", "可发货数量", "物流状态", "物流公司", "物流单号"));
         map.put(SourceChannel.ZHONGHUI, Set.of(
                 "订单号", "商品编号", "商品名称", "件数", "收件人", "收件电话", "收件地址", "包装规格", "单位"));
+        map.put(SourceChannel.DAZHE, Set.of(
+                "渠道订单号", "主商品编码", "供应商商品名称", "商品名称", "订单商品状态",
+                "采购单价(元)", "商品数量", "收货人", "收货人手机", "收货人详细地址",
+                "预计到货时间", "渠道下单时间", "渠道支付时间", "快递单号", "快递公司"));
         return map;
     }
 

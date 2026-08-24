@@ -21,11 +21,22 @@ export const appNavigation = [
     label: '作业中心',
     children: [
       { path: '/workbench/reviews', label: '人工复核' },
+      // Issue #64 运营提醒独立路由：按 #98 准入规则降级为上下文二级入口（复核页 ↔ 提醒页互为切换），
+      // 保留路由与上下文归属，不占作业中心可见菜单位。
+      { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       { path: '/workbench/channel-messages', label: '渠道消息' },
+      // Issue #107 今日发货工作台：先 hideInMenu 注册并诚实呈现渠道结果，01 再露出为可见入口。
+      { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: true },
+      // Issue #111：出库信息对账的作业中心入口，复用 /fulfillment/outbound-recon 展示，
+      // 按 #98 准入规则隐藏菜单、保留路由与上下文入口（金额口径说明由页面注入）。
+      { path: '/workbench/recon', label: '出库信息对账', hideInMenu: true },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },
+      // 低频专用查询（Issue #98 准入规则）：隐藏菜单、保留路由与上下文入口，见 docs/agents/navigation-admission.md。
+      { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
       { path: '/fulfillment/sales-outbound', label: '文件作业' },
       { path: '/fulfillment/shipments', label: '发货记录' },
+      { path: '/fulfillment/outbound-recon', label: '出库信息对账', hideInMenu: true },
     ],
   },
   {
@@ -37,6 +48,17 @@ export const appNavigation = [
       { path: '/orders/exceptions', label: '异常订单' },
       { path: '/orders/tracking', label: '订单追踪' },
       { path: '/orders/:orderId', label: '订单详情', hideInMenu: true },
+    ],
+  },
+  {
+    path: '/agents',
+    label: 'Agent 中心',
+    children: [
+      { path: '/agents', label: 'Agent 列表' },
+      { path: '/agents/runs', label: '运行记录' },
+      { path: '/agents/:slug', label: 'Agent 详情', hideInMenu: true },
+      { path: '/agents/runs/:runId', label: '运行详情', hideInMenu: true },
+      { path: '/agents/:slug/evals', label: '评测用例', hideInMenu: true },
     ],
   },
   {
@@ -55,6 +77,7 @@ export const appNavigation = [
       { path: '/product/categories', label: '品类基础信息', hideInMenu: true },
       { path: '/product/skus', label: '商品档案' },
       { path: '/product/sku-mappings', label: 'SKU 映射' },
+      { path: '/product/bundles', label: '静态礼包' },
     ],
   },
   { path: '/analytics', label: '经营分析' },
@@ -66,6 +89,8 @@ export const appNavigation = [
       { path: '/system/audit-logs', label: '操作审计' },
       { path: '/system/config', label: '系统配置', hideInMenu: true },
       { path: '/system/fulfillment-providers', label: '履约方配置' },
+      // Issue #89：内部运营人员登记（姓名、企微 userid、所属责任团队）——系统管理配置主线入口
+      { path: '/system/operators', label: '运营人员' },
       {
         path: '/system/jd-tools',
         label: '京东工具',

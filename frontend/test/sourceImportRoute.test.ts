@@ -159,6 +159,15 @@ test('successful source import shows accepted row details before whole-batch con
           raw_cells: { '商品编号': '2047705', '商品名称': '子牧牛腱子500g*2' },
           source_order_ref: 'CSX-ORDER-001', status: 'ACCEPTED', error_code: null, error_detail: {},
           order_id: '101', order_line_id: '201',
+          jd_cargos: [{
+            product_name: '礼包组件一',
+            provider_sku_code: 'JD-SKU-000001',
+            plan_quantity: 2,
+          }, {
+            product_name: '礼包组件二',
+            provider_sku_code: 'EMG-WANGQI-BUNDLE-002',
+            plan_quantity: 4,
+          }],
         }],
         page: 0, size: 200, total_elements: 1, total_pages: 1,
       });
@@ -203,6 +212,17 @@ test('successful source import shows accepted row details before whole-batch con
   assert.match(bodyText(), /将确认/);
   assert.match(bodyText(), /2047705/);
   assert.match(bodyText(), /子牧牛腱子500g\*2/);
+  // 多货品京东发货数量逐行渲染（名称 + 精确件数），不合并为单值
+  assert.match(bodyText(), /礼包组件一/);
+  assert.match(bodyText(), /礼包组件二/);
+  assert.match(bodyText(), /礼包组件一: 2 件/);
+  assert.match(bodyText(), /礼包组件二: 4 件/);
+  const headers = [...document.querySelectorAll('thead th')]
+    .map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim());
+  assert.ok(headers.includes('发货数量'));
+  assert.ok(!headers.includes('来源订单号'));
+  assert.ok(!headers.includes('系统订单 ID'));
+  assert.ok(!headers.includes('系统订单行 ID'));
   assert.ok(requests.includes('GET /api/v1/import-batches/7/rows?page=0&size=200&status=ACCEPTED'));
   assert.ok(control('确认本批次（已接收 1 行）'));
 });

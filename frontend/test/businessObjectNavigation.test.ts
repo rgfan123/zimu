@@ -20,11 +20,35 @@ function findNavigationNode(routes: readonly NavigationNode[], path: string): Na
   return undefined;
 }
 
-test('production navigation keeps the workbench limited to six daily operations', () => {
+test('production navigation keeps the demoted workbench query tools registered under the workbench', () => {
   const workbench = findNavigationNode(appNavigation, '/workbench');
 
   assert.deepEqual(
-    workbench?.children?.map(({ path, label }) => ({ path, label })),
+    workbench?.children?.map(({ path, label, hideInMenu }) => ({ path, label, hideInMenu: hideInMenu ?? false })),
+    [
+      { path: '/workbench/reviews', label: '人工复核', hideInMenu: false },
+      { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
+      { path: '/workbench/channel-messages', label: '渠道消息', hideInMenu: false },
+      { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: true },
+      // Issue #111：出库信息对账的工作台入口，隐藏但可路由；旧 /fulfillment/outbound-recon 保留。
+      { path: '/workbench/recon', label: '出库信息对账', hideInMenu: true },
+      { path: '/fulfillment/tasks', label: '履约任务', hideInMenu: false },
+      { path: '/procurement/tickets', label: '采购协同', hideInMenu: false },
+      { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
+      { path: '/fulfillment/sales-outbound', label: '文件作业', hideInMenu: false },
+      { path: '/fulfillment/shipments', label: '发货记录', hideInMenu: false },
+      { path: '/fulfillment/outbound-recon', label: '出库信息对账', hideInMenu: true },
+    ],
+  );
+});
+
+test('workbench menu gate keeps exactly the six daily high-frequency operations visible', () => {
+  const workbench = findNavigationNode(appNavigation, '/workbench');
+  const visibleChildren = workbench?.children?.filter(({ hideInMenu }) => !hideInMenu);
+
+  // 设计口径（business-object-navigation 01 / Issue #98）：作业中心只放日常高频运营入口，上限 6。
+  assert.deepEqual(
+    visibleChildren?.map(({ path, label }) => ({ path, label })),
     [
       { path: '/workbench/reviews', label: '人工复核' },
       { path: '/workbench/channel-messages', label: '渠道消息' },
@@ -34,6 +58,42 @@ test('production navigation keeps the workbench limited to six daily operations'
       { path: '/fulfillment/shipments', label: '发货记录' },
     ],
   );
+  assert.ok((visibleChildren?.length ?? 0) <= 6, '作业中心可见叶子不得超过高频上限 6');
+});
+
+test('demoted workbench tools stay routable and keep their workbench context', () => {
+  const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
+  const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
+
+  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts', '/workbench/shipping', '/workbench/recon']) {
+    const node = findNavigationNode(appNavigation, path);
+    assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
+    assert.equal(visiblePaths.includes(path), false, `${path} 不得出现在可见菜单`);
+    assert.equal(routablePaths.includes(path), true, `${path} 必须保持可路由（降级不等于删除，旧路径不 404）`);
+  }
+  assert.deepEqual(navigationContext('/procurement/price-compare', ''), {
+    section: '作业中心',
+    page: '采购比价',
+  });
+  assert.deepEqual(navigationContext('/fulfillment/outbound-recon', ''), {
+    section: '作业中心',
+    page: '出库信息对账',
+  });
+  // Issue #111：工作台对账入口是隐藏但可路由的上下文工具，与旧路径同属作业中心归属。
+  assert.deepEqual(navigationContext('/workbench/recon', ''), {
+    section: '作业中心',
+    page: '出库信息对账',
+  });
+  // Issue #64：运营提醒是独立路由但按 #98 规则不增加作业中心可见叶子。
+  assert.deepEqual(navigationContext('/workbench/alerts', ''), {
+    section: '作业中心',
+    page: '运营提醒',
+  });
+  // Issue #107：今日发货工作台先 hideInMenu 注册，保持作业中心归属与可路由，可见计数不变。
+  assert.deepEqual(navigationContext('/workbench/shipping', ''), {
+    section: '作业中心',
+    page: '今日发货工作台',
+  });
 });
 
 test('production navigation nests the six legacy JD URLs under system tools', () => {
@@ -82,19 +142,21 @@ test('system menu exposes each connector and provider configuration capability o
       { path: '/system/connectors', label: '渠道接入' },
       { path: '/system/audit-logs', label: '操作审计' },
       { path: '/system/fulfillment-providers', label: '履约方配置' },
+      { path: '/system/operators', label: '运营人员' },
       { path: '/system/jd-tools', label: '京东工具' },
     ],
   );
   assert.equal(findNavigationNode(appNavigation, '/system/config')?.hideInMenu, true);
 });
 
-test('product operations expose one product archive and keep technical product/category pages out of the menu', () => {
+test('product operations expose product archive, SKU mappings, and static bundle management', () => {
   const product = findNavigationNode(appNavigation, '/product');
   const visibleChildren = product?.children?.filter(({ hideInMenu }) => !hideInMenu);
 
   assert.deepEqual(visibleChildren, [
     { path: '/product/skus', label: '商品档案' },
     { path: '/product/sku-mappings', label: 'SKU 映射' },
+    { path: '/product/bundles', label: '静态礼包' },
   ]);
   assert.equal(findNavigationNode(appNavigation, '/product/products')?.hideInMenu, true);
   assert.equal(findNavigationNode(appNavigation, '/product/categories')?.hideInMenu, true);

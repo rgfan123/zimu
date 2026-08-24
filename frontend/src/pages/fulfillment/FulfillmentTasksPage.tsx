@@ -7,6 +7,9 @@ import { useMemo, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import { errorMessage } from '@/api/client';
 import { fulfillmentsApi, providersApi } from '@/api/endpoints';
 import type { ContinuationExportResult, Fulfillment, FulfillmentDetail, FulfillmentOutcome, ShippingProgress } from '@/api/types';
@@ -136,44 +139,32 @@ export default function FulfillmentTasksPage() {
   const err = list.error || providers.error;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {err ? (
-        <Alert
-          type="error"
-          showIcon
-          message="履约任务加载失败"
-          description={errorMessage(err)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={list.reload}>
-              重试
-            </Button>
-          }
-        />
-      ) : null}
-
-      <Card size="small">
-        <Space wrap>
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>履约方</Typography.Text>
-          <Select style={{ width: 200 }} placeholder="全部履约方" allowClear value={providerId} onChange={setProviderId}
-            options={(providers.data ?? []).map((p) => ({ value: p.id, label: p.provider_name }))} />
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>发货进度</Typography.Text>
-          <Select style={{ width: 140 }} placeholder="全部" allowClear value={progress} onChange={setProgress}
-            options={(Object.keys(PROGRESS_LABELS) as ShippingProgress[]).map((k) => ({ value: k, label: PROGRESS_LABELS[k] }))} />
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>结果</Typography.Text>
-          <Select style={{ width: 140 }} placeholder="全部" allowClear value={outcome} onChange={setOutcome}
-            options={(Object.keys(OUTCOME_LABELS) as FulfillmentOutcome[]).map((k) => ({ value: k, label: OUTCOME_LABELS[k] }))} />
-          <Button icon={<ReloadOutlined />} onClick={list.reload}>
-            刷新
-          </Button>
-        </Space>
-      </Card>
+    <PageShell
+      title="履约任务"
+      description="跟踪一条订单行从待发货到实际发货的履约单元；缺货采购为其补货分支（详情抽屉内展示采购工单）。"
+      actions={<Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>}
+    >
+      <FilterBar>
+        <Typography.Text type="secondary" style={{ fontSize: 13 }}>履约方</Typography.Text>
+        <Select style={{ width: 200 }} placeholder="全部履约方" allowClear value={providerId} onChange={setProviderId}
+          options={(providers.data ?? []).map((p) => ({ value: p.id, label: p.provider_name }))} />
+        <Typography.Text type="secondary" style={{ fontSize: 13 }}>发货进度</Typography.Text>
+        <Select style={{ width: 140 }} placeholder="全部" allowClear value={progress} onChange={setProgress}
+          options={(Object.keys(PROGRESS_LABELS) as ShippingProgress[]).map((k) => ({ value: k, label: PROGRESS_LABELS[k] }))} />
+        <Typography.Text type="secondary" style={{ fontSize: 13 }}>结果</Typography.Text>
+        <Select style={{ width: 140 }} placeholder="全部" allowClear value={outcome} onChange={setOutcome}
+          options={(Object.keys(OUTCOME_LABELS) as FulfillmentOutcome[]).map((k) => ({ value: k, label: OUTCOME_LABELS[k] }))} />
+      </FilterBar>
 
       <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
-        <Table<Fulfillment>
+        <DataTable<Fulfillment>
           rowKey="id"
           columns={columns}
           dataSource={list.data?.items ?? []}
           loading={list.loading}
+          error={err}
+          onRetry={list.reload}
+          errorTitle="履约任务加载失败"
           size="middle"
           scroll={{ x: 980 }}
           pagination={{
@@ -334,6 +325,6 @@ export default function FulfillmentTasksPage() {
           </Form.Item>
         </Form>
       </Modal>
-    </Space>
+    </PageShell>
   );
 }

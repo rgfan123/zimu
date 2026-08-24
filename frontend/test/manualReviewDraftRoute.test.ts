@@ -224,6 +224,8 @@ function trackingDraft(status: 'OPEN' | 'CONFIRMED' = 'OPEN') {
       shipped_quantity: '0.000',
       instructed_quantity: '8.000',
     }],
+    source: 'WECOM_MESSAGE',
+    confirmation_scope: 'SINGLE_TASK',
     shipment_judgment: 'FULL',
     default_full_shipment: true,
     actual_quantity: null,

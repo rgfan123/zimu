@@ -13,7 +13,7 @@
     <mxCell id="c1" value="业务人员（浏览器）&#10;运营 / 仓储 / 采购 / 财务" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="L1">
       <mxGeometry x="20" y="42" width="250" height="52" as="geometry"/>
     </mxCell>
-    <mxCell id="c2" value="Nginx 网关（本地 passwordless）&#10;注入服务端身份 X-Operator · 路由 /api → 后端、/metabase → BI、静态托管前端" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="L1">
+    <mxCell id="c2" value="Nginx 网关（边缘 Basic Auth 默认开启）&#10;注入服务端身份 X-Operator · 路由 /api → 后端、/metabase → BI、静态托管前端" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="L1">
       <mxGeometry x="300" y="42" width="620" height="52" as="geometry"/>
     </mxCell>
 

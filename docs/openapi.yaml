@@ -1,3 +1,9 @@
+# 评审用契约草案（工单 07）。本文件是人工评审的契约载体，承载业务语义与说明性描述；
+# 机器可读结构（路径/方法/参数/2xx 响应码/请求体与成功响应 schema）以 springdoc 从运行中的
+# 应用实时生成的契约为事实（/v3/api-docs 与 /v3/api-docs.yaml）。CI 门禁
+# OpenApiContractConsistencyTest 按固定粒度比对本文件与生成物，漂移即失败并打印差异；
+# 生成物快照见 jry/backend/target/generated-openapi.yaml。粒度与首次处置见
+# .scratch/repo-design-hardening/issues/07-spec-generation-gate.md 的 Resolution。
 openapi: 3.0.3
 info:
   title: Order Fulfillment and Logistics Hub API
@@ -25,6 +31,7 @@ tags:
   - name: OrderDrafts
   - name: TrackingDrafts
   - name: CarrierMappings
+  - name: ZhonghuiPms
   - name: WeCom
   - name: Audit
   - name: Analytics
@@ -34,56 +41,114 @@ tags:
 security:
   - basicAuth: []
 paths:
-  /wecom/callbacks/{connection_id}:
-    parameters:
-      - $ref: '#/components/parameters/WecomConnectionId'
+  /api/v1/zhonghui-pms/status:
     get:
-      tags: [WeCom]
-      operationId: verifyWecomCallbackUrl
-      description: >-
-        Public enterprise WeChat intelligent-bot URL verification. The
-        msg_signature authenticates the encrypted challenge; Nginx Basic Auth
-        is intentionally disabled for this callback only.
-      security: []
-      parameters:
-        - $ref: '#/components/parameters/WecomMessageSignature'
-        - $ref: '#/components/parameters/WecomTimestamp'
-        - $ref: '#/components/parameters/WecomNonce'
-        - name: echostr
-          in: query
-          required: true
-          schema: { type: string, minLength: 1 }
+      tags: [ZhonghuiPms]
+      operationId: getZhonghuiPmsStatus
+      description: Non-secret client mode, default-off write latch, credential readiness, and session state.
       responses:
         '200':
-          description: Decrypted challenge returned as unquoted text without a trailing newline
+          description: Zhonghui PMS readiness projection
           content:
-            text/plain:
-              schema: { type: string }
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusView' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/captcha:
+    get:
+      tags: [ZhonghuiPms]
+      operationId: getZhonghuiPmsCaptcha
+      responses:
+        '200':
+          description: Captcha number and Base64 PNG without a data URI prefix
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaptchaView' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/login:
     post:
-      tags: [WeCom]
-      operationId: receiveWecomCallback
-      description: >-
-        Public encrypted JSON callback. Only configured bot and business-group
-        text or mixed text/image messages are persisted. Every accepted retry receives an encrypted
-        fixed stream receipt after durable idempotent storage; ignored groups or
-        message types receive an empty 200 response.
-      security: []
+      tags: [ZhonghuiPms]
+      operationId: loginZhonghuiPms
+      description: External state-changing login; REAL mode additionally requires write_mode ON.
       parameters:
-        - $ref: '#/components/parameters/WecomMessageSignature'
-        - $ref: '#/components/parameters/WecomTimestamp'
-        - $ref: '#/components/parameters/WecomNonce'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/WecomEncryptedEnvelope' }
+            schema: { $ref: '#/components/schemas/LoginRequest' }
       responses:
         '200':
-          description: Encrypted fixed receipt JSON for an accepted message, or an empty body for a callback outside the configured boundary.
+          description: Login result; token is retained only in server memory
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/WecomEncryptedResponse' }
+              schema: { $ref: '#/components/schemas/LoginView' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/logout:
+    post:
+      tags: [ZhonghuiPms]
+      operationId: logoutZhonghuiPms
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: Local in-memory session cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success]
+                properties:
+                  success: { type: boolean }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/options:
+    get:
+      tags: [ZhonghuiPms]
+      operationId: getZhonghuiPmsOptions
+      responses:
+        '200':
+          description: Brands, certifications, and logistics options for the authenticated session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OptionsView' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/batch-uploads:
+    post:
+      tags: [ZhonghuiPms]
+      operationId: uploadZhonghuiPmsBatch
+      description: >-
+        Upload at most 20 SKUs through a stable persisted intent. Same-key recovery reuses the original
+        batch; SUCCESS/FAILED facts are not written again and PENDING facts are query-reconciled only.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchUploadCommand' }
+      responses:
+        '200':
+          description: Completed batch projection, or an idempotent replay of the first result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchUploadView' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/upload-batches/{batch_id}:
+    get:
+      tags: [ZhonghuiPms]
+      operationId: getZhonghuiPmsUploadBatch
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Identifier' }
+      responses:
+        '200':
+          description: Persisted batch intent and per-SKU facts for audit or reconciliation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchDetailView' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/channel-messages:
     get:
@@ -113,25 +178,6 @@ paths:
       responses:
         '200':
           description: Configuration gates and long-connection state
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/WecomConnectionReadiness' }
-        default: { $ref: '#/components/responses/ErrorResponse' }
-  /api/v1/wecom/connections/{connection_id}/readiness:
-    parameters:
-      - $ref: '#/components/parameters/WecomConnectionId'
-    get:
-      tags: [WeCom]
-      operationId: getWecomConnectionReadiness
-      description: >-
-        Authorized non-secret diagnostic of the configuration gates required to
-        run a real enterprise WeChat callback acceptance. real_acceptance_executable does
-        not prove public reachability or that a real group message was received.
-      parameters:
-        - $ref: '#/components/parameters/Operator'
-      responses:
-        '200':
-          description: Credential-presence, allowlist, and explicit public HTTPS callback gates
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WecomConnectionReadiness' }
@@ -321,6 +367,31 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/order-drafts/{draft_id}/supplement:
+    parameters:
+      - $ref: '#/components/parameters/OrderDraftId'
+    post:
+      tags: [OrderDrafts]
+      operationId: supplementOrderDraft
+      description: >-
+        Idempotently add supplementary lines to an existing draft. The expected revision
+        guards against concurrent edits; quantities are the NUMERIC(18,3) decimal strings
+        used across the contract.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderDraftSupplementCommand' }
+      responses:
+        '200':
+          description: Supplemented draft at its new revision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDraftDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/tracking-drafts:
     get:
       tags: [TrackingDrafts]
@@ -412,6 +483,32 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/tracking-drafts/{draft_id}/reject:
+    parameters:
+      - $ref: '#/components/parameters/TrackingDraftId'
+    post:
+      tags: [TrackingDrafts]
+      operationId: rejectTrackingDraft
+      description: >-
+        Idempotently reject an open tracking draft, dismiss its open ReviewCase, preserve the
+        operator reason, and leave Shipment/Tracking facts unchanged. The expected draft revision
+        and ReviewCase version are revalidated under the same submission-first lock order used by
+        confirmation.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrackingDraftRejectCommand' }
+      responses:
+        '200':
+          description: Rejected draft; an identical idempotency replay returns the same representation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrackingDraftDetail' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/carrier-prefix-mappings:
     get:
@@ -595,6 +692,33 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/OrderDetail' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/orders/{order_id}/fulfillment-routing:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    post:
+      tags: [Orders, Fulfillments, Shipments]
+      operationId: routeReadyWecomOrderToFulfillment
+      summary: 将已确认企业微信订单接入京东 Shipment pipeline
+      description: >-
+        仅创建本地 Shipment 和 ShipmentItem，不调用京东。只接受全部订单行均为
+        READY_TO_EXPORT 的京东普通单品订单；第三方、礼包、开放复核、缺少履约方 SKU
+        映射、非整数数量或已生成发货批次时失败关闭。后续仍须经过结构化地址确认、
+        实时库存检查、京东提交与运单回填门禁。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrderFulfillmentRoutingCommand' }
+      responses:
+        '201':
+          description: 已生成且仅生成一次的京东发货批次
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderFulfillmentRoutingResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/import-batches/source-orders:
     post:
       tags: [Imports]
@@ -643,7 +767,7 @@ paths:
                 source_file:
                   type: string
                   format: binary
-                  description: CAISHIXIAN, JUFUBAO, or FEIXIANG source-order file
+                  description: Supported source-order file; channel is determined by its exact template fingerprint
       responses:
         '200':
           description: Mapping candidates and review reasons; no master data was written
@@ -663,6 +787,29 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ImportBatch' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/import-batches/{batch_id}/source-attribution-corrections:
+    parameters:
+      - $ref: '#/components/parameters/BatchId'
+    post:
+      tags: [Imports]
+      operationId: correctSourceAttribution
+      summary: 追加来源渠道归因纠正
+      description: 原批次、订单、原始行、文件、审计和幂等快照均不改写。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceAttributionCorrectionWrite' }
+      responses:
+        '201':
+          description: 新增的归因纠正及回填文件处置结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceAttributionCorrection' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/import-batches/{batch_id}/confirm:
     parameters:
@@ -823,8 +970,6 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Size'
-        - $ref: '#/components/parameters/DateFrom'
-        - $ref: '#/components/parameters/DateTo'
         - name: provider_id
           in: query
           schema: { $ref: '#/components/schemas/Identifier' }
@@ -897,6 +1042,70 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TrackingImportBatch' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-exports/{export_id}/wecom-stop:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    post:
+      tags: [Exports, WeCom]
+      operationId: stopFulfillmentExportWecom
+      description: >-
+        人工停止该导出的企微自动发送与周期提醒（#84）。版本 CAS（409 VERSION_CONFLICT，
+        expected_version 必填，缺失 400 VALIDATION_ERROR）、理由必填（422
+        WECOM_STOP_REASON_REQUIRED）；已 COMPLETED/MANUALLY_STOPPED 再停
+        幂等 no-op 返回现状；LEGACY 明确拒绝（422 WECOM_EXPORT_LEGACY）。停止持久化
+        operator/reason/time、清 next_reminder，不删除历史 delivery；已入队的发送/提醒
+        任务执行时幂等跳过。认证与幂等沿用既有写接口（Basic Auth + X-Operator 复核 +
+        Idempotency-Key）。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WecomExportStopCommand' }
+      responses:
+        '200':
+          description: 停止成功（或已停止/已收齐的幂等现状），返回完整企微状态投影。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FulfillmentExportWecomState' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/fulfillment-exports/{export_id}/wecom-resend:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    post:
+      tags: [Exports, WeCom]
+      operationId: resendFulfillmentExportWecom
+      description: >-
+        人工重发企微文件消息（#84）：只生成新的可追溯 INITIAL delivery（sequence=max+1）
+        与 async task（202），HTTP 线程不直接发送；发送成功后 sent_at/due/提醒时间线以
+        新 ack 重置，并只关闭该导出（shipment + detail.export_id）的遗留告警，不误关共享
+        同一 shipment 的其他导出。已收齐（422 WECOM_EXPORT_TRACKING_COMPLETE）、
+        LEGACY（422 WECOM_EXPORT_LEGACY）拒绝；版本过期 409；存在进行中的 INITIAL
+        （PENDING/SENDING，含旧自动发送未完成）409 WECOM_RESEND_IN_FLIGHT；同
+        Idempotency-Key 重放返回首次结果。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WecomExportResendCommand' }
+      responses:
+        '202':
+          description: 重发已登记（发送异步执行），返回状态投影 + resend_delivery_id/resend_sequence。
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FulfillmentExportWecomState'
+                  - type: object
+                    properties:
+                      resend_delivery_id: { $ref: '#/components/schemas/Identifier' }
+                      resend_sequence: { type: integer, minimum: 1 }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/tracking-imports/{batch_id}:
     parameters:
@@ -1275,6 +1484,10 @@ paths:
           in: query
           description: Limits the queue to BUSINESS orders from this source channel.
           schema: { $ref: '#/components/schemas/SourceChannel' }
+        - name: import_batch_id
+          in: query
+          description: Limits the queue to review cases linked to this import batch; malformed values are rejected.
+          schema: { type: string, pattern: '^[1-9][0-9]*$' }
       responses:
         '200':
           description: BUSINESS manual-review queue
@@ -1346,48 +1559,6 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
-        default: { $ref: '#/components/responses/ErrorResponse' }
-  /api/v1/review-cases/{case_id}/resolve-carrier:
-    parameters:
-      - $ref: '#/components/parameters/CaseId'
-    post:
-      tags: [Reviews]
-      operationId: resolveCarrierReview
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-        - $ref: '#/components/parameters/Operator'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ResolveCarrierReviewCommand' }
-      responses:
-        '200':
-          description: Channel carrier mapping saved and review resolved
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ReviewCase' }
-        default: { $ref: '#/components/responses/ErrorResponse' }
-  /api/v1/review-cases/{case_id}/resolve-import-data:
-    parameters:
-      - $ref: '#/components/parameters/CaseId'
-    post:
-      tags: [Reviews]
-      operationId: resolveImportDataReview
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-        - $ref: '#/components/parameters/Operator'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ResolveImportDataCommand' }
-      responses:
-        '200':
-          description: Pre-commit import data corrected and review resolved
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ReviewCase' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/review-cases/{case_id}/resolve-jd-tracking-conflict:
     parameters:
@@ -1612,6 +1783,27 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProcurementTicket' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/procurement-price-agent/compare:
+    post:
+      tags: [Procurement]
+      operationId: compareProcurementPrice
+      description: >-
+        Runs one procurement price comparison (agent-decision-layer 05): structured input JSON
+        with procurement_ticket_id or sku_id plus optional quantity. Invalid input returns 4xx;
+        an unconfigured model returns a stable error code inside the result body (fail-closed)
+        rather than an exception. The run is audited by the agent runtime.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: string }
+      responses:
+        '200':
+          description: Comparison result with candidates, excluded candidates, and recommendation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcurementPriceRunResult' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/admin/catalog-imports/jd-authoritative:
     post:
@@ -2028,6 +2220,49 @@ paths:
           description: Provider mapping updated for future exports
           content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/provider-sku-mappings/jd-pieces-candidates:
+    get:
+      tags: [MasterData]
+      operationId: listJdPiecesCandidates
+      description: >-
+        Candidate provider-SKU rows whose per-unit JD factor is still unset, for the
+        per-unit import step. Read-only projection; values are applied only through
+        the import endpoint below.
+      responses:
+        '200':
+          description: Candidate rows without a per-unit factor
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/provider-sku-mappings/jd-pieces-per-unit-imports:
+    post:
+      tags: [MasterData]
+      operationId: importJdPiecesPerUnit
+      description: >-
+        Idempotently applies per-unit JD factor values to provider SKU mappings. All rows
+        are validated before any write; this endpoint never calls a JD write API.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderSkuJdFactorImport' }
+      responses:
+        '200':
+          description: Applied factor import summary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/fulfillment-providers:
     get:
       tags: [MasterData]
@@ -2071,6 +2306,105 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FulfillmentProvider' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/operators:
+    get:
+      tags: [MasterData]
+      operationId: listOperators
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: responsible_team
+          in: query
+          description: 责任团队精确筛选；服务端统一 trim + 大写归一（如 ORDER_OPS）。
+          schema: { type: string, maxLength: 32 }
+        - name: query
+          in: query
+          description: 姓名/企微 userid 模糊检索。
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '200':
+          description: 运营人员登记簿（Issue #89）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperatorPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    post:
+      tags: [MasterData]
+      operationId: createOperator
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OperatorWrite' }
+      responses:
+        '201':
+          description: 运营人员已登记；wecom_userid 重复 → 409 WECOM_USERID_EXISTS
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operator' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/operators/{operator_id}:
+    parameters:
+      - { name: operator_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
+    get:
+      tags: [MasterData]
+      operationId: getOperator
+      responses:
+        '200':
+          description: 运营人员详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operator' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+    patch:
+      tags: [MasterData]
+      operationId: updateOperator
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OperatorPatch' }
+      responses:
+        '200':
+          description: 运营人员已更新（expected_version 乐观锁；过期版本 → 409 VERSION_CONFLICT）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operator' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/operator-team-resolutions:
+    get:
+      tags: [MasterData]
+      operationId: resolveOperatorTeam
+      parameters:
+        - name: responsible_team
+          in: query
+          required: true
+          description: 责任团队（服务端 trim + 大写归一）；空白 → 422 OPERATOR_TEAM_REQUIRED。
+          schema: { type: string, maxLength: 32 }
+        - name: require_pushable
+          in: query
+          required: false
+          description: >-
+            true 时走 fail-closed 语义：团队存在未绑定 userid 人员或暂无人员等不可全员推送
+            情形直接返回 422 OPERATOR_TEAM_NOT_PUSHABLE（消息含未绑定人员名单与运营应对），
+            不静默跳过；默认 false = 只读结构化诊断（200）。
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: >-
+            责任团队 → active 运营人员/可推送 userid 的只读诊断（Issue #89）：未绑定 userid
+            的人员显式列出（unbound_member_names），pushable=false 表示不可全员推送，
+            绝不静默过滤；团队无人员为结构化 NO_MEMBERS，不是异常。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OperatorTeamResolution' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/connectors:
     get:
@@ -2131,6 +2465,34 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ConnectionTestResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/platform-orders/refresh:
+    post:
+      tags: [Connectors]
+      operationId: refreshPlatformOrders
+      description: >-
+        Manually triggers a one-shot refresh of CAISHIXIAN / JUFUBAO / FEIXIANG order data.
+        Only enabled REAL + API connectors may pull. Concurrent refreshes of the same channel
+        are coalesced so only one reaches the platform; completed attempts impose no frequency
+        limit. Java connectors run first and safely supported script fallbacks still enter the
+        existing ImportBatch manual-confirm loop. JUFUBAO onlinePull is capability-skipped before
+        locking or login until its captured receiver contract is complete.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200':
+          description: Per-channel fetch results with counts
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/jd-warehouse/owners:
     get:
@@ -2212,6 +2574,54 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/JdQueryResult' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/jd-sku-mapping/check:
+    post:
+      tags: [Connectors]
+      operationId: checkJdSkuMapping
+      description: >-
+        Manually triggers the global JD cloud-warehouse SKU mapping reconciliation. Results
+        are classified by difference kind and written into operational alerts or audit;
+        the check is read-only against JD and never creates a shipment.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: Reconciliation run completed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/outbound-recon:
+    get:
+      summary: Outbound internal-vs-JD fact reconciliation
+      tags: [Fulfillment]
+      operationId: queryOutboundRecon
+      description: >-
+        Side-by-side internal and JD facts for one outbound (Shipment). The query converges through
+        system outbound order no / JD delivery no / order no onto the same outbound; internal facts
+        always return, while JD status is OK / NOT_FOUND / UNAVAILABLE so that "not fetched" or
+        "no record" is never rendered as an empty value. Each query is audited (outbound.recon.query).
+      parameters:
+        - name: query_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [OUTBOUND_ORDER_NO, JD_DELIVERY_NO, ORDER_NO]
+        - name: query_value
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: Aligned internal and JD facts with per-field diff states
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OutboundReconView' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/admin/message-pipeline/summary:
     get:
       tags: [Operations]
@@ -2229,6 +2639,93 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MessagePipelineSummary' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/admin/message-pipeline/tasks:
+    get:
+      tags: [Operations]
+      operationId: listMessagePipelineTasks
+      description: >-
+        Authorized operational task list for the message pipeline, filterable by scope and
+        status. Minimal projections only: no lease owners, payloads, or other worker internals.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: scope
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Message pipeline task page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessagePipelineTaskPage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/admin/message-pipeline/media-failures:
+    get:
+      tags: [Operations]
+      operationId: listMessagePipelineMediaFailures
+      description: Authorized media-download failure list for the message pipeline; minimal projection.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Media failure page
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageMediaFailurePage' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/admin/message-pipeline/cleanup:
+    post:
+      tags: [Operations]
+      operationId: runMessagePipelineCleanup
+      description: >-
+        Manually triggers NON_BUSINESS retention cleanup; the task is idempotent, repeatable,
+        and records an audit summary. Business-group messages are never touched.
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: Retention cleanup report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RetentionCleanupReport' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/admin/wecom-notifications/deliveries:
+    get:
+      tags: [Operations]
+      operationId: listWecomNotificationDeliveries
+      description: >-
+        Issue #90 delivery ledger. Each row ties one review/business-event fact to one intended
+        recipient and records SENT/BLOCKED/UNKNOWN/FAILED evidence and a stable reason. UNKNOWN
+        means submission may already have happened and is never blindly resent.
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: source_type
+          in: query
+          schema: { type: string, enum: [REVIEW_CASE, ORDER_EVENT] }
+        - name: source_id
+          in: query
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [SENDING, SENT, RETRY_PENDING, BLOCKED, UNKNOWN, FAILED]
+      responses:
+        '200':
+          description: Traceable delivery outcomes, filterable by source fact and status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PageResponseWecomNotificationDelivery' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/audit-logs:
     get:
@@ -2459,6 +2956,13 @@ paths:
     post:
       tags: [Demo]
       operationId: runExtractedDemoOrder
+      description: >-
+        Creates an isolated DemoRun after human confirmation. Browser callers use the authenticated
+        management operator; the bundled order assistant uses the independently configured internal
+        service identity. Caller-supplied identity without valid credentials is rejected.
+      security:
+        - basicAuth: []
+        - internalServiceBearer: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/Operator'
@@ -2474,12 +2978,642 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DemoRun' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  "/api/v1/source-bundle-mappings":
+    get:
+      tags:
+      - bundle-master-data-controller
+      operationId: sourceBundleMappings
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          minimum: 0
+      - name: size
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 20
+          maximum: 200
+          minimum: 1
+      - name: source_channel
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - CAISHIXIAN
+          - JUFUBAO
+          - FEIXIANG
+          - ZHONGHUI
+          - DAZHE
+          - WANGQI
+          - WANQI
+          - WECOM
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/PageResponseMasterDataRecord"
+    post:
+      tags:
+      - bundle-master-data-controller
+      operationId: createSourceBundleMapping
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: X-Operator
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SourceBundleMappingWrite"
+        required: true
+      responses:
+        '201':
+          description: Created source bundle mapping
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MasterDataRecord' }
+  "/api/v1/product-bundles":
+    get:
+      tags:
+      - bundle-master-data-controller
+      operationId: productBundles
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+          minimum: 0
+      - name: size
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 20
+          maximum: 200
+          minimum: 1
+      - name: query
+        in: query
+        required: false
+        description: 按礼包编码或名称大小写不敏感模糊搜索
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/PageResponseMasterDataRecord"
+    post:
+      tags:
+      - bundle-master-data-controller
+      operationId: createProductBundle
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: X-Operator
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/BundleWrite"
+        required: true
+      responses:
+        '201':
+          description: Created product bundle
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MasterDataRecord' }
+  "/api/agents/{slug}/set-enabled":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: setEnabled
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/agents/{slug}/rollback":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: rollback
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/agents/{slug}/drafts/{version}/reject":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: reject_1
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/agents/{slug}/drafts/{version}/confirm":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: confirm_3
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/agents/drafts":
+    post:
+      tags:
+      - agent-definition-write-controller
+      operationId: createDraft
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/JsonNode"
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/internal/v1/agents":
+    get:
+      tags:
+      - internal-agent-read-controller
+      operationId: list
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/AgentListResponse"
+  "/internal/v1/agents/{slug}":
+    get:
+      tags:
+      - internal-agent-read-controller
+      operationId: detail
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/AgentDetail"
+  "/internal/v1/agents/{slug}/versions":
+    get:
+      tags:
+      - internal-agent-read-controller
+      operationId: versions
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: array
+                items:
+                  "$ref": "#/components/schemas/AgentVersionItem"
+  "/internal/v1/agent-runs":
+    get:
+      tags:
+      - internal-agent-run-read-controller
+      operationId: list_1
+      parameters:
+      - name: run_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: slug
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: outcome
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: run_mode
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_type
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_to
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/RunListResponse"
+  "/internal/v1/agent-runs/{runId}":
+    get:
+      tags:
+      - internal-agent-run-read-controller
+      operationId: detail_1
+      parameters:
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/RunDetail"
+  "/api/v1/source-bundle-mappings/{id}":
+    get:
+      tags:
+      - bundle-master-data-controller
+      operationId: sourceBundleMapping
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/MasterDataRecord"
+  "/api/v1/product-bundles/{id}":
+    get:
+      tags:
+      - bundle-master-data-controller
+      operationId: productBundle
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/MasterDataRecord"
+    patch:
+      tags:
+      - bundle-master-data-controller
+      operationId: patchProductBundle
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: X-Operator
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/BundlePatch"
+        required: true
+      responses:
+        '200':
+          description: Updated product bundle
+          content:
+            "*/*":
+              schema:
+                type: object
+  "/api/v1/agents":
+    get:
+      tags:
+      - agent-read-controller
+      operationId: list_14
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/AgentListResponse"
+  "/api/v1/agents/{slug}":
+    get:
+      tags:
+      - agent-read-controller
+      operationId: detail_13
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/AgentDetail"
+  "/api/v1/agents/{slug}/versions":
+    get:
+      tags:
+      - agent-read-controller
+      operationId: versions_2
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: array
+                items:
+                  "$ref": "#/components/schemas/AgentVersionItem"
+  "/api/v1/agents/{slug}/versions/{version}/eval-cases":
+    get:
+      tags:
+      - agent-read-controller
+      operationId: evalCases
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: version
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+      - name: metric_kind
+        in: query
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                type: array
+                items:
+                  "$ref": "#/components/schemas/AgentEvalCaseItem"
+  "/api/v1/agent-runs":
+    get:
+      tags:
+      - agent-run-read-controller
+      operationId: list_15
+      parameters:
+      - name: run_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: slug
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: outcome
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: run_mode
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_type
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_id
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_to
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 0
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/RunListResponse"
+  "/api/v1/agent-runs/{runId}":
+    get:
+      tags:
+      - agent-run-read-controller
+      operationId: detail_14
+      parameters:
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            "*/*":
+              schema:
+                "$ref": "#/components/schemas/RunDetail"
+
 components:
   securitySchemes:
     basicAuth:
       type: http
       scheme: basic
-      description: Nginx authenticates management, internal, and demo operations; explicitly public connector callbacks use their own signatures.
+      description: Nginx authenticates management and browser demo operations; explicitly public connector callbacks use their own signatures.
+    internalServiceBearer:
+      type: http
+      scheme: bearer
+      description: Internal service credential accepted only on explicitly registered service seams such as the demo order-assistant submission.
   headers:
     RequestId:
       description: Request correlation identifier
@@ -2553,26 +3687,6 @@ components:
     MessageSubmissionId: { name: submission_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
     OrderDraftId: { name: draft_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
     TrackingDraftId: { name: draft_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
-    WecomConnectionId:
-      name: connection_id
-      in: path
-      required: true
-      schema: { type: string, pattern: '^[a-z][a-z0-9-]{0,63}$' }
-    WecomMessageSignature:
-      name: msg_signature
-      in: query
-      required: true
-      schema: { type: string, pattern: '^[a-f0-9]{40}$' }
-    WecomTimestamp:
-      name: timestamp
-      in: query
-      required: true
-      schema: { type: string, pattern: '^[0-9]+$' }
-    WecomNonce:
-      name: nonce
-      in: query
-      required: true
-      schema: { type: string, minLength: 1, maxLength: 128 }
     RunId: { name: run_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
     SourceChannelPath:
       name: source_channel
@@ -2603,7 +3717,7 @@ components:
       pattern: '^[0-9a-f]{64}$'
     SourceChannel:
       type: string
-      enum: [CAISHIXIAN, JUFUBAO, FEIXIANG, WECOM]
+      enum: [CAISHIXIAN, JUFUBAO, FEIXIANG, ZHONGHUI, WANGQI, DAZHE, WANQI, WECOM]
     ImportMode:
       type: string
       enum: [NEW, REVISION]
@@ -2669,21 +3783,147 @@ components:
         details:
           type: object
           additionalProperties: true
-    WecomEncryptedEnvelope:
+    StatusView:
       type: object
       additionalProperties: false
-      required: [encrypt]
+      required: [client_mode, write_mode, external_writes_enabled, credentials_configured, live_ready, authenticated]
       properties:
-        encrypt: { type: string, minLength: 1, description: Base64 AES-256-CBC ciphertext }
-    WecomEncryptedResponse:
+        client_mode: { type: string, enum: [MOCK, REAL] }
+        write_mode: { type: string, enum: [OFF, ON] }
+        external_writes_enabled:
+          type: boolean
+          description: True only when client_mode is REAL and write_mode is ON.
+        credentials_configured: { type: boolean }
+        live_ready:
+          type: boolean
+          description: True only when both write latches and all REAL credentials are ready.
+        authenticated: { type: boolean }
+    CaptchaView:
       type: object
       additionalProperties: false
-      required: [encrypt, msgsignature, timestamp, nonce]
+      required: [captcha_no, img]
       properties:
-        encrypt: { type: string, minLength: 1 }
-        msgsignature: { type: string, pattern: '^[a-f0-9]{40}$' }
-        timestamp: { type: string, pattern: '^[0-9]+$' }
-        nonce: { type: string, minLength: 1 }
+        captcha_no: { type: string }
+        img: { type: string, description: Base64 PNG without a data URI prefix }
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [auth_code, captcha_no]
+      properties:
+        auth_code: { type: string, minLength: 1 }
+        captcha_no: { type: string, minLength: 1 }
+    LoginView:
+      type: object
+      additionalProperties: false
+      required: [success, business_code, message]
+      properties:
+        success: { type: boolean }
+        business_code: { type: string, maxLength: 64 }
+        message: { type: string }
+    BrandView:
+      type: object
+      additionalProperties: false
+      required: [brand_id, brand_name]
+      properties:
+        brand_id: { type: string }
+        brand_name: { type: string }
+    CertificationView:
+      type: object
+      additionalProperties: false
+      required: [certification_id, certification_name, commencement_date, inspection_end_date]
+      properties:
+        certification_id: { type: string }
+        certification_name: { type: string }
+        commencement_date: { type: string }
+        inspection_end_date: { type: string }
+    LogisticsView:
+      type: object
+      additionalProperties: false
+      required: [logist_id, logist_name]
+      properties:
+        logist_id: { type: string }
+        logist_name: { type: string }
+    OptionsView:
+      type: object
+      additionalProperties: false
+      required: [brands, certifications, logistics]
+      properties:
+        brands:
+          type: array
+          items: { $ref: '#/components/schemas/BrandView' }
+        certifications:
+          type: array
+          items: { $ref: '#/components/schemas/CertificationView' }
+        logistics:
+          type: array
+          items: { $ref: '#/components/schemas/LogisticsView' }
+    Overrides:
+      type: object
+      additionalProperties: false
+      properties:
+        brand_id: { type: integer, format: int32 }
+        certification_type: { type: integer, format: int32 }
+        certification_id: { type: integer, format: int32 }
+        third_id: { type: integer, format: int32 }
+        limit_area_temp_id: { type: integer, format: int32 }
+        goods_tax: { type: number }
+        logistics_carrier: { type: string }
+        producing_area: { type: string }
+        goods_num: { type: integer, format: int32 }
+        sale_unit: { type: string }
+        origincountry: { type: integer, format: int32 }
+        goods_price: { type: number }
+        supply_price: { type: number }
+    BatchUploadCommand:
+      type: object
+      additionalProperties: false
+      required: [sku_ids]
+      properties:
+        sku_ids:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/Identifier' }
+        overrides: { $ref: '#/components/schemas/Overrides' }
+    ItemView:
+      type: object
+      additionalProperties: false
+      required: [sku_id, sku_code, goods_name, success, business_code, message]
+      properties:
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        sku_code: { type: string, nullable: true }
+        goods_name: { type: string, nullable: true }
+        success: { type: boolean }
+        business_code: { type: string, maxLength: 64, nullable: true }
+        message: { type: string, nullable: true }
+        goods_id: { type: string, nullable: true, pattern: '^[1-9][0-9]*$' }
+        pms_status: { type: string, nullable: true }
+        warning: { type: string, nullable: true }
+    BatchUploadView:
+      type: object
+      additionalProperties: false
+      required: [batch_id, batch_no, status, total, succeeded, failed, items]
+      properties:
+        batch_id: { $ref: '#/components/schemas/Identifier' }
+        batch_no: { type: string }
+        status: { type: string, enum: [PENDING, COMPLETED] }
+        total: { type: integer, minimum: 0, maximum: 20 }
+        succeeded: { type: integer, minimum: 0, maximum: 20 }
+        failed: { type: integer, minimum: 0, maximum: 20 }
+        items:
+          type: array
+          maxItems: 20
+          items: { $ref: '#/components/schemas/ItemView' }
+    BatchDetailView:
+      allOf:
+        - $ref: '#/components/schemas/BatchUploadView'
+        - type: object
+          required: [created_by, created_at]
+          properties:
+            created_by: { type: string }
+            created_at: { type: string, format: date-time }
+            completed_at: { type: string, format: date-time, nullable: true }
     WecomConnectionReadiness:
       type: object
       additionalProperties: false
@@ -2751,7 +3991,7 @@ components:
         chat_id: { type: string }
         chat_type: { type: string, enum: [group, single] }
         sender_user_id: { type: string }
-        message_type: { type: string, enum: [text, mixed] }
+        message_type: { type: string, enum: [text, mixed, image, voice, file, video] }
         content_preview: { type: string }
         received_at: { type: string, format: date-time }
     ChannelMessageDetail:
@@ -2767,7 +4007,7 @@ components:
         chat_id: { type: string }
         chat_type: { type: string, enum: [group, single] }
         sender_user_id: { type: string }
-        message_type: { type: string, enum: [text, mixed] }
+        message_type: { type: string, enum: [text, mixed, image, voice, file, video] }
         content: { type: string }
         quote_type:
           type: string
@@ -2811,7 +4051,7 @@ components:
         status: { type: string, enum: [PENDING, RUNNING, FINALIZING, SUCCEEDED, FAILED] }
         attempts: { type: integer, minimum: 0 }
         max_attempts: { type: integer, minimum: 1 }
-        last_error: { type: string, enum: [MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID], nullable: true }
+        last_error: { type: string, enum: [MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID, WECOM_TRACKING_FILE_CHAT_UNSUPPORTED, WECOM_TRACKING_FILE_PAYLOAD_INVALID, WECOM_TRACKING_FILE_DOWNLOAD_FAILED, WECOM_TRACKING_FILE_TOO_LARGE, WECOM_TRACKING_FILE_INVALID, WECOM_TRACKING_FILE_PROCESSING_FAILED], nullable: true }
         created_at: { type: string, format: date-time }
     MessageTaskSummary:
       type: object
@@ -2824,7 +4064,7 @@ components:
         attempts: { type: integer, minimum: 0 }
         max_attempts: { type: integer, minimum: 1 }
         next_run_at: { type: string, format: date-time }
-        last_error: { type: string, enum: [MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID], nullable: true }
+        last_error: { type: string, enum: [MODEL_NOT_CONFIGURED, MODEL_CALL_FAILED, MODEL_OUTPUT_INVALID, WECOM_TRACKING_FILE_CHAT_UNSUPPORTED, WECOM_TRACKING_FILE_PAYLOAD_INVALID, WECOM_TRACKING_FILE_DOWNLOAD_FAILED, WECOM_TRACKING_FILE_TOO_LARGE, WECOM_TRACKING_FILE_INVALID, WECOM_TRACKING_FILE_PROCESSING_FAILED], nullable: true }
         created_at: { type: string, format: date-time }
     MessageTaskPage:
       allOf:
@@ -2923,6 +4163,7 @@ components:
         - receiver_phone
         - receiver_address
         - settlement_method
+        - settlement_time
         - missing_fields
         - lines
         - review_case_id
@@ -2953,6 +4194,7 @@ components:
         receiver_phone: { type: string, nullable: true }
         receiver_address: { type: string, nullable: true }
         settlement_method: { type: string, nullable: true }
+        settlement_time: { type: string, format: date-time, nullable: true }
         missing_fields:
           type: array
           items: { type: string }
@@ -3035,7 +4277,7 @@ components:
       properties:
         code: { type: string }
         name: { type: string }
-        source: { type: string, enum: [STATED, PREFIX] }
+        source: { type: string, enum: [STATED, PREFIX, FILE] }
     TrackingDraftCarrierOption:
       type: object
       additionalProperties: false
@@ -3084,6 +4326,8 @@ components:
         - manual_carrier_options
         - task_id
         - task_candidates
+        - source
+        - confirmation_scope
         - shipment_judgment
         - default_full_shipment
         - actual_quantity
@@ -3118,6 +4362,14 @@ components:
         task_candidates:
           type: array
           items: { $ref: '#/components/schemas/TrackingDraftTaskCandidate' }
+        source:
+          type: string
+          enum: [WECOM_MESSAGE, WECOM_TRACKING_FILE]
+          description: Evidence source; tracking files are parsed deterministically and never enter the model.
+        confirmation_scope:
+          type: string
+          enum: [SINGLE_TASK, ATOMIC_SHIPMENT]
+          description: ATOMIC_SHIPMENT means every listed task candidate is required and shares one formal tracking.
         shipment_judgment: { $ref: '#/components/schemas/TrackingDraftShipmentJudgment' }
         default_full_shipment: { type: boolean }
         actual_quantity:
@@ -3173,6 +4425,14 @@ components:
             - $ref: '#/components/schemas/PositiveDecimalQuantity'
           nullable: true
         remark: { type: string, maxLength: 2000, nullable: true }
+    TrackingDraftRejectCommand:
+      type: object
+      additionalProperties: false
+      required: [expected_draft_revision, expected_case_version, reason]
+      properties:
+        expected_draft_revision: { type: integer, format: int64, minimum: 0 }
+        expected_case_version: { type: integer, format: int64, minimum: 0 }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
     CarrierPrefixMappingEntry:
       type: object
       additionalProperties: false
@@ -3223,6 +4483,20 @@ components:
       properties:
         method: { type: string, enum: [MONTHLY, IMMEDIATE, CREDIT_TERM, PREPAID, COD, OTHER] }
         settlement_time: { type: string, format: date-time }
+    SettlementView:
+      type: object
+      required: [method, settlement_time]
+      properties:
+        method:
+          type: string
+          enum: [MONTHLY, IMMEDIATE, CREDIT_TERM, PREPAID, COD, OTHER]
+          nullable: true
+          description: 万齐 52 列来源未提供结账信息时为空
+        settlement_time:
+          type: string
+          format: date-time
+          nullable: true
+          description: 万齐 52 列来源未提供结账信息时为空
     BundleComponentInput:
       type: object
       required: [product_name, specification, unit, quantity_per_bundle]
@@ -3347,7 +4621,7 @@ components:
           required: [receiver, settlement, lines, review_cases]
           properties:
             receiver: { $ref: '#/components/schemas/Receiver' }
-            settlement: { $ref: '#/components/schemas/Settlement' }
+            settlement: { $ref: '#/components/schemas/SettlementView' }
             remark: { type: string }
             lines:
               type: array
@@ -3455,7 +4729,7 @@ components:
               quantity_per_bundle: { type: string, pattern: '^\\d+(\\.\\d{3})$' }
     ImportBatch:
       type: object
-      required: [id, batch_no, batch_type, import_mode, template_family, template_version, original_file_name, content_sha256, status, row_counts, received_at]
+      required: [id, batch_no, batch_type, import_mode, template_family, template_version, original_file_name, content_sha256, status, settlement_missing, row_counts, received_at]
       properties:
         id: { $ref: '#/components/schemas/Identifier' }
         batch_no: { type: string }
@@ -3464,6 +4738,9 @@ components:
         parent_import_batch_id: { $ref: '#/components/schemas/Identifier' }
         revision_no: { type: integer, minimum: 1 }
         source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        source_channel_display_name: { type: string, example: 大者 }
+        recorded_source_channel_display_name: { type: string, example: 万齐 }
+        effective_source_channel_display_name: { type: string, example: 大者 }
         fulfillment_provider_id: { $ref: '#/components/schemas/Identifier' }
         source_fulfillment_export_id: { $ref: '#/components/schemas/Identifier' }
         template_family: { type: string }
@@ -3474,6 +4751,9 @@ components:
         status: { $ref: '#/components/schemas/ImportBatchStatus' }
         confirmed_at: { type: string, format: date-time, nullable: true }
         confirmed_by: { type: string, nullable: true }
+        settlement_missing:
+          type: boolean
+          description: 真实万齐 52 列来源未提供结账方式和时间时为 true
         row_counts:
           type: object
           required: [total, accepted, need_review, rejected]
@@ -3563,6 +4843,20 @@ components:
             sku_specification:
               type: string
               description: 内部 SKU 主数据规格（来源文件未提供规格时的默认值）。
+        jd_cargos:
+          type: array
+          description: >-
+            该来源行将/已发送京东 SDK cargoInfos[].planQuantity 的精确货品清单
+            （与建单预览/提交共用同一纯数量换算，不四舍五入不向上取整）；第三方/无京东
+            履约行为空数组。血缘遍历 raw_import_row_order_lines 全量分片与礼包组件；
+            已提交（shipment_jd_outbounds.submitted_cargo_snapshot）时优先展示冻结的实际提交值。
+          items:
+            type: object
+            required: [product_name, provider_sku_code, plan_quantity]
+            properties:
+              product_name: { type: string }
+              provider_sku_code: { type: string }
+              plan_quantity: { type: integer, minimum: 1 }
     RawImportRowPage:
       allOf:
         - $ref: '#/components/schemas/PageMeta'
@@ -3775,6 +5069,25 @@ components:
         Empty command — the JD request is derived entirely from the Shipment and its
         ShipmentItems; the command itself carries no business fields.
       properties: {}
+    OrderFulfillmentRoutingCommand:
+      type: object
+      required: [expected_order_version]
+      properties:
+        expected_order_version:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 当前订单数据版本；过期请求返回 VERSION_CONFLICT。
+    OrderFulfillmentRoutingResult:
+      type: object
+      required: [order_id, order_version, shipment_ids]
+      properties:
+        order_id: { $ref: '#/components/schemas/Identifier' }
+        order_version: { type: integer, format: int64, minimum: 1 }
+        shipment_ids:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/Identifier' }
     ShipmentJdOutboundSubmitResult:
       type: object
       required: [shipment_id, erp_delivery_no, outbound_order_no, sync_status, retry_count, plan_quantity, goods_count]
@@ -4051,11 +5364,21 @@ components:
         export_kind: { type: string, enum: [JD_WAREHOUSE, THIRD_PARTY] }
         template_version: { type: string }
         file_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
-        tracking_due_at: { type: string, format: date-time }
+        tracking_due_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            权威回传截止（#84）：新第三方导出以企微文件消息成功 ack 时刻 + SLA 快照派生，
+            未发送时为 null（UI 不展示假的到期时间）；历史与 JD 导出保持 generated_at 派生语义。
         generated_at: { type: string, format: date-time }
         usage_status: { $ref: '#/components/schemas/ExportUsageStatus' }
         download_audit: { $ref: '#/components/schemas/DownloadAudit' }
         tracking_import_batch_id: { $ref: '#/components/schemas/Identifier' }
+        wecom:
+          allOf:
+            - $ref: '#/components/schemas/FulfillmentExportWecomState'
+            - description: 企微出站状态（#84）；仅第三方导出（含历史 LEGACY）存在状态行，JD 导出无此字段。
     FulfillmentExportDetail:
       allOf:
         - $ref: '#/components/schemas/FulfillmentExport'
@@ -4074,6 +5397,48 @@ components:
             items:
               type: array
               items: { $ref: '#/components/schemas/FulfillmentExport' }
+    FulfillmentExportWecomState:
+      type: object
+      required: [status, tracking_sla_minutes, reminder_interval_minutes, reminder_count, version]
+      properties:
+        status:
+          type: string
+          enum: [PENDING, ACTIVE, COMPLETED, MANUALLY_STOPPED, FAILED, UNKNOWN, LEGACY]
+          description: >-
+            PENDING=initial 已入队未发送；ACTIVE=文件消息已 ack（计时起点）；
+            COMPLETED=运单已收齐；MANUALLY_STOPPED=人工停止；FAILED=确定性失败（总尝试 2 次后）；
+            UNKNOWN=结局未知需人工对账（发送已提交但未获 ack/崩溃遗留）；
+            LEGACY=迁移历史导出（不自动发送、不提醒、不可重发/停止）。
+        chat_id: { type: string, nullable: true, description: initial 成功发送使用的群快照；提醒永远发到该群 }
+        tracking_sla_minutes: { type: integer, minimum: 1 }
+        reminder_interval_minutes: { type: integer, minimum: 1 }
+        initial_sent_at: { type: string, format: date-time, nullable: true, description: 文件消息服务端 ack 接收时刻（计时起点） }
+        tracking_due_at: { type: string, format: date-time, nullable: true }
+        next_reminder_at: { type: string, format: date-time, nullable: true, description: null = 暂停/停止/收齐，不再自动提醒 }
+        last_reminded_at: { type: string, format: date-time, nullable: true }
+        reminder_count: { type: integer, minimum: 0 }
+        last_error: { type: string, nullable: true, description: 稳定错误码/可操作消息，无 media_id/config/secret }
+        version: { type: integer, minimum: 0 }
+        stopped:
+          type: object
+          nullable: true
+          required: [by, reason, at]
+          properties:
+            by: { type: string }
+            reason: { type: string }
+            at: { type: string, format: date-time }
+    WecomExportStopCommand:
+      type: object
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, minimum: 0, description: 版本 CAS 必填；缺失/非整数 400 VALIDATION_ERROR }
+        reason: { type: string, minLength: 1, maxLength: 500, description: 停止理由（必填，随审计持久化） }
+    WecomExportResendCommand:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0, description: 版本 CAS 必填；缺失/非整数 400 VALIDATION_ERROR }
+        reason: { type: string, maxLength: 500, description: 可选重发备注（审计可追溯） }
     TrackingImportBatch:
       allOf:
         - $ref: '#/components/schemas/ImportBatch'
@@ -4102,6 +5467,37 @@ components:
         tracking_cutoff_at: { type: string, format: date-time }
         file_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         generated_at: { type: string, format: date-time }
+        valid: { type: boolean }
+        invalidation_reason: { type: string, nullable: true }
+        push_status: { type: string, enum: [NOT_PUSHED, PUSHING, SUCCESS, FAILED] }
+    SourceAttributionCorrectionWrite:
+      type: object
+      required: [source_channel_display_name, reason]
+      properties:
+        source_channel_display_name:
+          type: string
+          enum: [大者]
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        evidence: { type: object, additionalProperties: true }
+    SourceAttributionCorrection:
+      type: object
+      required:
+        - id
+        - import_batch_id
+        - correction_no
+        - recorded_source_channel_display_name
+        - effective_source_channel_display_name
+        - reason
+        - invalidated_source_return_count
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        import_batch_id: { $ref: '#/components/schemas/Identifier' }
+        correction_no: { type: integer, minimum: 1 }
+        recorded_source_channel_display_name: { type: string, example: 大者 }
+        effective_source_channel_display_name: { type: string, example: 大者 }
+        reason: { type: string }
+        invalidated_source_return_count: { type: integer, minimum: 0 }
+        successor_source_return_export_id: { $ref: '#/components/schemas/Identifier' }
     ReviewCase:
       type: object
       required: [id, case_no, case_type, responsible_team, reason_code, status, detail, allowed_actions, version, created_at]
@@ -4158,25 +5554,6 @@ components:
         source_sku_ref: { type: string, minLength: 1 }
         quantity_multiplier: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
         remark: { type: string, minLength: 1, maxLength: 1000 }
-    ResolveCarrierReviewCommand:
-      type: object
-      required: [expected_version, source_channel, internal_carrier_code, source_output_value, remark]
-      properties:
-        expected_version: { type: integer, minimum: 0 }
-        source_channel: { $ref: '#/components/schemas/SourceChannel' }
-        internal_carrier_code: { type: string, minLength: 1 }
-        source_output_value: { type: string, minLength: 1 }
-        remark: { type: string, minLength: 1, maxLength: 1000 }
-    ResolveImportDataCommand:
-      type: object
-      required: [expected_version, corrected_fields, remark]
-      properties:
-        expected_version: { type: integer, minimum: 0 }
-        corrected_fields:
-          type: object
-          minProperties: 1
-          additionalProperties: true
-        remark: { type: string, minLength: 1, maxLength: 1000 }
     CompleteSourceFollowupCommand:
       type: object
       required: [expected_version, note]
@@ -4228,6 +5605,61 @@ components:
         request_id: { type: string, nullable: true }
         data:
           description: SDK response data normalized to JSON; outbound-order responses exclude receiver/customer personal data.
+    OutboundReconView:
+      type: object
+      required: [query, audit, internal, jd, comparisons, matched_count, mismatch_count]
+      properties:
+        query:
+          type: object
+          required: [type, value]
+          properties:
+            type: { type: string, enum: [OUTBOUND_ORDER_NO, JD_DELIVERY_NO, ORDER_NO] }
+            value: { type: string }
+        audit:
+          type: object
+          required: [request_id, operator]
+          properties:
+            request_id: { type: string, nullable: true }
+            operator: { type: string }
+        internal:
+          type: object
+          required: [summary, items, tracking]
+          properties:
+            summary: { type: object, additionalProperties: true }
+            items:
+              type: array
+              items: { type: object, additionalProperties: true }
+            tracking: { type: object, nullable: true, additionalProperties: true }
+        jd:
+          type: object
+          required: [status, business_code, message, client_mode, summary, items]
+          properties:
+            status: { type: string, enum: [OK, NOT_FOUND, UNAVAILABLE] }
+            business_code: { type: string, nullable: true }
+            message: { type: string, nullable: true }
+            client_mode: { type: string, enum: [MOCK, REAL] }
+            summary: { type: object, nullable: true, additionalProperties: true }
+            items:
+              type: array
+              items: { type: object, additionalProperties: true }
+        comparisons:
+          type: array
+          items:
+            type: object
+            required: [key, label, internal_value, jd_value, internal_present, jd_present, state]
+            properties:
+              key: { type: string }
+              label: { type: string }
+              internal_value: { nullable: true }
+              jd_value: { nullable: true }
+              internal_present: { type: boolean }
+              jd_present: { type: boolean }
+              state:
+                type: string
+                enum: [MATCH, MISMATCH, INTERNAL_ONLY, JD_ONLY, EMPTY, JD_UNAVAILABLE, JD_NOT_FOUND]
+              note: { type: string, nullable: true }
+        matched_count: { type: integer }
+        mismatch_count: { type: integer }
     JdClientStatus:
       type: object
       required: [client_mode, credentials_configured, tenant_configured, live_ready]
@@ -4354,6 +5786,14 @@ components:
         retail_price:
           allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
           description: null means the retail price is not yet known; it never means zero.
+        jd_emg_no:
+          type: string
+          nullable: true
+          description: 当前启用的京东履约方 SKU 映射编码；映射或履约方停用时为 null。
+        product_version: { type: integer, format: int64, minimum: 0 }
+        product_purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        product_retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        product_other_cost: { $ref: '#/components/schemas/NullableCommercialPrice' }
     SkuRecord:
       allOf:
         - $ref: '#/components/schemas/MasterDataRecord'
@@ -4616,7 +6056,7 @@ components:
       required: [file_ref, url]
       properties:
         file_ref: { type: string, description: 受控引用，写入 products.main_image_ref }
-        url: { type: string, description: 可访问 URL（/api/v1/product-images?ref=...） }
+        url: { type: string, description: '可访问 URL（/api/v1/product-images?ref=...）' }
     SkuWrite:
       type: object
       required: [provider_id, product_id, specification, unit]
@@ -4629,6 +6069,85 @@ components:
         purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         active: { type: boolean, default: true }
+    BundleItemInput:
+      type: object
+      additionalProperties: false
+      required: [sku_id, quantity_per_bundle]
+      properties:
+        sku_id: { $ref: '#/components/schemas/Identifier' }
+        quantity_per_bundle:
+          type: string
+          pattern: '^[1-9][0-9]*$'
+          description: 每份礼包所需的正整数 SKU 件数。
+        emg_code_snapshot: { type: string, maxLength: 64, nullable: true }
+        source_text_snapshot: { type: string, maxLength: 255, nullable: true }
+    BundleWrite:
+      type: object
+      additionalProperties: false
+      required: [bundle_code, bundle_name, items]
+      properties:
+        bundle_code: { type: string, minLength: 1, maxLength: 64 }
+        bundle_name: { type: string, minLength: 1, maxLength: 200 }
+        category_id: { $ref: '#/components/schemas/Identifier' }
+        barcode: { type: string, maxLength: 64, nullable: true }
+        description: { type: string, nullable: true }
+        tax_rate:
+          type: string
+          nullable: true
+          pattern: '^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$'
+          description: 0 到 100 的 decimal string；null 或缺省表示未设置。
+        settlement_cost: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        status: { type: string, enum: [DRAFT, ACTIVE, INACTIVE], default: DRAFT }
+        items:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/BundleItemInput' }
+    BundlePatch:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 0 }
+        bundle_name:
+          type: string
+          maxLength: 200
+          nullable: true
+          description: null 或缺省均表示不修改。
+        category_id:
+          allOf: [{ $ref: '#/components/schemas/Identifier' }]
+          nullable: true
+          description: null 或缺省均表示不修改。
+        barcode:
+          type: string
+          maxLength: 64
+          nullable: true
+          description: 空字符串清空；null 或缺省均表示不修改。
+        description:
+          type: string
+          nullable: true
+          description: 空字符串清空；null 或缺省均表示不修改。
+        tax_rate:
+          type: string
+          nullable: true
+          pattern: '^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$'
+          description: 0 到 100 的 decimal string；null 或缺省均表示不修改。
+        settlement_cost:
+          type: string
+          nullable: true
+          pattern: '^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$'
+          description: null 或缺省均表示不修改；当前接口不提供清空操作。
+        status:
+          type: string
+          enum: [DRAFT, ACTIVE, INACTIVE]
+          nullable: true
+          description: null 或缺省均表示不修改。
+        items:
+          type: array
+          minItems: 1
+          nullable: true
+          description: 非空数组表示整表替换组件；null 或缺省表示不修改。
+          items: { $ref: '#/components/schemas/BundleItemInput' }
+      minProperties: 2
     SkuPatch:
       type: object
       required: [expected_version]
@@ -4828,6 +6347,8 @@ components:
       required: [sku_id, goods_no, warehouse_code, required_quantity, quantity_unit, observation_status]
       properties:
         sku_id: { $ref: '#/components/schemas/Identifier' }
+        sku_code: { type: string, minLength: 1 }
+        product_name: { type: string, minLength: 1 }
         goods_no: { type: string, minLength: 1 }
         warehouse_code: { type: string, minLength: 1 }
         required_quantity:
@@ -5081,7 +6602,7 @@ components:
           items: { $ref: '#/components/schemas/InventoryDetailCapability' }
     FulfillmentProvider:
       type: object
-      required: [id, provider_code, provider_name, provider_type, tracking_sla_minutes, active, version, jd_config]
+      required: [id, provider_code, provider_name, provider_type, tracking_sla_minutes, active, version, jd_config, wecom_group_chat_id]
       properties:
         id: { $ref: '#/components/schemas/Identifier' }
         provider_code: { type: string }
@@ -5090,6 +6611,22 @@ components:
         tracking_sla_minutes: { type: integer, minimum: 1 }
         active: { type: boolean }
         version: { type: integer, minimum: 0 }
+        wecom_group_chat_id:
+          type: string
+          nullable: true
+          description: >-
+            履约方登记的企业微信群 chatid（Issue #83）。chatid 是标识符不是凭据，
+            按既有 Provider 投影回显；未登记/已清除为 null。登记在
+            fulfillment_providers.config 的 wecomGroupChatId 键，改完即时生效无需重启。
+        wecom_reminder_interval_minutes:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 10080
+          description: >-
+            到期未收齐运单的群提醒间隔分钟（Issue #84）；null = 未配置（默认等于
+            tracking_sla_minutes）。保存于 fulfillment_providers.config 的
+            wecomReminderIntervalMinutes 键，导出生成时快照，改动不追溯既有导出。
         jd_config:
           type: object
           description: >-
@@ -5106,6 +6643,100 @@ components:
                 oneOf:
                   - { type: string }
                   - { type: boolean }
+    Operator:
+      type: object
+      required: [id, display_name, responsible_team, active, version]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        display_name: { type: string, minLength: 1, maxLength: 64 }
+        responsible_team: { type: string, minLength: 1, maxLength: 32 }
+        wecom_userid:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_@.\-]{0,63}$'
+          description: 企微 userid；null = 未绑定。非空时全局唯一（409 WECOM_USERID_EXISTS）。
+        active: { type: boolean }
+        version: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    OperatorPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/Operator' }
+    OperatorWrite:
+      type: object
+      required: [display_name, responsible_team]
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 64 }
+        responsible_team:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: >-
+            所属责任团队；服务端 trim + 大写归一（ORDER_OPS / CUSTOMER_OPS / SKU_OPS 等）。
+            纯空白 → 422 OPERATOR_TEAM_INVALID（字段 responsible_team）。
+        wecom_userid:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_@.\-]{0,63}$'
+          description: >-
+            企微 userid（可空 = 未绑定，推送时会由解析 seam 明确提示，不静默跳过）；
+            先 trim；非法字符/超长 → 422 OPERATOR_WECOM_USERID_INVALID（字段 wecom_userid）。
+        active:
+          type: boolean
+          description: 缺省 true；停用后解析 seam 不再返回该人员（不做物理删除）。
+    OperatorPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 0 }
+        display_name: { type: string, minLength: 1, maxLength: 64 }
+        responsible_team: { type: string, minLength: 1, maxLength: 32 }
+        wecom_userid:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^$|^[A-Za-z0-9][A-Za-z0-9_@.\-]{0,63}$'
+          description: >-
+            null = 不改动绑定；空串 = 显式清除绑定（pattern 显式允许空串）；
+            非空仍须匹配官方保守字符集，先 trim 再查重（同一企微 userid 只映射一个人，
+            409 WECOM_USERID_EXISTS）。
+        active: { type: boolean }
+      minProperties: 2
+    OperatorTeamResolution:
+      type: object
+      required: [responsible_team, members, pushable_user_ids, unbound_member_names, status, pushable]
+      properties:
+        responsible_team: { type: string }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/OperatorResolutionMember' }
+        pushable_user_ids:
+          type: array
+          items: { type: string }
+          description: >-
+            按 members 顺序列出仅已绑定企微 userid 的 active 人员的 userid；
+            未绑定人员的姓名在 unbound_member_names。
+        unbound_member_names:
+          type: array
+          items: { type: string }
+          description: 未绑定 userid 的人员姓名（显式诊断，绝不静默跳过）。
+        status: { type: string, enum: [PUSHABLE, PARTIALLY_BOUND, ALL_UNBOUND, NO_MEMBERS] }
+        pushable: { type: boolean, description: false 表示不可全员推送（PUSHABLE 以外状态）。 }
+    OperatorResolutionMember:
+      type: object
+      required: [operator_id, display_name, wecom_userid]
+      properties:
+        operator_id: { type: integer, format: int64, minimum: 1 }
+        display_name: { type: string }
+        wecom_userid: { type: string, nullable: true }
     FulfillmentProviderPatch:
       type: object
       required: [expected_version]
@@ -5117,7 +6748,8 @@ components:
         config:
           type: object
           description: >-
-            京东标识合并写入（jd-real-sdk-switch 01；05 票新增 outboundMode）。仅接受
+            履约方 config 合并写入（jd-real-sdk-switch 01；05 票新增 outboundMode；
+            #83 新增 wecomGroupChatId）。京东键仅接受
             sourceNo/warehouseNo/pin/erpShopNo/salesPlatformSource/ownerNo/shopNo/carrierNo/townRequired/outboundMode
             十个键；未知键拒绝（422 FULFILLMENT_PROVIDER_CONFIG_KEY_UNKNOWN）。字符串值必须非空，
             townRequired 只接受布尔（422 FULFILLMENT_PROVIDER_CONFIG_TOWN_REQUIRED_NOT_BOOLEAN），
@@ -5125,7 +6757,18 @@ components:
             （422 FULFILLMENT_PROVIDER_CONFIG_OUTBOUND_MODE_INVALID），
             显式 null 清除该键。customerCode 为客户级字段，由客户档案维护（见
             /api/v1/customers/jd-customer-code-imports）。pin 为敏感值，
-            响应与审计只标记存在性。
+            响应与审计只标记存在性。wecomGroupChatId 为企微群 chatid（所有履约方类型
+            均可登记；标识符非凭据）：显式 null 清除，非 null 先 trim、空串拒绝、
+            最长 128 字符、只接受可见 ASCII（等价正则 ^[\x21-\x7E]{1,128}$，
+            不含空白与控制字符）
+            （422 FULFILLMENT_PROVIDER_WECOM_GROUP_CHAT_ID_INVALID，字段
+            config.wecomGroupChatId）；未登记时 #84 发送侧解析 seam 抛
+            422 FULFILLMENT_PROVIDER_WECOM_GROUP_CHAT_MISSING（包含
+            「请在履约方配置登记企微群」），不静默不发。wecomReminderIntervalMinutes
+            为回传提醒间隔（#84）：1..10080 的整数分钟，显式 null 恢复默认
+            （= tracking_sla_minutes）
+            （422 FULFILLMENT_PROVIDER_WECOM_REMINDER_INTERVAL_INVALID，字段
+            config.wecomReminderIntervalMinutes）。
           additionalProperties:
             nullable: true
             oneOf:
@@ -5383,3 +7026,214 @@ components:
                   quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
                   unit: { type: string }
                   processing_stage: { type: string, enum: [COMPLETED] }
+    # ---- 工单 07 补录：结构取自 springdoc 生成物，描述经评审；新增端点见对应 paths 条目 ----
+    LineSupplement:
+      type: object
+      required: [lineNo]
+      properties:
+        lineNo: { type: integer, minimum: 1, description: 被补充的原草稿行号 }
+        quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        skuId: { type: string, pattern: '^[1-9][0-9]*$' }
+    OrderDraftSupplementCommand:
+      type: object
+      required: [expectedRevision]
+      properties:
+        expectedRevision: { type: integer, format: int64, description: 乐观并发守卫：草稿当前版本号 }
+        receiver: { $ref: '#/components/schemas/Receiver' }
+        settlementMethod: { type: string, enum: [MONTHLY, IMMEDIATE, CREDIT_TERM, PREPAID, COD, OTHER] }
+        settlementTime: { type: string, format: date-time }
+        items:
+          type: array
+          minItems: 0
+          maxItems: 100
+          items: { $ref: '#/components/schemas/LineSupplement' }
+    RefreshRequest:
+      type: object
+      description: 平台订单一键刷新范围；缺省为全部已配置渠道。
+      properties:
+        channels:
+          type: array
+          items: { type: string, enum: [CAISHIXIAN, JUFUBAO, FEIXIANG] }
+        date_begin: { type: string, description: 拉取起点（业务日） }
+        date_end: { type: string, description: 拉取终点（业务日） }
+    ProviderSkuJdFactorRow:
+      type: object
+      required: [providerSkuCode, jdPiecesPerUnit]
+      properties:
+        providerSkuCode: { type: string, description: 供应商 SKU 编码 }
+        jdPiecesPerUnit: { $ref: '#/components/schemas/DecimalQuantity' }
+    ProviderSkuJdFactorImport:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/ProviderSkuJdFactorRow' }
+    MessagePipelineTaskSummary:
+      type: object
+      description: 消息链路后台任务的最小投影（不含租约、载荷或密钥）。
+      required: [id, taskType, status]
+      properties:
+        id: { type: string }
+        taskType: { type: string }
+        status: { type: string }
+        attempts: { type: integer, format: int32, minimum: 0 }
+        maxAttempts: { type: integer, format: int32, minimum: 1 }
+        nextRunAt: { type: string, format: date-time, nullable: true }
+        lastError: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    MessagePipelineTaskPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/MessagePipelineTaskSummary' }
+    MessageMediaFailureSummary:
+      type: object
+      description: 媒体下载失败记录的最小投影。
+      required: [id, channelMediaId, downloadStatus]
+      properties:
+        id: { type: string }
+        channelMediaId: { type: string }
+        mediaType: { type: string, nullable: true }
+        downloadStatus: { type: string }
+        attempts: { type: integer, format: int32, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+    MessageMediaFailurePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/MessageMediaFailureSummary' }
+    RetentionCleanupReport:
+      type: object
+      description: 保留清理运行结果；enabled=false 表示清理未启用，其余字段为 0。
+      required: [enabled, retentionDays, cutoff]
+      properties:
+        enabled: { type: boolean }
+        retentionDays: { type: integer, format: int32 }
+        cutoff: { type: string, format: date-time }
+        expiredCandidates: { type: integer, format: int32 }
+        protectedCount: { type: integer, format: int32 }
+        submissionsRemoved: { type: integer, format: int32 }
+        messagesRemoved: { type: integer, format: int32 }
+        mediaRowsRemoved: { type: integer, format: int32 }
+        filesRemoved: { type: integer, format: int32 }
+    WecomNotificationDelivery:
+      type: object
+      description: >-
+        One source fact x intended recipient delivery trace. reasonCode/reasonMessage explain
+        blocked, failed or unknown outcomes without exposing source payload or customer PII.
+      required:
+        - deliveryId
+        - batchId
+        - sourceType
+        - sourceId
+        - notificationKind
+        - responsibleTeam
+        - status
+        - attemptCount
+        - windowStart
+        - updatedAt
+      properties:
+        deliveryId: { type: string }
+        batchId: { type: string }
+        sourceType: { type: string, enum: [REVIEW_CASE, ORDER_EVENT] }
+        sourceId: { type: string }
+        notificationKind: { type: string, enum: [REVIEW_CASE, ORDER_CREATED, SHIPMENT_COMPLETED] }
+        responsibleTeam: { type: string }
+        recipientDisplayName: { type: string, nullable: true }
+        recipientUserid: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [SENDING, SENT, RETRY_PENDING, BLOCKED, UNKNOWN, FAILED]
+        attemptCount: { type: integer, format: int32, minimum: 0 }
+        requestId: { type: string, nullable: true }
+        reasonCode: { type: string, nullable: true }
+        reasonMessage: { type: string, nullable: true }
+        alertId:
+          type: string
+          nullable: true
+          description: Durable operations alert projection id for BLOCKED/UNKNOWN/FAILED.
+        alertKey: { type: string, nullable: true }
+        alertSeverity: { type: string, enum: [YELLOW, RED], nullable: true }
+        windowStart: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PageResponseWecomNotificationDelivery:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/WecomNotificationDelivery' }
+    Inventory:
+      type: object
+      description: 采购比价用库存投影。
+      properties:
+        available: { $ref: '#/components/schemas/DecimalQuantity' }
+        shortage: { $ref: '#/components/schemas/DecimalQuantity' }
+    Candidate:
+      type: object
+      description: 可比候选供应商报价。
+      required: [provider_code, price, price_basis]
+      properties:
+        provider_code: { type: string }
+        price: { $ref: '#/components/schemas/DecimalQuantity' }
+        price_basis: { type: string, enum: [sku_commercial_price, provider_sku] }
+        note: { type: string }
+    ExcludedCandidate:
+      type: object
+      description: 被剔除的候选及其原因。
+      required: [provider_code, price, price_basis, exclusion_reason]
+      properties:
+        provider_code: { type: string }
+        price: { $ref: '#/components/schemas/DecimalQuantity' }
+        price_basis: { type: string, enum: [sku_commercial_price, provider_sku] }
+        note: { type: string }
+        exclusion_reason: { type: string, enum: [price_outlier, price_missing, mapping_stale] }
+        exclusion_reason_detail: { type: string }
+    Recommendation:
+      type: object
+      required: [provider_code]
+      properties:
+        provider_code: { type: string }
+        reason: { type: string }
+    ProcurementPriceRecommendation:
+      type: object
+      description: 采购比价的完整结构化输出。
+      required: [target_sku]
+      properties:
+        target_sku: { type: string }
+        requested_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        inventory: { $ref: '#/components/schemas/Inventory' }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/Candidate' }
+        excluded_candidates:
+          type: array
+          items: { $ref: '#/components/schemas/ExcludedCandidate' }
+        recommendation: { $ref: '#/components/schemas/Recommendation' }
+        missing_fields:
+          type: array
+          items: { type: string }
+        confidence: { type: number, format: double }
+        requires_human: { type: boolean }
+    ProcurementPriceRunResult:
+      type: object
+      description: 一次比价运行的稳定结果；模型未配置/未启用时以 error 码返回（fail-closed）。
+      required: [provider, model, prompt_version]
+      properties:
+        recommendation: { $ref: '#/components/schemas/ProcurementPriceRecommendation' }
+        provider: { type: string, description: 实际使用的模型供应商；未命中 allowlist 时为 none }
+        model: { type: string }
+        prompt_version: { type: string }
+        error: { type: string, description: 稳定错误码；null 表示运行成功 }

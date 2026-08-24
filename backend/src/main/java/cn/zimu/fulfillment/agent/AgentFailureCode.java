@@ -17,5 +17,7 @@ public enum AgentFailureCode {
     /** 注册表中不存在该 agent_slug。 */
     AGENT_NOT_FOUND,
     /** Agent 已注册但未启用（enabled=false），运行时拒绝执行。 */
-    AGENT_DISABLED;
+    AGENT_DISABLED,
+    /** 运行期守卫拒绝（05 决策默认链 [PII 拒绝]）：输入涉 PII，outcome=REJECTED 转人工。 */
+    PII_GUARDED;
 }

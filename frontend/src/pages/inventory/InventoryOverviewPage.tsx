@@ -1,8 +1,11 @@
 import { useState } from 'react';
-import { Alert, Button, Input, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Input, Space, Tag, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { Link, useSearchParams } from 'react-router-dom';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import { inventoryApi } from '@/api/endpoints';
 import { useAsync } from '@/hooks/useAsync';
 import { AdminEmpty, AdminFailureAlert, AdminLoading } from '@/pages/shared/AdminVisualComponents';
@@ -204,51 +207,50 @@ export default function InventoryOverviewPage() {
   }
 
   return (
-    <div className="admin-page inventory-overview">
-      <div className="admin-page__intro">
-        <Typography.Text className="admin-page__intro-copy" type="secondary">
-          按 SKU、仓库与履约方查看已落库的最新库存观测；未观测范围始终与零库存分开。
-        </Typography.Text>
-      </div>
+    <div className="admin-page">
+      <PageShell
+        title="总库存"
+        description="按 SKU、仓库与履约方查看已落库的最新库存观测；未观测范围始终与零库存分开。"
+      >
+        <div className="inventory-overview__scope" aria-label="库存观测覆盖范围">
+          <div>
+            <Typography.Text type="secondary">履约方覆盖</Typography.Text>
+            <Typography.Text strong>
+              {response?.coverage.observed_provider_count ?? 0} / {response?.coverage.provider_count ?? 0}
+            </Typography.Text>
+          </div>
+          <div>
+            <Typography.Text type="secondary">SKU 覆盖</Typography.Text>
+            <Typography.Text strong>
+              {response?.coverage.observed_sku_count ?? 0} / {response?.coverage.sku_count ?? 0}
+            </Typography.Text>
+          </div>
+          <div>
+            <Typography.Text type="secondary">已观测仓库</Typography.Text>
+            <Typography.Text strong>{response?.coverage.warehouse_count ?? 0}</Typography.Text>
+          </div>
+          <div>
+            <Typography.Text type="secondary">最近观测</Typography.Text>
+            <Typography.Text strong>{inventoryTimeLabel(response?.coverage.latest_observed_at ?? null)}</Typography.Text>
+          </div>
+        </div>
 
-      <div className="inventory-overview__scope" aria-label="库存观测覆盖范围">
-        <div>
-          <Typography.Text type="secondary">履约方覆盖</Typography.Text>
-          <Typography.Text strong>
-            {response?.coverage.observed_provider_count ?? 0} / {response?.coverage.provider_count ?? 0}
-          </Typography.Text>
-        </div>
-        <div>
-          <Typography.Text type="secondary">SKU 覆盖</Typography.Text>
-          <Typography.Text strong>
-            {response?.coverage.observed_sku_count ?? 0} / {response?.coverage.sku_count ?? 0}
-          </Typography.Text>
-        </div>
-        <div>
-          <Typography.Text type="secondary">已观测仓库</Typography.Text>
-          <Typography.Text strong>{response?.coverage.warehouse_count ?? 0}</Typography.Text>
-        </div>
-        <div>
-          <Typography.Text type="secondary">最近观测</Typography.Text>
-          <Typography.Text strong>{inventoryTimeLabel(response?.coverage.latest_observed_at ?? null)}</Typography.Text>
-        </div>
-      </div>
+        {warnings.length ? (
+          <Alert
+            showIcon
+            type="info"
+            message="库存观测范围提示"
+            description={
+              <ul className="inventory-overview__warnings">
+                {warnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            }
+          />
+        ) : null}
 
-      {warnings.length ? (
-        <Alert
-          showIcon
-          type="info"
-          message="库存观测范围提示"
-          description={
-            <ul className="inventory-overview__warnings">
-              {warnings.map((warning) => <li key={warning}>{warning}</li>)}
-            </ul>
-          }
-        />
-      ) : null}
-
-      <div className="admin-toolbar">
-        <Space wrap>
+        <FilterBar
+          actions={<Button icon={<ReloadOutlined />} onClick={overview.reload}>刷新</Button>}
+        >
           <Input
             aria-label="履约方 ID"
             placeholder="履约方 ID"
@@ -280,31 +282,29 @@ export default function InventoryOverviewPage() {
           <Button onClick={() => { setPage(0); setDraftFilters(EMPTY_FILTERS); setFilters(EMPTY_FILTERS); }}>
             重置
           </Button>
-        </Space>
-        <div className="admin-toolbar__spacer" />
-        <Button icon={<ReloadOutlined />} onClick={overview.reload}>刷新</Button>
-      </div>
+        </FilterBar>
 
-      <div className="admin-surface">
-        <Table<InventoryOverviewItem>
-          rowKey={(item) => `${item.provider_id}:${item.sku_id}:${item.warehouse_code ?? 'NOT_OBSERVED'}`}
-          columns={columns}
-          dataSource={response?.items ?? []}
-          scroll={{ x: 1360 }}
-          locale={{ emptyText: <AdminEmpty description="当前筛选范围内暂无匹配 SKU" /> }}
-          pagination={{
-            current: page + 1,
-            pageSize: size,
-            total: response?.total_elements ?? 0,
-            showSizeChanger: true,
-            showTotal: (total) => `共 ${total} 条`,
-            onChange: (nextPage, nextSize) => {
-              setPage(nextPage - 1);
-              setSize(nextSize);
-            },
-          }}
-        />
-      </div>
+        <div className="admin-surface">
+          <DataTable<InventoryOverviewItem>
+            rowKey={(item) => `${item.provider_id}:${item.sku_id}:${item.warehouse_code ?? 'NOT_OBSERVED'}`}
+            columns={columns}
+            dataSource={response?.items ?? []}
+            scroll={{ x: 1360 }}
+            emptyText={<AdminEmpty description="当前筛选范围内暂无匹配 SKU" />}
+            pagination={{
+              current: page + 1,
+              pageSize: size,
+              total: response?.total_elements ?? 0,
+              showSizeChanger: true,
+              showTotal: (total) => `共 ${total} 条`,
+              onChange: (nextPage, nextSize) => {
+                setPage(nextPage - 1);
+                setSize(nextSize);
+              },
+            }}
+          />
+        </div>
+      </PageShell>
     </div>
   );
 }

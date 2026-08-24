@@ -4,19 +4,6 @@
   margin: 0 auto;
 }
 
-.sku-mappings-page__heading {
-  margin-bottom: 18px;
-}
-
-.sku-mappings-page__heading .ant-typography-secondary {
-  display: block;
-  margin-top: 5px;
-}
-
-.sku-mappings-page .ant-card {
-  box-shadow: none !important;
-}
-
 .sku-mappings-page .ant-card,
 .sku-mappings-page__reference,
 .sku-mappings-page .ant-btn,

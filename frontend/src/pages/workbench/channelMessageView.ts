@@ -2,6 +2,7 @@ import type {
   ChannelMessageDetail,
   MessageFailureCode,
   MessageSubmissionDetail,
+  MessageTaskFailureCode,
 } from '@/api/types';
 
 export interface ChannelMessageFieldRow {
@@ -77,16 +78,50 @@ export function stableMessageFailureCode(error: string | null | undefined): Mess
   }
 }
 
+/** Dedicated task failures have their own stable allowlist; unknown text still fails closed. */
+export function stableMessageTaskFailureCode(
+  error: string | null | undefined,
+  taskType?: string,
+): MessageTaskFailureCode | null {
+  if (error == null || error.trim() === '') {
+    return null;
+  }
+  if (taskType === 'WECOM_TRACKING_FILE') {
+    switch (error) {
+      case 'WECOM_TRACKING_FILE_CHAT_UNSUPPORTED':
+      case 'WECOM_TRACKING_FILE_PAYLOAD_INVALID':
+      case 'WECOM_TRACKING_FILE_DOWNLOAD_FAILED':
+      case 'WECOM_TRACKING_FILE_TOO_LARGE':
+      case 'WECOM_TRACKING_FILE_INVALID':
+      case 'WECOM_TRACKING_FILE_PROCESSING_FAILED':
+        return error;
+      default:
+        return 'WECOM_TRACKING_FILE_PROCESSING_FAILED';
+    }
+  }
+  switch (error) {
+    case 'MODEL_NOT_CONFIGURED':
+    case 'MODEL_CALL_FAILED':
+    case 'MODEL_OUTPUT_INVALID':
+      return error;
+    default:
+      return 'MODEL_CALL_FAILED';
+  }
+}
+
 /** 提交状态的只读摘要；内部载荷（raw payload、密钥）永不进入页面。 */
 export function safeSubmissionSummary(submission: MessageSubmissionDetail): SubmissionSummaryRow[] {
   const task = submission.latest_task;
+  const isTrackingFile = task?.task_type === 'WECOM_TRACKING_FILE';
   const display = intentDisplay(submission.current_intent);
   const latestError = stableMessageFailureCode(submission.latest_error);
-  const taskError = stableMessageFailureCode(task?.last_error);
+  const taskError = stableMessageTaskFailureCode(task?.last_error, task?.task_type);
   return [
     { label: '提交编号', value: submission.submission_no },
-    { label: '提交状态', value: submissionStatusLabel(submission.status) },
-    { label: '当前意图', value: display.intentLabel },
+    { label: '提交状态', value: submissionStatusLabel(submission.status, task?.task_type) },
+    ...(!isTrackingFile || submission.current_intent
+      ? [{ label: '当前意图', value: display.intentLabel }]
+      : []),
     ...(latestError
       ? [{ label: '解释错误', value: latestError }]
       : []),
@@ -123,14 +158,14 @@ export function interpretationVersionRows(submission: MessageSubmissionDetail): 
   }));
 }
 
-function submissionStatusLabel(status: string): string {
+function submissionStatusLabel(status: string, taskType?: string): string {
   switch (status) {
     case 'RECEIVED':
-      return '已接收（解释中）';
+      return taskType === 'WECOM_TRACKING_FILE' ? '已接收（运单文件处理中）' : '已接收（解释中）';
     case 'INTERPRETED':
       return '已解释';
     case 'FAILED':
-      return '解释失败';
+      return taskType === 'WECOM_TRACKING_FILE' ? '运单文件处理失败' : '解释失败';
     case 'DRAFTED':
       return '已生成草稿';
     case 'CONFIRMED':

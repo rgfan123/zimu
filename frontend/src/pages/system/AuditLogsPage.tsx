@@ -4,13 +4,16 @@
  */
 
 import { useState } from 'react';
-import { Button, DatePicker, Descriptions, Drawer, Input, Space, Table, Typography } from 'antd';
+import { Button, DatePicker, Descriptions, Drawer, Input, Space, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { auditLogsApi } from '@/api/endpoints';
 import type { AuditLog } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import {
   AdminCategoryTag,
   AdminEmpty,
@@ -101,45 +104,43 @@ export default function AuditLogsPage() {
 
   return (
     <div className="admin-page">
-      <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {list.error ? (
-        <AdminFailureAlert error={list.error} title="审计记录加载失败" onRetry={list.reload} />
-      ) : null}
+      <PageShell title="操作审计">
+        {list.error ? (
+          <AdminFailureAlert error={list.error} title="审计记录加载失败" onRetry={list.reload} />
+        ) : null}
 
-      <div className="admin-surface admin-surface--padded">
-        <Space wrap>
+        <FilterBar
+          actions={<Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>}
+        >
           <Input style={{ width: 150 }} placeholder="操作员" allowClear value={operator} onChange={(e) => setOperator(e.target.value || undefined)} />
           <Input style={{ width: 150 }} placeholder="业务模块" allowClear value={service} onChange={(e) => setService(e.target.value || undefined)} />
           <Input style={{ width: 190 }} placeholder="业务操作" allowClear value={operation} onChange={(e) => setOperation(e.target.value || undefined)} />
           <Input style={{ width: 150 }} placeholder="处理结果编码" allowClear value={businessCode} onChange={(e) => setBusinessCode(e.target.value || undefined)} />
           <DatePicker.RangePicker size="middle" value={dates} onChange={(d) => setDates(d as [dayjs.Dayjs, dayjs.Dayjs] | null)} />
-          <Button icon={<ReloadOutlined />} onClick={list.reload}>
-            刷新
-          </Button>
-        </Space>
-      </div>
+        </FilterBar>
 
-      <div className="admin-surface" style={{ padding: '4px 8px' }}>
-        <Table<AuditLog>
-          rowKey="id"
-          columns={columns}
-          dataSource={list.data?.items ?? []}
-          loading={list.loading}
-          size="middle"
-          scroll={{ x: 1280 }}
-          pagination={{
-            current: page + 1,
-            pageSize: size,
-            total: list.data?.total_elements ?? 0,
-            showSizeChanger: true,
-            showTotal: (t) => `共 ${t} 条`,
-            onChange: (p, s) => {
-              setPage(p - 1);
-              setSize(s);
-            },
-          }}
-        />
-      </div>
+        <div className="admin-surface" style={{ padding: '4px 8px' }}>
+          <DataTable<AuditLog>
+            rowKey="id"
+            columns={columns}
+            dataSource={list.data?.items ?? []}
+            loading={list.loading}
+            size="middle"
+            scroll={{ x: 1280 }}
+            pagination={{
+              current: page + 1,
+              pageSize: size,
+              total: list.data?.total_elements ?? 0,
+              showSizeChanger: true,
+              showTotal: (t) => `共 ${t} 条`,
+              onChange: (p, s) => {
+                setPage(p - 1);
+                setSize(s);
+              },
+            }}
+          />
+        </div>
+      </PageShell>
 
       <Drawer
         title="审计详情"
@@ -199,7 +200,6 @@ export default function AuditLogsPage() {
           <AdminFailureAlert error={detail.error} title="审计详情加载失败" onRetry={detail.reload} />
         ) : null}
       </Drawer>
-      </Space>
     </div>
   );
 }

@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   buildTrackingDraftConfirmCommand,
   initialTrackingDraftReviewForm,
+  isAtomicShipmentDraft,
   trackingDraftBlockingIssues,
+  trackingDraftCarrierSourceLabel,
+  trackingDraftFullShipmentDescription,
   trackingDraftIssueLabel,
+  trackingDraftOpenStateDescription,
   type TrackingDraftDetail,
 } from '../src/pages/workbench/trackingDraftReview.ts';
 
@@ -37,6 +42,8 @@ function draft(): TrackingDraftDetail {
         instructed_quantity: '8.000',
       },
     ],
+    source: 'WECOM_MESSAGE',
+    confirmation_scope: 'SINGLE_TASK',
     shipment_judgment: 'FULL',
     default_full_shipment: true,
     actual_quantity: null,
@@ -58,9 +65,66 @@ test('single-line task-reference review defaults only unique deterministic candi
     task_id: '44',
     task_no: '',
     carrier_code: 'SF',
+    actual_quantity: '',
     remark: '',
   });
   assert.deepEqual(trackingDraftBlockingIssues(draft(), form), []);
+});
+
+test('file partial drafts carry the parsed quantity through an explicit human confirmation', () => {
+  const current = draft();
+  current.source = 'WECOM_TRACKING_FILE';
+  current.shipment_judgment = 'PARTIAL';
+  current.default_full_shipment = false;
+  current.actual_quantity = '1.250';
+  current.carrier_candidates = [{ code: 'SF', name: '顺丰速运', source: 'FILE' }];
+
+  const form = initialTrackingDraftReviewForm(current);
+  assert.equal(form.actual_quantity, '1.250');
+  assert.deepEqual(trackingDraftBlockingIssues(current, form), []);
+  assert.equal(buildTrackingDraftConfirmCommand(current, 7, form).actual_quantity, '1.250');
+  assert.deepEqual(
+    trackingDraftBlockingIssues(current, { ...form, actual_quantity: '0' }),
+    ['部分发货的实发数量无效'],
+  );
+});
+
+test('file atomic shipment drafts expose every required task without pretending they are alternatives', () => {
+  const current = draft();
+  current.source = 'WECOM_TRACKING_FILE';
+  current.confirmation_scope = 'ATOMIC_SHIPMENT';
+  current.carrier_candidates = [{ code: 'SF', name: '顺丰速运', source: 'FILE' }];
+  current.task_candidates.push({
+    task_id: '45', fulfillment_no: 'FUL-20260813-0045', order_id: '12', order_no: 'ORD-20260813-0012',
+    order_line_id: '32', shipment_id: '55', receiver_name: '张三',
+    requested_quantity: '2.000', shipped_quantity: '0.000', instructed_quantity: '2.000',
+  });
+
+  assert.equal(isAtomicShipmentDraft(current), true);
+  assert.equal(initialTrackingDraftReviewForm(current).task_id, '44');
+  assert.deepEqual(trackingDraftBlockingIssues(current, initialTrackingDraftReviewForm(current)), []);
+  assert.equal(trackingDraftCarrierSourceLabel('FILE'), '回传文件明确的物流公司');
+  assert.equal(
+    trackingDraftOpenStateDescription(current),
+    '只有系统确定性解析的同一发货批次全部必选明细与标准物流公司可被确认；确认后不会从企微消息推断实际发货时间。',
+  );
+  assert.equal(
+    trackingDraftFullShipmentDescription(current, current.task_candidates[0]),
+    '本文件行未明示部分发货或异常，确认时将使用上表全部 2 条必选明细各自的指令数量，不会只取其中一条。',
+  );
+});
+
+test('single-task confirmation copy may show only its selected deterministic quantity', () => {
+  const current = draft();
+
+  assert.equal(
+    trackingDraftOpenStateDescription(current),
+    '只有系统确定性解析的唯一任务与标准物流公司可被确认；确认后不会从企微消息推断实际发货时间。',
+  );
+  assert.equal(
+    trackingDraftFullShipmentDescription(current, current.task_candidates[0]),
+    '本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量 8.000。',
+  );
 });
 
 test('confirmation carries both visible versions and never sends a fake shipment time', () => {
@@ -218,4 +282,11 @@ test('unknown validation codes never leak as untranslated internal fields', () =
     trackingDraftBlockingIssues(unknown, initialTrackingDraftReviewForm(unknown)),
     ['存在暂不支持的校验问题，请联系管理员处理'],
   );
+});
+
+test('OpenAPI exposes file provenance, atomic confirmation scope, and FILE carrier evidence', () => {
+  const openapi = readFileSync(new URL('../../docs/openapi.yaml', import.meta.url), 'utf8');
+  assert.match(openapi, /source: \{ type: string, enum: \[STATED, PREFIX, FILE\] \}/);
+  assert.match(openapi, /enum: \[WECOM_MESSAGE, WECOM_TRACKING_FILE\]/);
+  assert.match(openapi, /enum: \[SINGLE_TASK, ATOMIC_SHIPMENT\]/);
 });

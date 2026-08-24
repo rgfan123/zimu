@@ -17,6 +17,7 @@ import cn.zimu.fulfillment.customer.CustomerSourceRefRepository;
 import cn.zimu.fulfillment.customer.CustomerStatus;
 import cn.zimu.fulfillment.fulfillment.FulfillmentRepository;
 import cn.zimu.fulfillment.fulfillment.InitialFulfillmentService;
+import cn.zimu.fulfillment.message.WecomTrackingFileFailureCode;
 import cn.zimu.fulfillment.order.domain.Order;
 import cn.zimu.fulfillment.order.domain.OrderLine;
 import cn.zimu.fulfillment.order.domain.OrderStatus;
@@ -64,7 +65,8 @@ public class ReviewCaseResolutionService {
             "JD_STOCK_BLOCKED",
             "WECOM_NEED_REVIEW",
             "WECOM_ORDER_CHANGE",
-            "WECOM_ORDER_CANCEL");
+            "WECOM_ORDER_CANCEL",
+            WecomTrackingFileFailureCode.REVIEW_REASON);
 
     /**
      * 消息链路事项由各自生命周期（草稿确认/驳回、消息重新识别）管理，
@@ -343,7 +345,7 @@ public class ReviewCaseResolutionService {
         });
     }
 
-    /** 关闭误建或不再需要的事项；消息链路事项必须走各自生命周期，不允许在此直接关闭。 */
+    /** 关闭误建或不再需要的事项；未完成的消息解读/草稿事项必须走各自生命周期。 */
     @Transactional
     public IdempotentResult<ReviewCaseDto> dismiss(
             long caseId,

@@ -46,7 +46,10 @@ python3 prototype/customer-order-assistant/app.py
 | `INSIGHT_LLM_MODEL` | 与 `LLM_MODEL` 相同 | 客户洞察 Agent 使用的模型，可单独指定 |
 | `INSIGHT_SYSTEM_PROMPT` | 内置洞察提示词 | 可替换画像与品类推荐 Agent 的任务提示 |
 
-订单接口也可通过 `ORDER_API_PATH`、`ORDER_API_EXTRA_HEADERS_JSON` 和 `ORDER_API_TIMEOUT_SECONDS` 配置。API key 和额外请求头只从环境变量读取，不会返回给浏览器。
+订单接口也可通过 `ORDER_API_PATH`、`ORDER_API_EXTRA_HEADERS_JSON` 和 `ORDER_API_TIMEOUT_SECONDS` 配置。
+关闭内置接口时必须同时配置 `APP_INTERNAL_SERVICE_NAME` 与 `APP_INTERNAL_SERVICE_TOKEN`；客户端据此发送
+服务端拥有的 `X-Operator` 与 Bearer 身份，`ORDER_API_EXTRA_HEADERS_JSON` 不能覆盖这两个认证头。
+凭据和额外请求头只从环境变量读取，不会返回给浏览器。
 
 ## 原型边界
 

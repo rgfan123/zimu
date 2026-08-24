@@ -38,6 +38,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.test.annotation.DirtiesContext;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -47,10 +48,12 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 端到端：SDK 路由确认 → 自动建单 → 轮询器自动回填 → 运单落库 → 来源回填文件生成并可下载。
  */
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
             "app.jd.client-mode=MOCK",
+            "app.scheduling.enabled=true",
             "app.jd.write-mode=ON",
             "app.jd.outbound-authorized-operators=source-batch-e2e",
             "app.gateway.basic-auth.username=source-batch-e2e",

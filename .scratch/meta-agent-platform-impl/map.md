@@ -40,12 +40,12 @@ T01 →（T02 ‖ T03 并行）→（T04 → T05 → T06）‖（T07 → T08）�
 | 02 | 注册表切 DB 真源 + 删代码定义 | 01 | resolved |
 | 03 | INVARIANT 评测数据化 + 基线门禁读 DB | 01 | resolved |
 | 04 | Runtime Adapter 骨架 + 通用门面（A 路径） | 02、03 | resolved |
-| 05 | B/C 路径收敛（采购比价/数据查询） | 04 | open |
-| 06 | D 路径意图桥适配 | 05 | open |
-| 07 | MCP 权限隔离（读写元数据 + 调用期复核 + stdio 只读） | 02 | open |
-| 08 | 门禁引擎 + 运行期 PII 守卫 | 07 | open |
-| 09 | QUALITY 链路：promptfoo 执行器 + 异步评测 | 03、05 | open |
-| 10 | Meta-Agent 工具面（list_agent_tools + 定义写工具） | 02、08 | open |
-| 11 | 异步任务基建 + 定义域写端点（202/confirm/reject/set-enabled/rollback） | 03、05、08 | open |
-| 12 | 读端点 + /internal 只读镜像 | 02、03 | open |
+| 05 | B/C 路径收敛（采购比价/数据查询） | 04 | resolved |
+| 06 | D 路径意图桥适配（GitHub #7） | 05 | resolved |
+| 07 | MCP 权限隔离（读写元数据 + 调用期复核 + stdio 只读）（GitHub #8） | 02 | resolved |
+| 08 | 门禁引擎 + 运行期 PII 守卫（GitHub #9） | 07 | resolved |
+| 09 | QUALITY 链路：promptfoo 执行器 + 异步评测（GitHub #10） | 03、05 | resolved |
+| 10 | Meta-Agent 工具面（list_agent_tools + 定义写工具）（GitHub #11） | 02、08 | resolved |
+| 11 | 异步任务基建 + 定义域写端点（202/confirm/reject/set-enabled/rollback） | 03、05、08 | resolved |
+| 12 | 读端点 + /internal 只读镜像 | 02、03 | resolved |
 | 13 | Meta-Agent REST 端点（202 闭环） | 10、11 | open |

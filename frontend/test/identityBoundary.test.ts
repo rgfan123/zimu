@@ -15,14 +15,18 @@ test('local Vite routes browser traffic through the loopback gateway without exp
   assert.doesNotMatch(vite, /X-Operator['"]?\s*:/);
 });
 
-test('canonical browser acceptance uses the passwordless public seam and never exposes internal APIs', () => {
+test('canonical browser acceptance authenticates at the credential-gated public seam and never exposes internal APIs', () => {
   const acceptance = readFileSync(
     fileURLToPath(new URL('../../scripts/acceptance.sh', import.meta.url)),
     'utf8',
   );
 
   assert.doesNotMatch(acceptance, /["']\/internal\//);
-  assert.doesNotMatch(acceptance, /Authorization: Basic|--config "\$acceptance_curl_config"/);
+  // 06: 边缘认证默认开启后，验收脚本从私有凭据文件派生 Basic 头；源码里不得出现
+  // 硬编码的凭据/令牌，也不得把密码放进 curl 的 argv（--config / --user 两种旧模式都被禁止）。
+  assert.match(acceptance, /"Authorization"\] = "Basic " \+ gateway_basic_auth/);
+  assert.doesNotMatch(acceptance, /--config "\$acceptance_curl_config"/);
+  assert.doesNotMatch(acceptance, /Authorization: Basic [A-Za-z0-9+/=]{16,}/);
   assert.doesNotMatch(acceptance, /error\.code == 401/);
   assert.match(acceptance, /request_headers = \{"Accept": "application\/json", \*\*\(headers or \{\}\)\}/);
 });
@@ -115,6 +119,13 @@ test('internal service identity is independently configurable without a predicta
   assert.match(exampleEnv, /^APP_INTERNAL_SERVICE_NAME=$/m);
   assert.match(exampleEnv, /^APP_INTERNAL_SERVICE_TOKEN=$/m);
   assert.doesNotMatch(compose, /APP_INTERNAL_SERVICE_(?:NAME|TOKEN):\s*(?:wecom|internal|changeme)/i);
+
+  const orderAssistantStart = compose.indexOf('  order-assistant:');
+  const orderAssistantEnd = compose.indexOf('\n  metabase:', orderAssistantStart);
+  const orderAssistant = compose.slice(orderAssistantStart, orderAssistantEnd);
+  assert.match(orderAssistant, /APP_INTERNAL_SERVICE_NAME: \$\{APP_INTERNAL_SERVICE_NAME:\?/);
+  assert.match(orderAssistant, /APP_INTERNAL_SERVICE_TOKEN: \$\{APP_INTERNAL_SERVICE_TOKEN:\?/);
+  assert.doesNotMatch(orderAssistant, /APP_ADMIN_(?:USER|PASSWORD)/);
 });
 
 test('acceptance secrets only enter the Compose child and are file-backed for other consumers', () => {
@@ -129,6 +140,8 @@ test('acceptance secrets only enter the Compose child and are file-backed for ot
     'APP_ADMIN_PASSWORD',
     'POSTGRES_USER',
     'POSTGRES_PASSWORD',
+    'APP_INTERNAL_SERVICE_NAME',
+    'APP_INTERNAL_SERVICE_TOKEN',
   ];
 
   assert.match(
@@ -140,7 +153,7 @@ test('acceptance secrets only enter the Compose child and are file-backed for ot
     /acceptance_credentials\.py" --write-environment "\$ephemeral_credentials_file"/,
   );
   assert.match(acceptance, /^ACCEPTANCE_CREDENTIAL_FILE="\$credentials_file" \\$/m);
-  assert.doesNotMatch(acceptance, /export (?:METABASE_ADMIN|APP_ADMIN|POSTGRES)/);
+  assert.doesNotMatch(acceptance, /export (?:METABASE_ADMIN|APP_ADMIN|POSTGRES|APP_INTERNAL_SERVICE)/);
   const unsetPosition = acceptance.indexOf('unset METABASE_ADMIN_EMAIL METABASE_ADMIN_PASSWORD');
   const firstConsumerPosition = acceptance.indexOf('ACCEPTANCE_CREDENTIAL_FILE="$credentials_file"');
   const cleanupTrapPosition = acceptance.indexOf('trap cleanup_acceptance_secrets EXIT HUP INT TERM');
@@ -189,7 +202,7 @@ test('release documentation does not overstate the production identity or databa
 
   assert.match(readme, /docs\/postgres-role-migration\.md/);
   assert.match(readme, /still shares one PostgreSQL login/i);
-  assert.match(readme, /passwordless local/i);
+  assert.match(readme, /single shared Basic credential/i);
   assert.match(readme, /does not provide per-user attribution or remote access control/i);
   assert.match(ticket, /independent Bearer token/i);
   assert.match(ticket, /request_id.*trace_id/is);

@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.message.*;
+import cn.zimu.fulfillment.connector.wecom.LocalMediaDownloaderConfiguration;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -31,6 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -44,6 +46,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 纯文字消息保持空媒体引用（回归）。
  */
 @Testcontainers
+@Import(LocalMediaDownloaderConfiguration.class)
 @SpringBootTest
 class InterpretationMediaIntegrationTest {
 
@@ -58,6 +61,10 @@ class InterpretationMediaIntegrationTest {
     @DynamicPropertySource
     static void mediaConfiguration(DynamicPropertyRegistry registry) {
         registry.add("app.message-worker.enabled", () -> "false");
+        registry.add("app.wecom-tracking-file-worker.enabled", () -> "false");
+        registry.add("app.wecom-export-worker.enabled", () -> "false");
+        registry.add("app.wecom-reminder.enabled", () -> "false");
+        registry.add("app.agent-worker.enabled", () -> "false");
         registry.add("app.media.dir", () -> MEDIA_DIR.toString());
     }
 
@@ -151,6 +158,81 @@ class InterpretationMediaIntegrationTest {
     }
 
     @Test
+    void fileMessageUsesDedicatedTrackingTaskAndNeverEntersTheModelQueue() {
+        long submissionId = submitFileMessage("MEDIA-FILE-001", baseUrl + "/media/ok");
+
+        assertThat(jdbc.queryForList(
+                        "SELECT task_type FROM app.async_tasks WHERE payload_ref=? ORDER BY id",
+                        "submission:" + submissionId))
+                .extracting(row -> row.get("task_type"))
+                .containsExactly("WECOM_TRACKING_FILE");
+
+        // 即使解释 Worker 正在轮询，也领不到专用文件任务，XLSX 字节绝不进入模型输入。
+        pollWorker();
+        verify(interpreter, never()).interpret(any());
+    }
+
+    @Test
+    void legacyInterpretTaskForAFileIsRetiredAndBackfillsTheDedicatedTaskWithoutCallingModel() {
+        long submissionId = submitFileMessage("MEDIA-FILE-LEGACY-001", baseUrl + "/media/ok");
+        jdbc.update("DELETE FROM app.async_tasks WHERE payload_ref=?", "submission:" + submissionId);
+        taskStore.enqueue(
+                "INTERPRET_MESSAGE",
+                "submission:" + submissionId,
+                "legacy-file-interpret:" + submissionId,
+                3);
+
+        pollWorker();
+
+        verify(interpreter, never()).interpret(any());
+        assertThat(jdbc.queryForList(
+                        "SELECT task_type, status FROM app.async_tasks WHERE payload_ref=? ORDER BY id",
+                        "submission:" + submissionId))
+                .containsExactly(
+                        Map.of("task_type", "INTERPRET_MESSAGE", "status", "SUCCEEDED"),
+                        Map.of("task_type", "WECOM_TRACKING_FILE", "status", "PENDING"));
+    }
+
+    @Test
+    void legacyFinalizingInterpretTaskForAFileAlsoRedirectsWithoutCreatingModelFailure() {
+        long submissionId = submitFileMessage("MEDIA-FILE-LEGACY-FINAL-001", baseUrl + "/media/ok");
+        jdbc.update("DELETE FROM app.async_tasks WHERE payload_ref=?", "submission:" + submissionId);
+        taskStore.enqueue(
+                "INTERPRET_MESSAGE",
+                "submission:" + submissionId,
+                "legacy-file-finalizing:" + submissionId,
+                3);
+        jdbc.update(
+                """
+                UPDATE app.async_tasks
+                SET status='FINALIZING', attempts=3,
+                    lease_until=CURRENT_TIMESTAMP-interval '1 second', lease_owner=NULL
+                WHERE idempotency_key=?
+                """,
+                "legacy-file-finalizing:" + submissionId);
+
+        pollWorker();
+
+        verify(interpreter, never()).interpret(any());
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM app.async_tasks WHERE idempotency_key=?",
+                        String.class,
+                        "legacy-file-finalizing:" + submissionId))
+                .isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.async_tasks WHERE task_type='WECOM_TRACKING_FILE' "
+                                + "AND payload_ref=?",
+                        Long.class,
+                        "submission:" + submissionId))
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.message_interpretations WHERE submission_id=?",
+                        Long.class,
+                        submissionId))
+                .isZero();
+    }
+
+    @Test
     void downloadFailureRetriesThenTerminalNeedReview() {
         long submissionId = submitImageMessage("MEDIA-FAIL-001", baseUrl + "/media/missing");
 
@@ -219,6 +301,27 @@ class InterpretationMediaIntegrationTest {
                 "user-text",
                 "text",
                 content,
+                null,
+                null,
+                json(frame)));
+    }
+
+    private long submitFileMessage(String messageId, String url) {
+        String frame = "{\"cmd\":\"aibot_msg_callback\",\"headers\":{\"req_id\":\"req-file\"},\"body\":{"
+                + "\"msgid\":\"" + messageId + "\",\"aibotid\":\"bot-1\",\"chattype\":\"single\","
+                + "\"from\":{\"userid\":\"user-file\"},\"msgtype\":\"file\","
+                + "\"file\":{\"url\":\"" + url + "\",\"aeskey\":\"" + AES_KEY
+                + "\",\"filename\":\"tracking.xlsx\"}}}";
+        return submissionService.submit(new ChannelMessageCommand(
+                "bot-1",
+                "wecom-long-connection",
+                "bot-1",
+                messageId,
+                "single:user-file",
+                "single",
+                "user-file",
+                "file",
+                "",
                 null,
                 null,
                 json(frame)));

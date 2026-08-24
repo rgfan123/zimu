@@ -16,6 +16,9 @@ export const CHANNEL_LABELS: Record<SourceChannel, string> = {
   JUFUBAO: '聚福宝',
   FEIXIANG: '飞象',
   ZHONGHUI: '中汇',
+  WANGQI: '大者',
+  DAZHE: '大者',
+  WANQI: '万齐',
   WECOM: '企业微信',
 };
 

@@ -174,6 +174,8 @@ class Config:
     order_api_base_url: str
     order_api_path: str
     order_api_extra_headers: dict[str, Any]
+    order_api_service_name: str
+    order_api_bearer_token: str
     order_api_timeout_seconds: float
     builtin_order_api_enabled: bool
 
@@ -207,6 +209,8 @@ class Config:
             ),
             order_api_path=os.getenv("ORDER_API_PATH", "/internal/v1/orders"),
             order_api_extra_headers=env_json_object("ORDER_API_EXTRA_HEADERS_JSON"),
+            order_api_service_name=os.getenv("APP_INTERNAL_SERVICE_NAME", "").strip(),
+            order_api_bearer_token=os.getenv("APP_INTERNAL_SERVICE_TOKEN", "").strip(),
             order_api_timeout_seconds=float(os.getenv("ORDER_API_TIMEOUT_SECONDS", "15")),
             builtin_order_api_enabled=env_bool("BUILTIN_ORDER_API_ENABLED", True),
         )
@@ -681,9 +685,25 @@ class OrderApiClient:
             "Accept": "application/json",
             "Idempotency-Key": idempotency_key,
         }
+        reserved_identity_headers = {"authorization", "x-operator"}
         headers.update(
-            {str(k): str(v) for k, v in self.config.order_api_extra_headers.items()}
+            {
+                str(k): str(v)
+                for k, v in self.config.order_api_extra_headers.items()
+                if str(k).lower() not in reserved_identity_headers
+            }
         )
+        if not self.config.builtin_order_api_enabled:
+            service_name = self.config.order_api_service_name.strip()
+            bearer_token = self.config.order_api_bearer_token.strip()
+            if not service_name or not bearer_token:
+                raise ApiError(
+                    503,
+                    "ORDER_API_INTERNAL_AUTH_REQUIRED",
+                    "订单接口内部服务身份未配置，已阻止提交。",
+                )
+            headers["X-Operator"] = service_name
+            headers["Authorization"] = "Bearer " + bearer_token
         req = request.Request(
             join_url(self.config.order_api_base_url, self.config.order_api_path),
             data=json.dumps(draft, ensure_ascii=False).encode("utf-8"),

@@ -71,7 +71,7 @@ public final class AgentEvalScorer {
             Set.of("requires_human", "tool_sequence", "missing_fields", "expected_error");
 
     /** 评测集版本标签（07：用例集按 (agent_slug, agent_version) 冻结；标签沿用 fixture 时代版本名）。 */
-    private static final String PROCUREMENT_EVAL_SET_VERSION = "procurement-eval-v1";
+    private static final String PROCUREMENT_EVAL_SET_VERSION = "procurement-eval-v2";
     private static final String DATA_QUERY_EVAL_SET_VERSION = "data-query-eval-v1";
 
     /** 跑分器当前支持的 agent（其余 slug 的 INVARIANT/CONFIRMED 用例属配置漂移，拒跑可见）。 */
@@ -81,8 +81,8 @@ public final class AgentEvalScorer {
     private static final String API_KEY = "sk-agent-eval-secret";
     private static final String RUN_ID = "run_" + "0".repeat(32);
 
-    /** 05 收敛后工具序列指标：canned 注册表实际被调用的工具（按问题逐轮核对） */
-    private static final AtomicReference<String> LAST_INVOKED_TOOL = new AtomicReference<>();
+    /** 05 收敛后工具序列指标：canned 注册表实际被调用的工具序列（按问题逐轮核对，须与预期序列一致） */
+    private static final java.util.List<String> INVOKED_TOOLS = new ArrayList<>();
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** 04 票已知写工具（对照：写工具零调用不变式的反面）。 */
@@ -108,10 +108,12 @@ public final class AgentEvalScorer {
      */
     public static List<AgentEvalCase> loadInvariantCases(JdbcTemplate jdbc) {
         List<AgentEvalCase> cases = jdbc.query(
-                "SELECT agent_slug, agent_version, metric_kind, input::text, expected::text "
-                        + "FROM app.agent_eval_cases "
-                        + "WHERE metric_kind = 'INVARIANT' AND status = 'CONFIRMED' "
-                        + "ORDER BY agent_slug, id",
+                "SELECT c.agent_slug, c.agent_version, c.metric_kind, c.input::text, c.expected::text "
+                        + "FROM app.agent_eval_cases c "
+                        + "JOIN app.agent_definitions d ON d.agent_slug=c.agent_slug "
+                        + "AND d.version=c.agent_version AND d.status='active' "
+                        + "WHERE c.metric_kind = 'INVARIANT' AND c.status = 'CONFIRMED' "
+                        + "ORDER BY c.agent_slug, c.id",
                 (rs, i) -> new AgentEvalCase(
                         rs.getString("agent_slug"),
                         rs.getInt("agent_version"),
@@ -358,7 +360,7 @@ public final class AgentEvalScorer {
     }
 
     // ------------------------------------------------------------------
-    // 采购比价（procurement-eval-v1，7 例，单帧 stub 模型；用例来自 DB）
+    // 采购比价（procurement-eval-v2，12 例，单帧 stub 模型；用例来自 DB）
     // ------------------------------------------------------------------
 
     private static ProcurementMetrics procurementMetrics(List<AgentEvalCase> cases) throws IOException {
@@ -378,7 +380,7 @@ public final class AgentEvalScorer {
             // 05 收敛：评测走门面（A 路径）——门面 + stub Adapter + canned 注册表，经领域包装执行
             AgentRuntimeFacade facade = facadeWithStub(
                     server.getAddress().getPort(), AgentSeedFixtures.procurementDefinition());
-            ProcurementPriceAgent agent = new ProcurementPriceAgent(facade, MAPPER);
+            ProcurementPriceAgent agent = new ProcurementPriceAgent(facade, Mockito.mock(AuditLogService.class), MAPPER);
             int schemaValid = 0;
             int schemaRejected = 0;
             int requiresHumanExpected = 0;
@@ -479,7 +481,7 @@ public final class AgentEvalScorer {
             for (AgentEvalCase evalCase : cases) {
                 String question = evalCase.input();
                 JsonNode expected = evalCase.expected();
-                LAST_INVOKED_TOOL.set(null);
+                INVOKED_TOOLS.clear();
                 DataQueryRunResult result = service.answer(question, AgentRunContext.of("eval-db"));
                 if (expected.has("tool_sequence")) {
                     answerable++;
@@ -488,9 +490,8 @@ public final class AgentEvalScorer {
                             expected.get("tool_sequence"),
                             MAPPER.getTypeFactory().constructCollectionType(List.class, String.class));
                     // 05 收敛后工具调用序列在 app.agent_tool_calls（08 观测）——
-                    // 跑分器以 canned 注册表实际被调用的工具核对选择正确率
-                    if (LAST_INVOKED_TOOL.get() != null
-                            && expectedTools.equals(List.of(LAST_INVOKED_TOOL.get()))) {
+                    // 跑分器以 canned 注册表实际被调用的工具序列核对选择正确率（须与预期序列一致）
+                    if (expectedTools.equals(List.copyOf(INVOKED_TOOLS))) {
                         toolCorrect++;
                     }
                     if (answerNumbersMatch(question, result.output() == null ? null : result.output().answer())) {
@@ -730,7 +731,7 @@ public final class AgentEvalScorer {
         for (String name : AgentSeedFixtures.DATA_QUERY_TOOL_NAMES) {
             tools.add(McpToolTestSupport.tool(
                     name, "只读工具 " + name, Map.of(), List.of(), (context, args) -> {
-                        LAST_INVOKED_TOOL.set(name);
+                        INVOKED_TOOLS.add(name);
                         return canned(name);
                     }));
         }

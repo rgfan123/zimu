@@ -290,11 +290,14 @@ test('deployment credential tools never place reusable secrets in process argume
   assert.doesNotMatch(provisioner, /--arg (?:password|db_password) "\$(?:admin_password|POSTGRES_PASSWORD)"/);
 
   assert.doesNotMatch(acceptance, /--config "\$acceptance_curl_config"/);
-  assert.doesNotMatch(acceptance, /Authorization: Basic/);
+  // 06: 边缘认证默认开启后，验收脚本从私有凭据文件派生 Basic 头；硬编码令牌与
+  // curl --user 明文密码两种旧模式都被禁止。
+  assert.match(acceptance, /"Authorization"\] = "Basic " \+ gateway_basic_auth/);
+  assert.doesNotMatch(acceptance, /Authorization: Basic [A-Za-z0-9+/=]{16,}/);
   assert.doesNotMatch(acceptance, /--user "\$APP_ADMIN_USER:\$APP_ADMIN_PASSWORD"/);
 });
 
-test('the passwordless local gateway overwrites browser identity at the business API boundary', () => {
+test('the credential-gated gateway overwrites browser identity at every business and demo boundary', () => {
   const nginx = readFileSync(
     fileURLToPath(new URL('../../docker/nginx/default.conf', import.meta.url)),
     'utf8',
@@ -304,12 +307,24 @@ test('the passwordless local gateway overwrites browser identity at the business
     'utf8',
   );
 
-  assert.match(nginx, /server \{[\s\S]*?auth_basic off;/);
+  // 06: 边缘 Basic Auth 由环境变量 GATEWAY_BASIC_AUTH_ENABLED（默认开）驱动，
+  // entrypoint 渲染 edge-auth.inc；default.conf 不再写死 auth_basic off。
+  assert.match(nginx, /server \{[\s\S]*?include \/etc\/nginx\/edge-auth\.inc;/);
+  assert.match(gatewayEntrypoint, /GATEWAY_BASIC_AUTH_ENABLED/);
+  assert.match(gatewayEntrypoint, /edge-auth\.inc/);
   assert.doesNotMatch(nginx, /auth_basic "Zimu Fulfillment ERP";/);
   assert.match(
     nginx,
     /location \/api\/ \{[\s\S]*?include \/etc\/nginx\/backend-auth\.inc;/,
   );
+  for (const location of ['location = /demo/v1 {', 'location /demo/v1/ {']) {
+    const start = nginx.indexOf(location);
+    assert.notEqual(start, -1);
+    const end = nginx.indexOf('\n    }', start);
+    const block = nginx.slice(start, end);
+    assert.match(block, /include \/etc\/nginx\/backend-auth\.inc;/);
+    assert.doesNotMatch(block, /local-operator|proxy_set_header Authorization "";/);
+  }
   assert.doesNotMatch(nginx, /proxy_set_header X-Operator \$http_x_operator;/);
   assert.doesNotMatch(nginx, /proxy_set_header Authorization \$http_authorization;/);
   assert.match(gatewayEntrypoint, /proxy_set_header X-Operator "%s";/);

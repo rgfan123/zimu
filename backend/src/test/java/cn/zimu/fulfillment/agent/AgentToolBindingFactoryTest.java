@@ -146,6 +146,28 @@ class AgentToolBindingFactoryTest {
                 .containsExactlyInAnyOrderElementsOf(allNames);
     }
 
+    @Test
+    void whitelistWithWriteToolWithoutAllowWriteFailsFastAtBindTime() {
+        // 08 决策：白名单含写工具（readOnly=false）且未声明 allow_write → 绑定期拒绝
+        McpToolRegistry withWrite = McpToolTestSupport.registry(
+                McpToolTestSupport.tool("list_channel_messages", "只读工具。"),
+                McpToolTestSupport.writeTool("reinterpret_submission", "写工具。"));
+        AgentToolBindingFactory strictFactory =
+                new AgentToolBindingFactory(withWrite, new McpAgentIdentity("binding-agent"), new ObjectMapper());
+
+        assertThatThrownBy(() -> strictFactory.bind(RUN_ID, List.of("reinterpret_submission")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("allow_write")
+                .hasMessageContaining("reinterpret_submission");
+
+        // 显式 allowWrite=true 时写工具可绑定（meta-agent 等受约束放行）
+        AgentToolBinding allowed =
+                strictFactory.bind(RUN_ID, List.of("reinterpret_submission"), true);
+        assertThat(allowed.specifications())
+                .extracting(ToolSpecification::name)
+                .containsExactly("reinterpret_submission");
+    }
+
     private static ToolSpecification specOf(AgentToolBinding binding, String name) {
         return binding.specifications().stream()
                 .filter(spec -> name.equals(spec.name()))

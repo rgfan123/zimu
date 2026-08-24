@@ -13,6 +13,7 @@ import {
   DatabaseOutlined,
   DashboardOutlined,
   GlobalOutlined,
+  RobotOutlined,
   RocketOutlined,
   SettingOutlined,
   UnorderedListOutlined,
@@ -28,7 +29,7 @@ import { AuditLogsPage } from '@/pages/system';
 import AnalyticsPage from '@/pages/analytics/AnalyticsPage';
 import DemoOrderPage from '@/pages/demo/DemoOrderPage';
 import DashboardPage from '@/pages/dashboard/DashboardPage';
-import { CategoriesPage, ProductsPage, SkuMappingsPage, SkusPage } from '@/pages/product';
+import { BundlesPage, CategoriesPage, ProductsPage, SkuMappingsPage, SkusPage } from '@/pages/product';
 import {
   FulfillmentTasksPage,
   JdBasicInfoQueryPage,
@@ -37,13 +38,20 @@ import {
   JdSerialQueryPage,
   JdStockQueryPage,
   JdWarehousePage,
+  OutboundReconPage,
   SalesOutboundPage,
   ShipmentsPage,
 } from '@/pages/fulfillment';
-import ProcurementTicketsPage from '@/pages/procurement';
-import ManualReviewPage from '@/pages/workbench';
+import ProcurementTicketsPage, { ProcurementPriceComparePage } from '@/pages/procurement';
+import { ReviewQueueCompatRoute, AlertsQueuePage, ShippingWorkbenchPage, ReconWorkbenchPage } from '@/pages/workbench';
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
-import { ConnectorsPage, FulfillmentProvidersPage, SystemConfigPage } from '@/pages/system';
+import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage } from '@/pages/system';
+import {
+  AgentDetailPage,
+  AgentRunsPage,
+  AgentsListPage,
+  RunDetailPage,
+} from '@/pages/agents';
 import { appNavigation, routeMatchScore, type NavigationNode } from '@/navigation';
 
 export interface AppRoute extends Omit<NavigationNode, 'children'> {
@@ -56,28 +64,40 @@ const iconFontSize = 16;
 
 const routeElements: Readonly<Record<string, ReactNode>> = {
   '/dashboard': <DashboardPage />,
-  '/workbench/reviews': <ManualReviewPage />,
+  '/workbench/reviews': <ReviewQueueCompatRoute />,
+  '/workbench/alerts': <AlertsQueuePage />,
   '/workbench/channel-messages': <ChannelMessagesPage />,
+  '/workbench/shipping': <ShippingWorkbenchPage />,
+  '/workbench/recon': <ReconWorkbenchPage />,
   '/fulfillment/tasks': <FulfillmentTasksPage />,
   '/procurement/tickets': <ProcurementTicketsPage />,
+  '/procurement/price-compare': <ProcurementPriceComparePage />,
   '/fulfillment/sales-outbound': <SalesOutboundPage />,
   '/fulfillment/shipments': <ShipmentsPage />,
+  '/fulfillment/outbound-recon': <OutboundReconPage />,
   '/orders': <OrdersPage />,
   '/orders/pending': <PendingOrdersPage />,
   '/orders/exceptions': <ExceptionOrdersPage />,
   '/orders/tracking': <OrderTrackingPage />,
   '/orders/:orderId': <OrderDetailPage />,
+  '/agents': <AgentsListPage />,
+  '/agents/runs': <AgentRunsPage />,
+  '/agents/:slug': <AgentDetailPage />,
+  '/agents/runs/:runId': <RunDetailPage />,
+  '/agents/:slug/evals': <AgentDetailPage />,
   '/inventory/overview': <InventoryOverviewPage />,
   '/inventory/details': <InventoryDetailsPage />,
   '/product/products': <ProductsPage />,
   '/product/categories': <CategoriesPage />,
   '/product/skus': <SkusPage />,
   '/product/sku-mappings': <SkuMappingsPage />,
+  '/product/bundles': <BundlesPage />,
   '/analytics': <AnalyticsPage />,
   '/system/connectors': <ConnectorsPage />,
   '/system/audit-logs': <AuditLogsPage />,
   '/system/config': <SystemConfigPage />,
   '/system/fulfillment-providers': <FulfillmentProvidersPage />,
+  '/system/operators': <OperatorsPage />,
   '/fulfillment/jd-warehouse': <JdWarehousePage />,
   '/fulfillment/jd-basicinfo': <JdBasicInfoQueryPage />,
   '/fulfillment/jd-stock': <JdStockQueryPage />,
@@ -91,6 +111,7 @@ const routeIcons: Readonly<Record<string, ReactNode>> = {
   '/dashboard': <DashboardOutlined style={{ fontSize: iconFontSize }} />,
   '/workbench': <CheckSquareOutlined style={{ fontSize: iconFontSize }} />,
   '/orders': <UnorderedListOutlined style={{ fontSize: iconFontSize }} />,
+  '/agents': <RobotOutlined style={{ fontSize: iconFontSize }} />,
   '/inventory': <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
   '/product': <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
   '/analytics': <BarChartOutlined style={{ fontSize: iconFontSize }} />,

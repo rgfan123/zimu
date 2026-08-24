@@ -16,6 +16,7 @@ import { demoApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import type { DemoRun, DemoScenario } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import PageShell from '@/components/PageShell';
 import StatusTag from '@/components/StatusTag';
 import OrderTimeline from '@/components/OrderTimeline';
 import AiOrderAssistantPanel from './AiOrderAssistantPanel';
@@ -92,7 +93,7 @@ export default function DemoOrderPage() {
   };
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <PageShell title="模拟下单">
       <Alert
         type="info"
         showIcon
@@ -264,6 +265,6 @@ export default function DemoOrderPage() {
           </Card>
         </Col>
       </Row>
-    </Space>
+    </PageShell>
   );
 }

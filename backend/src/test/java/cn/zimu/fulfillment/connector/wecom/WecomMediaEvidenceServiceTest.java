@@ -18,7 +18,11 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Comparator;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
@@ -29,6 +33,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -42,6 +47,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @Testcontainers
 @SpringBootTest
+@Import(LocalMediaDownloaderConfiguration.class)
 class WecomMediaEvidenceServiceTest {
 
     private static final String AES_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
@@ -55,6 +61,10 @@ class WecomMediaEvidenceServiceTest {
     static void mediaConfiguration(DynamicPropertyRegistry registry) {
         registry.add("app.media.dir", () -> MEDIA_DIR.toString());
         registry.add("app.message-worker.enabled", () -> "false");
+        registry.add("app.wecom-tracking-file-worker.enabled", () -> "false");
+        registry.add("app.wecom-export-worker.enabled", () -> "false");
+        registry.add("app.wecom-reminder.enabled", () -> "false");
+        registry.add("app.agent-worker.enabled", () -> "false");
     }
 
     @Autowired
@@ -134,6 +144,101 @@ class WecomMediaEvidenceServiceTest {
         assertThat(mediaRepository.count()).isEqualTo(1);
         // 幂等重入不再重新下载（URL 5 分钟有效，不能浪费）
         assertThat(downloadHits.get()).isEqualTo(1);
+    }
+
+    @Test
+    void lateConcurrentFailureCannotDowngradeAvailableEvidence() throws Exception {
+        byte[] plaintext = jpegSample();
+        byte[] ciphertext = encrypt(plaintext, AES_KEY);
+        CountDownLatch lateRequestEntered = new CountDownLatch(1);
+        CountDownLatch releaseLateFailure = new CountDownLatch(1);
+        server.createContext("/media/late-failure", exchange -> {
+            downloadHits.incrementAndGet();
+            lateRequestEntered.countDown();
+            try {
+                if (!releaseLateFailure.await(5, TimeUnit.SECONDS)) {
+                    throw new IOException("test did not release late failure");
+                }
+                respond(exchange, 503, "unavailable".getBytes(StandardCharsets.UTF_8), "text/plain");
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                exchange.close();
+            }
+        });
+        installMedia("/media/concurrent-success", ciphertext, "image/jpeg");
+        long channelMessageId = insertChannelMessage("msg-concurrent-monotonic");
+        String mediaKey = "media-concurrent";
+
+        CompletableFuture<MediaResult> lateFailure = CompletableFuture.supplyAsync(() -> evidenceService.storeMedia(
+                command(channelMessageId, mediaKey, "/media/late-failure")));
+        assertThat(lateRequestEntered.await(5, TimeUnit.SECONDS)).isTrue();
+
+        MediaResult success = evidenceService.storeMedia(
+                command(channelMessageId, mediaKey, "/media/concurrent-success"));
+        releaseLateFailure.countDown();
+        MediaResult staleResult = lateFailure.get(5, TimeUnit.SECONDS);
+
+        assertThat(success.status()).isEqualTo(MediaResultStatus.SUCCEEDED);
+        assertThat(staleResult.status()).isEqualTo(MediaResultStatus.SUCCEEDED);
+        MessageMedia row = mediaRepository
+                .findByChannelMessageIdAndChannelMediaId(channelMessageId, mediaKey)
+                .orElseThrow();
+        assertThat(row.getDownloadStatus()).isEqualTo(MediaDownloadStatus.AVAILABLE);
+        assertThat(row.getContentHash()).isEqualTo(sha256Hex(plaintext));
+        assertThat(row.getAttempts()).isZero();
+    }
+
+    @Test
+    void interruptedDownloadLeavesMediaPendingWithoutFailureAttempt() throws Exception {
+        CountDownLatch bodyStarted = new CountDownLatch(1);
+        CountDownLatch releaseBody = new CountDownLatch(1);
+        server.createContext("/media/interrupted", exchange -> {
+            try {
+                exchange.sendResponseHeaders(200, 1024);
+                exchange.getResponseBody().write(1);
+                exchange.getResponseBody().flush();
+                bodyStarted.countDown();
+                releaseBody.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        long channelMessageId = insertChannelMessage("msg-interrupted-download");
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        CountDownLatch finished = new CountDownLatch(1);
+        Thread downloadThread = new Thread(() -> {
+            try {
+                evidenceService.storeMedia(command(
+                        channelMessageId,
+                        "media-interrupted",
+                        "/media/interrupted"));
+            } catch (Throwable throwable) {
+                observed.set(throwable);
+            } finally {
+                finished.countDown();
+            }
+        }, "test-wecom-media-interrupt");
+
+        try {
+            downloadThread.start();
+            assertThat(bodyStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            downloadThread.interrupt();
+            assertThat(finished.await(5, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            releaseBody.countDown();
+            downloadThread.join(5_000);
+        }
+
+        assertThat(observed.get()).isInstanceOf(WecomMediaDownloader.MediaDownloadException.class);
+        MessageMedia row = mediaRepository
+                .findByChannelMessageIdAndChannelMediaId(channelMessageId, "media-interrupted")
+                .orElseThrow();
+        assertThat(row.getDownloadStatus()).isEqualTo(MediaDownloadStatus.PENDING);
+        assertThat(row.getAttempts()).isZero();
+        assertThat(row.getFailureReason()).isNull();
+        assertThat(countMediaDirFiles()).isZero();
     }
 
     @Test

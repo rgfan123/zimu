@@ -5,7 +5,7 @@
 
 // ---------- 枚举 ----------
 
-export type SourceChannel = 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG' | 'ZHONGHUI' | 'WECOM';
+export type SourceChannel = 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG' | 'ZHONGHUI' | 'WANGQI' | 'DAZHE' | 'WANQI' | 'WECOM';
 
 export type OrderStatus =
   | 'RECEIVED'
@@ -82,8 +82,8 @@ export interface Receiver {
 }
 
 export interface Settlement {
-  method: string;
-  settlement_time?: string;
+  method: string | null;
+  settlement_time?: string | null;
 }
 
 export interface OrderSummary {
@@ -468,6 +468,50 @@ export interface SkuPage extends Omit<MasterDataPage, 'items'> {
   items: SkuRecord[];
 }
 
+export type ProductBundleStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE';
+
+export interface ProductBundleItem {
+  sku_id: string;
+  quantity_per_bundle: string;
+  sku_code?: string;
+  product_name?: string;
+  specification?: string;
+  unit?: string;
+  emg_code_snapshot?: string | null;
+  source_text_snapshot?: string | null;
+}
+
+export interface ProductBundleAttributes {
+  barcode?: string | null;
+  description?: string | null;
+  status: ProductBundleStatus;
+  fulfillment_provider_id?: string | null;
+  items: ProductBundleItem[];
+}
+
+export interface ProductBundleRecord extends Omit<MasterDataRecord, 'attributes'> {
+  attributes: ProductBundleAttributes;
+}
+
+export interface ProductBundlePage extends Omit<MasterDataPage, 'items'> {
+  items: ProductBundleRecord[];
+}
+
+export interface ProductBundleItemInput {
+  sku_id: string;
+  quantity_per_bundle: string;
+  emg_code_snapshot?: string;
+}
+
+export interface ProductBundleCreateInput {
+  bundle_code: string;
+  bundle_name: string;
+  barcode?: string;
+  description?: string;
+  status?: ProductBundleStatus;
+  items: ProductBundleItemInput[];
+}
+
 /** 主图上传结果：内容寻址引用与可访问 URL（openapi ProductImageUploadResult）。 */
 export interface ProductImageUploadResult {
   file_ref: string;
@@ -534,6 +578,38 @@ export interface FulfillmentProvider {
   version: number;
   /** 京东标识状态投影（非京东履约方为空 map；pin 只含 present，永不回显明文）。 */
   jd_config: Record<string, JdProviderConfigEntry>;
+  /** 企微群 chatid（Issue #83）：标识符非凭据，按既有投影回显；未登记/已清除为 null。 */
+  wecom_group_chat_id: string | null;
+  /** 回传提醒间隔分钟（Issue #84）：未配置/已清除为 null（默认 = tracking_sla_minutes）。 */
+  wecom_reminder_interval_minutes: number | null;
+}
+
+/** 内部运营人员（Issue #89）：姓名、企微 userid、所属责任团队；只做映射与责任归属，不做登录/权限。 */
+export interface Operator {
+  id: string;
+  display_name: string;
+  /** 责任团队（服务端 trim + 大写归一，如 ORDER_OPS / CUSTOMER_OPS / SKU_OPS）。 */
+  responsible_team: string;
+  /** 企微 userid；null = 未绑定（需要推送时由解析 seam 明确提示，不静默跳过）。 */
+  wecom_userid: string | null;
+  active: boolean;
+  version: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface OperatorPage extends PageMeta {
+  items: Operator[];
+}
+
+/** 责任团队解析结果（Issue #89）：active 人员、可推送 userid 与未绑定人员的显式诊断。 */
+export interface OperatorTeamResolution {
+  responsible_team: string;
+  members: Array<{ display_name: string; wecom_userid: string | null }>;
+  pushable_user_ids: string[];
+  unbound_member_names: string[];
+  status: 'PUSHABLE' | 'PARTIALLY_BOUND' | 'ALL_UNBOUND' | 'NO_MEMBERS';
+  pushable: boolean;
 }
 
 export interface ConnectorConfig {
@@ -662,6 +738,26 @@ export interface DownloadAudit {
 
 export type ExportUsageStatus = 'GENERATED_NOT_DOWNLOADED' | 'DOWNLOADED_WAITING_RETURN' | 'RETURNED' | 'RETURN_OVERDUE';
 
+/** 履约导出企微出站状态（Issue #84）：状态行存在时返回；JD/未登记导出为 undefined。 */
+export interface FulfillmentExportWecomState {
+  status: 'PENDING' | 'ACTIVE' | 'COMPLETED' | 'MANUALLY_STOPPED' | 'FAILED' | 'UNKNOWN' | 'LEGACY';
+  chat_id?: string | null;
+  tracking_sla_minutes: number;
+  reminder_interval_minutes: number;
+  initial_sent_at?: string | null;
+  tracking_due_at?: string | null;
+  next_reminder_at?: string | null;
+  last_reminded_at?: string | null;
+  reminder_count: number;
+  last_error?: string | null;
+  version: number;
+  stopped?: {
+    by: string;
+    reason: string;
+    at: string;
+  };
+}
+
 export interface FulfillmentExport {
   id: string;
   export_batch_no: string;
@@ -669,12 +765,15 @@ export interface FulfillmentExport {
   export_kind: string;
   template_version: string;
   file_sha256?: string;
-  tracking_due_at?: string;
+  /** 权威回传截止：新第三方导出以企微发送 ack 派生，未发送时为 null（不展示假的到期时间）。 */
+  tracking_due_at?: string | null;
   generated_at: string;
   usage_status: ExportUsageStatus;
   download_audit?: DownloadAudit;
   tracking_import_batch_id?: string;
   import_batch_id?: string;
+  /** 企微出站状态（Issue #84）；JD 导出无此字段。 */
+  wecom?: FulfillmentExportWecomState;
 }
 
 export interface FulfillmentExportPage extends PageMeta {
@@ -700,6 +799,9 @@ export interface ImportBatch {
   parent_import_batch_id?: string;
   revision_no: number;
   source_channel?: SourceChannel;
+  recorded_source_channel_display_name?: string | null;
+  effective_source_channel_display_name?: string | null;
+  source_channel_display_name?: string | null;
   fulfillment_provider_id?: string;
   source_fulfillment_export_id?: string;
   template_family: string;
@@ -710,6 +812,7 @@ export interface ImportBatch {
   status: string;
   confirmed_at?: string | null;
   confirmed_by?: string | null;
+  settlement_missing: boolean;
   row_counts: ImportRowCounts;
   generated_fulfillment_export_ids?: string[];
   generated_source_return_export_ids?: string[];
@@ -746,6 +849,8 @@ export interface PlatformOrderRefreshResult {
   channels: Array<{
     channel: SourceChannel;
     status: 'OK' | 'FAILED' | 'SKIPPED';
+    /** finish() 总会写入；前端只按 business_code+status 封闭映射展示，不得直接渲染 message。 */
+    business_code?: string;
     message?: string;
     /** 已生成导入批次（彩食鲜/飞象） */
     batch_no?: string;
@@ -782,6 +887,15 @@ export interface RawImportRow {
     provider_name: string;
     sku_specification?: string | null;
   } | null;
+  /**
+   * 该来源行将/已发送京东 SDK cargoInfos 的精确发货数量（与建单预览/提交共用同一换算）；
+   * 第三方/无京东履约行为空数组。product_name 即 SDK goodsName 口径的来源商品名快照。
+   */
+  jd_cargos?: Array<{
+    product_name: string;
+    provider_sku_code: string;
+    plan_quantity: number;
+  }>;
 }
 
 export interface RawImportRowPage extends PageMeta {
@@ -984,6 +1098,58 @@ export interface ProcurementTicketPage extends PageMeta {
   items: ProcurementTicket[];
 }
 
+// ---------- 采购比价 Agent（01 票：不可比候选降级展示） ----------
+
+export type ProcurementPriceBasis = 'sku_commercial_price' | 'provider_sku';
+
+/** 不可比候选的剔除理由标签：价格离群 / 价格缺失 / 映射失效。 */
+export type ProcurementPriceExclusionReason = 'price_outlier' | 'price_missing' | 'mapping_stale';
+
+export interface ProcurementPriceCandidate {
+  provider_code: string;
+  price?: string | null;
+  price_basis?: ProcurementPriceBasis | null;
+  note?: string | null;
+}
+
+export interface ProcurementPriceExcludedCandidate extends ProcurementPriceCandidate {
+  exclusion_reason: ProcurementPriceExclusionReason;
+  exclusion_reason_detail?: string | null;
+}
+
+export interface ProcurementPriceInventory {
+  available?: string | null;
+  shortage?: string | null;
+}
+
+export interface ProcurementPriceRecommendation {
+  target_sku?: string;
+  requested_quantity?: string | null;
+  inventory?: ProcurementPriceInventory | null;
+  /** 可比候选（参与推荐与「可比候选」组展示）。 */
+  candidates: ProcurementPriceCandidate[];
+  /** 被剔除候选（降级展示，不是删除）：理由标签与可读说明可见。 */
+  excluded_candidates: ProcurementPriceExcludedCandidate[];
+  recommendation?: { provider_code: string; reason: string } | null;
+  missing_fields: string[];
+  confidence: number;
+  requires_human: boolean;
+}
+
+export interface ProcurementPriceRunResult {
+  recommendation?: ProcurementPriceRecommendation | null;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  error?: string | null;
+}
+
+export interface ProcurementPriceCompareCommand {
+  procurement_ticket_id?: string;
+  sku_id?: string;
+  quantity?: string;
+}
+
 // ---------- 复核队列 / 审计 ----------
 
 export type ReviewCaseStatus = 'OPEN' | 'RESOLVED' | 'DISMISSED';
@@ -1054,6 +1220,59 @@ export interface JdClientStatus {
   live_ready: boolean;
 }
 
+// ---------- 出库信息内外事实并排（GET /api/v1/outbound-recon） ----------
+
+export type OutboundReconQueryType = 'OUTBOUND_ORDER_NO' | 'JD_DELIVERY_NO' | 'ORDER_NO';
+
+/** 京东侧查询结果状态：OK 已返回；NOT_FOUND 京东没有这笔；UNAVAILABLE 查询失败/超时未取到。 */
+export type OutboundReconJdStatus = 'OK' | 'NOT_FOUND' | 'UNAVAILABLE';
+
+/** 逐字段差异状态。JD_UNAVAILABLE / JD_NOT_FOUND 表示整侧未取到/无记录，不是字段为空。 */
+export type OutboundReconRowState =
+  | 'MATCH'
+  | 'MISMATCH'
+  | 'INTERNAL_ONLY'
+  | 'JD_ONLY'
+  | 'EMPTY'
+  | 'JD_UNAVAILABLE'
+  | 'JD_NOT_FOUND';
+
+export interface OutboundReconComparisonRow {
+  key: string;
+  label: string;
+  internal_value: unknown;
+  jd_value: unknown;
+  internal_present: boolean;
+  jd_present: boolean;
+  state: OutboundReconRowState;
+  note: string | null;
+}
+
+export interface OutboundReconInternalSide {
+  summary: Record<string, unknown>;
+  items: Array<Record<string, unknown>>;
+  tracking: Record<string, unknown> | null;
+}
+
+export interface OutboundReconJdSide {
+  status: OutboundReconJdStatus;
+  business_code: string | null;
+  message: string | null;
+  client_mode: 'MOCK' | 'REAL';
+  summary: Record<string, unknown> | null;
+  items: Array<Record<string, unknown>>;
+}
+
+export interface OutboundReconView {
+  query: { type: OutboundReconQueryType; value: string };
+  audit: { request_id: string | null; operator: string };
+  internal: OutboundReconInternalSide;
+  jd: OutboundReconJdSide;
+  comparisons: OutboundReconComparisonRow[];
+  matched_count: number;
+  mismatch_count: number;
+}
+
 export interface AuditLog {
   id: string;
   data_scope: 'BUSINESS' | 'DEMO';
@@ -1078,6 +1297,8 @@ export interface AuditLogPage extends PageMeta {
 
 // ---------- 企业微信消息证据 ----------
 
+export type ChannelMessageType = 'text' | 'mixed' | 'image' | 'voice' | 'file' | 'video';
+
 export interface ChannelMessageSummary {
   id: string;
   corp_id: string;
@@ -1087,7 +1308,7 @@ export interface ChannelMessageSummary {
   chat_id: string;
   chat_type: 'group' | 'single';
   sender_user_id: string;
-  message_type: string;
+  message_type: ChannelMessageType;
   content_preview: string;
   received_at: string;
 }
@@ -1117,6 +1338,15 @@ export type MessageFailureCode =
   | 'MODEL_CALL_FAILED'
   | 'MODEL_OUTPUT_INVALID';
 
+export type MessageTaskFailureCode =
+  | MessageFailureCode
+  | 'WECOM_TRACKING_FILE_CHAT_UNSUPPORTED'
+  | 'WECOM_TRACKING_FILE_PAYLOAD_INVALID'
+  | 'WECOM_TRACKING_FILE_DOWNLOAD_FAILED'
+  | 'WECOM_TRACKING_FILE_TOO_LARGE'
+  | 'WECOM_TRACKING_FILE_INVALID'
+  | 'WECOM_TRACKING_FILE_PROCESSING_FAILED';
+
 export interface MessageInterpretation {
   version: number;
   intent: string;
@@ -1140,7 +1370,7 @@ export interface MessageTaskStatus {
   status: MessageTaskStatusCode;
   attempts: number;
   max_attempts: number;
-  last_error?: MessageFailureCode | null;
+  last_error?: MessageTaskFailureCode | null;
   created_at: string;
 }
 

@@ -36,7 +36,7 @@ class AgentEvalScorerTest extends AgentTestcontainersBase {
         assertThat(json.path("environment").path("eval_case_source").asText())
                 .contains("agent_eval_cases");
         assertThat(json.path("procurement").path("eval_set_version").asText())
-                .isEqualTo("procurement-eval-v1");
+                .isEqualTo("procurement-eval-v2");
         assertThat(json.path("data_query").path("eval_set_version").asText())
                 .isEqualTo("data-query-eval-v1");
 
@@ -56,7 +56,7 @@ class AgentEvalScorerTest extends AgentTestcontainersBase {
         AgentEvalScorer.Metrics metrics = AgentEvalScorer.compute(cases());
         System.out.println(AgentEvalScorer.render(metrics));
 
-        assertThat(metrics.procurement().totalCases()).isEqualTo(7);
+        assertThat(metrics.procurement().totalCases()).isEqualTo(12);
         assertThat(metrics.procurement().avgLatencyMs()).isGreaterThanOrEqualTo(0);
         assertThat(metrics.dataQuery().totalQueries()).isEqualTo(7);
         assertThat(metrics.dataQuery().avgModelLatencyMs()).isGreaterThanOrEqualTo(0);

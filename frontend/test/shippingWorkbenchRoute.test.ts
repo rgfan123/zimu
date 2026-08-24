@@ -1,0 +1,797 @@
+/**
+ * 今日发货工作台（Issue #107）路由契约：发货员从一次订单同步开始今天的工作，并如实呈现各渠道结果。
+ * 覆盖：初始 / 同步中禁用 / 成功多渠道 / 部分失败 / 全零「没有新订单」/ 聚福宝仅报告未入库 /
+ * 真实 OK Connector 即使生成 batch 也返回 order_count，reportedOrders 不得误计已入库渠道 /
+ * 顶层错误可读且可重试 / 有 batch_id 整卡跳文件作业页 / 手动导入跳文件作业页 / 无虚构频控 /
+ * 销售出库生产入口。隐藏但可路由的导航断言在 businessObjectNavigation.test.ts。
+ */
+
+import assert from 'node:assert/strict';
+import { after, afterEach, before, test } from 'node:test';
+import {
+  apiErrorResponse,
+  control,
+  createRouteHarness,
+  jsonResponse,
+  type RouteHarness,
+} from './routeHarness.ts';
+import {
+  REFRESH_URL,
+  channel,
+  rawChannel,
+  rawRefreshResult,
+  refreshResult,
+} from './shippingTestFixtures.ts';
+
+let harness: RouteHarness;
+
+before(async () => {
+  harness = await createRouteHarness('http://localhost/workbench/shipping');
+});
+
+afterEach(async () => {
+  await harness.unmount();
+});
+
+after(async () => {
+  await harness.close();
+});
+
+function refreshOnlyFetch(result: unknown) {
+  return async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === REFRESH_URL) return jsonResponse(result);
+    throw new Error(`unexpected request: ${url}`);
+  };
+}
+
+function emptyOk(name: 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG', extra: Parameters<typeof channel>[0] = {}) {
+  return channel({
+    channel: name, status: 'OK', batch_no: undefined, batch_id: undefined, row_counts: undefined, ...extra,
+  });
+}
+
+function skipped(name: 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG') {
+  return channel({
+    channel: name, status: 'SKIPPED', batch_no: undefined, batch_id: undefined, row_counts: undefined,
+    business_code: 'SKIPPED', message: '今日无数据',
+  });
+}
+
+function anchorWithHref(href: string): HTMLAnchorElement {
+  const link = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    .find((a) => a.getAttribute('href') === href);
+  assert.ok(link, `missing anchor with href ${href}`);
+  return link;
+}
+
+test('shipping workbench does not request or render a quota because platform pulls are unlimited', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = async (input) => {
+    requests.push(String(input));
+    throw new Error(`unexpected request: ${String(input)}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /今日发货工作台/));
+  assert.match(harness.bodyText(), /落为导入批次/, 'lede 必须还原原型口径');
+  assert.match(harness.bodyText(), /开始今日订单同步/);
+  assert.match(harness.bodyText(), /手动导入 Excel/);
+  assert.match(harness.bodyText(), /尚未同步/, '初始态必须给出可读提示');
+  assert.deepEqual(requests, [], '页面挂载不得读取不存在的频控配额');
+  assert.doesNotMatch(harness.bodyText(), /配额|今天最多还能拉|下次可拉取/);
+});
+
+test('sync disables the trigger and shows an independent loading block while in flight', async () => {
+  let refreshCalls = 0;
+  let resolveRefresh: (r: Response) => void = () => {};
+  const gate = new Promise<Response>((resolve) => {
+    resolveRefresh = resolve;
+  });
+  globalThis.fetch = async (input) => {
+    if (String(input) === REFRESH_URL) {
+      refreshCalls += 1;
+      return gate;
+    }
+    throw new Error(`unexpected request: ${String(input)}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.waitFor(() => assert.ok(control('开始今日订单同步')));
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  const loadingButton = [...document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((b) => b.textContent?.includes('开始今日订单同步'));
+  assert.ok(loadingButton, '同步按钮必须在同步中保持挂载');
+  await harness.waitFor(() => assert.ok(loadingButton.classList.contains('ant-btn-loading'), '同步中必须禁用触发按钮'));
+  await harness.dispatchEvent(loadingButton, new MouseEvent('click', { bubbles: true }));
+  assert.equal(refreshCalls, 1, '同一次在途同步不得被双击重复发起');
+  await harness.waitFor(() => assert.match(harness.bodyText(), /正在同步三平台订单/, '同步中必须有独立的加载块'));
+
+  resolveRefresh(jsonResponse(refreshResult([channel()])));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+});
+
+test('successful sync summarizes batch count and total rows and renders one card per channel', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel(),
+    channel({
+      channel: 'JUFUBAO',
+      status: 'OK',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      order_count: 41,
+      business_code: 'OK',
+      message: '缺收货人字段，仅报告未入库 /tmp/jufubao.py',
+    }),
+    channel({
+      channel: 'FEIXIANG',
+      batch_no: 'IMP-FX-002',
+      batch_id: '8',
+      row_counts: { total: 12, accepted: 12, need_review: 0, rejected: 0 },
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.waitFor(() => assert.ok(control('开始今日订单同步')));
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /飞象/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /聚福宝/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /生成 2 个导入批次 · 共 42 行 · 仅报告未入库 41 单/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-CSX-001/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-FX-002/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /成功/));
+  assert.doesNotMatch(harness.bodyText(), /jufubao\.py/);
+});
+
+test('partial failure keeps a readable summary and marks FAILED/SKIPPED channels distinctly', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel(),
+    channel({
+      channel: 'FEIXIANG',
+      status: 'FAILED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      business_code: 'SCRIPT_FAILED',
+      message: '脚本超时 /tmp/feixiang_fetch_orders.py CSX_PASSWORD',
+    }),
+    channel({
+      channel: 'ZHONGHUI',
+      status: 'SKIPPED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      business_code: 'SKIPPED',
+      message: '今日无数据',
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /生成 1 个导入批次 · 共 30 行/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /1 个渠道失败/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /失败/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /响应异常/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /未知渠道/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /该渠道拉取失败，请稍后重试/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /渠道响应格式异常，请联系管理员/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /同步结果格式异常/));
+  assert.doesNotMatch(harness.bodyText(), /已跳过/);
+  assert.doesNotMatch(harness.bodyText(), /该渠道已跳过本次拉取/);
+  assert.doesNotMatch(harness.bodyText(), /没有新订单|三平台已同步完成/);
+  assert.doesNotMatch(harness.bodyText(), /脚本超时|feixiang_fetch_orders\.py|CSX_PASSWORD|今日无数据/);
+});
+
+test('all-zero sync surfaces a clear "no new orders" result', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    emptyOk('CAISHIXIAN'),
+    emptyOk('JUFUBAO', { order_count: 0 }),
+    emptyOk('FEIXIANG'),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => {
+    const text = harness.bodyText();
+    assert.match(text, /没有新订单/);
+    assert.match(text, /三平台已同步完成/);
+    assert.doesNotMatch(text, /生成 \d+ 个导入批次|同步未完成/);
+  });
+});
+
+test('all-FAILED sync reports an incomplete sync and never claims three platforms completed', async () => {
+  const failedChannels = [
+    channel({
+      status: 'FAILED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      business_code: 'SCRIPT_FAILED',
+      message: '脚本超时 /tmp/caishixian_fetch_orders.py',
+    }),
+    channel({
+      channel: 'JUFUBAO',
+      status: 'FAILED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      business_code: 'INTERNAL_ERROR',
+      message: '拉取失败 credentials/csx-credentials.txt',
+    }),
+    channel({
+      channel: 'FEIXIANG',
+      status: 'SKIPPED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      business_code: 'SKIPPED',
+      message: '今日无数据 FEIXIANG_PASSWORD',
+    }),
+  ];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === REFRESH_URL) {
+      return jsonResponse({
+        message: '所有渠道刷新均未成功（SKIPPED 或 FAILED），请查看各渠道 message 后重试',
+        http_status: 502,
+        business_code: 'PLATFORM_REFRESH_ALL_FAILED',
+        trace_id: 'test-trace',
+        details: { channels: failedChannels },
+      }, 502);
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /订单同步失败/));
+  await harness.waitFor(() => assert.ok(control('重试'), '合法 502 必须保留顶层失败重试'));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /聚福宝/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /飞象/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /该渠道拉取失败，请稍后重试/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /该渠道刷新出现内部错误，请稍后重试/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /该渠道已跳过本次拉取/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /失败/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /已跳过/));
+  await harness.waitFor(() => assert.doesNotMatch(harness.bodyText(), /没有新订单/));
+  await harness.waitFor(() => assert.doesNotMatch(harness.bodyText(), /三平台已同步完成/));
+  await harness.waitFor(() => assert.doesNotMatch(harness.bodyText(), /生成 \d+ 个导入批次/));
+  assert.doesNotMatch(
+    harness.bodyText(),
+    /脚本超时|caishixian_fetch_orders\.py|csx-credentials\.txt|FEIXIANG_PASSWORD|今日无数据/,
+  );
+});
+
+test('malformed PLATFORM_REFRESH_ALL_FAILED details stay on the generic error and do not crash', async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === REFRESH_URL) {
+      return jsonResponse({
+        message: '所有渠道刷新均未成功（SKIPPED 或 FAILED），请查看各渠道 message 后重试',
+        http_status: 502,
+        business_code: 'PLATFORM_REFRESH_ALL_FAILED',
+        trace_id: 'test-trace',
+        details: { channels: 'not-an-array' },
+      }, 502);
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /订单同步失败/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /服务暂时不可用，请稍后重试/));
+  await harness.waitFor(() => assert.ok(control('重试')));
+  const statusTags = [...document.querySelectorAll('.ant-tag')].map((el) => el.textContent ?? '');
+  assert.equal(
+    statusTags.filter((text) => text === '失败' || text === '已跳过' || text === '成功').length,
+    0,
+    '畸形 details 不得渲染渠道状态卡',
+  );
+  assert.doesNotMatch(harness.bodyText(), /脚本超时|拉取失败|已跳过/);
+});
+
+test('one OK plus two SKIPPED with zero data reports incomplete sync and never claims three platforms completed', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    emptyOk('CAISHIXIAN'), skipped('JUFUBAO'), skipped('FEIXIANG'),
+  ]));
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => {
+    const text = harness.bodyText();
+    assert.match(text, /同步未完成/);
+    assert.match(text, /2 个渠道已跳过/);
+    assert.doesNotMatch(text, /没有新订单|三平台已同步完成|生成 \d+ 个导入批次/);
+  });
+});
+
+test('legal batch plus SKIPPED keeps the batch summary but never claims three platforms completed', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel(), skipped('JUFUBAO'), skipped('FEIXIANG'),
+  ]));
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => {
+    const text = harness.bodyText();
+    assert.match(text, /生成 1 个导入批次 · 共 30 行/);
+    assert.match(text, /2 个渠道已跳过/);
+    assert.match(text, /同步未完成/);
+    assert.doesNotMatch(text, /没有新订单|三平台已同步完成/);
+  });
+});
+
+test('zero-data partial failure reports the failed channels instead of "no new orders"', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel({ status: 'SKIPPED', batch_no: undefined, batch_id: undefined, row_counts: undefined, message: '今日无数据' }),
+    channel({
+      channel: 'JUFUBAO',
+      status: 'FAILED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      message: '拉取失败',
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /同步未完成/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /1 个渠道失败，请重试/));
+  await harness.waitFor(() => assert.doesNotMatch(harness.bodyText(), /没有新订单/));
+  await harness.waitFor(() => assert.doesNotMatch(harness.bodyText(), /三平台已同步完成/));
+});
+
+test('CAISHIXIAN order_count with a batch plus JUFUBAO report-only only counts the 41 unimported orders', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel({ order_count: 3 }),
+    channel({
+      channel: 'JUFUBAO',
+      status: 'OK',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      order_count: 41,
+      message: '缺收货人字段，仅报告未入库',
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /生成 1 个导入批次 · 共 30 行 · 仅报告未入库 41 单/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /拉取 41 单/));
+  assert.doesNotMatch(harness.bodyText(), /仅报告未入库 44 单/);
+  assert.doesNotMatch(harness.bodyText(), /拉取 3 单/);
+});
+
+test('JUFUBAO report-only is a first-class status without a fabricated destination', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel({
+      channel: 'JUFUBAO',
+      status: 'OK',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      order_count: 41,
+      message: '缺收货人字段，仅报告未入库',
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /仅报告未入库/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /拉取 41 单/));
+  const cardLinks = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    .filter((a) => (a.getAttribute('href') ?? '').startsWith('/fulfillment/sales-outbound?import_batch='));
+  assert.equal(cardLinks.length, 0, '仅报告未入库的渠道卡不得伪造导入批次落点');
+});
+
+test('top-level sync failure is readable and retryable', async () => {
+  let calls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === REFRESH_URL) {
+      calls += 1;
+      if (calls === 1) return apiErrorResponse(500, 'INTERNAL', 'refresh exploded');
+      return jsonResponse(refreshResult([channel()]));
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /订单同步失败/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /服务暂时不可用，请稍后重试/, '顶层失败必须可读'));
+  await harness.waitFor(() => assert.ok(control('重试'), '顶层失败必须暴露重试动作'));
+  await harness.dispatchEvent(control('重试'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+  assert.equal(calls, 2, '重试必须重新发起同步请求');
+});
+
+test('a channel card with a batch id navigates as a whole card to the file job page', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([channel()]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+
+  let cardLink: HTMLAnchorElement | undefined;
+  await harness.waitFor(() => {
+    cardLink = anchorWithHref('/fulfillment/sales-outbound?import_batch=7');
+  });
+  assert.ok(cardLink, '整卡必须渲染为指向文件作业页的链接');
+  await harness.dispatchEvent(cardLink, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.equal(harness.location(), '/fulfillment/sales-outbound?import_batch=7'));
+});
+
+test('manual import is a real link to the file job page', async () => {
+  globalThis.fetch = async (input) => {
+    throw new Error(`unexpected request: ${String(input)}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /手动导入 Excel/));
+
+  const manualLink = anchorWithHref('/fulfillment/sales-outbound');
+  assert.match(manualLink.textContent ?? '', /手动导入 Excel/);
+  assert.equal(manualLink.tagName, 'A', '手动导入必须是单一 <a> 锚点');
+  assert.equal(manualLink.querySelectorAll('button, a').length, 0, '手动导入锚点内不得嵌套 button/a');
+  await harness.dispatchEvent(manualLink, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.equal(harness.location(), '/fulfillment/sales-outbound'));
+});
+
+test('sales outbound page exposes the production entry without a second refresh', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/fulfillment-exports')) {
+      return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/fulfillment/sales-outbound']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /销售出库/));
+
+  assert.doesNotMatch(harness.bodyText(), /刷新三平台订单/, '销售出库不得再提供第二套刷新入口');
+
+  const entry = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    .find((a) => (a.getAttribute('href') === '/workbench/shipping') && (a.textContent ?? '').includes('今日发货工作台'));
+  assert.ok(entry, '销售出库页必须提供指向今日发货工作台的生产入口');
+  await harness.dispatchEvent(entry, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.location(), /\/workbench\/shipping/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /开始今日订单同步/));
+  assert.equal(
+    requests.some((r) => r.includes('/api/v1/platform-orders/refresh')),
+    false,
+    '销售出库不得发起三平台刷新请求',
+  );
+});
+
+function channelStatusTags(): string[] {
+  return [...document.querySelectorAll('.ant-tag')]
+    .map((el) => el.textContent ?? '')
+    .filter((text) => text === '失败' || text === '已跳过' || text === '成功' || text === '响应异常');
+}
+
+test('malicious 502 details do not render cards, links or crash', async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === REFRESH_URL) {
+      return jsonResponse({
+        message: '所有渠道刷新均未成功（SKIPPED 或 FAILED），请查看各渠道 message 后重试',
+        http_status: 502,
+        business_code: 'PLATFORM_REFRESH_ALL_FAILED',
+        trace_id: 'test-trace',
+        details: {
+          channels: [
+            {
+              channel: 'CAISHIXIAN',
+              status: 'FAILED',
+              business_code: 'SCRIPT_FAILED',
+              batch_id: '7&return_to=https://evil.invalid',
+              message: { text: '<img src=x onerror=alert(1)>' },
+              row_counts: '30',
+            },
+            {
+              channel: 'JUFUBAO',
+              status: 'OK',
+              business_code: 'OK',
+              message: 'should-not-appear',
+            },
+            {
+              channel: 'ZHONGHUI',
+              status: 'SKIPPED',
+              business_code: 'SKIPPED',
+              message: 'extra-channel',
+            },
+          ],
+        },
+      }, 502);
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /订单同步失败/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /服务暂时不可用，请稍后重试/));
+  await harness.waitFor(() => assert.ok(control('重试')));
+  assert.equal(channelStatusTags().length, 0, '恶意 502 details 不得渲染渠道状态卡');
+  const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  assert.equal(hrefs.some((href) => href.includes('evil.invalid') || href.includes('return_to')), false);
+  assert.doesNotMatch(harness.bodyText(), /should-not-appear|extra-channel|evil\.invalid/);
+});
+
+test('success response with a poisoned batch_id does not create a file-job link or crash', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel({
+      batch_id: '7&return_to=https://evil.invalid',
+      batch_no: 'IMP-CSX-001',
+      row_counts: { total: 30, accepted: 28, need_review: 2, rejected: 0 },
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-CSX-001/));
+  const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  assert.equal(hrefs.some((href) => href.includes('import_batch=')), false, '非法 batch_id 不得生成文件作业链接');
+  assert.equal(hrefs.some((href) => href.includes('evil.invalid')), false);
+});
+
+test('channel cards render public copy and never render backend free text', async () => {
+  const raw = 'leak /opt/zimu/scripts/caishixian_fetch_orders.py data-local/csx-credentials.txt CSX_PASSWORD <img src=x onerror=alert(1)>';
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel({
+      status: 'FAILED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      business_code: 'SCRIPT_FAILED',
+      message: raw,
+    }),
+    channel({
+      channel: 'JUFUBAO',
+      status: 'SKIPPED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      business_code: 'UNKNOWN_SKIP_CODE',
+      message: raw,
+    }),
+    channel({
+      channel: 'FEIXIANG',
+      status: 'OK',
+      batch_no: 'IMP-FX-002',
+      batch_id: '8',
+      row_counts: { total: 12, accepted: 12, need_review: 0, rejected: 0 },
+      business_code: 'OK',
+      message: raw,
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /聚福宝/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /飞象/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /失败/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /已跳过/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /成功/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /该渠道拉取失败，请稍后重试/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /该渠道已跳过本次拉取/));
+  assert.doesNotMatch(
+    harness.bodyText(),
+    /caishixian_fetch_orders\.py|csx-credentials\.txt|CSX_PASSWORD|<img src=x onerror=alert\(1\)>/,
+  );
+});
+
+test('invalid contracts drop batch/count fields and cannot pollute shipping summary totals', async () => {
+  const unknownChannel = rawChannel({
+    channel: '__proto__',
+    status: 'FAILED',
+    batch_no: 'IMP-PROTO-007',
+    batch_id: '7',
+    row_counts: { total: 30, accepted: 28, need_review: 2, rejected: 0 },
+    order_count: 99,
+    message: 'raw leak __proto__',
+  });
+  const unknownStatus = rawChannel({
+    channel: 'CAISHIXIAN',
+    status: 'toString',
+    batch_no: 'IMP-CSX-008',
+    batch_id: '8',
+    row_counts: { total: 12, accepted: 12, need_review: 0, rejected: 0 },
+    order_count: 5,
+    business_code: 'SCRIPT_FAILED',
+    message: 'raw leak toString',
+  });
+  const legalFeixiang = channel({
+    channel: 'FEIXIANG',
+    batch_no: 'IMP-FX-009',
+    batch_id: '9',
+    row_counts: { total: 4, accepted: 4, need_review: 0, rejected: 0 },
+  });
+
+  globalThis.fetch = refreshOnlyFetch(rawRefreshResult([unknownChannel, unknownStatus, legalFeixiang]));
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /飞象/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /生成 1 个导入批次 · 共 4 行/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-FX-009/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /同步结果格式异常/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /渠道响应格式异常，请联系管理员/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /响应异常/));
+  assert.doesNotMatch(harness.bodyText(), /没有新订单|三平台已同步完成/);
+  assert.doesNotMatch(harness.bodyText(), /批次 IMP-PROTO-007|批次 IMP-CSX-008/);
+  assert.doesNotMatch(harness.bodyText(), /共 30 行|共 12 行|拉取 99 单|拉取 5 单/);
+  assert.doesNotMatch(harness.bodyText(), /3 个导入批次|共 46 行|个渠道失败/);
+  const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  assert.equal(
+    hrefs.some((href) => href.includes('import_batch=7') || href.includes('import_batch=8')),
+    false,
+    '非法契约不得生成批次落点',
+  );
+  assert.ok(hrefs.includes('/fulfillment/sales-outbound?import_batch=9'), '合法飞象批次仍须可跳转');
+});
+
+test('invalid-only contracts surface a page-level format error and never claim three platforms completed', async () => {
+  const unknownSkipped = rawChannel({
+    channel: 'ZHONGHUI',
+    status: 'SKIPPED',
+    batch_no: 'IMP-ZH-001',
+    batch_id: '7',
+    row_counts: { total: 8, accepted: 8, need_review: 0, rejected: 0 },
+    order_count: 3,
+    business_code: 'SKIPPED',
+    message: '今日无数据 /tmp/zhonghui.py',
+  });
+  const badStatus = rawChannel({
+    channel: 'CAISHIXIAN',
+    status: 'WEIRD',
+    batch_no: undefined,
+    batch_id: undefined,
+    row_counts: undefined,
+    business_code: 'SKIPPED',
+    message: '今日无数据',
+  });
+
+  globalThis.fetch = refreshOnlyFetch(rawRefreshResult([unknownSkipped, badStatus]));
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /同步结果格式异常/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /渠道响应格式异常，请联系管理员/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /响应异常/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /未知渠道/));
+  assert.doesNotMatch(harness.bodyText(), /没有新订单/);
+  assert.doesNotMatch(harness.bodyText(), /三平台已同步完成/);
+  assert.doesNotMatch(harness.bodyText(), /生成 \d+ 个导入批次/);
+  assert.doesNotMatch(harness.bodyText(), /已跳过|该渠道已跳过本次拉取/);
+  assert.doesNotMatch(harness.bodyText(), /批次 IMP-ZH-001|今日无数据|zhonghui\.py/);
+  const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  assert.equal(hrefs.some((href) => href.includes('import_batch=')), false, '纯非法契约不得生成批次落点');
+});
+
+test('valid plus invalid contracts keep legal batches while contractErrorCount blocks the all-clear copy', async () => {
+  const legalCaishixian = channel();
+  const unknownSkipped = rawChannel({
+    channel: 'WANQI',
+    status: 'SKIPPED',
+    batch_no: 'IMP-WQ-002',
+    batch_id: '8',
+    row_counts: { total: 9, accepted: 9, need_review: 0, rejected: 0 },
+    order_count: 4,
+    business_code: 'SKIPPED',
+    message: '今日无数据 WANQI_PASSWORD',
+  });
+
+  globalThis.fetch = refreshOnlyFetch(rawRefreshResult([legalCaishixian, unknownSkipped]));
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /生成 1 个导入批次 · 共 30 行/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-CSX-001/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /同步结果格式异常/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /渠道响应格式异常，请联系管理员/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /响应异常/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /未知渠道/));
+  assert.doesNotMatch(harness.bodyText(), /没有新订单|三平台已同步完成/);
+  assert.doesNotMatch(harness.bodyText(), /批次 IMP-WQ-002|WANQI_PASSWORD|今日无数据/);
+  const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  assert.ok(hrefs.includes('/fulfillment/sales-outbound?import_batch=7'), '合法彩食鲜批次仍须可跳转');
+  assert.equal(hrefs.some((href) => href.includes('import_batch=8')), false, '非法契约批次不得生成落点');
+});
+
+test('success 200 with prototype channel/status keys stays crash-free without fake links or raw messages', async () => {
+  const raw = 'leak /opt/zimu/scripts/caishixian_fetch_orders.py CSX_PASSWORD';
+  globalThis.fetch = refreshOnlyFetch(rawRefreshResult([
+    // 恶意运行时输入：channel/status 为原型键，走 unknown seam（refreshResult 本就接受 unknown[]）
+    rawChannel({
+      channel: '__proto__',
+      status: 'OK',
+      batch_no: 'IMP-PROTO-001',
+      batch_id: '7',
+      row_counts: { total: 30, accepted: 28, need_review: 2, rejected: 0 },
+      message: raw,
+    }),
+    rawChannel({
+      channel: 'constructor',
+      status: 'FAILED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      business_code: 'toString',
+      message: raw,
+    }),
+    rawChannel({
+      channel: 'CAISHIXIAN',
+      status: 'toString',
+      batch_no: 'IMP-CSX-001',
+      batch_id: '8',
+      row_counts: { total: 12, accepted: 12, need_review: 0, rejected: 0 },
+      business_code: '__proto__',
+      message: raw,
+    }),
+    channel({
+      channel: 'JUFUBAO',
+      status: 'OK',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      order_count: 41,
+      message: '缺收货人字段，仅报告未入库 /tmp/jufubao.py',
+    }),
+    channel({
+      channel: 'FEIXIANG',
+      batch_no: 'IMP-FX-002',
+      batch_id: '9',
+      row_counts: { total: 12, accepted: 12, need_review: 0, rejected: 0 },
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /未知渠道/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /响应异常/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /聚福宝/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /飞象/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /渠道响应格式异常，请联系管理员/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /同步结果格式异常/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /仅报告未入库/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-FX-002/));
+  assert.doesNotMatch(harness.bodyText(), /该渠道刷新失败，请稍后重试/);
+  assert.doesNotMatch(harness.bodyText(), /没有新订单|三平台已同步完成/);
+  const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  assert.equal(
+    hrefs.some((href) => href.includes('import_batch=7') || href.includes('import_batch=8')),
+    false,
+    '原型键渠道不得生成批次落点',
+  );
+  assert.ok(hrefs.includes('/fulfillment/sales-outbound?import_batch=9'), '合法飞象批次仍须可跳转');
+  assert.doesNotMatch(harness.bodyText(), /caishixian_fetch_orders\.py|CSX_PASSWORD|jufubao\.py|raw leak/);
+  assert.doesNotMatch(harness.bodyText(), /\[object |native code|function Object/);
+  assert.ok(document.body, '原型键不得让 DOM 崩溃');
+  assert.match(harness.bodyText(), /今日发货工作台/);
+});

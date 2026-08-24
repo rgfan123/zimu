@@ -5,11 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -238,6 +240,105 @@ class IdempotencyServiceIntegrationTest {
                     return "read-only-result";
                 },
                 result -> Map.of("result", result));
+    }
+
+    @Test
+    void externalWriteExpiredClaimFailsClosedWithoutASecondExternalEffect() throws Exception {
+        Map<String, String> payload = Map.of("request", "same");
+        AtomicInteger externalWrites = new AtomicInteger();
+        CountDownLatch firstWriteStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstWrite = new CountDownLatch(1);
+
+        CompletableFuture<IdempotentResult<Map<String, String>>> first = CompletableFuture.supplyAsync(() ->
+                idempotencyService.executeWithExternalWriteIntent(
+                        "external-write-expiry-test",
+                        "external-write-expiry-001",
+                        payload,
+                        201,
+                        Duration.ofMinutes(7),
+                        () -> "stable-intent",
+                        (intent, claim) -> {
+                            claim.verifyActive();
+                            externalWrites.incrementAndGet();
+                            firstWriteStarted.countDown();
+                            try {
+                                if (!releaseFirstWrite.await(10, TimeUnit.SECONDS)) {
+                                    throw new IllegalStateException("timed out waiting to release first external write");
+                                }
+                            } catch (InterruptedException ex) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(ex);
+                            }
+                            return Map.of("external_ref", intent);
+                        },
+                        (intent, result) -> IdempotencyService.ExternalCompletion.succeeded(result)));
+
+        assertThat(firstWriteStarted.await(10, TimeUnit.SECONDS)).isTrue();
+        new JdbcTemplate(dataSource).update(
+                "UPDATE app.idempotency_registry "
+                        + "SET lease_expires_at=statement_timestamp()-INTERVAL '1 second' "
+                        + "WHERE scope=? AND idempotency_key=?",
+                "external-write-expiry-test",
+                "external-write-expiry-001");
+        try {
+            assertThatThrownBy(() -> idempotencyService.executeWithExternalWriteIntent(
+                            "external-write-expiry-test",
+                            "external-write-expiry-001",
+                            payload,
+                            201,
+                            Duration.ofMinutes(7),
+                            () -> "must-not-persist-a-second-intent",
+                            (intent, claim) -> {
+                                claim.verifyActive();
+                                externalWrites.incrementAndGet();
+                                return Map.of("external_ref", intent);
+                            },
+                            (intent, result) -> IdempotencyService.ExternalCompletion.succeeded(result)))
+                    .isInstanceOfSatisfying(BusinessException.class, ex ->
+                            assertThat(ex.getBusinessCode()).isEqualTo("RECONCILIATION_REQUIRED"));
+            assertThat(externalWrites).hasValue(1);
+        } finally {
+            releaseFirstWrite.countDown();
+        }
+        assertThatThrownBy(first::join)
+                .hasRootCauseInstanceOf(BusinessException.class)
+                .rootCause()
+                .extracting(ex -> ((BusinessException) ex).getBusinessCode())
+                .isEqualTo("IDEMPOTENCY_CLAIM_LOST");
+        assertThat(new JdbcTemplate(dataSource).queryForObject(
+                "SELECT status FROM app.idempotency_registry WHERE scope=? AND idempotency_key=?",
+                String.class,
+                "external-write-expiry-test",
+                "external-write-expiry-001"))
+                .isEqualTo("RECONCILIATION_REQUIRED");
+    }
+
+    @Test
+    void externalWriteCanUseAScopeSpecificLease() {
+        Duration scopeLease = Duration.ofMinutes(7);
+
+        idempotencyService.executeWithExternalWriteIntent(
+                "external-write-scope-lease-test",
+                "external-write-scope-lease-001",
+                Map.of("request", "same"),
+                201,
+                scopeLease,
+                () -> "stable-intent",
+                (intent, claim) -> {
+                    claim.verifyActive();
+                    Double remaining = new JdbcTemplate(dataSource).queryForObject(
+                            """
+                            SELECT EXTRACT(EPOCH FROM (lease_expires_at - statement_timestamp()))::double precision
+                            FROM app.idempotency_registry
+                            WHERE scope=? AND idempotency_key=?
+                            """,
+                            Double.class,
+                            "external-write-scope-lease-test",
+                            "external-write-scope-lease-001");
+                    assertThat(remaining).isGreaterThan(6 * 60.0);
+                    return Map.of("external_ref", intent);
+                },
+                (intent, result) -> IdempotencyService.ExternalCompletion.succeeded(result));
     }
 
     private IdempotencyService serviceWithLease(long leaseSeconds) {

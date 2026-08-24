@@ -4,6 +4,7 @@ import {
   canConfirmReferenceRow,
   canReceiveTracking,
   presentImportRow,
+  presentJdCargos,
   presentTrackingBatchRow,
   summarizeImportBatch,
 } from '../src/pages/fulfillment/fileOperations.ts';
@@ -50,6 +51,7 @@ test('import issue rows expose actionable source fields without dumping raw cell
       order_line_exception: 'SKU_MAPPING_REQUIRED',
       sql: 'select * from app.skus',
     },
+    jd_cargos: [],
   });
 
   assert.deepEqual(issue, {
@@ -64,6 +66,7 @@ test('import issue rows expose actionable source fields without dumping raw cell
     receiverAddress: '上海市浦东新区',
     productName: '子牧羊小腿',
     quantity: '—',
+    jdCargos: [],
     specification: '—',
     fulfillmentType: null,
     reason: '来源商品尚未建立 SKU 映射',
@@ -91,14 +94,38 @@ test('accepted import rows show their safe order persistence link', () => {
     error_detail: {},
     order_id: '101',
     order_line_id: '201',
+    jd_cargos: [{
+      product_name: '子牧牛腱子500g*2',
+      provider_sku_code: 'JD-SKU-000001',
+      plan_quantity: 6,
+    }],
   });
 
   assert.equal(accepted.reason, '已写入系统订单');
   assert.equal(accepted.sourceOrderRef, 'CSX-ORDER-001');
   assert.equal(accepted.orderId, '101');
   assert.equal(accepted.orderLineId, '201');
+  assert.deepEqual(accepted.jdCargos, [{
+    productName: '子牧牛腱子500g*2',
+    providerSkuCode: 'JD-SKU-000001',
+    planQuantity: 6,
+  }]);
   // 解析投影有意展示收货人手机号（确认明细核对字段），不再视为 PII 泄漏
   assert.equal(accepted.receiverPhone, '13800000000');
+});
+
+test('jd cargo presentation renders single, multi, and empty shipments distinctly', () => {
+  // 单货品直接「N 件」；多货品必须带商品名逐行列出（\n 供前端 white-space: pre-line 换行）
+  assert.equal(presentJdCargos([]), '—');
+  assert.equal(presentJdCargos([{
+    productName: '子牧牛腱子500g*2',
+    providerSkuCode: 'JD-SKU-000001',
+    planQuantity: 6,
+  }]), '6 件');
+  assert.equal(presentJdCargos([
+    { productName: '礼包组件一', providerSkuCode: 'JD-SKU-000001', planQuantity: 2 },
+    { productName: '礼包组件二', providerSkuCode: 'EMG-WANGQI-BUNDLE-002', planQuantity: 4 },
+  ]), '礼包组件一: 2 件\n礼包组件二: 4 件');
 });
 
 test('resolved SKU rows show the remaining customer review instead of a stale mapping error', () => {

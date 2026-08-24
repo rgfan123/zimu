@@ -12,7 +12,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -24,6 +23,8 @@ import { providersApi } from '@/api/endpoints';
 import type { FulfillmentProvider } from '@/api/types';
 import { PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import DataTable from '@/components/DataTable';
+import PageShell from '@/components/PageShell';
 import {
   AdminCategoryTag,
   AdminEmpty,
@@ -67,6 +68,22 @@ const OUTBOUND_MODE_LABELS: Record<string, string> = {
 
 const JD_STRING_KEYS = JD_CONFIG_KEYS.filter((key) => key !== 'pin' && key !== 'townRequired');
 
+/** 企微群 chatid 前端校验：与后端契约一致（可见 ASCII、无空白/控制字符、最长 128）。 */
+const validateGroupChatId = (_rule: unknown, value: string | undefined) => {
+  if (typeof value !== 'string' || value.length === 0) return Promise.resolve();
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return Promise.reject(new Error('企微群 chatid 不能只含空白字符；清除登记请留空保存'));
+  }
+  if (trimmed.length > 128) {
+    return Promise.reject(new Error('企微群 chatid 最长 128 个字符'));
+  }
+  if (/[^\x21-\x7E]/.test(trimmed)) {
+    return Promise.reject(new Error('企微群 chatid 只能包含可见 ASCII 字符（不含空白与控制字符）'));
+  }
+  return Promise.resolve();
+};
+
 export default function FulfillmentProvidersPage() {
   const { message: messageApi } = AntApp.useApp();
   const { data, loading, error, reload } = useAsync(() => providersApi.list(), []);
@@ -80,6 +97,8 @@ export default function FulfillmentProvidersPage() {
       provider_name: record.provider_name,
       tracking_sla_minutes: record.tracking_sla_minutes,
       active: record.active,
+      wecom_group_chat_id: record.wecom_group_chat_id ?? '',
+      wecom_reminder_interval_minutes: record.wecom_reminder_interval_minutes ?? null,
     };
     if (record.provider_type === 'JD_WAREHOUSE') {
       for (const key of JD_STRING_KEYS) {
@@ -106,7 +125,14 @@ export default function FulfillmentProvidersPage() {
     try {
       const values = await form.validateFields();
       setSubmitting(true);
-      const config: Record<string, string | boolean> = {};
+      // 所有履约方类型都维护企微群 chatid：空串提交 null（清除登记），其余交给后端 trim/校验
+      const config: Record<string, string | boolean | number | null> = {};
+      const groupChatId = typeof values.wecom_group_chat_id === 'string' ? values.wecom_group_chat_id : '';
+      config.wecomGroupChatId = groupChatId.length > 0 ? groupChatId : null;
+      // 回传提醒间隔（Issue #84）：留空提交 null（恢复默认 = 运单回传时限），显式值 1..10080
+      const reminderInterval = values.wecom_reminder_interval_minutes;
+      config.wecomReminderIntervalMinutes =
+        typeof reminderInterval === 'number' && reminderInterval > 0 ? reminderInterval : null;
       if (editing.provider_type === 'JD_WAREHOUSE') {
         for (const key of JD_STRING_KEYS) {
           if (typeof values[key] === 'string' && values[key].length > 0) {
@@ -129,7 +155,7 @@ export default function FulfillmentProvidersPage() {
         tracking_sla_minutes:
           typeof values.tracking_sla_minutes === 'number' ? values.tracking_sla_minutes : undefined,
         active: typeof values.active === 'boolean' ? values.active : undefined,
-        config: editing.provider_type === 'JD_WAREHOUSE' ? config : undefined,
+        config,
       });
       messageApi.success('履约方配置已保存');
       setEditing(null);
@@ -157,6 +183,18 @@ export default function FulfillmentProvidersPage() {
       render: (value: FulfillmentProvider['provider_type']) => (
         <AdminCategoryTag category={value}>{PROVIDER_TYPE_LABELS[value]}</AdminCategoryTag>
       ),
+    },
+    {
+      title: '企微群',
+      dataIndex: 'wecom_group_chat_id',
+      width: 200,
+      ellipsis: true,
+      render: (value: string | null) =>
+        value ? (
+          <Tag color="blue" style={{ fontVariantNumeric: 'tabular-nums' }}>{value}</Tag>
+        ) : (
+          <Tag>未登记</Tag>
+        ),
     },
     {
       title: '京东标识',
@@ -221,24 +259,23 @@ export default function FulfillmentProvidersPage() {
 
   return (
     <div className="admin-page">
-      <div className="admin-page__intro">
-        <Typography.Text className="admin-page__intro-copy" type="secondary">
-          统一维护京东云仓与第三方履约方。缺货采购完成后，订单仍回到原履约方继续处理。
-        </Typography.Text>
-        <Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>
-      </div>
-
-      <div className="admin-surface">
-        <Table<FulfillmentProvider>
-          rowKey="id"
-          columns={columns}
-          dataSource={rows}
-          size="middle"
-          scroll={{ x: 1000 }}
-          pagination={{ pageSize: 10, showTotal: (total) => `共 ${total} 条` }}
-          locale={{ emptyText: <AdminEmpty description="暂无履约方配置" /> }}
-        />
-      </div>
+      <PageShell
+        title="履约方配置"
+        description="统一维护京东云仓与第三方履约方。缺货采购完成后，订单仍回到原履约方继续处理。"
+        actions={<Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>}
+      >
+        <div className="admin-surface">
+          <DataTable<FulfillmentProvider>
+            rowKey="id"
+            columns={columns}
+            dataSource={rows}
+            size="middle"
+            scroll={{ x: 1000 }}
+            pagination={{ pageSize: 10, showTotal: (total) => `共 ${total} 条` }}
+            emptyText={<AdminEmpty description="暂无履约方配置" />}
+          />
+        </div>
+      </PageShell>
 
       <Modal
         title={`编辑履约方 ${editing?.provider_code ?? ''}`}
@@ -272,6 +309,32 @@ export default function FulfillmentProvidersPage() {
             extra="停用后不再生成新的履约导出文件，库存不计入库存总览；既有订单、已导入批次与既有运单回传处理不受影响"
           >
             <Switch />
+          </Form.Item>
+          <Form.Item
+            name="wecom_group_chat_id"
+            label="企微群 chatid"
+            extra="登记该履约方对应的企业微信群 chatid（履约导出后向群内通知用）；留空并保存即清除登记，改完立即生效无需重启"
+            rules={[{ validator: validateGroupChatId }]}
+          >
+            <Input placeholder="请输入企微群 chatid（留空并保存 = 清除登记）" maxLength={128} />
+          </Form.Item>
+          <Form.Item
+            name="wecom_reminder_interval_minutes"
+            label="回传提醒间隔（分钟）"
+            extra="到期未收齐运单时的群提醒间隔；留空并保存 = 默认等于运单回传时限，改动只影响之后新生成的导出"
+            rules={[
+              {
+                validator: (_rule, value: number | null | undefined) => {
+                  if (value == null) return Promise.resolve();
+                  if (!Number.isInteger(value) || value < 1 || value > 10080) {
+                    return Promise.reject(new Error('提醒间隔必须是 1..10080 的整数分钟'));
+                  }
+                  return Promise.resolve();
+                },
+              },
+            ]}
+          >
+            <InputNumber min={1} max={10080} style={{ width: '100%' }} placeholder="留空 = 默认等于运单回传时限" />
           </Form.Item>
           {editing?.provider_type === 'JD_WAREHOUSE' && (
             <>

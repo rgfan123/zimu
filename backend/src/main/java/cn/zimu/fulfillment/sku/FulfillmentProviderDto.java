@@ -11,5 +11,7 @@ public record FulfillmentProviderDto(
         int trackingSlaMinutes,
         boolean active,
         long version,
-        Map<String, Object> jdConfig) {
+        Map<String, Object> jdConfig,
+        String wecomGroupChatId,
+        Integer wecomReminderIntervalMinutes) {
 }

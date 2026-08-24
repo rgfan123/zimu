@@ -1,13 +1,13 @@
 # Agent 评测基线（agent-decision-layer 09）
 
-基线固化日期：2026-08-16
+基线固化日期：2026-08-16（采购比价 2026-08-19 重钉为 v2）
 数据驱动化（meta-agent-platform-impl 03）：2026-08-19
 
 ## 评测集（DB 真源 `app.agent_eval_cases`，V33 播种 + 版本化）
 
 | 评测集 | 版本 | 内容 | 真源位置 |
 |---|---|---|---|
-| 采购比价 | `procurement-eval-v1` | 7 例：正常比价（ticket / sku 输入）、无候选、缺价格、低置信度+字段缺失、schema 不符（负例）、camelCase 模型输出兼容 | `app.agent_eval_cases`（`metric_kind='INVARIANT'`，`status='CONFIRMED'`；代码 fixture 类已于 T03 删除） |
+| 采购比价 | `procurement-eval-v2` | 12 例：正常比价、无候选、缺价格、低置信度、schema 负例、camelCase 兼容，以及不可比候选剔除 5 例 | `app.agent_eval_cases`（`metric_kind='INVARIANT'`，`status='CONFIRMED'`） |
 | 数据查询 | `data-query-eval-v1` | 7 条：歧义澄清 3（SKU-xxx / P-123 / 某履约方）、PII 拒绝 1、可答落地 3（7 天缺货数、SKU 价格、工单缺口） | 同上 |
 | 意图识别回归门禁 | —（不新建用例） | 直接复用既有 `MessageInterpretation*Test` 套件（07 票不变式，行为零变化） | `backend/src/test/java/cn/zimu/fulfillment/message/` |
 
@@ -24,13 +24,21 @@
 
 | 指标 | 口径 | 基线 |
 |---|---|---|
-| schema 通过率 | 合法用例解析成功 / 合法用例，负例必须稳定拒绝（AGENT_OUTPUT_INVALID） | 100%（6/6 + 负例 1 拒绝） |
+| schema 通过率 | 合法用例解析成功 / 合法用例，负例必须稳定拒绝（AGENT_OUTPUT_INVALID） | 100%（11/11 + 负例 1 拒绝） |
 | 工具选择准确率 | 实际工具调用序列 == 预期工具（expected.tool_sequence） | 100%（3/3） |
 | 答案数字正确率 | 最终答案包含预期数字（数字来自工具返回值） | 100%（3/3） |
-| requires_human 召回 | 低置信度（<0.6）/无候选/缺价格/歧义/PII 必须转人工 | 采购 3/3；数据查询门禁 4/4 |
+| requires_human 召回 | 低置信度（<0.6）/无候选/缺价格/可比候选空/推荐落被剔除候选/歧义/PII 必须转人工 | 采购 6/6；数据查询门禁 4/4 |
 | happy 路径误转人工 | 正常用例不得误转人工 | 0 |
 | 写工具零调用不变式 | 评测运行中白名单外写工具零调用；绑定只暴露只读工具 | 0 |
 | latency / token | stub 实测毫秒 / stub 注入 token | 信息性（见归档） |
+
+## QUALITY 指标（参考，不进 CI 门禁；meta-agent-platform-impl 09）
+
+与 INVARIANT（stub 跑分器 + CI 基线门禁，确定性）分工：
+
+- **INVARIANT**（本文件上文）：工具序列 / schema 通过率 / requires_human 召回 / 写工具零调用，stub 模型 + DB 用例，`AgentEvalBaselineTest` 钉死基线——CI 只钉这类。
+- **QUALITY**（答案质量，真实模型）：由 `QualityEvalService` 按 `(agent_slug, agent_version)` 冻结的 QUALITY 用例集 + 定义 system_prompt 生成 promptfoo 配置（deepseek provider，密钥只经 `DEEPSEEK_API_KEY` 环境变量，绝不入 DB/日志/产物），`NpxPromptfooRunner`（ProcessBuilder 跑 `npx promptfoo eval`）执行，结果回写 `app.agent_eval_results`（`metric_kind='QUALITY'`，按 run_id/用例关联）；异步任务（`QUALITY_EVAL`，Spring Worker）执行并以 `run_mode=PREVIEW` 落 `agent_runs`，不污染 LIVE 统计与 INVARIANT 基线。
+- **分工**：QUALITY 是参考指标（供确认人参考、有波动），**不**进入 CI 门禁、不钉基线；失败不阻断草稿确认（落 FAILED 结果 + 观测行后任务收口）。运行形态：`app.quality-eval.enabled=true` 时 `QualityEvalWorker` 按 `app.quality-eval.poll-ms` 领取执行；冒烟 `PROMPTFOO_SMOKE=1` 跑 `PromptfooEvalSmokeTest`（echo provider 免密钥验证配置端到端消费；真实 deepseek 调用需设置 `DEEPSEEK_API_KEY` 后同一配置直接跑）。
 
 ## 运行命令
 
@@ -59,5 +67,5 @@ mvn -q test
 
 1. 改 Agent 提示词 / 模型 / 阈值 / 评测集 → 必须复跑 `mvn -q test -Dtest='AgentEval*'`；
 2. 指标达标后提交归档文件哈希/数字到本文件（或票 Answer）；
-3. `AgentEvalBaselineTest` 钉死基线数字与版本标识（`procurement-eval-v1` / `data-query-eval-v1` / `agent-foundation-v1` / `data-query-v1` / 低置信度阈值 0.6），改版本号/阈值/提示词版本必须同步更新该测试，防止静默回归；
+3. `AgentEvalBaselineTest` 钉死基线数字与版本标识（`procurement-eval-v2` / `data-query-eval-v1` / `agent-foundation-v1` / `data-query-v1` / `procurement-price-v2` / 低置信度阈值 0.6 / 离群倍数 2.0），改版本号/阈值/提示词版本必须同步更新该测试，防止静默回归；
 4. 提示词版本号随变更递增（版本即评测基线的一部分）。

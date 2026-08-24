@@ -31,6 +31,7 @@ function draft(): OrderDraftDetail {
     receiver_phone: '13800000000',
     receiver_address: '上海市浦东新区测试路 1 号',
     settlement_method: 'MONTHLY',
+    settlement_time: '2026-08-31T16:00:00.000Z',
     missing_fields: [],
     lines: [
       {
@@ -50,13 +51,18 @@ function draft(): OrderDraftDetail {
   };
 }
 
-test('review form defaults only deterministic unique candidates and remains incomplete without settlement time', () => {
+test('review form defaults deterministic unique candidates and a persisted settlement time', () => {
   const form = initialOrderDraftReviewForm(draft());
 
   assert.equal(form.customer_id, '12');
   assert.equal(form.items[1]?.sku_id, '44');
   assert.equal(form.items[1]?.quantity, '2');
-  assert.deepEqual(orderDraftMissingFields(draft(), form), ['settlement_time']);
+  assert.equal(form.settlement_time, '2026-08-31T16:00:00.000Z');
+  assert.deepEqual(orderDraftMissingFields(draft(), form), []);
+
+  const missingTime = draft();
+  missingTime.settlement_time = null;
+  assert.deepEqual(orderDraftMissingFields(missingTime, initialOrderDraftReviewForm(missingTime)), ['settlement_time']);
 
   const ambiguous = draft();
   ambiguous.customer_candidates = [

@@ -26,4 +26,27 @@ printf 'proxy_set_header X-Operator "%s";\nproxy_set_header Authorization "Basic
 chmod 600 /etc/nginx/backend-auth.inc
 unset basic_credentials
 unset app_admin_password
+
+# Edge Basic Auth toggle: GATEWAY_BASIC_AUTH_ENABLED defaults to on. The gateway
+# must not silently run open — disabling it is an explicit, visible opt-out for
+# controlled LAN acceptance only.
+edge_auth_enabled="${GATEWAY_BASIC_AUTH_ENABLED:-true}"
+case "$edge_auth_enabled" in
+  true|TRUE|True) edge_auth_enabled=true ;;
+  false|FALSE|False) edge_auth_enabled=false ;;
+  *)
+    echo "GATEWAY_BASIC_AUTH_ENABLED must be 'true' or 'false' (got '$edge_auth_enabled')" >&2
+    exit 1
+    ;;
+esac
+if [ "$edge_auth_enabled" = "true" ]; then
+  printf 'auth_basic "Zimu Fulfillment gateway";\nauth_basic_user_file /etc/nginx/.htpasswd;\n' \
+    > /etc/nginx/edge-auth.inc
+  echo "[zimu-nginx] edge Basic Auth: ENABLED (GATEWAY_BASIC_AUTH_ENABLED=${GATEWAY_BASIC_AUTH_ENABLED:-<unset, default true>})"
+else
+  printf 'auth_basic off;\n' > /etc/nginx/edge-auth.inc
+  echo "[zimu-nginx] WARNING: edge Basic Auth DISABLED (GATEWAY_BASIC_AUTH_ENABLED=false) — the gateway is open to any client that can reach it. Set GATEWAY_BASIC_AUTH_ENABLED=true (or unset) to restore protection." >&2
+fi
+chmod 600 /etc/nginx/edge-auth.inc
+
 exec /docker-entrypoint.sh nginx -g 'daemon off;'

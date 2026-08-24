@@ -2,9 +2,17 @@ package cn.zimu.fulfillment.connector.wecom;
 
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
+import cn.zimu.fulfillment.order.card.CardConfirmationResult;
+import cn.zimu.fulfillment.order.card.CardConfirmationStatus;
+import cn.zimu.fulfillment.order.card.CardFallbackStatus;
+import cn.zimu.fulfillment.order.card.CardInteractionOutcome;
+import cn.zimu.fulfillment.order.card.CardUpdateStatus;
+import cn.zimu.fulfillment.order.card.WecomOrderDraftCardInteractionService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -20,8 +28,10 @@ import org.springframework.stereotype.Component;
  * <p>映射决策（04 票）：chattype 区分单聊（无 chatid）与群聊；from.userid 明文直用；msgid 幂等由
  * {@code channel_messages} 的 ON CONFLICT 保证；回执透传回调 req_id，发送失败重试 1 次、仍失败只告警；
  * 媒体（image/mixed）**不在回调线程下载**——仅保存原始载荷并创建解释任务，由解释任务内下载解密
- * （wecom-message-intake 07 票 checkbox 1：不等待下载或识别即可回复「已接收」）；voice/file/video
- * 落证据但不下载；enter_chat / disconnected_event 留档，template_card_event / feedback_event 忽略。
+ * （wecom-message-intake 07 票 checkbox 1：不等待下载或识别即可回复「已接收」）；单聊 file
+ * 进入 {@code WECOM_TRACKING_FILE} 专用任务下载/解析且不进模型；voice/video 只落消息证据；
+ * enter_chat / disconnected_event 留档；template_card_event 走持久化人工确认与
+ * 5 秒 updateCard 快路径，feedback_event 忽略。
  * 不设白名单。
  */
 @Component
@@ -31,30 +41,45 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
 
     static final String CONNECTION_ID = "wecom-long-connection";
     static final String RECEIPT_TEXT = "已接收";
+    static final long UPDATE_CARD_BUDGET_NANOS = 4_500_000_000L;
+    private static final ZoneId DISPLAY_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter DISPLAY_TIME = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss");
 
     private final MessageSubmissionService submissionService;
     private final ObjectProvider<WecomConnectionManager> connectionManagerProvider;
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
+    private final WecomOrderDraftCardInteractionService cardInteractions;
+    private final ObjectProvider<WecomOutboundGateway> outboundGatewayProvider;
 
     private volatile WecomConnectionManager connectionManager;
+    private volatile WecomOutboundGateway outboundGateway;
 
     public WecomMessageDispatchHandler(
             MessageSubmissionService submissionService,
             ObjectProvider<WecomConnectionManager> connectionManagerProvider,
             JdbcTemplate jdbc,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            WecomOrderDraftCardInteractionService cardInteractions,
+            ObjectProvider<WecomOutboundGateway> outboundGatewayProvider) {
         this.submissionService = submissionService;
         this.connectionManagerProvider = connectionManagerProvider;
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
+        this.cardInteractions = cardInteractions;
+        this.outboundGatewayProvider = outboundGatewayProvider;
     }
 
     @Override
     public void onFrame(String cmd, JsonNode frame) {
+        onFrame(cmd, frame, System.nanoTime());
+    }
+
+    @Override
+    public void onFrame(String cmd, JsonNode frame, long receivedNanos) {
         switch (cmd == null ? "" : cmd) {
             case "aibot_msg_callback" -> handleMessage(frame);
-            case "aibot_event_callback" -> handleEvent(frame);
+            case "aibot_event_callback" -> handleEvent(frame, receivedNanos);
             default -> log.debug("忽略未知企微长连接帧: {}", cmd);
         }
     }
@@ -107,14 +132,203 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         }
     }
 
-    void handleEvent(JsonNode frame) {
+    void handleEvent(JsonNode frame, long startedNanos) {
         JsonNode body = frame.path("body");
         String eventType = body.path("event").path("eventtype").asText("");
         switch (eventType) {
             case "enter_chat", "disconnected_event" -> persistEvent(frame, body, eventType);
-            case "template_card_event", "feedback_event" -> log.debug("按决策忽略企微事件: {}", eventType);
+            case "template_card_event" -> handleTemplateCardEvent(frame, startedNanos);
+            case "feedback_event" -> log.debug("按决策忽略企微事件: {}", eventType);
             default -> log.debug("未知企微事件类型: {}", eventType);
         }
+    }
+
+    /**
+     * 业务处理先提交；updateCard 与文字兜底随后执行，任何通道失败都不会回滚已确认订单。
+     * 4.5 秒本地预算为官方 5 秒窗口预留 500ms 发送余量。
+     */
+    void handleTemplateCardEvent(JsonNode frame, long startedNanos) {
+        CardInteractionOutcome outcome;
+        try {
+            outcome = cardInteractions.handle(frame);
+        } catch (RuntimeException ex) {
+            log.error("企微卡片事件处理失败，无法进入 updateCard 快路径", ex);
+            return;
+        }
+        String messageId = frame.path("body").path("msgid").asText(outcome.messageId());
+        String reqId = frame.path("headers").path("req_id").asText(outcome.requestId());
+        if (outcome.duplicate()
+                && "ORDER_DRAFT_CARD_EVENT_IN_PROGRESS".equals(outcome.result().businessCode())) {
+            // The original callback still owns the business action and its req_id fast path. A
+            // concurrent redelivery must not mutate either the live card or the original
+            // callback's persisted send outcome. Both callbacks intentionally share the active
+            // claim token, so even a token-CAS write here could race after the owner records SENT.
+            log.debug("企微卡片事件正在由原回调处理，忽略并发重投 msgid={}", messageId);
+            return;
+        }
+        if (outcome.duplicate()
+                && "WECOM_CARD_EVENT_FACTS_MISMATCH".equals(outcome.result().businessCode())) {
+            // The persisted first callback owns this msgid. A transformed redelivery receives no
+            // business action, card update or fallback and cannot overwrite the original evidence.
+            log.warn("企微卡片事件首次事实不一致，拒绝变形重投 msgid={}", messageId);
+            return;
+        }
+        if (outcome.duplicate()) {
+            // A completed callback already owns the persisted update/fallback observation. A
+            // platform redelivery must be read-only: resending can duplicate fallback text and a
+            // late timeout/failure could otherwise downgrade an earlier SENT result.
+            log.debug("企微卡片事件已完成，忽略终态重投 msgid={}", messageId);
+            return;
+        }
+        String updateErrorCode = null;
+        String fallbackErrorCode = null;
+        CardUpdateStatus updateStatus;
+        CardFallbackStatus fallbackStatus = CardFallbackStatus.NOT_ATTEMPTED;
+        long deadlineNanos = startedNanos + UPDATE_CARD_BUDGET_NANOS;
+        long elapsed = System.nanoTime() - startedNanos;
+        if (reqId == null || reqId.isBlank()) {
+            updateStatus = CardUpdateStatus.FAILED;
+            updateErrorCode = "UPDATE_REQUEST_ID_MISSING";
+        } else if (outcome.taskId() == null || outcome.taskId().isBlank()) {
+            updateStatus = CardUpdateStatus.FAILED;
+            updateErrorCode = "UPDATE_TASK_ID_INVALID";
+        } else if (elapsed >= UPDATE_CARD_BUDGET_NANOS) {
+            updateStatus = CardUpdateStatus.TIMED_OUT;
+            updateErrorCode = "FAST_PATH_DEADLINE_EXCEEDED";
+        } else {
+            try {
+                WecomSendResult updateResult = connectionManager()
+                        .respondUpdateUntil(reqId, updateCard(outcome), deadlineNanos);
+                updateStatus = switch (updateResult.status()) {
+                    case SUCCESS -> CardUpdateStatus.SENT;
+                    case TIMEOUT -> CardUpdateStatus.TIMED_OUT;
+                    case FAILED -> CardUpdateStatus.FAILED;
+                };
+                updateErrorCode = updateStatus == CardUpdateStatus.SENT
+                        ? null
+                        : sendFailureCode(updateResult, "UPDATE_NOT_ACKNOWLEDGED");
+            } catch (RuntimeException ex) {
+                updateStatus = CardUpdateStatus.FAILED;
+                updateErrorCode = "UPDATE_SEND_EXCEPTION";
+                log.warn("企微卡片同步更新失败，改发文字兜底 msgid={}", messageId, ex);
+            }
+        }
+
+        if (updateStatus != CardUpdateStatus.SENT) {
+            FallbackDelivery fallback = sendFallback(outcome);
+            fallbackStatus = fallback.status();
+            fallbackErrorCode = fallback.errorCode();
+        }
+        int latencyMs = nanosToMillis(System.nanoTime() - startedNanos);
+        recordCardUpdateOutcome(
+                messageId,
+                outcome.claimToken(),
+                updateStatus,
+                fallbackStatus,
+                latencyMs,
+                updateErrorCode,
+                fallbackErrorCode);
+    }
+
+    private void recordCardUpdateOutcome(
+            String messageId,
+            String claimToken,
+            CardUpdateStatus updateStatus,
+            CardFallbackStatus fallbackStatus,
+            int latencyMs,
+            String updateErrorCode,
+            String fallbackErrorCode) {
+        if (claimToken == null || claimToken.isBlank()) {
+            return;
+        }
+        try {
+            cardInteractions.recordUpdateOutcome(
+                    messageId,
+                    claimToken,
+                    updateStatus,
+                    fallbackStatus,
+                    latencyMs,
+                    updateErrorCode,
+                    fallbackErrorCode);
+        } catch (RuntimeException ex) {
+            log.error("企微卡片更新结果落库失败 msgid={} status={}", messageId, updateStatus, ex);
+        }
+    }
+
+    private ObjectNode updateCard(CardInteractionOutcome outcome) {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("response_type", "update_template_card");
+        ObjectNode card = body.putObject("template_card");
+        card.put("card_type", "text_notice");
+        card.putObject("main_title")
+                .put("title", title(outcome.result().status()))
+                .put("desc", outcome.result().draftNo() + " · " + operatorAndTime(outcome.result()));
+        card.put("task_id", outcome.taskId());
+        return body;
+    }
+
+    private FallbackDelivery sendFallback(CardInteractionOutcome outcome) {
+        if (outcome.replyTarget() == null || outcome.replyTarget().isBlank()) {
+            return FallbackDelivery.failed("FALLBACK_TARGET_MISSING");
+        }
+        String text = title(outcome.result().status()) + "：" + outcome.result().draftNo() + "，"
+                + operatorAndTime(outcome.result());
+        if (outcome.result().status() == CardConfirmationStatus.MISSING_INFORMATION
+                && !outcome.result().missingFields().isEmpty()) {
+            text += "；待补充 " + String.join("、", outcome.result().missingFields());
+        }
+        try {
+            WecomSendResult result = outboundGateway()
+                    .send(WecomOutboundMessage.text(outcome.replyTarget(), text));
+            return result.status() == WecomSendStatus.SUCCESS
+                    ? FallbackDelivery.sent()
+                    : FallbackDelivery.failed(sendFailureCode(result, "FALLBACK_NOT_ACKNOWLEDGED"));
+        } catch (RuntimeException ex) {
+            log.warn("企微卡片文字兜底发送失败 target={}", outcome.replyTarget(), ex);
+            return FallbackDelivery.failed("FALLBACK_SEND_EXCEPTION");
+        }
+    }
+
+    private static String sendFailureCode(WecomSendResult result, String fallback) {
+        if (result.errorCode() != null) {
+            return "WECOM_" + result.errorCode();
+        }
+        return result.errorMessage() == null || result.errorMessage().isBlank()
+                ? fallback
+                : result.errorMessage();
+    }
+
+    private record FallbackDelivery(CardFallbackStatus status, String errorCode) {
+
+        static FallbackDelivery sent() {
+            return new FallbackDelivery(CardFallbackStatus.SENT, null);
+        }
+
+        static FallbackDelivery failed(String errorCode) {
+            return new FallbackDelivery(CardFallbackStatus.FAILED, errorCode);
+        }
+    }
+
+    private static String title(CardConfirmationStatus status) {
+        return switch (status) {
+            case CONFIRMED -> "订单已确认";
+            case ALREADY_CONFIRMED -> "订单已确认（重复点击）";
+            case MISSING_INFORMATION -> "订单信息待补充";
+            case REJECTED -> "卡片操作被拒绝";
+            case FAILED -> "卡片处理状态待确认";
+        };
+    }
+
+    private static String operatorAndTime(CardConfirmationResult result) {
+        String actor = result.confirmedBy() == null ? "unknown" : result.confirmedBy();
+        if (actor.startsWith("wecom:")) {
+            actor = actor.substring("wecom:".length());
+        }
+        return "操作人：" + actor + " · " + DISPLAY_TIME.format(result.processedAt().atZone(DISPLAY_ZONE));
+    }
+
+    private static int nanosToMillis(long nanos) {
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(0L, nanos / 1_000_000L));
     }
 
     private void persistEvent(JsonNode frame, JsonNode body, String eventType) {
@@ -180,6 +394,21 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
                 if (resolved == null) {
                     resolved = connectionManagerProvider.getObject();
                     connectionManager = resolved;
+                }
+            }
+        }
+        return resolved;
+    }
+
+    /** Lazy outbound gateway lookup breaks handler → gateway → connection manager → handler construction. */
+    private WecomOutboundGateway outboundGateway() {
+        WecomOutboundGateway resolved = outboundGateway;
+        if (resolved == null) {
+            synchronized (this) {
+                resolved = outboundGateway;
+                if (resolved == null) {
+                    resolved = outboundGatewayProvider.getObject();
+                    outboundGateway = resolved;
                 }
             }
         }

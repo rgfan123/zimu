@@ -118,6 +118,7 @@ public class OrderDraftQueryService {
                 draft.getReceiverPhone(),
                 draft.getReceiverAddress(),
                 draft.getSettlementMethod(),
+                draft.getSettlementTime(),
                 draft.getMissingFields(),
                 draftLines.stream()
                         .map(line -> toLine(line, skuCodes.get(line.getSkuId())))

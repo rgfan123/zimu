@@ -147,3 +147,25 @@ body {
   padding: 1px 7px;
   font-variant-numeric: tabular-nums;
 }
+
+/* ============ Agent 中心：PREVIEW 运行行底色 ============ */
+/* run_mode 存在的全部理由是隔离草稿试跑。横幅说明「现在在看什么」，
+   行底色让人滚到半页时仍然知道——两者缺一，隔离就是半拉子。
+   紫色是刻意选的：与品牌蓝相邻但绝不混淆，且不占用 success/warning/error 三个语义位。 */
+.agent-run-preview-row > td {
+  background: var(--zimu-saas-colorPurpleBg, #f1eef8);
+}
+.agent-run-preview-row:hover > td {
+  background: var(--zimu-saas-colorPurpleBgHover, #e8e3f4);
+}
+
+/* ============ 出库信息对账（Ticket 01）差异行高亮 ============ */
+/* 只染背景色不动文字色，配合 antd 深浅主题保持可读；MISMATCH/未取到偏红，单侧缺失偏琥珀。 */
+
+.recon-row-mismatch > td {
+  background-color: rgba(255, 77, 79, 0.06) !important;
+}
+
+.recon-row-only > td {
+  background-color: rgba(250, 173, 20, 0.06) !important;
+}

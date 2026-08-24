@@ -29,6 +29,11 @@ server:
   port: ${SERVER_PORT:8080}
 
 app:
+  scheduling:
+    # 生产默认启用；测试可整体关闭，避免缓存的 Spring context 继续轮询已销毁的 Testcontainer。
+    enabled: ${SCHEDULED_TASKS_ENABLED:true}
+    # 当前 10 条 @Scheduled 触发流各有独立 lane；代码将配置值限制在 10..32。
+    pool-size: ${SCHEDULED_TASK_POOL_SIZE:10}
   gateway:
     basic-auth:
       # 全部 /api 请求都会在后端复验 Nginx 提供的 Basic Auth；缺失时默认拒绝。
@@ -47,13 +52,55 @@ app:
     enabled: ${WECOM_ENABLED:false}
     bot-id: ${WECOM_BOT_ID:}
     secret: ${WECOM_SECRET:}
-    ws-url: ${WECOM_WS_URL:wss://openws.work.weixin.qq.com}
+    # 长连接目标固定为官方 wss://openws.work.weixin.qq.com；部署配置不可改写凭据发送目标。
     heartbeat-interval-seconds: ${WECOM_HEARTBEAT_INTERVAL_SECONDS:30}
   message-worker:
     enabled: ${MESSAGE_WORKER_ENABLED:true}
     poll-ms: ${MESSAGE_WORKER_POLL_MS:500}
     lease-seconds: ${MESSAGE_WORKER_LEASE_SECONDS:30}
     backoff-seconds: ${MESSAGE_WORKER_BACKOFF_SECONDS:5}
+  wecom-tracking-file-worker:
+    # Issue #86：单聊 file 专用确定性解析队列；默认跟随消息 Worker 总开关，且从不调用模型。
+    enabled: ${WECOM_TRACKING_FILE_WORKER_ENABLED:${MESSAGE_WORKER_ENABLED:true}}
+    poll-ms: ${WECOM_TRACKING_FILE_WORKER_POLL_MS:500}
+    lease-seconds: ${WECOM_TRACKING_FILE_WORKER_LEASE_SECONDS:60}
+    backoff-seconds: ${WECOM_TRACKING_FILE_WORKER_BACKOFF_SECONDS:5}
+    claim-error-suppress-seconds: ${WECOM_TRACKING_FILE_WORKER_CLAIM_ERROR_SUPPRESS_SECONDS:60}
+  wecom-export-worker:
+    # Issue #84：履约导出企微发送 Worker（INITIAL/REMINDER 共用 WECOM_EXPORT_DELIVERY 任务）。
+    enabled: ${WECOM_EXPORT_WORKER_ENABLED:true}
+    poll-ms: ${WECOM_EXPORT_WORKER_POLL_MS:1000}
+    # 租约 40 分钟（代码下限，不可调小）：必须覆盖 #82 上传器完整最坏恢复预算 =
+    # pre-init 5 次 resume (每次最多 15s 等 ACK + 60s 退避) + 15s init ACK = 5×(15+60)+15 = 390s
+    # + 30 分钟会话 + 15s = 1815s + 最终 send ACK 5s = 2210s (36m50s)，2400s 留约 190s 余量
+    # 作为保守下限——真实执行仍活跃时任务绝不被第二实例重新领取误判为 crash（SENDING 只在
+    # 租约过期后的重新领取时转 UNKNOWN 人工对账）。
+    lease-seconds: ${WECOM_EXPORT_WORKER_LEASE_SECONDS:2400}
+    backoff-seconds: ${WECOM_EXPORT_WORKER_BACKOFF_SECONDS:30}
+    claim-error-suppress-seconds: ${WECOM_EXPORT_WORKER_CLAIM_ERROR_SUPPRESS_SECONDS:60}
+  wecom-reminder:
+    # Issue #84：到期未收齐运单的周期提醒扫描器（DB 扫描，无内存延迟链）。
+    enabled: ${WECOM_REMINDER_ENABLED:true}
+    scan-ms: ${WECOM_REMINDER_SCAN_MS:30000}
+    scan-batch-limit: ${WECOM_REMINDER_SCAN_BATCH_LIMIT:20}
+  wecom-notification:
+    # Issue #90：复核/订单创建/发货完成按责任团队做 5 分钟持久化汇总；仅企微启用时默认启用。
+    enabled: ${WECOM_NOTIFICATION_ENABLED:${WECOM_ENABLED:false}}
+    poll-ms: ${WECOM_NOTIFICATION_POLL_MS:1000}
+    lease-seconds: ${WECOM_NOTIFICATION_LEASE_SECONDS:120}
+    batch-limit: ${WECOM_NOTIFICATION_BATCH_LIMIT:20}
+    claim-error-suppress-seconds: ${WECOM_NOTIFICATION_CLAIM_ERROR_SUPPRESS_SECONDS:60}
+  wecom-order-draft-card:
+    # Issues #87/#88：草稿事务内入队，独立 Worker 发送交互卡；默认跟随企微总开关。
+    enabled: ${WECOM_ORDER_DRAFT_CARD_ENABLED:${WECOM_ENABLED:false}}
+    poll-ms: ${WECOM_ORDER_DRAFT_CARD_POLL_MS:1000}
+    lease-seconds: ${WECOM_ORDER_DRAFT_CARD_LEASE_SECONDS:60}
+  agent-worker:
+    # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
+    enabled: ${AGENT_WORKER_ENABLED:true}
+    poll-ms: ${AGENT_WORKER_POLL_MS:500}
+    lease-seconds: ${AGENT_WORKER_LEASE_SECONDS:30}
+    backoff-seconds: ${AGENT_WORKER_BACKOFF_SECONDS:5}
   message-interpreter:
     provider: ${MESSAGE_INTERPRETER_PROVIDER:}
     model: ${MESSAGE_INTERPRETER_MODEL:}
@@ -122,6 +169,30 @@ app:
       poll-ms: ${JD_TRACKING_BACKFILL_POLL_MS:60000}
       batch-size: ${JD_TRACKING_BACKFILL_BATCH_SIZE:20}
       min-interval: ${JD_TRACKING_BACKFILL_MIN_INTERVAL:PT1M}
+  zhonghui-pms:
+    # MOCK（默认）只做本地联调；REAL 仅选择真实 Adapter，外部写仍须第二道 write-mode=ON 门闩。
+    client-mode: ${ZHONGHUI_PMS_CLIENT_MODE:MOCK}
+    write-mode: ${ZHONGHUI_PMS_WRITE_MODE:OFF}
+    # 每次 PMS HTTP 调用的响应上限；20 SKU 最坏调用预算受此值约束。
+    request-timeout: ${ZHONGHUI_PMS_REQUEST_TIMEOUT:PT30S}
+    # 独立于全局 60s 的外部写租约；20 SKU 名义 30 分钟调用预算外再留 10 分钟收尾余量。
+    idempotency-lease: ${ZHONGHUI_PMS_IDEMPOTENCY_LEASE:PT40M}
+    # 凭据只经环境变量注入，绝不写入日志、数据库或 API 响应。
+    base-url: ${ZHONGHUI_PMS_BASE_URL:}
+    username: ${ZHONGHUI_PMS_USERNAME:}
+    password: ${ZHONGHUI_PMS_PASSWORD:}
+    defaults:
+      brand-id: ${ZHONGHUI_PMS_DEFAULT_BRAND_ID:}
+      certification-type: ${ZHONGHUI_PMS_DEFAULT_CERTIFICATION_TYPE:}
+      certification-id: ${ZHONGHUI_PMS_DEFAULT_CERTIFICATION_ID:}
+      third-id: ${ZHONGHUI_PMS_DEFAULT_THIRD_ID:}
+      limit-area-temp-id: ${ZHONGHUI_PMS_DEFAULT_LIMIT_AREA_TEMP_ID:}
+      goods-tax: ${ZHONGHUI_PMS_DEFAULT_GOODS_TAX:}
+      logistics-carrier: ${ZHONGHUI_PMS_DEFAULT_LOGISTICS_CARRIER:}
+      producing-area: ${ZHONGHUI_PMS_DEFAULT_PRODUCING_AREA:}
+      goods-num: ${ZHONGHUI_PMS_DEFAULT_GOODS_NUM:99}
+      sale-unit: ${ZHONGHUI_PMS_DEFAULT_SALE_UNIT:件}
+      origincountry: ${ZHONGHUI_PMS_DEFAULT_ORIGIN_COUNTRY:1}
   platform-pull:
     # 三平台订单刷新通道：脚本与凭据目录挂载路径（docker-compose backend volumes）。
     scripts-dir: ${APP_PLATFORM_PULL_SCRIPTS_DIR:/app/platform-pull-scripts}

@@ -54,6 +54,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- OpenAPI spec 生成（工单 07）：从运行中的应用导出 /v3/api-docs(.yaml)。
+             springdoc-openapi v2.x 是 Spring Boot 3.x 对应的主线；2.9.0 明确按 Spring Boot 3.5.16 构建（见其 release notes）。 -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.9.0</version>
+        </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>

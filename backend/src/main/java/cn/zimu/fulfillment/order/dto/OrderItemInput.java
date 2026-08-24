@@ -20,6 +20,21 @@ public record OrderItemInput(
         @NotBlank(message = "单位不能为空") @Size(max = 32, message = "单位超长") String unit,
         @NotBlank(message = "数量不能为空")
                 @Pattern(regexp = Patterns.POSITIVE_DECIMAL_QUANTITY, message = "数量必须为正数且最多三位小数")
-                String quantity,
+        String quantity,
+        @Pattern(regexp = Patterns.IDENTIFIER, message = "静态礼包标识符无效") String bundleId,
         List<@Valid BundleComponentInput> components) {
+
+    /** 兼容普通商品和当单定制礼包调用方；静态礼包由来源适配器显式传 bundleId。 */
+    public OrderItemInput(
+            String sourceLineRef,
+            LineType lineType,
+            String skuCode,
+            String sourceSkuRef,
+            String productName,
+            String specification,
+            String unit,
+            String quantity,
+            List<BundleComponentInput> components) {
+        this(sourceLineRef, lineType, skuCode, sourceSkuRef, productName, specification, unit, quantity, null, components);
+    }
 }

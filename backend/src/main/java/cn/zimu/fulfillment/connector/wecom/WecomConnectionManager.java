@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import java.nio.file.Path;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
@@ -19,7 +20,7 @@ import org.springframework.stereotype.Component;
  * 通过 {@link #respond(String, JsonNode)} 发送「已接收」回执。
  */
 @Component
-public class WecomConnectionManager {
+public class WecomConnectionManager implements WecomOutboundTransport {
 
     private final WecomProperties properties;
     private final ObjectMapper objectMapper;
@@ -76,6 +77,38 @@ public class WecomConnectionManager {
     public boolean respond(String reqId, JsonNode body) {
         WecomLongConnectionClient current = client;
         return current != null && current.respond(reqId, body);
+    }
+
+    /** 卡片点击事件同步更新；透传事件 req_id，不生成新的请求标识。 */
+    public WecomSendResult respondUpdate(String reqId, JsonNode body) {
+        WecomLongConnectionClient current = client;
+        return current == null
+                ? WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true)
+                : current.respondUpdate(reqId, body);
+    }
+
+    /** 卡片同步更新，共享调用方给出的单调绝对截止时间。 */
+    public WecomSendResult respondUpdateUntil(String reqId, JsonNode body, long deadlineNanos) {
+        WecomLongConnectionClient current = client;
+        return current == null
+                ? WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true)
+                : current.respondUpdateUntil(reqId, body, deadlineNanos);
+    }
+
+    @Override
+    public WecomSendResult send(WecomOutboundMessage message) {
+        WecomLongConnectionClient current = client;
+        return current == null
+                ? WecomSendResult.failed(null, null, "CONNECTION_NOT_READY", true)
+                : current.send(message);
+    }
+
+    @Override
+    public WecomUploadResult upload(Path file, String filename, WecomMediaType type) {
+        WecomLongConnectionClient current = client;
+        return current == null
+                ? WecomUploadResult.failed(null, "INIT", "CONNECTION_NOT_READY", true, null, null)
+                : current.upload(file, filename, type);
     }
 
     public WecomConnectionStateHolder stateHolder() {

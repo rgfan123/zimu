@@ -20,6 +20,15 @@ function openApiSchemaBlock(source: string, schemaName: string): string {
   return nextSchema === -1 ? tail : tail.slice(0, nextSchema);
 }
 
+function openApiPropertyBlock(schema: string, propertyName: string): string {
+  const marker = `        ${propertyName}:`;
+  const start = schema.indexOf(marker);
+  assert.notEqual(start, -1, `OpenAPI property ${propertyName} must exist`);
+  const tail = schema.slice(start + marker.length);
+  const nextProperty = tail.search(/\n        [a-z][a-z0-9_]*:/);
+  return nextProperty === -1 ? tail : tail.slice(0, nextProperty);
+}
+
 test('OpenAPI 3.0.3 用显式 typed nullable schema 表达 SKU 未定价', () => {
   const openApi = readFileSync(
     fileURLToPath(new URL('../../docs/openapi.yaml', import.meta.url)),
@@ -32,11 +41,13 @@ test('OpenAPI 3.0.3 用显式 typed nullable schema 表达 SKU 未定价', () =>
   assert.match(nullablePrice, /\^\(0\|\[1-9\]\[0-9\]\{0,11\}\)/);
   for (const schemaName of ['SkuAttributes', 'SkuWrite', 'SkuPatch']) {
     const schema = openApiSchemaBlock(openApi, schemaName);
-    assert.equal(
-      schema.match(/#\/components\/schemas\/NullableCommercialPrice/g)?.length,
-      2,
-      `${schemaName} 的进货价/零售价应共用同一 nullable schema`,
-    );
+    for (const propertyName of ['purchase_price', 'retail_price']) {
+      assert.match(
+        openApiPropertyBlock(schema, propertyName),
+        /\$ref:\s*'#\/components\/schemas\/NullableCommercialPrice'/,
+        `${schemaName}.${propertyName} 应使用统一 nullable schema`,
+      );
+    }
   }
 });
 

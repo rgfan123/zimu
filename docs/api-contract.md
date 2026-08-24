@@ -5,6 +5,22 @@
 机器可读契约：`docs/openapi.yaml`  
 权威边界：`docs/prd-v0.1.md`、`docs/state-machine.md`、`docs/schema.md`、`docs/excel-closed-loop-spec.md`及已关闭 Wayfinder 决策票。
 
+## 0. 两份契约的关系（工单 07）
+
+- **生成物是事实**：后端接入 springdoc-openapi（2.9.0，按 Spring Boot 3.5.16 构建），运行中的应用在
+  `/v3/api-docs` / `/v3/api-docs.yaml` 暴露由控制器与 DTO 实时生成的 OpenAPI 契约。CI
+  （`.github/workflows/ci-jry.yml`）里的 `OpenApiContractConsistencyTest` 把生成物与手写 yaml
+  做结构化比对，漂移即失败并打印差异；每次测试也会把生成物快照导出到
+  `backend/target/generated-openapi.yaml` 供人工检查。
+- **手写 `docs/openapi.yaml` 是评审用契约草案**：承载业务语义、评审意图与说明性描述（即本文件
+  §1–§9 的约定与逐端点说明，以及 yaml 里的描述/示例/错误响应）。它的机器可读结构——路径、方法、
+  query/header 参数、2xx 响应码、请求体与成功响应的 schema——不再靠人眼与控制器保持一致：
+  这些结构以生成物为事实，由门禁保证两份契约不漂移；散文层由人工维护，不在比对范围。
+- **门禁粒度与首次处置**：比对路径模板集合（`{param}` 归一）、方法集合、参数名、2xx 码、
+  schema 引用名（归一化 + 别名注册表），排除描述/示例/排序/路径参数命名/认证头等噪音；
+  首次比对暴露的差异逐条修正或登记豁免，清单见
+  `.scratch/repo-design-hardening/issues/07-spec-generation-gate.md` 的 Resolution。
+
 ## 1. 目标与非目标
 
 本契约覆盖：
@@ -24,7 +40,7 @@
 |---|---|---|---|
 | `/api/v1` | React 管理后台 | 默认只查 `BUSINESS` | 业务查询、文件操作、人工命令、主数据维护 |
 | `/internal/v1` | 受信任的 LangBot / Agent / 部门系统 | 只写 `BUSINESS` | 创建订单、显式修订、采购回执 |
-| `/demo/v1` | 模拟下单页 | 只读写 `DEMO` | 创建并查看 DemoScenario / DemoRun |
+| `/demo/v1` | 已认证模拟下单页；订单助手仅调用 `/extracted-orders` | 只读写 `DEMO` | 创建并查看 DemoScenario / DemoRun；浏览器使用业务操作人身份，订单助手使用独立内部服务身份 |
 
 `BUSINESS` 与 `DEMO` 不使用查询参数混查；管理后台业务 API 不提供 `include_demo=true`。
 
@@ -41,7 +57,7 @@
 ### 3.2 请求标识、操作人和幂等
 
 - `X-Request-Id`：可选；未传时由服务端生成并在响应回显。
-- `X-Operator`：公共浏览器客户端不得自行提供，受信 Nginx 用服务端主体覆盖该请求头。后端对全部 `/api/` 请求（含读取、预览和下载）复验同一 Basic Auth 凭据，并要求已验证主体与 `X-Operator` 一致；仅伪造该请求头不能授权。全部 `/internal/` 请求使用独立 Bearer 服务身份。仅绕过公共入口的内部 Demo 调用可默认 `demo-ops`，并且只能写 `DEMO` 数据域。
+- `X-Operator`：公共浏览器客户端不得自行提供，受信 Nginx 用服务端主体覆盖该请求头。后端对全部 `/api/` 与浏览器 `/demo/` 请求复验同一 Basic Auth 凭据，并要求已验证主体与 `X-Operator` 一致；仅伪造该请求头不能授权。全部 `/internal/` 请求使用独立 Bearer 服务身份；订单助手调用 `/demo/v1/extracted-orders` 时也只使用这套内部服务身份。
 - `Idempotency-Key`：创建、文件导入、回执、重试、取消和复核命令必填。相同 key + 相同请求返回首次结果；相同 key + 不同请求返回 `409 IDEMPOTENCY_CONFLICT`。
 - 服务端把每个写用例映射为稳定的 `snake_case` 幂等 scope；scope 不是客户端参数，也不是需要随每个新端点修改 DDL 的封闭枚举。
 - `expected_version`：修改已存在业务事实的命令必填；版本不符返回 `409 VERSION_CONFLICT`。
@@ -105,6 +121,7 @@
 | GET | `/api/v1/orders/{order_id}/versions` | 不可变 OrderVersion 列表 |
 | GET | `/api/v1/orders/{order_id}/shipments` | 订单页展示履约方、商户/京东出库号、同步状态、失败阶段、运单与更新时间；不返回 Shipment 收件人快照、凭据或供应商原始响应 |
 | POST | `/api/v1/orders/{order_id}/corrections` | 已形成履约承诺后创建显式纠正单，不覆盖原单 |
+| POST | `/api/v1/orders/{order_id}/fulfillment-routing` | 将无来源批次、已确认且全部为京东普通单品的企业微信订单幂等接入 Shipment pipeline；只创建本地 Shipment，不调用京东 |
 
 订单列表返回行级聚合的 `processing_stage`、`processing_health`、`completed_count/total_count`和 `attention_reason`，不允许客户端自行重算最差进度。`source_channel` 表示订单来源，`provider_id` 表示订单行已分配的履约方，两者不得混用。
 
@@ -115,6 +132,7 @@
 | POST | `/api/v1/import-batches/source-orders` | `multipart/form-data` 上传来源表；必须显式选 `NEW` 或 `REVISION` |
 | POST | `/api/v1/import-batches/{batch_id}/confirm` | 对一个已识别且无阻断问题的来源批次作一次整体确认，并生成履约指令 |
 | GET | `/api/v1/import-batches/{batch_id}` | 导入批次结果、渠道指纹、行统计、复核数与自动生成的履约导出 |
+| POST | `/api/v1/import-batches/{batch_id}/source-attribution-corrections` | 追加来源渠道归因纠正；不改写原批次、订单、原始行、文件、审计或幂等快照 |
 | GET | `/api/v1/import-batches/{batch_id}/rows` | 逐行查看原值、解析结果、订单/行血缘和错误 |
 | GET | `/api/v1/import-batches/{batch_id}/source-return-exports` | 阶段性/最终来源回填版本 |
 | GET | `/api/v1/source-return-exports/{export_id}/file` | 下载指定来源回填版本并写 AuditLog |
@@ -191,6 +209,7 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | GET | `/api/v1/procurement-tickets/{ticket_id}` | 工单、SKU/礼包组件明细、累计数量和只追加回执 |
 | POST | `/api/v1/procurement-tickets/{ticket_id}/retry` | FAILED 后人工创建关联的新工单 |
 | POST | `/api/v1/procurement-tickets/{ticket_id}/cancel-remaining` | 人工取消明确剩余未发量，不回滚已发事实 |
+| POST | `/api/v1/procurement-price-agent/compare` | 运行一次采购比价（只读 Agent）：入参 `{procurement_ticket_id?, sku_id?, quantity?}`；返回可比候选 `candidates` 与被剔除候选 `excluded_candidates`（含 `exclusion_reason` 理由标签与 `exclusion_reason_detail` 可读说明），推荐只在可比候选中产生，可比候选为空或信息不全时 `requires_human=true`；未配置模型等失败以结果内稳定 `error` 码返回（fail-closed），输入非法抛 `INVALID_PARAMETERS` |
 
 采购回执使用同一受信任接入面 `POST /internal/v1/procurement/tickets/{ticket_id}/receipts`；Demo 采购操作台也调用该真实应用用例，不设置内部快进按钮。
 
@@ -205,6 +224,8 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | 来源 SKU 映射 | `GET/POST /api/v1/source-sku-mappings`，`GET/PATCH /api/v1/source-sku-mappings/{mapping_id}` |
 | 履约方 SKU 映射 | `GET/POST /api/v1/provider-sku-mappings`，`GET/PATCH /api/v1/provider-sku-mappings/{mapping_id}` |
 | FulfillmentProvider | `GET /api/v1/fulfillment-providers`，`GET/PATCH /api/v1/fulfillment-providers/{provider_id}` |
+| 内部运营人员（Issue #89） | `GET/POST /api/v1/operators`，`GET/PATCH /api/v1/operators/{operator_id}`；只读诊断 `GET /api/v1/operator-team-resolutions?responsible_team=...`（返回 active 人员、可推送 userid 与未绑定人员名单，不静默过滤）；`&require_pushable=true` 时不可全员推送直接 422 `OPERATOR_TEAM_NOT_PUSHABLE` |
+| 企微主动通知投递记录（Issue #90） | `GET /api/v1/admin/wecom-notifications/deliveries`；按 `source_type/source_id/status` 过滤，逐源事实 × 收件人返回 SENT/BLOCKED/UNKNOWN/FAILED、尝试次数、req_id、稳定原因及 durable alert id/key/severity；要求 `X-Operator`，不暴露源 payload 或客户 PII |
 | ConnectorConfig | `GET /api/v1/connectors`，`GET/PATCH /api/v1/connectors/{source_channel}` |
 | Connector 连通性 | `POST /api/v1/connectors/{source_channel}/test-connection` |
 
@@ -284,6 +305,8 @@ public interface JDWarehouseService {
 
 管理端暴露四个只读作业接缝：`GET /api/v1/jd-warehouse/owners`、`GET /api/v1/jd-warehouse/warehouses`、`GET /api/v1/jd-warehouse/outbound-orders/{erp_delivery_no}`、`GET /api/v1/jd-warehouse/tracking`。`owners` 允许在只有 PIN 时发现已授权事业部；负责人、电话、邮箱和地址与出库单收发件信息一样在 HTTP 边界移除。Shipment 页面另有唯一受控建单入口 `POST /api/v1/shipments/{shipment_id}/jd-so-order`；它不调用通用 `jd-write/order/so-create`，且会重新执行授权、幂等、SKU/数量/库存门禁。取消出库仍不得由页面直接调用。真实客户端配置统一从 `JD_LOP_*` 环境变量映射到 `app.jd.*`，密钥不得进入数据库或 API 响应。
 
+出库信息内外事实并排（Ticket 01）暴露 `GET /api/v1/outbound-recon`：输入系统出库单号 / 京东单号 / 订单号，收敛到同一笔出库后把内部事实与 `querySoOrder` 返回按语义对齐，逐字段给差异状态；京东侧失败/超时与无记录分别用 `jd.status=UNAVAILABLE` / `NOT_FOUND` 表达，内部事实照常返回。每次查询写审计（`outbound.recon.query`），京东收件人 PII 只在响应中保留脱敏姓名。
+
 ### 6.2 三平台 Connector
 
 ```java
@@ -339,6 +362,10 @@ public interface PlatformConnector {
 
 上表 LOP API 路径由对应 `Integratedsupplychain<域><动作>V<版本>LopRequest` 请求类名推导，与 §6.1 同源；登记开通时以京东开放平台后台展示为准。
 
+> 工单 07 注：上表涉及的 54 条 `/api/v1/jd-write` 等 ISC 透传端点由 springdoc 生成契约（`/v3/api-docs`）
+> 覆盖；手写 `docs/openapi.yaml` 未逐条补录（登记为已知豁免，门禁仍盯住这些路径），原因与清单见
+> `.scratch/repo-design-hardening/issues/07-spec-generation-gate.md` 的 Resolution。
+
 #### 启用条件与权限核对
 
 受控 Shipment 建单启用条件：`app.jd.write-mode: ON`、操作人通过服务端身份复验并进入授权名单，且京东开放平台已开通对应接口权限，缺一不可。旧通用 HTTP 写面不作为真实环境验收入口；真实环境权限核对按以下步骤进行（外部 gate 约束见 `.scratch/jd-sdk-bridge/spec.md`，不把 Mock 冒充真实权限）：
@@ -348,6 +375,9 @@ public interface PlatformConnector {
 3. 对已登记开通的接口，可临时置 `write-mode: ON` 做最小验证（Mock 先行、REAL 后行），验证完成后立即恢复 `OFF`；生产环境默认保持 `OFF`。
 
 ## 7. Demo API
+
+所有 Demo 浏览器入口均要求后端复验通过的业务操作人身份。`POST /demo/v1/extracted-orders`
+额外接受配置的内部服务名与 Bearer token，供订单助手直连；调用方自报 `X-Operator` 不构成授权。
 
 | Method | Path | 用途 |
 |---|---|---|
@@ -367,6 +397,10 @@ MCP Adapter 与 REST/UI 共用应用层 Interface，预留：
 - 禁止：确认客户/SKU/快递映射、取消剩余量、重试采购、关闭 ReviewCase、执行「已完成后续回传」。
 
 Agent 可以提建议，但上述终局动作必须由管理后台人员确认。任何 Agent 写入都需幂等键、operator/agent 身份和 AuditLog。
+
+企微订单草稿卡片属于另一条人工入口，不是 Agent 自动确认：新草稿通过持久化卡片 outbox 异步发送到原会话，`task_id=order-draft:{draft_id}`。`template_card_event` 回调只接受该稳定 task id 与 `confirm_order`/`supplement_order` 键；actor 只能取回调 `from.userid`，缺失时 fail closed，不能从卡片内容或请求参数冒充。确认按钮重新读取当前草稿并调用既有 `OrderDraftService.confirm`，所有缺失字段、唯一 Customer/SKU 候选、草稿版本与开放复核事项仍按原门禁校验。
+
+卡片事件业务结果先独立提交，再以原回调 `req_id` 调用 `update_template_card`。普通回调走有界保序业务队列；`template_card_event` 立即提交到独立的 4 并发快通道，并只允许最多 4 个仍受原始到达 deadline 约束的等待位。任一回调池溢出都只拒绝超出的事件，不重建共享连接或破坏已经受理的 update/无关外发 ACK。4.5 秒绝对 deadline 从 WebSocket listener 收到完整帧的单调时刻起覆盖线程切换、socket 提交与 ACK，过期发送帧不得事后发送。未确认、超时或异常时改发只含草稿号、操作人和处理时间的文字结果。卡片更新与文字兜底的失败都不得回滚已确认订单；`wecom_events.processing_status/processing_claim_token/processing_attempt`、`update_status/update_latency_ms/update_error_code` 与 `fallback_status/fallback_error_code` 分别保存业务尝试、卡片快路径和补偿结局。同一 `(event_type,msgid)` 的首次 bot/chat/actor/event/task/草稿/raw facts 不可变，变形重投不处理另一草稿；超过安全恢复窗且原业务幂等租约已失效时才轮换 claim token，业务完成及 update/fallback 结果均以 token CAS，旧 worker 无权覆盖。
 
 ### 8.1 预留工具契约
 
@@ -392,7 +426,7 @@ MCP 标识符和数量沿用 OpenAPI 的字符串规则。`operator`/Agent 身�
 以下是命令成功后的领域副作用，客户端不得分步拼装：
 
 1. 来源导入/内部订单通过客户和 SKU 校验后，自动创建 Fulfillment。
-2. 行达到 `READY_TO_EXPORT` 时按 provider/收货地址/批次自动创建 Shipment(CREATED) 和 FulfillmentExport，并冻结履约字段。
+2. 来源批次确认后，`READY_TO_EXPORT` 行按 provider/收货地址/批次自动创建 Shipment(CREATED) 和 FulfillmentExport；无来源批次的已确认企业微信订单由受权操作员调用 `fulfillment-routing` 接回同一 Shipment pipeline。两条路径都必须冻结履约字段并追加事件、版本和审计。
 3. 我方库存不足时，自动生成可发批次、采购工单和黄色提醒；第三方库存不由本系统判断。
 4. 某 provider 的合法运单回传批次整批提交后，自动生成一版 SourceReturnExport。
 5. 多 Shipment 只自动回填来源行首批；后续完成由人工命令关闭复核，不伪造首批-only final 文件。
@@ -409,3 +443,7 @@ MCP 标识符和数量沿用 OpenAPI 的字符串规则。`operator`/Agent 身�
 5. 所有 `BUSINESS` 列表不暴露 Demo；
 6. 覆盖前端导航、P0 Excel 闭环、人工复核、采购、审计、分析和 DemoScenario；
 7. 不存在通用「推进订单」、「改状态」或「任意关闭 ReviewCase」端点。
+
+其中第 1 条的「能被 YAML 解析」以及路径/方法/参数/2xx 码/schema 名等机器可读结构，由 CI 门禁
+（`OpenApiContractConsistencyTest`，见 §0）对照运行中应用生成的契约强制执行；本节的评审要求
+（业务语义、白名单、副作用描述）落在人工评审层，由本文件的散文与 yaml 的 description 承载。

@@ -9,6 +9,14 @@
 import { apiRequest, type QueryValue } from './client';
 import { ApiError } from './client';
 import type {
+  AgentDetail,
+  AgentEvalCaseItem,
+  AgentListResponse,
+  AgentVersionItem,
+  RunDetail,
+  RunListResponse,
+} from './agentTypes';
+import type {
   AuditLog,
   AuditLogPage,
   ChannelMessageDetail,
@@ -25,6 +33,7 @@ import type {
   FulfillmentDetail,
   FulfillmentExportDetail,
   FulfillmentExportPage,
+  FulfillmentExportWecomState,
   FulfillmentMetric,
   FulfillmentPage,
   FulfillmentProvider,
@@ -37,6 +46,11 @@ import type {
   JdReceiverAddressCandidate,
   MasterDataPage,
   MasterDataRecord,
+  OutboundReconQueryType,
+  OutboundReconView,
+  ProductBundleCreateInput,
+  ProductBundlePage,
+  ProductBundleRecord,
   ProductImageUploadResult,
   OrderDetail,
   OrderShipment,
@@ -45,10 +59,14 @@ import type {
   OrderEvent,
   OrderPage,
   OrderVersion,
+  Operator,
+  OperatorPage,
   OperationalAlert,
   OperationalAlertPage,
   ProcurementTicket,
   ProcurementTicketPage,
+  ProcurementPriceCompareCommand,
+  ProcurementPriceRunResult,
   ProviderSkuReferencePreview,
   ProductMetric,
   PlatformOrderRefreshResult,
@@ -299,6 +317,14 @@ export const skusApi = {
     apiRequest<SkuRecord>(`/api/v1/skus/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
 
+/** GET/POST /api/v1/product-bundles —— 静态礼包及其当前 BOM。 */
+export const productBundlesApi = {
+  list: (query: PageQuery = {}) =>
+    apiRequest<ProductBundlePage>('/api/v1/product-bundles', { params: query as Record<string, QueryValue> }),
+  create: (body: ProductBundleCreateInput) =>
+    apiRequest<ProductBundleRecord>('/api/v1/product-bundles', { method: 'POST', body, headers: writeHeaders() }),
+};
+
 /** GET/POST /api/v1/source-sku-mappings，GET/PATCH /api/v1/source-sku-mappings/{id}。 */
 export const sourceSkuMappingsApi = {
   list: (query: MasterDataListQuery = {}) =>
@@ -357,6 +383,34 @@ export const providerSkuMappingReferencesApi = {
   },
 };
 
+/** 内部运营人员登记（Issue #89）：GET/POST /api/v1/operators，GET/PATCH /api/v1/operators/{id}。 */
+export interface OperatorListQuery extends PageQuery {
+  /** 责任团队精确筛选（服务端 trim + 大写归一）。 */
+  responsible_team?: string;
+  /** 姓名/企微 userid 模糊检索。 */
+  query?: string;
+}
+
+export const operatorsApi = {
+  list: (query: OperatorListQuery = {}) =>
+    apiRequest<OperatorPage>('/api/v1/operators', { params: query as Record<string, QueryValue> }),
+  create: (body: {
+    display_name: string;
+    responsible_team: string;
+    /** 可空 = 未绑定；空串/纯空白视为未绑定。 */
+    wecom_userid?: string | null;
+    active?: boolean;
+  }) => apiRequest<Operator>('/api/v1/operators', { method: 'POST', body, headers: writeHeaders() }),
+  update: (id: string, body: {
+    expected_version: number;
+    display_name?: string;
+    responsible_team?: string;
+    /** null = 不改动绑定；空串 = 显式清除绑定。 */
+    wecom_userid?: string | null;
+    active?: boolean;
+  }) => apiRequest<Operator>(`/api/v1/operators/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
+};
+
 /** GET /api/v1/fulfillment-providers —— 履约方目录（京东仓 + 第三方）。 */
 export const providersApi = {
   list: () => apiRequest<FulfillmentProvider[]>('/api/v1/fulfillment-providers'),
@@ -365,8 +419,8 @@ export const providersApi = {
     provider_name?: string;
     tracking_sla_minutes?: number;
     active?: boolean;
-    /** 京东标识：字符串键必须非空，townRequired 只接受布尔；null 值清除该键。 */
-    config?: Record<string, string | boolean | null>;
+    /** config 合并写入：京东键字符串必须非空，townRequired 只接受布尔，null 清除该键；wecomGroupChatId 为企微群 chatid（空串/留空提交 null 清除）；wecomReminderIntervalMinutes 为提醒间隔分钟（1..10080，null 恢复默认 = 运单回传时限）。 */
+    config?: Record<string, string | boolean | number | null>;
   }) =>
     apiRequest<FulfillmentProvider>(`/api/v1/fulfillment-providers/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
@@ -481,6 +535,18 @@ export const fulfillmentExportsApi = {
     a.click();
     URL.revokeObjectURL(url);
   },
+  /** 人工停止企微自动发送与周期提醒（#84）：版本 CAS + 理由；已收齐/已停止幂等 no-op。 */
+  wecomStop: (id: string, body: { expected_version: number; reason: string }) =>
+    apiRequest<FulfillmentExportWecomState>(
+      `/api/v1/fulfillment-exports/${id}/wecom-stop`,
+      { method: 'POST', body, headers: { ...trustedWriteHeaders(), 'Content-Type': 'application/json' } },
+    ),
+  /** 人工重发企微文件消息（#84）：只登记新 delivery + 任务，发送异步执行。 */
+  wecomResend: (id: string, body: { expected_version: number; reason?: string }) =>
+    apiRequest<FulfillmentExportWecomState & { resend_delivery_id?: string; resend_sequence?: number }>(
+      `/api/v1/fulfillment-exports/${id}/wecom-resend`,
+      { method: 'POST', body, headers: { ...trustedWriteHeaders(), 'Content-Type': 'application/json' } },
+    ),
 };
 
 async function multipartRequest<T>(path: string, form: FormData): Promise<T> {
@@ -611,11 +677,22 @@ export const procurementApi = {
     }),
 };
 
+// ---------- 采购比价 Agent（01 票：不可比候选降级展示） ----------
+
+/** POST /api/v1/procurement-price-agent/compare —— 运行一次采购比价（只读）。 */
+export const procurementPriceAgentApi = {
+  compare: (command: ProcurementPriceCompareCommand) =>
+    apiRequest<ProcurementPriceRunResult>('/api/v1/procurement-price-agent/compare', {
+      method: 'POST',
+      body: command,
+    }),
+};
+
 // ---------- 复核队列 ----------
 
 /** GET /api/v1/review-cases —— 业务人工复核队列（数据中台「需人工介入」）。 */
 export const reviewCasesApi = {
-  list: (query: { page?: number; size?: number; status?: string; reason_code?: string; responsible_team?: string; source_channel?: string }) =>
+  list: (query: { page?: number; size?: number; status?: string; reason_code?: string; responsible_team?: string; source_channel?: string; import_batch_id?: string }) =>
     apiRequest<ReviewCasePage>('/api/v1/review-cases', { params: query as Record<string, QueryValue> }),
   detail: (id: string) => apiRequest<ReviewCase>(`/api/v1/review-cases/${id}`),
   resolveCustomer: (id: string, body: ResolveCustomerReviewCommand) =>
@@ -669,6 +746,14 @@ export const jdWarehouseApi = {
     apiRequest<JdQueryResult>(`/api/v1/jd-warehouse/outbound-orders/${encodeURIComponent(erpDeliveryNo)}`),
   tracking: (query: { waybill_no?: string; warehouse_order_no?: string }) =>
     apiRequest<JdQueryResult>('/api/v1/jd-warehouse/tracking', { params: query }),
+};
+
+// ---------- 出库信息内外事实并排（Ticket 01） ----------
+
+export const outboundReconApi = {
+  /** GET /api/v1/outbound-recon —— 系统出库单号 / 京东单号 / 订单号收敛到同一笔出库并排对照。 */
+  query: (query: { query_type: OutboundReconQueryType; query_value: string }) =>
+    apiRequest<OutboundReconView>('/api/v1/outbound-recon', { params: query }),
 };
 
 // ---------- 系统（Connector / Audit Log） ----------
@@ -748,4 +833,41 @@ export const analyticsApi = {
     apiRequest<ProductMetric[]>('/api/v1/analytics/products', { params: query as Record<string, QueryValue> }),
   fulfillments: (query: AnalyticsQuery) =>
     apiRequest<FulfillmentMetric[]>('/api/v1/analytics/fulfillments', { params: query as Record<string, QueryValue> }),
+};
+
+// ---------- Agent 中心（T12 读契约；只读，写动作等 T11） ----------
+
+/** GET /api/v1/agent-runs 的查询参数（AgentRunFilter，snake_case）。 */
+export interface AgentRunsQuery {
+  run_id?: string;
+  slug?: string;
+  outcome?: string;
+  /** 不传 = LIVE（后端默认即 LIVE——PREVIEW 草稿试跑不污染线上判断） */
+  run_mode?: string;
+  business_entity_type?: string;
+  business_entity_id?: string;
+  started_from?: string;
+  started_to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** GET /api/v1/agents 列表 —— 一次拿全聚合，无分页无查询参数。 */
+export const agentsApi = {
+  list: () => apiRequest<AgentListResponse>('/api/v1/agents'),
+  detail: (slug: string) => apiRequest<AgentDetail>(`/api/v1/agents/${slug}`),
+  versions: (slug: string) => apiRequest<AgentVersionItem[]>(`/api/v1/agents/${slug}/versions`),
+  /** 某定义版本的冻结用例集（可选 metric_kind 过滤，不传返回全部）。 */
+  evalCases: (slug: string, version: number, metricKind?: string) =>
+    apiRequest<AgentEvalCaseItem[]>(`/api/v1/agents/${slug}/versions/${version}/eval-cases`, {
+      params: metricKind ? { metric_kind: metricKind } : undefined,
+    }),
+};
+
+export const agentRunsApi = {
+  /** GET /api/v1/agent-runs —— 列表；limit 1..500，offset ≥ 0。 */
+  list: (query: AgentRunsQuery = {}) =>
+    apiRequest<RunListResponse>('/api/v1/agent-runs', { params: query as Record<string, QueryValue> }),
+  /** GET /api/v1/agent-runs/{run_id} —— 元信息 + 工具调用序列 + 评测结果摘要。 */
+  detail: (runId: string) => apiRequest<RunDetail>(`/api/v1/agent-runs/${runId}`),
 };

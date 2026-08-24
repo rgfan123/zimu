@@ -8,7 +8,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { App as AntApp, Alert, Button, Descriptions, Form, Input, Modal, Select, Space, Switch, Table, Typography } from 'antd';
+import { App as AntApp, Alert, Button, Descriptions, Form, Input, Modal, Select, Space, Switch, Typography } from 'antd';
 import { ApiOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { errorMessage } from '@/api/client';
@@ -16,6 +16,8 @@ import { connectorsApi } from '@/api/endpoints';
 import { CHANNEL_LABELS } from '@/constants/labels';
 import type { ConnectorConfig, SourceChannel } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import DataTable from '@/components/DataTable';
+import PageShell from '@/components/PageShell';
 import { AdminCategoryTag, AdminEmpty, AdminFailureAlert, AdminLoading, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
 import { adminPageState } from '@/pages/shared/adminVisual';
 import '@/pages/shared/adminSurface.css';
@@ -148,35 +150,34 @@ export default function ConnectorsPage() {
 
   return (
     <div className="admin-page">
-      {testResult ? (
-        <Alert
-          type={testResult.success ? 'success' : 'error'}
-          showIcon
-          closable
-          onClose={() => setTestResult(null)}
-          message={`${CHANNEL_LABELS[testResult.channel]} 连通性测试：${testResult.success ? '通过' : '失败'}`}
-          description={testResult.message ?? (testResult.latency_ms != null ? `延迟 ${testResult.latency_ms} ms` : undefined)}
-        />
-      ) : null}
+      <PageShell
+        title="渠道接入"
+        description="统一维护四个来源渠道的接入方式。彩食鲜、聚福宝和飞象当前采用文件接入；只有完成平台授权与生产连通性验收后，才可切换为在线接入。"
+        actions={<Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>}
+      >
+        {testResult ? (
+          <Alert
+            type={testResult.success ? 'success' : 'error'}
+            showIcon
+            closable
+            onClose={() => setTestResult(null)}
+            message={`${CHANNEL_LABELS[testResult.channel]} 连通性测试：${testResult.success ? '通过' : '失败'}`}
+            description={testResult.message ?? (testResult.latency_ms != null ? `延迟 ${testResult.latency_ms} ms` : undefined)}
+          />
+        ) : null}
 
-      <div className="admin-page__intro">
-        <Typography.Text className="admin-page__intro-copy" type="secondary">
-          统一维护四个来源渠道的接入方式。彩食鲜、聚福宝和飞象当前采用文件接入；只有完成平台授权与生产连通性验收后，才可切换为在线接入。
-        </Typography.Text>
-        <Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>
-      </div>
-
-      <div className="admin-surface">
-        <Table<ConnectorConfig>
-          rowKey="source_channel"
-          columns={columns}
-          dataSource={rows}
-          size="middle"
-          scroll={{ x: 1000 }}
-          pagination={false}
-          locale={{ emptyText: <AdminEmpty description="暂无渠道连接器配置" /> }}
-        />
-      </div>
+        <div className="admin-surface">
+          <DataTable<ConnectorConfig>
+            rowKey="source_channel"
+            columns={columns}
+            dataSource={rows}
+            size="middle"
+            scroll={{ x: 1000 }}
+            pagination={false}
+            emptyText={<AdminEmpty description="暂无渠道连接器配置" />}
+          />
+        </div>
+      </PageShell>
 
       <Modal
         title={`编辑渠道连接器 ${editing ? CHANNEL_LABELS[editing.source_channel] : ''}`}

@@ -2,6 +2,9 @@ package cn.zimu.fulfillment.mcp;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import cn.zimu.fulfillment.agent.AgentToolBinding;
+import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
+import cn.zimu.fulfillment.agent.AgentToolInvoker;
 import cn.zimu.fulfillment.common.audit.AuditLog;
 import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
@@ -39,7 +42,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 /**
  * 第三条主验收接缝：MCP 协议（JSON-RPC 2.0 over stdio）。
  *
- * <p>覆盖工具发现、读写成功、认证失败、版本冲突、幂等重放、审计与禁止终局工具缺席；
+ * <p>08 决策：stdio 面一期收紧为只读——tools/list 只暴露只读工具、调用写工具被拒；
+ * 写工具业务流（成功/认证失败/版本冲突/幂等重放/审计）经 Agent 面
+ * {@link AgentToolInvoker}（同一 McpToolRegistry + 身份 + 审计路径）验证。
+ * 覆盖工具发现、读写成功、认证失败、版本冲突、幂等重放、审计与禁止终局工具缺席；
  * 断言配置名与媒体下载凭据不出现在工具描述与响应中。
  */
 @Testcontainers
@@ -52,6 +58,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class McpProtocolAcceptanceTest {
 
     private static final String AGENT = "acceptance-agent";
+
+    private static final String RUN_ID = "run_" + "0".repeat(32);
 
     @Container
     @ServiceConnection
@@ -143,11 +151,13 @@ class McpProtocolAcceptanceTest {
     }
 
     @Test
-    void toolDiscoveryListsOnlyAllowedToolsAndNoTerminalTools() throws Exception {
+    void toolDiscoveryExposesOnlyReadOnlyToolsAndNoWriteOrTerminalTools() throws Exception {
         JsonNode response = rpc(AGENT, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}");
         List<String> names = new ArrayList<>();
         response.get("result").get("tools").forEach(tool -> names.add(tool.get("name").asText()));
         assertThat(names).containsExactlyInAnyOrder(
+                // 控制面只读：工具发现（T10）
+                "list_agent_tools",
                 // 查询：消息提交/媒体元数据/解释历史
                 "list_channel_messages",
                 "get_channel_message",
@@ -175,14 +185,14 @@ class McpProtocolAcceptanceTest {
                 "get_inventory_detail",
                 "list_products",
                 "list_categories",
-                "list_fulfillment_providers",
-                // 写：仅非终局 + 业务决策票放行的终局写（confirm_order_draft / submit_jd_outbound）
-                "reinterpret_submission",
-                "submit_order_draft_suggestion",
-                "submit_supplementary_material",
-                "submit_review_request",
-                "confirm_order_draft",
-                "submit_jd_outbound");
+                "list_fulfillment_providers");
+
+        // 08 决策：stdio 面一期只读——写工具集合按 readOnly 元数据向注册表查询（不手抄清单）
+        Set<String> writeTools = registry.writeToolNames();
+        assertThat(writeTools)
+                .as("注册表必须能判定写工具集合（默认禁写不变式）")
+                .isNotEmpty();
+        assertThat(names).doesNotContainAnyElementsOf(writeTools);
 
         Set<String> forbidden = Set.of(
                 "confirm_order",
@@ -203,6 +213,20 @@ class McpProtocolAcceptanceTest {
                 "cancel_order",
                 "shipment_jd_outbound_submit");
         assertThat(names).doesNotContainAnyElementsOf(forbidden);
+    }
+
+    @Test
+    void writeToolCallIsRejectedOnReadOnlyStdioWithoutSideEffects() throws Exception {
+        JsonNode response = rpc(AGENT, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+                + "\"params\":{\"name\":\"reinterpret_submission\",\"arguments\":{}}}");
+        assertThat(response.has("error")).as("写工具调用必须以 JSON-RPC 错误拒绝: %s", response).isTrue();
+        assertThat(response.get("error").get("code").asInt()).isEqualTo(-32602);
+        assertThat(response.get("error").get("message").asText()).contains("read-only");
+        // 拒绝发生在工具执行之前：不得留下任何写审计/副作用
+        assertThat(audits.findAll().stream()
+                        .filter(audit -> "mcp.reinterpret_submission".equals(audit.getOperation()))
+                        .count())
+                .isZero();
     }
 
     @Test
@@ -311,7 +335,8 @@ class McpProtocolAcceptanceTest {
         String draftId = drafts.get("items").get(0).get("id").asText();
         long revision = currentRevision(draftId);
 
-        JsonNode result = callResult(AGENT, "submit_order_draft_suggestion",
+        // 08 决策：写工具业务流走 Agent 面（stdio 只读）；同一注册表/身份/审计路径
+        JsonNode result = agentWriteCall(AGENT, "submit_order_draft_suggestion",
                 Map.of(
                         "draft_id", draftId,
                         "expected_revision", String.valueOf(revision),
@@ -337,7 +362,7 @@ class McpProtocolAcceptanceTest {
         String draftId = drafts.get("items").get(0).get("id").asText();
         long revision = currentRevision(draftId);
 
-        JsonNode result = callResult(AGENT, "submit_supplementary_material",
+        JsonNode result = agentWriteCall(AGENT, "submit_supplementary_material",
                 Map.of(
                         "draft_id", draftId,
                         "expected_revision", String.valueOf(revision),
@@ -346,10 +371,12 @@ class McpProtocolAcceptanceTest {
                                 "name", "补充收货人",
                                 "phone", "13900000000",
                                 "address", "补充地址"),
-                        "settlement_method", "COD"));
+                        "settlement_method", "COD",
+                        "settlement_time", "2026-08-31T16:00:00Z"));
         assertThat(result.get("receiver_name").asText()).isEqualTo("补充收货人");
         assertThat(result.get("receiver_phone").asText()).isEqualTo("13900000000");
         assertThat(result.get("settlement_method").asText()).isEqualTo("COD");
+        assertThat(result.get("settlement_time").asText()).isEqualTo("2026-08-31T16:00:00Z");
     }
 
     @Test
@@ -360,14 +387,12 @@ class McpProtocolAcceptanceTest {
         String draftId = drafts.get("items").get(0).get("id").asText();
         long staleRevision = currentRevision(draftId) + 1;
 
-        JsonNode response = call(AGENT, "submit_order_draft_suggestion",
+        JsonNode error = agentWriteCall(AGENT, "submit_order_draft_suggestion",
                 Map.of(
                         "draft_id", draftId,
                         "expected_revision", String.valueOf(staleRevision),
                         "idempotency_key", "mcp-conflict-key-001",
                         "items", List.of(Map.of("line_no", 1, "quantity", "2"))));
-        assertThat(response.get("result").get("isError").asBoolean()).isTrue();
-        JsonNode error = mapper.readTree(response.get("result").get("content").get(0).get("text").asText());
         assertThat(error.get("code").asText()).isEqualTo("VERSION_CONFLICT");
         assertThat(error.get("http_status").asInt()).isEqualTo(409);
         assertThat(error.toString()).doesNotContain(AGENT);
@@ -390,8 +415,8 @@ class McpProtocolAcceptanceTest {
                 "expected_revision", String.valueOf(currentRevision(draftId)),
                 "idempotency_key", "mcp-replay-key-001",
                 "items", List.of(Map.of("line_no", 1, "quantity", "3")));
-        JsonNode first = callResult(AGENT, "submit_order_draft_suggestion", args);
-        JsonNode second = callResult(AGENT, "submit_order_draft_suggestion", args);
+        JsonNode first = agentWriteCall(AGENT, "submit_order_draft_suggestion", args);
+        JsonNode second = agentWriteCall(AGENT, "submit_order_draft_suggestion", args);
         assertThat(second).as("重放必须返回与首次执行语义相同的结果").isEqualTo(first);
         assertThat(second.get("lines").get(0).get("quantity").asText()).isEqualTo("3");
 
@@ -406,10 +431,8 @@ class McpProtocolAcceptanceTest {
     @Test
     void writeWithoutAgentIdentityFailsWithAuthError() throws Exception {
         long submissionId = submitAndInterpret("MCP-AUTH-001", nonBusiness());
-        JsonNode response = call("", "reinterpret_submission",
+        JsonNode error = agentWriteCall("", "reinterpret_submission",
                 Map.of("submission_id", String.valueOf(submissionId), "idempotency_key", "mcp-auth-key-001"));
-        assertThat(response.get("result").get("isError").asBoolean()).isTrue();
-        JsonNode error = mapper.readTree(response.get("result").get("content").get(0).get("text").asText());
         assertThat(error.get("code").asText()).isEqualTo("MCP_AUTH_REQUIRED");
         assertThat(error.get("http_status").asInt()).isEqualTo(401);
         assertThat(error.toString()).doesNotContain("MCP_AGENT_IDENTITY");
@@ -421,7 +444,7 @@ class McpProtocolAcceptanceTest {
         long submissionId = submitAndInterpret("MCP-RE-001", customerOrder());
         InterpreterControl.queue(nonBusiness());
 
-        JsonNode result = callResult(AGENT, "reinterpret_submission",
+        JsonNode result = agentWriteCall(AGENT, "reinterpret_submission",
                 Map.of("submission_id", String.valueOf(submissionId), "idempotency_key", "mcp-reinterpret-key-001"));
         assertThat(result.get("id").asText()).isEqualTo(String.valueOf(submissionId));
         assertThat(result.get("status").asText()).isEqualTo("RECEIVED");
@@ -451,7 +474,7 @@ class McpProtocolAcceptanceTest {
     void submitReviewRequestCreatesAndReusesOpenNeedReviewCase() throws Exception {
         long submissionId = submitAndInterpret("MCP-REV-001", nonBusiness());
 
-        JsonNode first = callResult(AGENT, "submit_review_request",
+        JsonNode first = agentWriteCall(AGENT, "submit_review_request",
                 Map.of("submission_id", String.valueOf(submissionId),
                         "idempotency_key", "mcp-review-key-001",
                         "note", "agent 要求人工复核"));
@@ -465,7 +488,7 @@ class McpProtocolAcceptanceTest {
         assertThat(reviewCase.get("subject_id").asText()).isEqualTo(String.valueOf(submissionId));
 
         // 再次提交复用既有事项，不制造事项轮换
-        JsonNode second = callResult(AGENT, "submit_review_request",
+        JsonNode second = agentWriteCall(AGENT, "submit_review_request",
                 Map.of("submission_id", String.valueOf(submissionId),
                         "idempotency_key", "mcp-review-key-002",
                         "note", "再次确认"));
@@ -488,10 +511,8 @@ class McpProtocolAcceptanceTest {
     @Test
     void submitReviewRequestRejectsSubmissionsWithOpenDrafts() throws Exception {
         long submissionId = submitAndInterpret("MCP-REV-002", customerOrder());
-        JsonNode response = call(AGENT, "submit_review_request",
+        JsonNode error = agentWriteCall(AGENT, "submit_review_request",
                 Map.of("submission_id", String.valueOf(submissionId), "idempotency_key", "mcp-review-key-003"));
-        assertThat(response.get("result").get("isError").asBoolean()).isTrue();
-        JsonNode error = mapper.readTree(response.get("result").get("content").get(0).get("text").asText());
         assertThat(error.get("code").asText()).isEqualTo("SUBMISSION_HAS_OPEN_DRAFTS");
     }
 
@@ -534,6 +555,24 @@ class McpProtocolAcceptanceTest {
                 .as("工具应成功: %s -> %s", toolName, result)
                 .isFalse();
         return mapper.readTree(result.get("content").get(0).get("text").asText());
+    }
+
+    /**
+     * 08 决策后写工具业务流经 Agent 面执行（stdio 只读）：按真实生产路径
+     * （绑定工厂 allowWrite=true → 注入白名单的执行器）调用一次写工具，
+     * 返回工具结果载荷（成功为业务 JSON，失败为 code/http_status/message 信封）。
+     */
+    private JsonNode agentWriteCall(String identity, String toolName, Map<String, Object> args) throws Exception {
+        AgentToolBinding binding = new AgentToolBindingFactory(registry, new McpAgentIdentity(identity), mapper)
+                .bind(RUN_ID, List.of(toolName), true);
+        AgentToolInvoker invoker = (AgentToolInvoker) binding.tools().values().iterator().next();
+        String text = invoker.execute(
+                dev.langchain4j.agent.tool.ToolExecutionRequest.builder()
+                        .name(toolName)
+                        .arguments(mapper.writeValueAsString(args))
+                        .build(),
+                null);
+        return mapper.readTree(text);
     }
 
     private AuditLog onlyAudit(String operation) {

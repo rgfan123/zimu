@@ -1,0 +1,455 @@
+# UI 共享展示组件迁移（Issue #97）
+
+跟踪「既有页面批次迁移到共享展示组件」的批次划分、逐页度量与例外记录。
+共享组件为 `frontend/src/components/PageShell.tsx`（页面外壳）、`FilterBar.tsx`（筛选区）、
+`DataTable.tsx`（数据表格默认行为收敛），见组件文件头注释。
+
+迁移原则（Issue #97 验收）：
+
+- 迁移不改变任何页面的可见行为：视觉与交互不得倒退，只换承载结构。
+- 页面保留 URL / API / 按钮 / 表格列 / 分页 / 确认弹窗 / 业务文案原样。
+- 加载 / 空 / 错误态在**确实是表格数据页**时走 DataTable 默认行为，不再各页重复
+  Alert/Empty/Table 样板。
+- 非表格工具页**不强行套用** DataTable；无法套用共享组件的页面逐个记录原因。
+- 每批独立可合，typecheck / test / build 全绿。
+
+## 批次划分
+
+| 批次 | 范围 | 状态 |
+|---|---|---|
+| A | `frontend/src/pages/fulfillment`（10 个生产页面，页面最多、最长） | ✅ 本批完成（Issue #97 第 1 批） |
+| B | `frontend/src/pages/workbench`（基线 ManualReviewPage 1020 行，#95/#96 合入后实测） | ✅ 本批完成（Issue #97 第 2 批） |
+| C | `frontend/src/pages/product` + `frontend/src/pages/inventory`（7 个生产路由页面） | ✅ 本批完成（Issue #97 第 3 批） |
+| D | 其余页面（orders / procurement / system / dashboard / demo / analytics）+ 全仓最终审计：逐页核对采纳情况、更新本文件累计度量与最终 Resolution | ✅ 本批完成（Issue #97 第 4 批 / 最终批次），见下方「批次 D」与「最终 Resolution」 |
+
+批次 C/D 开工时把实际 before/after 行数追加到下方「累计度量」并逐页登记。
+
+## 批次 A：fulfillment（本批）
+
+### 逐页 before/after
+
+行数为 `git diff` 前后 `wc -l` 实测（含 import 与注释）。ShipmentsPage 在共享组件
+试点（commit 16cda17）已迁移，本批不动，仅登记。
+
+| 页面 | before | after | Δ | 采用组件 | 说明 |
+|---|---|---|---|---|---|
+| FulfillmentTasksPage | 339 | 330 | −9 | PageShell + FilterBar + DataTable | 表格数据页；错误 Alert → DataTable `error/onRetry/errorTitle`；筛选卡 → FilterBar；刷新按钮移至 PageShell actions（与试点 ShipmentsPage 一致） |
+| SalesOutboundPage | 868 | 859 | −9 | PageShell + FilterBar + DataTable | 表格数据页；错误 Alert → DataTable error；筛选卡 → FilterBar；`?import_batch=` 恢复/复核返回闭环（#95）所在 SourceImportPanel 零改动 |
+| JdWarehousePage | 394 | 394 | 0 | PageShell + FilterBar + DataTable | 混合页：SDK 工具段保持独立 Card；出库单列表筛选行 → FilterBar（查询按钮进 actions）；列表 Table → DataTable（`emptyText` 保留「暂无出库单数据」）；表格原本漏配 scroll，现走 DataTable 默认 x=960 |
+| JdReturnQueryPage | 368 | 363 | −5 | PageShell + FilterBar + DataTable | 结果列表 Table → DataTable（分页 `pageSize:10 + showTotal` 保留）；接口选择 + 参数表单进 FilterBar（查询按钮进 actions，表单 Enter 提交不变）；权限/失败业务 Alert 保留（业务码语义，非系统错误） |
+| OutboundReconPage | 346 | 343 | −3 | PageShell + FilterBar + DataTable | 查询条进 FilterBar（保留 Space.Compact 连体样式）；结果区 3 张对照子表 → DataTable（`emptyText`/`scroll`/`pagination=false`/`rowClassName` 原样透传）；视图级加载/错误/空态保留自定义（Skeleton/Result/Empty，属对照视图三态而非列表三态） |
+| JdBasicInfoQueryPage | 392 | 386 | −6 | PageShell | 非表格工具页：头部卡 → PageShell（含连接状态 Tag 进 actions）；结果用 Descriptions 白名单展示，不套 DataTable（例外见下） |
+| JdStockQueryPage | 525 | 521 | −4 | PageShell | 非表格工具页：头部卡 → PageShell；纵向参数表单 + 结果 Alert 保持原 Card；不套 FilterBar/DataTable（例外见下） |
+| JdOrderQueryPage | 485 | 480 | −5 | PageShell | 非表格工具页：头部卡 → PageShell（「系统渠道工具/只读」Tags 进 actions）；不套 FilterBar/DataTable（例外见下） |
+| JdSerialQueryPage | 343 | 338 | −5 | PageShell | 非表格工具页：头部卡 → PageShell（只读 Tag 进 actions）；不套 FilterBar/DataTable（例外见下） |
+| ShipmentsPage | 607 | 607 | 0 | PageShell + FilterBar + DataTable | 试点页（16cda17），本批零改动 |
+| **合计** | **4667** | **4621** | **−46** | — | 9 个文件改动，净 −46 行；删掉的都是各页重复的头部卡 / 错误 Alert / 筛选卡样板 |
+
+> 行数说明：迁移删除的是「承载结构」样板（每页 10–30 行），页面主体仍是业务逻辑
+> （列定义、表单、抽屉、业务文案），行数净减幅度与试点 ShipmentsPage（617→607）
+> 同量级；后续批次可复用同样口径。
+
+### 本批无法套用共享组件的页面（逐页原因）
+
+FilterBar 采用口径（本批定，后续批次沿用）：页面存在**独立于工具面板的常驻筛选/查询行**
+（列表页筛选卡、单条查询条，如 FulfillmentTasks / SalesOutbound / JdWarehouse 出库单
+列表 / OutboundRecon 查询条 / JdReturn 接口表单行）时采用；**工具表单面板**
+（接口选择 + 参数表单 + 上下文说明 + 结果提示的组合面板，如 JdBasicInfo / JdStock /
+JdOrder / JdSerial）不拆——拆出 FilterBar 会把表单上下文与查询按钮拆散到多张卡，
+信息分组倒退。DataTable 采用口径：页面存在真正的列表/对照表格数据源时采用；纯
+Descriptions 白名单结果与视图级三态不套。
+
+| 页面 | 组件 | 原因 |
+|---|---|---|
+| JdBasicInfoQueryPage | DataTable | 非表格数据页：查询结果为「白名单字段 Descriptions」内嵌在成功 Alert 中，无列表数据源；强套 DataTable 会把结果改成表格、破坏只读白名单展示口径。FilterBar 也未采用：查询区是「接口选择 + 按接口动态切换的内联表单 + 上下文说明 + 结果提示」组合工具面板，不是常驻筛选行；拆出 FilterBar 会把表单上下文与查询按钮拆散到两张卡。 |
+| JdStockQueryPage | FilterBar / DataTable | 非表格数据页：查询区为「接口选择 + 纵向参数表单 + 结果 Alert（Descriptions）」；结果无列表结构。纵向表单不是 FilterBar 覆盖的横向筛选控件行（FilterBar 组件注释覆盖 FulfillmentTasks / Shipments / JdWarehouse 等筛选卡页面）。 |
+| JdOrderQueryPage | FilterBar / DataTable | 同 JdStockQueryPage：纵向参数表单工具页，结果白名单 Descriptions，非表格数据页。 |
+| JdSerialQueryPage | FilterBar / DataTable | 同 JdStockQueryPage：接口选择 + 内联表单 + Descriptions 结果，非表格数据页。 |
+| JdWarehousePage | — | 无例外：SDK 工具段与列表段分别采用 PageShell + FilterBar + DataTable；SDK 段自身保持工具 Card（按钮组 + 结果 Alert），不属于表格。 |
+| OutboundReconPage | — | 无例外：结果区三态（Skeleton / Result / Empty）为对照视图级状态，保留自定义并记录于此——它们是「查询结果视图」的状态，不是表格列表三态，DataTable 默认行为不覆盖此类视图。 |
+| SalesOutboundPage | — | 无例外：SourceImportPanel 是业务工具面板（上传/确认/回传闭环），保持自有 Card；主列表已用 PageShell + FilterBar + DataTable。 |
+
+### 本批保留的自定义三态（有意为之）
+
+- OutboundReconPage 结果视图：Skeleton 加载卡 / Result 错误卡（含 404 与多批次歧义提示）/ Empty 空查询卡。
+- Jd 查询工具页的权限语义 Alert（业务码 2001「权限未开通」等）——业务文案区分于系统错误，DataTable 错误态只承载系统错误（`errorMessage`）。
+- 各页抽屉 / 弹窗内的明细子表（履约任务发货批次表、销售出库明细表等）：嵌套小表，尺寸/分页/空文案各不相同，属页面特写，不强套。
+
+### 可见行为核对（本批）
+
+- 既有文案零改动：所有**既有**标题、说明、按钮、占位符、Alert 文案与迁移前逐字一致
+  （Spec review 按字符串逐条比对确认）。
+- 新增文案仅两处页头：FulfillmentTasksPage（「履约任务」）与 SalesOutboundPage
+  （「销售出库」）此前没有页头卡，标题只存在于文件头注释；本批按试点 ShipmentsPage
+  口径新增 PageShell 页头（title 取自导航标签，description 依据文件头注释改写，
+  例如履约任务页头说明改写自「每行 = 一条履约单元（订单行 → 履约方）」），
+  属新增可见文案 + 有意承载变化。
+- 页头图标改由 PageShell 统一渲染（`saasVisualTokens.brand.primary`、字号 20），
+  与迁移前各页手写图标样式一致。
+- URL / API 参数零改动：OutboundRecon 查询条件进 query string 不变；SalesOutbound
+  `?import_batch=` 恢复闭环（#95）与 ReviewQueue `?import_batch=`（#96）由既有
+  route tests 固定，本批全绿。
+- 表格列 / 分页 / 确认弹窗 / 抽屉零改动。
+- 有意的承载变化（与试点 ShipmentsPage 同口径）：
+  - FulfillmentTasksPage / SalesOutboundPage 新增 PageShell 页头；刷新按钮从筛选行
+    移至页头 actions。
+  - 筛选区 Card 换为 FilterBar（圆角 + 阴影外观统一）。
+  - JdWarehousePage 出库单列表表格由「无 scroll」变为 DataTable 默认 x=960 横向
+    滚动（修复窄屏撑破容器，DataTable 组件设计目的之一）。
+  - JdWarehousePage SDK 工具段从原头部大卡拆为独立 Card（信息分组不变）。
+
+## 批次 B：workbench（本批）
+
+### 逐页 before/after
+
+行数为本批改动前后 `wc -l` 实测（含 import 与注释）。workbench 目录实际路由页面只有
+两个（`routes.tsx` 挂载 ManualReviewPage / ChannelMessagesPage）；`index.ts` 仅 1 行
+再导出，OrderDraftReviewPanel / TrackingDraftReviewPanel 是复核抽屉内的业务表单面板，
+helper/presentation 文件（channelMessageView / manualReviewActions / jdSkuMappingReview /
+orderDraftMasterData / orderDraftReview / trackingDraftReview / 各 `*Api`）不是页面，
+均不入采纳率计数、本批零改动。
+
+| 页面 | before | after | Δ | 采用组件 | 说明 |
+|---|---|---|---|---|---|
+| ManualReviewPage | 1020 | 1013 | −7 | PageShell + FilterBar + DataTable | 页头卡 → PageShell（title/说明/图标原样，Segmented 视图切换进 actions）；复核/提醒两个筛选卡 → FilterBar（刷新按钮进 actions 右对齐）；两张列表 Table → DataTable（`scroll`/分页/空态文案原样透传）；两个列表错误 Alert → DataTable `error/errorTitle`（原无重试按钮，不新增 onRetry） |
+| ChannelMessagesPage | 240 | 234 | −6 | PageShell + DataTable | 表格 Card 的 title「企业微信消息」+ extra 刷新 → PageShell（文案不变，刷新进 actions）；列表 Table → DataTable（错误 Alert 原带重试 → `onRetry` 保留；`scroll={{ x: 980 }}`/分页原样）；FilterBar 未采用（见下） |
+| **合计** | **1260** | **1247** | **−13** | — | 2 个页面文件，净 −13 行；删掉的都是页头卡 / 错误 Alert / 筛选卡 / 表格 locale 样板，页面主体（列定义、抽屉、确认动作、批次上下文）原样保留 |
+
+> 行数说明：ManualReviewPage 是双视图作业页，业务逻辑（批次上下文卡、fail-closed
+> 校验、六个解决动作、两张抽屉、运营提醒 ACK、主数据分页加载）占绝对主体，删掉的
+> 承载结构样板与 batch A 同量级；ChannelMessagesPage 本身已较精简，净 −6 行。
+> 两页行数净减幅度与 batch A 各页（−3 ~ −9）一致。
+
+> 后续（Issue #64）：ManualReviewPage 已拆为两个路由页——`/workbench/reviews`
+> （ManualReviewPage 复核队列，保留批次上下文与 fail-closed）+ `/workbench/alerts`
+> （AlertsQueuePage 运营提醒，隐藏可路由叶子）；两页共用 `QueueTable` 承载结构、
+> 处理表单拆到 ReviewCaseDrawer / AlertDrawer，标签常量集中到 queuePresentation。
+> 旧 `?view=alerts` 分享链接由 ReviewQueueCompatRoute 重定向到新提醒路由。度量见
+> Issue #64 交付说明，本表记录的是 #97 迁移时点的行数口径。
+
+### 本批无法套用共享组件的文件（逐页原因）
+
+FilterBar / DataTable 采用口径沿用 batch A：存在独立于工具面板的常驻筛选/查询行时用
+FilterBar；存在真正的列表数据源时用 DataTable；抽屉/弹窗内明细子表与视图级三态不强套。
+
+| 页面/文件 | 组件 | 原因 |
+|---|---|---|
+| ChannelMessagesPage | FilterBar | 页面无常驻筛选/查询行：消息列表仅分页（page/size 进 query），无筛选控件；套 FilterBar 会造出空壳筛选卡。 |
+| ManualReviewPage 批次上下文 | — | 无例外：`?import_batch=` 批次上下文卡与非法标识 fail-closed Alert（#95）是业务状态承载（加载/不存在/已确认/复核中四态 + 返回链接），不是列表三态，保持原 Card/Alert；队列隐藏逻辑（非法批次整块隐藏）零改动。 |
+| ManualReviewPage 抽屉内明细子表 | DataTable | SKU 映射证据表 / 京东阻断发货明细表：抽屉内嵌套小表（pagination=false、尺寸/空文案各异），batch A 口径即「页面特写，不强套」。 |
+| OrderDraftReviewPanel / TrackingDraftReviewPanel | — | 非路由页面：复核抽屉内的业务表单面板（原始证据 + 候选映射 + 确认命令），不入采纳率计数。 |
+
+### 本批保留的自定义三态（有意为之）
+
+- ManualReviewPage 批次上下文卡（加载中 / 批次不存在 / 本批次已确认 / 正在复核导入批次）
+  与非法批次 fail-closed Alert：业务语义状态，DataTable 错误态只承载系统错误。
+- 抽屉内提交错误 Alert（`submitError` / `alertSubmitError`）：动作失败反馈，位置在表单区，
+  非列表错误态。
+
+### 可见行为核对（本批）
+
+- 既有文案零改动：页头「人工作业中心」与说明、「企业微信消息」、筛选标签（状态/事项类型/
+  责任团队）、空态（「当前没有复核事项」/「当前没有运营提醒」）、错误条标题（「复核队列
+  加载失败」/「运营提醒加载失败」/「消息记录加载失败」）、分页统计（「共 N 项」/「共 N 条」）
+  与迁移前逐字一致。
+- URL / API 零改动：#95 `?import_batch=` 批次筛选、fail-closed、批次上下文/返回路径；
+  #96 status/reason_code/responsible_team/view 的 URL 唯一事实源与 Dashboard 落地预筛；
+  ManualReview 全部业务表单/抽屉/确认动作（含运营提醒 ACK「确认已知晓」语义——
+  不推进业务状态）；ChannelMessages 消息证据/媒体读取（抽屉白名单字段与原文）/重新解释。
+  均由既有 route 测试（importBatchReviewRoute / manualReviewQueueRoute /
+  manualReviewDraftRoute / dashboardDispatchRoute）与本批新增 6 个测试固定。
+- 表格 scroll 保留原值（x: 900 / x: 980）而非 DataTable 默认 x=960：原页面即显式配置，
+  避免横向滚动行为改变。
+- 重试按钮有无与迁移前一致：ManualReviewPage 两个列表错误条原无重试 → 不传 `onRetry`
+  （不新增可见按钮）；ChannelMessagesPage 错误 Alert 原带重试 → `onRetry` 保留。
+- 有意的承载变化（与 batch A 同口径）：
+  - ManualReviewPage 页头卡换为 PageShell 渲染（图标/标题/说明/视图切换外观一致）；
+    刷新按钮从筛选行内移至 FilterBar actions 右对齐；错误条从筛选行上方移入表格上方
+    （DataTable 错误条位置）。
+  - ChannelMessagesPage 表格 Card 的 title/extra 换为 PageShell 页头（文案与按钮不变，
+    刷新按钮仍在右上角）；错误条位置同 batch A（列表上方）。
+
+## 批次 C：product + inventory（本批）
+
+### 逐页 before/after
+
+行数为本批改动前后 `wc -l` 实测（含 import 与注释）。product 目录实际路由页面为
+CategoriesPage / ProductsPage / SkusPage / SkuMappingsPage / BundlesPage（`routes.tsx`
+挂载 `/product/*`）；inventory 目录为 InventoryOverviewPage / InventoryDetailsPage
+（`/inventory/overview`、`/inventory/details`）。`index.ts`、masterOptions / productArchive /
+productArchiveFields / providerSkuMapping / skuCommercialPrice / skuMappingMatrix /
+inventoryOverviewView / inventoryDetailsView 等 helper/presentation 文件不是页面，
+不入采纳率计数、本批零改动（与 batch A/B 口径一致）。
+
+| 页面 | before | after | Δ | 采用组件 | 说明 |
+|---|---|---|---|---|---|
+| SkuMappingsPage | 699 | 696 | −3 | PageShell + DataTable | 页头 Flex（标题 + 说明 + 「主数据」Tag）→ PageShell（Tag 进 actions，文案原样）；矩阵表 → DataTable（`locale` → `emptyText`，`scroll`/`sticky`/分页原样）；矩阵加载/错误态与两个辅助面板保持自定义（例外见下） |
+| InventoryOverviewPage | 310 | 310 | 0 | PageShell + FilterBar + DataTable | 新增 PageShell 页头（title「总库存」取自导航标签，原 intro 说明文案移入 description）；筛选行 admin-toolbar → FilterBar（刷新按钮进 actions 右对齐，控件/aria-label/查询重置逻辑原样）；表格 → DataTable（`scroll` x=1360 / `emptyText` / 分页原样）；加载/错误态保留（例外见下） |
+| InventoryDetailsPage | 150 | 153 | +3 | PageShell | 标题行（Space wrap + Typography.Title + 返回链接 + 两个状态 Tag）→ PageShell（返回链接与 Tags 进 actions，文案原样）；库存对象/能力卡/口径说明零改动；加载/错误态保留（例外见下） |
+| CategoriesPage | 50 | 50 | 0 | — | 不可迁：页面是共享骨架 MasterDataCrud 的薄配置层，无逐页页头/筛选/表格样板（原因见下） |
+| ProductsPage | 195 | 195 | 0 | — | 同上 |
+| SkusPage | 170 | 170 | 0 | — | 同上（筛选控件经 `filters` prop 由骨架 toolbar 承载） |
+| BundlesPage | 367 | 367 | 0 | PageShell + DataTable | 试点已采用（53c8aa7 随静态礼包功能合入），本批零改动，仅登记 |
+| **合计（7 页）** | **1941** | **1941** | **0** | — | 3 页采用/1 页已采用；另删 skuMappings.css 死规则 −13 行 |
+
+> 行数说明：本批三页可删的承载样板本就各只有一处（页头卡 / 筛选行容器 / 表格 locale），
+> PageShell / FilterBar 的 props 化 API 与删掉的 JSX 等量（details 页头原来只有 8 行，
+> 换 PageShell 反而 +3）；与 batch A/B 各页 −3 ~ −9 的幅度一致，页面主体（列定义、表单、
+> 抽屉、面板、业务文案）原样保留。真实的样板减少体现在结构统一与 CSS 死规则清理。
+
+### 本批无法套用共享组件的页面（逐页原因）
+
+FilterBar / DataTable 采用口径沿用 batch A/B：存在独立于工具面板的常驻筛选/查询行时用
+FilterBar；存在真正的列表数据源时用 DataTable；视图级三态、权限语义 Alert 与面板内
+特写小表不强套。以下例外均按 Issue #97 验收「发现某页确实无法套用共享组件时，记录原因
+而不是强行套」登记；DataTable 的加载/空/错默认行为只覆盖「表格数据页的列表三态」，
+视图级三态（整页/整块替换）与权限语义错误不在其覆盖范围（组件文件头注释明确错误态
+只承载系统错误 `errorMessage`）。
+
+| 页面/文件 | 组件 | 原因 |
+|---|---|---|
+| CategoriesPage / ProductsPage / SkusPage | PageShell / FilterBar / DataTable | 三个页面是共享骨架 MasterDataCrud（`pages/shared/`）的薄配置层：页头、筛选 toolbar、表格、加载/空/错三态已集中在该骨架一处，不存在逐页重复样板。骨架不在本批范围（非 product/inventory 页面文件），其内部 admin-toolbar / Table 的 FilterBar / DataTable 化会同时改变五个主数据页的加载/空/错行为（如全页 loading → 表格内 loading），列入 batch D 候选；强套 PageShell 只会新增可见页头与行数、无样板可删，不为采纳率乱改。 |
+| SkuMappingsPage 矩阵工具行 | FilterBar | 矩阵工具行是弹性筛选行：显示平台多选宽度由 `sku-matrix__filter` 网格（`minmax(260px, 460px)` + 移动端 1fr 全宽）驱动，行内还含「N 个内部 SKU · 显示 M 个平台」计数文本；FilterBar 的固定控件行（Space wrap）会把多选宽度钉死并改变移动端布局，属可见行为倒退。 |
+| SkuMappingsPage 矩阵加载/错误 | DataTable | 视图级三态：整块工作区被 AdminLoading / AdminFailureAlert 替换（含权限语义），不是列表三态，沿用 batch A OutboundRecon 口径。 |
+| SkuMappingsPage 参考预览表 / 京东件数换算表 | DataTable | Collapse 工具面板内的特写小表（rowSelection / 自定义列 / 无三态样板），沿用 batch A「抽屉/弹窗内明细子表不强套」口径。 |
+| InventoryOverviewPage / InventoryDetailsPage 加载/错误 | DataTable | 视图级三态 + 权限语义：403 业务码 FORBIDDEN →「暂无查看权限」warning Alert（`adminFailurePresentation`），DataTable 错误态只承载系统错误（`errorMessage`），沿用 batch A「业务码语义 Alert 保留」口径；由 inventoryOverviewRoute / inventoryDetailsRoute 既有测试固定。 |
+| InventoryOverviewPage 表格容器 | — | `admin-surface` 边框/圆角容器保留（DataTable 不提供表格容器，且页面在 `.admin-page` 内阴影口径不变）。 |
+
+### 本批保留的自定义三态（有意为之）
+
+- InventoryOverviewPage / InventoryDetailsPage 的视图级 AdminLoading（「正在加载库存观测…」
+  /「正在加载专业库存明细…」）与 AdminFailureAlert（403 权限 →「暂无查看权限」warning，
+  系统错误 → 错误标题 + 安全文案）。
+- SkuMappingsPage 矩阵工作区与京东件数换算面板的 AdminLoading / AdminFailureAlert
+  （「正在加载 SKU 映射矩阵…」/「京东件数换算加载失败」等）。
+- 参考预览面板的预览结果表（无列表三态，加载在「开始核对」按钮上）。
+
+### 可见行为核对（本批）
+
+- 既有文案零改动：标题「SKU 映射矩阵」「专业库存明细」「总库存」、说明、页脚、两个
+  Collapse 面板标题与说明、「主数据」Tag、「返回总库存」、筛选占位符与 aria-label、
+  空态（「当前筛选范围内暂无匹配 SKU」「暂无内部 SKU」）、错误标题与权限文案与迁移前
+  逐字一致（Spec review 按字符串逐条比对确认）。
+- 新增文案仅一处页头标题：InventoryOverviewPage 此前没有页头，「总库存」取自导航标签，
+  原 intro 说明文字移入 PageShell description（文案不变）——与 batch A 为无页头页面
+  （FulfillmentTasks / SalesOutbound）新增 PageShell 页头同口径。
+- URL / API / 跳转零改动：InventoryOverview 筛选（provider_id / sku_id / warehouse_code /
+  page / size）与「查看明细」跳转（含 return_to 闭环）、InventoryDetails 的 return_to
+  安全回落与能力工具链接、SkuMappings 矩阵两个 list 请求与 jd-pieces-candidates 请求，
+  均由既有 route tests（inventoryOverviewRoute / inventoryDetailsRoute / adminMasterDataRoute）
+  与本批新增 3 个测试固定。
+- 表格列 / 分页 / 行选择 / sticky / 确认弹窗 / 抽屉零改动。
+- 有意的承载变化（与 batch A/B 同口径）：
+  - SkuMappingsPage 页头 Flex → PageShell：标题字号 level 4 → PageShell level 5 统一；
+    工作区可访问名称由 `aria-labelledby`（指向手写标题 id，名称 =「SKU 映射矩阵」）改为
+    `aria-label="SKU 映射矩阵工作区"`（标题 id 随手写页头移除；名称变更为更明确的
+    「SKU 映射矩阵工作区」，语义等价）；删除 `box-shadow: none` 页级规则后页头卡恢复
+    antd 默认阴影（与 fulfillment/workbench 页头一致）。
+  - InventoryOverviewPage 筛选区 admin-toolbar → FilterBar（圆角容器外观统一，刷新按钮
+    从行内移至 actions 右对齐；查询/重置按钮保留在筛选控件行内——与输入框同属筛选操作
+    分组，维持原布局，不因 FilterBar 的 children/actions 拆分而移动）；表格 locale 样板
+    → DataTable `emptyText`（渲染节点相同）。
+  - InventoryDetailsPage 返回链接与两个状态 Tag 从标题行左/中位移入 PageShell actions
+    右侧（与 batch A「刷新按钮进 actions」同口径）。
+
+## 批次 D：orders / procurement / system / dashboard / demo / analytics + 最终审计（本批）
+
+### 逐页 before/after
+
+行数为本批改动前后 `wc -l` 实测（含 import 与注释）。orders 目录实际路由页面为
+OrdersPage / PendingOrdersPage / ExceptionOrdersPage / OrderTrackingPage（四个薄包装页共用
+OrderListView 实现）与 OrderDetailPage（`/orders/:orderId`）；`orderJdFulfillment.ts` 是
+展示层 helper 文件，不是页面，不入采纳率计数、本批零改动。system 目录 4 页全部为路由页面；
+index.tsx 仅再导出。procurement 目录 ProcurementTicketsPage / ProcurementPriceComparePage
+为路由页面；index.tsx 仅再导出。analytics 目录仅 AnalyticsPage 为路由页面（
+analyticsTypes / analyticsTransform / chartOptions / useAnalyticsData 等为 helper，
+本批零改动）。demo 目录仅 DemoOrderPage 为路由页面；AiOrderAssistantPanel 是页内面板
+（非路由），零改动。
+
+| 页面 | before | after | Δ | 采用组件 | 说明 |
+|---|---|---|---|---|---|
+| OrderListView | 317 | 297 | −20 | PageShell + FilterBar + DataTable | 四个订单列表页共用实现：页头 → PageShell（标题由各页传入，取自导航标签）；筛选卡 Row/Col → FilterBar（搜索框保留 flex 撑满行为，查询/重置按钮仍在控件行内）；列表错误 Alert → DataTable `error/onRetry/errorTitle`（原文案「订单列表加载失败」）；表格 `locale` 样板 → DataTable 默认空态；`scroll` x=1240 / 分页 / onRow 点击原样；「履约方目录加载失败」warning Alert 保留（筛选目录业务提示，非列表错误态，见例外） |
+| OrdersPage | 8 | 8 | 0 | —（经 OrderListView） | 薄包装页：传标题「全部订单」给 OrderListView，PageShell 由共用实现渲染 |
+| PendingOrdersPage | 13 | 14 | +1 | —（经 OrderListView） | 同上（标题「待处理」）；默认筛选 `processing_stage=NEED_REVIEW` 与 tip 原样 |
+| ExceptionOrdersPage | 13 | 14 | +1 | —（经 OrderListView） | 同上（标题「异常订单」）；默认筛选 `order_status=FULFILLMENT_EXCEPTION` 原样 |
+| OrderTrackingPage | 13 | 14 | +1 | —（经 OrderListView） | 同上（标题「订单追踪」）；默认筛选 `order_status=SHIPPED` 原样 |
+| OrderDetailPage | 394 | 395 | +1 | PageShell | 详情页：标题行（返回 + 订单号 + 状态/健康度 Tag）→ PageShell（返回按钮与 Tags 进 actions，同 batch C InventoryDetailsPage 口径）；404 Result / 全页错误 Alert / 订单信息卡 / 商品明细与发货运单卡（含嵌套展开子表）/ 时间线卡零改动（例外见下） |
+| ProcurementTicketsPage | 282 | 282 | 0 | PageShell + FilterBar + DataTable | 页头「采购协同」（description = 原 intro 文案）；筛选行 admin-toolbar → FilterBar（刷新进 actions）；表格 → DataTable（`emptyText`「暂无采购工单」、`scroll` x=1080、分页原样）；视图级 loading/error 保留（例外见下）；详情 Drawer / 重试与取消 Modal 零改动 |
+| ProcurementPriceComparePage | 262 | 262 | 0 | PageShell + FilterBar + DataTable | 页头「采购比价」（description = 原 intro）；查询条（SKU/工单/数量 + 开始比价）→ FilterBar（查询按钮进 actions，Enter 提交不变，同 batch A JdReturnQueryPage 口径）；可比 / 被剔除两张结果表 → DataTable（`emptyText` AdminEmpty 原样、`pagination=false`；原无 scroll → DataTable 默认 x=960，见承载变化）；「比价未能完成」/「需要人工介入」业务 Alert 与视图级三态保留 |
+| ConnectorsPage | 229 | 230 | +1 | PageShell + DataTable | 页头「渠道接入」（description = 原 intro，刷新进 actions）；表格 → DataTable（`emptyText`「暂无渠道连接器配置」、`scroll` x=1000、`pagination=false`）；连通性测试结果 Alert / 编辑 Modal（凭据只存密文口径）零改动；视图级 loading/error 保留 |
+| AuditLogsPage | 205 | 205 | 0 | PageShell + FilterBar + DataTable | 页头「操作审计」；筛选行 admin-surface--padded → FilterBar（4 输入 + RangePicker，刷新进 actions）；表格 → DataTable（`scroll` x=1280、分页原样；无显式空态 → DataTable 默认「暂无数据」）；审计详情 Drawer（白名单字段）零改动；列表错误 AdminFailureAlert 保留（例外见下） |
+| SystemConfigPage | 171 | 172 | +1 | PageShell + DataTable | 页头「系统配置」（description = 原 intro，「只读总览」Tag 进 actions）；两张只读表 `locale` → DataTable `emptyText`（`pagination=false`）；卡片标题 / 脚注 / 分面板刷新按钮原样（例外见下）；视图级 loading/error 保留 |
+| FulfillmentProvidersPage | 323 | 323 | 0 | PageShell + DataTable | 页头「履约方配置」（description = 原 intro，刷新进 actions）；表格 → DataTable（`emptyText`「暂无履约方配置」、`scroll` x=1000、分页 pageSize 10 原样）；编辑 Modal（京东标识表单）零改动；视图级 loading/error 保留 |
+| DashboardPage | 317 | 319 | +2 | PageShell + DataTable | 页头「工作台」；「待人工介入明细」widget 表 `locale` → DataTable `emptyText`（错误/空两种文案原样，`scroll` x=620、`pagination=false`、onRow 点击与 #96 预筛链接原样）；KPI 卡 / 趋势图 / 「工作台数据加载失败」视图级错误 Alert 保留 |
+| DemoOrderPage | 269 | 270 | +1 | PageShell | 页头「模拟下单」；演示环境说明 Alert / AI 面板 / 固定场景选择 / 运行记录 / 时间线零改动；无列表/筛选结构（见例外） |
+| AnalyticsPage | 749 | 749 | 0 | — | 例外（原因见下），零改动 |
+| **合计** | **2816** | **2805** | **−11** | — | 14 个页面文件改动（Analytics 零改动不计）；删掉的都是各页页头样板 / 筛选容器 / 表格 locale，净减幅度与 batch C（0 ~ +3）同量级，页面主体原样保留 |
+
+> 行数说明：本批可删的承载样板每页只有一处（页头行 / 筛选容器 / 表格 locale），PageShell /
+> FilterBar 的 props 化 API 与删掉的 JSX 等量（与 batch C 同口径）；OrderListView 的 −20
+> 是结构收益最大的一处（Row/Col 筛选卡 → FilterBar children）。真实的样板减少体现在结构统一、
+> 空态文案收敛与不再各页手写错误 Alert。
+
+### 本批无法套用共享组件的页面/区块（逐页原因）
+
+FilterBar / DataTable 采用口径沿用 batch A/B/C：存在独立于工具面板的常驻筛选/查询行时用
+FilterBar；存在真正的列表数据源时用 DataTable；视图级三态、权限语义 Alert、卡片/抽屉内
+特写小表与「错误替换表格」语义不强套。
+
+| 页面/文件 | 组件 | 原因 |
+|---|---|---|
+| AnalyticsPage | PageShell / FilterBar / DataTable | 单屏 bento 视觉系统（analytics.css + analyticsTheme CSS 变量 + 自研 AnalyticsChart / AnalyticsKpiCard / BentoCard / MiniTable）：①全局筛选条为 URL 状态驱动（range / start / end / ch / metric / txt 全部进 query string，筛选即查询、无独立查询按钮），与 FilterBar「常驻筛选行 + actions 查询动作」结构不兼容；②七张图卡有「图表 / 文字版明细」双面孔（`?txt=` 切换），与 DataTable 列表三态语义不同；③错误 / 加载 / 空为视图级（顶部 Alert + 各卡 Skeleton / Empty）。PageShell 未采用：页面自带「数据看板」标题与筛选条一体设计，叠加页头会破坏单屏 bento 结构。零改动。 |
+| OrderDetailPage 404 / 全页错误 | DataTable | 视图级三态：`Result 404`（订单不存在）与全页错误 Alert（订单详情加载失败）替换整页，不是列表三态。 |
+| OrderDetailPage 商品明细 / 发货运单表 | DataTable | 详情页卡片内嵌套子表（礼包组件快照展开表、发货明细展开表）与「发货与运单」卡内错误语义（错误时 Alert 替换表格、不渲染表格；`emptyText`「暂无发货记录」）——套 DataTable 会把「错误 + 空表并存」引入该卡，改变可见行为，沿用 batch A「抽屉/弹窗内明细子表不强套」口径。 |
+| OrderListView 履约方目录失败提示 | DataTable | 「履约方目录加载失败」warning Alert（含重试）是筛选目录的业务提示（加载失败时履约方筛选控件被禁用），不是列表错误态；列表错误已由 DataTable `error` 承载。 |
+| DashboardPage 明细 widget 表错误 | DataTable | 明细失败折叠进空态文案（「明细加载失败，请刷新重试」），且明细失败不影响 KPI 卡展示——DataTable `error` 语义（错误条 + 表格并存）会改变该行为；只透传 `emptyText`。 |
+| AuditLogsPage 列表错误 | DataTable | AdminFailureAlert 是安全语义错误提示（adminFailurePresentation 对 403 权限做专门呈现、隐藏原始错误细节），DataTable 错误态只承载系统错误（`errorMessage`），沿用 batch C「权限语义 Alert 保留」口径。 |
+| ProcurementPriceComparePage 视图级三态 / 业务 Alert | DataTable | AdminLoading（正在运行采购比价…）/ AdminFailureAlert（比价运行失败）/ 初始空态（输入提示 Empty）/ 「比价未能完成」fail-closed / 「需要人工介入」warning 均为工具视图级状态，非列表三态。 |
+| ProcurementTicketsPage / ConnectorsPage / SystemConfigPage / FulfillmentProvidersPage 视图级 loading/error | DataTable | 整页被 AdminLoading / AdminFailureAlert 替换（「正在加载采购工单…」「采购工单加载失败」等），是视图级三态而非列表三态，沿用 batch A OutboundRecon / batch C inventory 口径。 |
+| SystemConfigPage 分面板刷新 | PageShell actions | 页面有两个独立数据源（connectors + providers），两张卡的刷新按钮各自对应一个数据源，保留在 Card extra；页头 actions 只放「只读总览」Tag。 |
+| DemoOrderPage | FilterBar / DataTable | 无列表/筛选结构：AI 提取面板 + 固定场景选择 + 运行记录 + 时间线均为工具/演示面板；卡片内三态（场景列表 Skeleton/Alert/Empty、运行结果 Empty/错误 Alert）是面板语义。 |
+| AiOrderAssistantPanel | — | 非路由页面（demo 页内面板），不入采纳率计数。 |
+
+### 本批保留的自定义三态（有意为之）
+
+- AnalyticsPage：整页加载中文案 / 失败 Alert / 各卡 Skeleton / Empty / 文字版明细空态。
+- OrderDetailPage：404 Result、全页错误 Alert、发货运单卡「错误替换表格」与「暂无发货记录」空态。
+- DashboardPage：明细失败折叠进空态文案；「工作台数据加载失败」整页错误 Alert。
+- 各 admin 页视图级 AdminLoading / AdminFailureAlert（含 403 权限语义）。
+- ProcurementPriceComparePage 工具运行三态与业务 Alert。
+
+### 可见行为核对（本批）
+
+- 既有文案零改动：所有**既有**标题、说明、按钮、占位符、Alert、空态、错误文案与迁移前
+  逐字一致（Spec review 按字符串逐条比对确认）。
+- 新增文案：各页 PageShell 页头标题（取自导航标签：全部订单 / 待处理 / 异常订单 / 订单追踪 /
+  采购协同 / 采购比价 / 渠道接入 / 操作审计 / 系统配置 / 履约方配置 / 工作台 / 模拟下单）——
+  与 batch A/C 为无页头页面新增 PageShell 页头同口径；description 均为原 intro 文案移入
+  （文案不变），无 intro 的页面（订单四页 / 详情 / 审计 / 工作台 / 演示）只加标题不加说明。
+- URL / API / 动作零改动：orders 全部筛选参数与 sort、订单详情 / timeline / shipments /
+  fulfillment-providers 四请求、采购工单 list/detail/retry/cancel-remaining、比价
+  compare POST、connectors list/update/test-connection、audit-logs list/detail、
+  providers list/update、demo scenarios/run/runDetail、dashboard summary + review-cases
+  分页拉全，均由既有 route tests 与本批新增 25 个用例固定。
+- 表格列 / 分页 / 行点击 / 抽屉 / Modal / 确认弹窗零改动。
+- 有意的承载变化（与 A/B/C 同口径）：
+  - 各页新增 PageShell 页头；刷新按钮移入页头 actions 或 FilterBar actions 右对齐
+    （Connectors / FulfillmentProviders / ProcurementTickets / AuditLogs）；
+    OrderDetailPage 返回按钮与状态 Tag、SystemConfigPage「只读总览」Tag 移入 actions。
+  - 筛选区容器统一：OrderListView Row/Col 卡 → FilterBar；ProcurementTickets admin-toolbar
+    → FilterBar；AuditLogs admin-surface--padded → FilterBar；PriceCompare 查询条
+    admin-surface → FilterBar（「开始比价」按钮移入 actions 右对齐）——圆角 + 阴影外观统一。
+  - 无显式空态的两张表（OrderListView / AuditLogsPage）空态由 antd 默认变为 DataTable
+    默认「暂无数据」：生产环境本就由 ConfigProvider zh_CN 呈现「暂无数据」，测试环境
+    （无 locale）此前显示 "No data"，迁移后两处一致，属收敛而非倒退。
+  - SystemConfigPage 两张只读表与 PriceCompare 两张结果表由无 scroll 变为 DataTable 默认
+    x=960（窄屏横向滚动，DataTable 组件设计目的之一，与 batch A JdWarehousePage 同口径）。
+  - OrderListView 列表错误条从筛选卡上方移入表格上方（DataTable 错误条位置），与 batch B
+    ManualReviewPage / ChannelMessagesPage 同口径；各页原有顶部内容（订单 tip / 履约方
+    目录提示 / Connectors 连通性测试结果 Alert 等）随新增 PageShell 页头自然下移。
+  - routeHarness 与生产对齐：测试挂载增加 ConfigProvider（zh_CN + saasTheme）与 antd
+    App 包裹（与 main.tsx 一致），使 message/notification 上下文与中文 locale 在测试中
+    与生产一致——这是测试基础设施对齐，不是页面行为变化。
+
+## 最终 Resolution（Issue #97 全票验收）
+
+### 批次划分与执行
+
+| 批次 | 范围 | 生产页面 | 净行数（页面 wc -l） | 测试增量 | 状态 |
+|---|---|---|---|---|---|
+| A | fulfillment | 10 | −46（4667→4621） | +142 行 / 1 文件 | ✅ |
+| B | workbench | 2 | −13（1260→1247） | +222 行 / 1 文件 | ✅ |
+| C | product + inventory | 7 | 0（1941→1941，另删 skuMappings.css −13） | +258 行 / 2 文件 | ✅ |
+| D | orders / procurement / system / dashboard / demo / analytics | 14（Analytics 例外零改动） | −11（2816→2805） | +814 行 / 4 新文件 + 2 文件增补 | ✅ |
+| **合计** | — | 33 个页面文件 | **−70（另 CSS −13）** | **+1436 行测试** | **全绿** |
+
+每批合入后 typecheck / test / build 全绿（本批最终全量：typecheck ✅、303/303 测试 ✅、
+build ✅、`git diff --check` ✅）。
+
+### 准确分母与最终采纳率（路由口径）
+
+以 `appNavigation` + `routeElements/routeConfig` 计算（不使用 `grep *.tsx` 的目录文件数）：
+
+- **真实可路由叶子路由 = 38 条**：`appNavigation` 共 39 个叶子，减去外链 `/bi`
+  （Metabase，不参与前端路由）；`routeElements` 38 项全部绑定，`bindNavigationRoutes`
+  对缺 element 的叶子会直接抛错，因此 38 = 全部生产路由。
+- **唯一页面组件 = 37 个**：`/agents/:slug` 与 `/agents/:slug/evals` 复用同一个
+  AgentDetailPage（EvalsTab 是其页内 Tab 子组件，**不是路由页面，不单独计数**——修复此前
+  计数口径中 EvalsTab 单独计入 DataTable 的虚高 nit）。
+- **hideInMenu 隐藏路由仍计入分母**：隐藏只是菜单可见性（navigation.ts
+  `visibleNavigationTree`），路由照常注册可直达（/orders/:orderId、/inventory/details、
+  /product/products、/product/categories、/system/config、/agents/:slug、
+  /agents/runs/:runId、/agents/:slug/evals 均计入）。
+- 此前各批累计表沿用「页面文件 /54」口径（54 = `src/pages` 下全部 .tsx，含 index.tsx
+  再导出与面板/helper 文件，是近似分母）；**最终准确口径以 38 条路由为准**，/54 表仅作
+  批次连续性参考。
+
+最终采纳率（按 38 条可路由叶子）：
+
+| 组件 | 采用路由数 | 采纳率 | 未采用路由（全部有记录原因） |
+|---|---|---|---|
+| PageShell | 34/38 | 89.5% | /product/products、/product/categories、/product/skus（共享骨架 MasterDataCrud 承载）、/analytics（bento 例外） |
+| FilterBar | 17/38 | 44.7% | 无常驻筛选/查询行的列表/工具/详情页（含 ChannelMessages、Jd 工具四页、Connectors、Dashboard、Demo 等，逐页见批次表） |
+| DataTable | 25/38 | 65.8% | 工具结果/详情/骨架页与视图级三态页（Analytics、OrderDetail、Jd 工具四页、Dashboard widget 例外等，逐页见批次表） |
+
+按文件口径（/54，含非路由文件，仅连续性参考）：PageShell 30/54、FilterBar 14/54、
+DataTable 22/54（22 含 EvalsTab 文件；不计 EvalsTab 为 21 个页面文件——EvalsTab
+按路由口径归入 /agents/:slug/evals，不作为独立页面计数）。
+
+### 三态统一情况
+
+- **列表三态统一走 DataTable 默认行为**：所有表格数据页（A 批 6 页、B 批 2 页、C 批 2 页、
+  D 批 7 页 + 比价结果表）的加载/空/错误态由 DataTable 收敛；空态默认「暂无数据」或业务
+  `emptyText`，错误态 `error/errorTitle/onRetry`，不再各页手写 Alert/Empty/locale 样板。
+- **视图级三态保留并逐条记录**：整页 loading/error 替换、404、权限语义（403 →「暂无查看
+  权限」等）、卡片内错误替换表格、错误折叠进空态、工具运行三态——以上均非「表格列表三态」，
+  DataTable 组件注释明确只覆盖列表三态，保留即不强行套用（Issue #97 验收「发现某页确实
+  无法套用共享组件时，记录原因而不是强行套」）。
+
+### 无法迁移清单（最终）
+
+AnalyticsPage（bento 视觉系统，零改动）、CategoriesPage / ProductsPage / SkusPage
+（MasterDataCrud 骨架薄配置层，骨架为共享实现不在逐页迁移范围）、OrderDetailPage
+（详情页，仅页头采用 PageShell）、DashboardPage 明细 widget（仅 emptyText 透传）、
+ChannelMessagesPage FilterBar（无常驻筛选行）、Jd 工具四页 FilterBar/DataTable
+（工具表单面板 + 白名单 Descriptions）、各抽屉/卡片内嵌套子表。全部原因见各批「无法套用」
+小节，本批逐页原因见上表。
+
+### 行为保持证据与有意承载变化
+
+- 行为保持证据：既有 route tests（orders / orderJdFulfillment / dashboardDispatch /
+  procurementPriceCompare / fulfillmentProviderConfig / manualReview* /
+  inventoryOverview / skuMappings / fulfillmentPages / workbenchPages / sourceImport /
+  adminMasterData 等）与本批新增 25 个用例全绿；URL / API 参数 / 按钮 / 表格列 / 分页 /
+  确认弹窗 / 业务文案逐项固定。
+- 有意承载变化（全部记录，无隐藏行为改动）：新增 PageShell 页头与标题（取自导航标签）；
+  刷新/返回/状态 Tag 移入页头或 FilterBar actions 右对齐；筛选区容器统一为 FilterBar；
+  无显式空态表格空态收敛为「暂无数据」（与生产 zh_CN 一致）；SystemConfig 两张只读表与
+  PriceCompare 两张结果表获得 DataTable 默认 x=960 横向滚动；OrderListView 列表错误条移入
+  表格上方（DataTable 错误条位置）；routeHarness 测试环境与生产 ConfigProvider 对齐。
+- 硬保护确认：订单预设/详情 URL（/orders、/orders/pending、/orders/exceptions、
+  /orders/tracking、/orders/:orderId）、采购价格比较与工单动作（compare POST、
+  retry / cancel-remaining 版本化提交——两者均有点击到请求的完整用例）、系统配置/连接器/
+  审计（connectors PATCH 版本化提交 + test-connection POST + audit-logs list/detail）、
+  Dashboard #96 调度链接（status/reason_code/responsible_team 预筛、无伪造时间参数）、
+  Analytics URL 筛选（range/start/end/ch/metric/txt 全部 query string 事实源，本批
+  零改动）、Demo 下单隔离（/demo/v1 专用接口、DEMO 数据域展示）——均由本批 route tests 固定。
+
+## 累计度量（最终）
+
+以固定基线 e3e6b87（#96 合入后）为准：`frontend/src/pages` 共 54 个页面文件（近似分母，
+含 index.tsx 与面板/helper）；真实可路由叶子路由 38 条（37 个唯一组件），见「最终
+Resolution」。
+
+| 批次 | PageShell | FilterBar | DataTable | 备注 |
+|---|---|---|---|---|
+| 基线（e3e6b87） | 6/54 | 3/54 | 5/54 | 试点页 + Agent 中心 |
+| A fulfillment（第 1 批） | **15/54** | **8/54** | **10/54** | +9 页 PageShell，+5 页 FilterBar/DataTable |
+| B workbench（第 2 批） | **17/54** | **9/54** | **12/54** | +2 页 PageShell / +2 页 DataTable，+1 页 FilterBar |
+| C product + inventory（第 3 批） | **20/54** | **10/54** | **14/54** | +3 页 PageShell；+1 页 FilterBar；+2 页 DataTable |
+| D 最终（第 4 批） | **30/54** | **14/54** | **22/54** | +10 页 PageShell；+4 页 FilterBar（OrderListView / ProcurementTickets / PriceCompare / AuditLogs）；+8 页 DataTable（OrderListView / ProcurementTickets / PriceCompare / Connectors / AuditLogs / SystemConfig / FulfillmentProviders / Dashboard）。订单四路由共用 OrderListView 按 1 文件计 |
+
+口径说明：按「页面文件 import 并实际使用该组件」计数（文件口径 /54，与各批表格连续）；
+**最终采纳率以路由口径为准（PageShell 34/38、FilterBar 17/38、DataTable 25/38）**——
+`/agents/:slug/evals` 复用 AgentDetailPage 且 EvalsTab 是其页内子组件，不重复计数；
+订单四路由共用 OrderListView 一个实现，逐路由计 4 条、逐文件计 1 个。

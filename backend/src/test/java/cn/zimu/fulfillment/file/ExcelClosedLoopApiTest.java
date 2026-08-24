@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -13,6 +14,7 @@ import java.util.Map;
 import java.util.zip.ZipInputStream;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,6 +60,7 @@ class ExcelClosedLoopApiTest {
 
     @Autowired TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
+    @Autowired TrackingFileService trackingFileService;
 
     @BeforeEach
     void addExplicitFeixiangMappings() {
@@ -110,6 +113,64 @@ class ExcelClosedLoopApiTest {
         assertThat(caishixian.get("template_fingerprint").toString()).contains("CAISHIXIAN");
         assertThat(jufubao.get("template_fingerprint").toString()).contains("JUFUBAO");
         assertThat(feixiang.get("template_fingerprint").toString()).contains("FEIXIANG");
+    }
+
+    @Test
+    void zhonghuiSourceReturnMarksTheOriginalShippingStatusAsShipped() throws Exception {
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                SELECT 'ZHONGHUI', 'ZH-TP-STATUS-001', '中汇回填状态测试商品', '500g',
+                       1.000, sku_id, true
+                FROM app.source_channel_skus
+                WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-TP-001'
+                ON CONFLICT (source_channel, source_sku_ref) DO UPDATE
+                SET sku_id=EXCLUDED.sku_id, quantity_multiplier=EXCLUDED.quantity_multiplier,
+                    source_product_name=EXCLUDED.source_product_name,
+                    source_specification=EXCLUDED.source_specification, active=true
+                """);
+        ResponseEntity<Map> uploaded = uploadRaw(
+                "中汇订单.xlsx", zhonghuiStatusWorkbook(), "source-import-zhonghui-status-001");
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String batchId = uploaded.getBody().get("id").toString();
+        ResponseEntity<Map> confirmed = confirmBatch(batchId, "confirm-zhonghui-status-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String exportId = ((List<?>) confirmed.getBody().get("generated_fulfillment_export_ids"))
+                .getFirst().toString();
+        String waybillNo = "JDVA-ZHONGHUI-STATUS-001";
+        ResponseEntity<Map> tracked = uploadTracking(
+                exportId,
+                fillThirdPartyTracking(downloadExport(exportId), "SHIPPED", "1.000", waybillNo),
+                "tracking-import-zhonghui-status-001");
+        assertThat(tracked.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String returnId = ((List<?>) tracked.getBody().get("generated_source_return_export_ids"))
+                .getFirst().toString();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT DISTINCT ol.processing_stage
+                        FROM app.raw_import_rows rir
+                        JOIN app.order_lines ol ON ol.id=rir.order_line_id
+                        WHERE rir.import_batch_id=? AND rir.order_line_id IS NOT NULL
+                        """,
+                        String.class,
+                        Long.parseLong(batchId)))
+                .isEqualTo("RETURN_FILE_READY");
+
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(downloadSourceReturn(returnId)))) {
+            var header = workbook.getSheetAt(0).getRow(0);
+            var row = workbook.getSheetAt(0).getRow(1);
+            DataFormatter formatter = new DataFormatter();
+            Map<String, Integer> columns = new LinkedHashMap<>();
+            for (int index = 0; index < header.getLastCellNum(); index++) {
+                columns.put(formatter.formatCellValue(header.getCell(index)), index);
+            }
+            assertThat(formatter.formatCellValue(row.getCell(columns.get("发货状态"))))
+                    .isEqualTo("已发货");
+            assertThat(formatter.formatCellValue(row.getCell(columns.get("物流单号"))))
+                    .isEqualTo(waybillNo);
+        }
     }
 
     @Test
@@ -254,6 +315,24 @@ class ExcelClosedLoopApiTest {
                 String.class);
 
         Map<String, Object> skuCase = cases.get("SKU_MAPPING_REQUIRED");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> skuDetail = (Map<String, Object>) skuCase.get("detail");
+        // 复核抽屉逐条展示来源商品信息：名称/数量来自行快照，sheet/行号来自 raw_import_rows。
+        assertThat(skuDetail).containsEntry("source_channel", "FEIXIANG");
+        assertThat(skuDetail.get("source_product_name")).isEqualTo("子牧羊小腿");
+        assertThat(skuDetail.get("source_quantity")).isEqualTo("1.500");
+        assertThat(skuDetail.get("source_sheet_name")).isEqualTo("CSV");
+        assertThat(skuDetail.get("source_row_index")).isEqualTo(2);
+        assertThat((List<?>) skuDetail.get("evidence_items")).singleElement().satisfies(item -> {
+            Map<?, ?> evidence = (Map<?, ?>) item;
+            assertThat(evidence.get("source_sku_ref")).isEqualTo("FX-PRODUCT-REVIEW-001");
+            assertThat(evidence.get("product_name")).isEqualTo("子牧羊小腿");
+            assertThat(evidence.get("quantity")).isEqualTo("1.500");
+        });
+        // 复核事项直连原始文件行外键，原始单元格值可达。
+        assertThat(jdbc.queryForObject(
+                "SELECT raw_import_row_id FROM app.review_cases WHERE id=?",
+                Object.class, Long.parseLong(skuCase.get("id").toString()))).isNotNull();
         ResponseEntity<Map> skuResolved = resolveReview(
                 skuCase.get("id").toString(),
                 "resolve-sku",
@@ -319,6 +398,16 @@ class ExcelClosedLoopApiTest {
                 .contains("attachment", ".xlsx");
         byte[] instruction = instructionResponse.getBody();
         assertThat(instruction).startsWith((byte) 'P', (byte) 'K');
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(instruction))) {
+            DataFormatter formatter = new DataFormatter();
+            var sheet = workbook.getSheetAt(0);
+            Map<String, Integer> columns = new LinkedHashMap<>();
+            for (int index = 0; index < sheet.getRow(0).getLastCellNum(); index++) {
+                columns.put(formatter.formatCellValue(sheet.getRow(0).getCell(index)), index);
+            }
+            assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(columns.get("来源渠道"))))
+                    .isEqualTo("飞象");
+        }
 
         byte[] returned = fillThirdPartyTracking(instruction);
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
@@ -354,6 +443,39 @@ class ExcelClosedLoopApiTest {
         assertThat(csv.length >= 2 && csv[0] == 'P' && csv[1] == 'K').isFalse();
         String text = new String(csv, StandardCharsets.UTF_8);
         assertThat(text).contains("已发货", "京东物流", "JDVAFX-CLOSED-LOOP-001");
+    }
+
+    @Test
+    void wecomTrackingFileParsingReturnsDraftInputWithoutAcceptingTracking() throws Exception {
+        Map<String, Object> imported = upload(
+                "wecom-file-parse.csv",
+                feixiangSingleCsv("FX-WECOM-FILE-PARSE-001"),
+                "source-import-wecom-file-parse-001");
+        String exportId = ((List<?>) imported.get("generated_fulfillment_export_ids"))
+                .getFirst()
+                .toString();
+        byte[] returned = fillThirdPartyTracking(
+                downloadExport(exportId),
+                "SHIPPED",
+                "3.000",
+                "JDVA-WECOM-FILE-PARSE-001",
+                "");
+
+        TrackingFileService.ParsedTrackingFile parsed = trackingFileService.parseForDraft(returned);
+
+        assertThat(parsed.exportId()).isEqualTo(Long.parseLong(exportId));
+        assertThat(parsed.rows()).singleElement().satisfies(row -> {
+            assertThat(row.fulfillmentId()).isPositive();
+            assertThat(row.shipmentId()).isPositive();
+            assertThat(row.receiverName()).isNotBlank();
+            assertThat(row.result()).isEqualTo("SHIPPED");
+            assertThat(row.trackingNo()).isEqualTo("JDVA-WECOM-FILE-PARSE-001");
+        });
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.trackings WHERE shipment_id=?",
+                        Long.class,
+                        parsed.rows().getFirst().shipmentId()))
+                .isZero();
     }
 
     @Test
@@ -754,6 +876,17 @@ class ExcelClosedLoopApiTest {
             assertThat(reviewCase.get("reason_code")).isEqualTo("QUANTITY_SCALE");
             assertThat(reviewCase.get("status")).isEqualTo("OPEN");
             assertThat(reviewCase.get("order_line_id")).isNotNull();
+            Map<String, Object> detail = (Map<String, Object>) reviewCase.get("detail");
+            assertThat(detail)
+                    .containsEntry("reject_reason", "京东出库数量必须为正整数")
+                    // 飞象样表无单位列：解析器回退标记「来源数量单位」即行快照里的真实事实。
+                    .containsEntry("source_unit", "来源数量单位");
+            assertThat(new java.math.BigDecimal((String) detail.get("source_quantity")))
+                    .isEqualByComparingTo("1.5");
+            assertThat(new java.math.BigDecimal((String) detail.get("quantity_multiplier")))
+                    .isEqualByComparingTo("1.000");
+            assertThat(new java.math.BigDecimal((String) detail.get("converted_quantity")))
+                    .isEqualByComparingTo("1.5");
         });
     }
 
@@ -935,6 +1068,31 @@ class ExcelClosedLoopApiTest {
             var row = workbook.createSheet(sheetName).createRow(0);
             for (int index = 0; index < headers.size(); index++) {
                 row.createCell(index).setCellValue(headers.get(index));
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] zhonghuiStatusWorkbook() throws Exception {
+        List<String> headers = List.of(
+                "订单号", "下单时间", "支付时间", "完成时间", "商品编号", "商品名称", "税率",
+                "一级分类", "二级分类", "三级分类", "订单状态", "商品状态", "件数", "商家单价",
+                "商家金额", "上游成本价", "商家结算金额", "商家优惠", "商家运费", "收件人",
+                "收件电话", "收件地址", "发货状态", "包装规格", "单位");
+        List<String> values = List.of(
+                "S-ZHONGHUI-STATUS-001", "2026-08-21 10:00:00", "2026-08-21 10:00:01", "",
+                "ZH-TP-STATUS-001", "中汇回填状态测试商品", "9", "生鲜食品", "猪牛羊肉", "牛肉",
+                "待发货", "正常", "1", "100", "100", "60", "60", "0", "0", "状态测试客户",
+                "13800000001", "北京市丰台区测试路1号", "未发货", "500g", "份");
+        try (XSSFWorkbook workbook = new XSSFWorkbook();
+                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("Sheet1");
+            var header = sheet.createRow(0);
+            var row = sheet.createRow(1);
+            for (int index = 0; index < headers.size(); index++) {
+                header.createCell(index).setCellValue(headers.get(index));
+                row.createCell(index).setCellValue(values.get(index));
             }
             workbook.write(output);
             return output.toByteArray();

@@ -18,6 +18,8 @@ public record ProviderTrackingDraftDetailDto(
         List<Map<String, Object>> manualCarrierOptions,
         String taskId,
         List<Map<String, Object>> taskCandidates,
+        String source,
+        String confirmationScope,
         String shipmentJudgment,
         boolean defaultFullShipment,
         String actualQuantity,

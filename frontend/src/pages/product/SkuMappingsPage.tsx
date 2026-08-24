@@ -7,7 +7,6 @@ import {
   Button,
   Collapse,
   Descriptions,
-  Flex,
   Form,
   Input,
   Modal,
@@ -22,6 +21,8 @@ import {
 } from 'antd';
 import { CheckOutlined, FileSearchOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import DataTable from '@/components/DataTable';
+import PageShell from '@/components/PageShell';
 import { attr } from '@/pages/shared/MasterDataCrud';
 import { AdminEmpty, AdminFailureAlert, AdminLoading, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
@@ -548,7 +549,7 @@ function SourceSkuMatrix() {
         <Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>
       </div>
 
-      <Table<SourceSkuMappingMatrixRow>
+      <DataTable<SourceSkuMappingMatrixRow>
         className="sku-matrix__table"
         rowKey={(row) => row.sku.id}
         columns={columns}
@@ -556,7 +557,7 @@ function SourceSkuMatrix() {
         size="middle"
         sticky
         scroll={{ x: 260 + matrix.channels.length * 260 }}
-        locale={{ emptyText: <AdminEmpty description="暂无内部 SKU" /> }}
+        emptyText={<AdminEmpty description="暂无内部 SKU" />}
         pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 个内部 SKU` }}
       />
 
@@ -607,93 +608,89 @@ export default function SkuMappingsPage() {
 
   return (
     <div className="sku-mappings-page">
-      <Flex className="sku-mappings-page__heading" align="flex-start" justify="space-between" gap={24} wrap>
-        <div>
-          <Typography.Title id="sku-mapping-workspace-title" level={4} style={{ margin: 0 }}>
-            SKU 映射矩阵
-          </Typography.Title>
-          <Typography.Text type="secondary">
-            以内部 SKU 为主键，横向查看飞象、彩食鲜、聚福宝的平台商品映射。
-          </Typography.Text>
-        </div>
-        <Tag
-          bordered={false}
-          style={{ marginInlineEnd: 0, color: token.colorTextSecondary, background: token.colorFillTertiary }}
+      <PageShell
+        title="SKU 映射矩阵"
+        description="以内部 SKU 为主键，横向查看飞象、彩食鲜、聚福宝的平台商品映射。"
+        actions={(
+          <Tag
+            bordered={false}
+            style={{ marginInlineEnd: 0, color: token.colorTextSecondary, background: token.colorFillTertiary }}
+          >
+            主数据
+          </Tag>
+        )}
+      >
+        <section aria-label="SKU 映射矩阵工作区" className="sku-mappings-page__workspace">
+          <SourceSkuMatrix />
+        </section>
+
+        <section
+          aria-label="SKU 映射资料辅助核对"
+          className="sku-mappings-page__reference"
+          style={{
+            background: token.colorBgContainer,
+            border: `1px solid ${token.colorBorderSecondary}`,
+            borderRadius: token.borderRadiusLG,
+          }}
         >
-          主数据
-        </Tag>
-      </Flex>
+          <Collapse
+            ghost
+            items={[
+              {
+                key: 'reference-preview',
+                label: (
+                  <Space size={10}>
+                    <FileSearchOutlined style={{ color: token.colorTextSecondary }} />
+                    <span>
+                      <Typography.Text strong>使用文件辅助核对</Typography.Text>
+                      <Typography.Text type="secondary" className="sku-mappings-page__reference-copy">
+                        上传映射资料和来源样表，预览候选后再逐条确认。
+                      </Typography.Text>
+                    </span>
+                  </Space>
+                ),
+                children: <ReferencePreviewPanel />,
+              },
+            ]}
+          />
+        </section>
 
-      <section aria-labelledby="sku-mapping-workspace-title" className="sku-mappings-page__workspace">
-        <SourceSkuMatrix />
-      </section>
+        <section
+          aria-label="京东件数换算"
+          className="sku-mappings-page__reference"
+          style={{
+            background: token.colorBgContainer,
+            border: `1px solid ${token.colorBorderSecondary}`,
+            borderRadius: token.borderRadiusLG,
+          }}
+        >
+          <Collapse
+            ghost
+            defaultActiveKey={['jd-pieces']}
+            items={[
+              {
+                key: 'jd-pieces',
+                label: (
+                  <Space size={10}>
+                    <FileSearchOutlined style={{ color: token.colorTextSecondary }} />
+                    <span>
+                      <Typography.Text strong>京东件数换算</Typography.Text>
+                      <Typography.Text type="secondary" className="sku-mappings-page__reference-copy">
+                        从规格生成候选，人工确认后导入为 planQuantity 换算。
+                      </Typography.Text>
+                    </span>
+                  </Space>
+                ),
+                children: <JdPiecesPanel />,
+              },
+            ]}
+          />
+        </section>
 
-      <section
-        aria-label="SKU 映射资料辅助核对"
-        className="sku-mappings-page__reference"
-        style={{
-          background: token.colorBgContainer,
-          border: `1px solid ${token.colorBorderSecondary}`,
-          borderRadius: token.borderRadiusLG,
-        }}
-      >
-        <Collapse
-          ghost
-          items={[
-            {
-              key: 'reference-preview',
-              label: (
-                <Space size={10}>
-                  <FileSearchOutlined style={{ color: token.colorTextSecondary }} />
-                  <span>
-                    <Typography.Text strong>使用文件辅助核对</Typography.Text>
-                    <Typography.Text type="secondary" className="sku-mappings-page__reference-copy">
-                      上传映射资料和来源样表，预览候选后再逐条确认。
-                    </Typography.Text>
-                  </span>
-                </Space>
-              ),
-              children: <ReferencePreviewPanel />,
-            },
-          ]}
-        />
-      </section>
-
-      <section
-        aria-label="京东件数换算"
-        className="sku-mappings-page__reference"
-        style={{
-          background: token.colorBgContainer,
-          border: `1px solid ${token.colorBorderSecondary}`,
-          borderRadius: token.borderRadiusLG,
-        }}
-      >
-        <Collapse
-          ghost
-          defaultActiveKey={['jd-pieces']}
-          items={[
-            {
-              key: 'jd-pieces',
-              label: (
-                <Space size={10}>
-                  <FileSearchOutlined style={{ color: token.colorTextSecondary }} />
-                  <span>
-                    <Typography.Text strong>京东件数换算</Typography.Text>
-                    <Typography.Text type="secondary" className="sku-mappings-page__reference-copy">
-                      从规格生成候选，人工确认后导入为 planQuantity 换算。
-                    </Typography.Text>
-                  </span>
-                </Space>
-              ),
-              children: <JdPiecesPanel />,
-            },
-          ]}
-        />
-      </section>
-
-      <Typography.Text className="sku-mappings-page__footnote" type="secondary">
-        数量乘数用于把平台商品数量换算为内部 SKU 数量。飞象、彩食鲜、聚福宝均只展示有证据的显式映射，未映射时不会自动猜测。
-      </Typography.Text>
+        <Typography.Text className="sku-mappings-page__footnote" type="secondary">
+          数量乘数用于把平台商品数量换算为内部 SKU 数量。飞象、彩食鲜、聚福宝均只展示有证据的显式映射，未映射时不会自动猜测。
+        </Typography.Text>
+      </PageShell>
     </div>
   );
 }

@@ -10,11 +10,11 @@ import { useState } from 'react';
 import { Alert, Button, Card, Descriptions, Form, Input, InputNumber, Select, Space, Tag, Typography, message } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
+import PageShell from '@/components/PageShell';
 import { apiRequest, errorMessage } from '@/api/client';
 import type { JdQueryResult } from '@/api/types';
 import { jdSerialQueryPrefill, type JdSerialQueryKind } from './jdQueryPrefill';
 import { READ_ONLY_TAG_COLOR } from '@/pages/shared/semanticStatus';
-import { saasVisualTokens } from '@/theme/saasTheme';
 
 type QueryKind = JdSerialQueryKind;
 
@@ -238,19 +238,14 @@ export default function JdSerialQueryPage() {
   const mockMode = sdkResult?.result.business_code === 'MOCK_SUCCESS';
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" styles={{ body: { padding: '16px 18px' } }}>
+    <PageShell
+      icon={<SearchOutlined />}
+      title="京东序列号查询"
+      description="只读查询域：序列号查询 / 条件查询 / 流向查询 / 内部查询；不会在此页面发起任何写操作。"
+      actions={<Tag color={READ_ONLY_TAG_COLOR}>只读</Tag>}
+    >
+      <Card size="small">
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
-          <Space align="start" size={12} style={{ width: '100%' }}>
-            <SearchOutlined style={{ color: saasVisualTokens.brand.primary, fontSize: 20, marginTop: 3 }} />
-            <div>
-              <Typography.Title level={5} style={{ margin: 0 }}>京东序列号查询</Typography.Title>
-              <Typography.Text type="secondary">只读查询域：序列号查询 / 条件查询 / 流向查询 / 内部查询；不会在此页面发起任何写操作。</Typography.Text>
-            </div>
-            <div style={{ flex: 1 }} />
-            <Tag color={READ_ONLY_TAG_COLOR}>只读</Tag>
-          </Space>
-
           <Space size={12} wrap>
             <Select<QueryKind>
               style={{ width: 180 }}
@@ -338,6 +333,6 @@ export default function JdSerialQueryPage() {
           ) : null}
         </Space>
       </Card>
-    </Space>
+    </PageShell>
   );
 }

@@ -32,6 +32,11 @@ import org.springframework.beans.factory.annotation.Autowired;
  * 审计的 trace_id/request_id 与 run_id 同值，agent_run 与 AuditLog 由此双向关联。
  * provider 经 {@link AgentObservability} 接缝注入（默认 DB 实现），任何观测回调失败
  * 都 try/catch 隔离，不影响运行结果与审计。
+ *
+ * <p>运行期守卫（08 票）：模型调用前按平台默认链（{@link AgentGuard}，当前 [PII 拒绝]）
+ * 对输入判定——豁免（{@code guard_exemptions}）之外命中 → outcome=REJECTED
+ * （{@code PII_GUARDED}）转人工、不进模型，留审计与 FAILED 观测行；守卫故障按失败
+ * 隔离跳过（行为约束，与 07 票权限互不替代）。
  */
 public class AgentRuntimeFacade {
 
@@ -81,35 +86,60 @@ public class AgentRuntimeFacade {
         AgentDefinition definition = holder.current().bySlug(agentSlug);
         if (definition == null) {
             runStarted(ctx, runId, null, userInput);
-            recordAudit(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND.name(), 0, null);
-            runFinished(runId, AgentFailureCode.AGENT_NOT_FOUND.name(), 0, null);
-            return AgentRunResult.failClosed(AgentFailureCode.AGENT_NOT_FOUND);
+            return finalizeRun(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND.name(), 0,
+                    AgentRunResult.failClosed(AgentFailureCode.AGENT_NOT_FOUND), null);
         }
         if (!definition.enabled()) {
             runStarted(ctx, runId, definition, userInput);
-            recordAudit(ctx, runId, definition, AgentFailureCode.AGENT_DISABLED.name(), 0, null);
-            runFinished(runId, AgentFailureCode.AGENT_DISABLED.name(), 0, null);
-            return AgentRunResult.failClosed(AgentFailureCode.AGENT_DISABLED);
+            return finalizeRun(ctx, runId, definition, AgentFailureCode.AGENT_DISABLED.name(), 0,
+                    AgentRunResult.failClosed(AgentFailureCode.AGENT_DISABLED), null);
         }
         runStarted(ctx, runId, definition, userInput);
         long startedNanos = System.nanoTime();
         try {
-            AgentToolBinding binding = toolBindingFactory.bind(runId, definition.toolNames());
+            // 08 票运行期守卫（05 决策平台默认链 = [PII 拒绝]）：模型调用前判定，命中即短路
+            AgentRunResult guarded = guardReject(definition, userInput);
+            if (guarded != null) {
+                long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
+                return finalizeRun(ctx, runId, definition, guarded.error(), latencyMs, guarded, null);
+            }
+            AgentToolBinding binding = toolBindingFactory.bind(
+                    runId, definition.toolNames(), definition.allowWrite());
             AgentRunResult result = runtime.run(
                     new AgentTaskRequest(definition.systemPrompt(), userInput, binding, definition));
             long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
             // 04 决策：outcome 维度——失败（REJECTED/FAILED）才以失败码作状态，NEEDS_INPUT 不再是失败
             String status = result.error() == null ? result.outcome().name() : result.error();
-            recordAudit(ctx, runId, definition, status, latencyMs, result);
-            runFinished(runId, result.error(), latencyMs, projectedModel(result));
-            // 控制面收口富化：回填 run_id 与实测耗时（供领域包装回填业务 run-result 观测字段）
-            return result.withRunMetadata(runId, latencyMs);
+            return finalizeRun(ctx, runId, definition, status, latencyMs, result, projectedModel(result));
         } catch (RuntimeException ex) {
             // 绑定漂移等配置错误与运行时意外异常：留 FAILED 观测行收口后原样上抛（不吞配置错误）
             long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
             runFinished(runId, "AGENT_RUNTIME_EXCEPTION", latencyMs, null);
             throw ex;
         }
+    }
+
+    /**
+     * 收口一次运行：统一审计（status 语义见调用方）+ 观测收口 + run_id/耗时富化。
+     * 四条路径（未注册 / 未启用 / 守卫拒绝 / 正常运行）共用同一收口尾，避免重复。
+     */
+    private AgentRunResult finalizeRun(
+            AgentRunContext ctx,
+            String runId,
+            AgentDefinition definition,
+            String status,
+            long latencyMs,
+            AgentRunResult result,
+            String projectedModel) {
+        recordAudit(ctx, runId, definition, status, latencyMs, result);
+        runFinished(runId, result.error(), latencyMs, projectedModel);
+        // 控制面收口富化：回填 run_id 与实测耗时（供领域包装回填业务 run-result 观测字段）
+        return result.withRunMetadata(runId, latencyMs);
+    }
+
+    /** 按 slug 取当前生效定义（定义驱动：输入形态/输出 schema 由调用方按定义约定路由）。 */
+    public AgentDefinition definitionOf(String agentSlug) {
+        return holder.current().bySlug(agentSlug);
     }
 
     /** 会话延续：一期无状态，语义等价于 {@link #invoke}，thread_id 照常透传进审计。 */
@@ -137,7 +167,8 @@ public class AgentRuntimeFacade {
                     definition == null ? "none" : definition.modelRef(),
                     AgentPayloadRedactor.digest(userInput),
                     ctx.businessEntityType(),
-                    ctx.businessEntityId()));
+                    ctx.businessEntityId(),
+                    null));
         } catch (RuntimeException ignored) {
             // 观测失败不掩盖运行（与既有审计失败容忍语义一致）
         }
@@ -146,9 +177,32 @@ public class AgentRuntimeFacade {
     private void runFinished(String runId, String errorType, long latencyMs, String projectedModel) {
         try {
             observability.runFinished(
-                    new AgentObservability.Finish(runId, errorType, latencyMs, projectedModel));
+                    AgentObservability.Finish.of(runId, errorType, latencyMs, projectedModel));
         } catch (RuntimeException ignored) {
             // 观测失败不掩盖运行（与既有审计失败容忍语义一致）
+        }
+    }
+
+    /**
+     * 08 票运行期守卫（05 决策平台默认链 = [PII 拒绝]）：模型调用前对输入判定，
+     * 命中 → REJECTED（{@code PII_GUARDED}）转人工、不进模型；guard_exemptions 声明
+     * 后跳过（默认空 = 守卫生效）。守卫判定是纯字符串扫描（不应抛异常），异常仍按
+     * 失败隔离跳过守卫，不阻断既有 Agent 运行（与观测/审计失败容忍语义一致）。
+     *
+     * @return 命中返回拒绝结果；放行返回 null
+     */
+    private AgentRunResult guardReject(AgentDefinition definition, String userInput) {
+        try {
+            if (AgentGuard.exempt(definition, AgentGuardExemption.PII)) {
+                return null;
+            }
+            if (!AgentGuard.piiProblems(userInput).isEmpty()) {
+                return AgentRunResult.rejected("none", "none", "none", AgentFailureCode.PII_GUARDED);
+            }
+            return null;
+        } catch (RuntimeException ignored) {
+            // 守卫故障不得阻断 Agent 运行（失败隔离契约）
+            return null;
         }
     }
 

@@ -12,9 +12,12 @@ import cn.zimu.fulfillment.agent.AgentFailureCode;
 import cn.zimu.fulfillment.agent.AgentRunContext;
 import cn.zimu.fulfillment.agent.AgentRunResult;
 import cn.zimu.fulfillment.agent.AgentRuntimeFacade;
+import cn.zimu.fulfillment.agent.AgentSeedFixtures;
+import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -30,7 +33,13 @@ class ProcurementPriceAgentTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AgentRuntimeFacade facade = mock(AgentRuntimeFacade.class);
-    private final ProcurementPriceAgent agent = new ProcurementPriceAgent(facade, MAPPER);
+    private final ProcurementPriceAgent agent = new ProcurementPriceAgent(facade, mock(AuditLogService.class), MAPPER);
+
+    @BeforeEach
+    void stubDefinition() {
+        when(facade.definitionOf(ProcurementPriceAgent.AGENT_SLUG))
+                .thenReturn(AgentSeedFixtures.procurementDefinition());
+    }
 
     /** 策略可通过的 happy 路径推荐（候选 + 推荐 + 高置信度，requires_human 保持 false）。 */
     private static ProcurementPriceRecommendation happyPathRecommendation() {
@@ -39,6 +48,7 @@ class ProcurementPriceAgentTest {
                 new ProcurementPriceRecommendation.Inventory("0", "2"),
                 java.util.List.of(new ProcurementPriceRecommendation.Candidate(
                         "P001", "12.34", ProcurementPriceRecommendation.PriceBasis.sku_commercial_price, null)),
+                java.util.List.of(),
                 new ProcurementPriceRecommendation.Recommendation("P001", "最低价且来自主数据"),
                 java.util.List.of(), 0.9, false);
     }
@@ -50,13 +60,14 @@ class ProcurementPriceAgentTest {
                 new ProcurementPriceRecommendation.Inventory("0", "2"),
                 java.util.List.of(new ProcurementPriceRecommendation.Candidate(
                         "P001", "12.34", ProcurementPriceRecommendation.PriceBasis.sku_commercial_price, null)),
+                java.util.List.of(),
                 new ProcurementPriceRecommendation.Recommendation("P001", "x"),
                 java.util.List.of(), 0.2, false);
     }
 
     private static AgentRunResult successWith(ProcurementPriceRecommendation recommendation) {
         ObjectNode output = MAPPER.valueToTree(recommendation);
-        return AgentRunResult.success(output, "deepseek", "deepseek-chat", "procurement-price-v1")
+        return AgentRunResult.success(output, "deepseek", "deepseek-chat", "procurement-price-v2")
                 .withRunMetadata("run_abcdef", 42);
     }
 
@@ -83,7 +94,7 @@ class ProcurementPriceAgentTest {
         assertThat(result.error()).isNull();
         assertThat(result.provider()).isEqualTo("deepseek");
         assertThat(result.model()).isEqualTo("deepseek-chat");
-        assertThat(result.promptVersion()).isEqualTo("procurement-price-v1");
+        assertThat(result.promptVersion()).isEqualTo("procurement-price-v2");
         assertThat(result.recommendation()).isNotNull();
         assertThat(result.recommendation().targetSku()).isEqualTo("SKU-1001");
         assertThat(result.recommendation().requiresHuman()).isFalse();
@@ -120,13 +131,15 @@ class ProcurementPriceAgentTest {
         assertThatThrownBy(() -> agent.compare("{\"unknown\":1}", null))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("procurement_ticket_id");
-        org.mockito.Mockito.verifyNoInteractions(facade);
+        org.mockito.Mockito.verify(facade, org.mockito.Mockito.never())
+                .invoke(any(), any(), any());
     }
 
     @Test
     void blankInputIsRejectedBeforeModel() {
         assertThatThrownBy(() -> agent.compare("   ", null))
                 .isInstanceOf(BusinessException.class);
-        org.mockito.Mockito.verifyNoInteractions(facade);
+        org.mockito.Mockito.verify(facade, org.mockito.Mockito.never())
+                .invoke(any(), any(), any());
     }
 }

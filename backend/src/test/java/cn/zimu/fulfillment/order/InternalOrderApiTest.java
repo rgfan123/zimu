@@ -465,6 +465,69 @@ class InternalOrderApiTest {
         assertThat(created.getBody().get("order_status")).isEqualTo("NEED_REVIEW");
         Map<?, ?> reviewCase = (Map<?, ?>) ((java.util.List<?>) created.getBody().get("review_cases")).getFirst();
         assertThat(reviewCase.get("reason_code")).isEqualTo("SKU_MAPPING_CONFLICT");
+        // 复核抽屉应展示来源商品信息（WECOM 无文件血缘，不要求 sheet/行号）。
+        @SuppressWarnings("unchecked")
+        Map<String, Object> detail = (Map<String, Object>) reviewCase.get("detail");
+        assertThat(detail).containsEntry("source_product_name", "子牧羊小腿");
+        assertThat(detail).containsEntry("source_specification", "500g/盒");
+        assertThat(detail).containsEntry("source_unit", "盒");
+        assertThat(detail).containsEntry("source_quantity", "1.000");
+        assertThat((List<?>) detail.get("evidence_items")).singleElement().satisfies(item -> {
+            Map<?, ?> evidence = (Map<?, ?>) item;
+            assertThat(evidence.get("source_sku_ref")).isEqualTo("WECOM-SKU-JD-001");
+            assertThat(evidence.get("product_name")).isEqualTo("子牧羊小腿");
+        });
+        assertThat(detail.containsKey("source_sheet_name")).isFalse();
+    }
+
+    @Test
+    void unmappedBundleComponentProducesPerComponentSkuEvidence() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", "order-bundle-sku-evidence-001");
+        headers.set("X-Operator", "integration-test");
+        headers.set("X-Request-Id", "req-order-bundle-sku-evidence-001");
+        Map<String, Object> request = baseRequest(
+                "WECOM-ORDER-BUNDLE-SKU-EVIDENCE-001",
+                Map.of(
+                        "line_type", "CUSTOM_BUNDLE",
+                        "product_name", "子牧羊腿礼盒",
+                        "specification", "2盒/份",
+                        "unit", "份",
+                        "quantity", "2.000",
+                        "components", new Object[] {
+                                Map.of(
+                                        "source_sku_ref", "WECOM-SKU-JD-001",
+                                        "product_name", "子牧羊小腿",
+                                        "specification", "500g/盒",
+                                        "unit", "盒",
+                                        "quantity_per_bundle", "1.000"),
+                                Map.of(
+                                        "source_sku_ref", "WECOM-SKU-UNMAPPED-001",
+                                        "product_name", "未映射礼盒组件",
+                                        "specification", "300g/袋",
+                                        "unit", "袋",
+                                        "quantity_per_bundle", "2.000")}));
+
+        ResponseEntity<Map> created = http.exchange(
+                "/internal/v1/orders", HttpMethod.POST, new HttpEntity<>(request, headers), Map.class);
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(created.getBody()).isNotNull();
+        assertThat(created.getBody().get("order_status")).isEqualTo("NEED_REVIEW");
+        Map<?, ?> reviewCase = (Map<?, ?>) ((java.util.List<?>) created.getBody().get("review_cases")).getFirst();
+        assertThat(reviewCase.get("reason_code")).isEqualTo("SKU_MAPPING_REQUIRED");
+        // 多个被阻断组件逐行列出，而不是合并成一串编号。
+        Map<?, ?> detail = (Map<?, ?>) reviewCase.get("detail");
+        assertThat(detail.get("source_product_name")).isEqualTo("子牧羊腿礼盒");
+        assertThat((List<?>) detail.get("evidence_items")).singleElement().satisfies(item -> {
+            Map<?, ?> evidence = (Map<?, ?>) item;
+            assertThat(evidence.get("source_sku_ref")).isEqualTo("WECOM-SKU-UNMAPPED-001");
+            assertThat(evidence.get("product_name")).isEqualTo("未映射礼盒组件");
+            assertThat(evidence.get("specification")).isEqualTo("300g/袋");
+            assertThat(evidence.get("unit")).isEqualTo("袋");
+            assertThat(evidence.get("quantity")).isEqualTo("2.000");
+        });
     }
 
     @Test

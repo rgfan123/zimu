@@ -38,9 +38,11 @@ public record AgentDefinition(
         OffsetDateTime activatedAt,
         boolean allowWrite,
         List<String> guardExemptions,
-        JsonNode outputSchema) {
+        JsonNode outputSchema,
+        AgentInputFormat inputFormat) {
 
-    private static final String SLUG_PATTERN = "[a-z][a-z0-9-]{0,63}";
+    /** slug 格式（写工具/门禁/读面过滤共用，AgentDraftService、AgentRunFilter 等引用）。 */
+    public static final String SLUG_PATTERN = "[a-z][a-z0-9-]{0,63}";
 
     public AgentDefinition {
         agentSlug = requireSlug(agentSlug);
@@ -63,6 +65,9 @@ public record AgentDefinition(
                     "status=active 的定义必须携带 activated_by 与 activated_at: " + agentSlug);
         }
         guardExemptions = guardExemptions == null ? List.of() : List.copyOf(guardExemptions);
+        if (inputFormat == null) {
+            throw new IllegalArgumentException("input_format 不能为 null");
+        }
     }
 
     /**
@@ -94,7 +99,8 @@ public record AgentDefinition(
                 OffsetDateTime.now(),
                 false,
                 List.of(),
-                null);
+                null,
+                AgentInputFormat.NATURAL_LANGUAGE);
     }
 
     /** 全量构造（DB 真源加载/草稿确认路径）。 */
@@ -113,7 +119,8 @@ public record AgentDefinition(
             OffsetDateTime activatedAt,
             boolean allowWrite,
             List<String> guardExemptions,
-            JsonNode outputSchema) {
+            JsonNode outputSchema,
+            AgentInputFormat inputFormat) {
         return new AgentDefinition(
                 agentSlug,
                 name,
@@ -129,7 +136,8 @@ public record AgentDefinition(
                 activatedAt,
                 allowWrite,
                 guardExemptions,
-                outputSchema);
+                outputSchema,
+                inputFormat);
     }
 
     private static String requireSlug(String slug) {

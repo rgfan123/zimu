@@ -176,6 +176,199 @@ public class OperationalAlertService {
         });
     }
 
+    /**
+     * 系统侧（Worker）创建运营告警：无 Idempotency-Key/CommandContext 的路径。
+     *
+     * <p>同一 {@code (alert_type, shipment_id, detail.export_id)} 的既有 OPEN/ACKNOWLEDGED
+     * 告警只在其来源 delivery 代际不晚于当前命令时自动关闭（detail 留 superseded 证据）再
+     * 插入新告警；旧代际补建遇到新代际活动告警时保留新告警并幂等返回。绝不跨导出误关
+     * （续发导出可共享 fulfillment/shipment，按 detail 的 export_id 隔离）；并发插入由
+     * {@code uq_operational_alert_active_wecom_export} 唯一索引兜底（冲突时返回既有告警）。
+     */
+    @Transactional
+    public long createSystem(CreateOperationalAlertCommand command) {
+        validateCreate(command);
+        String exportId = exportIdOf(command);
+        // 同一导出的「关闭旧代际 → 插入当前代际」必须共用串行化点。唯一索引只能防止
+        // 两条活动行同时提交，不能保证并发 gen1/gen2 竞争时较新代际获胜；先锁 state 行后，
+        // 后继事务在 READ COMMITTED 下会看见前驱已提交告警，再按 generation 单调替换。
+        lockWecomExportAlertScope(exportId);
+        Integer initialGeneration = initialGenerationOf(command);
+        resolveActiveForExport(
+                command.alertType(),
+                command.shipmentId(),
+                exportId,
+                initialGeneration,
+                "superseded_by_new_delivery");
+        List<Long> inserted = jdbc.query(
+                """
+                INSERT INTO app.operational_alerts
+                    (alert_no, alert_type, severity, order_id, order_line_id, fulfillment_id, shipment_id,
+                     message, detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                """,
+                (rs, row) -> rs.getLong(1),
+                "ALERT-" + token(),
+                command.alertType(),
+                command.severity().name(),
+                command.orderId(),
+                command.orderLineId(),
+                command.fulfillmentId(),
+                command.shipmentId(),
+                command.message(),
+                writeJson(command.detail() == null ? Map.of() : command.detail()));
+        if (inserted.isEmpty()) {
+            List<Long> existing = jdbc.query(
+                    """
+                    SELECT id FROM app.operational_alerts
+                    WHERE alert_type=? AND shipment_id=?
+                      AND detail->>'export_id'=?
+                      AND status IN ('OPEN', 'ACKNOWLEDGED')
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (rs, row) -> rs.getLong(1),
+                    command.alertType(),
+                    command.shipmentId(),
+                    exportId);
+            return existing.isEmpty() ? -1 : existing.getFirst();
+        }
+        long alertId = inserted.getFirst();
+        audits.record(new AuditLogService.AuditCommand()
+                .dataScope(DataScope.BUSINESS)
+                .orderId(command.orderId())
+                .requestId("system:wecom-export")
+                .operator("system")
+                .actorType(AuditActorType.SYSTEM)
+                .service("OperationalAlertService")
+                .operation("operational_alert.create_system")
+                .requestPayload(command)
+                .responsePayload(loadAlert(alertId))
+                .httpStatus(201)
+                .businessCode("OPERATIONAL_ALERT_CREATED"));
+        return alertId;
+    }
+
+    /**
+     * 企微导出告警的事务级串行化点：锁对应 state 行直到 createSystem 提交。无合法 export_id
+     * 或旧调用方不存在 state 时保持兼容，由原唯一索引继续兜底。
+     */
+    private void lockWecomExportAlertScope(String exportId) {
+        if (exportId == null) {
+            return;
+        }
+        final long parsed;
+        try {
+            parsed = Long.parseLong(exportId);
+        } catch (NumberFormatException ignored) {
+            return;
+        }
+        jdbc.query(
+                "SELECT export_id FROM app.fulfillment_export_wecom_states WHERE export_id=? FOR UPDATE",
+                (rs, row) -> rs.getLong(1),
+                parsed);
+    }
+
+    /**
+     * 人工重发成功（新 initial ack）后只关闭**该导出**活动告警中**代际 <= {@code maxGeneration}**
+     * 的告警：按 {@code (alert_type, shipment_id, detail.export_id)} 隔离（不误关共享
+     * fulfillment/shipment 的其他导出），再按告警来源 delivery 的 INITIAL 代际收窄——旧代际
+     * initial 成功收口绝不关闭更新代际 resend 失败的红告警（代际 > maxGeneration 保持 OPEN）；
+     * detail 留下可追溯关闭证据。
+     */
+    @Transactional
+    public void resolveWecomExportAlerts(Long shipmentId, long exportId, int maxGeneration, String reason) {
+        if (shipmentId == null) {
+            return;
+        }
+        jdbc.update(
+                """
+                UPDATE app.operational_alerts a
+                SET status='RESOLVED', resolved_at=CURRENT_TIMESTAMP,
+                    detail=a.detail || jsonb_build_object('auto_resolved_reason', ?),
+                    lock_version=a.lock_version+1, updated_at=CURRENT_TIMESTAMP
+                FROM app.fulfillment_export_wecom_deliveries d
+                WHERE a.alert_type='FULFILLMENT_EXPORT_WECOM' AND a.shipment_id=?
+                  AND a.detail->>'export_id'=?
+                  AND a.status IN ('OPEN', 'ACKNOWLEDGED')
+                  AND d.id = (a.detail->>'delivery_id')::bigint
+                  AND d.initial_generation <= ?
+                """,
+                reason,
+                shipmentId,
+                String.valueOf(exportId),
+                maxGeneration);
+    }
+
+    private void resolveActiveForExport(
+            String alertType, Long shipmentId, String exportId, Integer maxGeneration, String reason) {
+        if (shipmentId == null || exportId == null) {
+            return;
+        }
+        if (maxGeneration != null) {
+            jdbc.update(
+                    """
+                    UPDATE app.operational_alerts a
+                    SET status='RESOLVED', resolved_at=CURRENT_TIMESTAMP,
+                        detail=a.detail || jsonb_build_object('auto_resolved_reason', ?),
+                        lock_version=a.lock_version+1, updated_at=CURRENT_TIMESTAMP
+                    FROM app.fulfillment_export_wecom_deliveries d
+                    WHERE a.alert_type=? AND a.shipment_id=? AND a.detail->>'export_id'=?
+                      AND a.status IN ('OPEN', 'ACKNOWLEDGED')
+                      AND d.id = (a.detail->>'delivery_id')::bigint
+                      AND d.initial_generation <= ?
+                    """,
+                    reason,
+                    alertType,
+                    shipmentId,
+                    exportId,
+                    maxGeneration);
+            return;
+        }
+        jdbc.update(
+                """
+                UPDATE app.operational_alerts
+                SET status='RESOLVED', resolved_at=CURRENT_TIMESTAMP,
+                    detail=detail || jsonb_build_object('auto_resolved_reason', ?),
+                    lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP
+                WHERE alert_type=? AND shipment_id=? AND detail->>'export_id'=?
+                  AND status IN ('OPEN', 'ACKNOWLEDGED')
+                """,
+                reason,
+                alertType,
+                shipmentId,
+                exportId);
+    }
+
+    /**
+     * 企微导出告警的来源代际必须以 delivery 事实为准，不信任调用方 detail 中的数字。
+     * 非企微或旧调用方没有 delivery_id 时返回 null，沿用原有按导出整体替换行为。
+     */
+    private Integer initialGenerationOf(CreateOperationalAlertCommand command) {
+        Object deliveryId = command.detail() == null ? null : command.detail().get("delivery_id");
+        if (deliveryId == null) {
+            return null;
+        }
+        final long parsed;
+        try {
+            parsed = Long.parseLong(String.valueOf(deliveryId));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+        List<Integer> generations = jdbc.query(
+                "SELECT initial_generation FROM app.fulfillment_export_wecom_deliveries WHERE id=?",
+                (rs, row) -> rs.getInt(1),
+                parsed);
+        return generations.isEmpty() ? null : generations.getFirst();
+    }
+
+    /** 告警 detail 中的 export_id（字符串），缺失时返回 null（调用方按无隔离处理）。 */
+    private static String exportIdOf(CreateOperationalAlertCommand command) {
+        Object exportId = command.detail() == null ? null : command.detail().get("export_id");
+        return exportId == null ? null : String.valueOf(exportId);
+    }
+
     private static void validateCreate(CreateOperationalAlertCommand command) {
         if (command == null || command.alertType() == null || command.alertType().isBlank()) {
             throw BusinessException.unprocessable("ALERT_TYPE_REQUIRED", "运营告警类型不能为空");

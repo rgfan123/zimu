@@ -4,16 +4,17 @@ import cn.zimu.fulfillment.common.event.OrderEvent;
 import cn.zimu.fulfillment.common.version.OrderVersion;
 import cn.zimu.fulfillment.message.MessageModelMetadataRegistry;
 import cn.zimu.fulfillment.message.MessagePublicProjectionSanitizer;
+import cn.zimu.fulfillment.message.WecomTrackingFileFailureCode;
 import cn.zimu.fulfillment.order.domain.Order;
 import cn.zimu.fulfillment.order.domain.OrderLine;
 import cn.zimu.fulfillment.order.domain.OrderLineComponent;
 import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
+import cn.zimu.fulfillment.order.domain.SettlementMethod;
 import cn.zimu.fulfillment.order.dto.OrderDetailDto;
 import cn.zimu.fulfillment.order.dto.OrderEventDto;
 import cn.zimu.fulfillment.order.dto.OrderLineComponentDto;
 import cn.zimu.fulfillment.order.dto.OrderLineDto;
-import cn.zimu.fulfillment.order.dto.OrderSummaryDto;
 import cn.zimu.fulfillment.order.dto.OrderVersionDto;
 import cn.zimu.fulfillment.order.dto.ReviewCaseDto;
 import cn.zimu.fulfillment.order.dto.Receiver;
@@ -33,26 +34,6 @@ public class OrderMapper {
         this.metadataRegistry = metadataRegistry;
     }
 
-    public OrderSummaryDto toSummary(Order order, String customerName, OrderQueryService.ViewProjection projection) {
-        return new OrderSummaryDto(
-                String.valueOf(order.getId()),
-                order.getOrderNo(),
-                order.getSourceChannel().name(),
-                order.getSourceRef(),
-                order.getCustomerId() == null ? null : String.valueOf(order.getCustomerId()),
-                customerName,
-                order.getReceiverName(),
-                order.getOrderStatus().name(),
-                projection.stage(),
-                projection.health(),
-                projection.completedCount(),
-                projection.totalCount(),
-                projection.attentionReason(),
-                order.getCreatedAt(),
-                order.getUpdatedAt(),
-                order.getLockVersion());
-    }
-
     public OrderDetailDto toDetail(
             Order order,
             List<OrderLine> lines,
@@ -60,6 +41,7 @@ public class OrderMapper {
             List<ReviewCase> reviewCases,
             String customerName,
             Map<Long, String> skuCodes,
+            String sourceChannel,
             OrderQueryService.ViewProjection projection) {
         Map<Long, List<OrderLineComponent>> componentsByLine = new LinkedHashMap<>();
         for (OrderLineComponent component : components) {
@@ -78,7 +60,7 @@ public class OrderMapper {
         return new OrderDetailDto(
                 String.valueOf(order.getId()),
                 order.getOrderNo(),
-                order.getSourceChannel().name(),
+                sourceChannel,
                 order.getSourceRef(),
                 order.getCustomerId() == null ? null : String.valueOf(order.getCustomerId()),
                 customerName,
@@ -100,7 +82,9 @@ public class OrderMapper {
                         null,
                         null,
                         order.getReceiverAddress()),
-                new Settlement(order.getSettlementMethod(), order.getSettlementTime()),
+                order.getSettlementMethod() == SettlementMethod.UNSPECIFIED
+                        ? new Settlement(null, null)
+                        : new Settlement(order.getSettlementMethod(), order.getSettlementTime()),
                 order.getRemark(),
                 lineDtos,
                 reviewCases.stream().map(this::toReviewCase).toList());
@@ -111,6 +95,7 @@ public class OrderMapper {
                 String.valueOf(line.getId()),
                 line.getLineNo(),
                 line.getLineType().name(),
+                line.getBundleId() == null ? null : String.valueOf(line.getBundleId()),
                 line.getSkuId() == null ? null : String.valueOf(line.getSkuId()),
                 skuCodes.get(line.getSkuId()),
                 line.getFulfillmentProviderId() == null ? null : String.valueOf(line.getFulfillmentProviderId()),
@@ -226,8 +211,10 @@ public class OrderMapper {
         snapshot.put("order_status", order.getOrderStatus().name());
         snapshot.put("customer_id", order.getCustomerId());
         snapshot.put("correction_of_order_id", order.getCorrectionOfOrderId());
-        snapshot.put("settlement_method", order.getSettlementMethod().name());
-        snapshot.put("settlement_time", order.getSettlementTime().toString());
+        boolean settlementMissing = order.getSettlementMethod()
+                == SettlementMethod.UNSPECIFIED;
+        snapshot.put("settlement_method", settlementMissing ? null : order.getSettlementMethod().name());
+        snapshot.put("settlement_time", order.getSettlementTime() == null ? null : order.getSettlementTime().toString());
         snapshot.put(
                 "receiver",
                 Map.of(
@@ -265,6 +252,7 @@ public class OrderMapper {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("line_no", line.getLineNo());
         snapshot.put("line_type", line.getLineType().name());
+        snapshot.put("bundle_id", line.getBundleId());
         snapshot.put("sku_id", line.getSkuId());
         snapshot.put("sku_code", skuCodes.get(line.getSkuId()));
         snapshot.put("provider_id", line.getFulfillmentProviderId());
@@ -311,9 +299,10 @@ public class OrderMapper {
                 List.of("RESOLVE_JD_TRACKING_CONFLICT", "DISMISS");
             case "MULTI_SHIPMENT_SOURCE_FOLLOWUP" -> List.of("COMPLETE_SOURCE_FOLLOWUP", "DISMISS");
             case "WECOM_ORDER_DRAFT" -> List.of("CONFIRM_ORDER_DRAFT", "REJECT_ORDER_DRAFT");
-            case "WECOM_TRACKING_DRAFT" -> List.of("CONFIRM_TRACKING_DRAFT");
+            case "WECOM_TRACKING_DRAFT" -> List.of("CONFIRM_TRACKING_DRAFT", "REJECT_TRACKING_DRAFT");
             case "WECOM_NEED_REVIEW", "WECOM_ORDER_CHANGE", "WECOM_ORDER_CANCEL" ->
                 List.of("REINTERPRET", "REJECT", "RESOLVE_MANUALLY");
+            case WecomTrackingFileFailureCode.REVIEW_REASON -> List.of("RESOLVE_MANUALLY", "DISMISS");
             case "SKU_MAPPING_CONFLICT", "REVISION_AFTER_EXPORT", "QUANTITY_SCALE",
                     "FULFILLMENT_EXCEPTION", "SYNC_FAILED", "IMPORT_DATA", "CARRIER_MAPPING",
                     "SOURCE_SKU_MAPPING_REQUIRED", "PROVIDER_SKU_MAPPING_REQUIRED" ->

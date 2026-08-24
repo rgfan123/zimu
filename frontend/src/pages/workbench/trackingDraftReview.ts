@@ -1,7 +1,7 @@
 export interface TrackingDraftCarrierCandidate {
   code: string;
   name: string;
-  source: 'STATED' | 'PREFIX';
+  source: 'STATED' | 'PREFIX' | 'FILE';
 }
 
 export interface TrackingDraftCarrierOption {
@@ -35,6 +35,8 @@ export interface TrackingDraftDetail {
   manual_carrier_options: TrackingDraftCarrierOption[];
   task_id: string | null;
   task_candidates: TrackingDraftTaskCandidate[];
+  source: 'WECOM_MESSAGE' | 'WECOM_TRACKING_FILE';
+  confirmation_scope: 'SINGLE_TASK' | 'ATOMIC_SHIPMENT';
   shipment_judgment: 'FULL' | 'PARTIAL' | 'SHORTAGE' | 'EXCEPTION';
   default_full_shipment: boolean;
   actual_quantity: string | null;
@@ -52,6 +54,7 @@ export interface TrackingDraftReviewForm {
   task_id: string;
   task_no: string;
   carrier_code: string;
+  actual_quantity: string;
   remark: string;
 }
 
@@ -61,7 +64,7 @@ export interface ConfirmTrackingDraftCommand {
   task_id: string | null;
   task_no: string | null;
   carrier_code: string;
-  actual_quantity: null;
+  actual_quantity: string | null;
   remark: string;
 }
 
@@ -111,6 +114,9 @@ export function initialTrackingDraftReviewForm(
     task_no: '',
     carrier_code: text(draft.carrier_code)
       || (draft.carrier_candidates.length === 1 ? text(draft.carrier_candidates[0]?.code) : ''),
+    actual_quantity: draft.source === 'WECOM_TRACKING_FILE' && draft.shipment_judgment === 'PARTIAL'
+      ? text(draft.actual_quantity)
+      : '',
     remark: '',
   };
 }
@@ -135,7 +141,11 @@ export function trackingDraftBlockingIssues(
   if (!taskReferenceIsValid) issues.push('发货任务未唯一确定');
   if (!carrierCode || !carrierIsKnown) issues.push('物流公司未唯一确定');
   if (!text(draft.tracking_no)) issues.push('运单号缺失');
-  if (!draft.default_full_shipment || draft.shipment_judgment !== 'FULL') {
+  const filePartial = draft.source === 'WECOM_TRACKING_FILE'
+    && draft.shipment_judgment === 'PARTIAL';
+  if (filePartial) {
+    if (!validPositiveQuantity(form.actual_quantity)) issues.push('部分发货的实发数量无效');
+  } else if (!draft.default_full_shipment || draft.shipment_judgment !== 'FULL') {
     issues.push('当前流程仅支持整项发货确认');
   }
   for (const issue of draft.validation_issues) {
@@ -168,11 +178,48 @@ export function buildTrackingDraftConfirmCommand(
     task_id: text(form.task_id) || null,
     task_no: text(form.task_no) || null,
     carrier_code: text(form.carrier_code),
-    actual_quantity: null,
+    actual_quantity: draft.source === 'WECOM_TRACKING_FILE' && draft.shipment_judgment === 'PARTIAL'
+      ? text(form.actual_quantity)
+      : null,
     remark: text(form.remark),
   };
 }
 
 export function trackingDraftIssueLabel(issue: string): string {
   return ISSUE_LABELS[issue] ?? '存在暂不支持的校验问题，请联系管理员处理';
+}
+
+export function isAtomicShipmentDraft(draft: TrackingDraftDetail): boolean {
+  return draft.source === 'WECOM_TRACKING_FILE'
+    && draft.confirmation_scope === 'ATOMIC_SHIPMENT';
+}
+
+export function trackingDraftOpenStateDescription(draft: TrackingDraftDetail): string {
+  return isAtomicShipmentDraft(draft)
+    ? '只有系统确定性解析的同一发货批次全部必选明细与标准物流公司可被确认；确认后不会从企微消息推断实际发货时间。'
+    : '只有系统确定性解析的唯一任务与标准物流公司可被确认；确认后不会从企微消息推断实际发货时间。';
+}
+
+export function trackingDraftFullShipmentDescription(
+  draft: TrackingDraftDetail,
+  selectedTask?: TrackingDraftTaskCandidate,
+): string {
+  if (isAtomicShipmentDraft(draft)) {
+    return `本文件行未明示部分发货或异常，确认时将使用上表全部 ${draft.task_candidates.length} 条必选明细各自的指令数量，不会只取其中一条。`;
+  }
+  const quantity = text(selectedTask?.instructed_quantity);
+  return `本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量${quantity ? ` ${quantity}` : ''}。`;
+}
+
+export function trackingDraftCarrierSourceLabel(
+  source: TrackingDraftCarrierCandidate['source'],
+): string {
+  if (source === 'STATED') return '消息明示物流公司';
+  if (source === 'FILE') return '回传文件明确的物流公司';
+  return '运单前缀主数据';
+}
+
+function validPositiveQuantity(value: string): boolean {
+  const normalized = text(value);
+  return /^\d+(?:\.\d{1,3})?$/.test(normalized) && Number(normalized) > 0;
 }

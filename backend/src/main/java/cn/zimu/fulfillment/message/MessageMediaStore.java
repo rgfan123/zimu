@@ -135,7 +135,7 @@ public class MessageMediaStore {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public String recordFailure(long id, String error, int maxAttempts) {
-        return jdbc.queryForObject(
+        List<String> states = jdbc.query(
                 """
                 UPDATE app.message_media
                 SET attempts = attempts + 1,
@@ -145,12 +145,21 @@ public class MessageMediaStore {
                                           ELSE 'PENDING'
                                       END,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND download_status <> 'AVAILABLE'
                 RETURNING download_status
                 """,
-                String.class,
+                (resultSet, rowNum) -> resultSet.getString(1),
                 error,
                 maxAttempts,
+                id);
+        if (!states.isEmpty()) {
+            return states.getFirst();
+        }
+        // 并发的新 owner 可能已成功留存证据；失败结果不得把 AVAILABLE
+        // 降级回 PENDING/FAILED。重读终态供编排层返回已有成功证据。
+        return jdbc.queryForObject(
+                "SELECT download_status FROM app.message_media WHERE id=?",
+                String.class,
                 id);
     }
 

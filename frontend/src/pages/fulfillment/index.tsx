@@ -10,3 +10,4 @@ export { default as JdOrderQueryPage } from './JdOrderQueryPage';
 export { default as JdStockQueryPage } from './JdStockQueryPage';
 export { default as JdSerialQueryPage } from './JdSerialQueryPage';
 export { default as JdReturnQueryPage } from './JdReturnQueryPage';
+export { default as OutboundReconPage } from './OutboundReconPage';

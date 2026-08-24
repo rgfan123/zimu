@@ -1,15 +1,25 @@
 package cn.zimu.fulfillment.message;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
+import cn.zimu.fulfillment.file.WecomTrackingFileDraftService;
+import cn.zimu.fulfillment.file.WecomTrackingFileProcessor;
+import cn.zimu.fulfillment.file.WecomTrackingFileWorker;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,6 +48,9 @@ class AsyncTaskStoreTest {
     @DynamicPropertySource
     static void disableWorkerForDeterminism(DynamicPropertyRegistry registry) {
         registry.add("app.message-worker.enabled", () -> "false");
+        registry.add("app.wecom-tracking-file-worker.enabled", () -> "false");
+        registry.add("app.wecom-export-worker.enabled", () -> "false");
+        registry.add("app.agent-worker.enabled", () -> "false");
     }
 
     @Autowired
@@ -136,6 +149,118 @@ class AsyncTaskStoreTest {
                 "SELECT status FROM app.async_tasks WHERE id = ?", String.class, task.get().id());
         assertThat(finalState).isEqualTo("FAILED");
         assertThat(taskStore.claim("worker-retry", Duration.ofSeconds(30))).isEmpty();
+    }
+
+    @Test
+    void externallyUnknownDeliveryCanBeFailedImmediatelyWithoutAnotherClaim() {
+        taskStore.enqueue("TEST_TASK", "card:1", "test-terminal-fail", 3);
+        AsyncTaskStore.AsyncTask task = taskStore.claim("worker-unknown", Duration.ofSeconds(30)).orElseThrow();
+
+        taskStore.failTerminal(task.id(), "worker-unknown", "DELIVERY_UNKNOWN");
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT status, attempts, last_error FROM app.async_tasks WHERE id=?", task.id());
+        assertThat(row)
+                .containsEntry("status", "FAILED")
+                .containsEntry("attempts", 1)
+                .containsEntry("last_error", "DELIVERY_UNKNOWN");
+        assertThat(taskStore.claim("worker-unknown", Duration.ofSeconds(30))).isEmpty();
+    }
+
+    @Test
+    void plannedShutdownReleaseRestoresThirdClaimWithoutEnteringFinalizing() {
+        taskStore.enqueue("TEST_TASK", "submission:901", "test-shutdown-release", 3);
+        AsyncTaskStore.AsyncTask first = taskStore.claim("worker-first", Duration.ofSeconds(30)).orElseThrow();
+        assertThat(taskStore.fail(first.id(), "worker-first", "previous-1", Duration.ZERO)).isFalse();
+        makeDue(first.id());
+        AsyncTaskStore.AsyncTask second = taskStore.claim("worker-second", Duration.ofSeconds(30)).orElseThrow();
+        assertThat(taskStore.fail(second.id(), "worker-second", "previous-2", Duration.ZERO)).isFalse();
+        makeDue(first.id());
+        AsyncTaskStore.AsyncTask third = taskStore.claim("worker-closing", Duration.ofSeconds(30)).orElseThrow();
+        assertThat(third.status()).isEqualTo("RUNNING");
+        assertThat(third.attempts()).isEqualTo(3);
+
+        assertThat(taskStore.releaseOwnedForShutdown(third.id(), "wrong-owner")).isFalse();
+        assertThat(taskStore.releaseOwnedForShutdown(third.id(), "worker-closing")).isTrue();
+
+        Map<String, Object> released = jdbc.queryForMap(
+                """
+                SELECT status, attempts, lease_until, lease_owner, last_error
+                FROM app.async_tasks WHERE id=?
+                """,
+                third.id());
+        assertThat(released)
+                .containsEntry("status", "PENDING")
+                .containsEntry("attempts", 2)
+                .containsEntry("lease_until", null)
+                .containsEntry("lease_owner", null)
+                .containsEntry("last_error", null);
+
+        AsyncTaskStore.AsyncTask recovered =
+                taskStore.claim("worker-recovered", Duration.ofSeconds(30)).orElseThrow();
+        assertThat(recovered.status()).isEqualTo("RUNNING");
+        assertThat(recovered.attempts()).isEqualTo(3);
+        assertThat(recovered.lastError()).isNull();
+    }
+
+    @Test
+    void thirdClaimInterruptedByWorkerShutdownIsLosslesslyRecovered() throws Exception {
+        taskStore.enqueue(
+                MessageSubmissionService.WECOM_TRACKING_FILE_TASK_TYPE,
+                "submission:902",
+                "test-worker-shutdown-recovery",
+                3);
+        AsyncTaskStore.AsyncTask first = taskStore.claim("worker-first", Duration.ofSeconds(30)).orElseThrow();
+        assertThat(taskStore.fail(first.id(), "worker-first", "previous-1", Duration.ZERO)).isFalse();
+        makeDue(first.id());
+        AsyncTaskStore.AsyncTask second = taskStore.claim("worker-second", Duration.ofSeconds(30)).orElseThrow();
+        assertThat(taskStore.fail(second.id(), "worker-second", "previous-2", Duration.ZERO)).isFalse();
+        makeDue(first.id());
+
+        WecomTrackingFileProcessor processor = mock(WecomTrackingFileProcessor.class);
+        WecomTrackingFileDraftService drafts = mock(WecomTrackingFileDraftService.class);
+        CountDownLatch processingStarted = new CountDownLatch(1);
+        doAnswer(invocation -> {
+                    processingStarted.countDown();
+                    try {
+                        new CountDownLatch(1).await(10, TimeUnit.SECONDS);
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("test processor interrupted during shutdown", exception);
+                    }
+                    return null;
+                })
+                .when(processor)
+                .process(any(AsyncTaskStore.AsyncTask.class));
+        WecomTrackingFileWorker worker =
+                new WecomTrackingFileWorker(taskStore, processor, drafts, true, 30, 0, 60);
+        try {
+            worker.poll();
+            assertThat(processingStarted.await(2, TimeUnit.SECONDS)).isTrue();
+            worker.shutdown();
+        } finally {
+            worker.shutdown();
+        }
+
+        Map<String, Object> released = jdbc.queryForMap(
+                """
+                SELECT status, attempts, lease_until, lease_owner, last_error
+                FROM app.async_tasks WHERE id=?
+                """,
+                first.id());
+        assertThat(released)
+                .containsEntry("status", "PENDING")
+                .containsEntry("attempts", 2)
+                .containsEntry("lease_until", null)
+                .containsEntry("lease_owner", null)
+                .containsEntry("last_error", null);
+        verifyNoInteractions(drafts);
+
+        AsyncTaskStore.AsyncTask recovered =
+                taskStore.claim("worker-recovered", Duration.ofSeconds(30)).orElseThrow();
+        assertThat(recovered.status()).isEqualTo("RUNNING");
+        assertThat(recovered.attempts()).isEqualTo(3);
+        assertThat(recovered.lastError()).isNull();
     }
 
     private void makeDue(long taskId) {

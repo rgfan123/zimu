@@ -7,13 +7,15 @@
  * 不为此新增不存在于契约的配置接口。
  */
 
-import { Button, Card, Tag, Table, Typography } from 'antd';
+import { Button, Card, Tag, Typography } from 'antd';
 import { LockOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { connectorsApi, providersApi } from '@/api/endpoints';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import type { ConnectorConfig, FulfillmentProvider, SourceChannel } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import DataTable from '@/components/DataTable';
+import PageShell from '@/components/PageShell';
 import { AdminCategoryTag, AdminEmpty, AdminFailureAlert, AdminLoading, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
 import { adminPageState } from '@/pages/shared/adminVisual';
 import '@/pages/shared/adminSurface.css';
@@ -110,62 +112,61 @@ export default function SystemConfigPage() {
 
   return (
     <div className="admin-page">
-      <div className="admin-page__intro">
-        <Typography.Text className="admin-page__intro-copy" type="secondary">
-          集中查看渠道接入与履约方配置，具体变更请前往对应管理页。
-        </Typography.Text>
-        <Tag bordered={false} icon={<LockOutlined />}>只读总览</Tag>
-      </div>
-
-      <Card
-        size="small"
-        title="渠道接入配置"
-        extra={
-          <Button size="small" icon={<ReloadOutlined />} onClick={connectors.reload}>
-            刷新
-          </Button>
-        }
+      <PageShell
+        title="系统配置"
+        description="集中查看渠道接入与履约方配置，具体变更请前往对应管理页。"
+        actions={<Tag bordered={false} icon={<LockOutlined />}>只读总览</Tag>}
       >
-        <Table<ConnectorConfig>
-          rowKey="source_channel"
+        <Card
           size="small"
-          columns={connectorColumns}
-          dataSource={connectors.data ?? []}
-          pagination={false}
-          locale={{ emptyText: <AdminEmpty description="暂无渠道接入配置" /> }}
-        />
-        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 10 }}>
-          彩食鲜、聚福宝和飞象当前采用文件接入。完成平台授权和生产连通性验收后，方可切换为在线接入；配置维护与连通性检查见「渠道接入」。
-        </Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
-          「启用」列表示渠道连通性测试开关：停用后，文件接入渠道的测试连接将判定为失败，文件导入、已导入批次与既有事实不受影响；企业微信长连接由连接就绪度诊断独立判定，不受此开关影响。
-        </Typography.Text>
-      </Card>
+          title="渠道接入配置"
+          extra={
+            <Button size="small" icon={<ReloadOutlined />} onClick={connectors.reload}>
+              刷新
+            </Button>
+          }
+        >
+          <DataTable<ConnectorConfig>
+            rowKey="source_channel"
+            size="small"
+            columns={connectorColumns}
+            dataSource={connectors.data ?? []}
+            pagination={false}
+            emptyText={<AdminEmpty description="暂无渠道接入配置" />}
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 10 }}>
+            彩食鲜、聚福宝和飞象当前采用文件接入。完成平台授权和生产连通性验收后，方可切换为在线接入；配置维护与连通性检查见「渠道接入」。
+          </Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
+            「启用」列表示渠道连通性测试开关：停用后，文件接入渠道的测试连接将判定为失败，文件导入、已导入批次与既有事实不受影响；企业微信长连接由连接就绪度诊断独立判定，不受此开关影响。
+          </Typography.Text>
+        </Card>
 
-      <Card
-        size="small"
-        title="履约方配置"
-        extra={
-          <Button size="small" icon={<ReloadOutlined />} onClick={providers.reload}>
-            刷新
-          </Button>
-        }
-      >
-        <Table<FulfillmentProvider>
-          rowKey="id"
+        <Card
           size="small"
-          columns={providerColumns}
-          dataSource={providers.data ?? []}
-          pagination={false}
-          locale={{ emptyText: <AdminEmpty description="暂无履约方配置" /> }}
-        />
-        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 10 }}>
-          编辑见「履约方配置」页（含运单回传 SLA）。
-        </Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
-          「状态」列表示履约方可用开关：停用后不再生成新的履约导出文件、库存不计入库存总览；既有订单、已导入批次与既有运单回传处理不受影响。
-        </Typography.Text>
-      </Card>
+          title="履约方配置"
+          extra={
+            <Button size="small" icon={<ReloadOutlined />} onClick={providers.reload}>
+              刷新
+            </Button>
+          }
+        >
+          <DataTable<FulfillmentProvider>
+            rowKey="id"
+            size="small"
+            columns={providerColumns}
+            dataSource={providers.data ?? []}
+            pagination={false}
+            emptyText={<AdminEmpty description="暂无履约方配置" />}
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 10 }}>
+            编辑见「履约方配置」页（含运单回传 SLA）。
+          </Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
+            「状态」列表示履约方可用开关：停用后不再生成新的履约导出文件、库存不计入库存总览；既有订单、已导入批次与既有运单回传处理不受影响。
+          </Typography.Text>
+        </Card>
+      </PageShell>
     </div>
   );
 }

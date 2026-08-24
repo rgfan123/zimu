@@ -680,43 +680,23 @@ class DataQueryAgentServiceIntegrationTest {
      * 记录式绑定工厂：包装真实绑定（AgentToolInvoker → 真实 McpToolRegistry）的执行器，
      * 把每次实际工具调用（工具名 + 参数）记入 {@link #recordedToolCalls}——05 收敛后
      * 编排层不再返回工具调用序列，测试以此核对工具选择与参数（与 08 的 agent_tool_calls
-     * 观测同源语义）。
+     * 观测同源语义）。包装形状与 3 参 bind 覆写共用 {@link McpToolTestSupport#recordingBindingFactory}。
      */
     private AgentToolBindingFactory recordingBindingFactory() {
-        AgentToolBindingFactory base = new AgentToolBindingFactory(registry, identity, mapper);
-        return new AgentToolBindingFactory(registry, identity, mapper) {
-            @Override
-            public AgentToolBinding bind(String runId, List<String> toolNames) {
-                AgentToolBinding bound = base.bind(runId, toolNames);
-                Map<ToolSpecification, ToolExecutor> wrapped = new LinkedHashMap<>();
-                for (Map.Entry<ToolSpecification, ToolExecutor> entry : bound.tools().entrySet()) {
-                    wrapped.put(entry.getKey(), new RecordingToolExecutor(entry.getValue()));
-                }
-                return new AgentToolBinding(runId, wrapped);
-            }
-        };
-    }
-
-    /** 记录执行器：委托真实执行器，先把工具名与参数记入序列。 */
-    private final class RecordingToolExecutor implements ToolExecutor {
-        private final ToolExecutor delegate;
-
-        private RecordingToolExecutor(ToolExecutor delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public String execute(ToolExecutionRequest request, Object memoryId) {
-            Map<String, Object> args = Map.of();
-            try {
-                args = MAPPER.readValue(
-                        request.arguments(),
-                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
-            } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
-                // 参数解析失败按空参数处理（不影响工具名核对）
-            }
-            recordedToolCalls.add(new DataQueryAgentToolCall(request.name(), args, false, null));
-            return delegate.execute(request, memoryId);
-        }
+        return McpToolTestSupport.recordingBindingFactory(
+                registry,
+                identity,
+                mapper,
+                request -> {
+                    Map<String, Object> args = Map.of();
+                    try {
+                        args = MAPPER.readValue(
+                                request.arguments(),
+                                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                    } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
+                        // 参数解析失败按空参数处理（不影响工具名核对）
+                    }
+                    recordedToolCalls.add(new DataQueryAgentToolCall(request.name(), args, false, null));
+                });
     }
 }

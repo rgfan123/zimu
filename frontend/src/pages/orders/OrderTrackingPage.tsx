@@ -6,6 +6,7 @@ import OrderListView from './OrderListView';
 export default function OrderTrackingPage() {
   return (
     <OrderListView
+      title="订单追踪"
       defaultFilters={{ order_status: 'SHIPPED' }}
       tip="订单追踪默认展示「已发货」订单；点击订单号进入详情页查看分批发货明细与运单信息。"
     />

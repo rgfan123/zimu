@@ -23,7 +23,9 @@ public class MessageMediaContentService {
     public MessageMediaContentService(
             JdbcTemplate jdbc, @Value("${app.media.dir:./data/media}") String mediaRoot) {
         this.jdbc = jdbc;
-        this.mediaRoot = Path.of(mediaRoot);
+        // WecomMediaFileStore 持久化绝对 content_ref；受控根也统一绝对化，默认相对配置下
+        // startsWith 校验仍能成立，且不会放宽越界读取。
+        this.mediaRoot = Path.of(mediaRoot).toAbsolutePath().normalize();
     }
 
     public MediaContent load(long mediaId) {
@@ -41,7 +43,7 @@ public class MessageMediaContentService {
             throw BusinessException.notFound("媒体证据不存在或尚未就绪: " + mediaId);
         }
         Path file = mediaRoot.resolve(rows.getFirst().contentRef()).normalize();
-        if (!file.startsWith(mediaRoot.normalize())) {
+        if (!file.startsWith(mediaRoot)) {
             throw BusinessException.notFound("媒体证据引用无效: " + mediaId);
         }
         try {

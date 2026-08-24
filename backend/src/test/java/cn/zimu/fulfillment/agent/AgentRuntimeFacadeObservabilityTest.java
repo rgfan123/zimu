@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
+import cn.zimu.fulfillment.mcp.McpControlReadTools;
 import cn.zimu.fulfillment.mcp.McpDomainReadTools;
 import cn.zimu.fulfillment.mcp.McpReadTools;
 import cn.zimu.fulfillment.mcp.McpTool;
@@ -58,7 +59,7 @@ class AgentRuntimeFacadeObservabilityTest {
 
     private static AgentToolBindingFactory bindingFactory() {
         return new AgentToolBindingFactory(
-                new McpToolRegistry(readTools(), emptyWriteTools(), emptyDomainTools()),
+                new McpToolRegistry(readTools(), emptyWriteTools(), emptyDomainTools(), McpToolTestSupport.emptyControlTools()),
                 new McpAgentIdentity(""),
                 new ObjectMapper());
     }

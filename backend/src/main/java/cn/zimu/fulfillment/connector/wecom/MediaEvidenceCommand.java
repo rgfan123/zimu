@@ -1,7 +1,7 @@
 package cn.zimu.fulfillment.connector.wecom;
 
 /**
- * 媒体证据处理命令：一条已解析出的渠道媒体项（image/mixed 的 url + aeskey）。
+ * 媒体证据处理命令：一条已解析出的渠道媒体项（image/mixed/file 的 url + aeskey）。
  *
  * <p>由接收链路（WS 帧解析）构造：channelMessageId 必须指向已落库的 {@code channel_messages} 行
  * （外键约束）；channelMediaId 与 channelMessageId 构成幂等键；url 5 分钟有效，应在任务内即时下载。

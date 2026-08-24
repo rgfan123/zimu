@@ -7,6 +7,7 @@ public record OrderLineDto(
         String id,
         int lineNo,
         String lineType,
+        String bundleId,
         String skuId,
         String skuCode,
         String providerId,

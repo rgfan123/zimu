@@ -43,8 +43,18 @@ public class AsyncTaskStore {
                 maxAttempts);
     }
 
+    /** 领取任意类型任务（仅测试/单 Worker 形态使用；多 Worker 共享队列必须用按类型领取）。 */
     @Transactional
     public Optional<AsyncTask> claim(String owner, Duration lease) {
+        return claim(null, owner, lease);
+    }
+
+    /**
+     * 按任务类型领取（09 票：多 Worker 共享 {@code app.async_tasks} 时防止解释 Worker 与
+     * QUALITY 评测 Worker 互抢任务）。{@code taskType} 为 null 时领取任意类型。
+     */
+    @Transactional
+    public Optional<AsyncTask> claim(String taskType, String owner, Duration lease) {
         List<AsyncTask> claimed = jdbc.query(
                 """
                 UPDATE app.async_tasks
@@ -63,9 +73,10 @@ public class AsyncTaskStore {
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = (
                     SELECT id FROM app.async_tasks
-                    WHERE (status = 'PENDING' AND next_run_at <= CURRENT_TIMESTAMP)
-                       OR (status = 'RUNNING' AND lease_until < statement_timestamp())
-                       OR (status = 'FINALIZING' AND lease_until < statement_timestamp())
+                    WHERE ((status = 'PENDING' AND next_run_at <= CURRENT_TIMESTAMP)
+                        OR (status = 'RUNNING' AND lease_until < statement_timestamp())
+                        OR (status = 'FINALIZING' AND lease_until < statement_timestamp()))
+                      AND (CAST(? AS VARCHAR) IS NULL OR task_type = CAST(? AS VARCHAR))
                     ORDER BY next_run_at, id
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
@@ -76,7 +87,9 @@ public class AsyncTaskStore {
                 """,
                 AsyncTaskStore::map,
                 lease.toSeconds(),
-                owner);
+                owner,
+                taskType,
+                taskType);
         return claimed.stream().findFirst();
     }
 
@@ -91,6 +104,51 @@ public class AsyncTaskStore {
                 """,
                 taskId,
                 owner);
+    }
+
+    /**
+     * 计划关闭时无损释放本次 RUNNING claim：仅当前 owner 且租约仍有效时回到 PENDING，
+     * 撤销 claim 增加的一次 attempts，并清除租约与历史错误。错误 owner/失租不会修改任务。
+     */
+    @Transactional
+    public boolean releaseOwnedForShutdown(long taskId, String owner) {
+        int updated = jdbc.update(
+                """
+                UPDATE app.async_tasks
+                SET status = 'PENDING',
+                    attempts = GREATEST(attempts - 1, 0),
+                    next_run_at = CURRENT_TIMESTAMP,
+                    lease_until = NULL,
+                    lease_owner = NULL,
+                    last_error = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'RUNNING' AND lease_owner = ?
+                  AND lease_until > statement_timestamp()
+                """,
+                taskId,
+                owner);
+        return updated == 1;
+    }
+
+    /**
+     * 续租/所有权复查（外部调用前 fence seam）：仅当该任务仍是当前 {@code owner} 持有的
+     * RUNNING 且租约未过期时，原子延长租约。返回 false 表示租约/所有权已丢失（被第二实例
+     * 重新领取），调用方必须放弃后续外部提交与业务状态变更，让新 owner 走 SENDING 恢复。
+     */
+    @Transactional
+    public boolean renewLease(long taskId, String owner, Duration lease) {
+        int updated = jdbc.update(
+                """
+                UPDATE app.async_tasks
+                SET lease_until = statement_timestamp() + (? || ' seconds')::interval,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'RUNNING' AND lease_owner = ?
+                  AND lease_until > statement_timestamp()
+                """,
+                lease.toSeconds(),
+                taskId,
+                owner);
+        return updated == 1;
     }
 
     /**
@@ -230,6 +288,27 @@ public class AsyncTaskStore {
                 taskId,
                 owner);
         return !states.isEmpty() && "FAILED".equals(states.getFirst());
+    }
+
+    /**
+     * Immediate terminal failure for an external side effect whose delivery is unknown. Such a
+     * task must never be reclaimed because a retry could duplicate the external message.
+     */
+    @Transactional
+    public void failTerminal(long taskId, String owner, String error) {
+        int updated = jdbc.update(
+                """
+                UPDATE app.async_tasks
+                SET status='FAILED', lease_until=NULL, lease_owner=NULL,
+                    last_error=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='RUNNING' AND lease_owner=?
+                """,
+                error,
+                taskId,
+                owner);
+        if (updated != 1) {
+            throw new IllegalStateException("异步任务租约已丢失: " + taskId);
+        }
     }
 
     /**

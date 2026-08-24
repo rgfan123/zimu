@@ -21,11 +21,11 @@ import {
 } from 'antd';
 import { CloudServerOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
+import PageShell from '@/components/PageShell';
 import { apiRequest, errorMessage, type QueryValue } from '@/api/client';
 import type { JdQueryResult } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
 import { jdConnectionSemantic } from '@/pages/shared/semanticStatus';
-import { saasVisualTokens } from '@/theme/saasTheme';
 import { jdStockQueryPrefill, type JdStockQueryKind } from './jdQueryPrefill';
 
 type QueryKind = JdStockQueryKind;
@@ -375,30 +375,26 @@ export default function JdStockQueryPage() {
   const mode = sdkStatus.data?.client_mode;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" styles={{ body: { padding: '16px 18px' } }}>
+    <PageShell
+      icon={<CloudServerOutlined />}
+      title="京东库存原始查询"
+      description="库存快照 / 汇总 / 批次异动 / 级别异动 / 效期商品 / 效期库存 / 店铺库存流水；全部为只读查询，不产生任何写操作。"
+      actions={
+        <Tag color={jdConnectionSemantic(Boolean(sdkStatus.data?.live_ready), mode)}>
+          {sdkStatus.loading
+            ? '正在确认连接状态'
+            : sdkStatus.data?.live_ready
+              ? '真实连接已就绪'
+              : mode === 'REAL'
+                ? '真实连接未就绪'
+                : mode === 'MOCK'
+                  ? '模拟模式（不代表真实权限）'
+                  : '连接状态未知'}
+        </Tag>
+      }
+    >
+      <Card size="small">
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
-          <Space align="start" size={12} style={{ width: '100%' }}>
-            <CloudServerOutlined style={{ color: saasVisualTokens.brand.primary, fontSize: 20, marginTop: 3 }} />
-            <div>
-              <Typography.Title level={5} style={{ margin: 0 }}>京东库存原始查询</Typography.Title>
-              <Typography.Text type="secondary">
-                库存快照 / 汇总 / 批次异动 / 级别异动 / 效期商品 / 效期库存 / 店铺库存流水；全部为只读查询，不产生任何写操作。
-              </Typography.Text>
-            </div>
-            <div style={{ flex: 1 }} />
-            <Tag color={jdConnectionSemantic(Boolean(sdkStatus.data?.live_ready), mode)}>
-              {sdkStatus.loading
-                ? '正在确认连接状态'
-                : sdkStatus.data?.live_ready
-                  ? '真实连接已就绪'
-                  : mode === 'REAL'
-                    ? '真实连接未就绪'
-                    : mode === 'MOCK'
-                      ? '模拟模式（不代表真实权限）'
-                      : '连接状态未知'}
-            </Tag>
-          </Space>
           {sdkStatus.error ? (
             <Alert
               type="error"
@@ -520,6 +516,6 @@ export default function JdStockQueryPage() {
           </Button>
         </Space>
       </Card>
-    </Space>
+    </PageShell>
   );
 }

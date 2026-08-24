@@ -3,6 +3,8 @@ package cn.zimu.fulfillment.file;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.SourceChannel;
+import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
@@ -14,15 +16,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.apache.poi.ss.usermodel.CellType;
@@ -64,16 +69,19 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     private final ObjectMapper objectMapper;
     private final ContentAddressedFileStore fileStore;
     private final AuditLogService auditLogService;
+    private final FulfillmentExportWecomService wecomExportService;
 
     ProviderFileService(
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
             ContentAddressedFileStore fileStore,
-            AuditLogService auditLogService) {
+            AuditLogService auditLogService,
+            FulfillmentExportWecomService wecomExportService) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.fileStore = fileStore;
         this.auditLogService = auditLogService;
+        this.wecomExportService = wecomExportService;
     }
 
     @Transactional
@@ -122,6 +130,164 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
         return result;
     }
 
+    /**
+     * 把已经人工确认且完成映射的企业微信订单接回京东 Shipment pipeline。
+     *
+     * <p>该接缝只创建本地 Shipment/ShipmentItem，不调用京东；地址确认、实时库存、京东建单与
+     * 运单回填仍由既有 Shipment 级公开命令分别完成。当前只接受全部订单行均为京东普通单品的
+     * 订单，任何第三方、礼包、复核、缺映射或非整数数量均失败关闭。
+     */
+    @Transactional
+    ReadyOrderRoute routeReadyWecomOrder(long orderId, long expectedOrderVersion) {
+        ReadyOrder header = lockReadyOrder(orderId);
+        if (header.version() != expectedOrderVersion) {
+            throw BusinessException.conflict("VERSION_CONFLICT", "订单已更新，请刷新后重试");
+        }
+        if (!"WECOM".equals(header.sourceChannel())) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_SOURCE_UNSUPPORTED", "该入口只处理已确认的企业微信订单");
+        }
+        if (header.sourceImportBatchId() != null) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_BATCH_UNSUPPORTED", "来源批次订单必须通过批次确认路由");
+        }
+        if (!"SKU_MAPPED".equals(header.orderStatus())) {
+            throw BusinessException.conflict(
+                    "ORDER_ROUTING_STATUS_INVALID", "订单必须处于已完成 SKU 映射状态");
+        }
+        Boolean openReview = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM app.review_cases WHERE order_id=? AND status='OPEN')",
+                Boolean.class,
+                orderId);
+        if (Boolean.TRUE.equals(openReview)) {
+            throw BusinessException.conflict("ORDER_ROUTING_REVIEW_OPEN", "订单仍有开放复核事项");
+        }
+        Boolean alreadyRouted = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM app.shipment_items si "
+                        + "JOIN app.fulfillments f ON f.id=si.fulfillment_id "
+                        + "JOIN app.order_lines ol ON ol.id=f.order_line_id WHERE ol.order_id=?)",
+                Boolean.class,
+                orderId);
+        if (Boolean.TRUE.equals(alreadyRouted)) {
+            throw BusinessException.conflict("ORDER_ALREADY_ROUTED", "订单已经生成发货批次，禁止重复路由");
+        }
+
+        List<ExportRow> rows = readyWecomJdRows(orderId);
+        long distinctLines = rows.stream().map(ExportRow::orderLineId).distinct().count();
+        if (rows.isEmpty() || rows.size() != distinctLines || distinctLines != header.lineCount()) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_NOT_READY", "订单存在非京东普通单品、缺少履约方 SKU 映射或尚未就绪的行");
+        }
+        if (rows.stream().anyMatch(row -> !"JD_WAREHOUSE".equals(row.providerType())
+                || !"SDK".equals(outboundMode(row.providerId())))) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_PROVIDER_UNSUPPORTED", "该入口只支持京东云仓 SDK 履约");
+        }
+        if (rows.stream().anyMatch(row -> !jdQuantityIsPositiveInteger(row))) {
+            throw BusinessException.unprocessable(
+                    "ORDER_ROUTING_QUANTITY_INVALID", "京东出库数量必须为正整数");
+        }
+
+        List<Long> shipmentIds = new ArrayList<>();
+        rows.stream()
+                .collect(Collectors.groupingBy(ExportRow::providerId, LinkedHashMap::new, Collectors.toList()))
+                .forEach((providerId, providerRows) -> shipmentIds.addAll(createJdShipments(providerId, providerRows)));
+        jdbc.update(
+                """
+                UPDATE app.order_lines
+                SET fulfillment_committed_at=COALESCE(fulfillment_committed_at, CURRENT_TIMESTAMP),
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE order_id=?
+                """,
+                orderId);
+        int updated = jdbc.update(
+                "UPDATE app.orders SET lock_version=lock_version+1, updated_at=CURRENT_TIMESTAMP "
+                        + "WHERE id=? AND lock_version=?",
+                orderId,
+                expectedOrderVersion);
+        if (updated != 1) {
+            throw BusinessException.conflict("VERSION_CONFLICT", "订单已更新，请刷新后重试");
+        }
+        return new ReadyOrderRoute(List.copyOf(shipmentIds), expectedOrderVersion + 1);
+    }
+
+    private ReadyOrder lockReadyOrder(long orderId) {
+        ReadyOrder value = jdbc.query(
+                """
+                SELECT o.lock_version, o.source_channel, o.order_status, o.source_import_batch_id,
+                       (SELECT count(*) FROM app.order_lines ol WHERE ol.order_id=o.id) line_count
+                FROM app.orders o
+                WHERE o.id=? AND o.data_scope='BUSINESS'
+                FOR UPDATE OF o
+                """,
+                resultSet -> resultSet.next()
+                        ? new ReadyOrder(
+                                resultSet.getLong("lock_version"),
+                                resultSet.getString("source_channel"),
+                                resultSet.getString("order_status"),
+                                resultSet.getObject("source_import_batch_id", Long.class),
+                                resultSet.getLong("line_count"))
+                        : null,
+                orderId);
+        if (value == null) {
+            throw BusinessException.notFound("BUSINESS 订单不存在");
+        }
+        return value;
+    }
+
+    private List<ExportRow> readyWecomJdRows(long orderId) {
+        return jdbc.query(
+                """
+                SELECT 0::bigint raw_row_id, o.id order_id, o.order_no, o.source_channel, o.source_ref,
+                       o.settlement_time ordered_at, o.remark,
+                       o.receiver_name, o.receiver_phone, o.receiver_address,
+                       ol.id order_line_id, ol.line_no, ol.product_name_snapshot,
+                       ol.specification_snapshot, ol.unit_snapshot,
+                       f.id fulfillment_id, f.requested_quantity fulfillment_quantity,
+                       f.requested_quantity requested_quantity,
+                       fp.id provider_id, fp.provider_code, fp.provider_name, fp.provider_type,
+                       fp.tracking_sla_minutes, ps.provider_sku_code
+                FROM app.orders o
+                JOIN app.order_lines ol ON ol.order_id=o.id
+                    AND ol.line_type='SINGLE' AND ol.processing_stage='READY_TO_EXPORT'
+                JOIN app.fulfillments f ON f.order_line_id=ol.id
+                    AND f.shipping_progress='NOT_SHIPPED' AND f.outcome='IN_PROGRESS'
+                JOIN app.fulfillment_providers fp ON fp.id=f.fulfillment_provider_id AND fp.active
+                JOIN app.provider_skus ps ON ps.fulfillment_provider_id=fp.id
+                    AND ps.sku_id=ol.sku_id AND ps.active
+                WHERE o.id=? AND o.data_scope='BUSINESS' AND o.source_channel='WECOM'
+                ORDER BY fp.id, ol.line_no
+                FOR UPDATE OF ol, f
+                """,
+                (resultSet, rowNum) -> new ExportRow(
+                        resultSet.getLong("raw_row_id"),
+                        resultSet.getLong("order_id"),
+                        resultSet.getString("order_no"),
+                        resultSet.getString("source_channel"),
+                        resultSet.getString("source_ref"),
+                        nullableInstant(resultSet, "ordered_at"),
+                        resultSet.getString("remark"),
+                        resultSet.getString("receiver_name"),
+                        resultSet.getString("receiver_phone"),
+                        resultSet.getString("receiver_address"),
+                        resultSet.getLong("order_line_id"),
+                        resultSet.getInt("line_no"),
+                        resultSet.getString("product_name_snapshot"),
+                        resultSet.getString("specification_snapshot"),
+                        resultSet.getString("unit_snapshot"),
+                        resultSet.getLong("fulfillment_id"),
+                        null,
+                        resultSet.getBigDecimal("fulfillment_quantity"),
+                        resultSet.getBigDecimal("requested_quantity"),
+                        resultSet.getLong("provider_id"),
+                        resultSet.getString("provider_code"),
+                        resultSet.getString("provider_name"),
+                        resultSet.getString("provider_type"),
+                        resultSet.getInt("tracking_sla_minutes"),
+                        resultSet.getString("provider_sku_code")),
+                orderId);
+    }
+
     /** 京东 SDK 路由：只创建发货批次与明细，不产文件、不推进订单阶段（由建单结果决定）。 */
     private List<Long> createJdShipments(long providerId, List<ExportRow> sourceRows) {
         Map<String, ShipmentPlan> shipments = new LinkedHashMap<>();
@@ -133,7 +299,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     INSERT INTO app.shipment_items(shipment_id, fulfillment_id, instructed_quantity)
                     VALUES (?, ?, ?)
                     """,
-                    shipment.id(), source.fulfillmentId(), source.requestedQuantity());
+                    shipment.id(), source.fulfillmentId(), source.fulfillmentQuantity());
         }
         return shipments.values().stream().map(ShipmentPlan::id).toList();
     }
@@ -147,10 +313,167 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     void validateSourceBatchExportability(long sourceBatchId) {
+        holdThirdPartyBundleLinesWithoutProviderSku(sourceBatchId);
         candidateRows(sourceBatchId).stream()
                 .filter(row -> "JD_WAREHOUSE".equals(row.providerType()))
                 .filter(row -> !jdQuantityIsPositiveInteger(row))
                 .forEach(row -> markJdQuantityReview(sourceBatchId, row));
+    }
+
+    /** 第三方礼包缺 provider_sku 时只把该 provider 分片留在 NEED_REVIEW，不阻断已就绪的京东分片。 */
+    private void holdThirdPartyBundleLinesWithoutProviderSku(long sourceBatchId) {
+        List<ProviderSkuHold> holds = jdbc.query(
+                """
+                WITH raw_line_links AS (
+                    SELECT rir.id raw_row_id, rir.order_line_id
+                    FROM app.raw_import_rows rir
+                    WHERE rir.import_batch_id=? AND rir.order_line_id IS NOT NULL
+                    UNION
+                    SELECT rirol.raw_import_row_id, rirol.order_line_id
+                    FROM app.raw_import_row_order_lines rirol
+                    JOIN app.raw_import_rows rir ON rir.id=rirol.raw_import_row_id
+                    WHERE rir.import_batch_id=?
+                )
+                SELECT DISTINCT o.id order_id, ol.id order_line_id, f.id fulfillment_id
+                FROM raw_line_links rll
+                JOIN app.raw_import_rows rir ON rir.id=rll.raw_row_id AND rir.status='ACCEPTED'
+                JOIN app.order_lines ol ON ol.id=rll.order_line_id
+                    AND ol.line_type='CUSTOM_BUNDLE' AND ol.bundle_id IS NOT NULL
+                    AND ol.processing_stage='READY_TO_EXPORT'
+                JOIN app.orders o ON o.id=ol.order_id
+                JOIN app.fulfillments f ON f.order_line_id=ol.id
+                JOIN app.fulfillment_providers fp ON fp.id=f.fulfillment_provider_id
+                    AND fp.provider_type='THIRD_PARTY'
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM app.order_line_components olc
+                    WHERE olc.order_line_id=ol.id
+                      AND NOT EXISTS (
+                          SELECT 1 FROM app.provider_skus ps
+                          WHERE ps.fulfillment_provider_id=f.fulfillment_provider_id
+                            AND ps.sku_id=olc.sku_id AND ps.active
+                      )
+                )
+                ORDER BY ol.id
+                """,
+                (resultSet, rowNum) -> new ProviderSkuHold(
+                        resultSet.getLong("order_id"),
+                        resultSet.getLong("order_line_id"),
+                        resultSet.getLong("fulfillment_id")),
+                sourceBatchId,
+                sourceBatchId);
+        for (ProviderSkuHold hold : holds) {
+            jdbc.update(
+                    """
+                    UPDATE app.order_lines
+                    SET processing_stage='NEED_REVIEW', exception_code='PROVIDER_SKU_MAPPING_REQUIRED',
+                        exception_reason='第三方礼包组件缺少履约方 SKU 映射', updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    hold.orderLineId());
+            jdbc.update(
+                    "UPDATE app.orders SET order_status='NEED_REVIEW', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    hold.orderId());
+            jdbc.update(
+                    """
+                    INSERT INTO app.review_cases
+                        (case_no, case_type, status, responsible_team, reason_code,
+                         order_id, order_line_id, fulfillment_id, import_batch_id, detail)
+                    VALUES (?, 'FULFILLMENT_EXPORT', 'OPEN', 'SKU_OPS', 'PROVIDER_SKU_MAPPING_REQUIRED',
+                            ?, ?, ?, ?, ?::jsonb)
+                    ON CONFLICT (case_no) DO NOTHING
+                    """,
+                    "RC-PROVIDER-SKU-" + hold.orderLineId(),
+                    hold.orderId(),
+                    hold.orderLineId(),
+                    hold.fulfillmentId(),
+                    sourceBatchId,
+                    json(providerSkuReviewDetail(sourceBatchId, hold)));
+        }
+    }
+
+    /** 为履约方 SKU 缺失生成可行动的商品证据，并保留来源文件位置。 */
+    private Map<String, Object> providerSkuReviewDetail(long sourceBatchId, ProviderSkuHold hold) {
+        Map<String, Object> line = jdbc.queryForMap(
+                """
+                SELECT line_no, product_name_snapshot, specification_snapshot, unit_snapshot, requested_quantity
+                FROM app.order_lines WHERE id=?
+                """,
+                hold.orderLineId());
+        List<Map<String, Object>> evidenceItems = jdbc.query(
+                """
+                SELECT s.sku_code, p.product_name, s.specification, s.unit,
+                       ol.requested_quantity * olc.quantity_per_bundle AS quantity
+                FROM app.order_line_components olc
+                JOIN app.order_lines ol ON ol.id=olc.order_line_id
+                JOIN app.skus s ON s.id=olc.sku_id
+                JOIN app.products p ON p.id=s.product_id
+                JOIN app.fulfillments f ON f.id=? AND f.order_line_id=ol.id
+                WHERE olc.order_line_id=?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM app.provider_skus ps
+                      WHERE ps.fulfillment_provider_id=f.fulfillment_provider_id
+                        AND ps.sku_id=olc.sku_id AND ps.active)
+                ORDER BY olc.id
+                """,
+                (resultSet, rowNum) -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("source_sku_ref", null);
+                    item.put("product_name", resultSet.getString("product_name"));
+                    item.put("specification", resultSet.getString("specification"));
+                    item.put("unit", resultSet.getString("unit"));
+                    item.put(
+                            "quantity",
+                            resultSet.getBigDecimal("quantity").setScale(3, RoundingMode.HALF_UP).toPlainString());
+                    return item;
+                },
+                hold.fulfillmentId(),
+                hold.orderLineId());
+
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("message", "第三方礼包组件缺少履约方 SKU 映射");
+        detail.put("line_no", line.get("line_no"));
+        detail.put("source_product_name", line.get("product_name_snapshot"));
+        detail.put("source_specification", line.get("specification_snapshot"));
+        detail.put("source_unit", line.get("unit_snapshot"));
+        detail.put("source_quantity", ((BigDecimal) line.get("requested_quantity")).toPlainString());
+        List<Map<String, Object>> sourceRows = jdbc.queryForList(
+                """
+                SELECT ib.source_channel, rir.sheet_name, rir.row_index, rir.raw_cells::text AS raw_cells
+                FROM app.raw_import_rows rir
+                JOIN app.import_batches ib ON ib.id=rir.import_batch_id
+                LEFT JOIN app.raw_import_row_order_lines rirol ON rirol.raw_import_row_id=rir.id
+                WHERE rir.import_batch_id=?
+                  AND (rir.order_line_id=? OR rirol.order_line_id=?)
+                ORDER BY rir.sheet_index, rir.row_index
+                LIMIT 1
+                """,
+                sourceBatchId,
+                hold.orderLineId(),
+                hold.orderLineId());
+        if (!sourceRows.isEmpty()) {
+            Map<String, Object> sourceRow = sourceRows.getFirst();
+            String sourceChannel = sourceRow.get("source_channel").toString();
+            Map<String, String> projection = sourceProjection(sourceChannel, sourceRow.get("raw_cells").toString());
+            String sourceSkuRef = projection.get("source_sku_ref");
+            detail.put("source_channel", sourceChannel);
+            detail.put("source_sheet_name", sourceRow.get("sheet_name"));
+            detail.put("source_row_index", sourceRow.get("row_index"));
+            detail.put("missing_source_sku_refs", sourceSkuRef == null ? List.of() : List.of(sourceSkuRef));
+            evidenceItems.forEach(item -> item.put("source_sku_ref", sourceSkuRef));
+        }
+        detail.putIfAbsent("missing_source_sku_refs", List.of());
+        detail.put("evidence_items", evidenceItems);
+        return detail;
+    }
+
+    private Map<String, String> sourceProjection(String sourceChannel, String rawCellsJson) {
+        try {
+            Map<String, String> rawCells = objectMapper.readValue(rawCellsJson, new TypeReference<>() {});
+            return new SourceFileParser().projection(SourceChannel.valueOf(sourceChannel), rawCells);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("来源行快照无法解析", exception);
+        }
     }
 
     @Override
@@ -161,15 +484,18 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     private long generateThirdParty(long providerId, List<ExportRow> sourceRows, String operator) {
         String batchNo = "EXP-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
         Map<String, ShipmentPlan> shipments = new LinkedHashMap<>();
+        Set<Long> allocatedFulfillments = new HashSet<>();
         for (ExportRow source : sourceRows) {
             String group = source.orderId() + ":" + source.providerId();
             ShipmentPlan shipment = shipments.computeIfAbsent(group, ignored -> createShipment(source));
-            jdbc.update(
-                    """
-                    INSERT INTO app.shipment_items(shipment_id, fulfillment_id, instructed_quantity)
-                    VALUES (?, ?, ?)
-                    """,
-                    shipment.id(), source.fulfillmentId(), source.requestedQuantity());
+            if (allocatedFulfillments.add(source.fulfillmentId())) {
+                jdbc.update(
+                        """
+                        INSERT INTO app.shipment_items(shipment_id, fulfillment_id, instructed_quantity)
+                        VALUES (?, ?, ?)
+                        """,
+                        shipment.id(), source.fulfillmentId(), source.fulfillmentQuantity());
+            }
         }
 
         List<PlannedExportRow> planned = new ArrayList<>();
@@ -186,7 +512,8 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 INSERT INTO app.fulfillment_exports
                     (export_batch_no, fulfillment_provider_id, export_kind, template_version,
                      file_ref, file_sha256, tracking_due_at, generated_by)
-                VALUES (?, ?, 'THIRD_PARTY', 'v1-24-columns', ?, ?, CURRENT_TIMESTAMP + (? * INTERVAL '1 minute'), ?)
+                VALUES (?, ?, 'THIRD_PARTY', 'v1-24-columns', ?, ?,
+                        NULL, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -194,23 +521,26 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 providerId,
                 stored.fileRef(),
                 stored.sha256(),
-                first.trackingSlaMinutes(),
                 operator);
+        // #84：同一业务事务内登记企微出站状态 + 入队 initial delivery（JD 路径不调用 = 不入队）
+        wecomExportService.scheduleInitial(exportId, providerId, first.trackingSlaMinutes());
         for (PlannedExportRow row : planned) {
             Map<String, Object> cells = outputCells(batchNo, row);
             jdbc.update(
                     """
                     INSERT INTO app.fulfillment_export_items
                         (fulfillment_export_id, export_line_no, shipment_id, fulfillment_id,
-                         order_line_id, raw_import_row_id, outbound_order_no, provider_sku_code,
+                         order_line_id, order_line_component_id, raw_import_row_id,
+                         outbound_order_no, provider_sku_code,
                          instructed_quantity, unit_snapshot, output_cells)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
                     """,
                     exportId,
                     row.lineNo(),
                     row.shipment().id(),
                     row.source().fulfillmentId(),
                     row.source().orderLineId(),
+                    row.source().orderLineComponentId(),
                     row.source().rawRowId(),
                     row.shipment().outboundOrderNo(),
                     row.source().providerSkuCode(),
@@ -249,7 +579,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     (export_batch_no, fulfillment_provider_id, export_kind, template_version,
                      file_ref, file_sha256, tracking_due_at, generated_by)
                 VALUES (?, ?, 'THIRD_PARTY', 'v1-24-columns', ?, ?,
-                        CURRENT_TIMESTAMP + (? * INTERVAL '1 minute'), ?)
+                        NULL, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -257,8 +587,9 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 source.providerId(),
                 stored.fileRef(),
                 stored.sha256(),
-                source.trackingSlaMinutes(),
                 operator);
+        // #84：第三方续发导出同样在同一事务登记出站状态并入队 initial delivery
+        wecomExportService.scheduleInitial(exportId, source.providerId(), source.trackingSlaMinutes());
         Map<String, Object> cells = outputCells(batchNo, planned);
         jdbc.update(
                 """
@@ -294,7 +625,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     INSERT INTO app.shipment_items(shipment_id, fulfillment_id, instructed_quantity)
                     VALUES (?, ?, ?)
                     """,
-                    shipment.id(), source.fulfillmentId(), source.requestedQuantity());
+                    shipment.id(), source.fulfillmentId(), source.fulfillmentQuantity());
         }
 
         List<PlannedExportRow> planned = new ArrayList<>();
@@ -481,6 +812,19 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     }
 
     private void markJdQuantityReview(long sourceBatchId, ExportRow row) {
+        Map<String, Object> lineFacts = jdbc.queryForMap(
+                "SELECT source_quantity_snapshot, mapping_multiplier_snapshot FROM app.order_lines WHERE id=?",
+                row.orderLineId());
+        // 数量换算事实（Issue #72）：来源数量原文/单位/当前乘数/换算后结果/拒绝原因，
+        // 全部为确定性快照与固定文案，不读取任何敏感字段。
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("reject_reason", "京东出库数量必须为正整数");
+        detail.put("source_quantity", toPlainString(lineFacts.get("source_quantity_snapshot")));
+        detail.put("source_unit", row.unit());
+        detail.put("quantity_multiplier", toPlainString(lineFacts.get("mapping_multiplier_snapshot")));
+        detail.put("converted_quantity", row.requestedQuantity().toPlainString());
+        detail.put("requested_quantity", row.requestedQuantity().toPlainString());
+        detail.put("provider_code", row.providerCode());
         jdbc.update(
                 """
                 UPDATE app.order_lines
@@ -496,10 +840,7 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     (case_no, case_type, status, responsible_team, reason_code,
                      order_id, order_line_id, fulfillment_id, import_batch_id, raw_import_row_id, detail)
                 VALUES (?, 'FULFILLMENT_EXPORT', 'OPEN', 'FULFILLMENT_OPS', 'QUANTITY_SCALE',
-                        ?, ?, ?, ?, ?, jsonb_build_object(
-                            'message', '京东出库数量必须为正整数',
-                            'requested_quantity', ?::text,
-                            'provider_code', ?))
+                        ?, ?, ?, ?, ?, ?::jsonb)
                 ON CONFLICT (case_no) DO NOTHING
                 """,
                 "RC-QUANTITY-" + row.orderLineId(),
@@ -508,8 +849,11 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 row.fulfillmentId(),
                 sourceBatchId,
                 row.rawRowId(),
-                row.requestedQuantity().toPlainString(),
-                row.providerCode());
+                json(detail));
+    }
+
+    private static String toPlainString(Object value) {
+        return value instanceof BigDecimal decimal ? decimal.toPlainString() : null;
     }
 
     private ShipmentPlan createShipment(ExportRow row) {
@@ -542,7 +886,8 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     private ExportRow continuationRow(long fulfillmentId, BigDecimal instructedQuantity, String continuationRemark) {
         List<ExportRow> rows = jdbc.query(
                 """
-                SELECT rir.id raw_row_id, o.id order_id, o.order_no, o.source_channel, o.source_ref,
+                SELECT rir.id raw_row_id, o.id order_id, o.order_no,
+                       source.effective_source_channel source_channel, o.source_ref,
                        o.settlement_time ordered_at, o.remark,
                        o.receiver_name, o.receiver_phone, o.receiver_address,
                        ol.id order_line_id, ol.line_no, ol.product_name_snapshot, ol.specification_snapshot,
@@ -555,18 +900,19 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                 JOIN app.fulfillment_providers fp ON fp.id=f.fulfillment_provider_id AND fp.active
                 JOIN app.provider_skus ps ON ps.fulfillment_provider_id=fp.id AND ps.sku_id=ol.sku_id AND ps.active
                 JOIN app.raw_import_rows rir ON rir.order_line_id=ol.id AND rir.status='ACCEPTED'
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=rir.import_batch_id
                 WHERE f.id=? ORDER BY rir.id LIMIT 1
                 """,
                 (resultSet, rowNum) -> new ExportRow(
                         resultSet.getLong("raw_row_id"), resultSet.getLong("order_id"),
                         resultSet.getString("order_no"), resultSet.getString("source_channel"),
-                        resultSet.getString("source_ref"), resultSet.getTimestamp("ordered_at").toInstant(),
+                        resultSet.getString("source_ref"), nullableInstant(resultSet, "ordered_at"),
                         appendRemark(resultSet.getString("remark"), continuationRemark),
                         resultSet.getString("receiver_name"), resultSet.getString("receiver_phone"),
                         resultSet.getString("receiver_address"), resultSet.getLong("order_line_id"),
                         resultSet.getInt("line_no"), resultSet.getString("product_name_snapshot"),
                         resultSet.getString("specification_snapshot"), resultSet.getString("unit_snapshot"),
-                        resultSet.getLong("fulfillment_id"), instructedQuantity,
+                        resultSet.getLong("fulfillment_id"), null, instructedQuantity, instructedQuantity,
                         resultSet.getLong("provider_id"), resultSet.getString("provider_code"),
                         resultSet.getString("provider_name"), resultSet.getString("provider_type"),
                         resultSet.getInt("tracking_sla_minutes"), resultSet.getString("provider_sku_code")),
@@ -585,48 +931,95 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     private List<ExportRow> candidateRows(long batchId) {
         return jdbc.query(
                 """
-                SELECT rir.id raw_row_id, o.id order_id, o.order_no, o.source_channel, o.source_ref,
+                WITH raw_line_links AS (
+                    SELECT rir.id raw_row_id, rir.order_line_id
+                    FROM app.raw_import_rows rir
+                    WHERE rir.import_batch_id=? AND rir.order_line_id IS NOT NULL
+                    UNION
+                    SELECT rirol.raw_import_row_id, rirol.order_line_id
+                    FROM app.raw_import_row_order_lines rirol
+                    JOIN app.raw_import_rows rir ON rir.id=rirol.raw_import_row_id
+                    WHERE rir.import_batch_id=?
+                )
+                SELECT rir.id raw_row_id, o.id order_id, o.order_no,
+                       source.effective_source_channel source_channel, o.source_ref,
                        o.settlement_time ordered_at, o.remark,
                        o.receiver_name, o.receiver_phone, o.receiver_address,
-                       ol.id order_line_id, ol.line_no, ol.product_name_snapshot, ol.specification_snapshot,
-                       ol.unit_snapshot, f.id fulfillment_id, f.requested_quantity,
+                       ol.id order_line_id, ol.line_no,
+                       CASE WHEN olc.id IS NULL THEN ol.product_name_snapshot ELSE olc.product_name_snapshot END
+                           product_name_snapshot,
+                       CASE WHEN olc.id IS NULL THEN ol.specification_snapshot ELSE olc.specification_snapshot END
+                           specification_snapshot,
+                       CASE WHEN olc.id IS NULL THEN ol.unit_snapshot ELSE olc.unit_snapshot END unit_snapshot,
+                       f.id fulfillment_id, olc.id order_line_component_id,
+                       f.requested_quantity fulfillment_quantity,
+                       f.requested_quantity * COALESCE(olc.quantity_per_bundle, 1) requested_quantity,
                        fp.id provider_id, fp.provider_code, fp.provider_name, fp.provider_type, fp.tracking_sla_minutes,
                        ps.provider_sku_code
                 FROM app.raw_import_rows rir
+                JOIN raw_line_links rll ON rll.raw_row_id=rir.id
+                JOIN app.v_import_batch_effective_source source ON source.import_batch_id=rir.import_batch_id
                 JOIN app.orders o ON o.id=rir.order_id AND o.data_scope='BUSINESS'
-                JOIN app.order_lines ol ON ol.id=rir.order_line_id AND ol.processing_stage='READY_TO_EXPORT'
+                JOIN app.order_lines ol ON ol.id=rll.order_line_id AND ol.processing_stage='READY_TO_EXPORT'
                 JOIN app.fulfillments f ON f.order_line_id=ol.id
                 JOIN app.fulfillment_providers fp ON fp.id=f.fulfillment_provider_id AND fp.active
-                JOIN app.provider_skus ps ON ps.fulfillment_provider_id=fp.id AND ps.sku_id=ol.sku_id AND ps.active
+                LEFT JOIN app.order_line_components olc
+                  ON olc.order_line_id=ol.id
+                 AND ol.line_type='CUSTOM_BUNDLE'
+                 AND fp.provider_type<>'JD_WAREHOUSE'
+                LEFT JOIN app.provider_skus ps
+                  ON ps.fulfillment_provider_id=fp.id
+                 AND ps.sku_id=COALESCE(olc.sku_id, ol.sku_id)
+                 AND ps.active
                 WHERE rir.import_batch_id=? AND rir.status='ACCEPTED'
+                  AND (
+                    (ol.line_type='SINGLE' AND ps.id IS NOT NULL)
+                    OR (
+                      ol.line_type='CUSTOM_BUNDLE'
+                      AND fp.provider_type='JD_WAREHOUSE'
+                      AND fp.config->>'outboundMode'='SDK'
+                    )
+                    OR (
+                      ol.line_type='CUSTOM_BUNDLE'
+                      AND ol.bundle_id IS NOT NULL
+                      AND fp.provider_type='THIRD_PARTY'
+                      AND olc.id IS NOT NULL
+                      AND ps.id IS NOT NULL
+                    )
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM app.review_cases rc
                     WHERE rc.order_id=o.id AND rc.status='OPEN'
+                      AND (rc.order_line_id IS NULL OR rc.order_line_id=ol.id)
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM app.fulfillment_export_items existing_item
                     WHERE existing_item.raw_import_row_id=rir.id
+                      AND existing_item.order_line_id=ol.id
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM app.shipment_items existing_item
                     JOIN app.fulfillments existing_fulfillment ON existing_fulfillment.id=existing_item.fulfillment_id
                     WHERE existing_fulfillment.order_line_id=ol.id
                   )
-                ORDER BY fp.id, o.id, ol.line_no
+                ORDER BY fp.id, o.id, ol.line_no, olc.component_no NULLS FIRST
                 """,
                 (resultSet, rowNum) -> new ExportRow(
                         resultSet.getLong("raw_row_id"), resultSet.getLong("order_id"), resultSet.getString("order_no"),
                         resultSet.getString("source_channel"), resultSet.getString("source_ref"),
-                        resultSet.getTimestamp("ordered_at").toInstant(), resultSet.getString("remark"),
+                        nullableInstant(resultSet, "ordered_at"), resultSet.getString("remark"),
                         resultSet.getString("receiver_name"), resultSet.getString("receiver_phone"),
                         resultSet.getString("receiver_address"), resultSet.getLong("order_line_id"),
                         resultSet.getInt("line_no"), resultSet.getString("product_name_snapshot"),
                         resultSet.getString("specification_snapshot"), resultSet.getString("unit_snapshot"),
-                        resultSet.getLong("fulfillment_id"), resultSet.getBigDecimal("requested_quantity"),
+                        resultSet.getLong("fulfillment_id"),
+                        (Long) resultSet.getObject("order_line_component_id"),
+                        resultSet.getBigDecimal("fulfillment_quantity"),
+                        resultSet.getBigDecimal("requested_quantity"),
                         resultSet.getLong("provider_id"), resultSet.getString("provider_code"),
                         resultSet.getString("provider_name"), resultSet.getString("provider_type"),
                         resultSet.getInt("tracking_sla_minutes"), resultSet.getString("provider_sku_code")),
-                batchId);
+                batchId, batchId, batchId);
     }
 
     private byte[] thirdPartyWorkbook(String batchNo, List<PlannedExportRow> rows) {
@@ -661,9 +1054,12 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
         cells.put("履约方编码", source.providerCode());
         cells.put("履约方名称", source.providerName());
         cells.put("内部订单号", source.orderNo());
-        cells.put("来源渠道", source.sourceChannel());
+        cells.put("来源渠道", SourceChannelDisplayNames.displayName(source.sourceChannel()));
         cells.put("来源订单号", source.sourceRef());
         cells.put("订单行号", source.lineNo());
+        if (source.orderLineComponentId() != null) {
+            cells.put("礼包分组标识", row.shipment().outboundOrderNo() + "-" + source.lineNo());
+        }
         cells.put("收件人", source.receiverName());
         cells.put("电话", source.receiverPhone());
         cells.put("地址", source.receiverAddress());
@@ -728,9 +1124,9 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
                     result.put("export_kind", resultSet.getString("export_kind"));
                     result.put("template_version", resultSet.getString("template_version"));
                     result.put("file_sha256", resultSet.getString("file_sha256"));
-                    Instant due = resultSet.getTimestamp("tracking_due_at").toInstant();
-                    result.put("tracking_due_at", due);
                     result.put("generated_at", resultSet.getTimestamp("generated_at").toInstant());
+                    result.put("legacy_tracking_due_at", resultSet.getTimestamp("tracking_due_at") == null
+                            ? null : resultSet.getTimestamp("tracking_due_at").toInstant());
                     result.put("tracking_import_batch_id", nullableId(resultSet.getObject("tracking_import_batch_id")));
                     result.put("import_batch_id", nullableId(resultSet.getObject("import_batch_id")));
                     return result;
@@ -740,6 +1136,13 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
             throw BusinessException.notFound("履约导出不存在: " + exportId);
         }
         Map<String, Object> result = values.getFirst();
+        // #84：新第三方导出以 sent_at 派生的 due 为权威（未发送时为 null，不展示假到期时间）；
+        // 历史（LEGACY）与 JD 导出保持旧 generated_at 派生语义。
+        Map<String, Object> wecom = wecomExportService.view(exportId);
+        boolean authoritativeDue = wecom != null && !"LEGACY".equals(wecom.get("status"));
+        result.put("tracking_due_at", authoritativeDue ? wecom.get("tracking_due_at") : result.get("legacy_tracking_due_at"));
+        result.remove("legacy_tracking_due_at");
+        result.put("wecom", wecom);
         Map<String, Object> download = downloadAudit(exportId);
         result.put("download_audit", download);
         result.put("usage_status", usageStatus(result, download));
@@ -821,12 +1224,21 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
         if (((Number) download.get("download_count")).intValue() == 0) {
             return "GENERATED_NOT_DOWNLOADED";
         }
-        return Instant.now().isAfter((Instant) export.get("tracking_due_at"))
-                ? "RETURN_OVERDUE" : "DOWNLOADED_WAITING_RETURN";
+        // #84：未发送的第三方导出没有权威 due（null）→ 不判超时，避免展示假的「回传超时」
+        Object due = export.get("tracking_due_at");
+        if (!(due instanceof Instant dueInstant)) {
+            return "DOWNLOADED_WAITING_RETURN";
+        }
+        return Instant.now().isAfter(dueInstant) ? "RETURN_OVERDUE" : "DOWNLOADED_WAITING_RETURN";
     }
 
     private String nullableId(Object value) {
         return value == null ? null : value.toString();
+    }
+
+    private Instant nullableInstant(java.sql.ResultSet resultSet, String column) throws java.sql.SQLException {
+        java.sql.Timestamp timestamp = resultSet.getTimestamp(column);
+        return timestamp == null ? null : timestamp.toInstant();
     }
 
     private String json(Object value) {
@@ -849,11 +1261,16 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
     private record JdWorkbook(byte[] bytes, String templateVersion) {}
     private record ShipmentPlan(long id, String outboundOrderNo) {}
     private record PlannedExportRow(int lineNo, ExportRow source, ShipmentPlan shipment) {}
+    private record ProviderSkuHold(long orderId, long orderLineId, long fulfillmentId) {}
+    record ReadyOrderRoute(List<Long> shipmentIds, long orderVersion) {}
+    private record ReadyOrder(
+            long version, String sourceChannel, String orderStatus, Long sourceImportBatchId, long lineCount) {}
     private record ExportRow(
             long rawRowId, long orderId, String orderNo, String sourceChannel, String sourceRef,
             Instant orderedAt, String remark,
             String receiverName, String receiverPhone, String receiverAddress,
             long orderLineId, int lineNo, String productName, String specification, String unit,
-            long fulfillmentId, BigDecimal requestedQuantity, long providerId, String providerCode,
+            long fulfillmentId, Long orderLineComponentId, BigDecimal fulfillmentQuantity,
+            BigDecimal requestedQuantity, long providerId, String providerCode,
             String providerName, String providerType, int trackingSlaMinutes, String providerSkuCode) {}
 }

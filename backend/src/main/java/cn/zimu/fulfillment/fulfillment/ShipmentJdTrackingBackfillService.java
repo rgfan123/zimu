@@ -41,15 +41,6 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public class ShipmentJdTrackingBackfillService {
 
     static final String SCOPE = "shipment.jd_tracking.backfill";
-    // 销售出库单状态枚举（access-guide 367/54597）：运单号自 100130 预分拣-获取运单起存在，
-    // 10014~10019 拣货/打包/交接全程有运单号；10020 包裹出库、10032/10033/10034 分拣/站点/妥投、
-    // 10054 分拣中心发货。真实探测（2026-08-18）：10015/10016 即返回 carrierInfo.waybillNo
-    // （如 JDVA46541368239），10054 为仓已发出的中后段状态。
-    private static final Set<String> SHIPPED_STATUS = Set.of(
-            "100130", "10014", "10015", "10016", "10017", "10018", "10019",
-            "10020", "10032", "10033", "10034", "10054");
-    private static final Set<String> TERMINAL_EXCEPTION_STATUS =
-            Set.of("10028", "10031", "10035");
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -391,6 +382,9 @@ public class ShipmentJdTrackingBackfillService {
         persistDiagnostic(current, "TRACKED", null, null, result);
         audit(current, context, parsed, result, 200,
                 accepted.replayed() ? "JD_TRACKING_ALREADY_RECORDED" : "JD_TRACKING_BACKFILLED");
+        if (!accepted.replayed()) {
+            openBackfilledPendingReviewCase(current, parsed);
+        }
         Map<String, Object> response = response(current, "TRACKED", parsed.waybillNo(), false, null);
         response.put(
                 "generated_source_return_export_ids",
@@ -400,6 +394,33 @@ public class ShipmentJdTrackingBackfillService {
                         .map(String::valueOf)
                         .toList());
         return response;
+    }
+
+    private void openBackfilledPendingReviewCase(Prepared current, Parsed parsed) {
+        String reasonCode = "JD_TRACKING_BACKFILLED_PENDING_REVIEW";
+        String caseNo = "RC-JD-TRACK-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+        String detail = json(Map.of(
+                "message", "京东运单回填完成，待人工确认发货信息",
+                "erp_delivery_no", current.erpDeliveryNo(),
+                "waybill_no", nullToEmpty(parsed.waybillNo()),
+                "carrier_code", nullToEmpty(parsed.carrierCode()),
+                "carrier_name", nullToEmpty(parsed.carrierName())));
+        jdbc.update(
+                """
+                INSERT INTO app.review_cases
+                    (case_no, case_type, status, responsible_team, reason_code,
+                     order_id, shipment_id, detail)
+                VALUES (?, 'JD_TRACKING', 'OPEN', 'FULFILLMENT_OPS',
+                        ?, ?, ?, ?::jsonb)
+                ON CONFLICT DO NOTHING
+                """,
+                caseNo, reasonCode, current.orderId(), current.shipmentId(), detail);
+        jdbc.update(
+                """
+                UPDATE app.review_cases SET detail=?::jsonb, updated_at=CURRENT_TIMESTAMP
+                WHERE shipment_id=? AND status='OPEN' AND reason_code=?
+                """,
+                detail, current.shipmentId(), reasonCode);
     }
 
     private Map<String, Object> completeConflict(
@@ -512,7 +533,7 @@ public class ShipmentJdTrackingBackfillService {
                 return Parsed.failed("JD_TRACKING_DELIVERY_REFERENCE_MISMATCH", "京东出库单引用不匹配");
             }
             String jdStatus = remoteRequiredToken(data.get("status"), 16, "[0-9]+");
-            if (TERMINAL_EXCEPTION_STATUS.contains(jdStatus)) {
+            if (JdOutboundStatus.TERMINAL_EXCEPTION_STATUS.contains(jdStatus)) {
                 return Parsed.terminalException(jdStatus);
             }
             List<String> splitNos = remoteCommaTokens(data.get("splitDeliveryNos"), 20, 128);
@@ -528,7 +549,7 @@ public class ShipmentJdTrackingBackfillService {
             if (split || candidates.size() > 1) {
                 return Parsed.conflict(jdStatus, List.copyOf(candidates));
             }
-            if (!SHIPPED_STATUS.contains(jdStatus)) {
+            if (!JdOutboundStatus.SHIPPED_STATUS.contains(jdStatus)) {
                 return Parsed.pending(jdStatus);
             }
             if (carrierCode == null || carrierName == null || waybillNo == null) {

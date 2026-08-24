@@ -9,11 +9,10 @@ import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
 import cn.zimu.fulfillment.common.web.TestRequestAuthenticationConfiguration;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
-import cn.zimu.fulfillment.mcp.McpTool;
 import cn.zimu.fulfillment.mcp.McpToolRegistry;
-import cn.zimu.fulfillment.mcp.McpWriteTools;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -25,8 +24,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * 05 — 采购比价 Agent 写操作不变式（agent-decision-layer 05，Testcontainers）：真实注册表下
- * 断言 AgentDefinition.tool_names 恰为 04 票只读工具面且与真实写工具清单（McpWriteTools）
- * 交集为空；Agent 工具绑定不暴露任何写工具；白名单引用的工具在真实注册表全部可解析。
+ * 断言 AgentDefinition.tool_names 恰为 04 票只读工具面且与真实写工具集合（按 readOnly
+ * 元数据向注册表查询，08 决策）交集为空；Agent 工具绑定不暴露任何写工具；白名单引用的
+ * 工具在真实注册表全部可解析。
  */
 @Testcontainers
 @SpringBootTest(
@@ -52,9 +52,6 @@ class ProcurementPriceAgentInvariantTest {
     private McpToolRegistry toolRegistry;
 
     @Autowired
-    private McpWriteTools writeTools;
-
-    @Autowired
     private McpAgentIdentity identity;
 
     @Autowired
@@ -65,7 +62,7 @@ class ProcurementPriceAgentInvariantTest {
         AgentDefinition definition = holder.current().bySlug(ProcurementPriceAgent.AGENT_SLUG);
         assertThat(definition).as("注册表必须含采购比价 Agent 定义").isNotNull();
         assertThat(definition.enabled()).isTrue();
-        assertThat(definition.promptVersion()).isEqualTo("procurement-price-v1");
+        assertThat(definition.promptVersion()).isEqualTo("procurement-price-v2");
         assertThat(definition.modelRef()).isEqualTo("app.agent");
         assertThat(definition.toolNames())
                 .containsExactlyElementsOf(AgentSeedFixtures.PROCUREMENT_TOOL_NAMES);
@@ -73,9 +70,10 @@ class ProcurementPriceAgentInvariantTest {
 
     @Test
     void whitelistNeverReferencesAnyRealWriteTool() {
-        List<String> writeToolNames = writeTools.tools().stream().map(McpTool::name).toList();
+        // 08 决策：写工具集合按 readOnly 元数据向注册表查询，不再手抄清单
+        Set<String> writeToolNames = toolRegistry.writeToolNames();
         assertThat(writeToolNames)
-                .as("写工具清单必须非空（McpWriteTools 现网清单）")
+                .as("写工具集合必须非空（默认禁写不变式可判定）")
                 .isNotEmpty();
 
         AgentDefinition definition = holder.current().bySlug(ProcurementPriceAgent.AGENT_SLUG);
@@ -96,7 +94,7 @@ class ProcurementPriceAgentInvariantTest {
         assertThat(binding.specifications())
                 .extracting(spec -> spec.name())
                 .containsExactlyInAnyOrderElementsOf(definition.toolNames());
-        List<String> writeToolNames = writeTools.tools().stream().map(McpTool::name).toList();
+        Set<String> writeToolNames = toolRegistry.writeToolNames();
         assertThat(binding.specifications())
                 .extracting(spec -> spec.name())
                 .doesNotContainAnyElementsOf(writeToolNames);

@@ -9,7 +9,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * {@code app.agent_runs} / {@code app.agent_tool_calls}（V29 迁移）。
  *
  * <p>生命周期两段写入：{@link #runStarted} 落 RUNNING 行（进程中断时以 finished_at
- * 为空检出）；{@link #runFinished} 收口 status/error_type/latency/model/finished_at；
+ * 为空检出）；{@link #runFinished} 收口 status/error_type/latency/model/provider/
+ * intent/prompt_version/finished_at（04 差异⑦：intent/provider 与投影后的实际
+ * prompt_version 随收口事件落列，替代意图桥重复审计）；
  * {@link #recordModelTokens} 与 {@link #toolCallFinished} 只写各自字段（UPDATE 按
  * RUNNING 状态匹配，失败静默跳过——观测写入的失败隔离由调用方 try/catch 承担）。
  *
@@ -21,14 +23,17 @@ public class JdbcAgentObservability implements AgentObservability {
     private static final String INSERT_RUN = """
             INSERT INTO app.agent_runs
                 (run_id, thread_id, agent_slug, agent_version, prompt_version, model,
-                 input_digest, status, business_entity_type, business_entity_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?)
+                 input_digest, status, business_entity_type, business_entity_id, run_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, COALESCE(NULLIF(?, ''), 'LIVE'))
             """;
 
     private static final String UPDATE_FINISH = """
             UPDATE app.agent_runs
             SET status = ?, error_type = ?, latency_ms = ?,
                 model = COALESCE(NULLIF(?, ''), model),
+                provider = COALESCE(NULLIF(?, ''), provider),
+                intent = COALESCE(NULLIF(?, ''), intent),
+                prompt_version = COALESCE(NULLIF(?, ''), prompt_version),
                 finished_at = CURRENT_TIMESTAMP
             WHERE run_id = ? AND status = 'RUNNING'
             """;
@@ -65,7 +70,8 @@ public class JdbcAgentObservability implements AgentObservability {
                 start.model(),
                 start.inputDigest(),
                 start.businessEntityType(),
-                start.businessEntityId());
+                start.businessEntityId(),
+                start.runMode());
     }
 
     @Override
@@ -76,6 +82,9 @@ public class JdbcAgentObservability implements AgentObservability {
                 finish.errorType(),
                 finish.latencyMs(),
                 finish.model() == null ? "" : finish.model(),
+                finish.provider() == null ? "" : finish.provider(),
+                finish.intent() == null ? "" : finish.intent(),
+                finish.promptVersion() == null ? "" : finish.promptVersion(),
                 finish.runId());
     }
 

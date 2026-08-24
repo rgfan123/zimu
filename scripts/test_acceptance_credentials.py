@@ -20,6 +20,8 @@ class AcceptanceCredentialsTest(unittest.TestCase):
             "APP_ADMIN_PASSWORD": "application-password-12345678",
             "POSTGRES_USER": "acceptance-db",
             "POSTGRES_PASSWORD": "postgres-password-1234567890",
+            "APP_INTERNAL_SERVICE_NAME": "acceptance-order-assistant",
+            "APP_INTERNAL_SERVICE_TOKEN": "internal-service-token-1234567890",
         }
 
         accepted = subprocess.run(
@@ -56,6 +58,8 @@ class AcceptanceCredentialsTest(unittest.TestCase):
             "APP_ADMIN_PASSWORD": "application-password-12345678",
             "POSTGRES_USER": "acceptance-db",
             "POSTGRES_PASSWORD": "postgres-password-1234567890",
+            "APP_INTERNAL_SERVICE_NAME": "acceptance-order-assistant",
+            "APP_INTERNAL_SERVICE_TOKEN": "internal-service-token-1234567890",
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "explicit.credentials"
@@ -81,15 +85,18 @@ class AcceptanceCredentialsTest(unittest.TestCase):
             first = path.read_bytes()
             lines = first.decode().splitlines()
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-            self.assertEqual(len(lines), 6)
+            self.assertEqual(len(lines), 8)
             self.assertEqual(lines[0], "acceptance@localhost.invalid")
             self.assertEqual(lines[2], "acceptance-admin")
             self.assertEqual(lines[4], "acceptance-db")
+            self.assertEqual(lines[6], "acceptance-order-assistant")
             self.assertGreaterEqual(len(lines[1]), 32)
             self.assertGreaterEqual(len(lines[3]), 32)
             self.assertGreaterEqual(len(lines[5]), 32)
+            self.assertGreaterEqual(len(lines[7]), 32)
             self.assertNotEqual(lines[1], lines[3])
             self.assertNotEqual(lines[3], lines[5])
+            self.assertNotIn(lines[7], {lines[1], lines[3], lines[5]})
 
             prepare_credentials(path)
 
@@ -162,7 +169,31 @@ class AcceptanceCredentialsTest(unittest.TestCase):
             self.assertEqual(tuple(upgraded[:4]), legacy)
             self.assertEqual(upgraded[4], "acceptance-db")
             self.assertGreaterEqual(len(upgraded[5]), 32)
+            self.assertEqual(upgraded[6], "acceptance-order-assistant")
+            self.assertGreaterEqual(len(upgraded[7]), 32)
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_upgrades_a_private_six_field_bundle_with_an_independent_internal_identity(self) -> None:
+        current = (
+            "acceptance@localhost.invalid",
+            "metabase-password-1234567890",
+            "acceptance-admin",
+            "application-password-12345678",
+            "acceptance-db",
+            "postgres-password-1234567890",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "six-field.credentials"
+            path.write_text("\n".join(current) + "\n")
+            path.chmod(0o600)
+
+            prepare_credentials(path)
+
+            upgraded = path.read_text().splitlines()
+            self.assertEqual(tuple(upgraded[:6]), current)
+            self.assertEqual(upgraded[6], "acceptance-order-assistant")
+            self.assertGreaterEqual(len(upgraded[7]), 32)
+            self.assertNotIn(upgraded[7], {current[1], current[3], current[5]})
 
     def test_rejects_private_bundles_with_missing_weak_or_repeated_credentials(self) -> None:
         valid = (
@@ -172,15 +203,20 @@ class AcceptanceCredentialsTest(unittest.TestCase):
             "application-password-12345678",
             "acceptance-db",
             "postgres-password-1234567890",
+            "acceptance-order-assistant",
+            "internal-service-token-1234567890",
         )
         invalid_bundles = {
             "missing-email": ("", *valid[1:]),
             "missing-app-user": (*valid[:2], "", *valid[3:]),
-            "missing-db-user": (*valid[:4], "", valid[5]),
+            "missing-db-user": (*valid[:4], "", *valid[5:]),
+            "missing-internal-service": (*valid[:6], "", valid[7]),
             "weak-metabase-password": (valid[0], "too-short", *valid[2:]),
             "weak-app-password": (*valid[:3], "too-short", *valid[4:]),
-            "weak-db-password": (*valid[:5], "too-short"),
-            "repeated-passwords": (valid[0], valid[1], valid[2], valid[1], valid[4], valid[5]),
+            "weak-db-password": (*valid[:5], "too-short", *valid[6:]),
+            "weak-internal-token": (*valid[:7], "too-short"),
+            "repeated-passwords": (valid[0], valid[1], valid[2], valid[1], *valid[4:]),
+            "reused-internal-token": (*valid[:7], valid[3]),
             "weak-legacy": (valid[0], "too-short", valid[2], valid[3]),
             "repeated-legacy": (valid[0], valid[1], valid[2], valid[1]),
         }

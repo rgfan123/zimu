@@ -3,6 +3,7 @@ package cn.zimu.fulfillment.agent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import cn.zimu.fulfillment.agent.procurement.ProcurementPriceEvalFixture;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -21,12 +22,12 @@ import org.springframework.dao.DataIntegrityViolationException;
  * <ul>
  *   <li>DB 是定义唯一真源：上下文无代码定义 bean 残留（T02），active 种子恰为 4 个
  *       （procurement-price-agent / data-query-agent / intent-recognition / meta-agent），
- *       version=1、status='active'、allow_write 仅 meta-agent 为 true、守卫豁免为空，
+ *       procurement-price-agent version=2、其余 version=1、status='active'、allow_write 仅 meta-agent 为 true、守卫豁免为空，
  *       注册表（holder 当前实例）按 status='active' AND enabled=true 可解析全部 slug；</li>
  *   <li>meta-agent 播种行：version=1、status='active'、allow_write=true、enabled=true、
  *       白名单 = [list_agent_tools, create_agent_draft, update_agent_draft]（06/08 决策）；</li>
- *   <li>14 例评测用例（procurement-eval-v1 7 例 + data-query-eval-v1 7 条）按 metric_kind=
- *       INVARIANT 播种为 CONFIRMED，input/expected 与 T03 钉死的字面量一致（防种子静默漂移）；</li>
+ *   <li>历史与 active 共 26 例评测用例；active 集合为 procurement-eval-v2 12 例 +
+ *       data-query-eval-v1 7 例，旧 procurement v1 七例继续冻结保留；</li>
  *   <li>结构约束落地：部分唯一索引（每 slug 至多一个 active）、agent_runs 新列与默认值、
  *       agent_eval_cases 外键。</li>
  * </ul>
@@ -73,9 +74,10 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                         + "FROM app.agent_definitions WHERE status = 'active' ORDER BY id",
                 (rs, i) -> row(rs));
         assertThat(active).extracting(DefinitionRow::slug)
-                .containsExactly("procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent");
+                .containsExactlyInAnyOrder(
+                        "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent");
         assertThat(active).allSatisfy(row -> {
-            assertThat(row.version()).isEqualTo(1);
+            assertThat(row.version()).isEqualTo("procurement-price-agent".equals(row.slug()) ? 2 : 1);
             assertThat(row.status()).isEqualTo("active");
             assertThat(row.enabled()).isTrue();
             assertThat(row.allowWrite()).as("仅 meta-agent 允许写（%s）", row.slug())
@@ -110,11 +112,11 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
     }
 
     // ------------------------------------------------------------------
-    // 14 例评测用例播种（INVARIANT / CONFIRMED）
+    // 26 例历史评测用例播种（INVARIANT / CONFIRMED）
     // ------------------------------------------------------------------
 
     @Test
-    void fourteenInvariantEvalCasesSeededConfirmed() {
+    void invariantEvalCasesKeepHistoryAndActiveVersion() {
         List<EvalCaseRow> rows = jdbc.query(
                 "SELECT agent_slug, agent_version, metric_kind, status, input::text, expected::text "
                         + "FROM app.agent_eval_cases ORDER BY id",
@@ -125,7 +127,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                         rs.getString("status"),
                         parse(rs.getString("input")),
                         parse(rs.getString("expected"))));
-        assertThat(rows).hasSize(14);
+        assertThat(rows).hasSize(26);
         assertThat(rows).allSatisfy(row -> {
             assertThat(row.metricKind()).isEqualTo("INVARIANT");
             assertThat(row.status()).isEqualTo("CONFIRMED");
@@ -133,25 +135,20 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
     }
 
     @Test
-    void evalCaseSeedMatchesDesignedFourteenCases() {
-        // T03 删除 mirror 测试后，用例真源钉死在此（防种子静默漂移：input 集合 + 关键 expected 形态）
+    void activeEvalCaseSeedMatchesCurrentDesignedCases() {
+        // 只核对各 slug 的 active 版本；旧版本用例由总数与外键/版本链测试保证继续保留。
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT agent_slug, input::text, expected::text FROM app.agent_eval_cases "
-                        + "WHERE metric_kind = 'INVARIANT' AND status = 'CONFIRMED' "
-                        + "ORDER BY agent_slug, id");
-        assertThat(rows).hasSize(14);
+                "SELECT c.agent_slug, c.input::text, c.expected::text FROM app.agent_eval_cases c "
+                        + "JOIN app.agent_definitions d ON d.agent_slug=c.agent_slug "
+                        + "AND d.version=c.agent_version AND d.status='active' "
+                        + "WHERE c.metric_kind = 'INVARIANT' AND c.status = 'CONFIRMED' "
+                        + "ORDER BY c.agent_slug, c.id");
+        assertThat(rows).hasSize(19);
 
         List<String> procurementInputs = normalizedInputs(rows, "procurement-price-agent");
-        // 7 例：6 个不同 input（{"sku_id":"1001"} 出现 2 次：snake_case 与 camelCase 兼容两例同输入）
-        assertThat(procurementInputs).hasSize(7);
-        assertThat(procurementInputs).containsExactlyInAnyOrder(
-                norm("{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}"),
-                norm("{\"sku_id\":\"1001\"}"),
-                norm("{\"sku_id\":\"1001\"}"),
-                norm("{\"procurement_ticket_id\":\"9002\",\"quantity\":\"1\"}"),
-                norm("{\"procurement_ticket_id\":\"9003\"}"),
-                norm("{\"procurement_ticket_id\":\"9004\",\"quantity\":\"4\"}"),
-                norm("{\"sku_id\":\"1002\"}"));
+        assertThat(procurementInputs).hasSize(ProcurementPriceEvalFixture.CASES.size());
+        assertThat(procurementInputs).containsExactlyInAnyOrderElementsOf(
+                ProcurementPriceEvalFixture.CASES.stream().map(c -> norm(c.inputJson())).toList());
 
         List<String> dataQueryInputs = normalizedInputs(rows, "data-query-agent");
         assertThat(dataQueryInputs).hasSize(7);

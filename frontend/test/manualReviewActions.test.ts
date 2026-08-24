@@ -8,6 +8,7 @@ import {
   buildSourceFollowupCompletion,
   reviewAction,
 } from '../src/pages/workbench/manualReviewActions.ts';
+import { REASON_LABELS } from '../src/pages/workbench/queuePresentation.ts';
 import type { ReviewCase } from '../src/api/types.ts';
 
 function reviewCase(reasonCode: string, detail: Record<string, unknown> = {}): ReviewCase {
@@ -95,6 +96,21 @@ test('WECOM tracking draft cases stay inside the existing review workspace', () 
   const item = trackingDraftCase(['CONFIRM_TRACKING_DRAFT']);
 
   assert.equal(reviewAction(item), 'TRACKING_DRAFT');
+});
+
+test('WECOM tracking file failures have an operator-readable queue label and generic close actions', () => {
+  const item = reviewCase('WECOM_TRACKING_FILE_REVIEW', {
+    source: 'WECOM_TRACKING_FILE',
+    error_code: 'WECOM_TRACKING_FILE_INVALID',
+  });
+  item.order_id = undefined;
+  item.subject_type = 'MESSAGE_SUBMISSION';
+  item.subject_id = '18';
+  item.allowed_actions = ['RESOLVE_MANUALLY', 'DISMISS'];
+
+  assert.equal(REASON_LABELS.WECOM_TRACKING_FILE_REVIEW, '企微运单文件处理失败');
+  assert.equal(reviewAction(item), 'NAVIGATE');
+  assert.deepEqual(item.allowed_actions, ['RESOLVE_MANUALLY', 'DISMISS']);
 });
 
 test('generic manual resolution and dismissal always carry the visible expected version', () => {

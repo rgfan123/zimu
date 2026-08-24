@@ -6,24 +6,16 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
-import cn.zimu.fulfillment.common.audit.AuditLog;
-import cn.zimu.fulfillment.common.audit.AuditLogRepository;
-import cn.zimu.fulfillment.common.audit.AuditLogService;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.persistence.EntityManager;
 import java.util.List;
-import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 /**
- * 07 — 意图识别运行桥埋点（agent-decision-layer 07）：解释运行写入 Agent 观测
- * （Start 先 RUNNING → Finish 收口）、run_id 与审计 trace_id/request_id 同值、
- * provider/model/prompt_version/intent/error_code 随审计可关联、allowlist 投影
- * （未白名单 → none）、启停只影响观测视图（禁用时零写入）；观测/审计失败隔离。
- * 纯单元测试：AgentObservability mock、AuditLogService 走真实记录映射（仓库 mock），
+ * 07 — 意图识别运行桥埋点（agent-decision-layer 07，T06 适配）：解释运行写入 Agent 观测
+ * （Start 先 RUNNING → Finish 收口）、运行期才可知的 provider/intent 随 Finish 落
+ * agent_runs 列（04 差异⑦，不再额外落 AGENT 审计）、allowlist 投影（未白名单 → none）、
+ * 启停只影响观测视图（禁用时零写入）；观测失败隔离。纯单元测试：AgentObservability mock，
  * 底层解释器不参与。
  */
 class IntentRecognitionAgentBridgeTest {
@@ -33,9 +25,6 @@ class IntentRecognitionAgentBridgeTest {
     private static final String INPUT = "请帮我下一单";
 
     private final AgentObservability observability = mock(AgentObservability.class);
-    private final AuditLogRepository auditLogs = mock(AuditLogRepository.class);
-    private final AuditLogService audits =
-            new AuditLogService(auditLogs, new ObjectMapper(), mock(EntityManager.class));
     private final AgentModelMetadataRegistry metadata = new AgentModelMetadataRegistry();
 
     private AgentDefinition enabledDefinition() {
@@ -52,7 +41,7 @@ class IntentRecognitionAgentBridgeTest {
 
     private IntentRecognitionAgentBridge bridge(AgentDefinition... definitions) {
         return new IntentRecognitionAgentBridge(
-                AgentSeedFixtures.holderOf(definitions), observability, audits, metadata);
+                AgentSeedFixtures.holderOf(definitions), observability, metadata);
     }
 
     private static IntentRecognitionRunMetadata success() {
@@ -84,11 +73,11 @@ class IntentRecognitionAgentBridgeTest {
     }
 
     @Test
-    void finishedRunClosesRunAndAuditsFullMetadataUnderRunId() {
+    void finishedRunClosesRunWithProjectedProviderAndIntent() {
         IntentRecognitionAgentBridge bridge = bridge(enabledDefinition());
         String runId = bridge.runStarted(THREAD_ID, SUBMISSION_ID, INPUT);
 
-        bridge.runFinished(runId, THREAD_ID, SUBMISSION_ID, success(), 12);
+        bridge.runFinished(runId, success(), 12);
 
         ArgumentCaptor<AgentObservability.Finish> finishCaptor =
                 ArgumentCaptor.forClass(AgentObservability.Finish.class);
@@ -97,63 +86,51 @@ class IntentRecognitionAgentBridgeTest {
         assertThat(finish.runId()).isEqualTo(runId);
         assertThat(finish.errorType()).isNull();
         assertThat(finish.latencyMs()).isEqualTo(12);
-        // 未白名单的模型三元组投影为 none（allowlist 生效）
+        // 未白名单的模型三元组投影为 none（allowlist 生效）；intent 归一化后直落列
         assertThat(finish.model()).isEqualTo("none");
-
-        AuditLog audit = capturedAudit();
-        assertThat(audit.getRequestId()).isEqualTo(runId);
-        assertThat(audit.getTraceId()).isEqualTo(runId);
-        assertThat(audit.getOperation()).isEqualTo("agent.intent-recognition.run");
-        assertThat(audit.getBusinessCode()).isEqualTo("SUCCESS");
-        assertThat(audit.getActorType()).isEqualTo(cn.zimu.fulfillment.common.audit.AuditActorType.AGENT);
-        assertThat(audit.getRequestPayload().get("agent_slug")).isEqualTo("intent-recognition");
-        assertThat(audit.getRequestPayload().get("thread_id")).isEqualTo(THREAD_ID);
-        Map<String, Object> response = audit.getResponsePayload();
-        assertThat(response.get("intent")).isEqualTo("NON_BUSINESS");
-        assertThat(response.get("provider")).isEqualTo("none");
-        assertThat(response.get("model")).isEqualTo("none");
-        assertThat(response.get("prompt_version")).isEqualTo("none");
-        assertThat(response).doesNotContainKey("error_code");
+        assertThat(finish.provider()).isEqualTo("none");
+        assertThat(finish.promptVersion()).isEqualTo("none");
+        assertThat(finish.intent()).isEqualTo("NON_BUSINESS");
     }
 
     @Test
-    void allowlistedTripleIsProjectedForObservationAndAudit() {
+    void allowlistedTripleIsProjectedIntoFinish() {
         metadata.setPublicMetadataAliases(List.of(alias("test-provider", "test-model", "test-prompt-v1")));
         IntentRecognitionAgentBridge bridge = bridge(enabledDefinition());
         String runId = bridge.runStarted(THREAD_ID, SUBMISSION_ID, INPUT);
 
-        bridge.runFinished(runId, THREAD_ID, SUBMISSION_ID, success(), 12);
+        bridge.runFinished(runId, success(), 12);
 
         ArgumentCaptor<AgentObservability.Finish> finishCaptor =
                 ArgumentCaptor.forClass(AgentObservability.Finish.class);
         verify(observability).runFinished(finishCaptor.capture());
-        assertThat(finishCaptor.getValue().model()).isEqualTo("test-model");
-        Map<String, Object> response = capturedAudit().getResponsePayload();
-        assertThat(response.get("provider")).isEqualTo("test-provider");
-        assertThat(response.get("model")).isEqualTo("test-model");
-        assertThat(response.get("prompt_version")).isEqualTo("test-prompt-v1");
+        AgentObservability.Finish finish = finishCaptor.getValue();
+        assertThat(finish.model()).isEqualTo("test-model");
+        assertThat(finish.provider()).isEqualTo("test-provider");
+        assertThat(finish.promptVersion()).isEqualTo("test-prompt-v1");
+        assertThat(finish.intent()).isEqualTo("NON_BUSINESS");
     }
 
     @Test
-    void failedRunCarriesStableErrorCodeIntoRunAndAudit() {
+    void failedRunCarriesStableErrorCodeIntoFinish() {
         IntentRecognitionAgentBridge bridge = bridge(enabledDefinition());
         String runId = bridge.runStarted(THREAD_ID, SUBMISSION_ID, INPUT);
 
-        bridge.runFinished(runId, THREAD_ID, SUBMISSION_ID,
-                IntentRecognitionRunMetadata.failed("MODEL_CALL_FAILED"), 3);
+        bridge.runFinished(runId, IntentRecognitionRunMetadata.failed("MODEL_CALL_FAILED"), 3);
 
         ArgumentCaptor<AgentObservability.Finish> finishCaptor =
                 ArgumentCaptor.forClass(AgentObservability.Finish.class);
         verify(observability).runFinished(finishCaptor.capture());
-        assertThat(finishCaptor.getValue().errorType()).isEqualTo("MODEL_CALL_FAILED");
-        Map<String, Object> response = capturedAudit().getResponsePayload();
-        assertThat(response.get("status")).isEqualTo("MODEL_CALL_FAILED");
-        assertThat(response.get("error_code")).isEqualTo("MODEL_CALL_FAILED");
-        assertThat(response.get("intent")).isNull();
+        AgentObservability.Finish finish = finishCaptor.getValue();
+        assertThat(finish.errorType()).isEqualTo("MODEL_CALL_FAILED");
+        // 失败路径意图未知：intent 不落，provider/prompt_version 投影为 none
+        assertThat(finish.intent()).isNull();
+        assertThat(finish.provider()).isEqualTo("none");
+        assertThat(finish.promptVersion()).isEqualTo("none");
     }
 
     @Test
-    void disabledAgentWritesNoObservationAndNoAudit() {
+    void disabledAgentWritesNoObservation() {
         AgentDefinition disabled = AgentDefinition.ofActiveV1(
                 "intent-recognition", "意图识别", "d", "s", "v1", "app.message-interpreter", false,
                 List.of());
@@ -163,10 +140,9 @@ class IntentRecognitionAgentBridgeTest {
         String runId = bridge.runStarted(THREAD_ID, SUBMISSION_ID, INPUT);
 
         assertThat(runId).isNull();
-        bridge.runFinished(runId, THREAD_ID, SUBMISSION_ID, success(), 12);
+        bridge.runFinished(runId, success(), 12);
         verify(observability, never()).runStarted(any());
         verify(observability, never()).runFinished(any());
-        verify(auditLogs, never()).save(any());
     }
 
     @Test
@@ -176,28 +152,19 @@ class IntentRecognitionAgentBridgeTest {
         assertThat(bridge.isEnabled()).isFalse();
         assertThat(bridge.runStarted(THREAD_ID, SUBMISSION_ID, INPUT)).isNull();
         verify(observability, never()).runStarted(any());
-        verify(auditLogs, never()).save(any());
     }
 
     @Test
-    void observabilityAndAuditFailuresNeverMaskInterpretationRun() {
-        AuditLogService failingAudits = mock(AuditLogService.class);
+    void observabilityFailuresNeverMaskInterpretationRun() {
         IntentRecognitionAgentBridge bridge = new IntentRecognitionAgentBridge(
-                AgentSeedFixtures.holderOf(enabledDefinition()), observability, failingAudits, metadata);
+                AgentSeedFixtures.holderOf(enabledDefinition()), observability, metadata);
         doThrow(new IllegalStateException("db down")).when(observability).runStarted(any());
         doThrow(new IllegalStateException("db down")).when(observability).runFinished(any());
-        when(failingAudits.record(any())).thenThrow(new IllegalStateException("db down"));
 
         String runId = bridge.runStarted(THREAD_ID, SUBMISSION_ID, INPUT);
         assertThat(runId).isNotNull();
-        bridge.runFinished(runId, THREAD_ID, SUBMISSION_ID, success(), 12);
+        bridge.runFinished(runId, success(), 12);
         // 无异常上抛即通过（失败隔离契约）
-    }
-
-    private AuditLog capturedAudit() {
-        ArgumentCaptor<AuditLog> captor = ArgumentCaptor.forClass(AuditLog.class);
-        verify(auditLogs).save(captor.capture());
-        return captor.getValue();
     }
 
     private static AgentModelMetadataRegistry.PublicMetadataAlias alias(

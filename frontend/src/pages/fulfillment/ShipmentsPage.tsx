@@ -5,9 +5,13 @@
  */
 
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Alert, Button, Card, Checkbox, Descriptions, Drawer, Empty, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import { errorMessage } from '@/api/client';
 import { jdWarehouseApi, providersApi, shipmentsApi } from '@/api/endpoints';
 import type { JdClientStatus, JdReceiverAddressCandidate, Shipment, ShipmentJdOutboundPreview, ShipmentStatus } from '@/api/types';
@@ -387,43 +391,36 @@ export default function ShipmentsPage() {
   const err = list.error || providers.error;
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {err ? (
-        <Alert
-          type="error"
-          showIcon
-          message="Shipment 加载失败"
-          description={errorMessage(err)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={list.reload}>
-              重试
-            </Button>
-          }
-        />
-      ) : null}
-
-      <Card size="small" style={{ borderRadius: 10, boxShadow: '0 1px 2px rgba(16,24,40,.05), 0 2px 8px rgba(16,24,40,.06)' }}>
-        <Space wrap>
-          <span style={{ color: '#7a8699', fontSize: 13 }}>履约方</span>
-          <Select style={{ width: 200 }} placeholder="全部履约方" allowClear value={providerId} onChange={setProviderId}
-            options={(providers.data ?? []).map((p) => ({ value: p.id, label: p.provider_name }))} />
-          <span style={{ color: '#7a8699', fontSize: 13 }}>状态</span>
-          <Select style={{ width: 140 }} placeholder="全部" allowClear value={status} onChange={setStatus}
-            options={(Object.keys(SHIPMENT_STATUS_LABELS) as ShipmentStatus[]).map((k) => ({ value: k, label: SHIPMENT_STATUS_LABELS[k] }))} />
-          <Button icon={<ReloadOutlined />} onClick={list.reload}>
-            刷新
-          </Button>
+    <PageShell
+      title="发货记录"
+      description="一次出库/发货批次，可包含同一订单、同一履约方、同一收货地址下的多条订单行；缺货后的后续批次生成新 Shipment / 出库单号 / 运单。"
+      actions={
+        <Space size={12}>
+          {/* 低频专用查询的上下文入口（Issue #98/#111）：出库信息对账已从菜单隐藏，由发货记录承载发现路径，指向工作台对账入口；旧 /fulfillment/outbound-recon 仍可直达。 */}
+          <Link to="/workbench/recon">出库信息对账</Link>
+          <Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>
         </Space>
-      </Card>
+      }
+    >
+      <FilterBar>
+        <span style={{ color: '#7a8699', fontSize: 13 }}>履约方</span>
+        <Select style={{ width: 200 }} placeholder="全部履约方" allowClear value={providerId} onChange={setProviderId}
+          options={(providers.data ?? []).map((p) => ({ value: p.id, label: p.provider_name }))} />
+        <span style={{ color: '#7a8699', fontSize: 13 }}>状态</span>
+        <Select style={{ width: 140 }} placeholder="全部" allowClear value={status} onChange={setStatus}
+          options={(Object.keys(SHIPMENT_STATUS_LABELS) as ShipmentStatus[]).map((k) => ({ value: k, label: SHIPMENT_STATUS_LABELS[k] }))} />
+      </FilterBar>
 
-      <Card size="small" style={{ borderRadius: 10, boxShadow: '0 1px 2px rgba(16,24,40,.05), 0 2px 8px rgba(16,24,40,.06)' }} styles={{ body: { padding: '4px 8px' } }}>
-        <Table<Shipment>
+      <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
+        <DataTable<Shipment>
           rowKey="id"
           columns={columns}
           dataSource={list.data?.items ?? []}
           loading={list.loading}
+          error={err}
+          onRetry={list.reload}
+          errorTitle="Shipment 加载失败"
           size="middle"
-          scroll={{ x: 1100 }}
           pagination={{
             current: page + 1,
             pageSize: size,
@@ -612,6 +609,6 @@ export default function ShipmentsPage() {
           <Alert type="error" showIcon message={errorMessage(detail.error)} />
         ) : null}
       </Drawer>
-    </Space>
+    </PageShell>
   );
 }

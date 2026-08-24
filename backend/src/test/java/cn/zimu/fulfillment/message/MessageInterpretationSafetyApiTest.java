@@ -28,6 +28,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -36,6 +37,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 /** Public safety contract for historical interpretation data and order-reference routing. */
 @Testcontainers
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class MessageInterpretationSafetyApiTest {
 
@@ -54,6 +56,8 @@ class MessageInterpretationSafetyApiTest {
 
     @DynamicPropertySource
     static void configuration(DynamicPropertyRegistry registry) {
+        registry.add("app.scheduling.enabled", () -> "true");
+        registry.add("app.message-worker.enabled", () -> "true");
         registry.add("app.message-worker.poll-ms", () -> "50");
         registry.add("app.message-worker.backoff-seconds", () -> "1");
         registry.add("app.message-worker.lease-seconds", () -> "10");

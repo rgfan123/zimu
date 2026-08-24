@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.service.tool.ToolExecutor;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -27,6 +28,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * {@code {"code","http_status","message"}} 稳定业务码 JSON（模型可据此修正参数重试），
  * 意外失败返回 {@code MCP_INTERNAL_ERROR}，与 stdio 客户端收到的工具结果结构一致。
  *
+ * <p>权限强制点（08 决策）：执行器携带绑定白名单（{@code AgentToolBindingFactory} 以
+ * AgentDefinition.tool_names 注入），{@link #execute} 对每次工具调用按白名单复核——
+ * 白名单外工具即使已在注册表也拒绝（{@code TOOL_NOT_AUTHORIZED}，防旁路真强制点）；
+ * 白名单为空视为拒绝一切调用（fail-closed）。
+ *
  * <p>可观测性（08 票）：每次工具调用以 run_id + 递增序号落 {@code agent_tool_call} 行
  * （参数/结果只存 {@link AgentPayloadRedactor} 脱敏摘要）；观测写入失败 try/catch 隔离，
  * 不影响工具调用结果。provider 经 {@link AgentObservability} 接缝注入，默认 no-op。
@@ -38,11 +44,16 @@ public class AgentToolInvoker implements ToolExecutor {
     private final McpAgentIdentity identity;
     private final ObjectMapper mapper;
     private final AgentObservability observability;
+    private final Set<String> whitelist;
     private final AtomicInteger sequence = new AtomicInteger();
 
     public AgentToolInvoker(
-            String runId, McpToolRegistry registry, McpAgentIdentity identity, ObjectMapper mapper) {
-        this(runId, registry, identity, mapper, AgentObservability.disabled());
+            String runId,
+            McpToolRegistry registry,
+            McpAgentIdentity identity,
+            ObjectMapper mapper,
+            Set<String> whitelist) {
+        this(runId, registry, identity, mapper, AgentObservability.disabled(), whitelist);
     }
 
     public AgentToolInvoker(
@@ -50,12 +61,14 @@ public class AgentToolInvoker implements ToolExecutor {
             McpToolRegistry registry,
             McpAgentIdentity identity,
             ObjectMapper mapper,
-            AgentObservability observability) {
+            AgentObservability observability,
+            Set<String> whitelist) {
         this.runId = runId;
         this.registry = registry;
         this.identity = identity;
         this.mapper = mapper;
         this.observability = observability == null ? AgentObservability.disabled() : observability;
+        this.whitelist = whitelist == null ? Set.of() : Set.copyOf(whitelist);
     }
 
     /** 当前绑定所属 Agent run 的 run_id（工具调用上下文关联键）。 */
@@ -66,7 +79,7 @@ public class AgentToolInvoker implements ToolExecutor {
     @Override
     public String execute(ToolExecutionRequest request, Object memoryId) {
         if (request == null || request.name() == null || request.name().isBlank()) {
-            return internalError("工具请求缺少名称");
+            return internalError();
         }
         String toolName = request.name().strip();
         long startedNanos = System.nanoTime();
@@ -74,8 +87,13 @@ public class AgentToolInvoker implements ToolExecutor {
         boolean success;
         McpTool tool = registry.find(toolName).orElse(null);
         if (tool == null) {
-            // 白名单之外的名称不应到达执行器（LangChain4j 只暴露绑定工具）；到达即注册表漂移
-            outcome = internalError("未知工具: " + toolName);
+            // 未注册名：注册表漂移/模型幻觉工具（工具根本不存在），非权限问题——稳定内部错误兜底；
+            // 工具名随观测行（agent_tool_calls.tool_name）留痕，信封不透出细节
+            outcome = internalError();
+            success = false;
+        } else if (!whitelist.contains(toolName)) {
+            // 08 决策调用期复核（真强制点，防旁路）：白名单外工具即使注册存在也拒绝
+            outcome = McpToolErrorEnvelope.notAuthorized();
             success = false;
         } else {
             try {
@@ -88,7 +106,7 @@ public class AgentToolInvoker implements ToolExecutor {
                 success = false;
             } catch (RuntimeException ex) {
                 // 与 MCP stdio 对意外失败的兜底一致：稳定错误码，不泄漏内部细节
-                outcome = internalError(toolName);
+                outcome = internalError();
                 success = false;
             }
         }
@@ -138,8 +156,8 @@ public class AgentToolInvoker implements ToolExecutor {
         return error.toString();
     }
 
-    private String internalError(String detail) {
-        // 信封统一经 McpToolErrorEnvelope（detail 仅作日志/审计线索，不透出）
+    private String internalError() {
+        // 信封统一经 McpToolErrorEnvelope；具体工具名随观测行（agent_tool_calls.tool_name）留痕
         return McpToolErrorEnvelope.internalError();
     }
 }

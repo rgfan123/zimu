@@ -192,6 +192,7 @@ test('JD provider shows missing identifier count and the edit form submits confi
           tracking_sla_minutes: 60,
           active: true,
           version: 2,
+          wecom_group_chat_id: null,
           jd_config: configured
             ? jdConfig(['sourceNo', 'warehouseNo', 'pin', 'erpShopNo', 'salesPlatformSource', 'ownerNo', 'shopNo', 'carrierNo', 'townRequired'])
             : jdConfig(['sourceNo', 'warehouseNo', 'pin']),
@@ -204,6 +205,7 @@ test('JD provider shows missing identifier count and the edit form submits confi
           tracking_sla_minutes: 120,
           active: false,
           version: 1,
+          wecom_group_chat_id: null,
           jd_config: {},
         },
       ]);
@@ -219,6 +221,7 @@ test('JD provider shows missing identifier count and the edit form submits confi
         tracking_sla_minutes: 60,
         active: true,
         version: 3,
+        wecom_group_chat_id: null,
         jd_config: jdConfig(['sourceNo', 'warehouseNo', 'pin', 'erpShopNo', 'salesPlatformSource', 'ownerNo', 'shopNo', 'carrierNo', 'townRequired']),
       });
     }
@@ -315,6 +318,9 @@ test('JD provider shows missing identifier count and the edit form submits confi
       pin: 'JD-PIN-NEW-001',
       townRequired: true,
       outboundMode: 'FILE',
+      wecomGroupChatId: null,
+      // Issue #84：提醒间隔随 config 合并提交；留空 = null（默认等于运单回传时限）
+      wecomReminderIntervalMinutes: null,
     },
   });
   const headers = patchBodies[0].init.headers as Record<string, string>;

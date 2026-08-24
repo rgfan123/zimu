@@ -5,8 +5,8 @@
  */
 
 import { useMemo } from 'react';
-import { Link } from 'react-router-dom';
-import { Alert, Button, Card, Col, Empty, Row, Space, Table, Typography } from 'antd';
+import { Link, useNavigate } from 'react-router-dom';
+import { Alert, Button, Card, Col, Empty, Row, Typography } from 'antd';
 import { AlertOutlined, CarOutlined, InboxOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { EChartsOption } from 'echarts';
@@ -16,10 +16,13 @@ import { errorMessage } from '@/api/client';
 import type { ReviewCase } from '@/api/types';
 import { reasonLabel } from '@/constants/labels';
 import { ATTENTION_COLORS } from '@/pages/shared/semanticStatus';
+import { attentionCardUrl, reviewsQueueUrl } from '@/pages/shared/reviewQueueUrl';
 import { saasChartPalette, saasVisualTokens } from '@/theme/saasTheme';
 import { useAsync } from '@/hooks/useAsync';
 import Chart from '@/components/Chart';
+import DataTable from '@/components/DataTable';
 import KpiCard from '@/components/KpiCard';
+import PageShell from '@/components/PageShell';
 
 function trendOption(dates: string[], orders: number[], shipped: number[]): EChartsOption {
   const [orderColor, shippedColor] = saasChartPalette.categorical;
@@ -88,27 +91,6 @@ function trendOption(dates: string[], orders: number[], shipped: number[]): ECha
   };
 }
 
-/**
- * 阻断/异常类原因 → 严重（红）；其余待关注（琥珀）。与工作台 attention 的 RED/YELLOW 语义对齐。
- *
- * 注意：这是 reason → severity 的前端派生表（后端 ReviewCase 契约未携带 severity）。
- * 新增严重原因码时需与本表同步；attention 聚合卡仍消费后端自带 severity，两者口径需保持一致。
- */
-const CRITICAL_REASONS = new Set([
-  'OUT_OF_STOCK',
-  'PROCUREMENT_FAILED',
-  'FULFILLMENT_EXCEPTION',
-  'JD_SUBMIT_FAILED',
-  'SYNC_FAILED',
-  'TRACKING_OVERDUE',
-  'RETURN_OVERDUE',
-]);
-
-function issueSeverity(reasonCode: string): { color: string; label: string } {
-  const severe = CRITICAL_REASONS.has(reasonCode);
-  return { color: severe ? ATTENTION_COLORS.severe : ATTENTION_COLORS.waiting, label: severe ? '严重' : '关注' };
-}
-
 /** 停留时长：自复核事项创建至今（小时/天）。 */
 function ageText(createdAt: string): string {
   const hours = Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 3_600_000));
@@ -130,32 +112,26 @@ async function fetchOpenReviewCases(): Promise<ReviewCase[]> {
   return [first, ...rest].flatMap((page) => page.items);
 }
 
+/**
+ * 明细行目标：按该行上下文预筛的复核队列（Issue #96）。
+ * 时间口径与「待人工介入」KPI 一致——summary SQL 对该聚合无时间边界，因此不带 date 参数。
+ */
+function issueTargetUrl(item: ReviewCase): string {
+  return reviewsQueueUrl({ status: 'OPEN', reasonCode: item.reason_code, team: item.responsible_team });
+}
+
 const issueColumns: ColumnsType<ReviewCase> = [
   {
     title: '原因',
     dataIndex: 'reason_code',
-    render: (v: string) => {
-      const sev = issueSeverity(v);
-      return (
-        <span>
-          <span
-            style={{
-              display: 'inline-block',
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: sev.color,
-              marginRight: 8,
-              verticalAlign: 'middle',
-            }}
-            title={sev.label}
-          />
-          {reasonLabel(v)}
-        </span>
-      );
-    },
+    render: (v: string) => reasonLabel(v),
   },
-  { title: '复核单号', dataIndex: 'case_no', ellipsis: true },
+  {
+    title: '复核单号',
+    dataIndex: 'case_no',
+    ellipsis: true,
+    render: (v: string, item) => <Link to={issueTargetUrl(item)}>{v}</Link>,
+  },
   { title: '责任团队', dataIndex: 'responsible_team', ellipsis: true },
   {
     title: '订单',
@@ -167,6 +143,7 @@ const issueColumns: ColumnsType<ReviewCase> = [
 ];
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
   // KPI 摘要与待介入明细并行加载，但互不拖垮：明细失败不影响 KPI 卡展示
   const { data, loading, error, reload } = useAsync(
     () =>
@@ -195,7 +172,7 @@ export default function DashboardPage() {
   }, [summary]);
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <PageShell title="工作台">
       {error ? (
         <Alert
           type="error"
@@ -236,26 +213,36 @@ export default function DashboardPage() {
           />
         </Col>
         <Col xs={24} sm={12} xl={6}>
-          <KpiCard
-            title="待人工介入"
-            value={summary?.pending_review_count}
-            unit="项"
-            color={ATTENTION_COLORS.waiting}
-            icon={<AlertOutlined />}
-            loading={loading}
-            tooltip="待人工介入事项（复核/缺货/异常等）"
-          />
+          <Link
+            to={reviewsQueueUrl({ status: 'OPEN' })}
+            style={{ display: 'block', color: 'inherit', textDecoration: 'none' }}
+          >
+            <KpiCard
+              title="待人工介入"
+              value={summary?.pending_review_count}
+              unit="项"
+              color={ATTENTION_COLORS.waiting}
+              icon={<AlertOutlined />}
+              loading={loading}
+              tooltip="待人工介入事项（复核/缺货/异常等）"
+            />
+          </Link>
         </Col>
         {summary?.attention.map((item) => (
           <Col key={item.reason_code} xs={24} sm={12} xl={6}>
-            <KpiCard
-              title={reasonLabel(item.reason_code)}
-              value={item.count}
-              unit="单"
-              color={item.severity === 'RED' ? ATTENTION_COLORS.severe : ATTENTION_COLORS.waiting}
-              icon={<WarningOutlined />}
-              loading={loading}
-            />
+            <Link
+              to={attentionCardUrl(item.reason_code)}
+              style={{ display: 'block', color: 'inherit', textDecoration: 'none' }}
+            >
+              <KpiCard
+                title={reasonLabel(item.reason_code)}
+                value={item.count}
+                unit="单"
+                color={item.severity === 'RED' ? ATTENTION_COLORS.severe : ATTENTION_COLORS.waiting}
+                icon={<WarningOutlined />}
+                loading={loading}
+              />
+            </Link>
           </Col>
         ))}
       </Row>
@@ -268,7 +255,7 @@ export default function DashboardPage() {
         </Col>
         <Col xs={24} xl={8}>
           <Card size="small" title="待人工介入明细">
-            <Table<ReviewCase>
+            <DataTable<ReviewCase>
               rowKey="id"
               size="small"
               columns={issueColumns}
@@ -276,9 +263,17 @@ export default function DashboardPage() {
               loading={loading}
               pagination={false}
               scroll={{ x: 620 }}
-              locale={{ emptyText: issuesError
+              onRow={(item) => ({
+                style: { cursor: 'pointer' },
+                onClick: (event) => {
+                  // 行内链接（复核单号/查看订单）自行处理跳转，整行点击不重复入栈
+                  if ((event.target as HTMLElement).closest('a')) return;
+                  navigate(issueTargetUrl(item));
+                },
+              })}
+              emptyText={issuesError
                 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="明细加载失败，请刷新重试" />
-                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无待介入事项" /> }}
+                : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前无待人工介入" />}
             />
           </Card>
         </Col>
@@ -287,6 +282,6 @@ export default function DashboardPage() {
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         业务日：{summary?.business_date ?? '—'}（Asia/Shanghai）
       </Typography.Text>
-    </Space>
+    </PageShell>
   );
 }

@@ -4,5 +4,5 @@
 import OrderListView from './OrderListView';
 
 export default function OrdersPage() {
-  return <OrderListView />;
+  return <OrderListView title="全部订单" />;
 }

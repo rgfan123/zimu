@@ -9,9 +9,11 @@ import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.common.web.WriteCommands;
+import cn.zimu.fulfillment.file.FulfillmentExportWecomService;
 import cn.zimu.fulfillment.fulfillment.dto.ProviderTrackingDraftDetailDto;
 import cn.zimu.fulfillment.fulfillment.dto.TrackingDraftBatchConfirmCommand;
 import cn.zimu.fulfillment.fulfillment.dto.TrackingDraftConfirmCommand;
+import cn.zimu.fulfillment.fulfillment.dto.TrackingDraftRejectCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionCompletionService;
 import cn.zimu.fulfillment.message.WecomTrackingDraftFactory;
 import cn.zimu.fulfillment.order.ReviewCaseRepository;
@@ -52,6 +54,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class TrackingDraftService {
 
     private static final String CONFIRM_SCOPE = "tracking_draft.confirm";
+    private static final String REJECT_SCOPE = "tracking_draft.reject";
     private static final String BATCH_SCOPE = "tracking_draft.batch_confirm";
     private static final String SHIPMENT_JUDGMENT_INVALID = "SHIPMENT_JUDGMENT_INVALID";
     private static final Set<String> TRACKING_UNIQUE_CONSTRAINTS = Set.of(
@@ -66,6 +69,7 @@ public class TrackingDraftService {
     private final IdempotencyService idempotency;
     private final AuditLogService audits;
     private final MessageSubmissionCompletionService submissionCompletion;
+    private final FulfillmentExportWecomService wecomExportService;
     private final JdbcTemplate jdbc;
     private final EntityManager entityManager;
     private final TransactionTemplate requiresNew;
@@ -79,6 +83,7 @@ public class TrackingDraftService {
             IdempotencyService idempotency,
             AuditLogService audits,
             MessageSubmissionCompletionService submissionCompletion,
+            FulfillmentExportWecomService wecomExportService,
             JdbcTemplate jdbc,
             EntityManager entityManager,
             PlatformTransactionManager transactionManager) {
@@ -90,6 +95,7 @@ public class TrackingDraftService {
         this.idempotency = idempotency;
         this.audits = audits;
         this.submissionCompletion = submissionCompletion;
+        this.wecomExportService = wecomExportService;
         this.jdbc = jdbc;
         this.entityManager = entityManager;
         this.requiresNew = new TransactionTemplate(transactionManager);
@@ -166,6 +172,97 @@ public class TrackingDraftService {
             recordRejectionAudit(ex, rejectionAuditPayload, context);
             throw ex;
         }
+    }
+
+    @Transactional
+    public IdempotentResult<ProviderTrackingDraftDetailDto> reject(
+            long draftId,
+            TrackingDraftRejectCommand command,
+            String idempotencyKey,
+            CommandContext context) {
+        Map<String, Object> idempotencyPayload = Map.of("draft_id", draftId, "command", command);
+        Map<String, Object> auditPayload = auditPayload(draftId, command);
+        requireAuthenticatedOperator("tracking_draft.reject", auditPayload, context);
+        return idempotency.execute(
+                REJECT_SCOPE,
+                idempotencyKey,
+                idempotencyPayload,
+                200,
+                () -> rejectWithAudit(draftId, command, context, auditPayload));
+    }
+
+    private ProviderTrackingDraftDetailDto rejectWithAudit(
+            long draftId,
+            TrackingDraftRejectCommand command,
+            CommandContext context,
+            Map<String, Object> payload) {
+        try {
+            return doReject(draftId, command, context);
+        } catch (BusinessException exception) {
+            recordRejectionAudit("tracking_draft.reject", exception, payload, context);
+            throw exception;
+        }
+    }
+
+    private ProviderTrackingDraftDetailDto doReject(
+            long draftId, TrackingDraftRejectCommand command, CommandContext context) {
+        long submissionId = drafts
+                .findSubmissionIdById(draftId)
+                .orElseThrow(() -> BusinessException.notFound("运单草稿不存在"));
+        submissionCompletion.lock(submissionId);
+        ProviderTrackingDraft draft = drafts
+                .findByIdForUpdate(draftId)
+                .orElseThrow(() -> BusinessException.notFound("运单草稿不存在"));
+        if (draft.getStatus() != ProviderTrackingDraft.Status.OPEN) {
+            throw BusinessException.conflict("DRAFT_NOT_OPEN", "运单草稿已确认或已拒绝，不能重复拒绝");
+        }
+        if (!Objects.equals(draft.getRevision(), command.expectedDraftRevision())) {
+            throw BusinessException.conflict("VERSION_CONFLICT", "运单草稿已被其他操作修改，请刷新后重试");
+        }
+        ReviewCase reviewCase = requireOpenCase(draftId, command.expectedCaseVersion());
+
+        draft.setStatus(ProviderTrackingDraft.Status.REJECTED);
+        draft.setConfirmedBy(context.operator());
+        draft.setConfirmedAt(Instant.now());
+        drafts.saveAndFlush(draft);
+
+        reviewCase.setStatus(ReviewCaseStatus.DISMISSED);
+        reviewCase.setResolution(Map.of(
+                "resolution_type", "TRACKING_DRAFT_REJECTED",
+                "draft_no", draft.getDraftNo(),
+                "reason", command.reason()));
+        reviewCase.setResolvedBy(context.operator());
+        reviewCase.setResolvedAt(Instant.now());
+        reviewCases.saveAndFlush(reviewCase);
+
+        submissionCompletion.reconcile(submissionId);
+
+        ProviderTrackingDraftDetailDto result = toDetail(draft);
+        audits.record(new AuditLogService.AuditCommand()
+                .dataScope(DataScope.BUSINESS)
+                .requestId(context.requestId())
+                .traceId(context.traceId())
+                .operator(context.operator())
+                .actorType(AuditActorType.HUMAN)
+                .service("tracking-draft")
+                .operation("tracking_draft.reject")
+                .requestPayload(auditPayload(draftId, command))
+                .responsePayload(Map.of(
+                        "draft_no", draft.getDraftNo(),
+                        "status", draft.getStatus().name(),
+                        "resolution_type", "TRACKING_DRAFT_REJECTED"))
+                .httpStatus(200)
+                .businessCode("TRACKING_DRAFT_REJECTED"));
+        return result;
+    }
+
+    private static Map<String, Object> auditPayload(
+            long draftId, TrackingDraftRejectCommand command) {
+        return Map.of(
+                "draft_id", String.valueOf(draftId),
+                "expected_draft_revision", command.expectedDraftRevision(),
+                "expected_case_version", command.expectedCaseVersion(),
+                "reason_present", command.reason() != null && !command.reason().isBlank());
     }
 
     // ------------------------------------------------------------------
@@ -256,6 +353,11 @@ public class TrackingDraftService {
                     SHIPMENT_JUDGMENT_INVALID, "发货判断无法识别，不能默认按整项发货");
         }
 
+        FileShipment fileShipment = fileShipment(reviewCase);
+        if (fileShipment != null && fileShipment.items().size() > 1) {
+            return confirmFileShipment(draftId, draft, reviewCase, fileShipment, command, context);
+        }
+
         TrackingTaskResolver.TaskCandidate task = requireTask(draft, command);
         CarrierPrefixMatcher.Carrier carrier = requireCarrier(draft, command);
         BigDecimal shippedQuantity = resolveShippedQuantity(draft, command, task);
@@ -285,6 +387,9 @@ public class TrackingDraftService {
             throw BusinessException.conflict(
                     "TRACKING_DUPLICATE", "该发货批次已有运单，或相同物流公司与运单号已存在");
         }
+        // #84/#86：企微草稿确认产生的 tracking 没有 import batch；仍须在同一事务内按
+        // shipment 反查导出并推进收齐状态，避免已人工确认后继续周期提醒。
+        markWecomTrackingReceived(shipmentId);
 
         draft.setTaskId(task.taskId());
         draft.setCarrierCode(carrier.code());
@@ -328,6 +433,151 @@ public class TrackingDraftService {
                         "shipment_judgment", draft.getShipmentJudgment().name()))
                 .httpStatus(200).businessCode("TRACKING_DRAFT_CONFIRMED"));
         return toDetail(draft);
+    }
+
+    /**
+     * 文件导出可把同一 Shipment 的多个 Fulfillment 展开成多行。解析阶段已验证这些行全部
+     * SHIPPED 且共享承运商/运单；人工确认时必须一次接受整个 Shipment，不能逐行生成重复 tracking。
+     */
+    private ProviderTrackingDraftDetailDto confirmFileShipment(
+            long draftId,
+            ProviderTrackingDraft draft,
+            ReviewCase reviewCase,
+            FileShipment fileShipment,
+            TrackingDraftConfirmCommand command,
+            CommandContext context) {
+        if (draft.getShipmentJudgment() != ProviderTrackingDraft.ShipmentJudgment.FULL) {
+            throw BusinessException.unprocessable(
+                    "TRACKING_MULTI_ITEM_SHIPMENT_MISMATCH",
+                    "同一 Shipment 的多履约明细必须完整发货并使用同一运单");
+        }
+        if (hasText(command.taskNo())) {
+            throw BusinessException.badRequest(
+                    "TASK_REFERENCE_CONFLICT", "文件多明细草稿已精确绑定 Shipment，不能改用 task_no");
+        }
+        if (hasText(command.taskId())
+                && !Objects.equals(WriteCommands.parseIdentifier(command.taskId()), draft.getTaskId())) {
+            throw BusinessException.unprocessable(
+                    "TASK_INVALID", "文件多明细草稿已精确绑定 Shipment，不能改选其他任务");
+        }
+        CarrierPrefixMatcher.Carrier carrier = requireCarrier(draft, command);
+        requireNoDuplicateTracking(carrier.code(), draft.getTrackingNo());
+
+        ShipmentTrackingAcceptance acceptance = shipmentTrackingService.acceptShipment(
+                new ShipmentTrackingBatchCommand(
+                        null,
+                        fileShipment.shipmentId(),
+                        fileShipment.orderId(),
+                        fileShipment.items(),
+                        carrier.code(),
+                        carrier.name(),
+                        draft.getTrackingNo(),
+                        null,
+                        Map.of(
+                                "source", "WECOM_TRACKING_FILE_DRAFT",
+                                "draft_id", String.valueOf(draftId),
+                                "submission_id", String.valueOf(draft.getSubmissionId()),
+                                "review_case_id", String.valueOf(reviewCase.getId())),
+                        "企微运单文件人工确认"),
+                context);
+        if (acceptance.conflicted()) {
+            throw BusinessException.conflict("TRACKING_DUPLICATE", "该发货批次已有不同运单，不能重复确认");
+        }
+
+        markWecomTrackingReceived(fileShipment.shipmentId());
+
+        BigDecimal total = fileShipment.items().stream()
+                .map(ShipmentTrackingBatchCommand.Item::shippedQuantity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        draft.setCarrierCode(carrier.code());
+        draft.setActualQuantity(total);
+        draft.setStatus(ProviderTrackingDraft.Status.CONFIRMED);
+        draft.setConfirmedBy(context.operator());
+        draft.setConfirmedAt(Instant.now());
+        drafts.saveAndFlush(draft);
+        entityManager.refresh(draft);
+
+        Map<String, Object> resolution = new LinkedHashMap<>();
+        resolution.put("resolution_type", "TRACKING_CONFIRMED");
+        resolution.put("draft_id", String.valueOf(draft.getId()));
+        resolution.put("task_id", String.valueOf(draft.getTaskId()));
+        resolution.put("carrier_code", carrier.code());
+        resolution.put("tracking_no", draft.getTrackingNo());
+        resolution.put("shipment_judgment", draft.getShipmentJudgment().name());
+        resolution.put("shipped_quantity", total.toPlainString());
+        resolution.put("file_shipment_item_count", fileShipment.items().size());
+        resolution.put("remark", command.remark());
+        reviewCase.setStatus(ReviewCaseStatus.RESOLVED);
+        reviewCase.setResolution(resolution);
+        reviewCase.setResolvedBy(context.operator());
+        reviewCase.setResolvedAt(Instant.now());
+        reviewCases.saveAndFlush(reviewCase);
+
+        submissionCompletion.reconcile(draft.getSubmissionId());
+        ProviderTrackingDraftDetailDto result = toDetail(draft);
+        audits.record(new AuditLogService.AuditCommand()
+                .dataScope(DataScope.BUSINESS)
+                .orderId(fileShipment.orderId())
+                .requestId(context.requestId()).traceId(context.traceId()).operator(context.operator())
+                .actorType(AuditActorType.HUMAN).service("tracking-draft").operation("tracking_draft.confirm")
+                .requestPayload(Map.of(
+                        "draft_id", String.valueOf(draftId),
+                        "expected_draft_revision", command.expectedDraftRevision(),
+                        "expected_case_version", command.expectedCaseVersion(),
+                        "task_id", String.valueOf(draft.getTaskId()),
+                        "carrier_code", carrier.code(),
+                        "file_shipment_item_count", fileShipment.items().size(),
+                        "remark_present", hasText(command.remark())))
+                .responsePayload(Map.of(
+                        "draft_no", draft.getDraftNo(),
+                        "shipment_id", fileShipment.shipmentId(),
+                        "tracking_no", draft.getTrackingNo(),
+                        "carrier_code", carrier.code(),
+                        "file_shipment_item_count", fileShipment.items().size(),
+                        "shipped_quantity", total.toPlainString(),
+                        "shipment_judgment", draft.getShipmentJudgment().name()))
+                .httpStatus(200).businessCode("TRACKING_DRAFT_CONFIRMED"));
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static FileShipment fileShipment(ReviewCase reviewCase) {
+        Map<String, Object> detail = reviewCase.getDetail();
+        if (detail == null || !"WECOM_TRACKING_FILE".equals(detail.get("source"))) {
+            return null;
+        }
+        Object rawItems = detail.get("file_shipment_items");
+        if (!(rawItems instanceof List<?> items) || items.size() <= 1) {
+            return null;
+        }
+        try {
+            long shipmentId = Long.parseLong(String.valueOf(detail.get("shipment_id")));
+            long orderId = Long.parseLong(String.valueOf(detail.get("order_id")));
+            List<ShipmentTrackingBatchCommand.Item> commands = items.stream().map(item -> {
+                Map<String, Object> row = (Map<String, Object>) item;
+                return new ShipmentTrackingBatchCommand.Item(
+                        Long.parseLong(String.valueOf(row.get("fulfillment_id"))),
+                        Long.parseLong(String.valueOf(row.get("order_line_id"))),
+                        new BigDecimal(String.valueOf(row.get("shipped_quantity"))));
+            }).toList();
+            return new FileShipment(shipmentId, orderId, commands);
+        } catch (RuntimeException exception) {
+            throw BusinessException.unprocessable(
+                    "WECOM_TRACKING_FILE_INVALID", "文件草稿的 Shipment 明细证据无效，请重新提交原文件");
+        }
+    }
+
+    private record FileShipment(
+            long shipmentId,
+            long orderId,
+            List<ShipmentTrackingBatchCommand.Item> items) {}
+
+    private void markWecomTrackingReceived(long shipmentId) {
+        jdbc.queryForList(
+                        "SELECT DISTINCT fulfillment_export_id FROM app.fulfillment_export_items WHERE shipment_id=?",
+                        Long.class,
+                        shipmentId)
+                .forEach(wecomExportService::markTrackingReceived);
     }
 
     private static Map<String, Object> confirmationAuditPayload(
@@ -628,6 +878,10 @@ public class TrackingDraftService {
                         .toList(),
                 draft.getTaskId() == null ? null : String.valueOf(draft.getTaskId()),
                 draft.getTaskCandidates(),
+                draft.getDraftNo().startsWith("TD-FILE-") ? "WECOM_TRACKING_FILE" : "WECOM_MESSAGE",
+                draft.getDraftNo().startsWith("TD-FILE-") && draft.getTaskCandidates().size() > 1
+                        ? "ATOMIC_SHIPMENT"
+                        : "SINGLE_TASK",
                 draft.getShipmentJudgment().name(),
                 draft.getShipmentJudgment() == ProviderTrackingDraft.ShipmentJudgment.FULL
                         && !draft.getValidationIssues().contains(SHIPMENT_JUDGMENT_INVALID),

@@ -2,7 +2,9 @@ package cn.zimu.fulfillment.connector;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.connector.jd.JDWarehouseService;
+import java.util.Arrays;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -94,7 +96,11 @@ class ConnectorApiTest {
                 "/api/v1/audit-logs?request_id=req-connector-check-wecom-001", Map.class);
 
         assertThat(configs.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(configs.getBody()).hasSize(4);
+        // 连接器集合跟随来源渠道枚举本身：新增来源渠道（及对应迁移登记）后无需改本测试。
+        assertThat(configs.getBody())
+                .extracting(config -> config.get("source_channel"))
+                .containsExactlyInAnyOrderElementsOf(
+                        Arrays.stream(SourceChannel.values()).map(SourceChannel::name).toList());
         assertThat(configs.getBody()).allSatisfy(config -> assertThat(config)
                 .containsKeys("source_channel", "client_mode", "transport_mode", "enabled", "version")
                 .doesNotContainKey("credential_secret_ref"));

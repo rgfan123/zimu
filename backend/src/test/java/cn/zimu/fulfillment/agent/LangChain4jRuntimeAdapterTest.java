@@ -246,6 +246,7 @@ class LangChain4jRuntimeAdapterTest {
                 java.time.OffsetDateTime.now(),
                 false,
                 java.util.List.of(),
-                schema);
+                schema,
+                AgentInputFormat.NATURAL_LANGUAGE);
     }
 }

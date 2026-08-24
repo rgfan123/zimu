@@ -42,14 +42,13 @@ import org.junit.jupiter.api.Test;
 
 /**
  * 05 — 采购比价 Agent 评测集与端到端（agent-decision-layer 05；meta-agent-platform-impl 03
- * 数据驱动化）：本地 JDK HttpServer stub 覆盖固定评测集（procurement-eval-v1，用例真源在 DB
+ * 数据驱动化）：本地 JDK HttpServer stub 覆盖固定评测集（procurement-eval-v2，用例真源在 DB
  * {@code agent_eval_cases}，Testcontainers 加载）、工具调用序列端到端、白名单只含只读工具、
  * 写工具永不暴露。不依赖真实网络与真实密钥。
  *
- * <p>用例 input/expected 来自 DB 种子；stub 模型的固定输出来自 {@link AgentEvalStubData}
- * （canned 层，与跑分器共享）：正常比价、无候选、缺价格、低置信度+字段缺失、schema 不符
- * （负例）、camelCase 兼容等 7 例。schema 校验通过率 = 合法用例解析成功 100%，
- * 负例稳定拒绝为 AGENT_OUTPUT_INVALID；requires_human 召回 = 低置信度/字段缺失用例 100% 转人工。
+ * <p>用例 input/expected 来自 DB 的 procurement-eval-v2；stub 模型固定输出覆盖正常比价、
+ * 无候选、缺价格、低置信度、schema 负例、camelCase 兼容，以及不可比候选剔除五类场景。
+ * 合法用例必须全部解析，负例稳定拒绝为 AGENT_OUTPUT_INVALID，所有人工门禁保持满召回。
  */
 class ProcurementPriceEvalTest extends AgentTestcontainersBase {
 
@@ -150,7 +149,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
     }
 
     // ------------------------------------------------------------------
-    // 固定评测集（procurement-eval-v1：用例真源 DB + stub 输出 AgentEvalStubData）
+    // 固定评测集（procurement-eval-v2：用例真源 DB + stub 输出 AgentEvalStubData）
     // ------------------------------------------------------------------
 
     @Test
@@ -235,6 +234,99 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
         assertThat(requestBodies.get(0)).contains("\\\"quantity\\\"");
         // 05 收敛：低层 ChatRequest 不再附加 AiServices 的 camelCase 文本指令——
         // camelCase 兼容由 camelCaseModelOutputIsAcceptedByPolicy 显式覆盖
+    }
+
+    // ------------------------------------------------------------------
+    // 01 票：不可比候选三规则（价格离群 / 价格缺失 / 映射失效）
+    // ------------------------------------------------------------------
+
+    @Test
+    void outlierCandidateIsExcludedAndRecommendationStaysAmongComparable() {
+        hits.set(0);
+        script = List.of(Step.finalAnswer(evalOutput("outlier-candidate-excluded")));
+        ProcurementPriceAgent agent = agent(properties());
+
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1001\"}", null);
+
+        assertThat(result.error()).isNull();
+        ProcurementPriceRecommendation recommendation = result.recommendation();
+        assertThat(recommendation.requiresHuman()).isFalse();
+        // 可比候选只剩 P001/P002；P003（45.67，> 中位数 12.90 的 2 倍）被剔除且带理由
+        assertThat(recommendation.candidates())
+                .extracting(ProcurementPriceRecommendation.Candidate::providerCode)
+                .containsExactly("P001", "P002");
+        assertThat(recommendation.excludedCandidates()).hasSize(1);
+        ProcurementPriceRecommendation.ExcludedCandidate excluded = recommendation.excludedCandidates().get(0);
+        assertThat(excluded.providerCode()).isEqualTo("P003");
+        assertThat(excluded.exclusionReason()).isEqualTo(ProcurementPriceRecommendation.ExclusionReason.price_outlier);
+        assertThat(excluded.exclusionReasonDetail()).contains("12.90", "45.67");
+        assertThat(recommendation.recommendation().providerCode()).isEqualTo("P001");
+    }
+
+    @Test
+    void mappingStaleCandidateIsExcludedButComparableCandidateStillRecommends() {
+        hits.set(0);
+        script = List.of(Step.finalAnswer(evalOutput("mapping-stale-candidate-excluded")));
+        ProcurementPriceAgent agent = agent(properties());
+
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1001\"}", null);
+
+        ProcurementPriceRecommendation recommendation = result.recommendation();
+        assertThat(recommendation.requiresHuman()).isFalse();
+        assertThat(recommendation.candidates())
+                .extracting(ProcurementPriceRecommendation.Candidate::providerCode)
+                .containsExactly("P001");
+        assertThat(recommendation.excludedCandidates()).hasSize(1);
+        assertThat(recommendation.excludedCandidates().get(0).exclusionReason())
+                .isEqualTo(ProcurementPriceRecommendation.ExclusionReason.mapping_stale);
+        assertThat(recommendation.excludedCandidates().get(0).exclusionReasonDetail()).isNotBlank();
+        assertThat(recommendation.recommendation().providerCode()).isEqualTo("P001");
+    }
+
+    @Test
+    void allCandidatesExcludedRoutesRequiresHumanWithoutHardRecommendation() {
+        hits.set(0);
+        script = List.of(Step.finalAnswer(evalOutput("all-mapping-stale-forces-human")));
+        ProcurementPriceAgent agent = agent(properties());
+
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1003\"}", null);
+
+        ProcurementPriceRecommendation recommendation = result.recommendation();
+        assertThat(recommendation.requiresHuman()).isTrue();
+        assertThat(recommendation.recommendation()).isNull();
+        assertThat(recommendation.candidates()).isEmpty();
+        // 被剔除候选与理由一并返回，不静默消失
+        assertThat(recommendation.excludedCandidates()).hasSize(2);
+        assertThat(recommendation.excludedCandidates())
+                .allSatisfy(candidate -> assertThat(candidate.exclusionReason())
+                        .isEqualTo(ProcurementPriceRecommendation.ExclusionReason.mapping_stale));
+        assertThat(recommendation.missingFields()).contains("candidates");
+    }
+
+    @Test
+    void recommendationOnExcludedCandidateIsRejectedAndRoutesHuman() {
+        hits.set(0);
+        script = List.of(Step.finalAnswer(evalOutput("recommendation-on-excluded-candidate-forces-human")));
+        ProcurementPriceAgent agent = agent(properties());
+
+        ProcurementPriceRunResult result = agent.compare("{\"sku_id\":\"1005\"}", null);
+
+        ProcurementPriceRecommendation recommendation = result.recommendation();
+        assertThat(recommendation.requiresHuman()).isTrue();
+        assertThat(recommendation.recommendation()).isNull();
+        assertThat(recommendation.missingFields()).contains("recommendation");
+        // P003 被剔除（离群），推荐落在其上 → 转人工，剔除候选仍可见
+        assertThat(recommendation.excludedCandidates())
+                .extracting(ProcurementPriceRecommendation.ExcludedCandidate::providerCode)
+                .containsExactly("P003");
+    }
+
+    private static String evalOutput(String id) {
+        return ProcurementPriceEvalFixture.CASES.stream()
+                .filter(candidate -> candidate.id().equals(id))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("评测用例不存在: " + id))
+                .modelOutput();
     }
 
     // ------------------------------------------------------------------
@@ -416,33 +508,16 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
                 mock(AuditLogService.class),
                 new AgentModelMetadataRegistry(),
                 recordingBindingFactory());
-        return new ProcurementPriceAgent(facade, MAPPER);
+        return new ProcurementPriceAgent(facade, mock(AuditLogService.class), MAPPER);
     }
 
     /** 记录式绑定工厂：把实际工具调用名记入 {@link #invokedTools}（05 收敛后序列由执行侧捕获）。 */
     private AgentToolBindingFactory recordingBindingFactory() {
-        AgentToolBindingFactory base = new AgentToolBindingFactory(
+        return McpToolTestSupport.recordingBindingFactory(
                 McpToolTestSupport.registry(new McpToolRegistryToolSupport(capturedContext).readOnlyTools()),
                 new McpAgentIdentity("procurement-price-agent"),
-                MAPPER);
-        return new AgentToolBindingFactory(
-                McpToolTestSupport.registry(new McpToolRegistryToolSupport(capturedContext).readOnlyTools()),
-                new McpAgentIdentity("procurement-price-agent"),
-                MAPPER) {
-            @Override
-            public AgentToolBinding bind(String runId, List<String> toolNames) {
-                AgentToolBinding bound = base.bind(runId, toolNames);
-                Map<ToolSpecification, ToolExecutor> wrapped = new LinkedHashMap<>();
-                for (Map.Entry<ToolSpecification, ToolExecutor> entry : bound.tools().entrySet()) {
-                    ToolSpecification spec = entry.getKey();
-                    wrapped.put(spec, (request, memoryId) -> {
-                        invokedTools.add(request.name());
-                        return entry.getValue().execute(request, memoryId);
-                    });
-                }
-                return new AgentToolBinding(runId, wrapped);
-            }
-        };
+                MAPPER,
+                request -> invokedTools.add(request.name()));
     }
 
     private List<String> exposedToolNames(String body) {

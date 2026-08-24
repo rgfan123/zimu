@@ -7,16 +7,18 @@
  */
 
 import { useState } from 'react';
-import { Alert, Button, Card, Descriptions, Form, Input, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Descriptions, Form, Input, Select, Space, Tag, Typography, message } from 'antd';
 import { SearchOutlined, SwapOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import DataTable from '@/components/DataTable';
+import FilterBar from '@/components/FilterBar';
+import PageShell from '@/components/PageShell';
 import { apiRequest, errorMessage } from '@/api/client';
 import type { QueryValue } from '@/api/client';
 import { jdWarehouseApi } from '@/api/endpoints';
 import type { JdQueryResult } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
 import { READ_ONLY_TAG_COLOR } from '@/pages/shared/semanticStatus';
-import { saasVisualTokens } from '@/theme/saasTheme';
 
 type QueryKind = 'rtwList' | 'rtwDetail' | 'returnToSupplier';
 
@@ -228,71 +230,64 @@ export default function JdReturnQueryPage() {
   }));
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" styles={{ body: { padding: '16px 18px' } }}>
-        <Space direction="vertical" size={14} style={{ width: '100%' }}>
-          <Space align="start" size={12} style={{ width: '100%' }}>
-            <SwapOutlined style={{ color: saasVisualTokens.brand.primary, fontSize: 20, marginTop: 3 }} />
-            <div>
-              <Typography.Title level={5} style={{ margin: 0 }}>
-                京东退货退供查询
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                退货入库单列表 / 详情、退供单查询；只读，不创建或修改任何单据。
-              </Typography.Text>
-            </div>
-            <div style={{ flex: 1 }} />
-            {sdkStatus.data ? (
-              <Tag color={sdkStatus.data.client_mode === 'REAL' ? READ_ONLY_TAG_COLOR : 'default'}>
-                {sdkStatus.data.client_mode === 'REAL' ? '真实连接' : '模拟模式'}
-              </Tag>
-            ) : null}
-          </Space>
-          <Form
-            form={form}
-            layout="inline"
-            style={{ rowGap: 12 }}
-            onFinish={runQuery}
-          >
-            <Form.Item label="接口" style={{ marginBottom: 0 }}>
-              <Select<QueryKind>
-                value={kind}
-                style={{ width: 200 }}
-                options={KIND_OPTIONS}
-                onChange={(next) => {
-                  setKind(next);
-                  form.resetFields();
-                  setResult(null);
-                }}
-              />
+    <PageShell
+      icon={<SwapOutlined />}
+      title="京东退货退供查询"
+      description="退货入库单列表 / 详情、退供单查询；只读，不创建或修改任何单据。"
+      actions={
+        sdkStatus.data ? (
+          <Tag color={sdkStatus.data.client_mode === 'REAL' ? READ_ONLY_TAG_COLOR : 'default'}>
+            {sdkStatus.data.client_mode === 'REAL' ? '真实连接' : '模拟模式'}
+          </Tag>
+        ) : null
+      }
+    >
+      <FilterBar
+        actions={
+          <Button type="primary" icon={<SearchOutlined />} loading={loading} onClick={runQuery}>
+            查询
+          </Button>
+        }
+      >
+        <Form
+          form={form}
+          layout="inline"
+          style={{ rowGap: 12 }}
+          onFinish={runQuery}
+        >
+          <Form.Item label="接口" style={{ marginBottom: 0 }}>
+            <Select<QueryKind>
+              value={kind}
+              style={{ width: 200 }}
+              options={KIND_OPTIONS}
+              onChange={(next) => {
+                setKind(next);
+                form.resetFields();
+                setResult(null);
+              }}
+            />
+          </Form.Item>
+          {KIND_FIELDS[kind].map((field) => (
+            <Form.Item
+              key={field.name}
+              name={field.name}
+              label={field.label}
+              style={{ marginBottom: 0 }}
+              rules={field.required ? [{ required: true, message: `请输入${field.label}` }] : undefined}
+            >
+              <Input style={{ width: 240 }} placeholder={field.placeholder} allowClear />
             </Form.Item>
-            {KIND_FIELDS[kind].map((field) => (
-              <Form.Item
-                key={field.name}
-                name={field.name}
-                label={field.label}
-                style={{ marginBottom: 0 }}
-                rules={field.required ? [{ required: true, message: `请输入${field.label}` }] : undefined}
-              >
-                <Input style={{ width: 240 }} placeholder={field.placeholder} allowClear />
-              </Form.Item>
-            ))}
-            {kind !== 'rtwDetail' ? (
-              <Form.Item label="返回明细" style={{ marginBottom: 0 }} tooltip="不填则使用京东接口默认行为；详情 / 退供单后端默认返回明细与批次。">
-                <Select style={{ width: 120 }} options={FLAG_OPTIONS} allowClear placeholder="默认" />
-              </Form.Item>
-            ) : null}
-            <Form.Item style={{ marginBottom: 0 }}>
-              <Button type="primary" icon={<SearchOutlined />} loading={loading} onClick={runQuery}>
-                查询
-              </Button>
+          ))}
+          {kind !== 'rtwDetail' ? (
+            <Form.Item label="返回明细" style={{ marginBottom: 0 }} tooltip="不填则使用京东接口默认行为；详情 / 退供单后端默认返回明细与批次。">
+              <Select style={{ width: 120 }} options={FLAG_OPTIONS} allowClear placeholder="默认" />
             </Form.Item>
-          </Form>
-          <Typography.Text type="secondary">
-            结果只展示白名单业务字段；联系方式等个人信息已由后端脱敏，不在此页展示。
-          </Typography.Text>
-        </Space>
-      </Card>
+          ) : null}
+        </Form>
+        <Typography.Text type="secondary" style={{ display: 'block', width: '100%' }}>
+          结果只展示白名单业务字段；联系方式等个人信息已由后端脱敏，不在此页展示。
+        </Typography.Text>
+      </FilterBar>
 
       {permissionDenied ? (
         <Alert
@@ -339,7 +334,7 @@ export default function JdReturnQueryPage() {
           {result.data === null || result.data === undefined ? (
             <Typography.Text type="secondary">本次结果没有可展示的业务字段。</Typography.Text>
           ) : Array.isArray(result.data) ? (
-            <Table<Record<string, unknown>>
+            <DataTable<Record<string, unknown>>
               rowKey={(_record, index) => `${index}`}
               columns={columns}
               dataSource={rows}
@@ -363,6 +358,6 @@ export default function JdReturnQueryPage() {
           )}
         </Card>
       ) : null}
-    </Space>
+    </PageShell>
   );
 }

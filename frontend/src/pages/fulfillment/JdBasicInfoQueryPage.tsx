@@ -21,12 +21,12 @@ import {
   message,
 } from 'antd';
 import { CloudServerOutlined, SearchOutlined } from '@ant-design/icons';
+import PageShell from '@/components/PageShell';
 import { errorMessage } from '@/api/client';
 import { jdBasicInfoApi, type BasicInfoQuery } from '@/api/basicinfoEndpoints';
 import type { JdQueryResult } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
 import { jdConnectionSemantic } from '@/pages/shared/semanticStatus';
-import { saasVisualTokens } from '@/theme/saasTheme';
 
 interface ParamField {
   name: keyof BasicInfoQuery;
@@ -285,20 +285,14 @@ export default function JdBasicInfoQueryPage() {
     );
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" styles={{ body: { padding: '16px 18px' } }}>
+    <PageShell
+      icon={<CloudServerOutlined />}
+      title="京东基础信息查询"
+      description="只读查询客户/商家/店铺/店铺商品/供应商/商品类目/仓库覆盖范围；结果已脱敏，只展示白名单业务字段。"
+      actions={modeTag}
+    >
+      <Card size="small">
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
-          <Space align="start" size={12} style={{ width: '100%' }}>
-            <CloudServerOutlined style={{ color: saasVisualTokens.brand.primary, fontSize: 20, marginTop: 3 }} />
-            <div>
-              <Typography.Title level={5} style={{ margin: 0 }}>京东基础信息查询</Typography.Title>
-              <Typography.Text type="secondary">
-                只读查询客户/商家/店铺/店铺商品/供应商/商品类目/仓库覆盖范围；结果已脱敏，只展示白名单业务字段。
-              </Typography.Text>
-            </div>
-            <div style={{ flex: 1 }} />
-            {modeTag}
-          </Space>
           {sdkStatus.error ? (
             <Alert
               type="error"
@@ -387,6 +381,6 @@ export default function JdBasicInfoQueryPage() {
           ) : null}
         </Space>
       </Card>
-    </Space>
+    </PageShell>
   );
 }
