@@ -20,6 +20,10 @@ public record SourceSyncResult(
         return new SourceSyncResult(false, businessCode, message, null, OffsetDateTime.now());
     }
 
+    public static SourceSyncResult failed(String businessCode, String message, String platformRef) {
+        return new SourceSyncResult(false, businessCode, message, platformRef, OffsetDateTime.now());
+    }
+
     public static SourceSyncResult ok(String platformRef) {
         return new SourceSyncResult(true, "OK", "success", platformRef, OffsetDateTime.now());
     }

@@ -15,7 +15,6 @@ import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
-import cn.zimu.fulfillment.connector.jufubao.JufubaoConnector;
 import cn.zimu.fulfillment.file.SourceImportService;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -324,20 +323,35 @@ class PlatformOrderRefreshServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void jufubaoCapabilityBlocksBeforeClaimLoginOrScriptFallback() {
-        assertThatThrownBy(() -> service(new JufubaoConnector())
-                .refresh(new PlatformOrderRefreshController.RefreshRequest(List.of("JUFUBAO"), null, null), context))
-                .isInstanceOf(BusinessException.class)
-                .satisfies(exception -> {
-                    BusinessException business = (BusinessException) exception;
-                    List<Map<String, Object>> channels =
-                            (List<Map<String, Object>>) business.getDetails().get("channels");
-                    assertThat(channels).singleElement().satisfies(channel -> assertThat(channel)
-                            .containsEntry("status", "SKIPPED")
-                            .containsEntry("business_code", "CONNECTOR_CAPABILITY_UNAVAILABLE"));
-                });
+    void jufubaoOnlinePullReturnsAReviewBatchWithoutScriptFallback() {
+        allowAttemptClaim();
+        PullResult pull = new PullResult(
+                SourceChannel.JUFUBAO,
+                List.of(),
+                null,
+                0,
+                OffsetDateTime.now(),
+                PullResult.PullStatus.OK,
+                "OK",
+                "已拉取 1 单并进入人工复核",
+                new PullResult.ImportBatchReference(
+                        "43",
+                        "PULL-JUFUBAO-1",
+                        Map.of("total", 1, "accepted", 0, "need_review", 1, "rejected", 0)));
+        PlatformConnector jufubao = connector(SourceChannel.JUFUBAO, pull);
+
+        Map<String, Object> result = service(jufubao)
+                .refresh(new PlatformOrderRefreshController.RefreshRequest(List.of("JUFUBAO"), null, null), context);
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> channels = (List<Map<String, Object>>) result.get("channels");
+        assertThat(channels).singleElement().satisfies(channel -> assertThat(channel)
+                .containsEntry("status", "OK")
+                .containsEntry("business_code", "OK")
+                .containsEntry("order_count", 0)
+                .containsEntry("batch_no", "PULL-JUFUBAO-1"));
+        verify(jufubao).pullOrders(any(PullCursor.class));
         verifyNoInteractions(scriptRunner, sourceImportService);
-        verify(jdbc, never()).query(anyString(), any(ResultSetExtractor.class), any(Object[].class));
     }
 
     @Test

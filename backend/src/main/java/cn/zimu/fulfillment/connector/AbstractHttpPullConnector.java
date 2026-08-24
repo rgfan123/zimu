@@ -11,9 +11,9 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 彩食鲜/飞象在线拉取 Connector 的共享抽象（ticket 07/08）。
+ * 彩食鲜/聚福宝/飞象在线拉取 Connector 的共享抽象（ticket 07/08/09）。
  *
- * <p>承载两个在线 Connector 近全同的公共实现：{@link #testConnection}（transportMode 感知）、
+ * <p>承载三个在线 Connector 近全同的公共实现：{@link #testConnection}（transportMode 感知）、
  * 日期窗口计算（Asia/Shanghai）、{@link #commandContext()}、幂等冲突码
  * {@link #DUPLICATE_CODES}、{@link #acceptedCount}、{@link #success}/{@link #failed}。
  * 子类只保留渠道特有逻辑：PullClient/transform 注入与 pullOrders 链路。
@@ -21,7 +21,7 @@ import java.util.Set;
  * <p>设计取舍：选择抽象类继承（而非共享 helper 类）——testConnection/success/failed 需要
  * 覆盖接口语义并复用 protected 常量，组合式 helper 会把近全同的方法签名散落到三个子类；
  * 抽象类把「渠道无关」部分一次收敛，子类职责收窄为「登录探测 + 拉取 + 导入」。代价是
- * 子类与抽象类单继承耦合，但两个 Connector 本就不需要其他父类。
+ * 子类与抽象类单继承耦合，但三个 Connector 本就不需要其他父类。
  */
 public abstract class AbstractHttpPullConnector implements PlatformConnector {
 
