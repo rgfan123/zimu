@@ -4,12 +4,18 @@ import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.connector.AbstractHttpPullConnector;
 import cn.zimu.fulfillment.connector.ConnectorCapabilities;
+import cn.zimu.fulfillment.connector.ExternalWritePermit;
 import cn.zimu.fulfillment.connector.PullCursor;
 import cn.zimu.fulfillment.connector.PullResult;
+import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
+import cn.zimu.fulfillment.connector.SourceShipmentResult;
+import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.file.SourceImportService;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -33,10 +39,15 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
 
     private final SourceImportService sourceImportService;
     private final CaishixianPullClient pullClient;
+    private final CaishixianShipmentGateway shipmentGateway;
 
-    public CaishixianConnector(SourceImportService sourceImportService, CaishixianPullClient pullClient) {
+    public CaishixianConnector(
+            SourceImportService sourceImportService,
+            CaishixianPullClient pullClient,
+            CaishixianShipmentGateway shipmentGateway) {
         this.sourceImportService = sourceImportService;
         this.pullClient = pullClient;
+        this.shipmentGateway = shipmentGateway;
     }
 
     @Override
@@ -46,8 +57,7 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
 
     @Override
     public ConnectorCapabilities capabilities() {
-        // fileImport/fileExport 保持既有文件模式；onlinePull 置 true（ticket 07）
-        return new ConnectorCapabilities(true, true, true, false, false);
+        return new ConnectorCapabilities(true, true, true, true, false);
     }
 
     @Override
@@ -90,5 +100,181 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
             log.warn("彩食鲜拉取失败: {}", exception.getMessage());
             return failed(channel, "PLATFORM_PULL_ERROR", exception.getMessage());
         }
+    }
+
+    @Override
+    public SourcePlatformCheckResult checkShipmentResult(SourceShipmentResult result) {
+        SourceSyncResult invalid = validateShipment(result);
+        if (invalid != null) {
+            return SourcePlatformCheckResult.unavailable(channel(), invalid.businessCode(), invalid.message());
+        }
+        try {
+            CaishixianShipmentGateway.PlatformOrderSnapshot snapshot = shipmentGateway.inspect(
+                    result.sourceRef().trim(), result.sourceLineRef().trim());
+            boolean receiverComplete = snapshot != null
+                    && nonBlank(snapshot.receiverName())
+                    && nonBlank(snapshot.receiverPhone())
+                    && nonBlank(snapshot.receiverAddress());
+            return new SourcePlatformCheckResult(
+                    true,
+                    "OK",
+                    "彩食鲜 Shipment 当前事实已读取",
+                    snapshot == null ? null : Integer.toString(snapshot.orderStatus()),
+                    false,
+                    receiverComplete
+                            ? SourcePlatformCheckResult.AddressStatus.CLEAR
+                            : SourcePlatformCheckResult.AddressStatus.UNKNOWN,
+                    snapshot == null ? null : snapshot.receiverName(),
+                    snapshot == null ? null : snapshot.receiverPhone(),
+                    snapshot == null ? null : snapshot.receiverAddress(),
+                    snapshot == null ? null : snapshot.sendableQuantity(),
+                    carrier(result.carrierOutputValue()) != null);
+        } catch (RuntimeException exception) {
+            return SourcePlatformCheckResult.unavailable(
+                    channel(), "CAISHIXIAN_PLATFORM_CHECK_UNAVAILABLE", "彩食鲜 Shipment 当前事实读取失败");
+        }
+    }
+
+    /** 禁止绕过 source-sync 的人工确认、Shipment CAS 与外部写租约。 */
+    @Override
+    public SourceSyncResult pushShipmentResult(SourceShipmentResult result) {
+        return SourceSyncResult.failed(
+                "SOURCE_SYNC_EXECUTION_CONTEXT_REQUIRED",
+                "彩食鲜在线发货必须通过 Shipment source-sync execute 入口");
+    }
+
+    @Override
+    public SourceSyncResult pushShipmentResult(
+            SourceShipmentResult result,
+            ExternalWritePermit permit) {
+        SourceSyncResult invalid = validateShipment(result);
+        if (invalid != null) {
+            return invalid;
+        }
+        AtomicBoolean externalWriteStarted = new AtomicBoolean();
+        try {
+            CaishixianShipmentGateway.PlatformOrderSnapshot before = shipmentGateway.inspect(
+                    result.sourceRef().trim(), result.sourceLineRef().trim());
+            if (before == null || !before.present() || before.orderStatus() != 3) {
+                return SourceSyncResult.failed(
+                        "CAISHIXIAN_ORDER_NOT_SHIPPABLE",
+                        "彩食鲜订单当前不是待发货状态，未上传回填文件");
+            }
+            if (!sameReceiver(result, before)) {
+                return SourceSyncResult.failed(
+                        "CAISHIXIAN_RECEIVER_MISMATCH",
+                        "Shipment 与彩食鲜当前收货信息不一致，未上传回填文件");
+            }
+            if (before.sendableQuantity() == null
+                    || before.sendableQuantity().compareTo(result.sourceUnitQuantity()) != 0) {
+                return SourceSyncResult.failed(
+                        "CAISHIXIAN_SHIPMENT_QUANTITY_MISMATCH",
+                        "Shipment 来源份数与彩食鲜当前可发数量不一致，未上传回填文件");
+            }
+            CaishixianShipmentGateway.CarrierOption carrier = carrier(result.carrierOutputValue());
+            if (carrier == null) {
+                return SourceSyncResult.failed(
+                        "CAISHIXIAN_CARRIER_UNMAPPED",
+                        "正式运单的物流公司未命中彩食鲜实时字典，未上传回填文件");
+            }
+            if (result.artifact() == null || !result.artifact().present()) {
+                return SourceSyncResult.failed(
+                        "CAISHIXIAN_SHIPMENT_ARTIFACT_REQUIRED",
+                        "缺少单 Shipment 彩食鲜回填工作簿，未上传");
+            }
+            CaishixianShipmentGateway.UploadAck uploaded = shipmentGateway.upload(result.artifact(), () -> {
+                permit.beforeExternalWrite();
+                externalWriteStarted.set(true);
+            });
+            if (uploaded.outcome() == CaishixianShipmentGateway.UploadAck.Outcome.REJECTED) {
+                String code = safeCode(uploaded.platformCode());
+                return SourceSyncResult.failed(
+                        code,
+                        "彩食鲜明确拒绝发货回填（业务码：" + code + "）");
+            }
+            CaishixianShipmentGateway.Verification verification = shipmentGateway.awaitVerified(
+                    before.platformOrderId(), carrier.code(), result.firstTrackingNo().trim());
+            if (verification.verified()) {
+                return SourceSyncResult.ok(verification.platformOrderId());
+            }
+            return reconciliationRequired(
+                    verification.safeMessage(),
+                    before.platformOrderId());
+        } catch (RuntimeException exception) {
+            if (externalWriteStarted.get()) {
+                return reconciliationRequired("彩食鲜上传或写后查询结果未知", null);
+            }
+            return SourceSyncResult.failed(
+                    "CAISHIXIAN_PLATFORM_UNAVAILABLE",
+                    "彩食鲜发货前查询失败，尚未上传回填文件");
+        }
+    }
+
+    private SourceSyncResult validateShipment(SourceShipmentResult result) {
+        if (result == null || result.channel() != SourceChannel.CAISHIXIAN) {
+            return SourceSyncResult.failed("CAISHIXIAN_CHANNEL_MISMATCH", "发货结果不属于彩食鲜渠道");
+        }
+        if (result.shipmentId() == null || result.shipmentId() <= 0
+                || !nonBlank(result.sourceRef()) || !nonBlank(result.sourceLineRef())) {
+            return SourceSyncResult.failed("CAISHIXIAN_SHIPMENT_LINEAGE_REQUIRED", "彩食鲜 Shipment 来源血缘不完整");
+        }
+        BigDecimal quantity = result.sourceUnitQuantity();
+        if (quantity == null || quantity.signum() <= 0 || quantity.stripTrailingZeros().scale() > 0) {
+            return SourceSyncResult.failed("CAISHIXIAN_QUANTITY_INVALID", "彩食鲜回填数量必须是正整数来源份数");
+        }
+        if (!"SHIPPED".equals(result.outcome())) {
+            return SourceSyncResult.failed("CAISHIXIAN_OUTCOME_NOT_SHIPPABLE", "P0 只允许完整已发货结果回传彩食鲜");
+        }
+        if (!nonBlank(result.carrierOutputValue()) || !nonBlank(result.firstTrackingNo())) {
+            return SourceSyncResult.failed("CAISHIXIAN_TRACKING_REQUIRED", "彩食鲜回填缺少物流公司或正式运单号");
+        }
+        if (!nonBlank(result.receiverName()) || !nonBlank(result.receiverPhone()) || !nonBlank(result.receiverAddress())) {
+            return SourceSyncResult.failed("CAISHIXIAN_RECEIVER_REQUIRED", "彩食鲜回填缺少 Shipment 收货信息");
+        }
+        return null;
+    }
+
+    private CaishixianShipmentGateway.CarrierOption carrier(String code) {
+        if (!nonBlank(code)) {
+            return null;
+        }
+        return shipmentGateway.carrierOptions().stream()
+                .filter(option -> code.trim().equals(option.code()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private boolean sameReceiver(
+            SourceShipmentResult result,
+            CaishixianShipmentGateway.PlatformOrderSnapshot platform) {
+        return normalizeText(result.receiverName()).equals(normalizeText(platform.receiverName()))
+                && normalizePhone(result.receiverPhone()).equals(normalizePhone(platform.receiverPhone()))
+                && normalizeText(result.receiverAddress()).equals(normalizeText(platform.receiverAddress()));
+    }
+
+    private SourceSyncResult reconciliationRequired(String message, String platformRef) {
+        return SourceSyncResult.failed(
+                "RECONCILIATION_REQUIRED",
+                (nonBlank(message) ? message : "彩食鲜发货结果未知") + "；禁止盲目重提，请到平台核对",
+                platformRef);
+    }
+
+    private static String safeCode(String code) {
+        return code != null && code.matches("[A-Za-z0-9._-]{1,64}")
+                ? code
+                : "CAISHIXIAN_PLATFORM_REJECTED";
+    }
+
+    private static boolean nonBlank(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static String normalizeText(String value) {
+        return value == null ? "" : value.trim().replaceAll("\\s+", " ");
+    }
+
+    private static String normalizePhone(String value) {
+        String normalized = value == null ? "" : value.trim().replaceAll("[\\s()-]", "");
+        return normalized.startsWith("+86") ? normalized.substring(3) : normalized;
     }
 }

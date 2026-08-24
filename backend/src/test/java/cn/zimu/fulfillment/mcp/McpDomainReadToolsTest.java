@@ -80,14 +80,16 @@ class McpDomainReadToolsTest {
                 .contains("list_procurement_tickets", "get_procurement_ticket", "list_procurement_receipts")
                 .contains("search_skus", "get_sku", "list_provider_skus")
                 .contains("get_inventory_overview", "get_inventory_detail")
-                .contains("list_products", "list_categories", "list_fulfillment_providers");
+                .contains("list_products", "list_categories", "list_fulfillment_providers")
+                .contains("check_shipment_source_sync");
         assertThat(names).doesNotHaveDuplicates();
         // 描述与输入 Schema 不得携带配置/凭据
         for (String name : List.of(
                 "list_procurement_tickets", "get_procurement_ticket", "list_procurement_receipts",
                 "search_skus", "get_sku", "list_provider_skus",
                 "get_inventory_overview", "get_inventory_detail",
-                "list_products", "list_categories", "list_fulfillment_providers")) {
+                "list_products", "list_categories", "list_fulfillment_providers",
+                "check_shipment_source_sync")) {
             McpTool tool = registry.find(name).orElseThrow();
             assertThat(tool.description() + " " + tool.inputSchema())
                     .doesNotContain("MCP_AGENT_IDENTITY")

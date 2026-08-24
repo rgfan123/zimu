@@ -47,8 +47,35 @@ public interface PlatformConnector {
 
     // ---------------------------------------------------------------- 在线回传（Phase 2）
 
+    /** 读取平台最新订单与可发货事实；不得产生远端写效果。 */
+    default SourcePlatformCheckResult checkShipmentResult(SourceShipmentResult result) {
+        return SourcePlatformCheckResult.unavailable(channel());
+    }
+
     /** 回传发货结果。未实现时返回失败（CAPABILITY_UNAVAILABLE 语义）。 */
     default SourceSyncResult pushShipmentResult(SourceShipmentResult result) {
         return SourceSyncResult.unavailable(channel());
+    }
+
+    /**
+     * 受围栏保护的 Shipment 级回传。Adapter 若包含多个不可逆写，必须在每一次前
+     * 重新调用 permit；默认实现只为旧的单效果 Connector 提供兼容。
+     */
+    default SourceSyncResult pushShipmentResult(SourceShipmentResult result, ExternalWritePermit permit) {
+        permit.beforeExternalWrite();
+        return pushShipmentResult(result);
+    }
+
+    /** 只读重查未知写结果；默认复用平台检查。 */
+    default SourcePlatformCheckResult reconcileShipmentResult(SourceShipmentResult result) {
+        return checkShipmentResult(result);
+    }
+
+    /**
+     * 人工对账确认平台未受理后，释放 Adapter 内部的原始平台意图键。
+     * 实现必须幂等；不得从当前已漂移事实重算键。
+     */
+    default boolean releaseShipmentIntent(String platformIntentKey) {
+        return false;
     }
 }

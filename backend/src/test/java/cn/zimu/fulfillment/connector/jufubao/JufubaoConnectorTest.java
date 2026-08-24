@@ -7,14 +7,22 @@ import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.connector.SourceShipmentResult;
 import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.connector.ConnectorRuntime;
+import cn.zimu.fulfillment.connector.ExternalWritePermit;
+import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
+import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
 import cn.zimu.fulfillment.file.SourceImportService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class JufubaoConnectorTest {
+
+    private static final String RECEIVER_NAME = "测试收货人";
+    private static final String RECEIVER_PHONE = "phone-1";
+    private static final String RECEIVER_ADDRESS = "测试地址一号";
 
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -40,7 +48,7 @@ class JufubaoConnectorTest {
                 List.of(
                         JufubaoShipmentGateway.OrderState.noDelivery("sub-1"),
                         JufubaoShipmentGateway.OrderState.notPending("sub-1")),
-                new JufubaoShipmentGateway.ShipmentDetail(List.of(product)),
+                new JufubaoShipmentGateway.ShipmentDetail(List.of(product), receiver(), ""),
                 List.of(new JufubaoShipmentGateway.CarrierOption("京东物流", 17)),
                 JufubaoShipmentGateway.SubmitResult.accepted("req-1"));
         JufubaoConnector connector = connector(gateway);
@@ -53,7 +61,8 @@ class JufubaoConnectorTest {
         assertThat(connector.capabilities().onlinePush()).isTrue();
         assertThat(gateway.submittedProducts).singleElement().satisfies(submitted -> {
             assertThat(submitted.has("fd-FnhFHVU1Xi")).isFalse();
-            assertThat(submitted.path("allow_send_num").asInt()).isEqualTo(1);
+            assertThat(submitted.has("allow_send_num")).isFalse();
+            assertThat(submitted.path("send_num").asText()).isEqualTo("1");
         });
         assertThat(gateway.submitCount).isEqualTo(1);
         assertThat(gateway.stateReadCount).isEqualTo(2);
@@ -86,6 +95,220 @@ class JufubaoConnectorTest {
 
         assertThat(result.success()).isFalse();
         assertThat(result.businessCode()).isEqualTo("JUFUBAO_ORDER_NOT_SHIPPABLE");
+        assertThat(gateway.submitCount).isZero();
+    }
+
+    @Test
+    void receivesANoReceiptOrderThenChecksTheAddressBeforeShipping() {
+        FakeGateway gateway = new FakeGateway(
+                List.of(
+                        JufubaoShipmentGateway.OrderState.noReceipt("sub-1"),
+                        JufubaoShipmentGateway.OrderState.noReceipt("sub-1"),
+                        JufubaoShipmentGateway.OrderState.noDelivery("sub-1"),
+                        JufubaoShipmentGateway.OrderState.notPending("sub-1")),
+                detail(1),
+                carriers(),
+                JufubaoShipmentGateway.SubmitResult.accepted("req-ship-1"));
+        gateway.receiveResult = JufubaoShipmentGateway.ReceiveResult.accepted("req-receive-1");
+
+        SourceSyncResult result = connector(gateway)
+                .pushShipmentResult(shipment("sub-1", "京东物流", "JDVA123"));
+
+        assertThat(result.success()).isTrue();
+        assertThat(gateway.receiveCount).isEqualTo(1);
+        assertThat(gateway.addressCheckCount).isEqualTo(1);
+        assertThat(gateway.stateReadCount).isEqualTo(4);
+        assertThat(gateway.submitCount).isEqualTo(1);
+    }
+
+    @Test
+    void rechecksTheFencedWritePermitAfterReceiveBeforeSubmittingShipment() {
+        FakeGateway gateway = new FakeGateway(
+                List.of(
+                        JufubaoShipmentGateway.OrderState.noReceipt("sub-1"),
+                        JufubaoShipmentGateway.OrderState.noDelivery("sub-1")),
+                detail(1),
+                carriers(),
+                JufubaoShipmentGateway.SubmitResult.accepted("req-ship-1"));
+        InMemoryJufubaoShipmentAttemptStore attemptStore =
+                new InMemoryJufubaoShipmentAttemptStore().failPermitAt(2);
+
+        SourceSyncResult result = connector(gateway, attemptStore)
+                .pushShipmentResult(shipment("sub-1", "京东物流", "JDVA123"));
+
+        assertThat(result.businessCode()).isEqualTo("RECONCILIATION_REQUIRED");
+        assertThat(attemptStore.permitChecks()).isEqualTo(2);
+        assertThat(gateway.receiveCount).isEqualTo(1);
+        assertThat(gateway.submitCount).isZero();
+    }
+
+    @Test
+    void rechecksTheSourceSyncPermitAfterReceiveBeforeSubmittingShipment() {
+        FakeGateway gateway = new FakeGateway(
+                List.of(
+                        JufubaoShipmentGateway.OrderState.noReceipt("sub-1"),
+                        JufubaoShipmentGateway.OrderState.noDelivery("sub-1")),
+                detail(1),
+                carriers(),
+                JufubaoShipmentGateway.SubmitResult.accepted("req-ship-1"));
+        AtomicInteger permitChecks = new AtomicInteger();
+        ExternalWritePermit permit = () -> {
+            if (permitChecks.incrementAndGet() == 2) {
+                throw new IllegalStateException("source-sync lease lost");
+            }
+        };
+
+        SourceSyncResult result = connector(gateway)
+                .pushShipmentResult(shipment("sub-1", "京东物流", "JDVA123"), permit);
+
+        assertThat(result.businessCode()).isEqualTo("RECONCILIATION_REQUIRED");
+        assertThat(permitChecks).hasValue(2);
+        assertThat(gateway.receiveCount).isEqualTo(1);
+        assertThat(gateway.submitCount).isZero();
+    }
+
+    @Test
+    void checksCurrentPlatformFactsWithoutProducingAnExternalWrite() {
+        FakeGateway gateway = successfulGateway();
+
+        SourcePlatformCheckResult result = connector(gateway)
+                .checkShipmentResult(shipment("sub-1", "京东物流", "JDVA123"));
+
+        assertThat(result.available()).isTrue();
+        assertThat(result.platformState()).isEqualTo("NO_DELIVERY");
+        assertThat(result.acceptanceRequired()).isFalse();
+        assertThat(result.addressStatus()).isEqualTo(SourcePlatformCheckResult.AddressStatus.CLEAR);
+        assertThat(result.receiverName()).isEqualTo(RECEIVER_NAME);
+        assertThat(result.receiverPhone()).isEqualTo(RECEIVER_PHONE);
+        assertThat(result.receiverAddress()).isEqualTo(RECEIVER_ADDRESS);
+        assertThat(result.sendableQuantity()).isEqualByComparingTo(BigDecimal.ONE);
+        assertThat(result.carrierMapped()).isTrue();
+        assertThat(result.effectHash()).matches("[0-9a-f]{64}");
+        assertThat(gateway.receiveCount).isZero();
+        assertThat(gateway.submitCount).isZero();
+        assertThat(gateway.shipmentDetailCount).isEqualTo(1);
+    }
+
+    @Test
+    void blocksSubmitWhenReceiverChangesAfterTheInitialCheck() {
+        FakeGateway gateway = successfulGateway();
+        gateway.latestDetail = new JufubaoShipmentGateway.ShipmentDetail(
+                detail(1).products(),
+                new JufubaoShipmentGateway.ReceiverSnapshot(
+                        RECEIVER_NAME, RECEIVER_PHONE, "提交前已变化的地址"),
+                "");
+
+        SourceSyncResult result = connector(gateway)
+                .pushShipmentResult(shipment("sub-1", "京东物流", "JDVA123"));
+
+        assertThat(result.businessCode()).isEqualTo("JUFUBAO_RECEIVER_MISMATCH");
+        assertThat(gateway.shipmentDetailCount).isEqualTo(2);
+        assertThat(gateway.submitCount).isZero();
+    }
+
+    @Test
+    void blocksSubmitWhenTheCanonicalProductOrCompanyWritePlanChangesAfterCheck() {
+        FakeGateway gateway = new FakeGateway(
+                List.of(
+                        JufubaoShipmentGateway.OrderState.noDelivery("sub-1"),
+                        JufubaoShipmentGateway.OrderState.noDelivery("sub-1")),
+                detail(1),
+                carriers(),
+                JufubaoShipmentGateway.SubmitResult.accepted("req-1"));
+        JufubaoConnector connector = connector(gateway);
+        SourceShipmentResult command = shipment("sub-1", "京东物流", "JDVA123");
+        SourcePlatformCheckResult check = connector.checkShipmentResult(command);
+        gateway.latestDetail = new JufubaoShipmentGateway.ShipmentDetail(
+                List.of(mapper.createObjectNode()
+                        .put("product_id", "p-changed")
+                        .put("allow_send_num", 1)),
+                receiver(),
+                "");
+
+        SourceSyncResult result = connector.pushShipmentResult(
+                command.withExpectedPlatformEffectHash(check.effectHash()));
+
+        assertThat(result.businessCode()).isEqualTo("JUFUBAO_WRITE_PLAN_CHANGED");
+        assertThat(gateway.submitCount).isZero();
+    }
+
+    @Test
+    void duplicateCarrierDictionaryLabelsFailClosed() {
+        FakeGateway gateway = new FakeGateway(
+                List.of(
+                        JufubaoShipmentGateway.OrderState.noDelivery("sub-1"),
+                        JufubaoShipmentGateway.OrderState.noDelivery("sub-1")),
+                detail(1),
+                carriers(),
+                JufubaoShipmentGateway.SubmitResult.accepted("req-1"));
+        gateway.carriers = List.of(
+                new JufubaoShipmentGateway.CarrierOption("京东物流", 17),
+                new JufubaoShipmentGateway.CarrierOption("京东物流", 18));
+
+        SourcePlatformCheckResult check = connector(gateway)
+                .checkShipmentResult(shipment("sub-1", "京东物流", "JDVA123"));
+        SourceSyncResult result = connector(gateway)
+                .pushShipmentResult(shipment("sub-1", "京东物流", "JDVA123"));
+
+        assertThat(check.carrierMapped()).isFalse();
+        assertThat(check.effectHash()).isNull();
+        assertThat(result.businessCode()).isEqualTo("JUFUBAO_CARRIER_UNMAPPED");
+        assertThat(gateway.submitCount).isZero();
+    }
+
+    @Test
+    void usesSourcePlatformUnitsInsteadOfCanonicalInternalQuantity() {
+        FakeGateway gateway = successfulGateway();
+        SourceShipmentResult converted = new SourceShipmentResult(
+                SourceChannel.JUFUBAO,
+                "main-1",
+                "sub-1",
+                BigDecimal.TEN,
+                BigDecimal.ONE,
+                "SHIPPED",
+                "京东物流",
+                "JDVA123",
+                null,
+                RECEIVER_NAME,
+                RECEIVER_PHONE,
+                RECEIVER_ADDRESS,
+                1L,
+                SourceShipmentArtifact.empty());
+
+        SourceSyncResult result = connector(gateway).pushShipmentResult(converted);
+
+        assertThat(result.success()).isTrue();
+        assertThat(gateway.submittedProducts).singleElement().satisfies(product ->
+                assertThat(product.path("send_num").asText()).isEqualTo("1"));
+    }
+
+    @Test
+    void failsClosedWhenTheSourceSyncWritePermitIsMissing() {
+        FakeGateway gateway = successfulGateway();
+
+        SourceSyncResult result = connector(gateway)
+                .pushShipmentResult(shipment("sub-1", "京东物流", "JDVA123"), null);
+
+        assertThat(result.businessCode()).isEqualTo("JUFUBAO_WRITE_PERMIT_REQUIRED");
+        assertThat(gateway.stateReadCount).isZero();
+        assertThat(gateway.submitCount).isZero();
+    }
+
+    @Test
+    void stopsBeforeShipmentWhenThePlatformRequiresAddressConfirmation() {
+        FakeGateway gateway = new FakeGateway(
+                List.of(JufubaoShipmentGateway.OrderState.noDelivery("sub-1")),
+                detail(1),
+                carriers(),
+                JufubaoShipmentGateway.SubmitResult.accepted("req-ship-1"));
+        gateway.addressCheck = JufubaoShipmentGateway.AddressCheck.confirmationRequired("收货地址已变化");
+
+        SourceSyncResult result = connector(gateway)
+                .pushShipmentResult(shipment("sub-1", "京东物流", "JDVA123"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.businessCode()).isEqualTo("JUFUBAO_ADDRESS_CONFIRMATION_REQUIRED");
+        assertThat(gateway.addressCheckCount).isEqualTo(1);
         assertThat(gateway.submitCount).isZero();
     }
 
@@ -171,7 +394,12 @@ class JufubaoConnectorTest {
                 "SHIPPED",
                 "17",
                 "JDVA123",
-                null));
+                null,
+                RECEIVER_NAME,
+                RECEIVER_PHONE,
+                RECEIVER_ADDRESS,
+                1L,
+                SourceShipmentArtifact.empty()));
 
         assertThat(first.success()).isTrue();
         assertThat(conflict.businessCode()).isEqualTo("JUFUBAO_IDEMPOTENCY_CONFLICT");
@@ -189,7 +417,12 @@ class JufubaoConnectorTest {
                 "SHIPPED",
                 "京东物流",
                 "JDVA123",
-                null);
+                null,
+                RECEIVER_NAME,
+                RECEIVER_PHONE,
+                RECEIVER_ADDRESS,
+                1L,
+                SourceShipmentArtifact.empty());
 
         SourceSyncResult result = connector(gateway).pushShipmentResult(command);
 
@@ -247,11 +480,34 @@ class JufubaoConnectorTest {
                 "FAILED",
                 "京东物流",
                 "JDVA123",
-                "履约失败");
+                "履约失败",
+                RECEIVER_NAME,
+                RECEIVER_PHONE,
+                RECEIVER_ADDRESS,
+                1L,
+                SourceShipmentArtifact.empty());
 
         SourceSyncResult result = connector(gateway).pushShipmentResult(failed);
 
         assertThat(result.businessCode()).isEqualTo("JUFUBAO_OUTCOME_NOT_SHIPPABLE");
+        assertThat(gateway.stateReadCount).isZero();
+        assertThat(gateway.submitCount).isZero();
+    }
+
+    @Test
+    void productionConnectorRejectsLegacyUnguardedShipmentPush() {
+        FakeGateway gateway = successfulGateway();
+        JufubaoConnector production = new JufubaoConnector(
+                mock(SourceImportService.class),
+                new ReadyPullClient(),
+                new JufubaoOrderTransform(),
+                gateway,
+                new InMemoryJufubaoShipmentAttemptStore());
+
+        SourceSyncResult result = production.pushShipmentResult(
+                shipment("sub-1", "京东物流", "JDVA123"));
+
+        assertThat(result.businessCode()).isEqualTo("SOURCE_SYNC_EXECUTION_CONTEXT_REQUIRED");
         assertThat(gateway.stateReadCount).isZero();
         assertThat(gateway.submitCount).isZero();
     }
@@ -267,17 +523,33 @@ class JufubaoConnectorTest {
     }
 
     private JufubaoConnector connector(JufubaoShipmentGateway gateway) {
+        return connector(gateway, new InMemoryJufubaoShipmentAttemptStore());
+    }
+
+    private JufubaoConnector connector(
+            JufubaoShipmentGateway gateway,
+            JufubaoShipmentAttemptStore attemptStore) {
         return new JufubaoConnector(
                 mock(SourceImportService.class),
                 new ReadyPullClient(),
                 new JufubaoOrderTransform(),
                 gateway,
-                new InMemoryJufubaoShipmentAttemptStore());
+                attemptStore,
+                true);
     }
 
     private JufubaoShipmentGateway.ShipmentDetail detail(int allowedQuantity) {
-        return new JufubaoShipmentGateway.ShipmentDetail(List.of(
-                mapper.createObjectNode().put("product_id", "p-1").put("allow_send_num", allowedQuantity)));
+        return new JufubaoShipmentGateway.ShipmentDetail(
+                List.of(mapper.createObjectNode()
+                        .put("product_id", "p-1")
+                        .put("allow_send_num", allowedQuantity)),
+                receiver(),
+                "");
+    }
+
+    private static JufubaoShipmentGateway.ReceiverSnapshot receiver() {
+        return new JufubaoShipmentGateway.ReceiverSnapshot(
+                RECEIVER_NAME, RECEIVER_PHONE, RECEIVER_ADDRESS);
     }
 
     private List<JufubaoShipmentGateway.CarrierOption> carriers() {
@@ -293,7 +565,12 @@ class JufubaoConnectorTest {
                 "SHIPPED",
                 carrier,
                 trackingNo,
-                null);
+                null,
+                RECEIVER_NAME,
+                RECEIVER_PHONE,
+                RECEIVER_ADDRESS,
+                1L,
+                SourceShipmentArtifact.empty());
     }
 
     private static final class FakeGateway implements JufubaoShipmentGateway {
@@ -302,8 +579,14 @@ class JufubaoConnectorTest {
         private List<CarrierOption> carriers;
         private final SubmitResult submitResult;
         private int stateReadCount;
+        private int receiveCount;
+        private int addressCheckCount;
+        private int shipmentDetailCount;
         private int submitCount;
         private List<ObjectNode> submittedProducts = List.of();
+        private ReceiveResult receiveResult = ReceiveResult.accepted("req-receive-default");
+        private AddressCheck addressCheck = AddressCheck.clear();
+        private ShipmentDetail latestDetail;
 
         private FakeGateway(
                 List<OrderState> states,
@@ -325,7 +608,20 @@ class JufubaoConnectorTest {
 
         @Override
         public ShipmentDetail shipmentDetail(String subOrderId) {
-            return detail;
+            shipmentDetailCount++;
+            return latestDetail != null && shipmentDetailCount > 1 ? latestDetail : detail;
+        }
+
+        @Override
+        public ReceiveResult receiveOrder(String subOrderId) {
+            receiveCount++;
+            return receiveResult;
+        }
+
+        @Override
+        public AddressCheck checkShipmentAddress(String subOrderId) {
+            addressCheckCount++;
+            return addressCheck;
         }
 
         @Override

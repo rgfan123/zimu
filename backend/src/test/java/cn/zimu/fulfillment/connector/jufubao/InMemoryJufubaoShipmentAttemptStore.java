@@ -12,6 +12,17 @@ final class InMemoryJufubaoShipmentAttemptStore implements JufubaoShipmentAttemp
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final ConcurrentMap<String, Entry> entries = new ConcurrentHashMap<>();
+    private volatile int failPermitAt = Integer.MAX_VALUE;
+    private volatile int permitChecks;
+
+    InMemoryJufubaoShipmentAttemptStore failPermitAt(int checkNumber) {
+        this.failPermitAt = checkNumber;
+        return this;
+    }
+
+    int permitChecks() {
+        return permitChecks;
+    }
 
     @Override
     public ClaimResult claim(ShipmentAttemptPayload payload) {
@@ -47,6 +58,14 @@ final class InMemoryJufubaoShipmentAttemptStore implements JufubaoShipmentAttemp
     }
 
     @Override
+    public void verifyWritePermit(String subOrderId, String trackingNo, String ownerToken) {
+        entry(subOrderId, trackingNo, ownerToken);
+        if (++permitChecks == failPermitAt) {
+            throw new IllegalStateException("聚福宝测试写许可已失效");
+        }
+    }
+
+    @Override
     public void completeSuccess(String subOrderId, String trackingNo, String ownerToken, SourceSyncResult result) {
         complete(subOrderId, trackingNo, ownerToken, result, Status.SUCCEEDED);
     }
@@ -59,6 +78,16 @@ final class InMemoryJufubaoShipmentAttemptStore implements JufubaoShipmentAttemp
     @Override
     public void release(String subOrderId, String trackingNo, String ownerToken, String businessCode, String message) {
         entry(subOrderId, trackingNo, ownerToken).status = Status.FAILED;
+    }
+
+    @Override
+    public boolean releaseReconciledNotAccepted(String intentKey) {
+        Entry entry = entries.get(intentKey);
+        if (entry == null || entry.status != Status.RECONCILIATION_REQUIRED) {
+            return false;
+        }
+        entry.status = Status.FAILED;
+        return true;
     }
 
     private void complete(

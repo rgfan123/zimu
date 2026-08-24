@@ -66,6 +66,18 @@ public class IdempotencyService {
         I persist();
     }
 
+    /** 幂等 claim 成功后、意图事务开始前读取稳定的本地或远端只读事实。 */
+    @FunctionalInterface
+    public interface ExternalWritePreparation<P> {
+        P prepare();
+    }
+
+    /** 在独立事务中使用事务外准备结果持久化可恢复的外部写意图。 */
+    @FunctionalInterface
+    public interface PreparedExternalWriteIntent<P, I> {
+        I persist(P prepared);
+    }
+
     /** 消费已提交的写意图；调用时不允许存在数据库事务。 */
     @FunctionalInterface
     public interface ExternalWrite<I, E> {
@@ -281,7 +293,9 @@ public class IdempotencyService {
         return executeExternalWrite(
                 scope, idempotencyKey, requestPayload, successStatus, defaultLease,
                 ExpiredClaimPolicy.TAKE_OVER,
-                intentWork, (intent, claim) -> externalWork.execute(intent), completion);
+                () -> Boolean.TRUE,
+                ignored -> intentWork.persist(),
+                (intent, claim) -> externalWork.execute(intent), completion);
     }
 
     /**
@@ -300,17 +314,40 @@ public class IdempotencyService {
         return executeExternalWrite(
                 scope, idempotencyKey, requestPayload, successStatus, scopeLease,
                 ExpiredClaimPolicy.REQUIRE_RECONCILIATION,
-                intentWork, externalWork, completion);
+                () -> Boolean.TRUE,
+                ignored -> intentWork.persist(),
+                externalWork, completion);
     }
 
-    private <I, E, T> IdempotentResult<T> executeExternalWrite(
+    /**
+     * 外部写三阶段 seam，允许 claim 后在事务外完成只读平台检查/产物构造，再用短事务锁定
+     * 本地事实并落意图。same-key terminal replay 会在 preparation 前返回。
+     */
+    public <P, I, E, T> IdempotentResult<T> executeWithPreparedExternalWriteIntent(
+            String scope,
+            String idempotencyKey,
+            Object requestPayload,
+            int successStatus,
+            Duration scopeLease,
+            ExternalWritePreparation<P> preparation,
+            PreparedExternalWriteIntent<P, I> intentWork,
+            GuardedExternalWrite<I, E> externalWork,
+            ExternalWriteCompletion<I, E, T> completion) {
+        return executeExternalWrite(
+                scope, idempotencyKey, requestPayload, successStatus, scopeLease,
+                ExpiredClaimPolicy.REQUIRE_RECONCILIATION,
+                preparation, intentWork, externalWork, completion);
+    }
+
+    private <P, I, E, T> IdempotentResult<T> executeExternalWrite(
             String scope,
             String idempotencyKey,
             Object requestPayload,
             int successStatus,
             Duration scopeLease,
             ExpiredClaimPolicy expiredClaimPolicy,
-            ExternalWriteIntent<I> intentWork,
+            ExternalWritePreparation<P> preparation,
+            PreparedExternalWriteIntent<P, I> intentWork,
             GuardedExternalWrite<I, E> externalWork,
             ExternalWriteCompletion<I, E, T> completion) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
@@ -334,7 +371,11 @@ public class IdempotencyService {
             throw BusinessException.conflict("IDEMPOTENCY_CONFLICT", "相同幂等键已被不同请求使用或正在执行");
         }
         try {
-            I intent = requiresNew.execute(status -> intentWork.persist());
+            P prepared = preparation.prepare();
+            if (prepared == null) {
+                throw new IllegalStateException("external write preparation must not be null");
+            }
+            I intent = requiresNew.execute(status -> intentWork.persist(prepared));
             if (intent == null) {
                 throw new IllegalStateException("external write intent must not be null");
             }
