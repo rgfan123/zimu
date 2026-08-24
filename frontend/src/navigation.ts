@@ -61,6 +61,8 @@ export const appNavigation = [
       { path: '/agents', label: 'Agent 列表' },
       { path: '/agents/runs', label: '运行记录' },
       { path: '/agents/cost', label: '消耗看板' },
+      { path: '/agents/fulfillment-file', label: '履约单据助手' },
+      { path: '/agents/new', label: '创建 Agent' },
       { path: '/agents/:slug', label: 'Agent 详情', hideInMenu: true },
       { path: '/agents/runs/:runId', label: '运行详情', hideInMenu: true },
       { path: '/agents/:slug/evals', label: '评测用例', hideInMenu: true },

@@ -7,5 +7,7 @@ export { default as AgentsListPage } from './AgentsListPage';
 export { default as AgentDetailPage } from './AgentDetailPage';
 export { default as AgentRunsPage } from './AgentRunsPage';
 export { default as AgentCostPage } from './AgentCostPage';
+export { default as AgentCreatePage } from './AgentCreatePage';
+export { default as FulfillmentFilePage } from './FulfillmentFilePage';
 export { default as RunDetailPage } from './RunDetailPage';
 export { default as EvalsTab } from './EvalsTab';

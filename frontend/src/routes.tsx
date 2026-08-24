@@ -48,9 +48,11 @@ import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
 import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage } from '@/pages/system';
 import {
   AgentCostPage,
+  AgentCreatePage,
   AgentDetailPage,
   AgentRunsPage,
   AgentsListPage,
+  FulfillmentFilePage,
   RunDetailPage,
 } from '@/pages/agents';
 import { appNavigation, routeMatchScore, type NavigationNode } from '@/navigation';
@@ -85,6 +87,8 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/agents': <AgentsListPage />,
   '/agents/runs': <AgentRunsPage />,
   '/agents/cost': <AgentCostPage />,
+  '/agents/fulfillment-file': <FulfillmentFilePage />,
+  '/agents/new': <AgentCreatePage />,
   '/agents/:slug': <AgentDetailPage />,
   '/agents/runs/:runId': <RunDetailPage />,
   '/agents/:slug/evals': <AgentDetailPage />,

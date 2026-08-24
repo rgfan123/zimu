@@ -16,6 +16,9 @@ import type {
   RunDetail,
   RunListResponse,
   TokenUsageSummaryResponse,
+  FulfillmentFileRunResult,
+  ImportBatchProgress,
+  MetaAgentOutcome,
 } from './agentTypes';
 import type {
   AuditLog,
@@ -893,6 +896,28 @@ export const agentsApi = {
   evalCases: (slug: string, version: number, metricKind?: string) =>
     apiRequest<AgentEvalCaseItem[]>(`/api/v1/agents/${slug}/versions/${version}/eval-cases`, {
       params: metricKind ? { metric_kind: metricKind } : undefined,
+    }),
+};
+
+/**
+ * meta-agent 对话式创建（agent-console 06）。
+ * **接口上不存在任何启用路径**——启用必须由人到 Agent 详情页单独做。
+ */
+export const metaAgentApi = {
+  converse: (message: string, threadId?: string) =>
+    apiRequest<MetaAgentOutcome>('/api/v1/agents/meta/conversations', {
+      method: 'POST',
+      body: { message, threadId },
+    }),
+};
+
+/** 履约单据 Agent：进度只读不花钱，解读才跑模型。 */
+export const importBatchApi = {
+  progress: (batchId: number) =>
+    apiRequest<ImportBatchProgress>(`/api/v1/import-batches/${batchId}/progress`),
+  assess: (batchId: number) =>
+    apiRequest<FulfillmentFileRunResult>(`/api/v1/import-batches/${batchId}/assessment`, {
+      method: 'POST',
     }),
 };
 

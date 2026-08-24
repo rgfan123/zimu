@@ -214,3 +214,88 @@ export interface TokenUsageSummaryResponse {
   /** 合计行；group_key 为空串。峰值列是各组峰值的最大值，不是求和 */
   totals: TokenUsageSummaryItem;
 }
+
+// ---------- meta-agent 对话式创建（agent-console 06） ----------
+
+export type MetaAgentOutcomeKind = 'SUCCESS' | 'NEEDS_INPUT' | 'REJECTED' | 'FAILED';
+
+export interface MetaAgentOutcome {
+  outcome: MetaAgentOutcomeKind;
+  /** 关联 agent_runs 与审计，双向可追溯 */
+  run_id: string | null;
+  agent_slug: string | null;
+  draft_version: number | null;
+  /**
+   * 草稿上的 enabled 值。**这只是草稿里的一个字段，不代表已启用**——
+   * 启用永远是人到 Agent 详情页单独做的动作。
+   */
+  draft_enabled: boolean | null;
+  /** NEEDS_INPUT 时的澄清问题；模型同时给草稿和问题时两者都会带回 */
+  questions: string[];
+  /** REJECTED 时的理由，必须可操作 */
+  rejection_reason: string | null;
+  error: string | null;
+  /** 模型原始输出，供右侧草稿预览 */
+  raw: unknown | null;
+}
+
+// ---------- 履约单据 Agent（Excel 四段闭环） ----------
+
+export interface ImportBatchStage {
+  name: string;
+  /**
+   * 该段是否已接入。**false 时 total/done/blocked 不会返回**——
+   * 「该段不适用」与「0 待办」是完全不同的行动信号。
+   */
+  supported: boolean;
+  total?: number;
+  done?: number;
+  blocked?: number;
+  complete?: boolean;
+}
+
+export interface ImportBatchBlocker {
+  stage: string;
+  /** 稳定码（复核 reason_code / 京东失败码 / 回传失败码） */
+  code: string;
+  count: number;
+  /** 可去后台搜的业务号 */
+  sampleNo: string | null;
+}
+
+export interface ImportBatchProgress {
+  batchId: number;
+  batchNo: string;
+  batchType: string;
+  sourceChannel: string | null;
+  status: string;
+  revisionNo: number;
+  receivedAt: string | null;
+  processedAt: string | null;
+  intake: ImportBatchStage;
+  outbound: ImportBatchStage;
+  tracking: ImportBatchStage;
+  sourceReturn: ImportBatchStage;
+  blockers: ImportBatchBlocker[];
+}
+
+export interface FulfillmentFileAssessment {
+  batchNo: string;
+  currentStage: string | null;
+  summary: string;
+  stageNotes: Array<{ stage: string; note: string }>;
+  suggestedActions: Array<{ action: string; reason: string; targetNo: string | null }>;
+  requiresHuman: boolean;
+  missingFields: string[];
+}
+
+export interface FulfillmentFileRunResult {
+  /** 确定性事实，永远存在——模型挂了也不该让运营连事实都看不到 */
+  progress: ImportBatchProgress;
+  /** 模型解读；失败时为 null */
+  assessment: FulfillmentFileAssessment | null;
+  provider: string | null;
+  model: string | null;
+  promptVersion: string | null;
+  error: string | null;
+}

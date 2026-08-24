@@ -38,6 +38,8 @@ const GLYPHS: Record<string, string> = {
   '/agents': '◈',
   '/agents/runs': '◉',
   '/agents/cost': '◍',
+  '/agents/fulfillment-file': '⊟',
+  '/agents/new': '＋',
   '/inventory/overview': '▤',
   '/product/skus': '≣',
   '/product/sku-mappings': '⇄',
