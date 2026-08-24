@@ -230,7 +230,10 @@ export default function MasterDataCrud({
       ? <AdminFailureAlert error={error} title="数据加载失败" onRetry={reload} />
       : null;
 
-  return stateContent ?? (
+  // 筛选区必须始终挂载：加载/错误态只替换表格区域。若把整棵树换成 stateContent，
+  // 每次筛选变化都会 unmount 工具栏，非受控输入（如搜索框）随之丢失已输入内容，
+  // 连带 allowClear 的清除入口一起消失，用户会卡在看不见也退不出的筛选态。
+  return (
     <div className="admin-crud">
           <div className="admin-toolbar">
             {filters}
@@ -245,28 +248,32 @@ export default function MasterDataCrud({
             </Button>
           </div>
 
-          <div className="admin-surface" style={{ marginTop: 16 }}>
-            <Table<MasterDataRecord>
-              rowKey="id"
-              columns={mergedColumns}
-              dataSource={data?.items ?? []}
-              size="middle"
-              scroll={{ x: 860 }}
-              locale={{ emptyText: <AdminEmpty description="暂无主数据" /> }}
-              pagination={{
-                current: page + 1,
-                pageSize: size,
-                total: data?.total_elements ?? 0,
-                showSizeChanger: true,
-                pageSizeOptions,
-                showTotal: (total) => `共 ${total} 条`,
-                onChange: (p, s) => {
-                  setPage(p - 1);
-                  setSize(s);
-                },
-              }}
-            />
-          </div>
+          {stateContent ? (
+            <div style={{ marginTop: 16 }}>{stateContent}</div>
+          ) : (
+            <div className="admin-surface" style={{ marginTop: 16 }}>
+              <Table<MasterDataRecord>
+                rowKey="id"
+                columns={mergedColumns}
+                dataSource={data?.items ?? []}
+                size="middle"
+                scroll={{ x: 860 }}
+                locale={{ emptyText: <AdminEmpty description="暂无主数据" /> }}
+                pagination={{
+                  current: page + 1,
+                  pageSize: size,
+                  total: data?.total_elements ?? 0,
+                  showSizeChanger: true,
+                  pageSizeOptions,
+                  showTotal: (total) => `共 ${total} 条`,
+                  onChange: (p, s) => {
+                    setPage(p - 1);
+                    setSize(s);
+                  },
+                }}
+              />
+            </div>
+          )}
 
           <Modal
             title={editing ? '编辑' : '新建'}
