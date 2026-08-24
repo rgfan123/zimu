@@ -1,8 +1,10 @@
 package cn.zimu.fulfillment.agent;
 
 import cn.zimu.fulfillment.agent.dto.AgentRunFilter;
+import cn.zimu.fulfillment.agent.dto.AgentTokenUsageFilter;
 import cn.zimu.fulfillment.agent.dto.RunDetail;
 import cn.zimu.fulfillment.agent.dto.RunListResponse;
+import cn.zimu.fulfillment.agent.dto.TokenUsageSummaryResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -21,9 +23,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class InternalAgentRunReadController {
 
     private final AgentRunReadService runs;
+    private final AgentTokenUsageReadService tokenUsage;
 
-    public InternalAgentRunReadController(AgentRunReadService runs) {
+    public InternalAgentRunReadController(AgentRunReadService runs, AgentTokenUsageReadService tokenUsage) {
         this.runs = runs;
+        this.tokenUsage = tokenUsage;
     }
 
     @GetMapping
@@ -41,6 +45,26 @@ public class InternalAgentRunReadController {
         return runs.listRuns(AgentRunFilter.of(
                 runId, slug, outcome, runMode, businessEntityType, businessEntityId,
                 startedFrom, startedTo, limit, offset));
+    }
+
+
+    /**
+     * 消耗汇总（129 票）：按 Agent / 业务日 / 业务实体类型聚合 token 与耗时。
+     *
+     * <p>路径先于 {@code /{runId}} 匹配（PathPatternParser 字面量段优先于模板段），
+     * 且 run_id 有 {@code ^run_[0-9a-f]{32}$} 强约束，二者不会互相截胡。
+     */
+    @GetMapping("/token-usage")
+    public TokenUsageSummaryResponse tokenUsage(
+            @RequestParam(name = "slug", required = false) String slug,
+            @RequestParam(name = "run_mode", required = false) String runMode,
+            @RequestParam(name = "business_entity_type", required = false) String businessEntityType,
+            @RequestParam(name = "started_from", required = false) String startedFrom,
+            @RequestParam(name = "started_to", required = false) String startedTo,
+            @RequestParam(name = "group_by", required = false) String groupBy,
+            @RequestParam(name = "limit", required = false, defaultValue = "100") int limit) {
+        return tokenUsage.summarize(AgentTokenUsageFilter.of(
+                slug, runMode, businessEntityType, startedFrom, startedTo, groupBy, limit));
     }
 
     @GetMapping("/{runId}")

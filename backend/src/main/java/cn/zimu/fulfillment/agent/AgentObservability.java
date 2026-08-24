@@ -70,8 +70,21 @@ public interface AgentObservability {
             long latencyMs,
             boolean success) {}
 
-    /** 模型 token 用量（任一字段可为 null，由 provider 决定）。 */
-    record TokenUsage(Integer promptTokens, Integer completionTokens, Integer totalTokens) {}
+    /**
+     * 模型 token 用量（任一字段可为 null，由 provider 决定）。
+     *
+     * <p>{@code modelCalls}（129 票）= 本次运行实际发生的模型调用轮数，含工具调用轮。
+     * 修准后 prompt/completion/total 是全轮累加值，单轮均值必须除以本字段才有意义；
+     * 3 参构造表示调用方未提供轮数，聚合侧按「未知」处理而不是按 1（按 1 会把多轮
+     * 运行的均值算成总量，正是本票要消灭的那类误读）。
+     */
+    record TokenUsage(
+            Integer promptTokens, Integer completionTokens, Integer totalTokens, Integer modelCalls) {
+
+        public TokenUsage(Integer promptTokens, Integer completionTokens, Integer totalTokens) {
+            this(promptTokens, completionTokens, totalTokens, null);
+        }
+    }
 
     void runStarted(Start start);
 

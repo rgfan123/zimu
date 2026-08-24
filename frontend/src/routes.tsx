@@ -47,6 +47,7 @@ import { ReviewQueueCompatRoute, AlertsQueuePage, ShippingWorkbenchPage, ReconWo
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
 import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage } from '@/pages/system';
 import {
+  AgentCostPage,
   AgentDetailPage,
   AgentRunsPage,
   AgentsListPage,
@@ -83,6 +84,7 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/orders/:orderId': <OrderDetailPage />,
   '/agents': <AgentsListPage />,
   '/agents/runs': <AgentRunsPage />,
+  '/agents/cost': <AgentCostPage />,
   '/agents/:slug': <AgentDetailPage />,
   '/agents/runs/:runId': <RunDetailPage />,
   '/agents/:slug/evals': <AgentDetailPage />,

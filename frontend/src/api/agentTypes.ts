@@ -178,3 +178,39 @@ export interface RunDetail {
   /** 仅 QUALITY PREVIEW 评测行存在 */
   eval_result: RunEvalResultItem | null;
 }
+
+/** 消耗汇总的分组维度（129 票；后端 TokenUsageGroupBy 枚举，前端不得自造值）。 */
+export type TokenUsageGroupBy = 'AGENT' | 'DAY' | 'BUSINESS_ENTITY_TYPE';
+
+export interface TokenUsageSummaryItem {
+  /** 分组键：agent_slug / 业务日（Asia/Shanghai）/ 业务实体类型；合计行为空串 */
+  group_key: string;
+  runs: number;
+  failed_runs: number;
+  /**
+   * 该组内**没有任何计量**的运行数。求和只覆盖有计量的运行，因此此值 > 0 时
+   * 汇总是下界而非全量（未配置模型的 fail-closed 运行、进程中断的运行都落这里）。
+   * 界面必须把这件事说出来——不说，读者会把下界当全量。
+   */
+  runs_without_token_usage: number;
+  /** 单次超阈值的运行数；阈值默认关闭时恒为 0 */
+  over_threshold_runs: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  /** 单次运行的 token 峰值；无计量时为 null */
+  max_run_total_tokens: number | null;
+  /** 模型调用轮数累计（含工具轮）；算单轮均耗的分母 */
+  model_calls: number;
+  total_latency_ms: number;
+  /** 单次运行的耗时峰值；无收口运行时为 null */
+  max_run_latency_ms: number | null;
+}
+
+export interface TokenUsageSummaryResponse {
+  group_by: TokenUsageGroupBy;
+  run_mode: RunMode;
+  items: TokenUsageSummaryItem[];
+  /** 合计行；group_key 为空串。峰值列是各组峰值的最大值，不是求和 */
+  totals: TokenUsageSummaryItem;
+}

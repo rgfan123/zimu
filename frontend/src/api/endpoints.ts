@@ -15,6 +15,7 @@ import type {
   AgentVersionItem,
   RunDetail,
   RunListResponse,
+  TokenUsageSummaryResponse,
 } from './agentTypes';
 import type {
   AuditLog,
@@ -870,6 +871,19 @@ export interface AgentRunsQuery {
   offset?: number;
 }
 
+/** GET /api/v1/agent-runs/token-usage 的查询参数（AgentTokenUsageFilter，snake_case）。 */
+export interface AgentTokenUsageQuery {
+  slug?: string;
+  /** 不传 = LIVE；PREVIEW 是草稿试跑，混进成本视图会让「线上花了多少」失去意义 */
+  run_mode?: string;
+  business_entity_type?: string;
+  started_from?: string;
+  started_to?: string;
+  /** AGENT（默认）/ DAY / BUSINESS_ENTITY_TYPE；后端按枚举白名单校验 */
+  group_by?: string;
+  limit?: number;
+}
+
 /** GET /api/v1/agents 列表 —— 一次拿全聚合，无分页无查询参数。 */
 export const agentsApi = {
   list: () => apiRequest<AgentListResponse>('/api/v1/agents'),
@@ -888,4 +902,12 @@ export const agentRunsApi = {
     apiRequest<RunListResponse>('/api/v1/agent-runs', { params: query as Record<string, QueryValue> }),
   /** GET /api/v1/agent-runs/{run_id} —— 元信息 + 工具调用序列 + 评测结果摘要。 */
   detail: (runId: string) => apiRequest<RunDetail>(`/api/v1/agent-runs/${runId}`),
+  /**
+   * GET /api/v1/agent-runs/token-usage —— 消耗汇总（129 票）。
+   * 默认 group_by=AGENT、run_mode=LIVE；PREVIEW 是草稿试跑，不进成本视图。
+   */
+  tokenUsage: (query: AgentTokenUsageQuery = {}) =>
+    apiRequest<TokenUsageSummaryResponse>('/api/v1/agent-runs/token-usage', {
+      params: query as Record<string, QueryValue>,
+    }),
 };

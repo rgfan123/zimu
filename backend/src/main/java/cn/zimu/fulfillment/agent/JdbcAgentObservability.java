@@ -2,6 +2,8 @@ package cn.zimu.fulfillment.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
@@ -17,8 +19,18 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <p>负载只含脱敏摘要（{@link AgentPayloadRedactor}），本实现不接触敏感原文；
  * 每次写入单条语句自提交，不参与业务事务，不引入第三方 SDK。
+ *
+ * <p>异常消耗可发现（129 票）：{@code tokenWarnThreshold} &gt; 0 时，单次运行 total
+ * 超阈值会在 {@code token_usage} 内落 {@code over_threshold}/{@code threshold} 两个字段
+ * 并打 WARN 日志。**不落 operational_alerts**——该表有
+ * {@code CHECK (num_nonnulls(order_id, order_line_id, fulfillment_id, shipment_id) > 0)}，
+ * 而 Agent 跑飞挂在 run_id 上、没有业务主体，为此放宽约束会削弱所有告警类型的完整性
+ * 保证；标记落在 token_usage 内则天然被 129 的聚合视图（token-usage 端点的
+ * over_threshold_runs）扫到，发现手段与成本视图同源，且不引入新表。
  */
 public class JdbcAgentObservability implements AgentObservability {
+
+    private static final Logger log = LoggerFactory.getLogger(JdbcAgentObservability.class);
 
     private static final String INSERT_RUN = """
             INSERT INTO app.agent_runs
@@ -53,9 +65,17 @@ public class JdbcAgentObservability implements AgentObservability {
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
 
+    /** 单次运行 total token 告警阈值；&lt;= 0 表示关闭（默认关闭，见 129 票边界）。 */
+    private final int tokenWarnThreshold;
+
     public JdbcAgentObservability(JdbcTemplate jdbc, ObjectMapper mapper) {
+        this(jdbc, mapper, 0);
+    }
+
+    public JdbcAgentObservability(JdbcTemplate jdbc, ObjectMapper mapper, int tokenWarnThreshold) {
         this.jdbc = jdbc;
         this.mapper = mapper;
+        this.tokenWarnThreshold = Math.max(tokenWarnThreshold, 0);
     }
 
     @Override
@@ -93,7 +113,8 @@ public class JdbcAgentObservability implements AgentObservability {
         if (runId == null || runId.isBlank() || tokens == null) {
             return;
         }
-        jdbc.update(UPDATE_TOKENS, tokensJson(tokens), runId);
+        // 运行时每次运行只调用一次（全轮累加已在 Adapter 侧完成），覆盖写因此是幂等的
+        jdbc.update(UPDATE_TOKENS, tokensJson(runId, tokens), runId);
     }
 
     @Override
@@ -109,11 +130,26 @@ public class JdbcAgentObservability implements AgentObservability {
                 call.success() ? "SUCCESS" : "FAILED");
     }
 
-    private String tokensJson(TokenUsage tokens) {
+    private String tokensJson(String runId, TokenUsage tokens) {
         ObjectNode node = mapper.createObjectNode();
         node.put("prompt_tokens", intOrZero(tokens.promptTokens()));
         node.put("completion_tokens", intOrZero(tokens.completionTokens()));
-        node.put("total_tokens", intOrZero(tokens.totalTokens()));
+        int total = intOrZero(tokens.totalTokens());
+        node.put("total_tokens", total);
+        // 轮数未知时不写 0——0 会被读成「没调用模型」，与「调用方没报轮数」是两回事
+        if (tokens.modelCalls() != null) {
+            node.put("model_calls", tokens.modelCalls());
+        }
+        if (tokenWarnThreshold > 0 && total > tokenWarnThreshold) {
+            node.put("over_threshold", true);
+            node.put("threshold", tokenWarnThreshold);
+            log.warn(
+                    "Agent 运行 token 超阈值: run_id={} total_tokens={} threshold={} model_calls={}",
+                    runId,
+                    total,
+                    tokenWarnThreshold,
+                    tokens.modelCalls());
+        }
         return node.toString();
     }
 

@@ -92,9 +92,13 @@ public class LangChain4jRuntimeAdapter implements AgentRuntime {
 
         List<ChatMessage> messages = new ArrayList<>(List.of(
                 SystemMessage.from(systemPrompt), UserMessage.from(request.userInput())));
+        // 129：累加器活在循环之外。工具轮 continue 前先记账——工具轮携带完整上下文 +
+        // 工具定义 + 累积的工具结果，往往是最贵的几轮，只记最后一轮是系统性少算。
+        TokenTally tally = TokenTally.EMPTY;
         try {
             for (int turn = 0; turn < MAX_TOOL_TURNS; turn++) {
                 ChatResponse response = chat(messages, binding, outputSchema);
+                tally = tally.plus(response.tokenUsage());
                 AiMessage aiMessage = response.aiMessage();
                 if (aiMessage.hasToolExecutionRequests()) {
                     for (ToolExecutionRequest executionRequest : aiMessage.toolExecutionRequests()) {
@@ -103,7 +107,6 @@ public class LangChain4jRuntimeAdapter implements AgentRuntime {
                     }
                     continue;
                 }
-                recordTokens(binding, response.tokenUsage());
                 return parseOutput(aiMessage.text(), outputSchema, promptVersion);
             }
             // 工具循环超限：模型未收敛为最终输出，按输出无效收口（不重试）
@@ -114,6 +117,10 @@ public class LangChain4jRuntimeAdapter implements AgentRuntime {
         } catch (RuntimeException ex) {
             // 请求组装/HTTP/网络等意外失败走稳定码，不把异常细节带进结果
             return AgentRunResult.failure(provider, model, promptVersion, AgentFailureCode.AGENT_MODEL_CALL_FAILED);
+        } finally {
+            // 四条出口（成功 / 输出无效 / 调用失败 / 循环超限）共用同一次写入：
+            // 失败的调用照样花钱，不记就等于成本核算天然缺一块。
+            recordTokens(binding, tally);
         }
     }
 
@@ -169,20 +176,61 @@ public class LangChain4jRuntimeAdapter implements AgentRuntime {
         return executor.execute(executionRequest, null);
     }
 
-    /** 模型调用观测：以绑定携带的 run_id 落 token 用量；失败隔离——观测失败不影响运行结果。 */
-    private void recordTokens(AgentToolBinding binding, TokenUsage usage) {
-        if (binding == null || usage == null) {
+    /**
+     * 模型调用观测：以绑定携带的 run_id 落全轮累加的 token 用量；每次运行恰好写一次
+     * （覆盖语义因此是幂等的，不需要把累加下推到 SQL）。失败隔离——观测失败不影响运行结果。
+     *
+     * <p>零次模型调用不写：写一行全 0 会被读成「跑了但没花钱」，与「根本没调用到模型」
+     * 是两回事，宁可留空也不编数。
+     */
+    private void recordTokens(AgentToolBinding binding, TokenTally tally) {
+        if (binding == null || tally == null || tally.isEmpty()) {
             return;
         }
         try {
             observability.recordModelTokens(
                     binding.runId(),
                     new AgentObservability.TokenUsage(
-                            usage.inputTokenCount(),
-                            usage.outputTokenCount(),
-                            usage.totalTokenCount()));
+                            tally.promptTokens(),
+                            tally.completionTokens(),
+                            tally.totalTokens(),
+                            tally.modelCalls()));
         } catch (RuntimeException ignored) {
             // 观测写入失败不影响运行结果（与审计失败容忍语义一致）
+        }
+    }
+
+    /**
+     * 全轮 token 累加器（129 票）：不可变，每轮返回新值。
+     *
+     * <p>provider 省略 {@code total_tokens} 时由 prompt+completion 推导——部分 OpenAI
+     * 兼容端点只给分项，照抄 null 会让总量凭空少一截。
+     */
+    private record TokenTally(int promptTokens, int completionTokens, int totalTokens, int modelCalls) {
+
+        static final TokenTally EMPTY = new TokenTally(0, 0, 0, 0);
+
+        TokenTally plus(TokenUsage usage) {
+            if (usage == null) {
+                // 轮次照数：provider 没回 usage 不等于这一轮没发生，均值口径靠它才不失真
+                return new TokenTally(promptTokens, completionTokens, totalTokens, modelCalls + 1);
+            }
+            int prompt = orZero(usage.inputTokenCount());
+            int completion = orZero(usage.outputTokenCount());
+            int total = usage.totalTokenCount() == null ? prompt + completion : usage.totalTokenCount();
+            return new TokenTally(
+                    promptTokens + prompt,
+                    completionTokens + completion,
+                    totalTokens + total,
+                    modelCalls + 1);
+        }
+
+        boolean isEmpty() {
+            return modelCalls == 0;
+        }
+
+        private static int orZero(Integer value) {
+            return value == null ? 0 : value;
         }
     }
 

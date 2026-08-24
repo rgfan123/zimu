@@ -21,6 +21,8 @@ import type {
   RunOutcome,
   RunStatus,
   RunToolCallItem,
+  TokenUsageGroupBy,
+  TokenUsageSummaryItem,
 } from '@/api/agentTypes';
 
 // ---------- 1. Agent 列表 state：三值直映，不推导 ----------
@@ -426,4 +428,112 @@ export function latencyBarPercents(calls: RunToolCallItem[]): Record<number, num
     out[c.sequence_no] = max > 0 && c.latency_ms != null ? Math.round((c.latency_ms / max) * 100) : 0;
   }
   return out;
+}
+
+// ---------- 9. 消耗看板（129 票） ----------
+
+export interface CostFilters {
+  slug?: string;
+  /** undefined = LIVE（后端默认即 LIVE，不传 run_mode 即可） */
+  runMode?: RunMode;
+  businessEntityType?: string;
+  startedFrom?: string;
+  startedTo?: string;
+  groupBy: TokenUsageGroupBy;
+}
+
+export const COST_DEFAULT_GROUP_BY: TokenUsageGroupBy = 'AGENT';
+
+export const GROUP_BY_OPTIONS: Array<{ value: TokenUsageGroupBy; label: string }> = [
+  { value: 'AGENT', label: '按 Agent' },
+  { value: 'DAY', label: '按业务日' },
+  { value: 'BUSINESS_ENTITY_TYPE', label: '按业务实体' },
+];
+
+function isGroupBy(value: string | null): value is TokenUsageGroupBy {
+  return value === 'AGENT' || value === 'DAY' || value === 'BUSINESS_ENTITY_TYPE';
+}
+
+export function costFiltersFromParams(params: URLSearchParams): CostFilters {
+  const runMode = params.get('run_mode');
+  const groupBy = params.get('group_by');
+  return {
+    slug: params.get('slug')?.trim() || undefined,
+    runMode: runMode === 'PREVIEW' ? 'PREVIEW' : undefined,
+    businessEntityType: params.get('business_entity_type')?.trim() || undefined,
+    startedFrom: params.get('started_from')?.trim() || undefined,
+    startedTo: params.get('started_to')?.trim() || undefined,
+    groupBy: isGroupBy(groupBy) ? groupBy : COST_DEFAULT_GROUP_BY,
+  };
+}
+
+export function costSearchParams(filters: CostFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.slug) params.set('slug', filters.slug);
+  if (filters.runMode === 'PREVIEW') params.set('run_mode', 'PREVIEW');
+  if (filters.businessEntityType) params.set('business_entity_type', filters.businessEntityType);
+  if (filters.startedFrom) params.set('started_from', filters.startedFrom);
+  if (filters.startedTo) params.set('started_to', filters.startedTo);
+  if (filters.groupBy !== COST_DEFAULT_GROUP_BY) params.set('group_by', filters.groupBy);
+  return params;
+}
+
+export function costLocation(filters: CostFilters): string {
+  const query = costSearchParams(filters).toString();
+  return query ? `/agents/cost?${query}` : '/agents/cost';
+}
+
+/** 千分位；token 是计数不是金额，绝不做费用换算（单价属计费口径，不进业务库）。 */
+export function formatTokens(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  return value.toLocaleString('zh-CN');
+}
+
+/** 耗时累计：毫秒进位到秒/分，超过一小时用「时 分」，读者要的是量级不是精度。 */
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return '—';
+  if (ms < 1000) return `${ms} ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分 ${Math.round(seconds % 60)} 秒`;
+  return `${Math.floor(minutes / 60)} 时 ${minutes % 60} 分`;
+}
+
+/**
+ * 均值一律返回 null 而不是 0——分母为 0 时「没有均值」和「均值是 0」是两回事，
+ * 渲染成 0 会让读者以为这些运行不花钱。
+ */
+export function averageOrNull(total: number, denominator: number): number | null {
+  return denominator > 0 ? Math.round(total / denominator) : null;
+}
+
+/** 已计量运行数 = 求和的实际分母（与后端 measuredRuns 同义）。 */
+export function measuredRuns(item: TokenUsageSummaryItem): number {
+  return Math.max(item.runs - item.runs_without_token_usage, 0);
+}
+
+export interface CoverageNote {
+  /** true 时汇总是下界而非全量，界面必须显式说明 */
+  partial: boolean;
+  label: string;
+}
+
+/**
+ * 计量覆盖率提示（诚实工程）：有未计量运行时必须说出「求和是下界」。
+ * 不说，读者会把下界当全量——这正是本票要消灭的那类误读。
+ */
+export function coverageNote(item: TokenUsageSummaryItem): CoverageNote {
+  if (item.runs === 0) {
+    return { partial: false, label: '无运行记录' };
+  }
+  if (item.runs_without_token_usage === 0) {
+    return { partial: false, label: `${item.runs} 次运行全部已计量` };
+  }
+  return {
+    partial: true,
+    label:
+      `${item.runs} 次运行中 ${item.runs_without_token_usage} 次无计量` +
+      `（未配置模型 / 进程中断），下方求和为下界而非全量`,
+  };
 }
