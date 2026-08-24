@@ -1155,6 +1155,88 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Shipment' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/shipments/{shipment_id}/source-sync/check:
+    parameters:
+      - $ref: '#/components/parameters/ShipmentId'
+    get:
+      tags: [Shipments, Connectors]
+      operationId: checkShipmentSourceSync
+      summary: 核对一张 Shipment 是否可以回传来源平台
+      description: >-
+        读取 BUSINESS Shipment、唯一来源行、正式运单和来源平台实时事实，确定性比较
+        平台状态、完整收货信息、来源份数和承运商。只允许网关已认证且与 X-Operator
+        一致的人工操作员读取；响应包含 PII，始终 Cache-Control: no-store，不产生平台写。
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: 完整即时检查；ready=false 与 blockers 是业务结果。
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceSyncCheck' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/shipments/{shipment_id}/source-sync/execute:
+    parameters:
+      - $ref: '#/components/parameters/ShipmentId'
+    post:
+      tags: [Shipments, Connectors]
+      operationId: executeShipmentSourceSync
+      summary: 人工确认并执行一张 Shipment 的来源平台回传
+      description: >-
+        仅支持聚福宝和彩食鲜。重新读取并校验 expected_check_hash 后持久化 SYNCING
+        意图；每一次不可逆平台写前复验幂等租约并登记 effect started。只有写后查询
+        验证终态才进入 SYNCED；可能已有外部效果但无法确认时进入
+        RECONCILIATION_REQUIRED，禁止普通重试。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceSyncExecuteCommand' }
+      responses:
+        '201':
+          description: 来源平台终态已验证；相同幂等键与相同请求重放首次结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceSyncOutcome' }
+        '409':
+          description: 检查过期、状态/幂等冲突，或外部效果未知必须人工对账。
+        '422':
+          description: 当前检查仍有确定性阻断项。
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/shipments/{shipment_id}/source-sync/reconcile:
+    parameters:
+      - $ref: '#/components/parameters/ShipmentId'
+    post:
+      tags: [Shipments, Connectors]
+      operationId: reconcileShipmentSourceSync
+      summary: 人工对账一次外部效果未知的来源回传
+      description: >-
+        仅允许 RECONCILIATION_REQUIRED。命令必须回显原 intent 的 check hash、来源行、
+        承运商、运单和 lock version；服务端再次核对当前事实。ACCEPTED 不再写平台并转
+        SYNCED，NOT_ACCEPTED 释放原平台 intent 后回到 PENDING，UNCERTAIN 继续隔离。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceSyncReconcileCommand' }
+      responses:
+        '200':
+          description: 已持久化的对账结论；相同幂等键与相同请求重放首次结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceSyncOutcome' }
+        '409':
+          description: 不在待对账状态、原 intent/当前事实漂移、版本或幂等冲突。
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/shipments/{shipment_id}/jd-so-order:
     parameters:
       - $ref: '#/components/parameters/ShipmentId'
@@ -3764,6 +3846,179 @@ components:
     ShipmentStatus:
       type: string
       enum: [CREATED, SHIPPED, FAILED, DELIVERED]
+    SourceSyncStatus:
+      type: string
+      enum: [PENDING, SYNCING, SYNCED, SYNC_FAILED, RECONCILIATION_REQUIRED]
+    SourceSyncBlocker:
+      type: object
+      additionalProperties: false
+      required: [code, field, message]
+      properties:
+        code: { type: string, maxLength: 64 }
+        field: { type: string }
+        message: { type: string }
+    SourceSyncFacts:
+      type: object
+      additionalProperties: false
+      required:
+        - shipment_id
+        - order_id
+        - source_channel
+        - source_ref
+        - source_line_ref
+        - receiver_name
+        - receiver_phone
+        - receiver_address
+        - ordered_source_quantity
+        - shipped_source_quantity
+        - internal_shipped_quantity
+        - fulfillment_outcome
+        - carrier_code
+        - carrier_name
+        - carrier_output_value
+        - tracking_number
+      properties:
+        shipment_id: { type: integer, format: int64 }
+        order_id: { type: integer, format: int64 }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        source_ref: { type: string, nullable: true }
+        source_line_ref: { type: string, nullable: true }
+        receiver_name: { type: string, nullable: true }
+        receiver_phone: { type: string, nullable: true }
+        receiver_address: { type: string, nullable: true }
+        ordered_source_quantity: { type: number, nullable: true }
+        shipped_source_quantity: { type: number, nullable: true }
+        internal_shipped_quantity: { type: number, nullable: true }
+        fulfillment_outcome: { type: string }
+        carrier_code: { type: string, nullable: true }
+        carrier_name: { type: string, nullable: true }
+        carrier_output_value: { type: string, nullable: true }
+        tracking_number: { type: string, nullable: true }
+    SourcePlatformCheckResult:
+      type: object
+      additionalProperties: false
+      required:
+        - available
+        - business_code
+        - message
+        - acceptance_required
+        - address_status
+        - carrier_mapped
+      properties:
+        available: { type: boolean }
+        business_code: { type: string, maxLength: 64 }
+        message: { type: string }
+        platform_state: { type: string, nullable: true }
+        acceptance_required: { type: boolean }
+        address_status:
+          type: string
+          enum: [CLEAR, CONFIRMATION_REQUIRED, UNKNOWN]
+        receiver_name: { type: string, nullable: true }
+        receiver_phone: { type: string, nullable: true }
+        receiver_address: { type: string, nullable: true }
+        sendable_quantity: { type: number, nullable: true }
+        carrier_mapped: { type: boolean }
+        effect_hash:
+          allOf: [{ $ref: '#/components/schemas/Sha256' }]
+          nullable: true
+          description: 不含 PII 的平台规范化写入计划摘要
+    SourceSyncProjection:
+      type: object
+      additionalProperties: false
+      required: [status, attempt_count, lock_version]
+      properties:
+        status: { $ref: '#/components/schemas/SourceSyncStatus' }
+        attempt_count: { type: integer, format: int32, minimum: 0 }
+        lock_version: { type: integer, format: int64, minimum: 0 }
+        last_error_code: { type: string, nullable: true }
+        last_error_message: { type: string, nullable: true }
+        synced_at: { type: string, format: date-time, nullable: true }
+    SourceSyncReconciliationIntent:
+      type: object
+      additionalProperties: false
+      required: [check_hash, source_line_ref, carrier_code, tracking_number, version]
+      properties:
+        check_hash: { $ref: '#/components/schemas/Sha256' }
+        source_line_ref: { type: string }
+        carrier_code: { type: string }
+        tracking_number: { type: string }
+        version: { type: integer, format: int64, minimum: 0 }
+    SourceSyncCheck:
+      type: object
+      additionalProperties: false
+      required:
+        - shipment_id
+        - ready
+        - check_hash
+        - artifact_hash
+        - internal
+        - platform
+        - blockers
+        - projection
+      properties:
+        shipment_id: { type: integer, format: int64 }
+        ready: { type: boolean }
+        check_hash: { $ref: '#/components/schemas/Sha256' }
+        artifact_hash: { $ref: '#/components/schemas/Sha256' }
+        internal: { $ref: '#/components/schemas/SourceSyncFacts' }
+        platform: { $ref: '#/components/schemas/SourcePlatformCheckResult' }
+        blockers:
+          type: array
+          items: { $ref: '#/components/schemas/SourceSyncBlocker' }
+        projection: { $ref: '#/components/schemas/SourceSyncProjection' }
+        reconciliation_intent:
+          allOf: [{ $ref: '#/components/schemas/SourceSyncReconciliationIntent' }]
+          nullable: true
+    SourceSyncExecuteCommand:
+      type: object
+      additionalProperties: false
+      required: [expected_check_hash]
+      properties:
+        expected_check_hash: { $ref: '#/components/schemas/Sha256' }
+    SourceSyncReconcileCommand:
+      type: object
+      additionalProperties: false
+      required:
+        - decision
+        - note
+        - expected_check_hash
+        - expected_source_line_ref
+        - expected_carrier_code
+        - expected_tracking_number
+        - expected_version
+      properties:
+        decision: { type: string, enum: [ACCEPTED, NOT_ACCEPTED, UNCERTAIN] }
+        note: { type: string, minLength: 1, maxLength: 500 }
+        expected_check_hash: { $ref: '#/components/schemas/Sha256' }
+        expected_source_line_ref: { type: string, minLength: 1, maxLength: 255 }
+        expected_carrier_code: { type: string, minLength: 1, maxLength: 64 }
+        expected_tracking_number: { type: string, minLength: 1, maxLength: 128 }
+        expected_version: { type: integer, format: int64, minimum: 0 }
+    SourceSyncOutcome:
+      type: object
+      additionalProperties: false
+      required:
+        - shipment_id
+        - status
+        - business_code
+        - message
+        - check_hash
+        - version
+        - completed_at
+      properties:
+        shipment_id: { type: integer, format: int64 }
+        status: { $ref: '#/components/schemas/SourceSyncStatus' }
+        business_code: { type: string, maxLength: 64 }
+        message: { type: string }
+        check_hash: { $ref: '#/components/schemas/Sha256' }
+        version: { type: integer, format: int64, minimum: 0 }
+        platform_ref:
+          type: string
+          nullable: true
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:-]+$'
+          description: 平台返回且经 allowlist 校验的非 PII 请求引用
+        completed_at: { type: string, format: date-time }
     ProcurementStatus:
       type: string
       enum: [PENDING, SUCCESS, PARTIAL, FAILED, CANCELLED]

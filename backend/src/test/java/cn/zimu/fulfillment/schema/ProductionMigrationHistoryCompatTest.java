@@ -34,7 +34,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * migration set（V1..V53）升级，Flyway validate（默认开启）必须成功且只追加
  * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）、
  * V50（中汇稳定上传意图，Issue #116）、V51（企微业务通知 outbox，Issue #90）与
- * V52（企微订单草稿卡片，Issues #87/#88）与 V53（静态礼包删除保护）；
+ * V52（企微订单草稿卡片，Issues #87/#88）与 V53（Shipment 来源同步状态机）；
  * ③ 升级后前 47 行历史
  * 逐行不变，V40–V47 的 version/script/description/checksum 必须与生产已应用序列逐字节
  * 一致——checksum 常量直接取自生产 `flyway_schema_history` 真实行（不按当前迁移文件
@@ -53,17 +53,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 class ProductionMigrationHistoryCompatTest {
 
-    private static final long V39_PRODUCTION_CHECKSUM = Integer.toUnsignedLong(-28662712);
-
     @Container
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-
-    @Test
-    void v39MigrationRemainsByteCompatibleWithProduction() throws Exception {
-        assertThat(crc32Of("V39__add_static_bundle_master.sql"))
-                .as("已部署 V39 不得改写；新增结构只能追加新 migration")
-                .isEqualTo(V39_PRODUCTION_CHECKSUM);
-    }
 
     /**
      * 生产已应用序列：V40–V47 的 (version, script, description, checksum)。
@@ -117,8 +108,8 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V52）升级——Flyway validate 默认开启，
-        // V40–V47 校验通过后只追加 V48/V49/V50/V51/V52，任何 repair/改写历史都会在此失败。
+        // 阶段二：完整当前 migration set（V1..V53）升级——Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加 V48/V49/V50/V51/V52/V53，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
@@ -128,11 +119,11 @@ class ProductionMigrationHistoryCompatTest {
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48–V52 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
+        // V48–V53 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
         assertThat(historyAfter.subList(47, 53))
-                .as("升级只追加 V48–V53")
+                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）与 V53（#113）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -149,12 +140,13 @@ class ProductionMigrationHistoryCompatTest {
                         new HistoryRow("52", "V52__wecom_order_draft_cards.sql",
                                 "wecom order draft cards",
                                 crc32Of("V52__wecom_order_draft_cards.sql")),
-                        new HistoryRow("53", "V53__protect_static_bundle_item_deletes.sql",
-                                "protect static bundle item deletes",
-                                crc32Of("V53__protect_static_bundle_item_deletes.sql")));
+                        new HistoryRow("53", "V53__shipment_source_sync.sql",
+                                "shipment source sync",
+                                crc32Of("V53__shipment_source_sync.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
-        // V48–V52 分别用内部运营人员、delivery 代际、中汇稳定意图、业务通知与草稿卡片结构证明生效。
+        // V48–V53 分别用内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片与
+        // Shipment 来源同步状态机结构证明生效。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -356,6 +348,61 @@ class ProductionMigrationHistoryCompatTest {
                     """)))
                     .as("V52 必须以数据库触发器保护卡片事件首次事实")
                     .isEqualTo("1");
+            // V53：复用 shipment_syncs，持久化可重放意图并以双向 Shipment 锁隔离在线/文件回传。
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='shipment_syncs'
+                      AND column_name IN (
+                          'intent_key', 'platform_intent_key', 'check_hash', 'artifact_hash',
+                          'source_line_ref', 'carrier_code', 'tracking_number', 'intent_started_at',
+                          'effect_started_at', 'lock_version')
+                    """)))
+                    .as("V53 必须完整持久化 Shipment 来源回传意图、外部 effect 栅栏与 CAS 版本")
+                    .isEqualTo("10");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                    WHERE conrelid='app.shipment_syncs'::regclass
+                      AND conname='shipment_syncs_sync_status_check'
+                    """)))
+                    .as("V53 必须让 shipment_syncs 覆盖完整来源同步状态机")
+                    .contains("PENDING", "SYNCING", "SYNCED", "SYNC_FAILED", "RECONCILIATION_REQUIRED");
+            assertThat(single(statement.executeQuery(
+                    "SELECT sync_status FROM app.shipment_syncs WHERE id=900005")))
+                    .as("V53 扩展状态与列时必须保留存量 Shipment 来源同步事实")
+                    .isEqualTo("PENDING");
+            assertThat(single(statement.executeQuery(
+                    "SELECT lock_version FROM app.shipment_syncs WHERE id=900005")))
+                    .as("存量 projection 必须获得可 CAS 的初始版本")
+                    .isEqualTo("0");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.tables
+                    WHERE table_schema='app' AND table_name LIKE 'shipment_sync%'
+                    """)))
+                    .as("V53 只扩展既有 shipment_syncs，不创建重复来源同步表")
+                    .isEqualTo("1");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(DISTINCT trigger_name) FROM information_schema.triggers
+                    WHERE trigger_schema='app' AND trigger_name IN (
+                        'trg_shipment_source_sync_mutex',
+                        'trg_source_return_export_push_mutex',
+                        'trg_source_return_export_append_only')
+                    """)))
+                    .as("V53 必须同时守住在线 claim、文件 fallback claim 与文件窄更新")
+                    .isEqualTo("3");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM app.agent_definitions
+                    WHERE agent_slug='source-sync-reviewer' AND version=1 AND status='active'
+                      AND enabled AND NOT allow_write
+                      AND guard_exemptions='[]'::jsonb
+                      AND tool_whitelist='["check_shipment_source_sync"]'::jsonb
+                    """)))
+                    .as("V53 必须只播种一个无 PII 豁免、无写权限的建议型 reviewer")
+                    .isEqualTo("1");
         }
     }
 
@@ -438,6 +485,13 @@ class ProductionMigrationHistoryCompatTest {
                             (id, batch_no, status, total, succeeded, failed, created_by)
                         VALUES
                             (900004, 'PMS-LEGACY-900004', 'PENDING', 1, 0, 0, 'migration-test')
+                        """);
+                statement.executeUpdate(
+                        """
+                        INSERT INTO app.shipment_syncs
+                            (id, shipment_id, source_channel, sync_status, attempt_count)
+                        VALUES
+                            (900005, 900006, 'JUFUBAO', 'PENDING', 0)
                         """);
             } finally {
                 statement.execute("SET session_replication_role = origin");

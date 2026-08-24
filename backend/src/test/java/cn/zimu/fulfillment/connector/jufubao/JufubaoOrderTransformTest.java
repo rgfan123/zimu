@@ -90,6 +90,30 @@ class JufubaoOrderTransformTest {
     }
 
     @Test
+    void enrichesCanonicalReceiverFromSubOrderInfoWithoutPersistingPiiInRawSnapshot() throws Exception {
+        Map<String, Object> payload = mapper.readValue(CAPTURED_ORDER_JSON, new TypeReference<>() {});
+        @SuppressWarnings("unchecked")
+        Map<String, Object> order = (Map<String, Object>) ((List<?>) payload.get("list")).get(0);
+        JufubaoShipmentGateway.ShipmentDetail detail = new JufubaoShipmentGateway.ShipmentDetail(
+                List.of(),
+                new JufubaoShipmentGateway.ReceiverSnapshot(
+                        "测试收货人", "13800000000", "河南省郑州市测试地址"),
+                "logistics");
+
+        StructuredOrderRow row = transform.toRow(order, detail);
+
+        assertThat(row.reviewRequired()).isNull();
+        assertThat(row.canonicalInput().receiver().name()).isEqualTo("测试收货人");
+        assertThat(row.canonicalInput().receiver().phone()).isEqualTo("13800000000");
+        assertThat(row.canonicalInput().receiver().address()).isEqualTo("河南省郑州市测试地址");
+        assertThat(row.rawSnapshot())
+                .containsEntry("receiver_source", "sub-order-info")
+                .containsEntry("receiver_missing", false);
+        assertThat(mapper.valueToTree(row.rawSnapshot()).toString())
+                .doesNotContain("测试收货人", "13800000000", "河南省郑州市测试地址");
+    }
+
+    @Test
     void masksShortSensitiveValuesFully() {
         Map<String, Object> order = Map.of(
                 "main_order_id", "m1",

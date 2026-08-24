@@ -27,12 +27,13 @@ class JufubaoPullConnectorTest {
 
     private final SourceImportService sourceImportService = mock(SourceImportService.class);
     private final JufubaoPullClient pullClient = mock(JufubaoPullClient.class);
+    private final JufubaoShipmentGateway shipmentGateway = mock(JufubaoShipmentGateway.class);
     private final JufubaoConnector connector =
             new JufubaoConnector(
                     sourceImportService,
                     pullClient,
                     new JufubaoOrderTransform(),
-                    mock(JufubaoShipmentGateway.class),
+                    shipmentGateway,
                     mock(JufubaoShipmentAttemptStore.class));
 
     private PullCursor cursor() {
@@ -82,6 +83,34 @@ class JufubaoPullConnectorTest {
         verify(pullClient).pullOrders(anyLong(), anyLong());
         verify(sourceImportService).importStructured(
                 eq(SourceChannel.JUFUBAO), any(), any(), any(CommandContext.class));
+    }
+
+    @Test
+    void pullOrdersEnrichesEachRowWithReadOnlyReceiverDetail() {
+        when(pullClient.login()).thenReturn(new JufubaoPullClient.LoginResult(true, "OK", "登录成功"));
+        when(pullClient.pullOrders(anyLong(), anyLong())).thenReturn(List.of(order("m1", "s1")));
+        when(shipmentGateway.shipmentDetail("s1")).thenReturn(new JufubaoShipmentGateway.ShipmentDetail(
+                List.of(),
+                new JufubaoShipmentGateway.ReceiverSnapshot("张三", "13800000000", "河南省郑州市1号"),
+                "logistics"));
+        when(sourceImportService.importStructured(
+                        eq(SourceChannel.JUFUBAO), any(), anyString(), any(CommandContext.class)))
+                .thenReturn(Map.of("id", "44", "batch_no", "BATCH-RECEIVER", "row_counts",
+                        Map.of("total", 1, "accepted", 1, "need_review", 0, "rejected", 0)));
+
+        PullResult result = connector.pullOrders(cursor());
+
+        assertThat(result.pulledCount()).isEqualTo(1);
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<cn.zimu.fulfillment.file.StructuredOrderRow>> rows =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(sourceImportService).importStructured(
+                eq(SourceChannel.JUFUBAO), rows.capture(), anyString(), any(CommandContext.class));
+        assertThat(rows.getValue()).singleElement().satisfies(row -> {
+            assertThat(row.reviewRequired()).isNull();
+            assertThat(row.canonicalInput().receiver().name()).isEqualTo("张三");
+            assertThat(row.rawSnapshot()).containsEntry("receiver_missing", false);
+        });
     }
 
     @Test

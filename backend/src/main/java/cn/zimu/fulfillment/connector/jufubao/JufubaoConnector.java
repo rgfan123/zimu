@@ -6,15 +6,20 @@ import cn.zimu.fulfillment.connector.AbstractHttpPullConnector;
 import cn.zimu.fulfillment.connector.ConnectorCapabilities;
 import cn.zimu.fulfillment.connector.ConnectionTestResult;
 import cn.zimu.fulfillment.connector.ConnectorRuntime;
+import cn.zimu.fulfillment.connector.ExternalWritePermit;
 import cn.zimu.fulfillment.connector.PullCursor;
 import cn.zimu.fulfillment.connector.PullResult;
+import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
 import cn.zimu.fulfillment.connector.SourceShipmentResult;
 import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.file.SourceImportService;
 import cn.zimu.fulfillment.file.StructuredOrderRow;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
+import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -33,13 +38,23 @@ import org.springframework.stereotype.Component;
 public class JufubaoConnector extends AbstractHttpPullConnector {
 
     private static final Logger log = LoggerFactory.getLogger(JufubaoConnector.class);
+    private static final ObjectMapper EFFECT_HASH_MAPPER = new ObjectMapper();
     private static final DateTimeFormatter BATCH_NO = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
+    private static final List<String> SHIPMENT_PRODUCT_WRITE_FIELDS = List.of(
+            "product_id",
+            "sku_id",
+            "product_sku_name",
+            "buy_num",
+            "purchase_price",
+            "product_thumb",
+            "product_form_data");
 
     private final SourceImportService sourceImportService;
     private final JufubaoPullClient pullClient;
     private final JufubaoOrderTransform transform;
     private final JufubaoShipmentGateway shipmentGateway;
     private final JufubaoShipmentAttemptStore attemptStore;
+    private final boolean allowLegacyUnguardedForTests;
 
     @Autowired
     public JufubaoConnector(
@@ -48,11 +63,23 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
             JufubaoOrderTransform transform,
             JufubaoShipmentGateway shipmentGateway,
             JufubaoShipmentAttemptStore attemptStore) {
+        this(sourceImportService, pullClient, transform, shipmentGateway, attemptStore, false);
+    }
+
+    /** Package-private test seam; production Spring wiring always rejects unguarded writes. */
+    JufubaoConnector(
+            SourceImportService sourceImportService,
+            JufubaoPullClient pullClient,
+            JufubaoOrderTransform transform,
+            JufubaoShipmentGateway shipmentGateway,
+            JufubaoShipmentAttemptStore attemptStore,
+            boolean allowLegacyUnguardedForTests) {
         this.sourceImportService = sourceImportService;
         this.pullClient = pullClient;
         this.transform = transform;
         this.shipmentGateway = shipmentGateway;
         this.attemptStore = attemptStore;
+        this.allowLegacyUnguardedForTests = allowLegacyUnguardedForTests;
     }
 
     @Override
@@ -98,13 +125,26 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
             if (orders.isEmpty()) {
                 return PullResult.empty(channel, null);
             }
-            List<StructuredOrderRow> rows = transform.toRows(orders);
+            List<StructuredOrderRow> rows = new ArrayList<>();
+            for (Map<String, Object> order : orders) {
+                Object rawSubOrderId = order == null ? null : order.get("sub_order_id");
+                String subOrderId = rawSubOrderId == null ? "" : rawSubOrderId.toString().trim();
+                JufubaoShipmentGateway.ShipmentDetail detail = null;
+                if (!subOrderId.isBlank()) {
+                    try {
+                        detail = shipmentGateway.shipmentDetail(subOrderId);
+                    } catch (RuntimeException exception) {
+                        // 单单详情失败只把该行留给人工复核；不复制响应/PII，也不回滚其他订单。
+                    }
+                }
+                rows.add(transform.toRow(order, detail));
+            }
             String batchNo = "PULL-JUFUBAO-" + LocalDateTime.now(SHANGHAI).format(BATCH_NO);
             Map<String, Object> batch = sourceImportService.importStructured(
                     SourceChannel.JUFUBAO, rows, batchNo, commandContext());
             int accepted = acceptedCount(batch);
-            String message = "已拉取聚福宝待发货订单 " + orders.size()
-                    + " 单；因收货人契约未验证，批次 " + batch.get("batch_no") + " 已进入人工复核";
+            String message = "已拉取聚福宝待处理订单 " + orders.size()
+                    + " 单，并以订单详情收货事实进入导入批次 " + batch.get("batch_no");
             log.info("聚福宝拉取完成: batchNo={}, pulled={}, accepted={}", batch.get("batch_no"), orders.size(), accepted);
             return success(channel, accepted, message, batch);
         } catch (BusinessException exception) {
@@ -119,7 +159,74 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
     }
 
     @Override
+    public SourcePlatformCheckResult checkShipmentResult(SourceShipmentResult result) {
+        if (result == null
+                || result.channel() != SourceChannel.JUFUBAO
+                || isBlank(result.sourceLineRef())) {
+            return SourcePlatformCheckResult.unavailable(
+                    channel(),
+                    "JUFUBAO_SHIPMENT_LINEAGE_REQUIRED",
+                    "聚福宝 Shipment 来源子单血缘不完整");
+        }
+        try {
+            String subOrderId = result.sourceLineRef().trim();
+            JufubaoShipmentGateway.OrderState state = shipmentGateway.findOrder(subOrderId);
+            JufubaoShipmentGateway.AddressCheck address = shipmentGateway.checkShipmentAddress(subOrderId);
+            JufubaoShipmentGateway.ShipmentDetail detail = shipmentGateway.shipmentDetail(subOrderId);
+            List<ObjectNode> products = sanitizedProducts(detail);
+            BigDecimal sendable = totalAllowedQuantity(products);
+            JufubaoShipmentGateway.CarrierOption mappedCarrier = isBlank(result.carrierOutputValue())
+                    ? null : carrier(result.carrierOutputValue());
+            boolean carrierMapped = mappedCarrier != null;
+            String effectHash = carrierMapped && !products.isEmpty()
+                    ? effectHash(products, mappedCarrier)
+                    : null;
+            JufubaoShipmentGateway.ReceiverSnapshot receiver = detail == null ? null : detail.receiver();
+            SourcePlatformCheckResult.AddressStatus addressStatus = !address.known()
+                    ? SourcePlatformCheckResult.AddressStatus.UNKNOWN
+                    : address.confirmationRequired()
+                            ? SourcePlatformCheckResult.AddressStatus.CONFIRMATION_REQUIRED
+                            : SourcePlatformCheckResult.AddressStatus.CLEAR;
+            return new SourcePlatformCheckResult(
+                    true,
+                    "OK",
+                    "聚福宝 Shipment 当前事实已读取",
+                    state.status(),
+                    state.presentInNoDelivery() && "NO_RECEIPT".equals(state.status()),
+                    addressStatus,
+                    receiver == null ? null : receiver.name(),
+                    receiver == null ? null : receiver.phone(),
+                    receiver == null ? null : receiver.address(),
+                    sendable,
+                    carrierMapped,
+                    effectHash);
+        } catch (RuntimeException exception) {
+            return SourcePlatformCheckResult.unavailable(
+                    channel(),
+                    "JUFUBAO_PLATFORM_CHECK_UNAVAILABLE",
+                    "聚福宝 Shipment 当前事实读取失败");
+        }
+    }
+
+    @Override
     public SourceSyncResult pushShipmentResult(SourceShipmentResult result) {
+        if (!allowLegacyUnguardedForTests) {
+            return SourceSyncResult.failed(
+                    "SOURCE_SYNC_EXECUTION_CONTEXT_REQUIRED",
+                    "聚福宝在线发货必须通过 Shipment source-sync execute 入口");
+        }
+        return pushShipmentResult(result, () -> {});
+    }
+
+    @Override
+    public SourceSyncResult pushShipmentResult(
+            SourceShipmentResult result,
+            ExternalWritePermit permit) {
+        if (permit == null) {
+            return SourceSyncResult.failed(
+                    "JUFUBAO_WRITE_PERMIT_REQUIRED",
+                    "聚福宝发货缺少有效外部写许可，未提交平台请求");
+        }
         SourceSyncResult invalid = validate(result);
         if (invalid != null) {
             return invalid;
@@ -128,9 +235,10 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                 new JufubaoShipmentAttemptStore.ShipmentAttemptPayload(
                         result.sourceRef(),
                         result.sourceLineRef(),
-                        result.actualShippedQuantity(),
+                        result.sourceUnitQuantity(),
                         result.carrierOutputValue(),
-                        result.firstTrackingNo());
+                        result.firstTrackingNo(),
+                        result.expectedPlatformEffectHash());
         JufubaoShipmentAttemptStore.ClaimResult claim;
         try {
             claim = attemptStore.claim(payload);
@@ -155,11 +263,19 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                     "JUFUBAO_PUSH_IN_PROGRESS",
                     "同一聚福宝拆单号和快递单号正在处理，未重复提交");
         }
-        return executeClaimed(result, claim.ownerToken());
+        return executeClaimed(result, claim.ownerToken(), permit);
     }
 
-    private SourceSyncResult executeClaimed(SourceShipmentResult result, String ownerToken) {
-        SourceSyncResult outcome = pushOnce(result, ownerToken);
+    @Override
+    public boolean releaseShipmentIntent(String platformIntentKey) {
+        return attemptStore.releaseReconciledNotAccepted(platformIntentKey);
+    }
+
+    private SourceSyncResult executeClaimed(
+            SourceShipmentResult result,
+            String ownerToken,
+            ExternalWritePermit permit) {
+        SourceSyncResult outcome = pushOnce(result, ownerToken, permit);
         String subOrderId = result.sourceLineRef().trim();
         String trackingNo = result.firstTrackingNo().trim();
         try {
@@ -184,35 +300,81 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
         }
     }
 
-    private SourceSyncResult pushOnce(SourceShipmentResult result, String ownerToken) {
+    private SourceSyncResult pushOnce(
+            SourceShipmentResult result,
+            String ownerToken,
+            ExternalWritePermit permit) {
         String subOrderId = result.sourceLineRef().trim();
         boolean externalWriteStarted = false;
         try {
             JufubaoShipmentGateway.OrderState before = shipmentGateway.findOrder(subOrderId);
+            if (before.presentInNoDelivery() && "NO_RECEIPT".equals(before.status())) {
+                shipmentGateway.prepareWrite();
+                attemptStore.markEffectStarted(
+                        subOrderId, result.firstTrackingNo().trim(), ownerToken);
+                attemptStore.verifyWritePermit(
+                        subOrderId, result.firstTrackingNo().trim(), ownerToken);
+                permit.beforeExternalWrite();
+                externalWriteStarted = true;
+                JufubaoShipmentGateway.ReceiveResult received = shipmentGateway.receiveOrder(subOrderId);
+                if (received.outcome() == JufubaoShipmentGateway.ReceiveResult.Outcome.REJECTED) {
+                    String code = safeBusinessCode(received.businessCode());
+                    return SourceSyncResult.failed(
+                            code,
+                            "聚福宝拒绝接单请求（业务码：" + code + "）",
+                            received.platformRef());
+                }
+                if (received.outcome() == JufubaoShipmentGateway.ReceiveResult.Outcome.UNKNOWN) {
+                    return reconciliationRequired("聚福宝接单响应无法确认", received.platformRef());
+                }
+                before = shipmentGateway.awaitNoDelivery(subOrderId);
+                if (!before.presentInNoDelivery() || !"NO_DELIVERY".equals(before.status())) {
+                    return reconciliationRequired(
+                            "聚福宝已受理接单，但订单未进入待发货状态",
+                            received.platformRef());
+                }
+            }
             if (!before.presentInNoDelivery() || !"NO_DELIVERY".equals(before.status())) {
                 return SourceSyncResult.failed(
                         "JUFUBAO_ORDER_NOT_SHIPPABLE",
                         "聚福宝订单当前不在待发货状态，未提交物流");
             }
 
-            List<ObjectNode> products = sanitizedProducts(shipmentGateway.shipmentDetail(subOrderId));
+            JufubaoShipmentGateway.AddressCheck addressCheck =
+                    shipmentGateway.checkShipmentAddress(subOrderId);
+            if (!addressCheck.known()) {
+                return SourceSyncResult.failed(
+                        "JUFUBAO_ADDRESS_CHECK_UNKNOWN",
+                        "聚福宝收货地址检查结果未知，未提交物流");
+            }
+            if (addressCheck.confirmationRequired()) {
+                return SourceSyncResult.failed(
+                        "JUFUBAO_ADDRESS_CONFIRMATION_REQUIRED",
+                        "聚福宝收货地址已变化，需要操作员确认后再发货");
+            }
+
+            JufubaoShipmentGateway.ShipmentDetail initialDetail = shipmentGateway.shipmentDetail(subOrderId);
+            if (!sameReceiver(result, initialDetail == null ? null : initialDetail.receiver())) {
+                return SourceSyncResult.failed(
+                        "JUFUBAO_RECEIVER_MISMATCH",
+                        "Shipment 与聚福宝当前收货信息不一致，未提交物流");
+            }
+            List<ObjectNode> products = sanitizedProducts(initialDetail);
             if (products.isEmpty()) {
                 return SourceSyncResult.failed("JUFUBAO_SHIPMENT_DETAIL_INVALID", "聚福宝发货详情缺少可发商品");
             }
             BigDecimal allowedQuantity;
             try {
-                allowedQuantity = products.stream()
-                        .map(this::allowedQuantity)
-                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+                allowedQuantity = totalAllowedQuantity(products);
             } catch (IllegalArgumentException exception) {
                 return SourceSyncResult.failed(
                         "JUFUBAO_SHIPMENT_DETAIL_INVALID",
                         "聚福宝发货详情的可发数量缺失或非正整数");
             }
-            if (allowedQuantity.compareTo(result.actualShippedQuantity()) != 0) {
+            if (allowedQuantity.compareTo(result.sourceUnitQuantity()) != 0) {
                 return SourceSyncResult.failed(
                         "JUFUBAO_SHIPMENT_QUANTITY_MISMATCH",
-                        "系统实发数量与聚福宝可发数量不一致，未提交物流");
+                        "聚福宝来源平台发货份数与可发数量不一致，未提交物流");
             }
 
             JufubaoShipmentGateway.CarrierOption carrier = carrier(result.carrierOutputValue());
@@ -220,13 +382,55 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                 return SourceSyncResult.failed("JUFUBAO_CARRIER_UNMAPPED", "物流公司未在聚福宝字典中找到，未提交物流");
             }
 
-            shipmentGateway.prepareWrite();
-            attemptStore.markEffectStarted(
-                    subOrderId, result.firstTrackingNo().trim(), ownerToken);
-            externalWriteStarted = true;
-            JufubaoShipmentGateway.SubmitResult submitted = shipmentGateway.submit(
+            if (!externalWriteStarted) {
+                shipmentGateway.prepareWrite();
+            }
+            JufubaoShipmentGateway.ShipmentDetail latestDetail = shipmentGateway.shipmentDetail(subOrderId);
+            if (!sameReceiver(result, latestDetail == null ? null : latestDetail.receiver())) {
+                return SourceSyncResult.failed(
+                        "JUFUBAO_RECEIVER_MISMATCH",
+                        "Shipment 与聚福宝提交前最新收货信息不一致，未提交物流");
+            }
+            products = sanitizedProducts(latestDetail);
+            try {
+                allowedQuantity = totalAllowedQuantity(products);
+            } catch (IllegalArgumentException exception) {
+                return SourceSyncResult.failed(
+                        "JUFUBAO_SHIPMENT_DETAIL_INVALID",
+                        "聚福宝提交前最新可发数量缺失或非正整数");
+            }
+            if (products.isEmpty() || allowedQuantity.compareTo(result.sourceUnitQuantity()) != 0) {
+                return SourceSyncResult.failed(
+                        "JUFUBAO_SHIPMENT_QUANTITY_MISMATCH",
+                        "聚福宝提交前最新可发数量已变化，未提交物流");
+            }
+            JufubaoShipmentGateway.ShipmentCommand command =
                     new JufubaoShipmentGateway.ShipmentCommand(
-                            subOrderId, products, carrier.value(), result.firstTrackingNo().trim()));
+                            subOrderId,
+                            submissionProducts(products),
+                            carrier.value(),
+                            result.firstTrackingNo().trim());
+            String latestEffectHash = effectHash(products, carrier);
+            if (!isBlank(result.expectedPlatformEffectHash())
+                    && !result.expectedPlatformEffectHash().equals(latestEffectHash)) {
+                return SourceSyncResult.failed(
+                        "JUFUBAO_WRITE_PLAN_CHANGED",
+                        "聚福宝可发商品或承运商字典在确认后变化，未提交物流");
+            }
+
+            if (!externalWriteStarted) {
+                attemptStore.markEffectStarted(
+                        subOrderId, result.firstTrackingNo().trim(), ownerToken);
+                attemptStore.verifyWritePermit(
+                        subOrderId, result.firstTrackingNo().trim(), ownerToken);
+                permit.beforeExternalWrite();
+                externalWriteStarted = true;
+            } else {
+                attemptStore.verifyWritePermit(
+                        subOrderId, result.firstTrackingNo().trim(), ownerToken);
+                permit.beforeExternalWrite();
+            }
+            JufubaoShipmentGateway.SubmitResult submitted = shipmentGateway.submit(command);
             if (submitted.outcome() == JufubaoShipmentGateway.SubmitResult.Outcome.REJECTED) {
                 String code = safeBusinessCode(submitted.businessCode());
                 return SourceSyncResult.failed(
@@ -238,7 +442,7 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                 return reconciliationRequired("聚福宝发货响应无法确认", submitted.platformRef());
             }
 
-            JufubaoShipmentGateway.OrderState after = shipmentGateway.findOrder(subOrderId);
+            JufubaoShipmentGateway.OrderState after = shipmentGateway.awaitNotPending(subOrderId);
             if (after.presentInNoDelivery()) {
                 return reconciliationRequired(
                         "聚福宝已受理，但订单仍在待发货列表",
@@ -267,16 +471,28 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                 || result.actualShippedQuantity().signum() <= 0) {
             return SourceSyncResult.failed("JUFUBAO_QUANTITY_INVALID", "聚福宝实发数量必须为正整数");
         }
-        if (!("SHIPPED".equals(result.outcome()) || "PARTIAL".equals(result.outcome()))) {
+        if (result.sourceUnitQuantity() == null
+                || result.sourceUnitQuantity().stripTrailingZeros().scale() > 0
+                || result.sourceUnitQuantity().signum() <= 0) {
+            return SourceSyncResult.failed(
+                    "JUFUBAO_SOURCE_QUANTITY_INVALID",
+                    "聚福宝来源平台发货份数必须为正整数");
+        }
+        if (!"SHIPPED".equals(result.outcome())) {
             return SourceSyncResult.failed(
                     "JUFUBAO_OUTCOME_NOT_SHIPPABLE",
-                    "只有已发货或部分发货的履约结果可以回传聚福宝");
+                    "P0 只允许完整已发货结果回传聚福宝");
         }
         if (isBlank(result.carrierOutputValue())) {
             return SourceSyncResult.failed("JUFUBAO_CARRIER_REQUIRED", "聚福宝物流公司不能为空");
         }
         if (isBlank(result.firstTrackingNo())) {
             return SourceSyncResult.failed("JUFUBAO_TRACKING_REQUIRED", "聚福宝快递单号不能为空");
+        }
+        if (isBlank(result.receiverName())
+                || isBlank(result.receiverPhone())
+                || isBlank(result.receiverAddress())) {
+            return SourceSyncResult.failed("JUFUBAO_RECEIVER_REQUIRED", "聚福宝发货缺少 Shipment 收货信息");
         }
         return null;
     }
@@ -318,6 +534,46 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
         return quantity;
     }
 
+    private BigDecimal totalAllowedQuantity(List<ObjectNode> products) {
+        return products.stream()
+                .map(this::allowedQuantity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private boolean sameReceiver(
+            SourceShipmentResult result,
+            JufubaoShipmentGateway.ReceiverSnapshot platform) {
+        return platform != null
+                && normalizeReceiver(result.receiverName()).equals(normalizeReceiver(platform.name()))
+                && normalizeReceiver(result.receiverPhone()).equals(normalizeReceiver(platform.phone()))
+                && normalizeReceiver(result.receiverAddress()).equals(normalizeReceiver(platform.address()));
+    }
+
+    private static String normalizeReceiver(String value) {
+        return Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFKC)
+                .trim()
+                .replaceAll("\\s+", " ");
+    }
+
+    /**
+     * HAR entry 667 的写 DTO 不是 {@code sub-order-info} 的读取 DTO 原样透传：只保留平台
+     * 实际提交字段，并把整数型 {@code allow_send_num} 转成字符串型 {@code send_num}。
+     */
+    private List<ObjectNode> submissionProducts(List<ObjectNode> products) {
+        List<ObjectNode> submissions = new ArrayList<>();
+        for (ObjectNode product : products) {
+            ObjectNode submission = JsonNodeFactory.instance.objectNode();
+            for (String field : SHIPMENT_PRODUCT_WRITE_FIELDS) {
+                if (product.has(field)) {
+                    submission.set(field, product.get(field).deepCopy());
+                }
+            }
+            submission.put("send_num", allowedQuantity(product).toPlainString());
+            submissions.add(submission);
+        }
+        return List.copyOf(submissions);
+    }
+
     private void removeBrowserOnlyFields(JsonNode node) {
         if (node instanceof ObjectNode object) {
             Iterator<Map.Entry<String, JsonNode>> fields = object.fields();
@@ -338,10 +594,19 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
 
     private JufubaoShipmentGateway.CarrierOption carrier(String configuredValue) {
         String value = configuredValue.trim();
-        return shipmentGateway.carrierOptions().stream()
+        List<JufubaoShipmentGateway.CarrierOption> matches = shipmentGateway.carrierOptions().stream()
                 .filter(option -> option.label().equals(value) || Integer.toString(option.value()).equals(value))
-                .findFirst()
-                .orElse(null);
+                .limit(2)
+                .toList();
+        return matches.size() == 1 ? matches.getFirst() : null;
+    }
+
+    private String effectHash(
+            List<ObjectNode> products,
+            JufubaoShipmentGateway.CarrierOption carrier) {
+        return JufubaoShipmentAttemptStore.payloadHash(
+                EFFECT_HASH_MAPPER,
+                new ShipmentWriteFingerprint(carrier.value(), submissionProducts(products)));
     }
 
     private SourceSyncResult reconciliationRequired(String detail, String platformRef) {
@@ -365,5 +630,7 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();
     }
+
+    private record ShipmentWriteFingerprint(int companyId, List<ObjectNode> productList) {}
 
 }

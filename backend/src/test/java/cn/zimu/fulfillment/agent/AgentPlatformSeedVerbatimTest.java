@@ -20,8 +20,9 @@ import org.springframework.dao.DataIntegrityViolationException;
  * <p>真实 PostgreSQL（Testcontainers，{@link AgentTestcontainersBase}）+ 完整应用启动
  * （Flyway 执行全部迁移）后，断言：
  * <ul>
- *   <li>DB 是定义唯一真源：上下文无代码定义 bean 残留（T02），active 种子恰为 4 个
- *       （procurement-price-agent / data-query-agent / intent-recognition / meta-agent），
+ *   <li>DB 是定义唯一真源：上下文无代码定义 bean 残留（T02），active 种子恰为 5 个
+ *       （procurement-price-agent / data-query-agent / intent-recognition / meta-agent /
+ *       source-sync-reviewer），
  *       procurement-price-agent version=2、其余 version=1、status='active'、allow_write 仅 meta-agent 为 true、守卫豁免为空，
  *       注册表（holder 当前实例）按 status='active' AND enabled=true 可解析全部 slug；</li>
  *   <li>meta-agent 播种行：version=1、status='active'、allow_write=true、enabled=true、
@@ -67,7 +68,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                     .as("代码定义 bean %s 必须已删除", beanName)
                     .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
         }
-        // 种子为唯一来源：active 定义恰为 4 个，身份与版本链字段与 V33 播种一致
+        // 种子为唯一来源：active 定义恰为 5 个，身份与版本链字段与迁移播种一致
         List<DefinitionRow> active = jdbc.query(
                 "SELECT agent_slug, name, description, system_prompt, prompt_version, model_ref, "
                         + "enabled, version, status, allow_write, tool_whitelist::text, guard_exemptions::text "
@@ -75,7 +76,8 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                 (rs, i) -> row(rs));
         assertThat(active).extracting(DefinitionRow::slug)
                 .containsExactlyInAnyOrder(
-                        "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent");
+                        "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent",
+                        "source-sync-reviewer");
         assertThat(active).allSatisfy(row -> {
             assertThat(row.version()).isEqualTo("procurement-price-agent".equals(row.slug()) ? 2 : 1);
             assertThat(row.status()).isEqualTo("active");
@@ -90,10 +92,12 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                 assertThat(row.toolWhitelist()).isNotEmpty();
             }
         });
-        // 运行条件 status='active' AND enabled=true：注册表（holder 当前实例）可解析全部 4 slug
+        // 运行条件 status='active' AND enabled=true：注册表（holder 当前实例）可解析全部 5 slug
         AgentRegistryHolder holder = context.getBean(AgentRegistryHolder.class);
         assertThat(holder.current().slugs())
-                .containsExactlyInAnyOrder("procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent");
+                .containsExactlyInAnyOrder(
+                        "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent",
+                        "source-sync-reviewer");
         assertThat(holder.current().isEnabled("procurement-price-agent")).isTrue();
         assertThat(holder.current().isEnabled("meta-agent")).isTrue();
     }
@@ -109,6 +113,27 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
         assertThat(row.toolWhitelist())
                 .containsExactly("list_agent_tools", "create_agent_draft", "update_agent_draft");
         assertThat(row.guardExemptions()).isEmpty();
+    }
+
+    @Test
+    void sourceSyncReviewerSeedIsReadOnlyAdvisoryAndUnique() {
+        DefinitionRow row = loadDefinition("source-sync-reviewer");
+        assertThat(row.version()).isEqualTo(1);
+        assertThat(row.status()).isEqualTo("active");
+        assertThat(row.enabled()).isTrue();
+        assertThat(row.allowWrite()).isFalse();
+        assertThat(row.toolWhitelist()).containsExactly("check_shipment_source_sync");
+        assertThat(row.guardExemptions())
+                .as("source-sync reviewer must not gain a blanket PII exemption")
+                .isEmpty();
+        assertThat(row.systemPrompt())
+                .contains("只读", "建议", "不得执行回传", "不得对账");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.agent_definitions "
+                                + "WHERE agent_slug='source-sync-reviewer' AND version=1",
+                        Long.class))
+                .as("Flyway/restart replay must retain exactly one seeded definition")
+                .isEqualTo(1L);
     }
 
     // ------------------------------------------------------------------

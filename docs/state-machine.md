@@ -81,7 +81,20 @@ CREATED → SHIPPED
 
 ### 2.6 SyncStatus
 
-`PENDING → SYNCED`；失败分支：`SYNC_FAILED → SYNCED`（人工/系统重试）。
+```text
+PENDING / SYNC_FAILED ──新鲜 check + 人工 execute──→ SYNCING
+SYNCING ──平台终态已验证──────────────────────────→ SYNCED
+SYNCING ──明确拒绝或确认无外部效果────────────────→ SYNC_FAILED
+SYNCING ──可能已有外部效果但结果未知──────────────→ RECONCILIATION_REQUIRED
+RECONCILIATION_REQUIRED ──ACCEPTED────────────────→ SYNCED
+RECONCILIATION_REQUIRED ──NOT_ACCEPTED────────────→ PENDING
+RECONCILIATION_REQUIRED ──UNCERTAIN───────────────→ RECONCILIATION_REQUIRED
+```
+
+`SYNCING` 是已持久化写意图，不是平台成功。租约过期且尚无 effect 的执行收敛为安全失败；
+effect 已开始则只能进入人工对账，恢复器绝不自动重放外部写。在线回传与来源文件 fallback
+按 Shipment 行锁双向互斥；文件只在父 export 合法进入 `PUSHING` 时取得 claim，已失效 artifact
+不得进入该状态。
 
 ### 2.7 ProcurementStatus
 

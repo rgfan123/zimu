@@ -45,7 +45,8 @@ class AgentRegistryHolderIntegrationTest extends AgentTestcontainersBase {
         assertThat(holder.current().isEnabled("data-query-agent")).isTrue();
         assertThat(holder.current().slugs())
                 .containsExactlyInAnyOrder(
-                        "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent");
+                        "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent",
+                        "source-sync-reviewer");
     }
 
     @Test

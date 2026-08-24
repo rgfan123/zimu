@@ -7,6 +7,7 @@ import cn.zimu.fulfillment.order.domain.SettlementMethod;
 import cn.zimu.fulfillment.order.dto.CanonicalOrderInput;
 import cn.zimu.fulfillment.order.dto.CustomerInput;
 import cn.zimu.fulfillment.order.dto.OrderItemInput;
+import cn.zimu.fulfillment.order.dto.Receiver;
 import cn.zimu.fulfillment.order.dto.Settlement;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -28,8 +29,9 @@ import org.springframework.stereotype.Component;
  *   <li>{@code created_time}（epoch 秒）→ 结账时间。</li>
  * </ul>
  *
- * <p><b>收货人边界</b>：orders/query 的 list 没有已验证的姓名/电话/地址契约。因此转换结果
- * 不构造空 Receiver，也不创建可履约订单；它通过 {@link StructuredOrderRow#reviewRequired}
+ * <p><b>收货人边界</b>：orders/query 的 list 不提供完整姓名/电话/地址；拉单 Connector 必须按
+ * 子单读取已捕获的 sub-order-info，并把其完整 receiver 传入本转换器。详情缺失或字段不完整时
+ * 不构造空 Receiver、不创建可履约订单，而是通过 {@link StructuredOrderRow#reviewRequired}
  * 保留脱敏原始血缘并进入人工复核。</p>
  *
  * <p><b>脱敏</b>：rawSnapshot 只保留已捕获契约中的允许字段；供应商名掩码，商品列表逐字段
@@ -71,6 +73,12 @@ public final class JufubaoOrderTransform {
     }
 
     public StructuredOrderRow toRow(Map<String, Object> order) {
+        return toRow(order, null);
+    }
+
+    public StructuredOrderRow toRow(
+            Map<String, Object> order,
+            JufubaoShipmentGateway.ShipmentDetail shipmentDetail) {
         Map<String, Object> source = stringKeys(order);
         String mainOrderId = text(source, "main_order_id");
         String subOrderId = text(source, "sub_order_id");
@@ -80,14 +88,23 @@ public final class JufubaoOrderTransform {
         String customerRef = supplierName.isBlank() ? (sourceRef.isBlank() ? "JUFUBAO" : sourceRef) : supplierName;
         long createdEpoch = epochOf(source.get("created_time"), 0L);
 
+        JufubaoShipmentGateway.ReceiverSnapshot currentReceiver =
+                shipmentDetail == null ? null : shipmentDetail.receiver();
+        Receiver receiver = completeReceiver(currentReceiver)
+                ? new Receiver(
+                        currentReceiver.name().trim(),
+                        currentReceiver.phone().trim(),
+                        null, null, null, null,
+                        currentReceiver.address().trim())
+                : null;
+        List<OrderItemInput> items = itemsOf(source, subOrderId);
         CanonicalOrderInput canonical = new CanonicalOrderInput(
                 SourceChannel.JUFUBAO,
                 sourceRef,
                 null,
                 new CustomerInput(null, customerRef, customerRef),
-                // orders/query 没有可信收货人契约；reviewRequired 行不会进入 OrderCreateService。
-                null,
-                itemsOf(source, subOrderId),
+                receiver,
+                items,
                 new Settlement(SettlementMethod.OTHER, Instant.ofEpochSecond(createdEpoch)),
                 null,
                 null);
@@ -100,13 +117,24 @@ public final class JufubaoOrderTransform {
         if (!source.containsKey("created_time")) {
             snapshot.put("created_time_missing", true);
         }
-        return StructuredOrderRow.reviewRequired(
-                sourceRef,
-                subOrderId,
-                canonical,
-                snapshot,
-                RECEIVER_REVIEW_CODE,
-                "聚福宝订单缺少已验证的收货人契约，禁止生成可履约订单");
+        snapshot.put("receiver_source", "sub-order-info");
+        snapshot.put("receiver_missing", receiver == null);
+        if (receiver == null) {
+            return StructuredOrderRow.reviewRequired(
+                    sourceRef, subOrderId, canonical, snapshot, RECEIVER_REVIEW_CODE,
+                    "聚福宝订单详情缺少完整收货信息，禁止生成可履约订单");
+        }
+        if (hasInvalidQuantity(source) || items.isEmpty()) {
+            return StructuredOrderRow.reviewRequired(
+                    sourceRef, subOrderId, canonical, snapshot, "JUFUBAO_QUANTITY_INVALID",
+                    "聚福宝订单商品数量缺失或不是正整数，禁止生成可履约订单");
+        }
+        if (createdEpoch <= 0) {
+            return StructuredOrderRow.reviewRequired(
+                    sourceRef, subOrderId, canonical, snapshot, "JUFUBAO_CREATED_TIME_REQUIRED",
+                    "聚福宝订单缺少有效创建时间，禁止生成可履约订单");
+        }
+        return new StructuredOrderRow(sourceRef, subOrderId, canonical, snapshot);
     }
 
     // ---------------------------------------------------------------- 商品行
@@ -238,8 +266,14 @@ public final class JufubaoOrderTransform {
             }
             out.put("product_list", sanitizedProducts);
         }
-        out.put("receiver_missing", true);
         return out;
+    }
+
+    private static boolean completeReceiver(JufubaoShipmentGateway.ReceiverSnapshot receiver) {
+        return receiver != null
+                && receiver.name() != null && !receiver.name().isBlank()
+                && receiver.phone() != null && !receiver.phone().isBlank()
+                && receiver.address() != null && !receiver.address().isBlank();
     }
 
     private static void copy(Map<String, Object> source, Map<String, Object> target, String key) {
