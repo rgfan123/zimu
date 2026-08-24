@@ -102,11 +102,11 @@ public class OrderQueryService {
         StringBuilder where = new StringBuilder(" WHERE o.data_scope = 'BUSINESS'");
         if (query.dateFrom() != null) {
             where.append(" AND o.created_at >= ?");
-            args.add(query.dateFrom());
+            args.add(java.sql.Timestamp.from(query.dateFrom()));
         }
         if (query.dateTo() != null) {
             where.append(" AND o.created_at < ?");
-            args.add(query.dateTo());
+            args.add(java.sql.Timestamp.from(query.dateTo()));
         }
         if (query.sourceChannel() != null) {
             where.append(" AND COALESCE(source.effective_source_channel, o.source_channel) = ?");

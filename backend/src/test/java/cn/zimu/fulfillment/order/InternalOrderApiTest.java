@@ -408,6 +408,17 @@ class InternalOrderApiTest {
     }
 
     @Test
+    void orderListAcceptsShanghaiDateRangeWithoutJdbcTypeInferenceFailure() {
+        ResponseEntity<Map> response = http.getForEntity(
+                "/api/v1/orders?date_from=2026-08-24&date_to=2026-08-24&page=0&size=1",
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody()).containsKeys("items", "total_elements");
+    }
+
+    @Test
     void mappedCustomBundleCreatesAnOrderInsteadOfRollingBack() {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
