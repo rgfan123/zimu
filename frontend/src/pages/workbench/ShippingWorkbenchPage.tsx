@@ -7,6 +7,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { Button } from 'antd';
+import dayjs from 'dayjs';
 import { CloudSyncOutlined, FileExcelOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import { platformOrdersApi } from '@/api/endpoints';
@@ -48,7 +49,10 @@ export default function ShippingWorkbenchPage() {
     syncInFlight.current = true;
     setState({ phase: 'loading' });
     try {
-      const result = await platformOrdersApi.refresh();
+      // 拉取窗口显式收窄到「今天」：后端默认回溯 30 天，彩食鲜侧导出任务会跑到网关超时
+      // （实测 30 天 >256s 超时，1 天 9s、7 天 7s）。「今日发货工作台」的语义本就是当天。
+      const today = dayjs().format('YYYY-MM-DD');
+      const result = await platformOrdersApi.refresh({ date_begin: today, date_end: today });
       setState({ phase: 'success', result });
     } catch (error) {
       setState({ phase: 'error', error });
