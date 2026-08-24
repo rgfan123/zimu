@@ -121,7 +121,13 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
                 lines.save(draftLine);
             }
             draft.setMissingFields(missingFields(draft, draftLineList));
-            drafts.save(draft);
+            // saveAndFlush 而非 save：revision 是 @Version，只在 flush 时递增。
+            // 卡片入队走 JdbcTemplate（不触发 Hibernate auto-flush），若此处不 flush，
+            // 卡片行会记下「递增前」的 revision，事务提交后草稿 revision 前进一位，
+            // OrderDraftCardRunner 便判定「草稿已被修订取代」→ 卡片 100% 发不出去。
+            // 该 off-by-one 在 missingFields 非空（实体被弄脏）时必现，即「需补资料」的
+            // 确认卡片——恰恰是这个功能存在的意义。实测：修复前卡片恒 SUPERSEDED 从未投递过。
+            draft = drafts.saveAndFlush(draft);
             cases.save(buildCase(submission, result, output, draft, draftLineList));
             cardEnqueuer.enqueue(draft.getId(), draft.getRevision());
             created.add(draft.getId());
