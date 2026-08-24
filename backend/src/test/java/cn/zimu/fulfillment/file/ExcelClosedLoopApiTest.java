@@ -1,7 +1,29 @@
 package cn.zimu.fulfillment.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import cn.zimu.fulfillment.common.audit.AuditActorType;
+import cn.zimu.fulfillment.common.domain.SourceChannel;
+import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.connector.jufubao.JufubaoShipmentGateway;
+import cn.zimu.fulfillment.connector.sync.SourceShipmentSyncService;
+import cn.zimu.fulfillment.connector.sync.SourceSyncCheck;
+import cn.zimu.fulfillment.connector.sync.SourceSyncExecuteCommand;
+import cn.zimu.fulfillment.connector.sync.SourceSyncStatus;
+import cn.zimu.fulfillment.customer.ImportedCustomerIdentity;
+import cn.zimu.fulfillment.fulfillment.ShipmentTrackingCommand;
+import cn.zimu.fulfillment.fulfillment.ShipmentTrackingService;
+import cn.zimu.fulfillment.order.domain.LineType;
+import cn.zimu.fulfillment.order.domain.SettlementMethod;
+import cn.zimu.fulfillment.order.dto.CanonicalOrderInput;
+import cn.zimu.fulfillment.order.dto.CustomerInput;
+import cn.zimu.fulfillment.order.dto.OrderItemInput;
+import cn.zimu.fulfillment.order.dto.Receiver;
+import cn.zimu.fulfillment.order.dto.Settlement;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
@@ -31,6 +53,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -61,6 +84,10 @@ class ExcelClosedLoopApiTest {
     @Autowired TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
     @Autowired TrackingFileService trackingFileService;
+    @Autowired SourceImportService sourceImportService;
+    @Autowired ShipmentTrackingService shipmentTrackingService;
+    @Autowired SourceShipmentSyncService sourceShipmentSyncService;
+    @MockitoBean JufubaoShipmentGateway jufubaoGateway;
 
     @BeforeEach
     void addExplicitFeixiangMappings() {
@@ -70,6 +97,19 @@ class ExcelClosedLoopApiTest {
                 SELECT customer_id, 'FEIXIANG', 'FX-MEMBER-001'
                 FROM app.customer_source_refs WHERE source_channel='WECOM'
                 ON CONFLICT (source_channel, source_customer_ref) DO NOTHING
+                """);
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                SELECT 'JUFUBAO', 'JFB-PRODUCT-E2E', '子牧羊小腿', '标准箱', 2.000, sku_id, true
+                FROM app.source_channel_skus
+                WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-TP-001'
+                ON CONFLICT (source_channel, source_sku_ref) DO UPDATE
+                SET sku_id=EXCLUDED.sku_id, quantity_multiplier=EXCLUDED.quantity_multiplier,
+                    source_product_name=EXCLUDED.source_product_name,
+                    source_specification=EXCLUDED.source_specification, active=true
                 """);
         jdbc.update(
                 """
@@ -443,6 +483,133 @@ class ExcelClosedLoopApiTest {
         assertThat(csv.length >= 2 && csv[0] == 'P' && csv[1] == 'K').isFalse();
         String text = new String(csv, StandardCharsets.UTF_8);
         assertThat(text).contains("已发货", "京东物流", "JDVAFX-CLOSED-LOOP-001");
+    }
+
+    @Test
+    void confirmedJufubaoImportAndFormalTrackingReachVerifiedSourceSyncOutcome() throws Exception {
+        jdbc.update(
+                """
+                UPDATE app.connector_configs
+                SET enabled=TRUE, mode='REAL', transport_mode='API',
+                    config='{"carrier_mappings":{"JD":"京东物流"}}'::jsonb,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE source_channel='JUFUBAO'
+                """);
+        String suffix = java.util.UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        String sourceRef = "JFB-E2E-" + suffix;
+        String sourceLineRef = sourceRef + "-LINE";
+        String receiverName = "聚福宝闭环收货人";
+        String receiverPhone = "13800000000";
+        String receiverAddress = "河南省郑州市金水区测试路 1 号";
+        String sourceCustomerRef = ImportedCustomerIdentity.from(receiverName, receiverPhone)
+                .sourceCustomerRef();
+        CanonicalOrderInput input = new CanonicalOrderInput(
+                SourceChannel.JUFUBAO,
+                sourceRef,
+                "v1",
+                new CustomerInput(null, sourceCustomerRef, receiverName),
+                new Receiver(receiverName, receiverPhone, "河南省", "郑州市", "金水区", null, receiverAddress),
+                List.of(new OrderItemInput(
+                        sourceLineRef,
+                        LineType.SINGLE,
+                        null,
+                        "JFB-PRODUCT-E2E",
+                        "子牧羊小腿",
+                        "标准箱",
+                        "箱",
+                        "2",
+                        null)),
+                new Settlement(SettlementMethod.MONTHLY, java.time.Instant.now()),
+                "jufubao-source-sync-e2e",
+                List.of());
+        Map<String, Object> imported = sourceImportService.importStructured(
+                SourceChannel.JUFUBAO,
+                List.of(new StructuredOrderRow(
+                        sourceRef,
+                        sourceLineRef,
+                        input,
+                        Map.of("source_ref", sourceRef, "source_line_ref", sourceLineRef))),
+                "PULL-" + suffix,
+                new CommandContext("req-import-" + suffix, "trace-" + suffix, "excel-test"));
+
+        ResponseEntity<Map> confirmed = confirmBatch(
+                imported.get("id").toString(),
+                "confirm-jfb-" + suffix.toLowerCase());
+
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String exportId = ((List<?>) confirmed.getBody().get("generated_fulfillment_export_ids"))
+                .getFirst()
+                .toString();
+        Map<String, Object> export = get("/api/v1/fulfillment-exports/" + exportId);
+        Map<?, ?> exportLine = (Map<?, ?>) ((List<?>) export.get("lines")).getFirst();
+        String shipmentId = exportLine.get("shipment_id").toString();
+        String trackingNumber = "JDVA-JFB-" + suffix;
+        long orderId = jdbc.queryForObject(
+                "SELECT order_id FROM app.shipments WHERE id=?",
+                Long.class,
+                Long.parseLong(shipmentId));
+        shipmentTrackingService.accept(
+                new ShipmentTrackingCommand(
+                        null,
+                        Long.parseLong(shipmentId),
+                        Long.parseLong(exportLine.get("fulfillment_id").toString()),
+                        Long.parseLong(exportLine.get("order_line_id").toString()),
+                        orderId,
+                        "SHIPPED",
+                        new BigDecimal("4.000"),
+                        "JD",
+                        "京东物流",
+                        trackingNumber,
+                        java.time.Instant.now(),
+                        null,
+                        Map.of("source", "jufubao-source-sync-e2e")),
+                new CommandContext("req-tracking-" + suffix, "trace-" + suffix, "excel-test"));
+
+        var product = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode()
+                .put("product_id", "p-1")
+                .put("allow_send_num", 2);
+        var detail = new JufubaoShipmentGateway.ShipmentDetail(
+                List.of(product),
+                new JufubaoShipmentGateway.ReceiverSnapshot(
+                        receiverName, receiverPhone, receiverAddress),
+                null);
+        when(jufubaoGateway.findOrder(sourceLineRef))
+                .thenReturn(JufubaoShipmentGateway.OrderState.noDelivery(sourceLineRef));
+        when(jufubaoGateway.checkShipmentAddress(sourceLineRef))
+                .thenReturn(JufubaoShipmentGateway.AddressCheck.clear());
+        when(jufubaoGateway.shipmentDetail(sourceLineRef)).thenReturn(detail);
+        when(jufubaoGateway.carrierOptions())
+                .thenReturn(List.of(new JufubaoShipmentGateway.CarrierOption("京东物流", 17)));
+        when(jufubaoGateway.submit(any()))
+                .thenReturn(JufubaoShipmentGateway.SubmitResult.accepted("req-jfb-e2e-" + suffix));
+        when(jufubaoGateway.awaitNotPending(sourceLineRef))
+                .thenReturn(JufubaoShipmentGateway.OrderState.notPending(sourceLineRef));
+
+        CommandContext sourceSyncContext = new CommandContext(
+                "req-source-sync-" + suffix,
+                "trace-" + suffix,
+                "excel-test",
+                "excel-test");
+        SourceSyncCheck check = sourceShipmentSyncService.check(
+                Long.parseLong(shipmentId), sourceSyncContext, AuditActorType.HUMAN);
+        assertThat(check.blockers())
+                .extracting(cn.zimu.fulfillment.connector.sync.SourceSyncBlocker::code)
+                .isEmpty();
+        assertThat(check.ready()).isTrue();
+
+        var executed = sourceShipmentSyncService.execute(
+                Long.parseLong(shipmentId),
+                new SourceSyncExecuteCommand(check.checkHash()),
+                "execute-jfb-" + suffix.toLowerCase(),
+                sourceSyncContext);
+
+        assertThat(executed.result().status()).isEqualTo(SourceSyncStatus.SYNCED);
+        assertThat(executed.result().businessCode()).isEqualTo("SOURCE_SYNC_VERIFIED");
+        assertThat(jdbc.queryForObject(
+                "SELECT sync_status FROM app.shipment_syncs WHERE shipment_id=?",
+                String.class,
+                Long.parseLong(shipmentId))).isEqualTo("SYNCED");
+        verify(jufubaoGateway, times(1)).submit(any());
     }
 
     @Test

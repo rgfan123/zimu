@@ -1,8 +1,16 @@
 package cn.zimu.fulfillment.mcp;
 
+import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.WriteCommands;
+import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
+import cn.zimu.fulfillment.connector.sync.SourceShipmentSyncService;
+import cn.zimu.fulfillment.connector.sync.SourceSyncBlocker;
+import cn.zimu.fulfillment.connector.sync.SourceSyncCheck;
+import cn.zimu.fulfillment.connector.sync.SourceSyncFacts;
+import cn.zimu.fulfillment.connector.sync.SourceSyncProjection;
+import cn.zimu.fulfillment.connector.sync.SourceSyncStatus;
 import cn.zimu.fulfillment.fulfillment.FulfillmentController;
 import cn.zimu.fulfillment.fulfillment.FulfillmentReadService;
 import cn.zimu.fulfillment.inventory.InventoryDetailsService;
@@ -42,6 +50,7 @@ public class McpDomainReadTools {
     private final InventoryOverviewService inventoryOverview;
     private final InventoryDetailsService inventoryDetails;
     private final MasterDataService masterData;
+    private final SourceShipmentSyncService sourceSync;
     private final ObjectMapper objectMapper;
 
     public McpDomainReadTools(
@@ -49,11 +58,13 @@ public class McpDomainReadTools {
             InventoryOverviewService inventoryOverview,
             InventoryDetailsService inventoryDetails,
             MasterDataService masterData,
+            SourceShipmentSyncService sourceSync,
             ObjectMapper objectMapper) {
         this.reads = reads;
         this.inventoryOverview = inventoryOverview;
         this.inventoryDetails = inventoryDetails;
         this.masterData = masterData;
+        this.sourceSync = sourceSync;
         this.objectMapper = objectMapper;
         this.tools = List.of(
                 new McpToolRegistry.SimpleTool(
@@ -148,7 +159,15 @@ public class McpDomainReadTools {
                         "list_fulfillment_providers",
                         "查询全部履约方主数据（非 PII）。",
                         schema(Map.of(), List.of()),
-                        this::listFulfillmentProviders));
+                        this::listFulfillmentProviders),
+                new McpToolRegistry.SimpleTool(
+                        "check_shipment_source_sync",
+                        "只读检查指定 Shipment 的来源回传状态、匹配布尔值与数量差异；"
+                                + "不返回姓名、电话、地址或完整运单号，不能执行或对账。",
+                        schema(
+                                Map.of("shipment_id", stringProperty("Shipment ID")),
+                                List.of("shipment_id")),
+                        this::checkShipmentSourceSync));
     }
 
     private final List<McpTool> tools;
@@ -240,6 +259,181 @@ public class McpDomainReadTools {
 
     private JsonNode listFulfillmentProviders(McpRequestContext context, Map<String, Object> args) {
         return json(masterData.providers());
+    }
+
+    private JsonNode checkShipmentSourceSync(McpRequestContext context, Map<String, Object> args) {
+        SourceSyncCheck check = sourceSync.check(
+                identifier(args, "shipment_id"),
+                context.requireCommandContext(),
+                AuditActorType.AGENT);
+        return safeSourceSyncProjection(check, objectMapper);
+    }
+
+    /**
+     * Agent 面的来源回传安全投影。
+     *
+     * <p>严禁对 {@link SourceSyncCheck} 直接序列化后再删字段：那种做法会在 DTO
+     * 新增字段时默认泄漏。这里只显式构造业务判定所需的布尔值、数量、状态和哈希。
+     */
+    static ObjectNode safeSourceSyncProjection(SourceSyncCheck check, ObjectMapper mapper) {
+        ObjectNode result = mapper.createObjectNode();
+        result.put("shipment_id", check.shipmentId());
+        result.put("ready", check.ready());
+
+        SourceSyncFacts internal = check.internal();
+        SourcePlatformCheckResult platform = check.platform();
+        SourceSyncProjection projection = check.projection();
+        boolean platformAvailable = platform != null && platform.available();
+
+        if (internal != null && internal.sourceChannel() != null) {
+            result.put("source_channel", internal.sourceChannel().name());
+        }
+
+        ObjectNode receiver = result.putObject("receiver_comparison");
+        receiver.put(
+                "name_matches",
+                platformAvailable
+                        && internal != null
+                        && present(internal.receiverName())
+                        && present(platform.receiverName())
+                        && !hasBlocker(check, "SOURCE_RECEIVER_NAME_MISMATCH"));
+        receiver.put(
+                "phone_matches",
+                platformAvailable
+                        && internal != null
+                        && present(internal.receiverPhone())
+                        && present(platform.receiverPhone())
+                        && !hasBlocker(check, "SOURCE_RECEIVER_PHONE_MISMATCH"));
+        receiver.put(
+                "address_matches",
+                platformAvailable
+                        && internal != null
+                        && present(internal.receiverAddress())
+                        && present(platform.receiverAddress())
+                        && !hasBlocker(check, "SOURCE_RECEIVER_ADDRESS_MISMATCH"));
+        receiver.put(
+                "all_match",
+                receiver.get("name_matches").asBoolean()
+                        && receiver.get("phone_matches").asBoolean()
+                        && receiver.get("address_matches").asBoolean());
+
+        ObjectNode quantity = result.putObject("quantity_comparison");
+        if (internal != null) {
+            quantity.put("ordered_source_quantity", internal.orderedSourceQuantity());
+            quantity.put("shipped_source_quantity", internal.shippedSourceQuantity());
+            quantity.put("internal_shipped_quantity", internal.internalShippedQuantity());
+        }
+        if (platform != null) {
+            quantity.put("platform_sendable_quantity", platform.sendableQuantity());
+        }
+        quantity.put(
+                "matches",
+                platformAvailable
+                        && internal != null
+                        && internal.shippedSourceQuantity() != null
+                        && platform.sendableQuantity() != null
+                        && internal.shippedSourceQuantity().compareTo(platform.sendableQuantity()) == 0
+                        && !hasBlocker(check, "SOURCE_PLATFORM_SENDABLE_QUANTITY_MISMATCH"));
+
+        ObjectNode platformSummary = result.putObject("platform_summary");
+        platformSummary.put("available", platformAvailable);
+        platformSummary.put("acceptance_required", platform != null && platform.acceptanceRequired());
+        platformSummary.put(
+                "address_status",
+                platform == null || platform.addressStatus() == null ? "UNKNOWN" : platform.addressStatus().name());
+        platformSummary.put("carrier_mapped", platform != null && platform.carrierMapped());
+
+        ObjectNode shipmentSummary = result.putObject("shipment_summary");
+        shipmentSummary.put(
+                "tracking_present",
+                internal != null && internal.trackingNumber() != null && !internal.trackingNumber().isBlank());
+        shipmentSummary.put(
+                "carrier_configured",
+                internal != null
+                        && internal.carrierOutputValue() != null
+                        && !internal.carrierOutputValue().isBlank());
+
+        if (projection != null) {
+            ObjectNode sync = result.putObject("sync_projection");
+            if (projection.status() != null) {
+                sync.put("status", projection.status().name());
+            }
+            sync.put("attempt_count", projection.attemptCount());
+            sync.put("lock_version", projection.lockVersion());
+            if (projection.syncedAt() != null) {
+                sync.put("synced_at", projection.syncedAt().toString());
+            }
+        }
+
+        ArrayNode blockerCodes = result.putArray("blocker_codes");
+        check.blockers().stream()
+                .map(SourceSyncBlocker::code)
+                .map(McpDomainReadTools::safeBlockerCode)
+                .distinct()
+                .forEach(blockerCodes::add);
+        result.put("outcome_category", safeSourceSyncOutcome(check));
+        result.put("next_action", safeSourceSyncNextAction(check));
+        result.put("advisory", true);
+        result.put("write_allowed", false);
+        return result;
+    }
+
+    private static String safeSourceSyncOutcome(SourceSyncCheck check) {
+        SourceSyncStatus status = check.projection() == null ? null : check.projection().status();
+        if (status == SourceSyncStatus.SYNCED) {
+            return "VERIFIED_SUCCESS";
+        }
+        if (status == SourceSyncStatus.RECONCILIATION_REQUIRED) {
+            return "RESULT_UNKNOWN";
+        }
+        if (status == SourceSyncStatus.SYNC_FAILED) {
+            return isExplicitPlatformRejection(check.projection().lastErrorCode())
+                    ? "PLATFORM_REJECTED"
+                    : "SAFE_FAILURE";
+        }
+        if (status == SourceSyncStatus.SYNCING) {
+            return "IN_PROGRESS";
+        }
+        return check.ready() ? "READY_TO_CONFIRM" : "BLOCKED";
+    }
+
+    private static String safeSourceSyncNextAction(SourceSyncCheck check) {
+        SourceSyncStatus status = check.projection() == null ? null : check.projection().status();
+        if (status == SourceSyncStatus.SYNCED) {
+            return "NO_ACTION_REQUIRED";
+        }
+        if (status == SourceSyncStatus.RECONCILIATION_REQUIRED) {
+            return "RECONCILE_PLATFORM_STATE";
+        }
+        if (status == SourceSyncStatus.SYNC_FAILED) {
+            return "FIX_AND_RECHECK";
+        }
+        if (status == SourceSyncStatus.SYNCING) {
+            return "WAIT_FOR_RECOVERY_OR_RECONCILIATION";
+        }
+        return check.ready() ? "HUMAN_CONFIRM_THEN_EXECUTE" : "FIX_BLOCKERS_AND_RECHECK";
+    }
+
+    private static boolean isExplicitPlatformRejection(String code) {
+        return "JUFUBAO_RECEIVE_REJECTED".equals(code)
+                || "JUFUBAO_SHIPMENT_REJECTED".equals(code)
+                || "CAISHIXIAN_UPLOAD_REJECTED".equals(code);
+    }
+
+    private static boolean hasBlocker(SourceSyncCheck check, String code) {
+        return check.blockers().stream().anyMatch(blocker -> code.equals(blocker.code()));
+    }
+
+    private static boolean present(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static String safeBlockerCode(String code) {
+        if (code != null
+                && code.matches("(?:SOURCE|SHIPMENT|FORMAL|CONNECTOR)_[A-Z0-9_]{1,96}")) {
+            return code;
+        }
+        return "SOURCE_SYNC_BLOCKED";
     }
 
     // ------------------------------------------------------------------

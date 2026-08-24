@@ -29,14 +29,22 @@ after(async () => {
 });
 
 /** 队列 + 抽屉动作所需的全部 mock；decoy 字段验证 fail-closed。 */
-function fetchWithCase(reasonCode: string, detail: Record<string, unknown>) {
+function fetchWithCase(
+  reasonCode: string,
+  detail: Record<string, unknown>,
+  resolution?: Record<string, unknown>,
+) {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.startsWith('/api/v1/review-cases?')) {
       return jsonResponse(page([reviewCaseFixture('1', {
         reasonCode,
         team: reasonCode === 'CUSTOMER_MATCH_REQUIRED' ? 'CUSTOMER_OPS' : 'ORDER_OPS',
-      })].map((item) => ({ ...item, detail }))));
+      })].map((item) => ({
+        ...item,
+        detail,
+        ...(resolution ? { status: 'RESOLVED', resolution } : {}),
+      }))));
     }
     if (url.startsWith('/api/v1/operational-alerts?')) return jsonResponse(page([]));
     if (url.startsWith('/api/v1/customers?')) return jsonResponse(page([]));
@@ -45,8 +53,12 @@ function fetchWithCase(reasonCode: string, detail: Record<string, unknown>) {
   };
 }
 
-async function openDrawer(reasonCode: string, detail: Record<string, unknown>) {
-  globalThis.fetch = fetchWithCase(reasonCode, detail);
+async function openDrawer(
+  reasonCode: string,
+  detail: Record<string, unknown>,
+  resolution?: Record<string, unknown>,
+) {
+  globalThis.fetch = fetchWithCase(reasonCode, detail, resolution);
   await harness.mount(['/workbench/reviews']);
   await harness.waitFor(() => assert.match(harness.bodyText(), /RC-FIXTURE-1/));
   await control('查看处理').click();
@@ -211,6 +223,49 @@ test('企微运单文件失败在复核抽屉显示稳定可读原因', async ()
   assert.match(text, /WECOM_TRACKING_FILE_INVALID/);
   assert.match(text, /精确 24 列模板/);
   assert.doesNotMatch(text, /temporary\.example|must-not-render|aeskey|source_url/);
+});
+
+test('SOURCE_SYNC_BLOCKED 在复核抽屉显示状态、阻断代码与安全下一步', async () => {
+  await openDrawer('SOURCE_SYNC_BLOCKED', {
+    message: '包含不应直接展示的历史自由文本',
+    status: 'RECONCILIATION_REQUIRED',
+    business_code: 'SOURCE_SYNC_CHECK_BLOCKED',
+    blocker_codes: ['SOURCE_PLATFORM_ADDRESS_CONFIRMATION_REQUIRED'],
+    check_hash: 'secret-check-hash',
+    receiver_phone: '13800000000',
+    platform_payload: { token: 'must-not-render' },
+  });
+  const text = harness.bodyText();
+  assert.match(text, /来源回传处理依据/);
+  assert.match(text, /结果未知，等待人工对账/);
+  assert.match(text, /SOURCE_SYNC_CHECK_BLOCKED/);
+  assert.match(text, /SOURCE_PLATFORM_ADDRESS_CONFIRMATION_REQUIRED/);
+  assert.match(text, /禁止直接重试/);
+  assert.doesNotMatch(
+    text,
+    /历史自由文本|secret-check-hash|13800000000|must-not-render|platform_payload/,
+  );
+});
+
+test('SOURCE_SYNC_BLOCKED 解决记录在原抽屉显示已验证成功且无需操作', async () => {
+  await openDrawer(
+    'SOURCE_SYNC_BLOCKED',
+    { status: 'SYNC_FAILED', receiver_phone: '13800000000' },
+    {
+      resolution_type: 'SOURCE_SYNC_VERIFIED',
+      status: 'SYNCED',
+      business_code: 'SOURCE_SYNC_VERIFIED',
+      blocker_codes: [],
+      next_action: '无需操作；来源平台已验证同步成功',
+      check_hash: 'secret-check-hash',
+    },
+  );
+  const text = harness.bodyText();
+  assert.match(text, /已验证同步成功/);
+  assert.match(text, /SOURCE_SYNC_VERIFIED/);
+  assert.match(text, /无阻断/);
+  assert.match(text, /无需操作/);
+  assert.doesNotMatch(text, /13800000000|secret-check-hash|check_hash/);
 });
 
 test('五家族缺字段时显示「来源未提供」占位，不整行消失', async () => {

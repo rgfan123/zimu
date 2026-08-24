@@ -48,7 +48,7 @@
 | **来源回填文件 SourceReturnExport** | 按订单来源平台的原始列格式生成、写入**来源份数**、快递公司与运单号的版本化文件。数量列一律用来源份数而非实际发货数量：来源平台按自己的销售单位记账，全部履约时回填的发货数量应与其下单数量相等（例如平台下单 1 组 `150g*4`，发往履约方 4 件，回填给平台的是 1）。数量必须是整数，不带小数位。包装乘数换算是履约方侧的事实，不对来源平台暴露；它可以汇集多个履约方的结果。同一来源商品行出现多个发货批次时，自动回填只写首批运单且不复制来源行，后续批次由复核事项交给人工跟进。 |
 | **采购工单 ProcurementTicket** | 缺货时向采购部门发起的协同工单；它可以连续接收多个部分回执，直到缺口补齐、人工取消剩余量或失败后转人工处理。 |
 | **履约结果 FulfillmentOutcome** | 履约结束时对请求数量的最终结论：全部履约、部分履约完成或全部取消；它与实际已发多少的 ShippingProgress 分离。 |
-| **回传 Sync** | 发货结果按来源渠道回传（三平台 Connector / WECOM 模拟回传）。 |
+| **回传 Sync** | 发货结果按来源渠道回传。聚福宝/彩食鲜在线回传以 Shipment 为最小执行单元，完整核对 receiver、来源份数、承运商与正式运单；写意图和外部 effect 可恢复，结果未知只能人工对账。在线路径与来源回填文件通过同一 Shipment 行锁双向互斥；平台受理或 HTTP 200 不等于成功，只有写后平台终态已验证才是 `SYNCED`。 |
 | **订单事件 OrderEvent** | 订单时间线（Timeline）上的业务事件（ORDER_RECEIVED、JD_SHIPPED、SOURCE_SYNCED 等），与审计日志分离。 |
 | **审计日志 AuditLog** | 接口调用与人工操作的审计记录（operator、request/response、trace_id），用于排错与追责。 |
 | **异常 Exception** | 需要人工介入的订单状态分支（NEED_REVIEW、FULFILLMENT_EXCEPTION、SYNC_FAILED 等）。 |
@@ -76,7 +76,7 @@
 - **ShippingProgress**：NOT_SHIPPED / PARTIALLY_SHIPPED / SHIPPED；按实际发货数量计算
 - **ProcessingStage**：每条 OrderLine 独立保存 NEED_REVIEW / READY_TO_EXPORT / WAITING_PROVIDER / TRACKING_RECEIVED / RETURN_FILE_READY / COMPLETED / EXCEPTION；采购分支另有 PROCUREMENT_IN_PROGRESS
 - **ShipmentStatus**：P0 使用 CREATED → SHIPPED，或 CREATED → FAILED；DELIVERED 仅为未来接入京东 SDK/物流轨迹后的终态，不参与当前 Excel 闭环完成判定
-- **SyncStatus**：PENDING → SYNCED；SYNC_FAILED →（重试）→ SYNCED
+- **SyncStatus**：PENDING / SYNC_FAILED →（新鲜 check + 人工确认）→ SYNCING → SYNCED / SYNC_FAILED / RECONCILIATION_REQUIRED；待对账只允许人工三态裁决
 - **ProcurementStatus**：PENDING → SUCCESS / PARTIAL / FAILED；订单取消 → CANCELLED
 - **FulfillmentOutcome**：IN_PROGRESS → FULLY_FULFILLED / PARTIALLY_FULFILLED / CANCELLED
 - 多行订单：行级独立推进；订单进度摘要取最差进度，处理健康度另行聚合

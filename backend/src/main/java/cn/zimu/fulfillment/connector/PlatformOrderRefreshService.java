@@ -35,7 +35,8 @@ import org.springframework.stereotype.Service;
  * {@link SourceImportService#upload}/{@code importStructured} 建 NEW 批次，内容哈希幂等）→
  * Connector 缺失或能力未接入（{@code CONNECTOR_CAPABILITY_UNAVAILABLE}）时回退脚本通道
  * （进程内执行 scripts/*_fetch_orders.py，产物自动上传，与文件导入同管线）。
- * 聚福宝当前因缺收货人字段 fail-closed，不生成导入批次。全程审计；单渠道失败不阻断其他渠道。
+ * 聚福宝缺少已验证收货人契约时 fail-closed 为 NEED_REVIEW 批次，不生成可履约订单。
+ * 全程审计；单渠道失败不阻断其他渠道。
  *
  * <p>并发门禁：同一渠道同时最多一个真实拉取。PostgreSQL 会话锁由专用连接持有；成功、失败
  * 都释放，连接或 JVM 异常终止时数据库自动释放，因此串行重试不受频率限制且没有陈旧 claim。
@@ -294,7 +295,7 @@ public class PlatformOrderRefreshService {
 
     /**
      * capability gate 必须先于数据库 claim 与任何外呼。已注册但 onlinePull=false 的 Connector
-     * 不得登录，也不得偷偷回退脚本；聚福宝在 ticket 15 完成前即使 bean 缺失也保持 fail-closed。
+     * 不得登录，也不得偷偷回退脚本；聚福宝 bean 缺失时也保持 fail-closed。
      */
     private PullAttemptDecision runtimeCapability(String channel) {
         if (!DEFAULT_CHANNELS.contains(channel)) {
@@ -317,7 +318,7 @@ public class PlatformOrderRefreshService {
         } else if (sourceChannel == SourceChannel.JUFUBAO) {
             return PullAttemptDecision.blocked(
                     CAPABILITY_UNAVAILABLE,
-                    "聚福宝 onlinePull 仍被 receiver ticket 15 阻塞，已阻止脚本回退");
+                    "聚福宝在线 Connector 未注册，已阻止脚本回退");
         }
         return PullAttemptDecision.granted();
     }

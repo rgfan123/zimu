@@ -15,10 +15,15 @@ import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.ConnectionTestResult;
 import cn.zimu.fulfillment.connector.ConnectorRuntime;
+import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
+import cn.zimu.fulfillment.connector.SourceShipmentResult;
+import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.connector.PullCursor;
 import cn.zimu.fulfillment.connector.PullResult;
 import cn.zimu.fulfillment.file.SourceImportService;
 import java.time.OffsetDateTime;
+import java.math.BigDecimal;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -28,7 +33,9 @@ class CaishixianConnectorTest {
 
     private final SourceImportService sourceImportService = mock(SourceImportService.class);
     private final CaishixianPullClient pullClient = mock(CaishixianPullClient.class);
-    private final CaishixianConnector connector = new CaishixianConnector(sourceImportService, pullClient);
+    private final CaishixianShipmentGateway shipmentGateway = mock(CaishixianShipmentGateway.class);
+    private final CaishixianConnector connector =
+            new CaishixianConnector(sourceImportService, pullClient, shipmentGateway);
 
     private static final byte[] XLSX = {'P', 'K', 3, 4, 0, 0, 0, 0};
 
@@ -41,8 +48,91 @@ class CaishixianConnectorTest {
         assertThat(connector.capabilities().onlinePull()).isTrue();
         assertThat(connector.capabilities().fileImport()).isTrue();
         assertThat(connector.capabilities().fileExport()).isTrue();
-        assertThat(connector.capabilities().onlinePush()).isFalse();
+        assertThat(connector.capabilities().onlinePush()).isTrue();
         assertThat(connector.channel()).isEqualTo(SourceChannel.CAISHIXIAN);
+    }
+
+    @Test
+    void guardedShipmentPushRequiresTheArtifactAndVerifiesStatusAndTrackingAfterUpload() {
+        when(shipmentGateway.inspect("main-1", "sub-1")).thenReturn(
+                new CaishixianShipmentGateway.PlatformOrderSnapshot(
+                        true, "42", "main-1", "sub-1", 3, "待发货",
+                        "张三", "13800000000", "河南省郑州市金水区1号",
+                        BigDecimal.ONE));
+        when(shipmentGateway.carrierOptions()).thenReturn(
+                List.of(new CaishixianShipmentGateway.CarrierOption("JD", "京东物流")));
+        when(shipmentGateway.upload(any(SourceShipmentArtifact.class), any())).thenAnswer(invocation -> {
+            invocation.getArgument(1, cn.zimu.fulfillment.connector.ExternalWritePermit.class)
+                    .beforeExternalWrite();
+            return CaishixianShipmentGateway.UploadAck.accepted("200000");
+        });
+        when(shipmentGateway.awaitVerified("42", "JD", "JDVA123")).thenReturn(
+                CaishixianShipmentGateway.Verification.verified("42"));
+        AtomicInteger permits = new AtomicInteger();
+
+        SourceSyncResult result = connector.pushShipmentResult(shipment(), permits::incrementAndGet);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.platformRef()).isEqualTo("42");
+        assertThat(permits).hasValue(1);
+        verify(shipmentGateway).upload(any(SourceShipmentArtifact.class), any());
+        verify(shipmentGateway).awaitVerified("42", "JD", "JDVA123");
+    }
+
+    @Test
+    void anUnknownUploadAcknowledgementStillUsesQueryOnlyVerification() {
+        when(shipmentGateway.inspect("main-1", "sub-1")).thenReturn(
+                new CaishixianShipmentGateway.PlatformOrderSnapshot(
+                        true, "42", "main-1", "sub-1", 3, "待发货",
+                        "张三", "13800000000", "河南省郑州市金水区1号",
+                        BigDecimal.ONE));
+        when(shipmentGateway.carrierOptions()).thenReturn(
+                List.of(new CaishixianShipmentGateway.CarrierOption("JD", "京东物流")));
+        when(shipmentGateway.upload(any(SourceShipmentArtifact.class), any())).thenAnswer(invocation -> {
+            invocation.getArgument(1, cn.zimu.fulfillment.connector.ExternalWritePermit.class)
+                    .beforeExternalWrite();
+            return new CaishixianShipmentGateway.UploadAck(
+                    CaishixianShipmentGateway.UploadAck.Outcome.UNKNOWN,
+                    "299999999",
+                    "未验证业务码");
+        });
+        when(shipmentGateway.awaitVerified("42", "JD", "JDVA123")).thenReturn(
+                CaishixianShipmentGateway.Verification.verified("42"));
+
+        SourceSyncResult result = connector.pushShipmentResult(shipment(), () -> {});
+
+        assertThat(result.success()).isTrue();
+        verify(shipmentGateway).awaitVerified("42", "JD", "JDVA123");
+    }
+
+    @Test
+    void anExplicitUploadRejectionUsesAStableInternalOutcomeCategory() {
+        when(shipmentGateway.inspect("main-1", "sub-1")).thenReturn(
+                new CaishixianShipmentGateway.PlatformOrderSnapshot(
+                        true, "42", "main-1", "sub-1", 3, "待发货",
+                        "张三", "13800000000", "河南省郑州市金水区1号",
+                        BigDecimal.ONE));
+        when(shipmentGateway.carrierOptions()).thenReturn(
+                List.of(new CaishixianShipmentGateway.CarrierOption("JD", "京东物流")));
+        when(shipmentGateway.upload(any(SourceShipmentArtifact.class), any())).thenAnswer(invocation -> {
+            invocation.getArgument(1, cn.zimu.fulfillment.connector.ExternalWritePermit.class)
+                    .beforeExternalWrite();
+            return CaishixianShipmentGateway.UploadAck.rejected("110511000", "字段校验失败");
+        });
+
+        SourceSyncResult result = connector.pushShipmentResult(shipment(), () -> {});
+
+        assertThat(result.businessCode()).isEqualTo("CAISHIXIAN_UPLOAD_REJECTED");
+        assertThat(result.message()).contains("110511000");
+        verify(shipmentGateway, never()).awaitVerified(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void legacyUnguardedPushIsRejectedBeforeAnyPlatformWrite() {
+        SourceSyncResult result = connector.pushShipmentResult(shipment());
+
+        assertThat(result.businessCode()).isEqualTo("SOURCE_SYNC_EXECUTION_CONTEXT_REQUIRED");
+        verify(shipmentGateway, never()).upload(any(), any());
     }
 
     @Test
@@ -192,5 +282,26 @@ class CaishixianConnectorTest {
 
     private static ConnectorRuntime runtimeExcel(boolean enabled) {
         return new ConnectorRuntime("API", "EXCEL", enabled, "https://wapi.freshfood.cn", false);
+    }
+
+    private SourceShipmentResult shipment() {
+        return new SourceShipmentResult(
+                SourceChannel.CAISHIXIAN,
+                "main-1",
+                "sub-1",
+                BigDecimal.ONE,
+                "SHIPPED",
+                "JD",
+                "JDVA123",
+                null,
+                "张三",
+                "13800000000",
+                "河南省郑州市金水区1号",
+                7L,
+                new SourceShipmentArtifact(
+                        "shipment-7.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        XLSX,
+                        "a".repeat(64)));
     }
 }

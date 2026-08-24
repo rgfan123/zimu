@@ -1,12 +1,23 @@
 package cn.zimu.fulfillment.mcp;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.agent.AgentToolBinding;
 import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
 import cn.zimu.fulfillment.agent.AgentToolInvoker;
+import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLog;
 import cn.zimu.fulfillment.common.audit.AuditLogRepository;
+import cn.zimu.fulfillment.common.domain.SourceChannel;
+import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
+import cn.zimu.fulfillment.connector.sync.SourceShipmentSyncService;
+import cn.zimu.fulfillment.connector.sync.SourceSyncCheck;
+import cn.zimu.fulfillment.connector.sync.SourceSyncFacts;
+import cn.zimu.fulfillment.connector.sync.SourceSyncProjection;
+import cn.zimu.fulfillment.connector.sync.SourceSyncStatus;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.InterpretationResult;
@@ -21,7 +32,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +48,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -120,6 +134,9 @@ class McpProtocolAcceptanceTest {
     @Autowired
     private AuditLogRepository audits;
 
+    @MockitoBean
+    private SourceShipmentSyncService sourceSync;
+
     @Autowired
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
@@ -185,7 +202,12 @@ class McpProtocolAcceptanceTest {
                 "get_inventory_detail",
                 "list_products",
                 "list_categories",
-                "list_fulfillment_providers");
+                "list_fulfillment_providers",
+                "check_shipment_source_sync");
+
+        assertThat(registry.find("check_shipment_source_sync")).get()
+                .extracting(McpTool::readOnly)
+                .isEqualTo(true);
 
         // 08 决策：stdio 面一期只读——写工具集合按 readOnly 元数据向注册表查询（不手抄清单）
         Set<String> writeTools = registry.writeToolNames();
@@ -254,6 +276,86 @@ class McpProtocolAcceptanceTest {
     // ------------------------------------------------------------------
     // 只读工具
     // ------------------------------------------------------------------
+
+    @Test
+    void sourceSyncProtocolResponseIsAdvisoryAndDoesNotExposeReceiverOrTrackingPii() throws Exception {
+        String receiverName = "协议测试收货人-小沈";
+        String receiverPhone = "13700002222";
+        String receiverAddress = "上海市浦东新区测试街 66 号 502";
+        String trackingNumber = "TRACK-SECRET-13700002222";
+        SourceSyncFacts internal = new SourceSyncFacts(
+                501L,
+                601L,
+                SourceChannel.JUFUBAO,
+                "SOURCE-ORDER-PII",
+                "SOURCE-LINE-PII",
+                receiverName,
+                receiverPhone,
+                receiverAddress,
+                BigDecimal.ONE,
+                BigDecimal.ONE,
+                BigDecimal.TEN,
+                "FULLY_FULFILLED",
+                "SF",
+                "顺丰速运",
+                "PLATFORM-CARRIER-PII",
+                trackingNumber);
+        SourcePlatformCheckResult platform = new SourcePlatformCheckResult(
+                true,
+                "RAW-" + receiverPhone,
+                "平台消息含 " + receiverAddress,
+                "STATE-" + receiverName,
+                false,
+                SourcePlatformCheckResult.AddressStatus.CLEAR,
+                receiverName,
+                receiverPhone,
+                receiverAddress,
+                BigDecimal.ONE,
+                true);
+        when(sourceSync.check(eq(501L), any(), eq(AuditActorType.AGENT)))
+                .thenReturn(new SourceSyncCheck(
+                        501L,
+                        true,
+                        "safe-check-hash",
+                        "safe-artifact-hash",
+                        internal,
+                        platform,
+                        List.of(),
+                        new SourceSyncProjection(
+                                SourceSyncStatus.PENDING,
+                                1,
+                                2L,
+                                "RAW-" + receiverPhone,
+                                "历史错误含 " + receiverAddress,
+                                OffsetDateTime.parse("2026-08-24T12:34:56+08:00"))));
+
+        JsonNode result = callResult(
+                AGENT,
+                "check_shipment_source_sync",
+                Map.of("shipment_id", "501"));
+
+        assertThat(result.get("advisory").asBoolean()).isTrue();
+        assertThat(result.get("write_allowed").asBoolean()).isFalse();
+        assertThat(result.get("receiver_comparison").get("all_match").asBoolean()).isTrue();
+        assertThat(result.get("quantity_comparison").get("matches").asBoolean()).isTrue();
+        assertThat(result.get("shipment_summary").get("tracking_present").asBoolean()).isTrue();
+        assertThat(result.get("sync_projection").get("status").asText()).isEqualTo("PENDING");
+        assertThat(result.toString())
+                .doesNotContain(receiverName)
+                .doesNotContain(receiverPhone)
+                .doesNotContain(receiverAddress)
+                .doesNotContain(trackingNumber)
+                .doesNotContain("SOURCE-ORDER-PII")
+                .doesNotContain("SOURCE-LINE-PII")
+                .doesNotContain("PLATFORM-CARRIER-PII")
+                .doesNotContain("receiver_name")
+                .doesNotContain("receiver_phone")
+                .doesNotContain("receiver_address")
+                .doesNotContain("tracking_number")
+                .doesNotContain("platform_state")
+                .doesNotContain("business_code")
+                .doesNotContain("last_error_message");
+    }
 
     @Test
     void readToolsReturnSeededMessagesSubmissionsAndReviewCases() throws Exception {

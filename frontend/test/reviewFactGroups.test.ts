@@ -215,3 +215,44 @@ test('WECOM_TRACKING_FILE_REVIEW 只展示稳定失败码与服务端文案', ()
   ]);
   assert.doesNotMatch(JSON.stringify(rows), /temporary\.example|must-not-render|aeskey|source_url/);
 });
+
+test('SOURCE_SYNC_BLOCKED 展示可行动状态、阻断代码与下一步，未知和 PII 字段 fail-closed', () => {
+  const rows = allRows({
+    message: '包含不应直接展示的历史自由文本',
+    status: 'RECONCILIATION_REQUIRED',
+    business_code: 'SOURCE_SYNC_CHECK_BLOCKED',
+    blocker_codes: ['SOURCE_PLATFORM_ADDRESS_CONFIRMATION_REQUIRED'],
+    check_hash: 'secret-check-hash',
+    receiver_phone: '13800000000',
+    platform_payload: { token: 'must-not-render' },
+  }, 'SOURCE_SYNC_BLOCKED');
+
+  assert.deepEqual(rows, [
+    { label: '来源回传状态', value: '结果未知，等待人工对账' },
+    { label: '业务代码', value: 'SOURCE_SYNC_CHECK_BLOCKED' },
+    { label: '阻断代码', value: 'SOURCE_PLATFORM_ADDRESS_CONFIRMATION_REQUIRED' },
+    { label: '下一步', value: '先到来源平台核对是否已受理，再提交人工对账结论；禁止直接重试' },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(rows),
+    /历史自由文本|secret-check-hash|13800000000|must-not-render|platform_payload/,
+  );
+});
+
+test('SOURCE_SYNC_BLOCKED 已解决时展示验证成功、无阻断与无需操作', () => {
+  const rows = allRows({
+    status: 'SYNCED',
+    business_code: 'SOURCE_SYNC_VERIFIED',
+    blocker_codes: [],
+    check_hash: 'secret-check-hash',
+    receiver_phone: '13800000000',
+  }, 'SOURCE_SYNC_BLOCKED');
+
+  assert.deepEqual(rows, [
+    { label: '来源回传状态', value: '已验证同步成功' },
+    { label: '业务代码', value: 'SOURCE_SYNC_VERIFIED' },
+    { label: '阻断代码', value: '无阻断' },
+    { label: '下一步', value: '无需操作；来源平台已验证同步成功' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(rows), /secret-check-hash|13800000000/);
+});

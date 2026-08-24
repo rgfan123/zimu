@@ -19,6 +19,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -339,6 +340,41 @@ class IdempotencyServiceIntegrationTest {
                     return Map.of("external_ref", intent);
                 },
                 (intent, result) -> IdempotencyService.ExternalCompletion.succeeded(result));
+    }
+
+    @Test
+    void externalPreparationRunsWithoutATransactionBeforeIntentPersistenceStartsOne() {
+        AtomicBoolean preparationTransaction = new AtomicBoolean(true);
+        AtomicBoolean intentTransaction = new AtomicBoolean(false);
+
+        IdempotentResult<Map<String, String>> result =
+                idempotencyService.executeWithPreparedExternalWriteIntent(
+                        "prepared-external-write-transaction-test",
+                        "prepared-external-write-transaction-001",
+                        Map.of("request", "same"),
+                        201,
+                        Duration.ofMinutes(7),
+                        () -> {
+                            preparationTransaction.set(
+                                    TransactionSynchronizationManager.isActualTransactionActive());
+                            return "read-only-platform-facts";
+                        },
+                        prepared -> {
+                            intentTransaction.set(
+                                    TransactionSynchronizationManager.isActualTransactionActive());
+                            return "stable-intent:" + prepared;
+                        },
+                        (intent, claim) -> {
+                            claim.verifyActive();
+                            return Map.of("external_ref", intent);
+                        },
+                        (intent, externalResult) ->
+                                IdempotencyService.ExternalCompletion.succeeded(externalResult));
+
+        assertThat(result.result()).containsEntry(
+                "external_ref", "stable-intent:read-only-platform-facts");
+        assertThat(preparationTransaction).isFalse();
+        assertThat(intentTransaction).isTrue();
     }
 
     private IdempotencyService serviceWithLease(long leaseSeconds) {

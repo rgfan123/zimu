@@ -158,6 +158,10 @@
 | GET | `/api/v1/shipments` | Shipment 列表 |
 | GET | `/api/v1/shipments/{shipment_id}` | 出库单号、分批序号、收货快照、行、Tracking 与 Shipment 级京东出库集成状态（只暴露诊断字段，不暴露凭据/PII） |
 | POST | `/api/v1/shipments/{shipment_id}/jd-so-order` | 将整个 Shipment 批次聚合为一张京东出库单（addSoOrder），Idempotency-Key 幂等重放；`app.jd.write-mode=OFF` 时拒绝，失败阶段与诊断码落 Shipment 级集成记录 |
+| GET | `/api/v1/shipments/{shipment_id}/source-sync/check` | 聚福宝/彩食鲜来源回传前的完整即时事实核对；仅认证人工可读，响应 `Cache-Control: no-store`，不产生平台写 |
+| POST | `/api/v1/shipments/{shipment_id}/source-sync/execute` | 以刚查看的 `check_hash` 确认并执行一次 Shipment 级回传；每次外部写前复验租约，只有平台终态已验证才成功 |
+| POST | `/api/v1/shipments/source-sync/batch-execute` | 最多 100 张 Shipment 的逐单回传；每项独立携带 `shipment_id`、`expected_check_hash` 与 `idempotency_key`，逐项返回成功/失败且互不回滚 |
+| POST | `/api/v1/shipments/{shipment_id}/source-sync/reconcile` | 对外部效果未知的执行作三态人工对账；命令回显原 intent 全部稳定字段和 `lock_version`，不自动重提 |
 
 `FulfillmentExport` 在所有前置复核通过后自动生成，不提供「生成发货表」人工命令。一份文件只属于一个 FulfillmentProvider。
 
@@ -317,16 +321,30 @@ public interface PlatformConnector {
     PullResult pullOrderChanges(PullCursor cursor);
     PullResult pullCancellations(PullCursor cursor);
     CanonicalOrderDraft transform(SourceOrderEnvelope sourceOrder);
+    SourcePlatformCheckResult checkShipmentResult(SourceShipmentResult result);
     SourceSyncResult pushShipmentResult(SourceShipmentResult result);
+    SourceSyncResult pushShipmentResult(SourceShipmentResult result, ExternalWritePermit permit);
 }
 ```
 
 - 彩食鲜、聚福宝、飞象各自实现一个 Connector；`channel()` 必须固定，禁止运行时混用渠道。
 - 三平台真实接口契约（登录/认证/订单获取/发货回传）已通过抓包确认，见 `docs/research/platform-apis-overview.md` 及三份平台契约文档；在线 API 接入评估见 `docs/research/platform-api-integration-plan.md`。
-- 当前 `EXCEL` 模式只启用文件指纹识别、`transform` 与来源回填文件生成；三种 `pull*` 和在线 `pushShipmentResult` 返回稳定的 `CONNECTOR_CAPABILITY_UNAVAILABLE`，不得假装成功。
-- 后续切换 `API` 模式时才启用鉴权、游标拉单/变更/取消、限流、重试和平台错误码转换；仍复用相同 CanonicalOrder、ShipmentSync 和幂等用例。
-- `pushShipmentResult` 输入只使用内部标准字段：来源引用、来源行引用、实际发货数量、履约结果、来源渠道承运商输出值、首批运单号与异常原因；不得把平台表格列名泄露到领域层。
+- `checkShipmentResult` 只读查询来源平台的最新状态、收货信息、可发来源份数和承运商字典；不能接单、上传或发货。
+- 生产在线写只能从 Shipment source-sync `execute` 进入；无 `ExternalWritePermit` 的旧调用在聚福宝和彩食鲜均失败关闭。
+- `pushShipmentResult` 输入只使用内部标准字段：Shipment/来源血缘、Canonical 实发件数、来源份数、履约结果、承运商输出值、正式运单与 receiver 快照；彩食鲜工作簿封装在 artifact seam 内，不把表格列名泄露到领域层。
+- 聚福宝的接单与发货是两次不可逆写，每次都要分别复验外层执行租约和平台内层 owner/lease；彩食鲜在登录和 multipart 构造完成后、真正 `http.send` 前复验一次。
+- 平台 HTTP 受理不是成功。聚福宝必须写后确认目标离开 `NO_DELIVERY`；彩食鲜必须在详情中同时确认状态 `4`、承运商代码和运单号。
 - WECOM 使用独立 `InternalShipmentCallback` 接口；Demo 的 mock 可以记录“模拟回传成功”，但 BUSINESS 模式在真实回调未接入前必须返回 `CONNECTOR_CAPABILITY_UNAVAILABLE`，不能伪造已同步。
+
+#### Shipment source-sync 状态与对账
+
+1. `check` 从已确认 BUSINESS 导入批次、单一完整 Shipment、唯一来源行和正式运单派生 `check_hash`；receiver 或来源份数任何不一致都会阻断。
+2. `execute` 在数据库中固化 outer/platform intent key、check/artifact hash、来源行、承运商、运单和版本，然后才允许平台写。相同幂等键改变请求返回冲突。
+3. 平台明确拒绝或确认无远端效果进入 `SYNC_FAILED`；可能已有远端效果但响应/终态/本地归档不明进入 `RECONCILIATION_REQUIRED`。
+4. `reconcile` 必须回显原 intent 的 check hash、来源行、承运商、运单和版本，并再次核对当前事实。`ACCEPTED` 不再写平台并转 `SYNCED`；`NOT_ACCEPTED` 释放原平台 intent 后回到 `PENDING`；`UNCERTAIN` 保持隔离。
+5. 在线 begin 与来源回填文件进入 `PUSHING` 竞争同一 Shipment 行锁。任一侧已占用或在线已成功/待对账时，另一侧失败关闭；失效的文件 artifact 也不能重新 claim。
+6. `execute` 审计记录 allowlist 校验后的平台请求引用与端到端外部调用耗时；请求/响应摘要只含哈希、状态和“字段存在”标记，不复制 receiver、凭据或平台原始报文。
+7. `batch-execute` 只编排既有单 Shipment `execute`：每项使用自己的检查哈希和幂等键，任一项被阻断、冲突或异常都只形成该项结果，已成功项不得被整批事务回滚；`RECONCILIATION_REQUIRED` 仍禁止普通重试。
 
 ### 6.3 京东 ISC 写接口收口
 
@@ -413,6 +431,7 @@ Agent 可以提建议，但上述终局动作必须由管理后台人员确认�
 | `get_order` | `order_id` | OrderDetail | 否 |
 | `get_order_timeline` | `order_id` | OrderEvent 列表 | 否 |
 | `get_shipment` | `shipment_id` | Shipment/Tracking 详情 | 否 |
+| `check_shipment_source_sync` | `shipment_id` | PII 安全的 receiver/数量比较、状态、`blocker_codes`、`outcome_category` 与 `next_action`；只作建议且 `write_allowed=false` | 否 |
 | `search_skus` | `query`, `provider_id?`, `page`, `size` | SKU 候选页 | 否 |
 | `create_internal_order` | `idempotency_key` + OpenAPI `InternalOrderInput` | OrderDetail；可能同时产生 ReviewCase | 是，创建订单 |
 | `suggest_customer_match` | `idempotency_key`, `review_case_id`, `expected_version`, `customer_id?`, `create_customer_suggestion?`, `reason` | 追加建议后的 ReviewCase | 只追加建议，不确认映射 |

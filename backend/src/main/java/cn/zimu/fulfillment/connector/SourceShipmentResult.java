@@ -14,8 +14,77 @@ public record SourceShipmentResult(
         String sourceRef,
         String sourceLineRef,
         BigDecimal actualShippedQuantity,
+        BigDecimal sourceUnitQuantity,
         String outcome,
         String carrierOutputValue,
         String firstTrackingNo,
-        String exceptionReason) {
+        String exceptionReason,
+        String receiverName,
+        String receiverPhone,
+        String receiverAddress,
+        Long shipmentId,
+        SourceShipmentArtifact artifact,
+        String expectedPlatformEffectHash) {
+
+    public SourceShipmentResult(
+            SourceChannel channel,
+            String sourceRef,
+            String sourceLineRef,
+            BigDecimal actualShippedQuantity,
+            BigDecimal sourceUnitQuantity,
+            String outcome,
+            String carrierOutputValue,
+            String firstTrackingNo,
+            String exceptionReason,
+            String receiverName,
+            String receiverPhone,
+            String receiverAddress,
+            Long shipmentId,
+            SourceShipmentArtifact artifact) {
+        this(channel, sourceRef, sourceLineRef, actualShippedQuantity, sourceUnitQuantity, outcome,
+                carrierOutputValue, firstTrackingNo, exceptionReason, receiverName, receiverPhone,
+                receiverAddress, shipmentId, artifact, null);
+    }
+
+    /** 兼容已恢复 Adapter 的旧扩展构造；旧调用默认两种数量口径相同。 */
+    public SourceShipmentResult(
+            SourceChannel channel,
+            String sourceRef,
+            String sourceLineRef,
+            BigDecimal actualShippedQuantity,
+            String outcome,
+            String carrierOutputValue,
+            String firstTrackingNo,
+            String exceptionReason,
+            String receiverName,
+            String receiverPhone,
+            String receiverAddress,
+            Long shipmentId,
+            SourceShipmentArtifact artifact) {
+        this(channel, sourceRef, sourceLineRef, actualShippedQuantity, actualShippedQuantity, outcome,
+                carrierOutputValue, firstTrackingNo, exceptionReason, receiverName, receiverPhone,
+                receiverAddress, shipmentId, artifact, null);
+    }
+
+    /** 兼容既有 Connector 调用；旧路径默认内部数量与来源份数相同。 */
+    public SourceShipmentResult(
+            SourceChannel channel,
+            String sourceRef,
+            String sourceLineRef,
+            BigDecimal actualShippedQuantity,
+            String outcome,
+            String carrierOutputValue,
+            String firstTrackingNo,
+            String exceptionReason) {
+        this(channel, sourceRef, sourceLineRef, actualShippedQuantity, actualShippedQuantity, outcome,
+                carrierOutputValue, firstTrackingNo, exceptionReason, null, null, null, null,
+                SourceShipmentArtifact.empty(), null);
+    }
+
+    public SourceShipmentResult withExpectedPlatformEffectHash(String effectHash) {
+        return new SourceShipmentResult(
+                channel, sourceRef, sourceLineRef, actualShippedQuantity, sourceUnitQuantity, outcome,
+                carrierOutputValue, firstTrackingNo, exceptionReason, receiverName, receiverPhone,
+                receiverAddress, shipmentId, artifact, effectHash);
+    }
 }
