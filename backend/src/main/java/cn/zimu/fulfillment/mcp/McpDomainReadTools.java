@@ -3,6 +3,8 @@ package cn.zimu.fulfillment.mcp;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.batch.ImportBatchProgress;
+import cn.zimu.fulfillment.batch.ImportBatchProgressService;
 import cn.zimu.fulfillment.common.web.WriteCommands;
 import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
 import cn.zimu.fulfillment.connector.sync.SourceShipmentSyncService;
@@ -50,6 +52,7 @@ public class McpDomainReadTools {
     private final InventoryDetailsService inventoryDetails;
     private final MasterDataService masterData;
     private final SourceShipmentSyncService sourceSync;
+    private final ImportBatchProgressService batchProgress;
     private final ObjectMapper objectMapper;
 
     public McpDomainReadTools(
@@ -58,12 +61,14 @@ public class McpDomainReadTools {
             InventoryDetailsService inventoryDetails,
             MasterDataService masterData,
             SourceShipmentSyncService sourceSync,
+            ImportBatchProgressService batchProgress,
             ObjectMapper objectMapper) {
         this.reads = reads;
         this.inventoryOverview = inventoryOverview;
         this.inventoryDetails = inventoryDetails;
         this.masterData = masterData;
         this.sourceSync = sourceSync;
+        this.batchProgress = batchProgress;
         this.objectMapper = objectMapper;
         this.tools = List.of(
                 new McpToolRegistry.SimpleTool(
@@ -166,7 +171,67 @@ public class McpDomainReadTools {
                         schema(
                                 Map.of("shipment_id", stringProperty("Shipment ID")),
                                 List.of("shipment_id")),
-                        this::checkShipmentSourceSync));
+                        this::checkShipmentSourceSync),
+                new McpToolRegistry.SimpleTool(
+                        "get_import_batch_progress",
+                        "查询一个导入批次在「收表 → 发货 → 回填 → 回传」四段链路上的进度与阻塞事实。"
+                                + "一次取全四段，避免多轮工具调用；未接入的段位显式标注 supported=false，"
+                                + "不与「0 待办」混淆。不返回姓名、电话、地址与文件下载地址。",
+                        schema(
+                                Map.of("import_batch_id", stringProperty("导入批次 ID")),
+                                List.of("import_batch_id")),
+                        this::getImportBatchProgress));
+    }
+
+    /**
+     * 四段链路进度（Excel 履约闭环）。四段的判定全部在
+     * {@link ImportBatchProgressService} 由 SQL 算出，Agent 只读不算——
+     * 让模型去数「发了几单」，错了没人能复现。
+     */
+    private JsonNode getImportBatchProgress(McpRequestContext context, Map<String, Object> args) {
+        long batchId = identifier(args, "import_batch_id");
+        ImportBatchProgress progress = batchProgress.of(batchId);
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("import_batch_id", progress.batchId());
+        node.put("batch_no", progress.batchNo());
+        node.put("batch_type", progress.batchType());
+        node.put("source_channel", progress.sourceChannel() == null ? "" : progress.sourceChannel());
+        node.put("status", progress.status());
+        node.put("revision_no", progress.revisionNo());
+        node.put("complete", progress.complete());
+        // current_stage 为 null 表示四段全部走完；不要渲染成空串
+        if (progress.currentStage() != null) {
+            node.put("current_stage", progress.currentStage());
+        }
+        ObjectNode stages = node.putObject("stages");
+        putStage(stages, "intake", progress.intake());
+        putStage(stages, "outbound", progress.outbound());
+        putStage(stages, "tracking", progress.tracking());
+        putStage(stages, "source_return", progress.sourceReturn());
+        ArrayNode blockers = node.putArray("blockers");
+        for (ImportBatchProgress.Blocker blocker : progress.blockers()) {
+            ObjectNode item = blockers.addObject();
+            item.put("stage", blocker.stage());
+            item.put("code", blocker.code());
+            item.put("count", blocker.count());
+            if (blocker.sampleNo() != null) {
+                item.put("sample_no", blocker.sampleNo());
+            }
+        }
+        return node;
+    }
+
+    private static void putStage(ObjectNode parent, String key, ImportBatchProgress.Stage stage) {
+        ObjectNode node = parent.putObject(key);
+        node.put("name", stage.name());
+        node.put("supported", stage.supported());
+        // 未接入时不输出计数：输出 0 会被模型读成「0 待办」，那正是要避免的误读
+        if (stage.supported()) {
+            node.put("total", stage.total());
+            node.put("done", stage.done());
+            node.put("blocked", stage.blocked());
+            node.put("complete", stage.complete());
+        }
     }
 
     private final List<McpTool> tools;

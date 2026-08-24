@@ -96,6 +96,7 @@ class McpDomainReadToolsSourceSyncRedactionTest {
                 mock(InventoryDetailsService.class),
                 mock(MasterDataService.class),
                 sourceSync,
+                mock(cn.zimu.fulfillment.batch.ImportBatchProgressService.class),
                 new ObjectMapper());
         McpTool tool = tools.tools().stream()
                 .filter(candidate -> "check_shipment_source_sync".equals(candidate.name()))

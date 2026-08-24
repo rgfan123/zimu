@@ -68,7 +68,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                     .as("代码定义 bean %s 必须已删除", beanName)
                     .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
         }
-        // 种子为唯一来源：active 定义恰为 5 个，身份与版本链字段与迁移播种一致
+        // 种子为唯一来源：active 定义恰为 6 个，身份与版本链字段与迁移播种一致
         List<DefinitionRow> active = jdbc.query(
                 "SELECT agent_slug, name, description, system_prompt, prompt_version, model_ref, "
                         + "enabled, version, status, allow_write, tool_whitelist::text, guard_exemptions::text "
@@ -77,7 +77,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
         assertThat(active).extracting(DefinitionRow::slug)
                 .containsExactlyInAnyOrder(
                         "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent",
-                        "source-sync-reviewer");
+                        "source-sync-reviewer", "fulfillment-file-agent");
         assertThat(active).allSatisfy(row -> {
             assertThat(row.version()).isEqualTo("procurement-price-agent".equals(row.slug()) ? 2 : 1);
             assertThat(row.status()).isEqualTo("active");
@@ -92,12 +92,12 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                 assertThat(row.toolWhitelist()).isNotEmpty();
             }
         });
-        // 运行条件 status='active' AND enabled=true：注册表（holder 当前实例）可解析全部 5 slug
+        // 运行条件 status='active' AND enabled=true：注册表（holder 当前实例）可解析全部 6 slug
         AgentRegistryHolder holder = context.getBean(AgentRegistryHolder.class);
         assertThat(holder.current().slugs())
                 .containsExactlyInAnyOrder(
                         "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent",
-                        "source-sync-reviewer");
+                        "source-sync-reviewer", "fulfillment-file-agent");
         assertThat(holder.current().isEnabled("procurement-price-agent")).isTrue();
         assertThat(holder.current().isEnabled("meta-agent")).isTrue();
     }
@@ -137,7 +137,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
     }
 
     // ------------------------------------------------------------------
-    // 26 例历史评测用例播种（INVARIANT / CONFIRMED）
+    // 29 例历史评测用例播种（INVARIANT / CONFIRMED）
     // ------------------------------------------------------------------
 
     @Test
@@ -152,7 +152,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                         rs.getString("status"),
                         parse(rs.getString("input")),
                         parse(rs.getString("expected"))));
-        assertThat(rows).hasSize(26);
+        assertThat(rows).hasSize(29);
         assertThat(rows).allSatisfy(row -> {
             assertThat(row.metricKind()).isEqualTo("INVARIANT");
             assertThat(row.status()).isEqualTo("CONFIRMED");
@@ -168,12 +168,15 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                         + "AND d.version=c.agent_version AND d.status='active' "
                         + "WHERE c.metric_kind = 'INVARIANT' AND c.status = 'CONFIRMED' "
                         + "ORDER BY c.agent_slug, c.id");
-        assertThat(rows).hasSize(19);
+        assertThat(rows).hasSize(22);
 
         List<String> procurementInputs = normalizedInputs(rows, "procurement-price-agent");
         assertThat(procurementInputs).hasSize(ProcurementPriceEvalFixture.CASES.size());
         assertThat(procurementInputs).containsExactlyInAnyOrderElementsOf(
                 ProcurementPriceEvalFixture.CASES.stream().map(c -> norm(c.inputJson())).toList());
+
+        // 履约单据 Agent（V56）：三条 INVARIANT——必须先调进度工具、缺事实转人工、无参数负例
+        assertThat(normalizedInputs(rows, "fulfillment-file-agent")).hasSize(3);
 
         List<String> dataQueryInputs = normalizedInputs(rows, "data-query-agent");
         assertThat(dataQueryInputs).hasSize(7);
