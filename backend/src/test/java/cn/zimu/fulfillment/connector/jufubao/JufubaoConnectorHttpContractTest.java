@@ -5,6 +5,7 @@ import static org.mockito.Mockito.mock;
 
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.connector.SourceShipmentResult;
+import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
 import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.file.SourceImportService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -26,11 +27,16 @@ class JufubaoConnectorHttpContractTest {
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final AtomicInteger orderQueries = new AtomicInteger();
+    private final AtomicInteger receiveOrders = new AtomicInteger();
+    private final AtomicInteger addressChecks = new AtomicInteger();
     private final AtomicInteger submissions = new AtomicInteger();
     private final AtomicInteger redirectedSubmissions = new AtomicInteger();
     private final AtomicInteger logins = new AtomicInteger();
     private final AtomicReference<JsonNode> submittedBody = new AtomicReference<>();
     private final AtomicReference<String> submitMode = new AtomicReference<>("SUCCESS");
+    private final AtomicReference<String> receiveMode = new AtomicReference<>("SUCCESS");
+    private final AtomicReference<String> addressMode = new AtomicReference<>("CLEAR");
+    private final AtomicReference<String> orderMode = new AtomicReference<>("NO_DELIVERY");
     private final AtomicReference<Boolean> expireFirstBusinessRequest = new AtomicReference<>(false);
     private HttpServer server;
     private URI baseUri;
@@ -70,7 +76,92 @@ class JufubaoConnectorHttpContractTest {
         JsonNode products = mapper.readTree(body.path("product_list_json").asText());
         assertThat(products).hasSize(1);
         assertThat(products.get(0).path("product_id").asText()).isEqualTo("product-1");
+        assertThat(products.get(0).path("send_num").asText()).isEqualTo("1");
+        assertThat(products.get(0).has("allow_send_num")).isFalse();
         assertThat(products.get(0).has("fd-random1234")).isFalse();
+    }
+
+    @Test
+    void receivesNoReceiptThenPollsAndUsesTheObservedAddressGate() {
+        orderMode.set("NO_RECEIPT");
+
+        SourceSyncResult result = connector().pushShipmentResult(shipmentCommand());
+
+        assertThat(result.success()).isTrue();
+        assertThat(receiveOrders).hasValue(1);
+        assertThat(addressChecks).hasValue(1);
+        assertThat(orderQueries).hasValue(4);
+        assertThat(submissions).hasValue(1);
+    }
+
+    @Test
+    void preservesAReceiveRejectionAndNeverContinuesToShipment() {
+        orderMode.set("NO_RECEIPT");
+        receiveMode.set("REJECTED");
+
+        SourceSyncResult result = connector().pushShipmentResult(shipmentCommand());
+
+        assertThat(result.businessCode()).isEqualTo("InvalidArgument");
+        assertThat(result.message()).isEqualTo("聚福宝拒绝接单请求（业务码：InvalidArgument）");
+        assertThat(result.platformRef()).isEqualTo("req-receive-rejected");
+        assertThat(orderQueries).hasValue(1);
+        assertThat(receiveOrders).hasValue(1);
+        assertThat(addressChecks).hasValue(0);
+        assertThat(submissions).hasValue(0);
+    }
+
+    @Test
+    void treatsAReceiveResponseWithoutRequestIdAsUnknownAndNeverBlindlyRetries() {
+        orderMode.set("NO_RECEIPT");
+        receiveMode.set("MALFORMED");
+        JufubaoConnector connector = connector();
+
+        SourceSyncResult first = connector.pushShipmentResult(shipmentCommand());
+        SourceSyncResult replay = connector.pushShipmentResult(shipmentCommand());
+
+        assertThat(first.businessCode()).isEqualTo("RECONCILIATION_REQUIRED");
+        assertThat(first.message()).isEqualTo("聚福宝接单响应无法确认；禁止盲目重提，请到平台核对");
+        assertThat(replay).isEqualTo(first);
+        assertThat(orderQueries).hasValue(1);
+        assertThat(receiveOrders).hasValue(1);
+        assertThat(addressChecks).hasValue(0);
+        assertThat(submissions).hasValue(0);
+    }
+
+    @Test
+    void blocksShipmentWhenAddressConfirmationIsRequired() {
+        addressMode.set("CONFIRM_REQUIRED");
+
+        SourceSyncResult result = connector().pushShipmentResult(shipmentCommand());
+
+        assertThat(result.businessCode()).isEqualTo("JUFUBAO_ADDRESS_CONFIRMATION_REQUIRED");
+        assertThat(addressChecks).hasValue(1);
+        assertThat(submissions).hasValue(0);
+    }
+
+    @Test
+    void failsClosedWhenAddressConfirmationFactIsMissing() {
+        addressMode.set("MISSING");
+
+        SourceSyncResult result = connector().pushShipmentResult(shipmentCommand());
+
+        assertThat(result.businessCode()).isEqualTo("JUFUBAO_ADDRESS_CHECK_UNKNOWN");
+        assertThat(addressChecks).hasValue(1);
+        assertThat(submissions).hasValue(0);
+    }
+
+    @Test
+    void requiresReconciliationWhenReceivePollingTimesOut() {
+        orderMode.set("RECEIVE_TIMEOUT");
+
+        SourceSyncResult result = connector().pushShipmentResult(shipmentCommand());
+
+        assertThat(result.businessCode()).isEqualTo("RECONCILIATION_REQUIRED");
+        assertThat(result.message()).contains("禁止盲目重提");
+        assertThat(orderQueries).hasValue(6);
+        assertThat(receiveOrders).hasValue(1);
+        assertThat(addressChecks).hasValue(0);
+        assertThat(submissions).hasValue(0);
     }
 
     @Test
@@ -163,7 +254,7 @@ class JufubaoConnectorHttpContractTest {
 
         assertThat(result.businessCode()).isEqualTo("RECONCILIATION_REQUIRED");
         assertThat(result.success()).isFalse();
-        assertThat(orderQueries).hasValue(2);
+        assertThat(orderQueries).hasValue(6);
         assertThat(submissions).hasValue(1);
     }
 
@@ -180,7 +271,8 @@ class JufubaoConnectorHttpContractTest {
                 new JufubaoHttpPullClient(session, mapper),
                 new JufubaoOrderTransform(),
                 gateway,
-                new InMemoryJufubaoShipmentAttemptStore());
+                new InMemoryJufubaoShipmentAttemptStore(),
+                true);
     }
 
     private JufubaoSessionAdapter session() {
@@ -197,7 +289,12 @@ class JufubaoConnectorHttpContractTest {
                 "SHIPPED",
                 "京东物流",
                 "JDVA123",
-                null);
+                null,
+                "receiver-1",
+                "phone-1",
+                "address-1",
+                1L,
+                SourceShipmentArtifact.empty());
     }
 
     private void dispatch(HttpExchange exchange) throws IOException {
@@ -233,7 +330,17 @@ class JufubaoConnectorHttpContractTest {
             assertThat(request.path("tab").asText()).isEqualTo("no_delivery");
             assertThat(request.path("page_token").asText()).isEqualTo("1");
             assertThat(request.path("system").asText()).isEqualTo("supplier");
-            if (orderQueries.getAndIncrement() == 0) {
+            int queryIndex = orderQueries.getAndIncrement();
+            if (orderMode.get().equals("RECEIVE_TIMEOUT")) {
+                respond(exchange, 200,
+                        "{\"list\":[{\"sub_order_id\":\"sub-1\",\"order_status\":\"NO_RECEIPT\"}],\"next_page_token\":\"\",\"request_id\":\"req-query-receive-timeout\"}");
+            } else if (orderMode.get().equals("NO_RECEIPT") && queryIndex < 2) {
+                respond(exchange, 200,
+                        "{\"list\":[{\"sub_order_id\":\"sub-1\",\"order_status\":\"NO_RECEIPT\"}],\"next_page_token\":\"\",\"request_id\":\"req-query-receive\"}");
+            } else if (orderMode.get().equals("NO_RECEIPT") && queryIndex == 2) {
+                respond(exchange, 200,
+                        "{\"list\":[{\"sub_order_id\":\"sub-1\",\"order_status\":\"NO_DELIVERY\"}],\"next_page_token\":\"\",\"request_id\":\"req-query-ready\"}");
+            } else if (queryIndex == 0) {
                 respond(exchange, 200,
                         "{\"list\":[{\"sub_order_id\":\"sub-1\",\"order_status\":\"NO_DELIVERY\"}],\"next_page_token\":\"\",\"request_id\":\"req-query-1\"}");
             } else if (submitMode.get().equals("STILL_LISTED_OTHER_STATUS")) {
@@ -245,10 +352,41 @@ class JufubaoConnectorHttpContractTest {
             }
             return;
         }
+        if (method.equals("POST") && path.equals("/order-supplier/v1/order/receive-order")) {
+            JsonNode request = mapper.readTree(requestBody(exchange));
+            assertThat(request.path("sub_order_id").asText()).isEqualTo("sub-1");
+            assertThat(request.path("system").asText()).isEqualTo("supplier");
+            receiveOrders.incrementAndGet();
+            if (receiveMode.get().equals("REJECTED")) {
+                respond(exchange, 400,
+                        "{\"code\":\"InvalidArgument\",\"message\":\"订单状态不允许接单\",\"request_id\":\"req-receive-rejected\"}");
+            } else if (receiveMode.get().equals("MALFORMED")) {
+                respond(exchange, 200, "{\"message\":\"接单结果不完整\"}");
+            } else {
+                respond(exchange, 200, "{\"request_id\":\"req-receive-1\"}");
+            }
+            return;
+        }
+        if (method.equals("GET")
+                && path.equals("/order-supplier/v1/sub-orders/sub-1/shipment-receipt-address-confirmation")) {
+            assertThat(exchange.getRequestURI().getRawQuery()).isEqualTo("system=supplier");
+            addressChecks.incrementAndGet();
+            if (addressMode.get().equals("CONFIRM_REQUIRED")) {
+                respond(exchange, 200,
+                        "{\"need_confirm\":true,\"message\":\"收货地址已变化\",\"original_address\":[],\"latest_address\":[],\"request_id\":\"req-address-1\"}");
+            } else if (addressMode.get().equals("MISSING")) {
+                respond(exchange, 200,
+                        "{\"message\":\"地址检查事实缺失\",\"request_id\":\"req-address-1\"}");
+            } else {
+                respond(exchange, 200,
+                        "{\"need_confirm\":false,\"message\":\"\",\"original_address\":[],\"latest_address\":[],\"request_id\":\"req-address-1\"}");
+            }
+            return;
+        }
         if (method.equals("GET") && path.equals("/order-supplier/v1/logistics/sub-order-info")) {
             assertThat(exchange.getRequestURI().getRawQuery()).contains("sub_order_id=sub-1", "system=supplier");
             respond(exchange, 200,
-                    "{\"product_list\":[{\"product_id\":\"product-1\",\"allow_send_num\":1,\"fd-random1234\":\"browser-only\"}]}");
+                    "{\"receipt_user_name\":\"receiver-1\",\"receipt_phone_number\":\"phone-1\",\"location\":\"address-1\",\"product_list\":[{\"product_id\":\"product-1\",\"allow_send_num\":1,\"fd-random1234\":\"browser-only\"}]}");
             return;
         }
         if (method.equals("GET") && path.equals("/order-public/v1/logistics-company/options")) {
@@ -270,9 +408,9 @@ class JufubaoConnectorHttpContractTest {
                 respond(exchange, 409,
                         "{\"code\":\"Conflict\",\"message\":\"结果需核对\",\"request_id\":\"req-409\"}");
             } else if (submitMode.get().equals("MALFORMED")) {
-                respond(exchange, 200, "{\"message\":\"结果不完整\",\"request_id\":\"req-unknown\"}");
+                respond(exchange, 200, "{\"message\":\"结果不完整\"}");
             } else {
-                respond(exchange, 200, "{\"code\":0,\"message\":\"操作成功\",\"request_id\":\"req-ship-1\"}");
+                respond(exchange, 200, "{\"request_id\":\"req-ship-1\"}");
             }
             return;
         }

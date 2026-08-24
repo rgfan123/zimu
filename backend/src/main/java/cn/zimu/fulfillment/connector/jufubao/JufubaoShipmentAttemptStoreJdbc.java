@@ -108,6 +108,26 @@ public class JufubaoShipmentAttemptStoreJdbc implements JufubaoShipmentAttemptSt
     }
 
     @Override
+    public void verifyWritePermit(String subOrderId, String trackingNo, String ownerToken) {
+        int updated = requiresNew.execute(status -> jdbc.update(
+                """
+                UPDATE app.idempotency_registry
+                SET lease_expires_at = CURRENT_TIMESTAMP + (? * INTERVAL '1 second'),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE scope = ? AND idempotency_key = ? AND owner_token = ?
+                  AND status = 'IN_PROGRESS'
+                  AND lease_expires_at > CURRENT_TIMESTAMP
+                """,
+                lease.toSeconds(),
+                SCOPE,
+                JufubaoShipmentAttemptStore.idempotencyKey(subOrderId, trackingNo),
+                ownerToken));
+        if (updated != 1) {
+            throw claimLost("外部写许可校验失败，禁止执行外部写");
+        }
+    }
+
+    @Override
     public void completeSuccess(String subOrderId, String trackingNo, String ownerToken, SourceSyncResult result) {
         complete(subOrderId, trackingNo, ownerToken, "SUCCEEDED", result);
     }
@@ -134,6 +154,47 @@ public class JufubaoShipmentAttemptStoreJdbc implements JufubaoShipmentAttemptSt
         if (updated != 1) {
             throw claimLost("租约未释放，行状态未登记为可重试");
         }
+    }
+
+    @Override
+    public boolean releaseReconciledNotAccepted(String intentKey) {
+        if (intentKey == null || !intentKey.startsWith("JUFUBAO:") || intentKey.length() <= "JUFUBAO:".length()) {
+            return false;
+        }
+        Boolean released = requiresNew.execute(status -> {
+            int updated = jdbc.update(
+                    """
+                    UPDATE app.idempotency_registry
+                    SET status = 'FAILED', effect_started_at = NULL, owner_token = NULL,
+                        lease_expires_at = NULL,
+                        completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE scope = ? AND idempotency_key = ?
+                      AND (
+                          status = 'RECONCILIATION_REQUIRED'
+                          OR (status = 'IN_PROGRESS'
+                              AND (lease_expires_at IS NULL
+                                   OR lease_expires_at <= statement_timestamp()))
+                      )
+                    """,
+                    SCOPE,
+                    intentKey);
+            if (updated == 1) {
+                return true;
+            }
+            Integer alreadyReleased = jdbc.queryForObject(
+                    """
+                    SELECT COUNT(*)
+                    FROM app.idempotency_registry
+                    WHERE scope = ? AND idempotency_key = ?
+                      AND status = 'FAILED'
+                    """,
+                    Integer.class,
+                    SCOPE,
+                    intentKey);
+            return alreadyReleased != null && alreadyReleased == 1;
+        });
+        return Boolean.TRUE.equals(released);
     }
 
     private ClaimResult decideExisting(String key, String payloadHash, String ownerToken) {

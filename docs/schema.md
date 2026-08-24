@@ -4,7 +4,7 @@
 依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
-和 `V2`–`V52` 增量迁移；两条路径必须得到等价的当前结构——
+和 `V2`–`V53` 增量迁移；两条路径必须得到等价的当前结构——
 [`SchemaSnapshotMigrationEquivalenceTest`](../backend/src/test/java/cn/zimu/fulfillment/schema/SchemaSnapshotMigrationEquivalenceTest.java)
 用 Testcontainers 分别以空库快照与 Flyway 全链建库，从 `pg_catalog` 比对表/视图/列
 （类型/可空/默认/identity）/主键/唯一键/check 约束/外键/普通索引/触发器/显式序列/
@@ -95,7 +95,7 @@ erDiagram
 | `shipment_items` | Shipment 与 Fulfillment 的数量分配 | 支持“一批多行”和“一行多批”；已实发量、取消量和所有 CREATED 批次的待出库量共同守恒；礼包只能按完整份数 |
 | `shipment_jd_outbounds` | Shipment 级京东出库集成记录 | `shipment_id` / `erp_delivery_no` 唯一；独立持久同步状态、请求指纹、外部引用、失败/对账事实和当次 `client_mode`，旧记录为 `UNKNOWN` |
 | `trackings` | Shipment 的物流公司与运单号 | P0 一个 Shipment 最多一个 Tracking；运单只追加，不覆盖冲突值 |
-| `shipment_syncs` | Shipment 向来源渠道回传的状态 | `(shipment_id, source_channel)` 唯一 |
+| `shipment_syncs` | Shipment 向来源渠道回传的权威状态与 durable intent 投影 | `(shipment_id, source_channel)` 唯一；SYNCING 必须保存 intent/platform intent、check/artifact hash、来源行、承运商、运单、开始时间与累计尝试次数；`lock_version` 做 CAS；PENDING 必须清空旧确认事实；与文件 fallback 共享 Shipment 行锁 |
 | `procurement_tickets` | 我方库存缺口协同工单头 | 仅允许 `inventory_managed_by_us=true` 的履约方；第三方短发不能创建该工单 |
 | `procurement_ticket_items` | 缺货 SKU/礼包组件明细 | 普通项必须是本行 SKU，礼包项必须是本行组件；fulfilled 只能由只追加回执累计 |
 | `procurement_receipts` | 一次 SUCCESS/PARTIAL/FAILED 回执头 | 一张工单可接收多次回执；只追加 |
@@ -113,7 +113,7 @@ erDiagram
 |---|---|---|
 | `fulfillment_exports` | 一份只属于一个履约方的发货指令文件 | 京东/第三方模板分开；文件版本只追加；快照运单 SLA 截止时间 |
 | `fulfillment_export_items` | 导出逐行不可变快照 | Fulfillment/OrderLine/Shipment/provider 必须同源；普通 SKU 一行，礼包完整展开全部组件且数量等于本批礼包数×单份用量 |
-| `source_return_exports` | 按来源原格式生成的版本化回填文件 | `(import_batch_id, version_no)` 唯一；阶段版和最终版都永久保留 |
+| `source_return_exports` | 按来源原格式生成的版本化回填文件与人工 fallback push 投影 | `(import_batch_id, version_no)` 唯一；生成事实永久不可改；已失效 artifact 禁止 PUSHING；push 仅允许 NOT_PUSHED/FAILED→PUSHING→SUCCESS/FAILED；进入 PUSHING 时按不可变 items 排序锁住关联 Shipment，并拒绝 SYNCING/SYNCED/RECONCILIATION_REQUIRED 的在线回传 |
 | `source_return_export_items` | 原始行到 Shipment/运单的回填快照 | 首个关联 Shipment 正常回填；预计或已经存在后续 Shipment 时创建 `MULTI_SHIPMENT_SOURCE_FOLLOWUP` ReviewCase，禁止复制来源行、拼接或覆盖运单；零实发全量取消用 CANCELLED 且不伪造 Shipment |
 | `fulfillment_export_wecom_states` | 每第三方导出一行的企微出站/提醒状态（#84） | `export_id` 唯一；status ∈ PENDING/ACTIVE/COMPLETED/MANUALLY_STOPPED/FAILED/UNKNOWN/LEGACY；ACTIVE 必须携带 `initial_sent_at`/`tracking_due_at`/`chat_id`（ack 派生计时起点 + 快照群）；COMPLETED/人工停止清 `next_reminder_at`；LEGACY = 迁移历史导出，`initial_sent_at` 必空、绝不自动入队；SLA 与提醒间隔生成时快照；`lock_version` 乐观并发 |
 | `fulfillment_export_wecom_deliveries` | 每次 initial/reminder 尝试的证据（#84） | `UNIQUE (export_id, kind, sequence)` 防同一 initial/同一 reminder sequence 重复入队与并发发送；status ∈ PENDING/SENDING/SENT/FAILED/UNKNOWN；SENT ⟺ 携带服务端 ack 接收时刻（计时起点证据）；`attempts <= max_attempts`（默认 2 = 1 次自动重试）；只存 `media_id_sha256` 摘要，不落 media_id 明文或文件内容 |
@@ -165,6 +165,8 @@ Timeline 按订单内 `sequence_no`/`created_at` 排序，不按事件类型字�
 
 消息链路血缘为 `channel_messages`（§3.5 原始证据）→ `message_submissions` → `message_interpretations`（同一提交多版本）→ 草稿（`order_drafts`/`provider_tracking_drafts`）。`message_media` 只保存证据，不参与解释；`async_tasks` 由 `InterpretationWorker` 以 `SKIP LOCKED` 租约轮询领取，`ApplicationFence.SUPERSEDED` 让被取代版本的任务成为幂等 no-op。
 
+V53 在既有 `agent_definitions` 中播种 `source-sync-reviewer` v1：仅白名单只读工具 `check_shipment_source_sync`，`allow_write=false`、`guard_exemptions=[]`，输出只能作为人工确认前的建议，不能执行回传或对账。
+
 ### 3.8 内部运营人员与企微业务通知（5）
 
 | 表 | 职责 | 关键约束 |
@@ -184,14 +186,14 @@ Timeline 按订单内 `sequence_no`/`created_at` 排序，不按事件类型字�
 
 ## 4. 状态维度
 
-| 维度 | 存储位置 | V1 值 |
+| 维度 | 存储位置 | 当前值 |
 |---|---|---|
 | OrderStatus | `orders.order_status` | RECEIVED、VALIDATED、SKU_MAPPED、FULFILLING、SHIPPED、SYNCED、CLOSED、NEED_REVIEW、OUT_OF_STOCK、PROCUREMENT_PENDING、FULFILLMENT_EXCEPTION、SYNC_FAILED、CANCELLED |
 | ProcessingStage | `order_lines.processing_stage` | NEED_REVIEW、READY_TO_EXPORT、WAITING_PROVIDER、PROCUREMENT_IN_PROGRESS、TRACKING_RECEIVED、RETURN_FILE_READY、COMPLETED、EXCEPTION |
 | ShippingProgress | `fulfillments.shipping_progress` | NOT_SHIPPED、PARTIALLY_SHIPPED、SHIPPED |
 | FulfillmentOutcome | `fulfillments.outcome` | IN_PROGRESS、FULLY_FULFILLED、PARTIALLY_FULFILLED、CANCELLED |
 | ShipmentStatus | `shipments.shipment_status` | P0：CREATED、SHIPPED、FAILED；未来物流回调：DELIVERED |
-| SyncStatus | `shipment_syncs.sync_status` | PENDING、SYNCED、SYNC_FAILED |
+| SyncStatus | `shipment_syncs.sync_status` | PENDING、SYNCING、SYNCED、SYNC_FAILED、RECONCILIATION_REQUIRED |
 | ProcurementStatus | `procurement_tickets.procurement_status` | PENDING、SUCCESS、PARTIAL、FAILED、CANCELLED |
 
 OrderProgressSummary 不写回 `orders`。`app.v_order_progress_summary` 从订单行和活跃提醒派生：
@@ -275,7 +277,7 @@ DDL 必须通过以下门槛：
 3. 执行 `docs/schema-smoke.sql`，覆盖：上海业务日出库单号原子流水、运单回传与原 FulfillmentExport/provider 关联、已发货但未提供实际发货时间、非已发货状态的不一致时间拒绝、第三方库存写入拒绝、错误修订链拒绝、跨 provider/非整份礼包拒绝、重复待出库批次拒绝、跨订单导出/回填拒绝、Demo 业务隔离、京东金额非 0 拒绝、Shipment 超发拒绝、Tracking 冲突拒绝、最终回填含等待项拒绝、已导出订单字段冻结、分析视图排除 Demo 和未知实际发货日数据，以及渠道/商品实发量的乘数换算与礼包组件展开。
 4. `git diff --check` 无空白错误。
 5. `SchemaSnapshotMigrationEquivalenceTest`（Testcontainers，`mvn test` 默认阶段运行）：分别用
-   `docs/schema.sql` 与 Flyway 全链（V1..V52）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
+   `docs/schema.sql` 与 Flyway 全链（V1..V53）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
 
 ## 11. 快照与迁移链的更新责任
 

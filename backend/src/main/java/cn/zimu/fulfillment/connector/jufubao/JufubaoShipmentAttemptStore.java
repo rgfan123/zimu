@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -17,8 +18,8 @@ import java.util.Objects;
  * 聚福宝单订单发货外部写的持久幂等 store（GitHub Issue rgfan123/zimu#99）。
  *
  * <p>复用共享注册表 {@code app.idempotency_registry}（scope 固定为合法字符串 {@value #SCOPE}），
- * 不新增 migration 或表。幂等键固定为 {@code JUFUBAO + sub_order_id + tracking_no}
- * （见 {@link #idempotencyKey}）。注册表行是唯一跨重启事实来源：新 store 实例（无进程内状态）
+ * 不新增 migration 或表。幂等键固定为渠道前缀与 {@code sub_order_id + tracking_no} 的 SHA-256
+ * 摘要（见 {@link #idempotencyKey}）。注册表行是唯一跨重启事实来源：新 store 实例（无进程内状态）
  * 会重放 SUCCEEDED / RECONCILIATION_REQUIRED，绝不对未知结果给出 PROCEED，禁止盲目重提。
  *
  * <p>调用方必须遵守的流水线顺序：
@@ -26,15 +27,18 @@ import java.util.Objects;
  *   <li>{@link #claim}：PROCEED 才可继续；REPLAY 直接返回已登记结果；CONFLICT / IN_PROGRESS /
  *       RECONCILIATION_REQUIRED 均不得提交外部写。</li>
  *   <li>写前检查（订单状态、发货详情、承运商映射等）；写前失败可调用 {@link #release}，允许安全重试。</li>
- *   <li>{@link #markEffectStarted}：必须在外部写之前调用并以独立事务提交，使租约失效后
+ *   <li>{@link #markEffectStarted}：必须在首次外部写之前调用并以独立事务提交，使租约失效后
  *       系统能判定「外部效果是否已开始」。</li>
+ *   <li>{@link #verifyWritePermit}：每一次不可逆外部写前单独调用，原子校验 fencing owner 和
+ *       有效租约；一次许可不得跨接单、发货两个动作复用。</li>
  *   <li>外部提交后：已验证成功用 {@link #completeSuccess}、结果未知用 {@link #completeUnknown}
  *       持久化（均以 fencing {@code owner_token} 守卫）；平台明确拒绝用 {@link #release} 释放。</li>
  * </ol>
  *
  * <p>所有写操作都在 REQUIRES_NEW 独立事务中提交，先于外部调用落库。{@code owner_token} 是
- * fencing token：租约过期或被接管后，旧 owner 的任何写入都被拒绝（抛
- * {@code JUFUBAO_IDEMPOTENCY_CLAIM_LOST}）。租约过期且 {@code effect_started_at} 为空可安全接管；
+ * fencing token：每次不可逆外部写前必须通过 {@link #verifyWritePermit} 同时校验 owner、状态和
+ * 有效租约；校验失败抛 {@code JUFUBAO_IDEMPOTENCY_CLAIM_LOST}。租约过期且
+ * {@code effect_started_at} 为空可安全接管；
  * {@code effect_started_at} 非空必须单调转 RECONCILIATION_REQUIRED，绝不回退到 PROCEED。
  *
  * <p>store 不接触、不持久化 Cookie / Token / 完整收件信息等敏感字段：快照只承载
@@ -56,10 +60,18 @@ public interface JufubaoShipmentAttemptStore {
 
     /**
      * 在外部写之前提交「外部效果已开始」标记（REQUIRES_NEW，先于外部调用持久化）。
-     * 租约过期本身不使 owner 失效；只有已被新 owner 接管或状态已改变时才抛
-     * {@code JUFUBAO_IDEMPOTENCY_CLAIM_LOST}。
+     * 此方法只登记外部效果即将开始，不替代 {@link #verifyWritePermit} 的 owner/租约校验。
      */
     void markEffectStarted(String subOrderId, String trackingNo, String ownerToken);
+
+    /**
+     * 为紧随其后的单次不可逆外部写获取 fencing 许可。
+     *
+     * <p>实现必须原子校验 owner_token、IN_PROGRESS 状态和未过期租约，并刷新租约；调用方不得
+     * 复用一次许可覆盖多个外部写。聚福宝的接单与发货是两个独立外部效果，因此两次调用之前都要
+     * 分别校验。
+     */
+    void verifyWritePermit(String subOrderId, String trackingNo, String ownerToken);
 
     /**
      * 持久化已验证成功结果：状态转 SUCCEEDED 并写入响应快照，以 fencing owner_token 守卫。
@@ -78,14 +90,28 @@ public interface JufubaoShipmentAttemptStore {
      */
     void release(String subOrderId, String trackingNo, String ownerToken, String businessCode, String message);
 
-    /** 幂等键 = {@code JUFUBAO + sub_order_id + tracking_no}（两端去除首尾空白）。 */
+    /**
+     * 人工对账确认平台未受理后，按最初持久化的完整 intent key 解除未知结果门禁。
+     *
+     * <p>只允许 {@code RECONCILIATION_REQUIRED -> FAILED}，保留原响应快照作为审计证据，清除
+     * effect_started_at 后才允许原 payload 再次 claim。不得用当前可变事实重新计算 key。
+     */
+    boolean releaseReconciledNotAccepted(String intentKey);
+
+    /** 幂等键 = 聚福宝渠道前缀 + {@code sub_order_id + tracking_no} 的稳定摘要。 */
     static String idempotencyKey(String subOrderId, String trackingNo) {
         String orderId = Objects.requireNonNull(subOrderId, "subOrderId").trim();
         String no = Objects.requireNonNull(trackingNo, "trackingNo").trim();
         if (orderId.isEmpty() || no.isEmpty()) {
             throw new IllegalArgumentException("subOrderId 与 trackingNo 不能为空");
         }
-        return "JUFUBAO:" + orderId + ":" + no;
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((orderId + "\u0000" + no).getBytes(StandardCharsets.UTF_8));
+            return "JUFUBAO:sha256:" + HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     /**
@@ -137,7 +163,17 @@ public interface JufubaoShipmentAttemptStore {
             String subOrderId,
             BigDecimal actualShippedQuantity,
             String carrierOutputValue,
-            String trackingNo) {
+            String trackingNo,
+            String expectedPlatformEffectHash) {
+
+        public ShipmentAttemptPayload(
+                String sourceRef,
+                String subOrderId,
+                BigDecimal actualShippedQuantity,
+                String carrierOutputValue,
+                String trackingNo) {
+            this(sourceRef, subOrderId, actualShippedQuantity, carrierOutputValue, trackingNo, "");
+        }
 
         public ShipmentAttemptPayload {
             sourceRef = sourceRef == null ? "" : sourceRef;
@@ -145,6 +181,7 @@ public interface JufubaoShipmentAttemptStore {
             trackingNo = requireNonBlank(trackingNo, "trackingNo");
             actualShippedQuantity = Objects.requireNonNull(actualShippedQuantity, "actualShippedQuantity");
             carrierOutputValue = requireNonBlank(carrierOutputValue, "carrierOutputValue");
+            expectedPlatformEffectHash = expectedPlatformEffectHash == null ? "" : expectedPlatformEffectHash;
         }
 
         private static String requireNonBlank(String value, String name) {

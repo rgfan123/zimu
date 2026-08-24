@@ -167,6 +167,60 @@ class JufubaoShipmentAttemptStoreIntegrationTest {
     }
 
     @Test
+    void reconciledNotAcceptedReleasesOnlyTheOriginalPersistedIntentAndPreservesEvidence() {
+        ShipmentAttemptPayload payload = payload("sub-reconciled", "JDVA-RECONCILED");
+        ClaimResult claim = store.claim(payload);
+        SourceSyncResult unknown = SourceSyncResult.failed(
+                "RECONCILIATION_REQUIRED", "聚福宝发货结果未知", "req-reconciled");
+        store.markEffectStarted("sub-reconciled", "JDVA-RECONCILED", claim.ownerToken());
+        store.completeUnknown("sub-reconciled", "JDVA-RECONCILED", claim.ownerToken(), unknown);
+        String originalIntent = JufubaoShipmentAttemptStore.idempotencyKey(
+                "sub-reconciled", "JDVA-RECONCILED");
+
+        assertThat(store.releaseReconciledNotAccepted("JUFUBAO:other:tracking")).isFalse();
+        assertThat(store.releaseReconciledNotAccepted(originalIntent)).isTrue();
+        assertThat(store.releaseReconciledNotAccepted(originalIntent)).isTrue();
+
+        Map<String, Object> released = jdbc().queryForMap(
+                "SELECT status, effect_started_at, response_snapshot FROM app.idempotency_registry "
+                        + "WHERE scope = ? AND idempotency_key = ?",
+                JufubaoShipmentAttemptStore.SCOPE,
+                originalIntent);
+        assertThat(released)
+                .containsEntry("status", "FAILED")
+                .containsEntry("effect_started_at", null);
+        assertThat(released.get("response_snapshot")).isNotNull();
+        assertThat(freshStore().claim(payload).decision()).isEqualTo(Decision.PROCEED);
+    }
+
+    @Test
+    void reconciledNotAcceptedCanReleaseAnExpiredInProgressInnerIntentButNotAnActiveOne() {
+        ShipmentAttemptPayload payload = payload("sub-expired-reconcile", "JDVA-EXPIRED-RECONCILE");
+        ClaimResult claim = store.claim(payload);
+        store.markEffectStarted(
+                "sub-expired-reconcile", "JDVA-EXPIRED-RECONCILE", claim.ownerToken());
+        String intent = JufubaoShipmentAttemptStore.idempotencyKey(
+                "sub-expired-reconcile", "JDVA-EXPIRED-RECONCILE");
+
+        assertThat(store.releaseReconciledNotAccepted(intent)).isFalse();
+        jdbc().update(
+                "UPDATE app.idempotency_registry SET lease_expires_at=CURRENT_TIMESTAMP-INTERVAL '1 second' "
+                        + "WHERE scope=? AND idempotency_key=?",
+                JufubaoShipmentAttemptStore.SCOPE,
+                intent);
+
+        assertThat(store.releaseReconciledNotAccepted(intent)).isTrue();
+        assertThat(jdbc().queryForMap(
+                        "SELECT status, effect_started_at, owner_token FROM app.idempotency_registry "
+                                + "WHERE scope=? AND idempotency_key=?",
+                        JufubaoShipmentAttemptStore.SCOPE,
+                        intent))
+                .containsEntry("status", "FAILED")
+                .containsEntry("effect_started_at", null)
+                .containsEntry("owner_token", null);
+    }
+
+    @Test
     void differentPayloadForSameKeyIsConflict() {
         ShipmentAttemptPayload original = payload("sub-4", "JDVA004");
         ClaimResult claim = store.claim(original);
@@ -222,16 +276,16 @@ class JufubaoShipmentAttemptStoreIntegrationTest {
     }
 
     @Test
-    void leaseExpiryAloneDoesNotInvalidateTheCurrentOwner() {
+    void expiredLeaseCannotAcquireAWritePermitEvenWhenTheOwnerWasNotTakenOver() {
         ShipmentAttemptPayload payload = payload("sub-owner", "JDVA-OWNER");
         ClaimResult claim = store.claim(payload);
+        store.markEffectStarted("sub-owner", "JDVA-OWNER", claim.ownerToken());
         expireLease("sub-owner", "JDVA-OWNER");
 
-        store.markEffectStarted("sub-owner", "JDVA-OWNER", claim.ownerToken());
-        SourceSyncResult outcome = SourceSyncResult.ok("req-owner");
-        store.completeSuccess("sub-owner", "JDVA-OWNER", claim.ownerToken(), outcome);
-
-        assertSameResult(freshStore().claim(payload).replay(), outcome);
+        assertThatThrownBy(() -> store.verifyWritePermit(
+                        "sub-owner", "JDVA-OWNER", claim.ownerToken()))
+                .isInstanceOfSatisfying(BusinessException.class, ex ->
+                        assertThat(ex.getBusinessCode()).isEqualTo("JUFUBAO_IDEMPOTENCY_CLAIM_LOST"));
     }
 
     @Test
@@ -325,6 +379,8 @@ class JufubaoShipmentAttemptStoreIntegrationTest {
         ClaimResult rejected = store.claim(rejectedPayload);
         store.markEffectStarted("sub-8", "JDVA008", rejected.ownerToken());
         store.release("sub-8", "JDVA008", rejected.ownerToken(), "InvalidArgument", "快递单号非法");
+        assertThat(store.releaseReconciledNotAccepted(
+                JufubaoShipmentAttemptStore.idempotencyKey("sub-8", "JDVA008"))).isTrue();
 
         ClaimResult retryRejected = freshStore().claim(rejectedPayload);
         assertThat(retryRejected.decision()).isEqualTo(Decision.PROCEED);
@@ -337,6 +393,7 @@ class JufubaoShipmentAttemptStoreIntegrationTest {
         ClaimResult claim = store.claim(payload);
 
         store.markEffectStarted("sub-9", "JDVA009", claim.ownerToken());
+        store.verifyWritePermit("sub-9", "JDVA009", claim.ownerToken());
 
         // REQUIRES_NEW 已提交：独立连接立即可见 effect_started_at，且行仍为 IN_PROGRESS。
         assertThat(jdbc().queryForMap(

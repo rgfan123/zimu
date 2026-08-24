@@ -24,6 +24,7 @@ class JufubaoShipmentAttemptStorePayloadHashTest {
         mapPayload.put("actualShippedQuantity", new BigDecimal("1"));
         mapPayload.put("subOrderId", "sub-1");
         mapPayload.put("sourceRef", "main-1");
+        mapPayload.put("expectedPlatformEffectHash", "");
 
         assertThat(hash(recordPayload)).isEqualTo(hash(mapPayload));
     }
@@ -49,6 +50,18 @@ class JufubaoShipmentAttemptStorePayloadHashTest {
 
         assertThat(hash(differentCarrier)).isNotEqualTo(hash(original));
         assertThat(hash(differentQuantity)).isNotEqualTo(hash(original));
+    }
+
+    @Test
+    void maximumLengthPlatformIdentifiersStillProduceDatabaseSafeDistinctKeys() {
+        String first = JufubaoShipmentAttemptStore.idempotencyKey("a".repeat(255), "b".repeat(128));
+        String second = JufubaoShipmentAttemptStore.idempotencyKey("a".repeat(254) + "c", "b".repeat(128));
+
+        assertThat(first).hasSizeLessThanOrEqualTo(255).startsWith("JUFUBAO:sha256:");
+        assertThat(second).hasSizeLessThanOrEqualTo(255).isNotEqualTo(first);
+        assertThat(JufubaoShipmentAttemptStore.idempotencyKey("sub-1", "JDVA123"))
+                .hasSize(79)
+                .startsWith("JUFUBAO:sha256:");
     }
 
     private String hash(Object payload) {
