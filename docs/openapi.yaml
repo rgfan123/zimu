@@ -41,6 +41,323 @@ tags:
 security:
   - basicAuth: []
 paths:
+  "/api/v1/agent-runs/token-usage":
+    "Blocker":
+      type: object
+      properties:
+        stage:
+          type: string
+        code:
+          type: string
+        count:
+          type: integer
+          format: int32
+        sampleNo:
+          type: string
+    "FulfillmentFileAssessment":
+      type: object
+      properties:
+        batch_no:
+          type: string
+        current_stage:
+          type: string
+        summary:
+          type: string
+        stage_notes:
+          type: array
+          items:
+            $ref: "#/components/schemas/StageNote"
+        suggested_actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SuggestedAction"
+        requires_human:
+          type: boolean
+        missing_fields:
+          type: array
+          items:
+            type: string
+    "FulfillmentFileRunResult":
+      type: object
+      properties:
+        progress:
+          $ref: "#/components/schemas/ImportBatchProgress"
+        assessment:
+          $ref: "#/components/schemas/FulfillmentFileAssessment"
+        provider:
+          type: string
+        model:
+          type: string
+        promptVersion:
+          type: string
+        error:
+          type: string
+    "ImportBatchProgress":
+      type: object
+      properties:
+        batchId:
+          type: integer
+          format: int64
+        batchNo:
+          type: string
+        batchType:
+          type: string
+        sourceChannel:
+          type: string
+        status:
+          type: string
+        revisionNo:
+          type: integer
+          format: int32
+        receivedAt:
+          type: string
+          format: date-time
+        processedAt:
+          type: string
+          format: date-time
+        intake:
+          $ref: "#/components/schemas/Stage"
+        outbound:
+          $ref: "#/components/schemas/Stage"
+        tracking:
+          $ref: "#/components/schemas/Stage"
+        sourceReturn:
+          $ref: "#/components/schemas/Stage"
+        blockers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blocker"
+    "MetaAgentMessage":
+      type: object
+      properties:
+        message:
+          type: string
+        threadId:
+          type: string
+    JsonNode: {}
+    "MetaAgentOutcome":
+      type: object
+      properties:
+        outcome:
+          type: string
+        runId:
+          type: string
+        agentSlug:
+          type: string
+        draftVersion:
+          type: integer
+          format: int32
+        draftEnabled:
+          type: boolean
+        questions:
+          type: array
+          items:
+            type: string
+        rejectionReason:
+          type: string
+        error:
+          type: string
+        raw:
+          $ref: "#/components/schemas/JsonNode"
+    "Stage":
+      type: object
+      properties:
+        name:
+          type: string
+        total:
+          type: integer
+          format: int32
+        done:
+          type: integer
+          format: int32
+        blocked:
+          type: integer
+          format: int32
+        supported:
+          type: boolean
+    "StageNote":
+      type: object
+      properties:
+        stage:
+          type: string
+        note:
+          type: string
+    "SuggestedAction":
+      type: object
+      properties:
+        action:
+          type: string
+        reason:
+          type: string
+        target_no:
+          type: string
+    "TokenUsageSummaryItem":
+      type: object
+      properties:
+        groupKey:
+          type: string
+        runs:
+          type: integer
+          format: int64
+        failedRuns:
+          type: integer
+          format: int64
+        runsWithoutTokenUsage:
+          type: integer
+          format: int64
+        overThresholdRuns:
+          type: integer
+          format: int64
+        promptTokens:
+          type: integer
+          format: int64
+        completionTokens:
+          type: integer
+          format: int64
+        totalTokens:
+          type: integer
+          format: int64
+        maxRunTotalTokens:
+          type: integer
+          format: int64
+        modelCalls:
+          type: integer
+          format: int64
+        totalLatencyMs:
+          type: integer
+          format: int64
+        maxRunLatencyMs:
+          type: integer
+          format: int64
+    "TokenUsageSummaryResponse":
+      type: object
+      properties:
+        groupBy:
+          type: string
+        runMode:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenUsageSummaryItem"
+        totals:
+          $ref: "#/components/schemas/TokenUsageSummaryItem"
+    get:
+      tags:
+      - agent-run-read-controller
+      operationId: tokenUsage_1
+      parameters:
+      - name: slug
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: run_mode
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_type
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_to
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: group_by
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/TokenUsageSummaryResponse"
+  "/api/v1/agents/meta/conversations":
+    post:
+      tags:
+      - meta-agent-controller
+      operationId: converse
+      parameters:
+      - name: X-Operator
+        in: header
+        required: false
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MetaAgentMessage"
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/MetaAgentOutcome"
+  "/api/v1/import-batches/{batchId}/assessment":
+    post:
+      tags:
+      - fulfillment-file-agent-controller
+      operationId: assess
+      parameters:
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      - name: X-Operator
+        in: header
+        required: false
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/FulfillmentFileRunResult"
+  "/api/v1/import-batches/{batchId}/progress":
+    get:
+      tags:
+      - fulfillment-file-agent-controller
+      operationId: progress
+      parameters:
+      - name: batchId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ImportBatchProgress"
   /api/v1/zhonghui-pms/status:
     get:
       tags: [ZhonghuiPms]
@@ -2943,6 +3260,56 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/FulfillmentMetric' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  "/internal/v1/agent-runs/token-usage":
+    get:
+      tags:
+      - internal-agent-run-read-controller
+      operationId: tokenUsage
+      parameters:
+      - name: slug
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: run_mode
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_type
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: started_to
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: group_by
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 100
+      responses:
+        "200":
+          description: OK
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/TokenUsageSummaryResponse"
   /internal/v1/orders:
     post:
       tags: [Internal]
