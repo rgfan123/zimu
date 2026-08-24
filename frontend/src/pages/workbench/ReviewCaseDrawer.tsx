@@ -649,7 +649,12 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
               ) : null}
             </>
           ) : selected.resolution ? (
-            safeReviewDetailRows(selected.resolution).length ? (
+            selected.reason_code === 'SOURCE_SYNC_BLOCKED' ? (
+              <FactGroupSection
+                detail={selected.resolution}
+                groups={reviewFactGroups(selected.reason_code)}
+              />
+            ) : safeReviewDetailRows(selected.resolution).length ? (
               <Descriptions
                 bordered
                 size="small"

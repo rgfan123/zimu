@@ -2,10 +2,6 @@ package cn.zimu.fulfillment.customer;
 
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.order.dto.CustomerInput;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.text.Normalizer;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,24 +29,31 @@ public class ImportedCustomerService {
     }
 
     public CustomerInput resolve(SourceChannel channel, String rawName, String rawPhone) {
-        String name = normalizeName(rawName);
-        String phone = normalizePhone(rawPhone);
-        if (name.isBlank() || phone.isBlank()) {
-            return new CustomerInput(null, "UNRESOLVED", name.isBlank() ? "待匹配客户" : name);
+        ImportedCustomerIdentity identity = ImportedCustomerIdentity.from(rawName, rawPhone);
+        String name = identity.normalizedName();
+        String phone = identity.normalizedPhone();
+        if (!identity.complete()) {
+            return new CustomerInput(null, identity.sourceCustomerRef(), name.isBlank() ? "待匹配客户" : name);
         }
-        String identityHash = sha256(name + "\u001f" + phone);
-        String sourceRef = "CONTACT-" + identityHash.substring(0, 32).toUpperCase();
-        jdbc.query(
-                "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
-                resultSet -> {
-                    resultSet.next();
-                    return null;
-                },
-                "import-customer:" + identityHash);
+        String sourceRef = identity.sourceCustomerRef();
+        List<ImportedCustomerIdentity> candidates = ImportedCustomerIdentity.lookupCandidates(rawName, rawPhone);
+        candidates.stream()
+                .map(ImportedCustomerIdentity::advisoryLockKey)
+                .distinct()
+                .sorted()
+                .forEach(this::lockIdentity);
 
-        Customer customer = sourceRefs.findBySourceChannelAndSourceCustomerRef(channel, sourceRef)
-                .flatMap(ref -> customers.findById(ref.getCustomerId()))
-                .orElseGet(() -> findByIdentity(name, phone));
+        Map<Long, Customer> matches = new LinkedHashMap<>();
+        for (ImportedCustomerIdentity candidate : candidates) {
+            Customer refMatch = findBySourceRef(channel, candidate.sourceCustomerRef());
+            if (refMatch != null) matches.put(refMatch.getId(), refMatch);
+            Customer profileMatch = findByIdentity(name, candidate.normalizedPhone());
+            if (profileMatch != null) matches.put(profileMatch.getId(), profileMatch);
+        }
+        if (matches.size() > 1) {
+            throw new IllegalStateException("duplicate imported customer identity");
+        }
+        Customer customer = matches.isEmpty() ? null : matches.values().iterator().next();
         if (customer == null) {
             customer = codes.createBusinessCustomer(name);
             Map<String, Object> profile = new LinkedHashMap<>(customer.getProfile());
@@ -71,12 +74,29 @@ public class ImportedCustomerService {
         return new CustomerInput(customer.getCustomerCode(), sourceRef, customer.getCustomerName());
     }
 
+    private void lockIdentity(String lockKey) {
+        jdbc.query(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                resultSet -> {
+                    resultSet.next();
+                    return null;
+                },
+                lockKey);
+    }
+
+    private Customer findBySourceRef(SourceChannel channel, String sourceRef) {
+        return sourceRefs.findBySourceChannelAndSourceCustomerRef(channel, sourceRef)
+                .flatMap(ref -> customers.findById(ref.getCustomerId()))
+                .orElse(null);
+    }
+
     private Customer findByIdentity(String name, String phone) {
         List<Long> ids = jdbc.queryForList(
                 """
                 SELECT id FROM app.customers
                 WHERE data_scope='BUSINESS' AND status='ACTIVE'
-                  AND profile->>'identity_name'=? AND profile->>'identity_phone'=?
+                  AND profile->>'identity_name'=?
+                  AND profile->>'identity_phone'=?
                 ORDER BY id LIMIT 2
                 """,
                 Long.class,
@@ -88,24 +108,4 @@ public class ImportedCustomerService {
         return ids.isEmpty() ? null : customers.findById(ids.getFirst()).orElse(null);
     }
 
-    static String normalizeName(String value) {
-        if (value == null) return "";
-        return Normalizer.normalize(value, Normalizer.Form.NFKC).trim().replaceAll("\\s+", " ");
-    }
-
-    static String normalizePhone(String value) {
-        if (value == null) return "";
-        return Normalizer.normalize(value, Normalizer.Form.NFKC)
-                .trim()
-                .replaceAll("[\\s\\-()]", "");
-    }
-
-    private static String sha256(String value) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(StandardCharsets.UTF_8)));
-        } catch (Exception ex) {
-            throw new IllegalStateException("SHA-256 unavailable", ex);
-        }
-    }
 }

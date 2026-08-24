@@ -1209,6 +1209,29 @@ paths:
         '422':
           description: 当前检查仍有确定性阻断项。
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/shipments/source-sync/batch-execute:
+    post:
+      tags: [Shipments, Connectors]
+      operationId: batchExecuteShipmentSourceSync
+      summary: 逐 Shipment 独立执行一批来源平台回传
+      description: >-
+        最多 100 项；每项独立携带 shipment_id、expected_check_hash 与 idempotency_key，
+        并复用单 Shipment execute 的全部检查、租约、幂等、审计与对账语义。响应始终保留
+        每项结果；一项被阻断、冲突或异常不得回滚已经验证成功的兄弟 Shipment。
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceSyncBatchExecuteCommand' }
+      responses:
+        '200':
+          description: 每项独立成功或失败的聚合结果；客户端必须逐项处理。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceSyncBatchOutcome' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/shipments/{shipment_id}/source-sync/reconcile:
     parameters:
       - $ref: '#/components/parameters/ShipmentId'
@@ -3959,6 +3982,58 @@ components:
       required: [expected_check_hash]
       properties:
         expected_check_hash: { $ref: '#/components/schemas/Sha256' }
+    SourceSyncBatchExecuteCommand:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SourceSyncBatchExecuteItem' }
+    SourceSyncBatchExecuteItem:
+      type: object
+      additionalProperties: false
+      required: [shipment_id, expected_check_hash, idempotency_key]
+      properties:
+        shipment_id: { type: integer, format: int64, minimum: 1 }
+        expected_check_hash: { $ref: '#/components/schemas/Sha256' }
+        idempotency_key: { type: string, minLength: 8, maxLength: 255 }
+    SourceSyncBatchOutcome:
+      type: object
+      additionalProperties: false
+      required: [items, success_count, failure_count]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SourceSyncBatchOutcomeItem' }
+        success_count: { type: integer, format: int32, minimum: 0 }
+        failure_count: { type: integer, format: int32, minimum: 0 }
+    SourceSyncBatchOutcomeItem:
+      type: object
+      additionalProperties: false
+      required:
+        - shipment_id
+        - success
+        - replayed
+        - http_status
+        - business_code
+        - message
+      properties:
+        shipment_id: { type: integer, format: int64, minimum: 1 }
+        success: { type: boolean }
+        replayed: { type: boolean }
+        http_status: { type: integer, format: int32, minimum: 100, maximum: 599 }
+        business_code: { type: string, maxLength: 64 }
+        message: { type: string }
+        outcome:
+          allOf: [{ $ref: '#/components/schemas/SourceSyncOutcome' }]
+          nullable: true
+        replayed_body:
+          type: object
+          additionalProperties: true
+          nullable: true
     SourceSyncReconcileCommand:
       type: object
       additionalProperties: false

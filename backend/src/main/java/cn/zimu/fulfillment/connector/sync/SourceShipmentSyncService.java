@@ -121,6 +121,74 @@ public class SourceShipmentSyncService {
         }
     }
 
+    /**
+     * 批量人工执行 seam：逐 Shipment 调用既有幂等用例，每行单独收敛结果。
+     * 本方法不建立整批事务，因此一个失败行不会回滚已经验证成功的兄弟 Shipment。
+     */
+    public SourceSyncBatchOutcome executeBatch(
+            SourceSyncBatchExecuteCommand command,
+            CommandContext context) {
+        requireAuthenticatedOperator(context);
+        if (command == null || command.items().isEmpty()) {
+            throw BusinessException.badRequest("SOURCE_SYNC_BATCH_EMPTY", "批量来源回传至少需要一个 Shipment");
+        }
+        List<SourceSyncBatchOutcome.Item> items = new ArrayList<>();
+        for (SourceSyncBatchExecuteCommand.Item item : command.items()) {
+            try {
+                IdempotentResult<SourceSyncOutcome> result = execute(
+                        item.shipmentId(),
+                        new SourceSyncExecuteCommand(item.expectedCheckHash()),
+                        item.idempotencyKey(),
+                        context);
+                if (result.replayed()) {
+                    String code = jsonText(result.replayedBody(), "business_code", "OK");
+                    String message = jsonText(result.replayedBody(), "message", "来源回传幂等重放完成");
+                    items.add(new SourceSyncBatchOutcome.Item(
+                            item.shipmentId(),
+                            result.httpStatus() >= 200 && result.httpStatus() < 300,
+                            true,
+                            result.httpStatus(),
+                            code,
+                            message,
+                            null,
+                            result.replayedBody()));
+                } else {
+                    SourceSyncOutcome outcome = result.result();
+                    items.add(new SourceSyncBatchOutcome.Item(
+                            item.shipmentId(),
+                            true,
+                            false,
+                            result.httpStatus(),
+                            outcome.businessCode(),
+                            outcome.message(),
+                            outcome,
+                            null));
+                }
+            } catch (BusinessException exception) {
+                items.add(new SourceSyncBatchOutcome.Item(
+                        item.shipmentId(),
+                        false,
+                        false,
+                        exception.getHttpStatus(),
+                        exception.getBusinessCode(),
+                        exception.getMessage(),
+                        null,
+                        null));
+            } catch (RuntimeException exception) {
+                items.add(new SourceSyncBatchOutcome.Item(
+                        item.shipmentId(),
+                        false,
+                        false,
+                        500,
+                        "SOURCE_SYNC_INTERNAL_ERROR",
+                        "该 Shipment 来源回传出现内部错误，请稍后重试或联系管理员",
+                        null,
+                        null));
+            }
+        }
+        return new SourceSyncBatchOutcome(items);
+    }
+
     public IdempotentResult<SourceSyncOutcome> reconcile(
             long shipmentId,
             SourceSyncReconcileCommand command,
@@ -133,6 +201,16 @@ public class SourceShipmentSyncService {
                 Map.of("shipment_id", shipmentId, "command", command),
                 200,
                 () -> doReconcile(shipmentId, command, context));
+    }
+
+    private static String jsonText(
+            com.fasterxml.jackson.databind.JsonNode body,
+            String field,
+            String fallback) {
+        if (body == null || !body.path(field).isTextual() || body.path(field).asText().isBlank()) {
+            return fallback;
+        }
+        return body.path(field).asText();
     }
 
     private Prepared prepare(long shipmentId) {

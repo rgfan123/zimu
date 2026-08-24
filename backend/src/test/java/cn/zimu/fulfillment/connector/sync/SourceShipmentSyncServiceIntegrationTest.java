@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.common.audit.AuditActorType;
+import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.CommandContext;
@@ -129,7 +130,44 @@ class SourceShipmentSyncServiceIntegrationTest {
     }
 
     @Test
-    void readOnlyCheckDoesNotOpenReviewButBlockedExecuteDoes() {
+    void batchExecutionKeepsSuccessfulShipmentWhenAnotherShipmentIsRejected() {
+        long shipmentId = seedReadyShipment();
+        stubReadyJufubaoClosure();
+        CommandContext context = new CommandContext("req-batch", "trace-batch", "jry", "jry");
+        SourceSyncCheck ready = service.check(shipmentId, context, AuditActorType.HUMAN);
+
+        SourceSyncBatchOutcome result = service.executeBatch(
+                new SourceSyncBatchExecuteCommand(List.of(
+                        new SourceSyncBatchExecuteCommand.Item(
+                                shipmentId,
+                                ready.checkHash(),
+                                "source-sync-batch-success-0001"),
+                        new SourceSyncBatchExecuteCommand.Item(
+                                999_999L,
+                                "f".repeat(64),
+                                "source-sync-batch-failure-0001"))),
+                context);
+
+        assertThat(result.successCount()).isEqualTo(1);
+        assertThat(result.failureCount()).isEqualTo(1);
+        assertThat(result.items()).hasSize(2);
+        assertThat(result.items().getFirst())
+                .returns(shipmentId, SourceSyncBatchOutcome.Item::shipmentId)
+                .returns(true, SourceSyncBatchOutcome.Item::success)
+                .returns("SOURCE_SYNC_VERIFIED", SourceSyncBatchOutcome.Item::businessCode);
+        assertThat(result.items().get(1))
+                .returns(999_999L, SourceSyncBatchOutcome.Item::shipmentId)
+                .returns(false, SourceSyncBatchOutcome.Item::success)
+                .returns("NOT_FOUND", SourceSyncBatchOutcome.Item::businessCode);
+        assertThat(jdbc.queryForObject(
+                "SELECT sync_status FROM app.shipment_syncs WHERE shipment_id=?",
+                String.class,
+                shipmentId)).isEqualTo("SYNCED");
+        verify(jufubaoGateway, times(1)).submit(any());
+    }
+
+    @Test
+    void readOnlyCheckDoesNotOpenReviewButBlockedExecuteDoes() throws Exception {
         long shipmentId = seedReadyShipment(false);
         CommandContext context = new CommandContext("req-blocked", "trace-blocked", "jry", "jry");
 
@@ -150,6 +188,75 @@ class SourceShipmentSyncServiceIntegrationTest {
         assertThat(jdbc.queryForObject(
                 "SELECT COUNT(*) FROM app.review_cases WHERE shipment_id=? AND status='OPEN'",
                 Integer.class, shipmentId)).isEqualTo(1);
+        String detail = jdbc.queryForObject(
+                "SELECT detail::text FROM app.review_cases WHERE shipment_id=? AND status='OPEN'",
+                String.class,
+                shipmentId);
+        assertThat(objectMapper.readTree(detail).path("status").asText()).isEqualTo("PENDING");
+        assertThat(objectMapper.readTree(detail).path("business_code").asText())
+                .isEqualTo("SOURCE_SYNC_CHECK_BLOCKED");
+        assertThat(detail)
+                .contains("SOURCE_SYNC_QUANTITY_NOT_SOURCE_UNIT")
+                .doesNotContain("张三")
+                .doesNotContain("13800000000")
+                .doesNotContain("河南省郑州市金水区1号");
+        verify(jufubaoGateway, never()).submit(any());
+    }
+
+    @Test
+    void gateMatrixRejectsUnconfirmedMissingTrackingAndAlreadySynced() {
+        long shipmentId = seedReadyShipmentWithoutTracking();
+        CommandContext context = new CommandContext("req-gates", "trace-gates", "jry", "jry");
+
+        jdbc.update(
+                """
+                UPDATE app.import_batches SET confirmed_at=NULL, confirmed_by=NULL
+                WHERE id=(SELECT o.source_import_batch_id FROM app.orders o
+                          JOIN app.shipments s ON s.order_id=o.id WHERE s.id=?)
+                """,
+                shipmentId);
+        assertThat(service.check(shipmentId).blockers())
+                .extracting(SourceSyncBlocker::code)
+                .contains("SOURCE_BATCH_NOT_CONFIRMED");
+        jdbc.update(
+                """
+                UPDATE app.import_batches SET confirmed_at=CURRENT_TIMESTAMP, confirmed_by='ops'
+                WHERE id=(SELECT o.source_import_batch_id FROM app.orders o
+                          JOIN app.shipments s ON s.order_id=o.id WHERE s.id=?)
+                """,
+                shipmentId);
+
+        assertThat(service.check(shipmentId).blockers())
+                .extracting(SourceSyncBlocker::code)
+                .contains("FORMAL_TRACKING_REQUIRED");
+        jdbc.update(
+                """
+                INSERT INTO app.trackings
+                    (shipment_id, logistics_company_code, logistics_company_name, tracking_number)
+                VALUES (?, 'JD', '京东物流', 'JDVA123')
+                """,
+                shipmentId);
+
+        stubReadyJufubaoClosure();
+        SourceSyncCheck ready = service.check(shipmentId, context, AuditActorType.HUMAN);
+        service.execute(
+                shipmentId,
+                new SourceSyncExecuteCommand(ready.checkHash()),
+                "source-sync-gate-success-0001",
+                context);
+        assertThat(service.check(shipmentId).blockers())
+                .extracting(SourceSyncBlocker::code)
+                .contains("SOURCE_SYNC_ALREADY_SYNCED");
+        verify(jufubaoGateway, times(1)).submit(any());
+    }
+
+    @Test
+    void unsupportedSourceChannelIsRejectedAtTheModuleBoundary() {
+        long shipmentId = seedReadyShipmentForChannel(SourceChannel.FEIXIANG);
+
+        assertThat(service.check(shipmentId).blockers())
+                .extracting(SourceSyncBlocker::code)
+                .contains("SOURCE_SYNC_CHANNEL_UNSUPPORTED");
         verify(jufubaoGateway, never()).submit(any());
     }
 
@@ -335,6 +442,25 @@ class SourceShipmentSyncServiceIntegrationTest {
     }
 
     private long seedReadyShipment(boolean withSourceUnits) {
+        return seedReadyShipment(withSourceUnits, true);
+    }
+
+    private long seedReadyShipmentWithoutTracking() {
+        return seedReadyShipment(true, false);
+    }
+
+    private long seedReadyShipment(boolean withSourceUnits, boolean withTracking) {
+        return seedReadyShipment(withSourceUnits, withTracking, SourceChannel.JUFUBAO);
+    }
+
+    private long seedReadyShipmentForChannel(SourceChannel channel) {
+        return seedReadyShipment(true, true, channel);
+    }
+
+    private long seedReadyShipment(
+            boolean withSourceUnits,
+            boolean withTracking,
+            SourceChannel channel) {
         long customerId = jdbc.queryForObject(
                 "INSERT INTO app.customers(customer_code, customer_name) "
                         + "VALUES ('CUST-SYNC', '同步客户') RETURNING id",
@@ -360,21 +486,21 @@ class SourceShipmentSyncServiceIntegrationTest {
                     (batch_no, batch_type, source_channel, template_family, template_version,
                      template_fingerprint, original_file_name, content_sha256, file_ref,
                      status, uploaded_by, confirmed_at, confirmed_by)
-                VALUES ('SYNC-BATCH-1', 'SOURCE_ORDER', 'JUFUBAO', 'STRUCTURED', '1',
+                VALUES ('SYNC-BATCH-1', 'SOURCE_ORDER', ?, 'STRUCTURED', '1',
                         'structured-json-v1', 'sync.json', repeat('b', 64), 'structured://sync',
                         'COMPLETED', 'ops', CURRENT_TIMESTAMP, 'ops')
                 RETURNING id
-                """, Long.class);
+                """, Long.class, channel.name());
         long orderId = jdbc.queryForObject("""
                 INSERT INTO app.orders
                     (order_no, data_scope, source_channel, source_ref, source_ref_kind,
                      source_import_batch_id, customer_id, order_status, settlement_method,
                      settlement_time, receiver_name, receiver_phone, receiver_address)
-                VALUES ('ORD-SYNC-1', 'BUSINESS', 'JUFUBAO', 'main-1', 'PROVIDED', ?, ?,
+                VALUES ('ORD-SYNC-1', 'BUSINESS', ?, 'main-1', 'PROVIDED', ?, ?,
                         'SHIPPED', 'OTHER', CURRENT_TIMESTAMP, '张三', '13800000000',
                         '河南省郑州市金水区1号')
                 RETURNING id
-                """, Long.class, batchId, customerId);
+                """, Long.class, channel.name(), batchId, customerId);
         long orderLineId = jdbc.queryForObject("""
                 INSERT INTO app.order_lines
                     (order_id, line_no, line_type, sku_id, fulfillment_provider_id,
@@ -417,11 +543,13 @@ class SourceShipmentSyncServiceIntegrationTest {
                 VALUES (?, ?, 4, 4)
                 """, shipmentId, fulfillmentId);
         markFulfilled(fulfillmentId);
-        jdbc.update("""
-                INSERT INTO app.trackings
-                    (shipment_id, logistics_company_code, logistics_company_name, tracking_number)
-                VALUES (?, 'JD', '京东物流', 'JDVA123')
-                """, shipmentId);
+        if (withTracking) {
+            jdbc.update("""
+                    INSERT INTO app.trackings
+                        (shipment_id, logistics_company_code, logistics_company_name, tracking_number)
+                    VALUES (?, 'JD', '京东物流', 'JDVA123')
+                    """, shipmentId);
+        }
         return shipmentId;
     }
 

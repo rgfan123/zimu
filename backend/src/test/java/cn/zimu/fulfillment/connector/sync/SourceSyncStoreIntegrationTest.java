@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -122,6 +123,30 @@ class SourceSyncStoreIntegrationTest {
         String stored = jdbc.queryForObject(
                 "SELECT last_error_message FROM app.shipment_syncs WHERE shipment_id=7006", String.class);
         assertThat(stored).contains("note_sha256=", "note_length=").doesNotContain("不要把这段原文落库");
+    }
+
+    @Test
+    void successfulSyncResolvesTheExistingReviewWithSafeVisibleOutcome() {
+        insertWithoutForeignKeys(
+                """
+                INSERT INTO app.review_cases
+                    (case_no, case_type, status, responsible_team, reason_code, shipment_id, detail)
+                VALUES ('RC-SOURCE-SYNC-7010-test', 'SOURCE_SYNC', 'OPEN',
+                        'FULFILLMENT_OPS', 'SOURCE_SYNC_BLOCKED', 7010,
+                        '{"status":"SYNC_FAILED","receiver_phone":"13800000000"}'::jsonb)
+                """);
+        SourceSyncCheck successful = new SourceSyncCheck(
+                7010L, true, "a".repeat(64), "b".repeat(64), null, null, List.of(),
+                new SourceSyncProjection(SourceSyncStatus.SYNCED, 1, 2, null, null, null));
+
+        store.reconcileReviewCase(successful, "reviewer");
+
+        Map<String, Object> review = jdbc.queryForMap(
+                "SELECT status, resolution::text resolution FROM app.review_cases WHERE shipment_id=7010");
+        assertThat(review).containsEntry("status", "RESOLVED");
+        assertThat((String) review.get("resolution"))
+                .contains("SOURCE_SYNC_VERIFIED", "SYNCED", "无需操作")
+                .doesNotContain("13800000000", "check_hash");
     }
 
     private TransactionTemplate tx() {

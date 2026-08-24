@@ -3,6 +3,11 @@
 日期：2026-08-24
 范围：只读研究；没有登录真实账号，没有调用接单或发货接口，没有读取或复制本地 HAR 中的敏感载荷。
 
+> **历史报告提示：** 本文记录的是读取 HAR 之前的固定基线判断。随后对用户提供 HAR 的审计已证实
+> `receive-order`、地址确认、`sub-order-info` receiver 和 `sub-order-send` 写后闭环；当前证据与实现状态
+> 以 [聚福宝 HAR 发货闭环审计](jufubao-har-fulfillment-closure-audit-2026-08-24.md) 及 PR #128 为准。
+> 下文“未抓实/未实现”只能按当时快照理解，不代表当前候选代码。
+
 证据基线：pull 固定快照 `74e4a31891f3f284ca4121193e375fcec9706639`；push 固定提交 `c529fe49fee1f5eae83961951ff168c886989cd0`。核查时当前 root 的 `JufubaoConnector`、`JufubaoPullClient`、`JufubaoOrderTransform`、pull 测试及拉取脚本 blob 均与 `74e4a318` 完全一致；下文涉及 pull 行为时仍以该不可变提交为引用。
 
 ## 结论

@@ -10,6 +10,7 @@ import cn.zimu.fulfillment.connector.ExternalWritePermit;
 import cn.zimu.fulfillment.connector.PullCursor;
 import cn.zimu.fulfillment.connector.PullResult;
 import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
+import cn.zimu.fulfillment.connector.SourceReceiverNormalizer;
 import cn.zimu.fulfillment.connector.SourceShipmentResult;
 import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.file.SourceImportService;
@@ -19,7 +20,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
-import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -320,7 +320,7 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                 if (received.outcome() == JufubaoShipmentGateway.ReceiveResult.Outcome.REJECTED) {
                     String code = safeBusinessCode(received.businessCode());
                     return SourceSyncResult.failed(
-                            code,
+                            "JUFUBAO_RECEIVE_REJECTED",
                             "聚福宝拒绝接单请求（业务码：" + code + "）",
                             received.platformRef());
                 }
@@ -434,7 +434,7 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
             if (submitted.outcome() == JufubaoShipmentGateway.SubmitResult.Outcome.REJECTED) {
                 String code = safeBusinessCode(submitted.businessCode());
                 return SourceSyncResult.failed(
-                        code,
+                        "JUFUBAO_SHIPMENT_REJECTED",
                         "聚福宝拒绝发货请求（业务码：" + code + "）",
                         submitted.platformRef());
             }
@@ -544,15 +544,9 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
             SourceShipmentResult result,
             JufubaoShipmentGateway.ReceiverSnapshot platform) {
         return platform != null
-                && normalizeReceiver(result.receiverName()).equals(normalizeReceiver(platform.name()))
-                && normalizeReceiver(result.receiverPhone()).equals(normalizeReceiver(platform.phone()))
-                && normalizeReceiver(result.receiverAddress()).equals(normalizeReceiver(platform.address()));
-    }
-
-    private static String normalizeReceiver(String value) {
-        return Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFKC)
-                .trim()
-                .replaceAll("\\s+", " ");
+                && SourceReceiverNormalizer.sameName(result.receiverName(), platform.name())
+                && SourceReceiverNormalizer.samePhone(result.receiverPhone(), platform.phone())
+                && SourceReceiverNormalizer.sameAddress(result.receiverAddress(), platform.address());
     }
 
     /**

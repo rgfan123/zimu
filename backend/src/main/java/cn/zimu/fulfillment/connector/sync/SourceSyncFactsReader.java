@@ -53,6 +53,11 @@ public final class SourceSyncFactsReader {
 
     private Loaded assemble(Header header, List<Item> rows) {
         List<SourceSyncBlocker> blockers = new ArrayList<>();
+        if (header.channel() != SourceChannel.JUFUBAO
+                && header.channel() != SourceChannel.CAISHIXIAN) {
+            block(blockers, "SOURCE_SYNC_CHANNEL_UNSUPPORTED", "source_channel",
+                    "来源回传在线闭环仅支持聚福宝和彩食鲜");
+        }
         if (header.confirmedAt() == null) block(blockers, "SOURCE_BATCH_NOT_CONFIRMED", "import_batch", "来源导入批次尚未确认");
         if (!("SHIPPED".equals(header.shipmentStatus()) || "DELIVERED".equals(header.shipmentStatus()))) {
             block(blockers, "SHIPMENT_NOT_SHIPPED", "shipment_status", "Shipment 尚未形成已发货事实");

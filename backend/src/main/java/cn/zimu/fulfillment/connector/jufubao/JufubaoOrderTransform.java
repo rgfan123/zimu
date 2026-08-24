@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.connector.jufubao;
 
 import cn.zimu.fulfillment.common.domain.SourceChannel;
+import cn.zimu.fulfillment.customer.ImportedCustomerIdentity;
 import cn.zimu.fulfillment.file.StructuredOrderRow;
 import cn.zimu.fulfillment.order.domain.LineType;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
@@ -25,7 +26,7 @@ import org.springframework.stereotype.Component;
  *   <li>{@code sub_order_id} → sourceLineRef（「拆单号」）；</li>
  *   <li>{@code product_list[]} → 订单行（product_id → sourceSkuRef，product_name → 商品名，
  *       product_num → 数量）；</li>
- *   <li>{@code supplier_name} → 客户引用（聚福宝侧无独立客户档案，以供应商名为客户身份）；</li>
+ *   <li>{@code supplier_name} → 供应商证据；客户身份只由收货人姓名与手机号二元组确定；</li>
  *   <li>{@code created_time}（epoch 秒）→ 结账时间。</li>
  * </ul>
  *
@@ -84,8 +85,6 @@ public final class JufubaoOrderTransform {
         String subOrderId = text(source, "sub_order_id");
         String sourceRef = mainOrderId.isBlank() ? subOrderId : mainOrderId;
 
-        String supplierName = text(source, "supplier_name");
-        String customerRef = supplierName.isBlank() ? (sourceRef.isBlank() ? "JUFUBAO" : sourceRef) : supplierName;
         long createdEpoch = epochOf(source.get("created_time"), 0L);
 
         JufubaoShipmentGateway.ReceiverSnapshot currentReceiver =
@@ -97,12 +96,18 @@ public final class JufubaoOrderTransform {
                         null, null, null, null,
                         currentReceiver.address().trim())
                 : null;
+        ImportedCustomerIdentity customerIdentity = ImportedCustomerIdentity.from(
+                receiver == null ? null : receiver.name(),
+                receiver == null ? null : receiver.phone());
         List<OrderItemInput> items = itemsOf(source, subOrderId);
         CanonicalOrderInput canonical = new CanonicalOrderInput(
                 SourceChannel.JUFUBAO,
                 sourceRef,
                 null,
-                new CustomerInput(null, customerRef, customerRef),
+                new CustomerInput(
+                        null,
+                        customerIdentity.sourceCustomerRef(),
+                        customerIdentity.complete() ? customerIdentity.normalizedName() : "待匹配客户"),
                 receiver,
                 items,
                 new Settlement(SettlementMethod.OTHER, Instant.ofEpochSecond(createdEpoch)),

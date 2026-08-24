@@ -340,21 +340,30 @@ public class SourceSyncStore {
 
     @Transactional
     public void reconcileReviewCase(SourceSyncCheck check, String operator) {
-        if (check.ready()) {
+        if (check.ready() && check.projection().status() == SourceSyncStatus.SYNCED) {
             jdbc.update(
                     """
                     UPDATE app.review_cases
                     SET status='RESOLVED', resolution=jsonb_build_object(
-                            'reason','source-sync blockers cleared','check_hash',?),
+                            'resolution_type','SOURCE_SYNC_VERIFIED',
+                            'status','SYNCED',
+                            'business_code','SOURCE_SYNC_VERIFIED',
+                            'blocker_codes',jsonb_build_array(),
+                            'next_action','无需操作；来源平台已验证同步成功'),
                         resolution_version=resolution_version+1,
                         resolved_by=?, resolved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
                     WHERE shipment_id=? AND reason_code='SOURCE_SYNC_BLOCKED' AND status='OPEN'
                     """,
-                    check.checkHash(), operator, check.shipmentId());
+                    operator, check.shipmentId());
+            return;
+        }
+        if (check.ready()) {
             return;
         }
         String detail = json(Map.of(
                 "message", "Shipment 来源回传检查存在阻断项",
+                "status", check.projection().status().name(),
+                "business_code", "SOURCE_SYNC_CHECK_BLOCKED",
                 "check_hash", check.checkHash(),
                 "blocker_codes", check.blockers().stream().map(SourceSyncBlocker::code).toList()));
         jdbc.update(
@@ -502,7 +511,7 @@ public class SourceSyncStore {
                          order_id, shipment_id, detail)
                     SELECT ?, 'SOURCE_SYNC', 'OPEN', 'FULFILLMENT_OPS', 'SOURCE_SYNC_BLOCKED',
                            s.order_id, s.id,
-                           jsonb_build_object('message', ?, 'business_code', ?)
+                           jsonb_build_object('message', ?, 'status', ?, 'business_code', ?)
                     FROM app.shipments s WHERE s.id=?
                     ON CONFLICT (case_no) DO NOTHING
                     """,
@@ -510,6 +519,7 @@ public class SourceSyncStore {
                     candidate.effectStarted()
                             ? "过期来源回传可能已产生平台效果，必须人工对账"
                             : "过期来源回传未开始平台效果，可重新检查",
+                    next,
                     code,
                     candidate.shipmentId());
             recovered++;
