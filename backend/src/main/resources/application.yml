@@ -111,6 +111,30 @@ app:
     enabled: ${WECOM_ORDER_DRAFT_CARD_ENABLED:${WECOM_ENABLED:false}}
     poll-ms: ${WECOM_ORDER_DRAFT_CARD_POLL_MS:1000}
     lease-seconds: ${WECOM_ORDER_DRAFT_CARD_LEASE_SECONDS:60}
+  wecom-business-card:
+    # 通用业务卡（复核事项 / 运营告警 / 整批确认播报 / 京东出库失败）：默认跟随企微总开关。
+    enabled: ${WECOM_BUSINESS_CARD_ENABLED:${WECOM_ENABLED:false}}
+    poll-ms: ${WECOM_BUSINESS_CARD_POLL_MS:1000}
+    lease-seconds: ${WECOM_BUSINESS_CARD_LEASE_SECONDS:60}
+    claim-error-suppress-seconds: ${WECOM_BUSINESS_CARD_CLAIM_ERROR_SUPPRESS_SECONDS:60}
+    # 卡片深链的后台基地址；不配则卡片只带信息不带跳转（宁可不跳，也不发点了 404 的链接）。
+    base-url: ${WECOM_BUSINESS_CARD_BASE_URL:}
+    # 每类卡的目标会话。这四类卡都是系统产生的，没有「原会话」可回，必须显式配置。
+    # 未配置即不发，按 INFO 记录——没配群是部署选择，不是故障。
+    # 群聊路由要求渲染侧脱敏：收件人姓名/手机号/详细地址不得进群。
+    routes:
+      review:
+        type: ${WECOM_CARD_REVIEW_ROUTE_TYPE:GROUP}
+        chat-id: ${WECOM_CARD_REVIEW_CHAT_ID:}
+      alert:
+        type: ${WECOM_CARD_ALERT_ROUTE_TYPE:GROUP}
+        chat-id: ${WECOM_CARD_ALERT_CHAT_ID:}
+      batch:
+        type: ${WECOM_CARD_BATCH_ROUTE_TYPE:GROUP}
+        chat-id: ${WECOM_CARD_BATCH_CHAT_ID:}
+      jd-outbound:
+        type: ${WECOM_CARD_JD_OUTBOUND_ROUTE_TYPE:GROUP}
+        chat-id: ${WECOM_CARD_JD_OUTBOUND_CHAT_ID:}
   agent-worker:
     # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
     enabled: ${AGENT_WORKER_ENABLED:true}
