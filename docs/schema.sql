@@ -6658,20 +6658,5 @@ VALUES (
     }$$::jsonb,
     '["get_import_batch_progress","get_review_case","list_review_cases","get_inventory_overview","search_skus"]'::jsonb);
 
--- INVARIANT 评测用例：确定性门禁，跑 stub 评分器，不进真实模型。
--- 三条覆盖三个最容易做错的判定：必须先调进度工具、未接入段不得说成 0、缺事实时转人工。
-INSERT INTO app.agent_eval_cases (
-    agent_slug, agent_version, metric_kind, input, expected, status, created_by, confirmed_by, confirmed_at)
-VALUES
-    ('fulfillment-file-agent', 1, 'INVARIANT',
-     '{"import_batch_id":"7001"}'::jsonb,
-     '{"requires_human":false,"tool_sequence":["get_import_batch_progress"]}'::jsonb,
-     'CONFIRMED', 'system', 'system', CURRENT_TIMESTAMP),
-    ('fulfillment-file-agent', 1, 'INVARIANT',
-     '{"import_batch_id":"7002"}'::jsonb,
-     '{"requires_human":true,"missing_fields":["blockers"]}'::jsonb,
-     'CONFIRMED', 'system', 'system', CURRENT_TIMESTAMP),
-    ('fulfillment-file-agent', 1, 'INVARIANT',
-     '{}'::jsonb,
-     '{"expected_error":"INVALID_PARAMETERS"}'::jsonb,
-     'CONFIRMED', 'system', 'system', CURRENT_TIMESTAMP);
+-- 刻意不播种评测用例（理由见 V56__fulfillment_file_agent.sql）。
+

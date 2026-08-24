@@ -137,7 +137,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
     }
 
     // ------------------------------------------------------------------
-    // 29 例历史评测用例播种（INVARIANT / CONFIRMED）
+    // 26 例历史评测用例播种（INVARIANT / CONFIRMED）
     // ------------------------------------------------------------------
 
     @Test
@@ -152,7 +152,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                         rs.getString("status"),
                         parse(rs.getString("input")),
                         parse(rs.getString("expected"))));
-        assertThat(rows).hasSize(29);
+        assertThat(rows).hasSize(26);
         assertThat(rows).allSatisfy(row -> {
             assertThat(row.metricKind()).isEqualTo("INVARIANT");
             assertThat(row.status()).isEqualTo("CONFIRMED");
@@ -168,15 +168,15 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                         + "AND d.version=c.agent_version AND d.status='active' "
                         + "WHERE c.metric_kind = 'INVARIANT' AND c.status = 'CONFIRMED' "
                         + "ORDER BY c.agent_slug, c.id");
-        assertThat(rows).hasSize(22);
+        assertThat(rows).hasSize(19);
 
         List<String> procurementInputs = normalizedInputs(rows, "procurement-price-agent");
         assertThat(procurementInputs).hasSize(ProcurementPriceEvalFixture.CASES.size());
         assertThat(procurementInputs).containsExactlyInAnyOrderElementsOf(
                 ProcurementPriceEvalFixture.CASES.stream().map(c -> norm(c.inputJson())).toList());
 
-        // 履约单据 Agent（V56）：三条 INVARIANT——必须先调进度工具、缺事实转人工、无参数负例
-        assertThat(normalizedInputs(rows, "fulfillment-file-agent")).hasSize(3);
+        // 履约单据 Agent（V56）刻意不播种用例：CONFIRMED 代表人确认过，不能由迁移自签
+        assertThat(normalizedInputs(rows, "fulfillment-file-agent")).isEmpty();
 
         List<String> dataQueryInputs = normalizedInputs(rows, "data-query-agent");
         assertThat(dataQueryInputs).hasSize(7);

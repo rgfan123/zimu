@@ -203,7 +203,8 @@ class McpProtocolAcceptanceTest {
                 "list_products",
                 "list_categories",
                 "list_fulfillment_providers",
-                "check_shipment_source_sync");
+                "check_shipment_source_sync",
+                "get_import_batch_progress");
 
         assertThat(registry.find("check_shipment_source_sync")).get()
                 .extracting(McpTool::readOnly)

@@ -77,20 +77,9 @@ VALUES (
     }$$::jsonb,
     '["get_import_batch_progress","get_review_case","list_review_cases","get_inventory_overview","search_skus"]'::jsonb);
 
--- INVARIANT 评测用例：确定性门禁，跑 stub 评分器，不进真实模型。
--- 三条覆盖三个最容易做错的判定：必须先调进度工具、未接入段不得说成 0、缺事实时转人工。
-INSERT INTO app.agent_eval_cases (
-    agent_slug, agent_version, metric_kind, input, expected, status, created_by, confirmed_by, confirmed_at)
-VALUES
-    ('fulfillment-file-agent', 1, 'INVARIANT',
-     '{"import_batch_id":"7001"}'::jsonb,
-     '{"requires_human":false,"tool_sequence":["get_import_batch_progress"]}'::jsonb,
-     'CONFIRMED', 'system', 'system', CURRENT_TIMESTAMP),
-    ('fulfillment-file-agent', 1, 'INVARIANT',
-     '{"import_batch_id":"7002"}'::jsonb,
-     '{"requires_human":true,"missing_fields":["blockers"]}'::jsonb,
-     'CONFIRMED', 'system', 'system', CURRENT_TIMESTAMP),
-    ('fulfillment-file-agent', 1, 'INVARIANT',
-     '{}'::jsonb,
-     '{"expected_error":"INVALID_PARAMETERS"}'::jsonb,
-     'CONFIRMED', 'system', 'system', CURRENT_TIMESTAMP);
+-- 刻意不播种评测用例。
+-- agent_eval_cases 的 status=CONFIRMED 代表「人确认过这套冻结评测集」；
+-- 由迁移用 confirmed_by='system' 自签，等于绕过平台要求的人工确认，
+-- 也等于作者给自己刚写的 Agent 打了一套自定的基线分。
+-- 用例应当在 Agent 有真实运行之后，经 Agent 中心的人工纠正回流路径逐条确认。
+-- 跑分器（AgentEvalScorer）对未登记 slug 的 fail-closed 拒跑正是在守这条线。
