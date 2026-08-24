@@ -230,7 +230,7 @@ export default function MasterDataCrud({
       ? <AdminFailureAlert error={error} title="数据加载失败" onRetry={reload} />
       : null;
 
-  return stateContent ?? (
+  return (
     <div className="admin-crud">
           <div className="admin-toolbar">
             {filters}
@@ -245,28 +245,32 @@ export default function MasterDataCrud({
             </Button>
           </div>
 
-          <div className="admin-surface" style={{ marginTop: 16 }}>
-            <Table<MasterDataRecord>
-              rowKey="id"
-              columns={mergedColumns}
-              dataSource={data?.items ?? []}
-              size="middle"
-              scroll={{ x: 860 }}
-              locale={{ emptyText: <AdminEmpty description="暂无主数据" /> }}
-              pagination={{
-                current: page + 1,
-                pageSize: size,
-                total: data?.total_elements ?? 0,
-                showSizeChanger: true,
-                pageSizeOptions,
-                showTotal: (total) => `共 ${total} 条`,
-                onChange: (p, s) => {
-                  setPage(p - 1);
-                  setSize(s);
-                },
-              }}
-            />
-          </div>
+          {stateContent ? (
+            <div style={{ marginTop: 16 }}>{stateContent}</div>
+          ) : (
+            <div className="admin-surface" style={{ marginTop: 16 }}>
+              <Table<MasterDataRecord>
+                rowKey="id"
+                columns={mergedColumns}
+                dataSource={data?.items ?? []}
+                size="middle"
+                scroll={{ x: 860 }}
+                locale={{ emptyText: <AdminEmpty description="暂无主数据" /> }}
+                pagination={{
+                  current: page + 1,
+                  pageSize: size,
+                  total: data?.total_elements ?? 0,
+                  showSizeChanger: true,
+                  pageSizeOptions,
+                  showTotal: (total) => `共 ${total} 条`,
+                  onChange: (p, s) => {
+                    setPage(p - 1);
+                    setSize(s);
+                  },
+                }}
+              />
+            </div>
+          )}
 
           <Modal
             title={editing ? '编辑' : '新建'}

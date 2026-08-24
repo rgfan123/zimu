@@ -2,7 +2,7 @@
  * 商品档案：以可履约 SKU 为运营主记录，同时展示所属商品、品类、履约方、规格与价格。
  */
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Button, Input, Select, Space, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
@@ -23,6 +23,7 @@ import { leadTimeLabel, listingPeriodLabel, marginLabel } from './productArchive
 
 export default function SkusPage() {
   const [providerId, setProviderId] = useState<string | undefined>();
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState<string | undefined>();
   const providerOptions = useProviderOptions();
   const productOptions = useProductOptions();
@@ -30,8 +31,23 @@ export default function SkusPage() {
   const providerLabels = new Map(providerOptions.map(({ value, label }) => [String(value), label]));
   const categoryLabels = new Map(categoryOptions.map(({ value, label }) => [String(value), label]));
 
+  const fetchPage = useCallback(
+    (query: { page: number; size: number }) =>
+      skusApi.list({ ...query, provider_id: providerId, query: searchQuery }),
+    [providerId, searchQuery],
+  );
+
   const columns: ColumnsType<MasterDataRecord> = [
     { title: '商品 / SKU', key: 'identity', width: 210, render: (_, r) => <ProductIdentity name={r.name} code={r.code} /> },
+    {
+      title: '京东EMG编号',
+      key: 'jd_emg_no',
+      width: 160,
+      render: (_, r) => {
+        const emg = attr(r, 'jd_emg_no');
+        return emg ? <Tag style={{ marginInlineEnd: 0 }}>{String(emg)}</Tag> : '—';
+      },
+    },
     {
       title: '主图',
       key: 'main_image',
@@ -140,8 +156,15 @@ export default function SkusPage() {
             style={{ width: 260 }}
             placeholder="搜索 SKU 编码 / 商品名称"
             allowClear
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
             onSearch={(value) => setSearchQuery(value.trim() || undefined)}
           />
+          {searchQuery ? (
+            <Button size="small" onClick={() => { setSearchInput(''); setSearchQuery(undefined); }}>
+              清除搜索
+            </Button>
+          ) : null}
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>履约方</Typography.Text>
           <Select
             style={{ width: 200 }}
@@ -159,7 +182,7 @@ export default function SkusPage() {
         </Space>
       }
       extraQuery={{ provider_id: providerId, query: searchQuery }}
-      fetchPage={(q) => skusApi.list({ ...q, provider_id: providerId, query: searchQuery })}
+      fetchPage={fetchPage}
       create={(v) => skusApi.create(buildSkuCreateBody(v))}
       update={(id, v) => skusApi.update(id, buildSkuUpdateBody(v))}
       columns={columns}

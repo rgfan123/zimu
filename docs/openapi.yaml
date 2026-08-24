@@ -4354,6 +4354,10 @@ components:
         retail_price:
           allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
           description: null means the retail price is not yet known; it never means zero.
+        jd_emg_no:
+          type: string
+          nullable: true
+          description: 当前启用的京东履约方 SKU 映射编码；映射或履约方停用时为 null。
     SkuRecord:
       allOf:
         - $ref: '#/components/schemas/MasterDataRecord'

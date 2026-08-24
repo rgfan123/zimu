@@ -458,6 +458,7 @@ export interface SkuAttributes {
   barcode?: string | null;
   purchase_price: string | null;
   retail_price: string | null;
+  jd_emg_no?: string | null;
 }
 
 export interface SkuRecord extends Omit<MasterDataRecord, 'attributes'> {
