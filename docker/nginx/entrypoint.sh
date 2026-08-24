@@ -10,9 +10,23 @@ case "$APP_ADMIN_USER" in
     exit 1
     ;;
 esac
-if [ "${#APP_ADMIN_PASSWORD}" -lt 16 ]; then
-  echo "APP_ADMIN_PASSWORD must contain at least 16 characters" >&2
+app_admin_password_min_length="${APP_ADMIN_PASSWORD_MIN_LENGTH:-16}"
+case "$app_admin_password_min_length" in
+  ''|*[!0-9]*)
+    echo "APP_ADMIN_PASSWORD_MIN_LENGTH must be an integer between 6 and 128" >&2
+    exit 1
+    ;;
+esac
+if [ "$app_admin_password_min_length" -lt 6 ] || [ "$app_admin_password_min_length" -gt 128 ]; then
+  echo "APP_ADMIN_PASSWORD_MIN_LENGTH must be an integer between 6 and 128" >&2
   exit 1
+fi
+if [ "${#APP_ADMIN_PASSWORD}" -lt "$app_admin_password_min_length" ]; then
+  echo "APP_ADMIN_PASSWORD must contain at least $app_admin_password_min_length characters" >&2
+  exit 1
+fi
+if [ "$app_admin_password_min_length" -lt 16 ]; then
+  echo "[zimu-nginx] WARNING: password minimum explicitly lowered to $app_admin_password_min_length" >&2
 fi
 
 app_admin_password="$APP_ADMIN_PASSWORD"

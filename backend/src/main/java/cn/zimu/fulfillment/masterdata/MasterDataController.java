@@ -94,6 +94,12 @@ public class MasterDataController {
             @RequestHeader("Idempotency-Key") String key, @RequestHeader("X-Operator") String operator) {
         return WriteCommands.respond(service.createProduct(body, WriteCommands.requireIdempotencyKey(key), WriteCommands.writeContext(operator)));
     }
+    @PostMapping("/products/with-sku") public ResponseEntity<?> createProductWithInitialSku(
+            @Valid @RequestBody ProductWithInitialSkuWrite body,
+            @RequestHeader("Idempotency-Key") String key, @RequestHeader("X-Operator") String operator) {
+        return WriteCommands.respond(service.createProductWithInitialSku(
+                body, WriteCommands.requireIdempotencyKey(key), WriteCommands.writeContext(operator)));
+    }
     @PatchMapping("/products/{id}") public ResponseEntity<?> patchProduct(@PathVariable String id,
             @Valid @RequestBody ProductPatch body, @RequestHeader("Idempotency-Key") String key,
             @RequestHeader("X-Operator") String operator) {

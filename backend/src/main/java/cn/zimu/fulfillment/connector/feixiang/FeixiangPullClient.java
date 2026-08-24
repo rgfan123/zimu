@@ -80,6 +80,7 @@ public interface FeixiangPullClient {
         private final HttpClient client;
         private final String baseUrl;
         private final Function<String, String> environment;
+        private volatile boolean authenticated;
 
         public Http() {
             this(HttpClient.newBuilder()
@@ -102,11 +103,14 @@ public interface FeixiangPullClient {
         }
 
         @Override
-        public LoginResult login() {
+        public synchronized LoginResult login() {
             String username = env("FEIXIANG_USERNAME");
             String password = env("FEIXIANG_PASSWORD");
             if (isBlank(username) || isBlank(password)) {
                 return LoginResult.failed("CREDENTIALS_REQUIRED", "飞象凭据未配置（FEIXIANG_USERNAME/FEIXIANG_PASSWORD）");
+            }
+            if (authenticated && hasSessionCookie()) {
+                return new LoginResult(true, "OK", "已复用登录会话");
             }
             try {
                 // 1) 引导会话：种下 fxqf_sess cookie
@@ -136,10 +140,12 @@ public interface FeixiangPullClient {
                 if (!is2xx(response.statusCode())
                         || !LOGIN_SUCCESS_PATH.equals(finalPath)
                         || !hasSessionCookie()) {
+                    authenticated = false;
                     return LoginResult.failed(
                             "PLATFORM_AUTH_FAILED",
                             "飞象登录失败（最终响应必须为 2xx、路径必须匹配抓包成功页且会话 cookie 必须存在）");
                 }
+                authenticated = true;
                 return new LoginResult(true, "OK", "登录成功");
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
@@ -162,6 +168,9 @@ public interface FeixiangPullClient {
             try {
                 HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
                 if (response.statusCode() >= 400) {
+                    if (response.statusCode() == 401 || response.statusCode() == 403) {
+                        authenticated = false;
+                    }
                     throw new PullTransportException("导出接口返回 HTTP " + response.statusCode());
                 }
                 bytes = response.body();
@@ -174,6 +183,7 @@ public interface FeixiangPullClient {
                 throw new PullTransportException("飞象导出失败: " + safeMessage(exception), exception);
             }
             if (bytes == null || bytes.length < 2 || bytes[0] != 'P' || bytes[1] != 'K') {
+                authenticated = false;
                 throw new PullTransportException("导出内容不是 xlsx（魔数异常，可能未登录或会话失效）");
             }
             return bytes;

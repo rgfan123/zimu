@@ -179,37 +179,6 @@ BEGIN
 END;
 $$;
 
--- 5.6 ACTIVE 礼包不允许直接删组件；DRAFT/INACTIVE 删除后重算履约方，空 BOM 归零。
-CREATE FUNCTION app.protect_active_bundle_item_delete() RETURNS TRIGGER
-LANGUAGE plpgsql AS $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM app.product_bundles
-        WHERE id = OLD.bundle_id AND status = 'ACTIVE'
-    ) THEN
-        RAISE EXCEPTION 'active bundle components cannot be deleted';
-    END IF;
-    RETURN OLD;
-END;
-$$;
-
-CREATE FUNCTION app.recompute_bundle_provider_after_item_delete() RETURNS TRIGGER
-LANGUAGE plpgsql AS $$
-BEGIN
-    UPDATE app.product_bundles
-       SET fulfillment_provider_id = (
-           SELECT s.fulfillment_provider_id
-           FROM app.bundle_items bi
-           JOIN app.skus s ON s.id = bi.sku_id
-           WHERE bi.bundle_id = OLD.bundle_id
-           ORDER BY bi.sort_no
-           LIMIT 1
-       )
-     WHERE id = OLD.bundle_id;
-    RETURN OLD;
-END;
-$$;
-
 CREATE TRIGGER trg_bundle_item_validation
 BEFORE INSERT OR UPDATE ON app.bundle_items
 FOR EACH ROW EXECUTE FUNCTION app.validate_bundle_item();
@@ -230,15 +199,7 @@ CREATE TRIGGER trg_bundle_delete_protection
 BEFORE DELETE ON app.product_bundles
 FOR EACH ROW EXECUTE FUNCTION app.protect_bundle_delete();
 
-CREATE TRIGGER trg_active_bundle_item_delete_protection
-BEFORE DELETE ON app.bundle_items
-FOR EACH ROW EXECUTE FUNCTION app.protect_active_bundle_item_delete();
-
-CREATE TRIGGER trg_bundle_item_delete_provider_recompute
-AFTER DELETE ON app.bundle_items
-FOR EACH ROW EXECUTE FUNCTION app.recompute_bundle_provider_after_item_delete();
-
--- 5.7 set_updated_at 循环数组追加（与 V1 基线同款 DO 块）
+-- 5.6 set_updated_at 循环数组追加（与 V1 基线同款 DO 块）
 DO $$
 DECLARE
     table_name TEXT;

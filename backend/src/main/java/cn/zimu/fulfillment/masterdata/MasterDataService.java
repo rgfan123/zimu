@@ -502,6 +502,58 @@ public class MasterDataService {
     }
 
     @Transactional
+    public IdempotentResult<MasterDataRecord> createProductWithInitialSku(
+            ProductWithInitialSkuWrite input, String key, CommandContext ctx) {
+        ProductWrite productInput = input.product();
+        InitialSkuWrite skuInput = input.sku();
+        BigDecimal productPurchasePrice = SkuCommercialPrice.parse(productInput.purchasePrice(), "purchase_price");
+        BigDecimal productRetailPrice = SkuCommercialPrice.parse(productInput.retailPrice(), "retail_price");
+        BigDecimal otherCost = SkuCommercialPrice.parse(productInput.otherCost(), "other_cost");
+        BigDecimal skuPurchasePrice = SkuCommercialPrice.parse(skuInput.purchasePrice(), "purchase_price");
+        BigDecimal skuRetailPrice = SkuCommercialPrice.parse(skuInput.retailPrice(), "retail_price");
+        LocalDate listedFrom = parseListedDate(productInput.listedFrom(), "listed_from");
+        LocalDate listedUntil = parseListedDate(productInput.listedUntil(), "listed_until");
+        requireListingOrder(listedFrom, listedUntil);
+        List<String> tags = normalizeTags(productInput.tags(), "tags");
+        return writeCatalogMasterData("product_with_sku.create", key, input, CREATED, ctx, () -> {
+            if (products.existsByProductCode(productInput.productCode())) {
+                throw BusinessException.conflict("PRODUCT_CODE_EXISTS", "商品编码已存在");
+            }
+            long categoryId = WriteCommands.parseIdentifier(productInput.categoryId());
+            long providerId = WriteCommands.parseIdentifier(skuInput.providerId());
+            requireCategory(categoryId);
+            requireProvider(providerId);
+
+            Product product = new Product();
+            product.setProductCode(productInput.productCode());
+            product.setProductName(productInput.productName());
+            product.setCategoryId(categoryId);
+            product.setIngredients(blankToNull(productInput.ingredients()));
+            product.setTags(tags);
+            product.setListedFrom(listedFrom);
+            product.setListedUntil(listedUntil);
+            product.setLeadTimeHours(productInput.leadTimeHours());
+            product.setPurchasePrice(productPurchasePrice);
+            product.setRetailPrice(productRetailPrice);
+            product.setOtherCost(otherCost);
+            product.setMainImageRef(blankToNull(productInput.mainImageRef()));
+            product.setActive(!Boolean.FALSE.equals(productInput.active()));
+            product = refresh(products.saveAndFlush(product));
+
+            Sku sku = new Sku();
+            sku.setFulfillmentProviderId(providerId);
+            sku.setProductId(product.getId());
+            sku.setSpecification(skuInput.specification());
+            sku.setUnit(skuInput.unit());
+            sku.setBarcode(blankToNull(skuInput.barcode()));
+            sku.setPurchasePrice(skuPurchasePrice);
+            sku.setRetailPrice(skuRetailPrice);
+            sku.setActive(!Boolean.FALSE.equals(skuInput.active()));
+            return sku(refresh(skus.saveAndFlush(sku)));
+        });
+    }
+
+    @Transactional
     public IdempotentResult<MasterDataRecord> patchProduct(long id, ProductPatch input, String key, CommandContext ctx) {
         if (!input.anyArchiveFieldPresent()) {
             requireAny(input.productName(), input.categoryId(), input.active());

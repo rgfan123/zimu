@@ -11,11 +11,11 @@ import { MainImageThumb } from '@/pages/shared/MainImage';
 import { skusApi } from '@/api/endpoints';
 import type { MasterDataRecord } from '@/api/types';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
-import { useCategoryOptions, useProductOptions, useProviderOptions } from './masterOptions';
+import { useCategoryOptions, useProviderOptions } from './masterOptions';
 import { displaySkuSpecification } from './productArchive';
 import {
   COMMERCIAL_PRICE_PATTERN,
-  buildSkuCreateBody,
+  buildProductWithInitialSkuBody,
   buildSkuUpdateBody,
   commercialPriceLabel,
 } from './skuCommercialPrice';
@@ -25,13 +25,21 @@ export default function SkusPage() {
   const [providerId, setProviderId] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState<string | undefined>();
   const providerOptions = useProviderOptions();
-  const productOptions = useProductOptions();
   const categoryOptions = useCategoryOptions();
   const providerLabels = new Map(providerOptions.map(({ value, label }) => [String(value), label]));
   const categoryLabels = new Map(categoryOptions.map(({ value, label }) => [String(value), label]));
 
   const columns: ColumnsType<MasterDataRecord> = [
     { title: '商品 / SKU', key: 'identity', width: 210, render: (_, r) => <ProductIdentity name={r.name} code={r.code} /> },
+    {
+      title: '京东EMG编号',
+      key: 'jd_emg_no',
+      width: 160,
+      render: (_, r) => {
+        const emg = attr(r, 'jd_emg_no');
+        return emg ? <Tag style={{ marginInlineEnd: 0 }}>{String(emg)}</Tag> : '—';
+      },
+    },
     {
       title: '主图',
       key: 'main_image',
@@ -90,8 +98,10 @@ export default function SkusPage() {
   ];
 
   const createFields: CrudField[] = [
+    { name: 'product_code', label: '商品编码', required: true, placeholder: '如 P-1001' },
+    { name: 'product_name', label: '商品名称', required: true },
+    { name: 'category_id', label: '品类', required: true, type: 'select', options: categoryOptions },
     { name: 'provider_id', label: '履约方', required: true, type: 'select', options: providerOptions },
-    { name: 'product_id', label: '商品', required: true, type: 'select', options: productOptions },
     { name: 'specification', label: '规格', required: true, placeholder: '如 500g*2袋' },
     { name: 'unit', label: '单位', required: true, placeholder: '如 盒 / 袋' },
     { name: 'barcode', label: '条码', placeholder: '可选' },
@@ -152,7 +162,7 @@ export default function SkusPage() {
             options={providerOptions}
           />
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            商品名称与品类使用基础信息维护；规格、履约方和价格在本档案维护。
+            新建会同时创建商品及首个 SKU；后续可在基础信息中维护完整商品资料。
           </Typography.Text>
           <Button size="small"><Link to="/product/products">管理商品名称</Link></Button>
           <Button size="small"><Link to="/product/categories">管理品类</Link></Button>
@@ -160,7 +170,7 @@ export default function SkusPage() {
       }
       extraQuery={{ provider_id: providerId, query: searchQuery }}
       fetchPage={(q) => skusApi.list({ ...q, provider_id: providerId, query: searchQuery })}
-      create={(v) => skusApi.create(buildSkuCreateBody(v))}
+      create={(v) => skusApi.createWithProduct(buildProductWithInitialSkuBody(v))}
       update={(id, v) => skusApi.update(id, buildSkuUpdateBody(v))}
       columns={columns}
       createFields={createFields}

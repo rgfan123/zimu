@@ -31,10 +31,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V52）升级，Flyway validate（默认开启）必须成功且只追加
+ * migration set（V1..V53）升级，Flyway validate（默认开启）必须成功且只追加
  * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）、
  * V50（中汇稳定上传意图，Issue #116）、V51（企微业务通知 outbox，Issue #90）与
- * V52（企微订单草稿卡片，Issues #87/#88）；
+ * V52（企微订单草稿卡片，Issues #87/#88）与 V53（静态礼包删除保护）；
  * ③ 升级后前 47 行历史
  * 逐行不变，V40–V47 的 version/script/description/checksum 必须与生产已应用序列逐字节
  * 一致——checksum 常量直接取自生产 `flyway_schema_history` 真实行（不按当前迁移文件
@@ -53,8 +53,17 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 class ProductionMigrationHistoryCompatTest {
 
+    private static final long V39_PRODUCTION_CHECKSUM = Integer.toUnsignedLong(-28662712);
+
     @Container
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
+    @Test
+    void v39MigrationRemainsByteCompatibleWithProduction() throws Exception {
+        assertThat(crc32Of("V39__add_static_bundle_master.sql"))
+                .as("已部署 V39 不得改写；新增结构只能追加新 migration")
+                .isEqualTo(V39_PRODUCTION_CHECKSUM);
+    }
 
     /**
      * 生产已应用序列：V40–V47 的 (version, script, description, checksum)。
@@ -92,7 +101,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV52() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV53() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -114,16 +123,16 @@ class ProductionMigrationHistoryCompatTest {
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 52 条历史")
-                .hasSize(52);
+                .as("完整升级后应恰有 53 条历史")
+                .hasSize(53);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
         // V48–V52 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 52))
-                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）与 V52（#87/#88）")
+        assertThat(historyAfter.subList(47, 53))
+                .as("升级只追加 V48–V53")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -139,7 +148,10 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V51__wecom_business_notification_outbox.sql")),
                         new HistoryRow("52", "V52__wecom_order_draft_cards.sql",
                                 "wecom order draft cards",
-                                crc32Of("V52__wecom_order_draft_cards.sql")));
+                                crc32Of("V52__wecom_order_draft_cards.sql")),
+                        new HistoryRow("53", "V53__protect_static_bundle_item_deletes.sql",
+                                "protect static bundle item deletes",
+                                crc32Of("V53__protect_static_bundle_item_deletes.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // V48–V52 分别用内部运营人员、delivery 代际、中汇稳定意图、业务通知与草稿卡片结构证明生效。

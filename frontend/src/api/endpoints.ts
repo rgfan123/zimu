@@ -306,6 +306,24 @@ export const skusApi = {
     active?: boolean;
   }) =>
     apiRequest<SkuRecord>('/api/v1/skus', { method: 'POST', body, headers: writeHeaders() }),
+  createWithProduct: (body: {
+    product: {
+      product_code: string;
+      product_name: string;
+      category_id: string;
+      active?: boolean;
+    };
+    sku: {
+      provider_id: string;
+      specification: string;
+      unit: string;
+      barcode?: string;
+      purchase_price?: string;
+      retail_price?: string;
+      active?: boolean;
+    };
+  }) =>
+    apiRequest<SkuRecord>('/api/v1/products/with-sku', { method: 'POST', body, headers: writeHeaders() }),
   update: (id: string, body: {
     expected_version: number;
     specification?: string;

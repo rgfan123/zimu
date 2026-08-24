@@ -276,6 +276,8 @@ test('deployment credential tools never place reusable secrets in process argume
   assert.ok(
     gatewayEntrypoint.indexOf('unset APP_ADMIN_PASSWORD') < gatewayEntrypoint.indexOf('htpasswd '),
   );
+  assert.match(gatewayEntrypoint, /APP_ADMIN_PASSWORD_MIN_LENGTH:-16/);
+  assert.match(gatewayEntrypoint, /APP_ADMIN_PASSWORD_MIN_LENGTH must be an integer between 6 and 128/);
 
   assert.match(provisioner, /secret_dir="\$\(mktemp -d/);
   assert.match(provisioner, /chmod 700 "\$secret_dir"/);

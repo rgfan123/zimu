@@ -1981,6 +1981,22 @@ paths:
           description: Product created
           content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/products/with-sku:
+    post:
+      tags: [MasterData]
+      operationId: createProductWithInitialSku
+      summary: 商品档案一次创建新商品及其首个 SKU
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ProductWithInitialSkuWrite' } } }
+      responses:
+        '201':
+          description: Product and initial SKU created atomically; response is the new SKU record
+          content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataRecord' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/products/tags:
     get:
       tags: [MasterData]
@@ -6002,6 +6018,23 @@ components:
         other_cost: { $ref: '#/components/schemas/NullableCommercialPrice' }
         main_image_ref: { type: string, maxLength: 512, description: 主图上传返回的受控引用 }
         active: { type: boolean, default: true }
+    InitialSkuWrite:
+      type: object
+      required: [provider_id, specification, unit]
+      properties:
+        provider_id: { $ref: '#/components/schemas/Identifier' }
+        specification: { type: string, minLength: 1, maxLength: 200 }
+        unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
+        barcode: { type: string, minLength: 1, maxLength: 64 }
+        purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
+        active: { type: boolean, default: true }
+    ProductWithInitialSkuWrite:
+      type: object
+      required: [product, sku]
+      properties:
+        product: { $ref: '#/components/schemas/ProductWrite' }
+        sku: { $ref: '#/components/schemas/InitialSkuWrite' }
     ProductPatch:
       type: object
       required: [expected_version]

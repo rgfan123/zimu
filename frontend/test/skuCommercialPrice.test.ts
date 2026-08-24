@@ -4,6 +4,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   COMMERCIAL_PRICE_PATTERN,
+  buildProductWithInitialSkuBody,
   buildSkuCreateBody,
   buildSkuUpdateBody,
   commercialPriceLabel,
@@ -112,4 +113,38 @@ test('SKU 新建和编辑把两个价格投影到公开 API 载荷', () => {
     retail_price: null,
     active: false,
   });
+});
+
+test('商品档案新建提交新商品资料而不是已有商品标识', () => {
+  const body = buildProductWithInitialSkuBody({
+    product_code: 'PROD-NEW-001',
+    product_name: '新商品',
+    category_id: '9',
+    provider_id: '11',
+    specification: '500g',
+    unit: '袋',
+    barcode: ' 690000000009 ',
+    purchase_price: '12.30',
+    retail_price: '18',
+    active: true,
+  });
+
+  assert.deepEqual(body, {
+    product: {
+      product_code: 'PROD-NEW-001',
+      product_name: '新商品',
+      category_id: '9',
+      active: true,
+    },
+    sku: {
+      provider_id: '11',
+      specification: '500g',
+      unit: '袋',
+      barcode: '690000000009',
+      purchase_price: '12.30',
+      retail_price: '18',
+      active: true,
+    },
+  });
+  assert.equal('product_id' in body.sku, false);
 });

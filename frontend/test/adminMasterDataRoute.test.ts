@@ -227,6 +227,54 @@ test('real product route presents the category name and code instead of an inter
   ]));
 });
 
+test('product archive shows JD EMG and opens a new-product form without an existing-product selector', async () => {
+  const requestedUrls: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    requestedUrls.push(url);
+    if (url === '/api/v1/categories?page=0&size=200') {
+      return jsonResponse(page([{ id: '9', code: 'MEAT/BEEF', name: '牛肉', active: true, version: 1 }]));
+    }
+    if (url === '/api/v1/fulfillment-providers') {
+      return jsonResponse([{ id: '11', provider_code: 'JD', provider_name: '京东仓', active: true, version: 1 }]);
+    }
+    if (url === '/api/v1/skus?page=0&size=10') {
+      return jsonResponse(page([{
+        id: '501',
+        code: 'SKU-JD-000501',
+        name: '子牧牛腱',
+        active: true,
+        version: 1,
+        attributes: {
+          category_id: '9',
+          provider_id: '11',
+          specification: '500g',
+          unit: '袋',
+          jd_emg_no: 'EMG4418691852262',
+        },
+      }]));
+    }
+    return jsonResponse({ message: `unexpected request ${url}` }, 500);
+  };
+
+  await mountRoute('/product/skus');
+  await waitFor(() => assert.match(bodyText(), /EMG4418691852262/));
+  assert.match(bodyText(), /京东EMG编号/);
+  assert.equal(requestedUrls.some((url) => url.startsWith('/api/v1/products?')), false);
+
+  const createButton = [...document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === '新建');
+  assert.ok(createButton);
+  await act(async () => createButton.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(() => assert.match(bodyText(), /商品编码/));
+
+  const labels = [...document.querySelectorAll<HTMLElement>('.ant-modal .ant-form-item-label')]
+    .map((label) => label.textContent?.trim());
+  assert.ok(labels.includes('商品编码'));
+  assert.ok(labels.includes('商品名称'));
+  assert.equal(labels.includes('商品'), false);
+});
+
 test('static bundle route lists static bundles and exposes the current component list', async () => {
   const requestedUrls: string[] = [];
   globalThis.fetch = async (input) => {

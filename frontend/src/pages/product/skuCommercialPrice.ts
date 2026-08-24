@@ -60,6 +60,28 @@ export function buildSkuCreateBody(values: Record<string, unknown>) {
   };
 }
 
+/** 商品档案新建：提交新商品资料及首个 SKU，不接受已有 product_id。 */
+export function buildProductWithInitialSkuBody(values: Record<string, unknown>) {
+  const active = typeof values.active === 'boolean' ? values.active : undefined;
+  return {
+    product: {
+      product_code: String(values.product_code),
+      product_name: String(values.product_name),
+      category_id: String(values.category_id),
+      active,
+    },
+    sku: {
+      provider_id: String(values.provider_id),
+      specification: String(values.specification),
+      unit: String(values.unit),
+      barcode: optionalTrimmedString(values.barcode),
+      purchase_price: optionalCommercialPrice(values.purchase_price),
+      retail_price: optionalCommercialPrice(values.retail_price),
+      active,
+    },
+  };
+}
+
 export function buildSkuUpdateBody(values: Record<string, unknown>) {
   return {
     expected_version: Number(values.expected_version),

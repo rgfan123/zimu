@@ -101,6 +101,49 @@ class MasterDataApiTest {
         assertThat(response.getBody()).containsEntry("business_code", "PROVIDER_SKU_MAPPING_EXISTS");
     }
 
+    @Test
+    void productArchiveCreatesANewProductAndItsInitialSkuInOneCommand() {
+        Map<String, Object> category = ((List<Map<String, Object>>) page("/api/v1/categories").get("items")).getFirst();
+        Map<String, Object> provider = Arrays.stream(http.getForObject("/api/v1/fulfillment-providers", Map[].class))
+                .map(value -> (Map<String, Object>) value)
+                .findFirst()
+                .orElseThrow();
+        long productsBefore = ((Number) page("/api/v1/products").get("total_elements")).longValue();
+        long skusBefore = ((Number) page("/api/v1/skus").get("total_elements")).longValue();
+
+        Map<String, Object> request = Map.of(
+                "product", Map.of(
+                        "product_code", "PROD-ARCHIVE-NEW-001",
+                        "product_name", "商品档案新建商品",
+                        "category_id", category.get("id"),
+                        "active", true),
+                "sku", Map.of(
+                        "provider_id", provider.get("id"),
+                        "specification", "500g/袋",
+                        "unit", "袋",
+                        "active", true));
+
+        ResponseEntity<Map> response = http.exchange(
+                "/api/v1/products/with-sku",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders("product-archive-new-001", "req-product-archive-new-001")),
+                Map.class);
+        ResponseEntity<Map> replay = http.exchange(
+                "/api/v1/products/with-sku",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders("product-archive-new-001", "req-product-archive-new-001")),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(replay.getBody()).isEqualTo(response.getBody());
+        assertThat(response.getBody().get("name")).isEqualTo("商品档案新建商品");
+        assertThat(((Number) page("/api/v1/products").get("total_elements")).longValue())
+                .isEqualTo(productsBefore + 1);
+        assertThat(((Number) page("/api/v1/skus").get("total_elements")).longValue())
+                .isEqualTo(skusBefore + 1);
+    }
+
     private Map<String, Object> page(String path) {
         return page(path, 20);
     }
