@@ -1,3 +1,6 @@
+-- 版本改号：合并 PR #128 时与本地 master 的 V53__protect_static_bundle_item_deletes 撞号。
+-- 两者均未在任何真实库应用（live 库最高 V38），礼包保护 V53 在 master 历史中在先，故本迁移顺延 V54。
+
 -- Issue #113: Shipment-scoped source-platform sync projection, durable intent and
 -- bidirectional exclusion with the existing SourceReturnExport fallback path.
 

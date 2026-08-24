@@ -20,7 +20,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** V53 persists Shipment-scoped source-sync intent and fences online/file fallback writes. */
+/** V54 persists Shipment-scoped source-sync intent and fences online/file fallback writes. */
 @Testcontainers
 class ShipmentSourceSyncMigrationTest {
 
