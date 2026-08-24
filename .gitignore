@@ -35,6 +35,8 @@ frontend/.playwright-cli/
 
 # Generated exports, playwright artifacts and temp files
 output/
+outputs/
+exports/
 tmp/
 
 # Session captures (may contain live auth material)
@@ -43,6 +45,8 @@ tmp/
 # Business order / product extracts (never commit)
 待发货订单-测试/
 京东商品编号.xlsx
+# 仓库根目录下的业务台账导出（模板类 xlsx 在 backend/src/main/resources 下，不受影响）
+/*.xlsx
 
 # Python
 __pycache__/
