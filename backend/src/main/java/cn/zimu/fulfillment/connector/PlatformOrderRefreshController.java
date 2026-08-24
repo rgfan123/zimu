@@ -14,8 +14,8 @@ import org.springframework.web.bind.annotation.RestController;
  * 三平台（彩食鲜/聚福宝/飞象）订单数据一键刷新（人工触发）。
  *
  * <p>仅对已启用的 REAL + API Connector 执行在线拉取，Java Connector 优先，安全可用时
- * 才回退 Phase 0 脚本；产物仍进入 ImportBatch + 人工确认闭环。聚福宝 onlinePull 被
- * receiver ticket 15 阻断，本入口在领取频次与触网前稳定跳过。
+ * 才回退 Phase 0 脚本；产物仍进入 ImportBatch + 人工确认闭环。聚福宝可以在线拉取，
+ * 但收货人契约未验证的行只进入 NEED_REVIEW，不生成可履约订单。
  *
  * <p>幂等取舍（A1，契约 §3.2/§10.3）：refresh 会真实调用外部平台拉取，请求不可重放，
  * 因此 Idempotency-Key 仅做格式校验（≥8 字符）防重复点击，不做注册表级幂等；真正的
