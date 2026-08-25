@@ -3,8 +3,10 @@ import { Alert, Button, Drawer, Form, Input, Popconfirm, Select, Space, message 
 
 import { jdWarehouseApi, providersApi, shipmentsApi } from '../../api/endpoints';
 import type {
-  FulfillmentProvider, JdClientStatus, Shipment, ShipmentJdOutboundPreview,
+  FulfillmentProvider, JdClientStatus, JdReceiverAddressCandidate, Shipment,
+  ShipmentJdOutboundPreview,
 } from '../../api/types';
+import { jdReceiverAddressDefaults } from '../fulfillment/jdReceiverAddress';
 import {
   canSubmitJdOutbound, jdOutboundConfirmationDetail, jdOutboundConfirmationTitle,
   jdOutboundPresentation, jdOutboundRuntimeGate,
@@ -69,6 +71,9 @@ export function JdBlockerFixDrawer({
   const [runtime, setRuntime] = useState<JdClientStatus | null>(null);
   const [preview, setPreview] = useState<ShipmentJdOutboundPreview | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [addressCandidate, setAddressCandidate] = useState<JdReceiverAddressCandidate | null>(null);
+  const [addressForm] = Form.useForm();
+  const [savingAddress, setSavingAddress] = useState(false);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [saveError, setSaveError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
@@ -89,6 +94,11 @@ export function JdBlockerFixDrawer({
     () => groups.filter((g) => g.table === 'fulfillment_providers').flatMap((g) => g.keys),
     [groups],
   );
+  // 地址类阻塞的 source 指向 shipments 表（如 shipments.jd_receiver_province）
+  const hasAddressBlocker = useMemo(
+    () => groups.some((group) => group.table === 'shipments'),
+    [groups],
+  );
   const cleared = current.length === 0;
 
   // 打开时解析发货单 → 履约方；阻塞项自身不带履约方身份，只能这样拿。
@@ -104,10 +114,16 @@ export function JdBlockerFixDrawer({
         if (!found) throw new Error(`未找到履约方 ${loaded.provider_id}`);
         // 运行时状态是高危外部写的前置门禁：读不到就一律禁止建单（不是默认放行）
         const status = await jdWarehouseApi.status().catch(() => null);
+        const candidates = await shipmentsApi
+          .jdReceiverAddressCandidates({ only_missing: false })
+          .catch(() => [] as JdReceiverAddressCandidate[]);
+        const mine = candidates.find((row) => row.shipment_id === shipmentId) ?? null;
         if (!cancelled) {
           setShipment(loaded);
           setProvider(found);
           setRuntime(status);
+          setAddressCandidate(mine);
+          if (mine) addressForm.setFieldsValue(jdReceiverAddressDefaults(mine));
         }
       } catch (error) {
         if (!cancelled) setLoadError(error);
@@ -126,6 +142,31 @@ export function JdBlockerFixDrawer({
     setShipment(refreshed);
     if (next.blockers.length === 0) onResolved?.();
   }, [shipmentId, onResolved]);
+
+  const saveAddress = useCallback(async () => {
+    if (!addressCandidate) return;
+    setSavingAddress(true);
+    setSaveError(null);
+    try {
+      const values = await addressForm.validateFields();
+      await shipmentsApi.confirmJdReceiverAddresses({
+        items: [{
+          shipment_id: addressCandidate.shipment_id,
+          expected_version: addressCandidate.expected_version,
+          province: values.province,
+          city: values.city,
+          county: values.county,
+          town: values.town ?? null,
+          detail_address: values.detail_address,
+        }],
+      });
+      await rerunPreview();
+    } catch (error) {
+      setSaveError(error);
+    } finally {
+      setSavingAddress(false);
+    }
+  }, [addressCandidate, addressForm, rerunPreview]);
 
   const save = useCallback(async () => {
     if (!provider) return;
@@ -329,9 +370,38 @@ export function JdBlockerFixDrawer({
             </Form>
           ) : null}
 
-          {configKeys.length === 0 ? (
+          {hasAddressBlocker && addressCandidate ? (
+            <Form form={addressForm} layout="vertical" style={{ marginTop: 16 }} disabled={savingAddress}>
+              <p style={{ margin: '0 0 4px', fontWeight: 600 }}>收货人结构化地址</p>
+              <p style={{ margin: '0 0 12px', color: 'rgba(0,0,0,.55)' }}>
+                原始地址：{addressCandidate.receiver_address_snapshot}
+                <br />
+                系统不从自由文本猜测行政区划，四级必须人工确认。
+              </p>
+              {[
+                ['province', '省'], ['city', '市'], ['county', '区/县'],
+                ['town', '乡镇（京东未要求时可留空）'], ['detail_address', '详细地址'],
+              ].map(([name, label]) => (
+                <Form.Item
+                  key={name}
+                  name={name}
+                  label={label}
+                  rules={name === 'town' ? [] : [{ required: true, message: `请填写${label}` }]}
+                >
+                  <Input autoComplete="off" />
+                </Form.Item>
+              ))}
+              <Space>
+                <Button type="primary" loading={savingAddress} onClick={saveAddress}>
+                  确认地址并重跑预检
+                </Button>
+              </Space>
+            </Form>
+          ) : null}
+
+          {configKeys.length === 0 && !hasAddressBlocker ? (
             <p style={{ marginTop: 16, color: 'rgba(0,0,0,.55)' }}>
-              本批阻塞不在履约方配置层，需到对应位置处理后重跑预检。
+              本批阻塞不在履约方配置或收货地址层，需到对应位置处理后重跑预检。
             </p>
           ) : null}
         </>
