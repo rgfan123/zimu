@@ -13,7 +13,7 @@ import dayjs from 'dayjs';
 import { ApiError, errorMessage } from '@/api/client';
 import { ordersApi, providersApi } from '@/api/endpoints';
 import type { OrderLine, OrderShipment, OrderStatus } from '@/api/types';
-import { reasonLabel } from '@/constants/labels';
+import { reasonLabel, SETTLEMENT_METHOD_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
 import OrderTimeline from '@/components/OrderTimeline';
@@ -265,7 +265,7 @@ export default function OrderDetailPage() {
                     .filter(Boolean)
                     .join(' '),
                 },
-                { key: 'settlement', label: '结账方式', children: detail.settlement.method },
+                { key: 'settlement', label: '结账方式', children: detail.settlement.method ? SETTLEMENT_METHOD_LABELS[detail.settlement.method] ?? detail.settlement.method : '—' },
                 { key: 'progress', label: '行进度', children: `${detail.completed_count}/${detail.total_count}` },
                 { key: 'created_at', label: '创建时间', children: dayjs(detail.created_at).format('YYYY-MM-DD HH:mm:ss') },
                 { key: 'updated_at', label: '更新时间', children: detail.updated_at ? dayjs(detail.updated_at).format('YYYY-MM-DD HH:mm:ss') : '—' },

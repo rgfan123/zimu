@@ -18,6 +18,7 @@ import PageShell from '@/components/PageShell';
 import { errorMessage } from '@/api/client';
 import { channelMessagesApi, messageSubmissionsApi } from '@/api/endpoints';
 import type { ChannelMessageSummary, MessageSubmissionDetail } from '@/api/types';
+import { MESSAGE_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import {
   currentChannelMessageDetail,
@@ -67,7 +68,9 @@ export default function ChannelMessagesPage() {
       title: '类型',
       dataIndex: 'message_type',
       width: 90,
-      render: (value: string) => <Tag color="blue">{value === 'text' ? '文字' : value}</Tag>,
+      render: (value: ChannelMessageSummary['message_type']) => (
+        <Tag color="blue">{MESSAGE_TYPE_LABELS[value] ?? value}</Tag>
+      ),
     },
     { title: '消息内容', dataIndex: 'content_preview', ellipsis: true },
     {

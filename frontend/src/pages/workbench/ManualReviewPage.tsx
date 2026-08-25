@@ -40,6 +40,7 @@ import QueueTable from './queueTable';
 import ReviewCaseDrawer from './ReviewCaseDrawer';
 import { useQueuePagination } from './queuePagination';
 import { REASON_LABELS, REVIEW_STATUS_LABELS, TEAM_LABELS, TEAM_OPTIONS } from './queuePresentation';
+import { reasonLabel } from '@/constants/labels';
 
 /** 路由层兼容门：旧 view=alerts 链接重定向到新提醒路由，其余原样渲染复核页。 */
 export function ReviewQueueCompatRoute() {
@@ -133,7 +134,7 @@ export default function ManualReviewPage() {
 
   const reviewColumns: ColumnsType<ReviewCase> = [
     { title: '复核单号', dataIndex: 'case_no', width: 145 },
-    { title: '待办事项', dataIndex: 'reason_code', width: 190, render: (value: string) => REASON_LABELS[value] ?? value },
+    { title: '待办事项', dataIndex: 'reason_code', width: 190, render: (value: string) => reasonLabel(value) },
     { title: '责任团队', dataIndex: 'responsible_team', width: 115, render: (value: string) => TEAM_LABELS[value] ?? value },
     {
       title: '关联订单', dataIndex: 'order_id', width: 90,
@@ -141,7 +142,7 @@ export default function ManualReviewPage() {
     },
     {
       title: '状态', dataIndex: 'status', width: 85,
-      render: (value: ReviewCaseStatus) => <Tag color={reviewCaseStatusSemantic(value)}>{REVIEW_STATUS_LABELS[value]}</Tag>,
+      render: (value: ReviewCaseStatus) => <Tag color={reviewCaseStatusSemantic(value)}>{REVIEW_STATUS_LABELS[value] ?? value}</Tag>,
     },
     { title: '进入队列时间', dataIndex: 'created_at', width: 150, render: (value: string) => dayjs(value).format('YYYY-MM-DD HH:mm') },
     { title: '操作', key: 'action', width: 90, fixed: 'right', render: (_, item) => <Typography.Link onClick={() => setSelected(item)}>查看处理</Typography.Link> },

@@ -56,7 +56,8 @@ import {
   type MasterDataOptionLoader,
   type MasterDataOptionState,
 } from './orderDraftMasterData';
-import { REASON_LABELS, REVIEW_STATUS_LABELS, TEAM_LABELS } from './queuePresentation';
+import { REVIEW_STATUS_LABELS, TEAM_LABELS } from './queuePresentation';
+import { reasonLabel } from '@/constants/labels';
 
 type PrimaryAction =
   | 'CUSTOMER'
@@ -414,10 +415,10 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
       ) : selected ? (
         <Space direction="vertical" size={18} style={{ width: '100%' }}>
           <Descriptions size="small" column={2} items={[
-            { key: 'reason', label: '事项', children: REASON_LABELS[selected.reason_code] ?? selected.reason_code },
+            { key: 'reason', label: '事项', children: reasonLabel(selected.reason_code) },
             { key: 'team', label: '责任团队', children: TEAM_LABELS[selected.responsible_team] ?? selected.responsible_team },
             { key: 'subject', label: '关联对象', children: `${selected.subject_type} #${selected.subject_id}` },
-            { key: 'status', label: '状态', children: REVIEW_STATUS_LABELS[selected.status] },
+            { key: 'status', label: '状态', children: REVIEW_STATUS_LABELS[selected.status] ?? selected.status },
             { key: 'version', label: '当前版本', children: selected.version },
             { key: 'resolved', label: '解决人', children: selected.resolved_by ?? '—' },
           ]} />
