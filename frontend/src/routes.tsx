@@ -45,6 +45,7 @@ import {
 import ProcurementTicketsPage, { ProcurementPriceComparePage } from '@/pages/procurement';
 import { ReviewQueueCompatRoute, AlertsQueuePage, ShippingWorkbenchPage, ReconWorkbenchPage, ProcurementWorkbenchPage } from '@/pages/workbench';
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
+import ZhonghuiChannelPage from '@/pages/upload/ZhonghuiChannelPage';
 import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage } from '@/pages/system';
 import {
   AgentCostPage,
@@ -99,6 +100,8 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/product/skus': <SkusPage />,
   '/product/sku-mappings': <SkuMappingsPage />,
   '/product/bundles': <BundlesPage />,
+  // 商品档案「上架」二级页：由 PlatformUploadModal 选定渠道后进入，不占主导航位。
+  '/upload-platform/zhonghui': <ZhonghuiChannelPage />,
   '/analytics': <AnalyticsPage />,
   '/system/connectors': <ConnectorsPage />,
   '/system/audit-logs': <AuditLogsPage />,
