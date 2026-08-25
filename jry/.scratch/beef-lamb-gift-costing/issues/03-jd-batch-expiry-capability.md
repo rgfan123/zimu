@@ -1,7 +1,7 @@
 # 03 — 京东库存批次与效期接口能力（调研）
 
 **Type:** research
-**Status:** open
+**Status:** resolved
 **Blocked by:** —
 
 ## Question
@@ -28,3 +28,15 @@
 ### 交付
 
 findings 写 `.scratch/beef-lamb-gift-costing/research/03-jd-batch-expiry.md`，结论回写本票 `## Answer`。证据以 jar 反编译签名或 `docs/research/jdl-api-367/` 原文为准，**不接受推测**。
+
+## Answer
+
+**拿得到，兜底方案不必启用。** 京东在三个层面都给效期真值：① `queryStock` 传 `stockIndexes=2` 时 `StockResult.batchInfos` 返回 `productDate` / `expireDate` / `createTime`(入库日期) / `lot` 等 17 个批属性（**注意票里的 `produceDate` 拼写错误，实际是 `productDate`；没有 `batchNo`**）；② 票里没提过的 **`queryShelfLifeGoodsList` 保质期商品库存查询**（`/integratedsupplychain/stock/Shelflifeinventory/query/v1`）直接给 `remainDays` / `remainDaysRate` / `shelfLifeDays` 和 6 档临期 `status`，剩余保质期不用自己算；③ `queryGoodsInfo.GuaranteePeriodResult` 给主数据保质期与京东侧临期阈值（`adventDay` / `regularAdventDay` / `urgentAdventDay`）。此外 `addSoOrder` 有 `leftExpirationPercent`，可把「只出剩余保质期 ≥ X%」下推给京东执行。
+
+`deliveryBatchItemFlag` 语义已确认：**0=否 / 1=是，默认 0**，9 个 Flag 全部同此格式（`deliveryItemFlag` 默认 1）。要拿一行拆多批次的准确数据必须显式设 `deliveryBatchItemFlag=1`。
+
+**票 08 的「待决策点 1」（没有入库日期，一期方案是空的）不成立**——入库日期、生产日期、到期日期、剩余天数、剩余比例都是真值可得。且 `JDStockService` 里 `queryBatchChange` / `queryShelfLifeGoods` / `queryShelfLifeInventory` **客户端代码已经写好**，只是结果没落库；UAT 探针 `JdReadOnlyUatProbe` 也已存在。
+
+**四个阻塞项必须先解**（都要 UAT 实测，读文档解决不了）：批次滚动分页的 `cursor` 在响应结构里根本不存在；批次量之和与总量的关系官方零说明（是否有未分批次余量直接影响可用量高估）；`expireDate` 格式在不同接口有三种互相矛盾的写法；**现有出库门闩 `ShipmentJdStockCheckService` 写死 `stockIndexes="1"` 且假设「一商品一仓仅一行」，切批次维度会触发 `JD_STOCK_RESPONSE_AMBIGUOUS` 拦单——批次采集必须走新路径，不要动这条生产逻辑。**
+
+完整证据与 12 项未解决清单见 [`../research/03-jd-batch-expiry.md`](../research/03-jd-batch-expiry.md)。

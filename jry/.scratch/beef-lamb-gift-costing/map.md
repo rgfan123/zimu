@@ -1,7 +1,7 @@
 # 牛羊礼包精准成本核算与礼包整理 Agent map
 
 Type: map
-Status: charting complete — 13 张票已建，前沿 6 张（01/02/03/04/05/13）
+Status: 13 张票已建；调研票 03/04 已关闭，前沿 4 张（01/02/05/13）
 
 ## Destination
 
@@ -29,12 +29,12 @@ Status: charting complete — 13 张票已建，前沿 6 张（01/02/03/04/05/13
 **已核实事实（2026-08-25，本次建图勘察）**：
 - 商品档案现状：`app.products`（V30 后）仅 `purchase_price` / `retail_price` / `other_cost` 三个成本数；`app.skus` 有 `purchase_price` / `retail_price`。装不下成本构成。
 - **全库无任何重量/体积字段**（`schema-export-current.sql` 中 `weight`/`volume` 零命中）。`wayfinder/tickets/product-bundle-and-pack-mapping.md` 的「不增加商品净重模型」是把重量排除在 **Demo effort** 之外，非永久否决；本 effort 正当重启。
-- **无效期模型**：`app.provider_stock_snapshots` 只有 `stock_num` / `usable_num`，无批次无生产日期；成本表也无保质期列。京东 `StockResult` 带 `batchInfos`（`docs/research/jd-isc-api.md:75`），是否含效期待调研（票 03）。
+- **无效期模型**：`app.provider_stock_snapshots` 只有 `stock_num` / `usable_num`，无批次无生产日期；成本表也无保质期列。**但京东侧有真值**（票 03 已证实）：`queryStock`(`stockIndexes=2`) 的 `batchInfos` 给 `productDate`/`expireDate`/`createTime`/`lot`，`queryShelfLifeGoodsList` 直接给 `remainDays`/`remainDaysRate`；`JDStockService` 客户端代码已写好但结果未落库。缺的是**落库与建模**，不是数据源。
 - **无结构化省份**：`app.orders.receiver_address` 是自由文本 TEXT；结构化 province/city 只存在于京东出库的临时 `ShipmentJdReceiverAddressCommand`，未落库。
 - MCP 已存在：`McpToolRegistry` + `McpServer`（stdio 只读面），已有 `list_products` / `get_sku` / `get_inventory_overview` / `get_inventory_detail` / `list_categories` / `list_provider_skus`。本 effort 是**加工具**，不是新建 server。
 - 数据源单一：`jdbc:postgresql://localhost:5432/fulfillment_hub`，无第二个库。
 - 样例礼包 8 个组件在 `A产品成本核算26.3.29.xlsx` 的 `成品` sheet 全部命中，净重合计正好 3800g；`AI 线下供货成本/份` 合计 ≈ 213.00，`AJ 售价` 合计 = 273。
-- **抛重可能改运费档位**：6 号泡沫箱 435×300×250 = 32.6L，按抛重系数 6000 折 5.44kg > 净重 3.8kg。系数与进位规则待向京东确认（票 04）。
+- **抛重确实会改运费档位**：计费重量 = `max(体积重, 实重)` 已由京东官方文件证实（票 04 ①）。但**系数未定**——京东自家同时存在 5000 与 6000 两套官方口径，「行业惯例 6000」被证伪，不可填充。6 号泡沫箱 32.6L 在 6000 系数下折 5.44kg，在 5000 下折 6.53kg，跨了不同档位。**系数确认前所有运费数字都是估算。**
 
 ## 建图期已定决策（grilling 结论，不再重开）
 
@@ -44,7 +44,9 @@ Status: charting complete — 13 张票已建，前沿 6 张（01/02/03/04/05/13
 4. **商品范围 = 全部三类**：自有成品（113 行）、送仓经销品（~109 行）、一件代发经销品（~72 行）统一进 `products` / `skus`，用供货模式区分。一件代发那张表自带产地/发货仓/快递公司/服务区域/发货时效，是运费与时效核算的输入，不丢。
 5. **重量模型 = 只在 `skus` 加净重**（`net_weight_g`）；包材自重、箱内外径与体积、冷媒重量归**包材主数据**，礼包毛重与体积在运行时按装箱方案算。换箱子不该改商品档案。
 6. **保质期 = 两层**：一期落「商品保质期天数」主数据 + 入库日期估算；京东批次真值（`batchInfos`）由票 03 调研后择机替换，真值优先。
+   > **票 03 已 resolved，此决策可升级**：京东同时提供入库日期、生产日期、到期日期、剩余天数与剩余比例，「主数据估算」这一层不再是必需的一期方案，而是京东未覆盖商品（第三方履约）的兜底。最终形态由票 08 定。
 7. **运费 = 京东快递**，5 分区表（1kg 首重 + 3kg内/3-5kg/>5kg 三档续重）作为**版本化主数据**落库，不硬编码。
+   > **票 04 已 resolved 后的补强**：① 基础表不含燃油/偏远/超长超重/旺季附加，主数据必须能表达**时间窗口生效的附加费**；② 抛重系数、进位单位、档位边界开闭、续重是否分段累进**四项均未确认**，票 06 只能建结构、四项做成显式配置，**不得硬编码任何一种算法**；③ 未确认期间运费一律带「估算」标记，不进对外报价。
 8. **区域来源 = 两者都支持**：调用方传了省份就用；没传则按客户历史订单省份分布推断，并**显式标注为推断值**，同时返回分布、加权平均运费与最贵/最便宜省份。前置依赖确定性的地址→省份解析（票 05）。
 9. **京东仓储费 = 存储费不进礼包单位成本**（4元/方/天，按月对账，属期间费用）。**耗材（泡沫箱/冰袋/干冰）与订单生产费（出库费）、入库验收费计入礼包成本**——它们按件实付，与自有包材同性质。
    > 2026-08-25 用户把「京东出库费」明确列为必须建模的因子，本条前半（含出库费与耗材）**已确认**，⚠️ 标注撤销。存储费的排除维持不变。
@@ -57,7 +59,8 @@ Status: charting complete — 13 张票已建，前沿 6 张（01/02/03/04/05/13
 
 <!-- 每张已关闭票一行：标题（链接）+ 一句话结论。 -->
 
-（尚无票关闭。）
+- [03 京东库存批次与效期接口能力](issues/03-jd-batch-expiry-capability.md) — **效期是真值可得，兜底方案不必启用**：`queryStock` 传 `stockIndexes=2` 给 `productDate`/`expireDate`/`createTime`(入库日期)/`lot`；另有票里没预料到的 `queryShelfLifeGoodsList` 直接返回 `remainDays`/`remainDaysRate`/`shelfLifeDays` 与 6 档临期状态。客户端代码已存在只是没落库。**四项须 UAT 实测**（批次分页无 cursor、批次量与总量关系无官方说明、`expireDate` 格式三种矛盾写法、出库门闩写死 `stockIndexes="1"` 切批次会拦单）。详见 [research/03-jd-batch-expiry.md](research/03-jd-batch-expiry.md)。
+- [04 京东快递运费口径与抛重规则](issues/04-jd-express-freight-rules.md) — **7 项里 2 项查实、4 项必须问商务、1 项本地判定**。已证实：计费重量 = `max(体积重, 实重)`（京东官方明文）；基础运费表**一律不含**燃油/偏远/超长超重附加；春节在合同价基础上另收「高峰期资源调节费」→ **票 06 必须支持时间窗口生效的附加费**（礼包旺季正撞年货季）。**「行业惯例抛重系数 6000」被京东自己的文件证伪**（京东同时存在 5000/6000 两套官方系数、0.5kg/1kg 两套进位），故抛重系数/进位/档位边界开闭/续重是否分段累进四项全部归「需问商务」，**Q1–Q4 确认前运费只能标估算、不得对外报价**。**「不发货区域」不是冲突**：`一件代发经销品` U 列 59 行「港澳台，西藏不发货」+ 12 行含新疆青海海南，后者 100% 来自华润五丰一家、承运方是顺丰/德邦（全表 0 行京东快递）——**青海/新疆/海南不要跟着排除**。详见 [research/04-jd-express-freight.md](research/04-jd-express-freight.md)。
 
 ## 用户点名的因子 → 落在哪张票
 
@@ -76,7 +79,7 @@ Status: charting complete — 13 张票已建，前沿 6 张（01/02/03/04/05/13
 |---|---|---|---|---|
 | 01 | [商品成本档案数据模型](issues/01-cost-archive-data-model.md) | grilling (HITL) | — | open（前沿） |
 | 02 | [包材、装箱方案与耗材主数据](issues/02-packaging-master-data.md) | grilling (HITL) | — | open（前沿） |
-| 03 | [京东库存批次与效期接口能力](issues/03-jd-batch-expiry-capability.md) | research (AFK) | — | open（前沿） |
+| 03 | [京东库存批次与效期接口能力](issues/03-jd-batch-expiry-capability.md) | research (AFK) | — | ✅ resolved |
 | 04 | [京东快递冷链运费口径与抛重规则](issues/04-jd-express-freight-rules.md) | research (AFK) | — | open（前沿） |
 | 05 | [地址→省份解析与历史订单区域回填](issues/05-address-province-backfill.md) | task (AFK) | — | open（前沿） |
 | 06 | [运费主数据与计费重量模型](issues/06-freight-master-data.md) | grilling (HITL) | 04 | blocked |
@@ -110,6 +113,7 @@ Status: charting complete — 13 张票已建，前沿 6 张（01/02/03/04/05/13
 - **反向组合的搜索算法**（穷举 / 贪心 / 约束求解）与各约束权重——票 12 定完约束集合再选。
 - **账期比例与平台扣点是否进礼包落地成本**——`成品` sheet 有 `账期比例`/`账期费用/份`/`扣点`/`扣点费用/份` 四列，但它们随客户与渠道变化，不是商品固有属性；等票 07 分层时看是作为成本项还是作为报价参数。
 - **客户历史商品偏好画像**——历史订单里除了发往哪儿，也留着「这个客户实际买什么品类/规格/价位带」。与票 09 同源、成本不高，但用户 2026-08-25 澄清「偏好」指的是销售偏好（票 13）而非此项，故不立票。等票 12 定目标函数时看要不要毕业。
+- **旺季资源调节费的具体标准与生效窗口**——票 04 证实存在（京东官网公告），但标准与窗口需商务提供；拿到后并入票 06 的附加费模型。
 - **动销速度的数据来源与口径**——临期评分要用，但现有 analytics 视图是发货量口径，是否够用等票 08 判断。
 - **三类商品群成本列差异的统一方式**——经销品只有采购价/供货价/零售价，无加工构成；等票 01 定完深度再看是同表可空还是分表。
 - **礼包方案草稿的表结构与人工确认流程**——决策 11 定了归属（应用层），形态等票 10 定完工具出参再说。
