@@ -5,6 +5,7 @@
 **Blocked by:** 09 或 07 或 08（任一 Connector 落地），D3 决策
 
 **Status:** ready-for-agent
+**GitHub:** https://github.com/rgfan123/zimu/issues/25
 
 - [ ] testConnection 对三平台做真实只读探测并返回准确诊断
 - [ ] 拉取/上传/确认关键动作均落 AuditLog

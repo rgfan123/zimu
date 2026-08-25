@@ -67,6 +67,25 @@ services:
       JD_TRACKING_BACKFILL_POLL_MS: "${JD_TRACKING_BACKFILL_POLL_MS:-60000}"
       JD_TRACKING_BACKFILL_BATCH_SIZE: "${JD_TRACKING_BACKFILL_BATCH_SIZE:-20}"
       JD_TRACKING_BACKFILL_MIN_INTERVAL: "${JD_TRACKING_BACKFILL_MIN_INTERVAL:-PT1M}"
+      ZHONGHUI_PMS_CLIENT_MODE: ${ZHONGHUI_PMS_CLIENT_MODE:-MOCK}
+      # REAL 连接模式不等于授权写入；生产缺省保持第二道门闩 OFF。
+      ZHONGHUI_PMS_WRITE_MODE: ${ZHONGHUI_PMS_WRITE_MODE:-OFF}
+      ZHONGHUI_PMS_REQUEST_TIMEOUT: ${ZHONGHUI_PMS_REQUEST_TIMEOUT:-PT30S}
+      ZHONGHUI_PMS_IDEMPOTENCY_LEASE: ${ZHONGHUI_PMS_IDEMPOTENCY_LEASE:-PT40M}
+      ZHONGHUI_PMS_BASE_URL: ${ZHONGHUI_PMS_BASE_URL:-}
+      ZHONGHUI_PMS_USERNAME: ${ZHONGHUI_PMS_USERNAME:-}
+      ZHONGHUI_PMS_PASSWORD: ${ZHONGHUI_PMS_PASSWORD:-}
+      ZHONGHUI_PMS_DEFAULT_BRAND_ID: ${ZHONGHUI_PMS_DEFAULT_BRAND_ID:-}
+      ZHONGHUI_PMS_DEFAULT_CERTIFICATION_TYPE: ${ZHONGHUI_PMS_DEFAULT_CERTIFICATION_TYPE:-}
+      ZHONGHUI_PMS_DEFAULT_CERTIFICATION_ID: ${ZHONGHUI_PMS_DEFAULT_CERTIFICATION_ID:-}
+      ZHONGHUI_PMS_DEFAULT_THIRD_ID: ${ZHONGHUI_PMS_DEFAULT_THIRD_ID:-}
+      ZHONGHUI_PMS_DEFAULT_LIMIT_AREA_TEMP_ID: ${ZHONGHUI_PMS_DEFAULT_LIMIT_AREA_TEMP_ID:-}
+      ZHONGHUI_PMS_DEFAULT_GOODS_TAX: ${ZHONGHUI_PMS_DEFAULT_GOODS_TAX:-}
+      ZHONGHUI_PMS_DEFAULT_LOGISTICS_CARRIER: ${ZHONGHUI_PMS_DEFAULT_LOGISTICS_CARRIER:-}
+      ZHONGHUI_PMS_DEFAULT_PRODUCING_AREA: ${ZHONGHUI_PMS_DEFAULT_PRODUCING_AREA:-}
+      ZHONGHUI_PMS_DEFAULT_GOODS_NUM: ${ZHONGHUI_PMS_DEFAULT_GOODS_NUM:-99}
+      ZHONGHUI_PMS_DEFAULT_SALE_UNIT: ${ZHONGHUI_PMS_DEFAULT_SALE_UNIT:-件}
+      ZHONGHUI_PMS_DEFAULT_ORIGIN_COUNTRY: ${ZHONGHUI_PMS_DEFAULT_ORIGIN_COUNTRY:-1}
       # 三平台拉取/回传凭据：走环境变量（红线「凭据只走环境变量」），值来自 .env 或部署环境；
       # data-local 挂载的凭据文件仅作为本地开发兜底（PlatformScriptRunner/Connector env 优先）。
       CSX_USERNAME: ${CSX_USERNAME:-}
@@ -89,8 +108,13 @@ services:
       MESSAGE_INTERPRETER_PUBLIC_PROVIDER_ALIAS: ${MESSAGE_INTERPRETER_PUBLIC_PROVIDER_ALIAS:-}
       MESSAGE_INTERPRETER_PUBLIC_MODEL_ALIAS: ${MESSAGE_INTERPRETER_PUBLIC_MODEL_ALIAS:-}
       MESSAGE_INTERPRETER_PUBLIC_PROMPT_VERSION_ALIAS: ${MESSAGE_INTERPRETER_PUBLIC_PROMPT_VERSION_ALIAS:-}
-      # 平台拉取合规红线（每日 ≤2 次）与回传 PUSHING 超时回收（app.platform-pull.*）。
-      APP_PLATFORM_PULL_MIN_INTERVAL: ${APP_PLATFORM_PULL_MIN_INTERVAL:-PT12H}
+      # Agent 运行时（app.agent.*）：与 message-interpreter.* 相互独立，
+      # 采购比价 Agent / meta-agent 依赖此配置；缺失时 Agent 以 fail-closed 错误码返回。
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      AGENT_BASE_URL: ${AGENT_BASE_URL:-}
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      # 平台回传 PUSHING 超时回收（app.platform-pull.*）。
       APP_PLATFORM_PULL_PUSH_STALE_TIMEOUT: ${APP_PLATFORM_PULL_PUSH_STALE_TIMEOUT:-PT15M}
       TZ: Asia/Shanghai
     volumes:
@@ -139,6 +163,9 @@ services:
       LLM_TRANSPORT: ${LLM_TRANSPORT:-urllib}
       ORDER_API_BASE_URL: http://backend:8080
       ORDER_API_PATH: /demo/v1/extracted-orders
+      # 订单助手直连后端时使用独立内部服务身份；不得复用管理网关 Basic 凭据。
+      APP_INTERNAL_SERVICE_NAME: ${APP_INTERNAL_SERVICE_NAME:?set APP_INTERNAL_SERVICE_NAME in the deployment environment}
+      APP_INTERNAL_SERVICE_TOKEN: ${APP_INTERNAL_SERVICE_TOKEN:?set APP_INTERNAL_SERVICE_TOKEN in the deployment environment}
       BUILTIN_ORDER_API_ENABLED: "false"
       TZ: Asia/Shanghai
     extra_hosts:
@@ -199,8 +226,13 @@ services:
     environment:
       APP_ADMIN_USER: ${APP_ADMIN_USER:?set APP_ADMIN_USER in the deployment environment}
       APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:?set APP_ADMIN_PASSWORD in the deployment environment}
+      # Edge Basic Auth defaults on; set false only for controlled LAN acceptance
+      # (the nginx entrypoint logs a warning and the gateway becomes open to any
+      # client that can reach it).
+      GATEWAY_BASIC_AUTH_ENABLED: "${GATEWAY_BASIC_AUTH_ENABLED:-true}"
     ports:
-      # This passwordless gateway is local-only. Remote deployments require real user auth and HTTPS first.
+      # Edge Basic Auth is on by default (single shared admin credential), and the
+      # gateway stays loopback-bound. Remote deployments require real user auth and HTTPS first.
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8088}:80"
     volumes:
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro

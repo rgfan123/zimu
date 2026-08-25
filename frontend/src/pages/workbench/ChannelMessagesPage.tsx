@@ -17,6 +17,7 @@ import { errorMessage } from '@/api/client';
 import { channelMessagesApi, messageSubmissionsApi } from '@/api/endpoints';
 import type { ChannelMessageSummary, MessageSubmissionDetail } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import {
   currentChannelMessageDetail,
   intentDisplay,
@@ -79,39 +80,39 @@ export default function ChannelMessagesPage() {
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       {list.error ? (
-        <Alert
-          type="error"
-          showIcon
+        <PageState
+          state="error"
           message="消息记录加载失败"
           description={errorMessage(list.error)}
-          action={<Button size="small" icon={<ReloadOutlined />} onClick={list.reload}>重试</Button>}
+          onRetry={list.reload}
         />
-      ) : null}
-      <Card
-        size="small"
-        title="企业微信消息"
-        extra={<Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>}
-        styles={{ body: { padding: '4px 8px' } }}
-      >
-        <Table<ChannelMessageSummary>
-          rowKey="id"
-          columns={columns}
-          dataSource={list.data?.items ?? []}
-          loading={list.loading}
-          scroll={{ x: 980 }}
-          pagination={{
-            current: page + 1,
-            pageSize: size,
-            total: list.data?.total_elements ?? 0,
-            showSizeChanger: true,
-            showTotal: (total) => `共 ${total} 条`,
-            onChange: (nextPage, nextSize) => {
-              setPage(nextPage - 1);
-              setSize(nextSize);
-            },
-          }}
-        />
-      </Card>
+      ) : (
+        <Card
+          size="small"
+          title="企业微信消息"
+          extra={<Button icon={<ReloadOutlined />} onClick={list.reload}>刷新</Button>}
+          styles={{ body: { padding: '4px 8px' } }}
+        >
+          <Table<ChannelMessageSummary>
+            rowKey="id"
+            columns={columns}
+            dataSource={list.data?.items ?? []}
+            loading={list.loading}
+            scroll={{ x: 980 }}
+            pagination={{
+              current: page + 1,
+              pageSize: size,
+              total: list.data?.total_elements ?? 0,
+              showSizeChanger: true,
+              showTotal: (total) => `共 ${total} 条`,
+              onChange: (nextPage, nextSize) => {
+                setPage(nextPage - 1);
+                setSize(nextSize);
+              },
+            }}
+          />
+        </Card>
+      )}
 
       <Drawer title="消息证据详情" open={Boolean(selected)} onClose={() => setSelected(null)} width={720}>
         {detail.loading || (selected && !currentDetail && !detail.error) ? (

@@ -14,6 +14,7 @@
 在线化替换部分 **blocked by** `platform-online-integration` 07 / 08 / 09（三平台在线拉取 Connector，均 ready-for-agent 未实现）——只影响把 `PlatformOrderRefreshService` 内部实现换成在线拉取，不影响本票一期交付；07/08/09 完成后替换内部实现，MCP 工具面不变。
 
 **Status:** open
+**GitHub:** https://github.com/rgfan123/zimu/issues/24
 
 ## 边界与既有约束（platform-online-integration 合并裁决，不得违反）
 

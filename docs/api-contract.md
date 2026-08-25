@@ -201,6 +201,7 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | Customer | `GET/POST /api/v1/customers`，`GET/PATCH /api/v1/customers/{customer_id}` |
 | Category | `GET/POST /api/v1/categories`，`GET/PATCH /api/v1/categories/{category_id}` |
 | Product | `GET/POST /api/v1/products`，`GET/PATCH /api/v1/products/{product_id}` |
+| ProductBundle（静态礼包） | `GET/POST /api/v1/product-bundles`（支持 `query` 模糊检索），`GET/PATCH /api/v1/product-bundles/{bundle_id}`；组件清单随 `items` 数组整体读写（`sku_id` + `quantity_per_bundle` 正整数 + `emg_code_snapshot`/`source_text_snapshot` 选填），写操作沿用 Idempotency-Key + expected_version 乐观锁 |
 | SKU | `GET/POST /api/v1/skus`，`GET/PATCH /api/v1/skus/{sku_id}` |
 | 来源 SKU 映射 | `GET/POST /api/v1/source-sku-mappings`，`GET/PATCH /api/v1/source-sku-mappings/{mapping_id}` |
 | 履约方 SKU 映射 | `GET/POST /api/v1/provider-sku-mappings`，`GET/PATCH /api/v1/provider-sku-mappings/{mapping_id}` |
@@ -346,6 +347,41 @@ public interface PlatformConnector {
 1. 保持 `write-mode` 默认 `OFF`，先用只读探针（`JD_LOP_*` 凭据）确认当前 appKey/PIN 组合的授权基线：未开通的接口返回 `2001 / 没有事业部操作权限`。
 2. 对照上表逐行在京东开放平台后台核对开通情况，开通一个、登记一个，形成接口权限清单；未登记开通的接口一律不得临时放行。
 3. 对已登记开通的接口，可临时置 `write-mode: ON` 做最小验证（Mock 先行、REAL 后行），验证完成后立即恢复 `OFF`；生产环境默认保持 `OFF`。
+
+### 6.4 中汇好泰 PMS 商品录入（外部写）
+
+从商品档案批量上传商品到中汇 PMS（接口契约见仓库根目录 `pms_openapi.md`），实现位于
+`backend/src/main/java/cn/zimu/fulfillment/connector/zhonghui/`：
+
+```java
+public interface ZhonghuiPmsService {
+    boolean authenticated();
+    CaptchaView captcha();
+    LoginView login(LoginCommand command);
+    List<BrandView> usableBrands();
+    List<CertificationView> certifications();
+    List<LogisticsView> logistics();
+    GoodsVerifyView queryGoods(String goodsItem, String goodsName);
+    String uploadImage(byte[] bytes, String contentType);
+    GoodsCreateResult createGoods(GoodsCreateCommand command);
+}
+```
+
+- `client_mode=MOCK`（默认）使用本地假客户端，不触网；`REAL` 才连接 `pms.zhonghuihaotai.com`。
+- 登录需人工输入图片验证码（`GET /captcha` + `POST /login`）；JWT 只在单实例内存缓存，不落库、不对外暴露。
+- 管理面：`GET /api/v1/zhonghui-pms/status`、`GET /captcha`、`POST /login`、`POST /logout`、
+  `GET /options`（需已登录）、`POST /batch-uploads`、`GET /upload-batches/{batch_id}`。
+  `login` 与 `batch-uploads` 为写接口，按 §3.2 强制 `Idempotency-Key` 并接入幂等注册表
+  （scope `zhonghui-pms.login` / `zhonghui-pms.batch-upload`）：同键+同请求重放首次结果
+  （batch-uploads 不重复调 PMS 创建），同键+不同请求 409；前端批量上传使用基于
+  `sku_ids+overrides` 摘要的稳定键。响应侧标识符与覆盖字段按 §3.1 以十进制字符串传输。
+- 批量上传满足 §3.5：批次意图（PENDING）先落库（V35 `zhonghui_pms_upload_batches(_items)`），
+  再逐商品执行创建；每个商品创建成功后经 `POST /goodsInfos` 做商品列表校验回写 `goods_id` 与审核状态，
+  逐商品回写 SUCCESS/FAILED（含 `warning`，如缺少主图），批次最后置 COMPLETED；
+  单商品失败不回滚其他商品；中途断连遗留 PENDING 行可经 `GET /upload-batches/{id}` 查询后人工重试。
+- `thirdId`、`limitAreaTempId`、`certificationType/Id`、`goodsTax`、`brandId`、`logisticsCarrier` 等
+  待确认字段以 `app.zhonghui-pms.defaults.*` 配置默认值 + 请求 `overrides` 提供；PMS 无幂等语义，
+  重试可能产生重复商品，重试前需在 PMS 侧核对。
 
 ## 7. Demo API
 

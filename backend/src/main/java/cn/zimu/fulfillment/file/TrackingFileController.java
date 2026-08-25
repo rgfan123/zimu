@@ -21,9 +21,11 @@ import org.springframework.web.multipart.MultipartFile;
 class TrackingFileController {
 
     private final TrackingFileService service;
+    private final SourceReturnPushService pushService;
 
-    TrackingFileController(TrackingFileService service) {
+    TrackingFileController(TrackingFileService service, SourceReturnPushService pushService) {
         this.service = service;
+        this.pushService = pushService;
     }
 
     @PostMapping(path = "/api/v1/fulfillment-exports/{export_id}/tracking-imports", consumes = "multipart/form-data")
@@ -60,5 +62,22 @@ class TrackingFileController {
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         ContentDisposition.attachment().filename(file.filename(), StandardCharsets.UTF_8).build().toString())
                 .body(file.bytes());
+    }
+
+    /**
+     * 来源回填文件在线推送（票 11，人工触发；彩食鲜/聚福宝）。
+     *
+     * <p>幂等取舍（A1，契约 §3.2/§10.3）：推送会真实调用外部平台（不可重放），Idempotency-Key
+     * 仅做格式校验（≥8 字符）防重复点击；重复推送由 DB 幂等闸门承担（push_status 状态机，
+     * 见 SourceReturnPushService）。
+     */
+    @PostMapping("/api/v1/source-return-exports/{export_id}/push")
+    Map<String, Object> push(
+            @PathVariable("export_id") String exportId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(value = "X-Operator", required = false) String operator) {
+        WriteCommands.requireIdempotencyKey(idempotencyKey);
+        return pushService.push(
+                WriteCommands.parseIdentifier(exportId), WriteCommands.writeContext(operator));
     }
 }

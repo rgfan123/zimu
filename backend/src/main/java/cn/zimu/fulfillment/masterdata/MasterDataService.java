@@ -23,9 +23,16 @@ import cn.zimu.fulfillment.customer.CustomerStatus;
 import cn.zimu.fulfillment.customer.CustomerWrite;
 import cn.zimu.fulfillment.product.Category;
 import cn.zimu.fulfillment.product.CategoryRepository;
+import cn.zimu.fulfillment.product.BundleItem;
+import cn.zimu.fulfillment.product.BundleItemRepository;
+import cn.zimu.fulfillment.product.BundleItemInput;
+import cn.zimu.fulfillment.product.BundlePatch;
+import cn.zimu.fulfillment.product.BundleWrite;
 import cn.zimu.fulfillment.product.NamedCodePatch;
 import cn.zimu.fulfillment.product.NamedCodeWrite;
 import cn.zimu.fulfillment.product.Product;
+import cn.zimu.fulfillment.product.ProductBundle;
+import cn.zimu.fulfillment.product.ProductBundleRepository;
 import cn.zimu.fulfillment.product.ProductPatch;
 import cn.zimu.fulfillment.product.ProductRepository;
 import cn.zimu.fulfillment.product.ProductWrite;
@@ -86,6 +93,8 @@ public class MasterDataService {
     private final CustomerRepository customers;
     private final CategoryRepository categories;
     private final ProductRepository products;
+    private final ProductBundleRepository bundles;
+    private final BundleItemRepository bundleItems;
     private final SkuRepository skus;
     private final SourceChannelSkuRepository sourceMappings;
     private final ProviderSkuRepository providerMappings;
@@ -99,6 +108,8 @@ public class MasterDataService {
             CustomerRepository customers,
             CategoryRepository categories,
             ProductRepository products,
+            ProductBundleRepository bundles,
+            BundleItemRepository bundleItems,
             SkuRepository skus,
             SourceChannelSkuRepository sourceMappings,
             ProviderSkuRepository providerMappings,
@@ -110,6 +121,8 @@ public class MasterDataService {
         this.customers = customers;
         this.categories = categories;
         this.products = products;
+        this.bundles = bundles;
+        this.bundleItems = bundleItems;
         this.skus = skus;
         this.sourceMappings = sourceMappings;
         this.providerMappings = providerMappings;
@@ -536,6 +549,92 @@ public class MasterDataService {
     }
 
     @Transactional(readOnly = true)
+    public PageResponse<MasterDataRecord> productBundles(int page, int size, String query) {
+        Page<ProductBundle> result = query == null || query.isBlank()
+                ? bundles.findAll(page(page, size))
+                : bundles.search("%" + query.trim() + "%", page(page, size));
+        return PageResponse.of(result.stream().map(this::bundle).toList(), result);
+    }
+
+    @Transactional(readOnly = true)
+    public MasterDataRecord productBundle(long id) {
+        return bundle(requireBundle(id));
+    }
+
+    @Transactional
+    public IdempotentResult<MasterDataRecord> createProductBundle(BundleWrite input, String key, CommandContext ctx) {
+        return writeCatalogMasterData("bundle.create", key, input, CREATED, ctx, () -> {
+            if (bundles.existsByBundleCode(input.bundleCode())) {
+                throw BusinessException.conflict("BUNDLE_CODE_EXISTS", "礼包编码已存在");
+            }
+            if (input.barcode() != null && !input.barcode().isBlank() && bundles.existsByBarcode(input.barcode())) {
+                throw BusinessException.conflict("BUNDLE_BARCODE_EXISTS", "礼包条码已存在");
+            }
+            Long categoryId = input.categoryId() == null ? null : WriteCommands.parseIdentifier(input.categoryId());
+            if (categoryId != null) {
+                requireCategory(categoryId);
+            }
+            ProductBundle value = new ProductBundle();
+            value.setBundleCode(input.bundleCode());
+            value.setBundleName(input.bundleName());
+            value.setCategoryId(categoryId);
+            value.setBarcode(blankToNull(input.barcode()));
+            value.setDescription(blankToNull(input.description()));
+            value.setTaxRate(parseRate(input.taxRate(), "tax_rate"));
+            value.setSettlementCost(SkuCommercialPrice.parse(input.settlementCost(), "settlement_cost"));
+            value.setStatus(input.status() == null ? "DRAFT" : input.status());
+            ProductBundle saved = bundles.saveAndFlush(value);
+            replaceBundleItems(saved.getId(), parseBundleItems(input.items()));
+            return bundle(refresh(bundles.findById(saved.getId()).orElseThrow()));
+        });
+    }
+
+    @Transactional
+    public IdempotentResult<MasterDataRecord> patchProductBundle(long id, BundlePatch input, String key, CommandContext ctx) {
+        requireAny(input.bundleName(), input.categoryId(), input.barcode(), input.description(),
+                input.taxRate(), input.settlementCost(), input.status(), input.items());
+        return writeCatalogMasterData("bundle.update", key, Map.of("id", id, "body", input), OK, ctx, () -> {
+            ProductBundle value = requireBundle(id);
+            version(value.getLockVersion(), input.expectedVersion());
+            if (input.bundleName() != null) {
+                value.setBundleName(input.bundleName());
+            }
+            if (input.categoryId() != null) {
+                long categoryId = WriteCommands.parseIdentifier(input.categoryId());
+                requireCategory(categoryId);
+                value.setCategoryId(categoryId);
+            }
+            if (input.barcode() != null) {
+                if (input.barcode().isBlank()) {
+                    value.setBarcode(null);
+                } else {
+                    if (bundles.existsByBarcodeAndIdNot(input.barcode(), id)) {
+                        throw BusinessException.conflict("BUNDLE_BARCODE_EXISTS", "礼包条码已存在");
+                    }
+                    value.setBarcode(input.barcode());
+                }
+            }
+            if (input.description() != null) {
+                value.setDescription(blankToNull(input.description()));
+            }
+            if (input.taxRate() != null) {
+                value.setTaxRate(parseRate(input.taxRate(), "tax_rate"));
+            }
+            if (input.settlementCost() != null) {
+                value.setSettlementCost(SkuCommercialPrice.parse(input.settlementCost(), "settlement_cost"));
+            }
+            if (input.status() != null) {
+                value.setStatus(input.status());
+            }
+            bundles.saveAndFlush(value);
+            if (input.items() != null) {
+                replaceBundleItems(id, parseBundleItems(input.items()));
+            }
+            return bundle(refresh(bundles.findById(id).orElseThrow()));
+        });
+    }
+
+    @Transactional(readOnly = true)
     public PageResponse<MasterDataRecord> skus(int page, int size, String providerId, String query) {
         Page<Sku> result;
         if (query != null && !query.isBlank()) {
@@ -881,6 +980,7 @@ public class MasterDataService {
         attributes.put("retail_price", SkuCommercialPrice.text(value.getRetailPrice()));
         attributes.put("jd_emg_no", jdEmgNo);
         if (product != null) {
+            attributes.put("product_version", product.getLockVersion());
             attributes.put("product_tags", product.getTags());
             attributes.put("product_ingredients", product.getIngredients());
             attributes.put("product_listed_from",
@@ -889,18 +989,23 @@ public class MasterDataService {
                     product.getListedUntil() == null ? null : product.getListedUntil().toString());
             attributes.put("product_lead_time_hours", product.getLeadTimeHours());
             attributes.put("product_main_image_ref", product.getMainImageRef());
+            attributes.put("product_purchase_price", SkuCommercialPrice.text(product.getPurchasePrice()));
+            attributes.put("product_retail_price", SkuCommercialPrice.text(product.getRetailPrice()));
+            attributes.put("product_other_cost", SkuCommercialPrice.text(product.getOtherCost()));
             attributes.put("margin", marginText(product.getRetailPrice(), product.getPurchasePrice(), product.getOtherCost()));
         }
         return record(value.getId(), value.getSkuCode(), product == null ? value.getSkuCode() : product.getProductName(),
                 value.isActive(), value.getLockVersion(), attributes, value);
     }
 
+    /** 单个 SKU 的京东 EMG 编号（单条读取/写后投影用）。 */
     private String jdEmgNo(long skuId) {
         List<ProviderSkuRepository.JdProviderSkuCode> rows =
                 providerMappings.findJdProviderSkuCodes(List.of(skuId));
         return rows.isEmpty() ? null : rows.getFirst().getProviderSkuCode();
     }
 
+    /** 批量 SKU 的京东 EMG 编号；无京东映射的 SKU 不出现在结果中。 */
     private Map<Long, String> jdEmgCodes(Collection<Long> skuIds) {
         if (skuIds.isEmpty()) {
             return Map.of();
@@ -1007,6 +1112,91 @@ public class MasterDataService {
 
     private Sku requireSku(long id) {
         return skus.findById(id).orElseThrow(() -> BusinessException.notFound("SKU 不存在"));
+    }
+
+    private ProductBundle requireBundle(long id) {
+        return bundles.findById(id).orElseThrow(() -> BusinessException.notFound("礼包不存在"));
+    }
+
+    /** 礼包投影：attributes 含组件清单（bundle_items 按 sort_no）与 SKU 展示快照。 */
+    private MasterDataRecord bundle(ProductBundle value) {
+        List<Map<String, Object>> items = bundleItems.findByBundleIdOrderBySortNo(value.getId())
+                .stream()
+                .map(this::bundleItemView)
+                .toList();
+        Map<String, Object> attributes = map(
+                "category_id", id(value.getCategoryId()),
+                "barcode", value.getBarcode(),
+                "description", value.getDescription(),
+                "status", value.getStatus(),
+                "fulfillment_provider_id", id(value.getFulfillmentProviderId()),
+                "tax_rate", SkuCommercialPrice.text(value.getTaxRate()),
+                "settlement_cost", SkuCommercialPrice.text(value.getSettlementCost()),
+                "items", items);
+        return record(value.getId(), value.getBundleCode(), value.getBundleName(),
+                "ACTIVE".equals(value.getStatus()), value.getLockVersion(), attributes, value);
+    }
+
+    private Map<String, Object> bundleItemView(BundleItem item) {
+        Map<String, Object> view = map(
+                "sku_id", id(item.getSkuId()),
+                "quantity_per_bundle", SkuCommercialPrice.text(item.getQuantityPerBundle()),
+                "emg_code_snapshot", item.getEmgCodeSnapshot(),
+                "source_text_snapshot", item.getSourceTextSnapshot());
+        Sku sku = skus.findById(item.getSkuId()).orElse(null);
+        if (sku != null) {
+            view.put("sku_code", sku.getSkuCode());
+            view.put("specification", sku.getSpecification());
+            view.put("unit", sku.getUnit());
+            Product product = products.findById(sku.getProductId()).orElse(null);
+            view.put("product_name", product == null ? null : product.getProductName());
+        }
+        return view;
+    }
+
+    /** 组件输入解析：SKU 存在性 + 礼包内 SKU 去重 + sort_no 顺序分配。 */
+    private List<BundleItem> parseBundleItems(List<BundleItemInput> inputs) {
+        List<BundleItem> result = new ArrayList<>();
+        Set<Long> seenSkus = new HashSet<>();
+        int sortNo = 1;
+        for (BundleItemInput input : inputs) {
+            long skuId = WriteCommands.parseIdentifier(input.skuId());
+            requireSku(skuId);
+            if (!seenSkus.add(skuId)) {
+                throw BusinessException.badRequest("BUNDLE_DUPLICATE_SKU", "同一礼包内组件 SKU 重复: " + input.skuId());
+            }
+            BundleItem item = new BundleItem();
+            item.setSortNo(sortNo++);
+            item.setSkuId(skuId);
+            item.setQuantityPerBundle(new BigDecimal(input.quantityPerBundle()));
+            item.setEmgCodeSnapshot(blankToNull(input.emgCodeSnapshot()));
+            item.setSourceTextSnapshot(blankToNull(input.sourceTextSnapshot()));
+            result.add(item);
+        }
+        return result;
+    }
+
+    /** 整表替换礼包组件（bundle_id 由调用方事务内分配/复用）。 */
+    private void replaceBundleItems(Long bundleId, List<BundleItem> items) {
+        bundleItems.deleteByBundleId(bundleId);
+        bundleItems.flush();
+        for (BundleItem item : items) {
+            item.setBundleId(bundleId);
+            bundleItems.save(item);
+        }
+        bundleItems.flush();
+    }
+
+    /** 税率解析：0-100 的金额格式字符串。 */
+    private static BigDecimal parseRate(Object raw, String field) {
+        if (raw == null) {
+            return null;
+        }
+        BigDecimal value = SkuCommercialPrice.parse(raw, field);
+        if (value.signum() < 0 || value.compareTo(BigDecimal.valueOf(100)) > 0) {
+            throw invalidArchiveField(field, "税率必须在 0-100 之间");
+        }
+        return value;
     }
 
     private static void version(Long actual, Long expected) {

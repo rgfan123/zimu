@@ -328,6 +328,9 @@ public class TrackingFileService {
                 case "ZHONGHUI" -> {
                     // 中汇回填模板：原表最后新增一列「物流单号」，回填京东物流单号；
                     // 平台模板未提供承运商列，不新增「物流公司」列。
+                    if (cells.containsKey("发货状态")) {
+                        cells.put("发货状态", "已发货");
+                    }
                     cells.put("物流单号", fill.trackingNo());
                 }
                 default -> throw new IllegalStateException("unsupported source return channel");
@@ -392,7 +395,7 @@ public class TrackingFileService {
                             WHERE rc.order_line_id=ol.id AND rc.status='OPEN'
                               AND rc.reason_code='MULTI_SHIPMENT_SOURCE_FOLLOWUP'
                         ) THEN ol.processing_stage
-                        ELSE 'RETURN_FILE_READY'
+                        ELSE 'COMPLETED'
                     END
                     WHERE ol.id=?
                     """,
@@ -503,7 +506,8 @@ public class TrackingFileService {
         return jdbc.query(
                 """
                 SELECT id, import_batch_id, version_no, is_final, template_version,
-                       tracking_cutoff_at, file_sha256, generated_at
+                       tracking_cutoff_at, file_sha256, generated_at,
+                       push_status, pushed_at, pushed_by, push_platform_ref, push_error::text push_error
                 FROM app.source_return_exports WHERE import_batch_id=? ORDER BY version_no
                 """,
                 (resultSet, rowNum) -> {
@@ -516,6 +520,12 @@ public class TrackingFileService {
                     result.put("tracking_cutoff_at", resultSet.getTimestamp("tracking_cutoff_at").toInstant());
                     result.put("file_sha256", resultSet.getString("file_sha256"));
                     result.put("generated_at", resultSet.getTimestamp("generated_at").toInstant());
+                    result.put("push_status", resultSet.getString("push_status"));
+                    result.put("pushed_at", resultSet.getTimestamp("pushed_at") == null
+                            ? null : resultSet.getTimestamp("pushed_at").toInstant());
+                    result.put("pushed_by", resultSet.getString("pushed_by"));
+                    result.put("push_platform_ref", resultSet.getString("push_platform_ref"));
+                    result.put("push_error", parseJson(resultSet.getString("push_error")));
                     return result;
                 }, sourceBatchId);
     }
@@ -735,6 +745,15 @@ public class TrackingFileService {
     private Map<String, Object> jsonMap(String value) {
         try { return objectMapper.readValue(value, new TypeReference<>() {}); }
         catch (JsonProcessingException exception) { throw new IllegalStateException(exception); }
+    }
+
+    /** 容错解析 JSONB 文本；空/非法时返回 null（push_error 可选列）。 */
+    private Object parseJson(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try { return objectMapper.readValue(value, new TypeReference<Map<String, Object>>() {}); }
+        catch (JsonProcessingException exception) { return value; }
     }
 
     private record ExportHeader(long id, long providerId, String batchNo, String exportKind) {}

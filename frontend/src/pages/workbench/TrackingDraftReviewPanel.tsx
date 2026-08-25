@@ -6,6 +6,7 @@ import {
   Divider,
   Empty,
   Input,
+  Modal,
   Select,
   Space,
   Table,
@@ -18,6 +19,7 @@ import { errorMessage } from '@/api/client';
 import type { ReviewCase } from '@/api/types';
 import {
   buildTrackingDraftConfirmCommand,
+  buildTrackingDraftRejectCommand,
   initialTrackingDraftReviewForm,
   trackingDraftBlockingIssues,
   trackingDraftIssueLabel,
@@ -53,6 +55,10 @@ export default function TrackingDraftReviewPanel({
   const [batchSubmitting, setBatchSubmitting] = useState(false);
   const [batchResult, setBatchResult] = useState<TrackingDraftBatchConfirmResult>();
   const [batchLoadError, setBatchLoadError] = useState<string>();
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejectSubmitting, setRejectSubmitting] = useState(false);
+  const [rejectError, setRejectError] = useState<string>();
 
   useEffect(() => {
     let active = true;
@@ -173,6 +179,31 @@ export default function TrackingDraftReviewPanel({
     && draft?.status === 'OPEN'
     && draft.review_case_id === reviewCase.id
     && draft.review_case_version != null;
+
+  const canReject = reviewCase.status === 'OPEN'
+    && reviewCase.allowed_actions.includes('REJECT_TRACKING_DRAFT')
+    && draft?.status === 'OPEN'
+    && draft.review_case_id === reviewCase.id
+    && draft.review_case_version != null;
+
+  async function rejectDraft() {
+    if (!draft || !canReject) return;
+    setRejectSubmitting(true);
+    setRejectError(undefined);
+    try {
+      const result = await trackingDraftReviewApi.reject(
+        draft.id,
+        buildTrackingDraftRejectCommand(draft, draft.review_case_version, rejectReason),
+      );
+      setRejectOpen(false);
+      setRejectReason('');
+      onCompleted(result);
+    } catch (error) {
+      setRejectError(displayError(error));
+    } finally {
+      setRejectSubmitting(false);
+    }
+  }
 
   async function confirmDraft() {
     if (!draft || !form) return;
@@ -489,10 +520,45 @@ export default function TrackingDraftReviewPanel({
             >
               确认并记录运单
             </Button>
-            <Typography.Text type="secondary">确认后发货批次进入已发货，实际发货时间保持为空。</Typography.Text>
+            {canReject ? (
+              <Button danger onClick={() => setRejectOpen(true)}>拒绝该运单草稿</Button>
+            ) : null}
+            <Typography.Text type="secondary">确认后发货批次进入已发货，实际发货时间保持为空；无法处理的草稿可拒绝关闭。</Typography.Text>
           </Space>
         </>
       ) : null}
+
+      <Modal
+        title="拒绝运单草稿"
+        open={rejectOpen}
+        onCancel={() => {
+          setRejectOpen(false);
+          setRejectReason('');
+          setRejectError(undefined);
+        }}
+        onOk={rejectDraft}
+        okText="确认拒绝"
+        okButtonProps={{ disabled: !rejectReason.trim() || rejectSubmitting }}
+        confirmLoading={rejectSubmitting}
+        cancelButtonProps={{ disabled: rejectSubmitting }}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            拒绝后该草稿结束（事项关闭，不再参与确认），不会创建任何运单事实。请填写拒绝理由作为处理依据。
+          </Typography.Text>
+          <Input.TextArea
+            rows={4}
+            maxLength={2000}
+            showCount
+            value={rejectReason}
+            onChange={(event) => setRejectReason(event.target.value)}
+            placeholder="拒绝理由（必填）"
+          />
+          {rejectError ? (
+            <Alert type="error" showIcon message="拒绝未完成" description={rejectError} />
+          ) : null}
+        </Space>
+      </Modal>
     </Space>
   );
 }

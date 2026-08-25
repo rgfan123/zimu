@@ -4,42 +4,40 @@
  * 联系方式等个人信息由后端在 HTTP 边界脱敏，本页只展示白名单业务字段；
  * 未授权（业务码 2001）时明确提示「权限未开通」，不当作系统错误。
  * 导航由主 agent 接线，本文件不注册路由。
+ *
+ * issue #40：骨架收敛到共享 JdQueryPage（配置驱动），本文件只声明配置；
+ * 列表行「系统退货入库单号」点击直达详情通过 JdQueryPageHandle.switchTo 实现。
  */
 
-import { useState } from 'react';
-import { Alert, Button, Card, Descriptions, Form, Input, Select, Space, Table, Tag, Typography, message } from 'antd';
-import { SearchOutlined, SwapOutlined } from '@ant-design/icons';
-import type { ColumnsType } from 'antd/es/table';
-import { apiRequest, errorMessage } from '@/api/client';
+import { useCallback, useMemo, useRef } from 'react';
+import { SwapOutlined } from '@ant-design/icons';
+import { Space, Tag, Typography } from 'antd';
+import { apiRequest } from '@/api/client';
 import type { QueryValue } from '@/api/client';
 import { jdWarehouseApi } from '@/api/endpoints';
 import type { JdQueryResult } from '@/api/types';
-import { useAsync } from '@/hooks/useAsync';
 import { READ_ONLY_TAG_COLOR } from '@/pages/shared/semanticStatus';
-import { saasVisualTokens } from '@/theme/saasTheme';
+import JdQueryPage, { isJdBusinessCodeDenied, normalizeKey } from '@/pages/shared/JdQueryPage';
+import type { JdQueryField, JdQueryPageConfig, JdQueryPageHandle } from '@/pages/shared/JdQueryPage';
 
 type QueryKind = 'rtwList' | 'rtwDetail' | 'returnToSupplier';
 
-const KIND_OPTIONS: { value: QueryKind; label: string }[] = [
-  { value: 'rtwList', label: '退货入库单列表' },
-  { value: 'rtwDetail', label: '退货入库单详情' },
-  { value: 'returnToSupplier', label: '退供单查询' },
-];
-
 /** 参数表单按接口切换；空值会被 apiRequest 忽略，不发给后端。 */
-const KIND_FIELDS: Record<QueryKind, { name: string; label: string; required?: boolean; placeholder?: string }[]> = {
+const KIND_FIELDS: Record<QueryKind, JdQueryField[]> = {
   rtwList: [
-    { name: 'return_to_warehouse_no', label: '退货入库单号' },
-    { name: 'erp_return_to_warehouse_no', label: '系统退货入库单号' },
-    { name: 'delivery_no', label: '送货单号' },
-    { name: 'out_store_no', label: '出库单号' },
+    { name: 'return_to_warehouse_no', label: '退货入库单号', width: 240 },
+    { name: 'erp_return_to_warehouse_no', label: '系统退货入库单号', width: 240 },
+    { name: 'delivery_no', label: '送货单号', width: 240 },
+    { name: 'out_store_no', label: '出库单号', width: 240 },
   ],
   rtwDetail: [
     {
       name: 'erp_return_to_warehouse_no',
       label: '系统退货入库单号',
       required: true,
+      requiredMessage: '请输入系统退货入库单号',
       placeholder: '如 ZM-RTW-001（列表行的系统退货入库单号可点击直达）',
+      width: 240,
     },
   ],
   returnToSupplier: [
@@ -47,7 +45,9 @@ const KIND_FIELDS: Record<QueryKind, { name: string; label: string; required?: b
       name: 'erp_return_to_supplier_no',
       label: '系统退供单号',
       required: true,
+      requiredMessage: '请输入系统退供单号',
       placeholder: '如 ZM-RTS-001',
+      width: 240,
     },
   ],
 };
@@ -56,6 +56,15 @@ const FLAG_OPTIONS = [
   { value: 1, label: '返回' },
   { value: 0, label: '不返回' },
 ];
+
+/** 「返回明细」选项：列表 / 退供单接口可切换，详情接口由后端默认返回明细与批次。 */
+const FLAG_FIELD: JdQueryField = {
+  name: 'return_detail_flag',
+  label: '返回明细',
+  kind: 'flag',
+  options: FLAG_OPTIONS,
+  tip: '不填则使用京东接口默认行为；详情 / 退供单后端默认返回明细与批次。',
+};
 
 /** 结果展示字段白名单：归一化后的字段名（小写、去下划线）→ 中文标签。 */
 const FIELD_LABELS: Record<string, string> = {
@@ -104,11 +113,6 @@ const FIELD_LABELS: Record<string, string> = {
   serialno: '序列号',
 };
 
-interface Entry {
-  label: string;
-  value: string;
-}
-
 const jdReturnApi = {
   rtwOrders: (params: Record<string, QueryValue>) =>
     apiRequest<JdQueryResult>('/api/v1/jd-return/rtw-orders', { params }),
@@ -122,247 +126,108 @@ const jdReturnApi = {
     ),
 };
 
-function normalizeKey(key: string): string {
-  return key.toLowerCase().replace(/_/g, '');
-}
-
-function collectEntries(value: unknown, prefix: string, out: Entry[]): void {
-  if (value === null || value === undefined) return;
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => {
-      if (item !== null && typeof item === 'object') {
-        collectEntries(item, `${prefix}${index + 1}`, out);
-      }
-    });
-    return;
-  }
-  if (typeof value === 'object') {
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      const label = FIELD_LABELS[normalizeKey(key)];
-      if (!label) continue;
-      if (item !== null && typeof item === 'object') {
-        collectEntries(item, `${prefix}${label} · `, out);
-      } else {
-        out.push({ label: `${prefix}${label}`, value: String(item) });
-      }
-    }
-    return;
-  }
-  out.push({ label: prefix, value: String(value) });
-}
-
-function tableColumns(data: Record<string, unknown>[]): { key: string; title: string }[] {
-  const seen = new Set<string>();
-  const columns: { key: string; title: string }[] = [];
-  for (const item of data) {
-    for (const key of Object.keys(item)) {
-      const normalized = normalizeKey(key);
-      if (FIELD_LABELS[normalized] && !seen.has(normalized)) {
-        seen.add(normalized);
-        columns.push({ key, title: FIELD_LABELS[normalized] });
-      }
-    }
-  }
-  return columns;
+function buildConfig(openDetail: (erpReturnToWarehouseNo: string) => void): JdQueryPageConfig {
+  return {
+    title: '京东退货退供查询',
+    subtitle: '退货入库单列表 / 详情、退供单查询；只读，不创建或修改任何单据。',
+    icon: <SwapOutlined />,
+    options: [
+      {
+        key: 'rtwList',
+        label: '退货入库单列表',
+        fields: [...KIND_FIELDS.rtwList, FLAG_FIELD],
+        run: (v) => jdReturnApi.rtwOrders(v as Record<string, QueryValue>),
+        whitelist: FIELD_LABELS,
+        view: 'table',
+        renderCell: (key, value) =>
+          normalizeKey(key) === 'erpreturntowarehouseno' && String(value) ? (
+            <Typography.Link onClick={() => openDetail(String(value))}>{String(value)}</Typography.Link>
+          ) : (
+            String(value)
+          ),
+      },
+      {
+        key: 'rtwDetail',
+        label: '退货入库单详情',
+        fields: KIND_FIELDS.rtwDetail,
+        run: (v) => jdReturnApi.rtwOrderDetail(String(v.erp_return_to_warehouse_no ?? '')),
+        whitelist: FIELD_LABELS,
+      },
+      {
+        key: 'returnToSupplier',
+        label: '退供单查询',
+        fields: [...KIND_FIELDS.returnToSupplier, FLAG_FIELD],
+        run: (v) => jdReturnApi.returnToSupplier(String(v.erp_return_to_supplier_no ?? '')),
+        whitelist: FIELD_LABELS,
+      },
+    ],
+    queryBar: 'form',
+    selectWidth: 200,
+    selectLabel: '接口',
+    isPermissionDenied: isJdBusinessCodeDenied,
+    collect: { maxRows: 100000, prefixNested: true, skipUnlisted: true, indexArrays: true, includeNull: true },
+    result: {
+      container: 'card',
+      requestId: 'card-extra',
+      bordered: true,
+      emptyText: '本次结果没有可展示的业务字段。',
+      successTitle: ({ result }) => `查询成功（业务码 ${result.business_code}）`,
+      cardExtra: (r) => (r.request_id ? `requestId：${r.request_id}` : null),
+      denied: {
+        description: (r) => (
+          <Space direction="vertical" size={4}>
+            <Typography.Text>
+              当前应用尚未在京东开放平台开通该查询接口的访问权限（业务码 2001）。
+            </Typography.Text>
+            <Typography.Text type="secondary">
+              请联系管理员在京东开放平台申请开通相应接口权限后重试；这不是系统故障。
+            </Typography.Text>
+            {r.request_id ? (
+              <Typography.Text type="secondary" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                requestId：{r.request_id}
+              </Typography.Text>
+            ) : null}
+          </Space>
+        ),
+      },
+      failed: {
+        title: () => '查询失败',
+        description: (r) => (
+          <Space direction="vertical" size={4}>
+            <Typography.Text>{r.message || '京东服务暂时不可用，请稍后重试'}</Typography.Text>
+            <Typography.Text type="secondary">
+              业务码：{r.business_code ?? '未知'}
+              {r.request_id ? `；requestId：${r.request_id}` : ''}
+            </Typography.Text>
+          </Space>
+        ),
+      },
+    },
+    feedback: { enabled: false },
+    hint: (
+      <Typography.Text type="secondary">
+        结果只展示白名单业务字段；联系方式等个人信息已由后端脱敏，不在此页展示。
+      </Typography.Text>
+    ),
+    status: {
+      load: () => jdWarehouseApi.status(),
+      usePageState: false,
+      renderTag: (data) =>
+        data ? (
+          <Tag color={data.client_mode === 'REAL' ? READ_ONLY_TAG_COLOR : 'default'}>
+            {data.client_mode === 'REAL' ? '真实连接' : '模拟模式'}
+          </Tag>
+        ) : null,
+    },
+  };
 }
 
 export default function JdReturnQueryPage() {
-  const [kind, setKind] = useState<QueryKind>('rtwList');
-  const [form] = Form.useForm();
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<JdQueryResult | null>(null);
-  const sdkStatus = useAsync(() => jdWarehouseApi.status(), []);
+  const handleRef = useRef<JdQueryPageHandle>(null);
+  const openDetail = useCallback((erpReturnToWarehouseNo: string) => {
+    handleRef.current?.switchTo('rtwDetail', { erp_return_to_warehouse_no: erpReturnToWarehouseNo }, true);
+  }, []);
+  const config = useMemo(() => buildConfig(openDetail), [openDetail]);
 
-  const execute = async (target: QueryKind, values: Record<string, unknown>) => {
-    const params = values as Record<string, QueryValue>;
-    setLoading(true);
-    try {
-      const outcome =
-        target === 'rtwList'
-          ? await jdReturnApi.rtwOrders(params)
-          : target === 'rtwDetail'
-            ? await jdReturnApi.rtwOrderDetail(String(values.erp_return_to_warehouse_no ?? ''))
-            : await jdReturnApi.returnToSupplier(String(values.erp_return_to_supplier_no ?? ''));
-      setResult(outcome);
-    } catch (err) {
-      setResult(null);
-      message.error(errorMessage(err));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const runQuery = async () => {
-    const values = await form.validateFields().catch(() => null);
-    if (!values) return;
-    await execute(kind, values);
-  };
-
-  const openDetail = async (erpReturnToWarehouseNo: string) => {
-    setKind('rtwDetail');
-    form.setFieldsValue({ erp_return_to_warehouse_no: erpReturnToWarehouseNo });
-    await execute('rtwDetail', { erp_return_to_warehouse_no: erpReturnToWarehouseNo });
-  };
-
-  const permissionDenied = result !== null && !result.success && result.business_code === '2001';
-  const failed = result !== null && !result.success && !permissionDenied;
-  const rows = Array.isArray(result?.data) ? (result.data as Record<string, unknown>[]) : [];
-  const entries: Entry[] = [];
-  if (result?.success && result.data !== null && typeof result.data === 'object' && !Array.isArray(result.data)) {
-    collectEntries(result.data, '', entries);
-  }
-  const columns: ColumnsType<Record<string, unknown>> = tableColumns(rows).map((column) => ({
-    title: column.title,
-    dataIndex: column.key,
-    key: column.key,
-    render: (value: unknown) => {
-      if (value === null || value === undefined || typeof value === 'object') return '—';
-      const normalized = normalizeKey(column.key);
-      if (normalized === 'erpreturntowarehouseno' && String(value)) {
-        return (
-          <Typography.Link onClick={() => openDetail(String(value))}>{String(value)}</Typography.Link>
-        );
-      }
-      return String(value);
-    },
-  }));
-
-  return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card size="small" styles={{ body: { padding: '16px 18px' } }}>
-        <Space direction="vertical" size={14} style={{ width: '100%' }}>
-          <Space align="start" size={12} style={{ width: '100%' }}>
-            <SwapOutlined style={{ color: saasVisualTokens.brand.primary, fontSize: 20, marginTop: 3 }} />
-            <div>
-              <Typography.Title level={5} style={{ margin: 0 }}>
-                京东退货退供查询
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                退货入库单列表 / 详情、退供单查询；只读，不创建或修改任何单据。
-              </Typography.Text>
-            </div>
-            <div style={{ flex: 1 }} />
-            {sdkStatus.data ? (
-              <Tag color={sdkStatus.data.client_mode === 'REAL' ? READ_ONLY_TAG_COLOR : 'default'}>
-                {sdkStatus.data.client_mode === 'REAL' ? '真实连接' : '模拟模式'}
-              </Tag>
-            ) : null}
-          </Space>
-          <Form
-            form={form}
-            layout="inline"
-            style={{ rowGap: 12 }}
-            onFinish={runQuery}
-          >
-            <Form.Item label="接口" style={{ marginBottom: 0 }}>
-              <Select<QueryKind>
-                value={kind}
-                style={{ width: 200 }}
-                options={KIND_OPTIONS}
-                onChange={(next) => {
-                  setKind(next);
-                  form.resetFields();
-                  setResult(null);
-                }}
-              />
-            </Form.Item>
-            {KIND_FIELDS[kind].map((field) => (
-              <Form.Item
-                key={field.name}
-                name={field.name}
-                label={field.label}
-                style={{ marginBottom: 0 }}
-                rules={field.required ? [{ required: true, message: `请输入${field.label}` }] : undefined}
-              >
-                <Input style={{ width: 240 }} placeholder={field.placeholder} allowClear />
-              </Form.Item>
-            ))}
-            {kind !== 'rtwDetail' ? (
-              <Form.Item label="返回明细" style={{ marginBottom: 0 }} tooltip="不填则使用京东接口默认行为；详情 / 退供单后端默认返回明细与批次。">
-                <Select style={{ width: 120 }} options={FLAG_OPTIONS} allowClear placeholder="默认" />
-              </Form.Item>
-            ) : null}
-            <Form.Item style={{ marginBottom: 0 }}>
-              <Button type="primary" icon={<SearchOutlined />} loading={loading} onClick={runQuery}>
-                查询
-              </Button>
-            </Form.Item>
-          </Form>
-          <Typography.Text type="secondary">
-            结果只展示白名单业务字段；联系方式等个人信息已由后端脱敏，不在此页展示。
-          </Typography.Text>
-        </Space>
-      </Card>
-
-      {permissionDenied ? (
-        <Alert
-          type="warning"
-          showIcon
-          message="权限未开通"
-          description={
-            <Space direction="vertical" size={4}>
-              <Typography.Text>
-                当前应用尚未在京东开放平台开通该查询接口的访问权限（业务码 2001）。
-              </Typography.Text>
-              <Typography.Text type="secondary">
-                请联系管理员在京东开放平台申请开通相应接口权限后重试；这不是系统故障。
-              </Typography.Text>
-              {result?.request_id ? (
-                <Typography.Text type="secondary" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  requestId：{result.request_id}
-                </Typography.Text>
-              ) : null}
-            </Space>
-          }
-        />
-      ) : null}
-
-      {failed ? (
-        <Alert
-          type="error"
-          showIcon
-          message="查询失败"
-          description={
-            <Space direction="vertical" size={4}>
-              <Typography.Text>{result?.message || '京东服务暂时不可用，请稍后重试'}</Typography.Text>
-              <Typography.Text type="secondary">
-                业务码：{result?.business_code ?? '未知'}
-                {result?.request_id ? `；requestId：${result.request_id}` : ''}
-              </Typography.Text>
-            </Space>
-          }
-        />
-      ) : null}
-
-      {result?.success ? (
-        <Card size="small" title={`查询成功（业务码 ${result.business_code}）`} extra={result.request_id ? `requestId：${result.request_id}` : null}>
-          {result.data === null || result.data === undefined ? (
-            <Typography.Text type="secondary">本次结果没有可展示的业务字段。</Typography.Text>
-          ) : Array.isArray(result.data) ? (
-            <Table<Record<string, unknown>>
-              rowKey={(_record, index) => `${index}`}
-              columns={columns}
-              dataSource={rows}
-              loading={loading}
-              size="middle"
-              pagination={{ pageSize: 10, showTotal: (total) => `共 ${total} 条` }}
-            />
-          ) : entries.length ? (
-            <Descriptions
-              size="small"
-              column={{ xs: 1, sm: 2 }}
-              bordered
-              items={entries.map((entry, index) => ({
-                key: `${entry.label}-${index}`,
-                label: entry.label,
-                children: entry.value,
-              }))}
-            />
-          ) : (
-            <Typography.Text type="secondary">本次结果没有可展示的业务字段。</Typography.Text>
-          )}
-        </Card>
-      ) : null}
-    </Space>
-  );
+  return <JdQueryPage ref={handleRef} config={config} />;
 }

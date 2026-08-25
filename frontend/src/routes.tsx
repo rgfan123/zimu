@@ -17,18 +17,16 @@ import {
   SettingOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons';
-import OrderTrackingPage from '@/pages/orders/OrderTrackingPage';
 import OrderDetailPage from '@/pages/orders/OrderDetailPage';
-import ExceptionOrdersPage from '@/pages/orders/ExceptionOrdersPage';
 import OrdersPage from '@/pages/orders/OrdersPage';
-import PendingOrdersPage from '@/pages/orders/PendingOrdersPage';
 import InventoryOverviewPage from '@/pages/inventory/InventoryOverviewPage';
 import InventoryDetailsPage from '@/pages/inventory/InventoryDetailsPage';
 import { AuditLogsPage } from '@/pages/system';
 import AnalyticsPage from '@/pages/analytics/AnalyticsPage';
 import DemoOrderPage from '@/pages/demo/DemoOrderPage';
 import DashboardPage from '@/pages/dashboard/DashboardPage';
-import { CategoriesPage, ProductsPage, SkuMappingsPage, SkusPage } from '@/pages/product';
+import { CategoriesPage, ProductsPage, SkuMappingsPage, SkusPage, BundlesPage } from '@/pages/product';
+import ZhonghuiChannelPage from '@/pages/upload/ZhonghuiChannelPage';
 import {
   FulfillmentTasksPage,
   JdBasicInfoQueryPage,
@@ -63,9 +61,10 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/fulfillment/sales-outbound': <SalesOutboundPage />,
   '/fulfillment/shipments': <ShipmentsPage />,
   '/orders': <OrdersPage />,
-  '/orders/pending': <PendingOrdersPage />,
-  '/orders/exceptions': <ExceptionOrdersPage />,
-  '/orders/tracking': <OrderTrackingPage />,
+  // 预设视图已并入「全部订单」页内切换；旧 URL 直达同一合并组件，由 OrdersPage 按 pathname 解析预设。
+  '/orders/pending': <OrdersPage />,
+  '/orders/exceptions': <OrdersPage />,
+  '/orders/tracking': <OrdersPage />,
   '/orders/:orderId': <OrderDetailPage />,
   '/inventory/overview': <InventoryOverviewPage />,
   '/inventory/details': <InventoryDetailsPage />,
@@ -73,6 +72,8 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/product/categories': <CategoriesPage />,
   '/product/skus': <SkusPage />,
   '/product/sku-mappings': <SkuMappingsPage />,
+  '/product/bundles': <BundlesPage />,
+  '/upload-platform/zhonghui': <ZhonghuiChannelPage />,
   '/analytics': <AnalyticsPage />,
   '/system/connectors': <ConnectorsPage />,
   '/system/audit-logs': <AuditLogsPage />,

@@ -4,13 +4,14 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { errorMessage } from '@/api/client';
 import { fulfillmentsApi, providersApi } from '@/api/endpoints';
 import type { ContinuationExportResult, Fulfillment, FulfillmentDetail, FulfillmentOutcome, ShippingProgress } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import {
   FULFILLMENT_OUTCOME_SEMANTIC,
   SHIPPING_PROGRESS_SEMANTIC,
@@ -135,22 +136,19 @@ export default function FulfillmentTasksPage() {
 
   const err = list.error || providers.error;
 
+  if (err) {
+    return (
+      <PageState
+        state="error"
+        message="履约任务加载失败"
+        description={errorMessage(err)}
+        onRetry={list.reload}
+      />
+    );
+  }
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {err ? (
-        <Alert
-          type="error"
-          showIcon
-          message="履约任务加载失败"
-          description={errorMessage(err)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={list.reload}>
-              重试
-            </Button>
-          }
-        />
-      ) : null}
-
       <Card size="small">
         <Space wrap>
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>履约方</Typography.Text>
@@ -234,9 +232,65 @@ export default function FulfillmentTasksPage() {
 
             {canCreateContinuation ? (
               <div>
-                <Button type="primary" onClick={() => setContinuationOpen(true)}>
-                  创建续发批次
+                <Button type="primary" onClick={() => setContinuationOpen((open) => !open)}>
+                  {continuationOpen ? '收起续发表单' : '创建续发批次'}
                 </Button>
+                {continuationOpen ? (
+                  <Card size="small" style={{ marginTop: 12 }}>
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
+                        续发会新建独立发货批次和第三方履约导出；数量不得超过后台计算的剩余可续发数量；如履约已被其他人更新，请刷新后重试。
+                      </Typography.Paragraph>
+                      <Form form={continuationForm} layout="vertical" preserve={false}>
+                        <Form.Item
+                          name="instructed_quantity"
+                          label="续发数量"
+                          rules={[
+                            { required: true, message: '请输入续发数量' },
+                            { pattern: /^(?:0|[1-9]\d{0,14})(?:\.\d{1,3})?$/, message: '请输入最多 15 位整数、3 位小数的数量' },
+                            {
+                              validator: (_, value: string | undefined) => (
+                                value && Number(value) > 0
+                                  ? Promise.resolve()
+                                  : Promise.reject(new Error('续发数量必须大于 0'))
+                              ),
+                            },
+                          ]}
+                        >
+                          <Input inputMode="decimal" placeholder="例如 2.500" />
+                        </Form.Item>
+                        <Form.Item
+                          name="remark"
+                          label="续发依据"
+                          rules={[
+                            { required: true, whitespace: true, message: '请输入续发依据' },
+                            { max: 1000, message: '续发依据不得超过 1000 字' },
+                          ]}
+                        >
+                          <Input.TextArea rows={4} maxLength={1000} showCount placeholder="请记录采购到货或人工核对依据" />
+                        </Form.Item>
+                      </Form>
+                      <Space>
+                        <Button
+                          type="primary"
+                          loading={continuationSubmitting}
+                          onClick={submitContinuation}
+                        >
+                          创建批次并生成导出
+                        </Button>
+                        <Button
+                          disabled={continuationSubmitting}
+                          onClick={() => {
+                            setContinuationOpen(false);
+                            continuationForm.resetFields();
+                          }}
+                        >
+                          取消
+                        </Button>
+                      </Space>
+                    </Space>
+                  </Card>
+                ) : null}
               </div>
             ) : null}
 
@@ -283,57 +337,6 @@ export default function FulfillmentTasksPage() {
           <Alert type="error" showIcon message={errorMessage(detail.error)} />
         ) : null}
       </Drawer>
-
-      <Modal
-        title="创建续发批次"
-        open={continuationOpen}
-        okText="创建批次并生成导出"
-        cancelText="取消"
-        confirmLoading={continuationSubmitting}
-        onOk={submitContinuation}
-        onCancel={() => {
-          setContinuationOpen(false);
-          continuationForm.resetFields();
-        }}
-        destroyOnClose
-      >
-        <Alert
-          type="info"
-          showIcon
-          message="续发会新建独立发货批次和第三方履约导出"
-          description="数量不得超过后台计算的剩余可续发数量；如履约已被其他人更新，请刷新后重试。"
-          style={{ marginBottom: 16 }}
-        />
-        <Form form={continuationForm} layout="vertical" preserve={false}>
-          <Form.Item
-            name="instructed_quantity"
-            label="续发数量"
-            rules={[
-              { required: true, message: '请输入续发数量' },
-              { pattern: /^(?:0|[1-9]\d{0,14})(?:\.\d{1,3})?$/, message: '请输入最多 15 位整数、3 位小数的数量' },
-              {
-                validator: (_, value: string | undefined) => (
-                  value && Number(value) > 0
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('续发数量必须大于 0'))
-                ),
-              },
-            ]}
-          >
-            <Input inputMode="decimal" placeholder="例如 2.500" />
-          </Form.Item>
-          <Form.Item
-            name="remark"
-            label="续发依据"
-            rules={[
-              { required: true, whitespace: true, message: '请输入续发依据' },
-              { max: 1000, message: '续发依据不得超过 1000 字' },
-            ]}
-          >
-            <Input.TextArea rows={4} maxLength={1000} showCount placeholder="请记录采购到货或人工核对依据" />
-          </Form.Item>
-        </Form>
-      </Modal>
     </Space>
   );
 }

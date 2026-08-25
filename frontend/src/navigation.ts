@@ -24,7 +24,7 @@ export const appNavigation = [
       { path: '/workbench/channel-messages', label: '渠道消息' },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },
-      { path: '/fulfillment/sales-outbound', label: '文件作业' },
+      { path: '/fulfillment/sales-outbound', label: '销售出库' },
       { path: '/fulfillment/shipments', label: '发货记录' },
     ],
   },
@@ -33,9 +33,10 @@ export const appNavigation = [
     label: '订单中心',
     children: [
       { path: '/orders', label: '全部订单' },
-      { path: '/orders/pending', label: '待处理' },
-      { path: '/orders/exceptions', label: '异常订单' },
-      { path: '/orders/tracking', label: '订单追踪' },
+      // 预设视图并入「全部订单」页内切换（Segmented），旧 URL 保留为隐藏直达路径，书签不失效。
+      { path: '/orders/pending', label: '待处理', hideInMenu: true },
+      { path: '/orders/exceptions', label: '异常订单', hideInMenu: true },
+      { path: '/orders/tracking', label: '订单追踪', hideInMenu: true },
       { path: '/orders/:orderId', label: '订单详情', hideInMenu: true },
     ],
   },
@@ -55,6 +56,15 @@ export const appNavigation = [
       { path: '/product/categories', label: '品类基础信息', hideInMenu: true },
       { path: '/product/skus', label: '商品档案' },
       { path: '/product/sku-mappings', label: 'SKU 映射' },
+      { path: '/product/bundles', label: '礼包管理' },
+    ],
+  },
+  {
+    path: '/upload-platform',
+    label: '上传平台',
+    hideInMenu: true,
+    children: [
+      { path: '/upload-platform/zhonghui', label: '中汇渠道平台' },
     ],
   },
   { path: '/analytics', label: '经营分析' },
@@ -80,7 +90,7 @@ export const appNavigation = [
       },
     ],
   },
-  { path: '/demo/order', label: '模拟下单' },
+  { path: '/demo/order', label: '模拟下单', hideInMenu: true },
   { path: '/bi', label: '管理驾驶舱', external: '/metabase' },
 ] as const satisfies readonly NavigationNode[];
 

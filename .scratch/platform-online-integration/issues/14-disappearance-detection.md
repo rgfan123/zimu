@@ -17,6 +17,7 @@
 **Blocked by:** 02（比对基线的可得性取决于结构化导入用例怎么留原始证据）
 
 **Status:** ready-for-agent
+**GitHub:** https://github.com/rgfan123/zimu/issues/29
 
 - [ ] 语义结论落文档；`excel-closed-loop-spec.md` §11 原因码白名单完成修订并过评审
 - [ ] 已确认单从待发货列表消失 → 生成复核事项，订单本身零改动

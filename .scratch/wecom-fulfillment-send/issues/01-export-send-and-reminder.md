@@ -5,6 +5,7 @@ status: open
 blocked_by: []
 parent: wayfinder:map:wecom-fulfillment-send
 ---
+GitHub: https://github.com/rgfan123/zimu/issues/30
 
 # 01 履约导出发送与周期性回传提醒
 

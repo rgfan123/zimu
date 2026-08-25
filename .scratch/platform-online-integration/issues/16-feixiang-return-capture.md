@@ -27,6 +27,7 @@
 **Blocked by:** None — can start immediately
 
 **Status:** needs-user
+**GitHub:** https://github.com/rgfan123/zimu/issues/33
 
 - [ ] 回填端点契约写入 `feixiang-supplier-export-api.md` 新增「发货回传」章节
 - [ ] 上传文件格式与列结构确认，与 `SourceReturnExport` 飞象模板比对结论明确

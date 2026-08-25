@@ -13,7 +13,8 @@ RUN --mount=type=cache,target=/root/.m2 \
 
 FROM eclipse-temurin:21-jre-alpine
 
-# 三平台订单刷新通道（platform-pull）：容器内直接执行拉取脚本（python3 + requests）。
+# 三平台订单刷新/回传通道（platform-pull/push）：容器内直接执行拉取与回填脚本（python3 + requests）。
+# 回传文件的 xlsx 解析由 Java 侧（POI）完成，脚本只收结构化输入，无需容器内 openpyxl。
 RUN apk add --no-cache python3 py3-requests \
     && addgroup -S app \
     && adduser -S -G app app \

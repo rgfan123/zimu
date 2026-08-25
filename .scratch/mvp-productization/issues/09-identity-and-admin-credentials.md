@@ -2,6 +2,7 @@
 
 Type: development-release-gate
 Status: resolved
+GitHub: https://github.com/rgfan123/zimu/issues/31
 Blocked by: 05 — 企业 ERP Public-ready 文案对账
 Claimed by: /root → zed-agent (2026-08-14 codex 额度中断后接手收口)
 

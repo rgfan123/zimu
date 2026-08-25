@@ -5,6 +5,7 @@
 **Blocked by:** 02 — 注册表切 DB 真源；03 — INVARIANT 评测数据化（设计源：meta-agent-platform 票 12）。
 
 **Status:** ready-for-agent
+**GitHub:** https://github.com/rgfan123/zimu/issues/13
 
 - [ ] 读端点契约测试（过滤条件生效、字段投影正确、无 PII/凭据外泄）
 - [ ] /internal 镜像只读（无写端点）；Basic Auth 与 internal-auth 各自鉴权正确

@@ -11,9 +11,11 @@ import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import { errorMessage } from '@/api/client';
 import { fileOperationsApi, fulfillmentExportsApi, platformOrdersApi, providersApi } from '@/api/endpoints';
-import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, ImportBatch, PlatformOrderRefreshResult, TrackingImportBatch } from '@/api/types';
+import { collectPushChannelBatchIds, isOnlinePushChannel, platformChannelResultText, platformImportBatchId, sourcePushButtonVisible, sourceReturnPushOutcome } from '@/api/types';
+import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, ImportBatch, PlatformOrderRefreshResult, SourceChannel, SourceReturnExport, TrackingImportBatch } from '@/api/types';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
 import {
   canReceiveTracking,
@@ -31,13 +33,68 @@ const USAGE_LABELS: Record<ExportUsageStatus, string> = {
   RETURN_OVERDUE: '回传超时',
 };
 
+const EMPTY_CHANNEL_MAP: ReadonlyMap<string, SourceChannel | undefined | null> = new Map();
+
+/** 页面底部固定「操作结果区」：渲染最近一次页面级操作结果，不自动消失，可关闭，被下一次结果替换。 */
+type OperationResult = {
+  kind: 'success' | 'info' | 'warning' | 'error';
+  text: string;
+};
+
+function OperationResultBar({
+  result,
+  onClose,
+}: {
+  result: OperationResult | null;
+  onClose: () => void;
+}) {
+  if (!result) return null;
+  return (
+    <Alert
+      type={result.kind}
+      showIcon
+      closable
+      message={result.text}
+      onClose={onClose}
+      style={{
+        position: 'fixed',
+        bottom: 24,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        zIndex: 90,
+        maxWidth: 'min(720px, calc(100vw - 48px))',
+        boxShadow: '0 6px 16px rgba(0, 0, 0, 0.14)',
+      }}
+    />
+  );
+}
+
+/**
+ * P3：并发拉取本页去重批次（每页 ≤10 个）的来源渠道一次，渲染期零 N+1。
+ * 单个批次失败（Promise.allSettled）只丢该行的「推送平台」按钮（fail-closed），不影响其余行。
+ * 注意：SDK 直连行（仅 tracking_import_batch_id）指向 PROVIDER_TRACKING 批次，其 source_channel
+ * 按 schema（import_batches CHECK）恒为 NULL，getSourceBatch 同样返回 null，故这些行按渠道未知
+ * 不显示按钮——真实渠道仍来自 import_batch_id（本页正常均携带）。
+ */
+async function loadChannelByBatch(rows: FulfillmentExport[]): Promise<Map<string, SourceChannel | undefined | null>> {
+  const map = new Map<string, SourceChannel | undefined | null>();
+  await Promise.allSettled(collectPushChannelBatchIds(rows).map(async (id) => {
+    const batch = await fileOperationsApi.getSourceBatch(id);
+    map.set(id, batch.source_channel ?? null);
+  }));
+  return map;
+}
+
 function num(v: string | number | undefined | null): string {
   if (v === undefined || v === null || v === '') return '—';
   const n = typeof v === 'number' ? v : parseFloat(v);
   return Number.isFinite(n) ? n.toLocaleString('zh-CN') : String(v);
 }
 
-function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
+function SourceImportPanel({ onCompleted, onOperationResult }: {
+  onCompleted: () => void;
+  onOperationResult: (result: OperationResult) => void;
+}) {
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState<'NEW' | 'REVISION'>('NEW');
   const [parentBatchId, setParentBatchId] = useState('');
@@ -52,6 +109,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const [confirmRowsError, setConfirmRowsError] = useState<unknown>(null);
   const [pulling, setPulling] = useState(false);
   const [pullResult, setPullResult] = useState<PlatformOrderRefreshResult | null>(null);
+  const [openingBatchId, setOpeningBatchId] = useState<string | null>(null);
 
   const loadConfirmRows = async (batch: ImportBatch) => {
     const statuses = [
@@ -91,11 +149,11 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
       const imported = await fileOperationsApi.uploadSource(file, mode, parentBatchId.trim() || undefined);
       setResult(imported);
       setFile(null);
-      message.success('来源订单文件已处理');
+      onOperationResult({ kind: 'success', text: '来源订单文件已处理' });
       onCompleted();
       await loadConfirmRows(imported);
     } catch (error) {
-      message.error(errorMessage(error));
+      onOperationResult({ kind: 'error', text: errorMessage(error) });
     } finally {
       setUploading(false);
     }
@@ -110,9 +168,9 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
       setResult(confirmed);
       const sdkCount = confirmed.outbound_routing?.jd_sdk_shipment_ids?.length ?? 0;
       if (sdkCount > 0) {
-        message.success(`本批次已确认：${sdkCount} 个发货批次走京东 SDK 建单；未就绪的已落待处理，可在「发货单」页确认地址后重试`);
+        onOperationResult({ kind: 'success', text: `本批次已确认：${sdkCount} 个发货批次走京东 SDK 建单；未就绪的已落待处理，可在「发货单」页确认地址后重试` });
       } else {
-        message.success('本批次已确认，履约文件已生成');
+        onOperationResult({ kind: 'success', text: '本批次已确认，履约文件已生成' });
       }
       onCompleted();
       // 确认后重载明细：已接收行建立系统订单关联，逐行结果需反映"已确认"
@@ -120,7 +178,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     } catch (error) {
       const reason = errorMessage(error);
       setConfirmError(reason);
-      message.error(reason);
     } finally {
       setConfirming(false);
     }
@@ -134,12 +191,12 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
       const outcome = await fileOperationsApi.submitJdOutboundsForBatch(result.id);
       const failed = outcome.items.filter((item) => item.business_code);
       if (failed.length === 0) {
-        message.success(`京东建单完成：新提交 ${outcome.submitted_count}，已跳过 ${outcome.skipped_count}`);
+        onOperationResult({ kind: 'success', text: `京东建单完成：新提交 ${outcome.submitted_count}，已跳过 ${outcome.skipped_count}` });
       } else {
-        message.warning(`京东建单：新提交 ${outcome.submitted_count}，跳过 ${outcome.skipped_count}，失败 ${failed.length} 项（${failed.map((item) => `#${item.shipment_id} ${item.business_code}`).join('；')}）`);
+        onOperationResult({ kind: 'warning', text: `京东建单：新提交 ${outcome.submitted_count}，跳过 ${outcome.skipped_count}，失败 ${failed.length} 项（${failed.map((item) => `#${item.shipment_id} ${item.business_code}`).join('；')}）` });
       }
     } catch (error) {
-      message.error(errorMessage(error));
+      onOperationResult({ kind: 'error', text: errorMessage(error) });
     } finally {
       setJdSubmitting(false);
     }
@@ -158,17 +215,27 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     try {
       const outcome = await platformOrdersApi.refresh();
       setPullResult(outcome);
-      const imported = outcome.channels.filter((c) => c.batch_no);
-      if (imported.length > 0) {
-        message.success(`三平台刷新完成：${imported.map((c) => `${CHANNEL_LABELS[c.channel]} ${c.batch_no}`).join('、')}`);
-      } else {
-        message.info('三平台刷新完成，未生成新导入批次（请查看各渠道结果）');
-      }
       onCompleted();
     } catch (error) {
-      message.error(errorMessage(error));
+      onOperationResult({ kind: 'error', text: errorMessage(error) });
     } finally {
       setPulling(false);
+    }
+  };
+
+  /** 刷新只建立未确认批次；操作员从此处进入现有整批复核/确认接缝。 */
+  const openPulledBatch = async (batchId: string) => {
+    setOpeningBatchId(batchId);
+    setConfirmError(null);
+    try {
+      const batch = await fileOperationsApi.getSourceBatch(batchId);
+      setResult(batch);
+      await loadConfirmRows(batch);
+      onOperationResult({ kind: 'info', text: `批次 ${batch.batch_no} 已加载，请核对后整批确认并触发发货` });
+    } catch (error) {
+      onOperationResult({ kind: 'error', text: errorMessage(error) });
+    } finally {
+      setOpeningBatchId(null);
     }
   };
 
@@ -186,7 +253,8 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
             刷新三平台订单
           </Button>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            一键拉取彩食鲜、聚福宝、飞象最新待发货订单并自动生成导入批次（聚福宝缺收货人字段，仅拉取不导入）。
+            一键拉取彩食鲜、聚福宝、飞象最新待发货订单并生成导入批次；字段不完整的订单会进入待复核，不会直接发货。
+            合规提示：每日每平台最多拉取 2 次，达到上限或间隔不足的渠道将被跳过，并在渠道结果中提示原因。
           </Typography.Text>
         </Space>
         {pullResult ? (
@@ -198,16 +266,26 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
             message={`三平台订单刷新完成（${pullResult.date_begin ?? ''} ~ ${pullResult.date_end ?? ''}）`}
             description={(
               <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                {pullResult.channels.map((c) => (
-                  <Typography.Text key={c.channel} style={{ display: 'block' }}>
-                    {CHANNEL_LABELS[c.channel] ?? c.channel}：
-                    {c.status === 'OK' && c.batch_no
-                      ? `批次 ${c.batch_no} · 已接收 ${c.row_counts?.accepted ?? 0} 行 / 待复核 ${c.row_counts?.need_review ?? 0} / 拒绝 ${c.row_counts?.rejected ?? 0}`
-                      : c.status === 'OK' && c.order_count != null
-                        ? `已拉取 ${c.order_count} 单（${c.message ?? ''}）`
-                        : c.message ?? (c.status === 'SKIPPED' ? '已跳过' : '失败')}
-                  </Typography.Text>
-                ))}
+                {pullResult.channels.map((c) => {
+                  const batchId = platformImportBatchId(c);
+                  return (
+                    <Space key={c.channel} wrap>
+                      <Typography.Text style={{ display: 'block' }}>
+                        {CHANNEL_LABELS[c.channel] ?? c.channel}：{platformChannelResultText(c)}
+                      </Typography.Text>
+                      {batchId ? (
+                        <Button
+                          size="small"
+                          type="primary"
+                          loading={openingBatchId === batchId}
+                          onClick={() => openPulledBatch(batchId)}
+                        >
+                          核对并确认发货
+                        </Button>
+                      ) : null}
+                    </Space>
+                  );
+                })}
               </Space>
             )}
           />
@@ -331,7 +409,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                   width: 110,
                   render: () => result?.source_channel ? CHANNEL_LABELS[result.source_channel] : '—',
                 },
-                { title: '来源订单号', dataIndex: 'sourceOrderRef', width: 160 },
                 {
                   title: '收货人',
                   dataIndex: 'receiverName',
@@ -349,6 +426,16 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                   dataIndex: 'receiverAddress',
                   width: 220,
                   render: (value: string) => value || '—',
+                },
+                {
+                  title: '状态',
+                  dataIndex: 'status',
+                  width: 100,
+                  render: (status: ImportRowView['status']) => (
+                    <Tag color={importRowStatusSemantic(status)}>
+                      {status === 'ACCEPTED' ? '已接收' : status === 'REJECTED' ? '已拒绝' : '待复核'}
+                    </Tag>
+                  ),
                 },
                 {
                   title: '商品',
@@ -381,16 +468,6 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                       </Tag>
                     )
                     : '—',
-                },
-                {
-                  title: '状态',
-                  dataIndex: 'status',
-                  width: 100,
-                  render: (status: ImportRowView['status']) => (
-                    <Tag color={importRowStatusSemantic(status)}>
-                      {status === 'ACCEPTED' ? '已接收' : status === 'REJECTED' ? '已拒绝' : '待复核'}
-                    </Tag>
-                  ),
                 },
                 {
                   title: '本次确认',
@@ -476,7 +553,9 @@ function TrackingUploadModal({
   return (
     <Modal title={`回传履约结果 · ${target?.export_batch_no ?? ''}`} open={open} onCancel={close} footer={null} destroyOnClose>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
-        <Alert type="info" showIcon message="请上传由本批次履约文件填写后的 XLSX，系统会先整批校验，再原子写入发货与运单结果。" />
+        <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
+          请上传由本批次履约文件填写后的 XLSX，系统会先整批校验，再原子写入发货与运单结果。
+        </Typography.Paragraph>
         <Space wrap>
           <Upload
             accept=".xlsx"
@@ -567,6 +646,8 @@ export default function SalesOutboundPage() {
   const [selected, setSelected] = useState<FulfillmentExport | null>(null);
   const [trackingTarget, setTrackingTarget] = useState<FulfillmentExport | null>(null);
   const [returnDownloading, setReturnDownloading] = useState<string | null>(null);
+  const [returnPushing, setReturnPushing] = useState<string | null>(null);
+  const [operationResult, setOperationResult] = useState<OperationResult | null>(null);
 
   const providers = useAsync(() => providersApi.list(), []);
   const providerName = useMemo(() => {
@@ -577,6 +658,18 @@ export default function SalesOutboundPage() {
   const list = useAsync(
     () => fulfillmentExportsApi.list({ page, size, provider_id: providerId, usage_status: usage }),
     [page, size, providerId, usage],
+  );
+
+  /**
+   * P3（评审 C1 完全落实）：列表加载后按需拉取本页去重批次的来源渠道映射
+   * Map<batchId, sourceChannel>，渲染时仅对 CAISHIXIAN/JUFUBAO 显示「推送平台」按钮，
+   * 其余渠道（FEIXIANG/ZHONGHUI 无回传）不显示。拉取失败按 fail-closed 处理：
+   * 渠道未知的行不显示按钮（改用线下文件回传），点击时的 isOnlinePushChannel 拦截
+   * 与后端 PUSH_CHANNEL_UNSUPPORTED 保留为兜底。
+   */
+  const channelByBatch = useAsync(
+    () => loadChannelByBatch(list.data?.items ?? []),
+    [list.data],
   );
 
   const detail = useAsync<FulfillmentExportDetail | null>(
@@ -591,45 +684,92 @@ export default function SalesOutboundPage() {
       await fulfillmentExportsApi.downloadFile(r.id, r.export_batch_no);
       list.reload();
     } catch (e) {
-      message.error(errorMessage(e));
+      setOperationResult({ kind: 'error', text: errorMessage(e) });
     } finally {
       setDownloading(false);
     }
   };
 
+  /** 解析当前履约导出对应的终版来源回填文件 ID 列表（文件路由/SDK 直连路由共用）。 */
+  const resolveReturnIds = async (record: FulfillmentExport): Promise<string[] | null> => {
+    if (record.tracking_import_batch_id) {
+      const tracking = await fileOperationsApi.getTrackingBatch(record.tracking_import_batch_id);
+      if ((tracking.generated_source_return_export_ids?.length ?? 0) === 0) return null;
+      return tracking.generated_source_return_export_ids ?? [];
+    }
+    if (record.import_batch_id) {
+      // 一个批次可能有多版回填表（分批回运单会追加版本）；只取终版，
+      // 避免运营拿到已作废版本回传给来源平台——文件名是 SHA-256，肉眼分不出新旧。
+      const exports = await fileOperationsApi.sourceReturns(record.import_batch_id);
+      const finals = exports.filter((item) => item.is_final);
+      return finals.length === 0 ? null : finals.map((item) => item.id);
+    }
+    return null;
+  };
+
   const handleSourceReturnDownload = async (record: FulfillmentExport) => {
     setReturnDownloading(record.id);
     try {
-      // 文件路由：回传导入批次带 generated_source_return_export_ids；
-      // SDK 直连路由：履约导出行无 tracking_import_batch_id，按导出来源批次直接取回填表。
-      if (record.tracking_import_batch_id) {
-        const tracking = await fileOperationsApi.getTrackingBatch(record.tracking_import_batch_id);
-        if ((tracking.generated_source_return_export_ids?.length ?? 0) === 0) {
-          message.info('当前批次尚未生成来源回填文件');
-          return;
-        }
-        for (const returnId of tracking.generated_source_return_export_ids ?? []) {
-          await fileOperationsApi.downloadSourceReturn(returnId);
-        }
-      } else if (record.import_batch_id) {
-        // 一个批次可能有多版回填表（分批回运单会追加版本）；只下终版，
-        // 避免运营拿到已作废版本回传给来源平台——文件名是 SHA-256，肉眼分不出新旧。
-        const exports = await fileOperationsApi.sourceReturns(record.import_batch_id);
-        const finals = exports.filter((item) => item.is_final);
-        if (finals.length === 0) {
-          message.info('当前批次尚未生成来源回填文件');
-          return;
-        }
-        for (const item of finals) {
-          await fileOperationsApi.downloadSourceReturn(item.id);
-        }
-      } else {
-        message.info('当前批次尚未生成来源回填文件');
+      const returnIds = await resolveReturnIds(record);
+      if (returnIds === null || returnIds.length === 0) {
+        setOperationResult({ kind: 'info', text: '当前批次尚未生成来源回填文件' });
+        return;
+      }
+      for (const returnId of returnIds) {
+        await fileOperationsApi.downloadSourceReturn(returnId);
       }
     } catch (error) {
-      message.error(errorMessage(error));
+      setOperationResult({ kind: 'error', text: errorMessage(error) });
     } finally {
       setReturnDownloading(null);
+    }
+  };
+
+  /** 票 11：把终版来源回填文件推送到来源平台（彩食鲜/聚福宝；人工触发 + 幂等闸门）。 */
+  const handleSourceReturnPush = async (record: FulfillmentExport) => {
+    // C4 幂等：按钮 loading 已按行禁用，此处再加周期内闸门，杜绝同一事件循环内双击并发重复推送
+    // （后端另有幂等闸门 PUSH_ALREADY_CLAIMED 兜底）。
+    if (returnPushing) return;
+    setReturnPushing(record.id);
+    try {
+      const returnIds = await resolveReturnIds(record);
+      if (returnIds === null || returnIds.length === 0) {
+        setOperationResult({ kind: 'info', text: '当前批次尚未生成来源回填文件' });
+        return;
+      }
+      // C1 渠道闸门（兜底）：按钮渲染已按 P3 渠道映射只对彩食鲜/聚福宝显示，此处点击时再取一次
+      // 来源批次渠道复核，防渲染期缓存与最新数据不一致（如跨页/刷新竞态）；后端另有
+      // PUSH_CHANNEL_UNSUPPORTED 幂等闸门兜底。import_batch_id 缺失时（理论不发生）放行。
+      if (record.import_batch_id) {
+        const sourceBatch = await fileOperationsApi.getSourceBatch(record.import_batch_id);
+        if (!isOnlinePushChannel(sourceBatch.source_channel)) {
+          message.warning(
+            `该渠道回传尚未接入：仅${CHANNEL_LABELS.CAISHIXIAN}/${CHANNEL_LABELS.JUFUBAO}支持在线推送，请改用线下文件回传`,
+          );
+          return;
+        }
+      }
+      let last: SourceReturnExport | null = null;
+      for (const returnId of returnIds) {
+        last = await fileOperationsApi.pushSourceReturn(returnId);
+      }
+      // C3 结果区分：平台明确拒绝（REJECTED，展示 push_error.message）vs 结果未知
+      // （UNKNOWN，push_error.unknown_outcome=true，需先到平台核实是否已受理再决定是否重推）。
+      const outcome = sourceReturnPushOutcome(last);
+      if (outcome.kind === 'SUCCESS') {
+        setOperationResult({ kind: 'success', text: outcome.text });
+      } else if (outcome.kind === 'UNKNOWN') {
+        setOperationResult({ kind: 'warning', text: outcome.text });
+      } else if (outcome.kind === 'REJECTED') {
+        setOperationResult({ kind: 'error', text: outcome.text });
+      } else {
+        setOperationResult({ kind: 'info', text: outcome.text });
+      }
+      list.reload();
+    } catch (error) {
+      setOperationResult({ kind: 'error', text: errorMessage(error) });
+    } finally {
+      setReturnPushing(null);
     }
   };
 
@@ -678,15 +818,34 @@ export default function SalesOutboundPage() {
             回传
           </Button>
           {r.tracking_import_batch_id || r.import_batch_id ? (
-            <Button
-              size="small"
-              type="link"
-              icon={<DownloadOutlined />}
-              loading={returnDownloading === r.id}
-              onClick={() => handleSourceReturnDownload(r)}
-            >
-              来源回填
-            </Button>
+            <>
+              <Button
+                size="small"
+                type="link"
+                icon={<DownloadOutlined />}
+                loading={returnDownloading === r.id}
+                onClick={() => handleSourceReturnDownload(r)}
+              >
+                来源回填
+              </Button>
+              {/* P3：仅在线回传渠道（彩食鲜/聚福宝）显示「推送平台」，其余渠道不显示；
+                  渠道未知（无批次 id / 映射缺失 / 拉取失败）同样不显示（fail-closed）。 */}
+              {sourcePushButtonVisible(r, channelByBatch.data ?? EMPTY_CHANNEL_MAP) ? (
+                <Tooltip title="仅彩食鲜/聚福宝支持在线回传，其余渠道请使用线下文件回传">
+                  <span>
+                    <Button
+                      size="small"
+                      type="link"
+                      icon={<CloudSyncOutlined />}
+                      loading={returnPushing === r.id}
+                      onClick={() => handleSourceReturnPush(r)}
+                    >
+                      推送平台
+                    </Button>
+                  </span>
+                </Tooltip>
+              ) : null}
+            </>
           ) : null}
           <Typography.Link onClick={() => setSelected(r)}>明细</Typography.Link>
         </Space>
@@ -696,23 +855,20 @@ export default function SalesOutboundPage() {
 
   const err = list.error || providers.error;
 
+  if (err) {
+    return (
+      <PageState
+        state="error"
+        message="销售出库加载失败"
+        description={errorMessage(err)}
+        onRetry={list.reload}
+      />
+    );
+  }
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <SourceImportPanel onCompleted={list.reload} />
-
-      {err ? (
-        <Alert
-          type="error"
-          showIcon
-          message="销售出库加载失败"
-          description={errorMessage(err)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={list.reload}>
-              重试
-            </Button>
-          }
-        />
-      ) : null}
+      <SourceImportPanel onCompleted={list.reload} onOperationResult={setOperationResult} />
 
       <Card size="small">
         <Space wrap>
@@ -795,6 +951,8 @@ export default function SalesOutboundPage() {
         onClose={() => setTrackingTarget(null)}
         onCompleted={list.reload}
       />
+
+      <OperationResultBar result={operationResult} onClose={() => setOperationResult(null)} />
     </Space>
   );
 }

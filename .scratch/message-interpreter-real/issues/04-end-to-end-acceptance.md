@@ -6,7 +6,9 @@
 
 **Blocked by:** 03 — 元数据白名单与密钥安全
 
-**Status:** ready-for-agent
+**Status:** resolved
+
+> 2026-08-19 复核：真实 DeepSeek 端到端验收已在 `.scratch/wecom-message-intake/acceptance/report.md` §6 留证（真群订单消息 → CUSTOMER_ORDER → 草稿 OD-3-3 + ReviewCase OPEN；单字母消息判 NON_BUSINESS 不建草稿），收口为 resolved。
 
 **Source:** .scratch/message-interpreter-real/spec.md（Testing Decisions 端到端节）
 

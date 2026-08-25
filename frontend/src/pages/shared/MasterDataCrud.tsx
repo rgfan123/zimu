@@ -28,6 +28,8 @@ export interface CrudField {
   patternMessage?: string;
   /** 编辑弹窗打开时，从记录装载表单值的自定义读取器（默认 attr(record, name)）。 */
   loadValue?: (record: MasterDataRecord) => unknown;
+  /** 条件显示：按当前表单值决定该字段是否渲染（隐藏字段不参与必填校验）。 */
+  visible?: (values: Record<string, unknown>) => boolean;
 }
 
 export interface MasterDataCrudProps {
@@ -37,10 +39,13 @@ export interface MasterDataCrudProps {
   extraQuery?: Record<string, string | undefined>;
   fetchPage: (query: { page: number; size: number }) => Promise<MasterDataPage>;
   create?: (values: Record<string, unknown>) => Promise<unknown>;
-  update?: (id: string, values: Record<string, unknown>) => Promise<unknown>;
+  /** 更新回调；第三参为整条记录，供需要读 attributes（如关联商品 id/版本）的页面使用。 */
+  update?: (id: string, values: Record<string, unknown>, record: MasterDataRecord) => Promise<unknown>;
   columns: ColumnsType<MasterDataRecord>;
   createFields?: CrudField[];
   updateFields?: CrudField[];
+  /** 打开新建弹窗时预填的表单值（如默认模式开关）。 */
+  createInitialValues?: Record<string, unknown>;
   pageSizeOptions?: number[];
 }
 
@@ -88,6 +93,7 @@ export default function MasterDataCrud({
   columns,
   createFields = [],
   updateFields = [],
+  createInitialValues,
   pageSizeOptions = [10, 20, 50],
 }: MasterDataCrudProps) {
   const [page, setPage] = useState(0);
@@ -99,6 +105,8 @@ export default function MasterDataCrud({
   const [tick, setTick] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<MasterDataRecord | null>(null);
+  // 表单值变化时驱动重渲染，让 visible 条件字段即时切换（如新建弹窗的模式开关）
+  const [formTick, setFormTick] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
   const { message: messageApi } = AntApp.useApp();
@@ -143,6 +151,7 @@ export default function MasterDataCrud({
   const openCreate = () => {
     setEditing(null);
     setCreateOpen(true);
+    if (createInitialValues) form.setFieldsValue(createInitialValues);
   };
 
   const openEdit = (record: MasterDataRecord) => {
@@ -159,7 +168,7 @@ export default function MasterDataCrud({
       const values = await form.validateFields();
       setSubmitting(true);
       if (editing) {
-        await update?.(editing.id, { expected_version: editing.version, ...values });
+        await update?.(editing.id, { expected_version: editing.version, ...values }, editing);
         messageApi.success('已保存');
       } else if (create) {
         await create(values);
@@ -176,24 +185,30 @@ export default function MasterDataCrud({
     }
   };
 
-  const renderFields = (fields: CrudField[]) => (
-    <Space direction="vertical" size={4} style={{ width: '100%' }}>
-      {fields.map((f) => (
-        <Form.Item
-          key={f.name}
-          name={f.name}
-          label={f.label}
-          valuePropName={f.type === 'switch' ? 'checked' : 'value'}
-          rules={[
-            { required: f.required, message: `请${f.type === 'select' ? '选择' : '填写'}${f.label}` },
-            ...(f.pattern ? [{ pattern: f.pattern, message: f.patternMessage ?? `${f.label}格式不正确` }] : []),
-          ]}
-        >
-          {fieldControl(f)}
-        </Form.Item>
-      ))}
-    </Space>
-  );
+  const renderFields = (fields: CrudField[]) => {
+    // 读取 formTick：表单值变化（onValuesChange）后驱动重渲染，visible 条件字段即时切换
+    void formTick;
+    const currentValues = form.getFieldsValue();
+    const visibleFields = fields.filter((f) => !f.visible || f.visible(currentValues));
+    return (
+      <Space direction="vertical" size={4} style={{ width: '100%' }}>
+        {visibleFields.map((f) => (
+          <Form.Item
+            key={f.name}
+            name={f.name}
+            label={f.label}
+            valuePropName={f.type === 'switch' ? 'checked' : 'value'}
+            rules={[
+              { required: f.required, message: `请${f.type === 'select' ? '选择' : '填写'}${f.label}` },
+              ...(f.pattern ? [{ pattern: f.pattern, message: f.patternMessage ?? `${f.label}格式不正确` }] : []),
+            ]}
+          >
+            {fieldControl(f)}
+          </Form.Item>
+        ))}
+      </Space>
+    );
+  };
 
   const mergedColumns: ColumnsType<MasterDataRecord> = [
     ...columns,
@@ -230,6 +245,9 @@ export default function MasterDataCrud({
       ? <AdminFailureAlert error={error} title="数据加载失败" onRetry={reload} />
       : null;
 
+  // 筛选区必须始终挂载：加载/错误态只替换表格区域。若把整棵树换成 stateContent，
+  // 每次筛选变化都会 unmount 工具栏，非受控输入（如搜索框）随之丢失已输入内容，
+  // 连带 allowClear 的清除入口一起消失，用户会卡在看不见也退不出的筛选态。
   return (
     <div className="admin-crud">
           <div className="admin-toolbar">
@@ -288,7 +306,12 @@ export default function MasterDataCrud({
             destroyOnHidden
             forceRender
           >
-            <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
+            <Form
+              form={form}
+              layout="vertical"
+              style={{ marginTop: 12 }}
+              onValuesChange={() => setFormTick((value) => value + 1)}
+            >
               {renderFields(editing ? updateFields : createFields)}
             </Form>
           </Modal>

@@ -17,6 +17,10 @@ import org.springframework.web.bind.annotation.RestController;
  * 执行脚本 → 产物文件自动进入现有导入闭环（ImportBatch + 人工确认），与人工导表
  * 上传同一条管线，不绕过批次语义。聚福宝 JSON 直连缺收货人字段（票 15 blocker），
  * 只拉取并报告数量，不自动导入。
+ *
+ * <p>幂等取舍（A1，契约 §3.2/§10.3）：refresh 会真实调用外部平台拉取，请求不可重放，
+ * 因此 Idempotency-Key 仅做格式校验（≥8 字符）防重复点击，不做注册表级幂等；真正的
+ * 重复防护由导入批次内容哈希幂等承担（见 PlatformOrderRefreshService 类注释）。
  */
 @RestController
 @RequestMapping("/api/v1/platform-orders")
@@ -34,7 +38,9 @@ class PlatformOrderRefreshController {
     @PostMapping("/refresh")
     Map<String, Object> refresh(
             @RequestBody(required = false) RefreshRequest body,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestHeader(value = "X-Operator", required = false) String operator) {
+        WriteCommands.requireIdempotencyKey(idempotencyKey);
         CommandContext context = WriteCommands.writeContext(operator);
         return service.refresh(body, context);
     }

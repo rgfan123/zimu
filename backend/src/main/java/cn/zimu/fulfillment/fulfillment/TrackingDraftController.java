@@ -7,6 +7,7 @@ import cn.zimu.fulfillment.common.web.WriteCommands;
 import cn.zimu.fulfillment.fulfillment.dto.ProviderTrackingDraftDetailDto;
 import cn.zimu.fulfillment.fulfillment.dto.TrackingDraftBatchConfirmCommand;
 import cn.zimu.fulfillment.fulfillment.dto.TrackingDraftConfirmCommand;
+import cn.zimu.fulfillment.fulfillment.dto.TrackingDraftRejectCommand;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -64,6 +65,20 @@ public class TrackingDraftController {
             @RequestHeader("X-Operator") String operator) {
         CommandContext context = WriteCommands.writeContext(operator);
         return WriteCommands.respond(service.confirm(
+                WriteCommands.parseIdentifier(draftId),
+                body,
+                WriteCommands.requireIdempotencyKey(idempotencyKey),
+                context));
+    }
+
+    @PostMapping("/{draft_id}/reject")
+    public ResponseEntity<?> reject(
+            @PathVariable("draft_id") String draftId,
+            @Valid @RequestBody TrackingDraftRejectCommand body,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader("X-Operator") String operator) {
+        CommandContext context = WriteCommands.writeContext(operator);
+        return WriteCommands.respond(service.reject(
                 WriteCommands.parseIdentifier(draftId),
                 body,
                 WriteCommands.requireIdempotencyKey(idempotencyKey),

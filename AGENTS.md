@@ -4,7 +4,7 @@
 
 ### Issue tracker
 
-Issues and specs are tracked as Local Markdown under `.scratch/`. See `docs/agents/issue-tracker.md`.
+Issues are tracked as **GitHub Issues** in `rgfan123/zimu` (new issues are filed there via `gh`). `.scratch/` now serves as historical archive for past tickets; migrated tickets carry a `**GitHub:** <url>` link. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

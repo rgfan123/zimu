@@ -50,3 +50,6 @@ __pycache__/
 
 # 本地 MCP 开发配置（含 JD 写门闩 ON，不提交）
 .mcp.json
+
+# Claude Code worktrees（大量文件，勿扫描）
+.claude/worktrees/

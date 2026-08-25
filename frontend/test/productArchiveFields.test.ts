@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildProductCreateBody,
+  buildProductCreateValues,
+  buildProductFieldsUpdateBody,
   buildProductUpdateBody,
   leadTimeLabel,
   listingPeriodLabel,
@@ -120,4 +122,74 @@ test('product archive tags normalize trims and dedupes', () => {
   assert.equal(normalizeTags([]), undefined);
   assert.equal(normalizeTags(['', '  ']), undefined);
   assert.equal(normalizeTags(undefined), undefined);
+});
+
+test('product fields update body maps product_* prices and never touches product identity', () => {
+  const body = compact(buildProductFieldsUpdateBody({
+    product_version: 3,
+    ingredients: '羔羊肉',
+    tags: ['预售'],
+    listing_period: { from: '2026-09-01' },
+    lead_time_hours: '48',
+    product_purchase_price: '12.30',
+    product_retail_price: '19.90',
+    product_other_cost: '1.00',
+    main_image_ref: 'product-images/abc.png',
+    active: true,
+  })!);
+  assert.deepEqual(body, {
+    expected_version: 3,
+    ingredients: '羔羊肉',
+    tags: ['预售'],
+    listed_from: '2026-09-01',
+    listed_until: null,
+    lead_time_hours: 48,
+    purchase_price: '12.30',
+    retail_price: '19.90',
+    other_cost: '1.00',
+    main_image_ref: 'product-images/abc.png',
+  });
+  assert.ok(!('active' in body), '商品层 PATCH 不得携带 active');
+
+  // 无任何字段变化 → null，调用方跳过商品 PATCH
+  assert.equal(buildProductFieldsUpdateBody({ product_version: 3 }), null);
+
+  // 清空语义：标签清空 → 显式 null
+  const cleared = compact(buildProductFieldsUpdateBody({ product_version: 3, tags: [] })!);
+  assert.deepEqual(cleared, { expected_version: 3, tags: null });
+});
+
+test('sku create with new product maps product_* prices and excludes sku-only fields', () => {
+  const values = buildProductCreateValues({
+    product_code: 'P-1001',
+    product_name: '子牧羊小腿',
+    category_id: '3',
+    ingredients: '羔羊肉',
+    tags: ['预售'],
+    listing_period: { from: '2026-09-01' },
+    lead_time_hours: '48',
+    product_purchase_price: '12.30',
+    product_retail_price: '19.90',
+    product_other_cost: '1.00',
+    main_image_ref: 'product-images/abc.png',
+    active: true,
+    specification: '500g*2袋',
+    unit: '盒',
+    barcode: 'X',
+  });
+  assert.deepEqual(values, {
+    product_code: 'P-1001',
+    product_name: '子牧羊小腿',
+    category_id: '3',
+    ingredients: '羔羊肉',
+    tags: ['预售'],
+    listing_period: { from: '2026-09-01' },
+    lead_time_hours: '48',
+    purchase_price: '12.30',
+    retail_price: '19.90',
+    other_cost: '1.00',
+    main_image_ref: 'product-images/abc.png',
+  });
+  assert.ok(!('active' in values), '商品创建不得携带 SKU 弹窗的启用开关');
+  assert.ok(!('specification' in values), 'SKU 层字段不得混入商品创建');
 });

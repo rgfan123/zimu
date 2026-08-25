@@ -159,6 +159,7 @@ export interface ReviewCase {
     | 'CONFIRM_ORDER_DRAFT'
     | 'REJECT_ORDER_DRAFT'
     | 'CONFIRM_TRACKING_DRAFT'
+    | 'REJECT_TRACKING_DRAFT'
     | 'OPEN_SKU_MAPPING'
     | 'RERUN_JD_SKU_MAPPING_CHECK'
     | 'RERUN_JD_STOCK_CHECK'
@@ -762,6 +763,31 @@ export interface PlatformOrderRefreshResult {
   date_end?: string;
 }
 
+/** 只有刷新成功且后端明确返回批次 ID 时，才允许进入人工整批确认。 */
+export function platformImportBatchId(
+  channel: PlatformOrderRefreshResult['channels'][number],
+): string | null {
+  return channel.status === 'OK' && channel.batch_id ? channel.batch_id : null;
+}
+
+/**
+ * 三平台刷新单个渠道结果的展示文案。
+ * SKIPPED 由后端携带原因（如「距上次拉取不足…」的频控提示），无 message 时给出合规兜底文案；
+ * 与页面内联三元等价，抽出以便单元测试覆盖（合规红线：每日每平台最多 2 次拉取）。
+ */
+export function platformChannelResultText(c: PlatformOrderRefreshResult['channels'][number]): string {
+  if (c.status === 'OK' && c.batch_no) {
+    return `批次 ${c.batch_no} · 已接收 ${c.row_counts?.accepted ?? 0} 行 / 待复核 ${c.row_counts?.need_review ?? 0} / 拒绝 ${c.row_counts?.rejected ?? 0}`;
+  }
+  if (c.status === 'OK' && c.order_count != null) {
+    return `已拉取 ${c.order_count} 单（${c.message ?? ''}）`;
+  }
+  if (c.status === 'SKIPPED') {
+    return `已跳过：${c.message ?? '达到每日拉取上限或拉取间隔不足'}`;
+  }
+  return c.message ?? '失败';
+}
+
 /** 来源文件原始行血缘；raw_cells 仅由展示层白名单取值，不得整体渲染。 */
 export interface RawImportRow {
   id: string;
@@ -789,6 +815,24 @@ export interface RawImportRowPage extends PageMeta {
   items: RawImportRow[];
 }
 
+/** 在线推送失败详情（push_error JSONB 的结构化字段）。 */
+export interface SourceReturnPushError {
+  code?: string;
+  message?: string;
+  /** true = 平台结果未知（outcome=unknown）：平台可能已受理也可能未受理，需先核实再决定是否重推。 */
+  unknown_outcome?: boolean;
+  /**
+   * 平台原始响应全文（P2）。聚福宝 multi-send 平台无逐行响应结构（全有全无受理），
+   * 失败时脚本把平台原始响应 code/message/request_id 全量透出，供人工按 request_id 在平台核对。
+   */
+  platform_response?: {
+    code?: string;
+    message?: string;
+    request_id?: string;
+    [key: string]: unknown;
+  } | null;
+}
+
 export interface SourceReturnExport {
   id: string;
   import_batch_id: string;
@@ -798,6 +842,90 @@ export interface SourceReturnExport {
   tracking_cutoff_at: string;
   file_sha256: string;
   generated_at: string;
+  /** 在线推送状态（票 11 回传闸门）：NOT_PUSHED / PUSHING / SUCCESS / FAILED。 */
+  push_status?: 'NOT_PUSHED' | 'PUSHING' | 'SUCCESS' | 'FAILED';
+  pushed_at?: string | null;
+  pushed_by?: string | null;
+  push_platform_ref?: string | null;
+  push_error?: SourceReturnPushError | null;
+}
+
+/** 在线回传（推送平台）是否支持该来源渠道：后端仅接入彩食鲜（CAISHIXIAN）与聚福宝（JUFUBAO）。 */
+export function isOnlinePushChannel(channel: SourceChannel | undefined | null): boolean {
+  return channel === 'CAISHIXIAN' || channel === 'JUFUBAO';
+}
+
+/**
+ * P3：收集一页导出行需要解析来源渠道的去重批次 id（每页 ≤10 个），
+ * 优先来源批次 import_batch_id；无来源批次时退回 SDK 直连的运单批次
+ * tracking_import_batch_id（该路径渠道恒为 null，仅作兜底尝试，见 sourcePushButtonVisible）。
+ */
+export function collectPushChannelBatchIds(
+  rows: Array<Pick<FulfillmentExport, 'import_batch_id' | 'tracking_import_batch_id'>>,
+): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const id = row.import_batch_id ?? row.tracking_import_batch_id;
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * P3：该导出行是否显示「推送平台」按钮——仅当能解析出来源渠道且为在线回传渠道
+ * （CAISHIXIAN/JUFUBAO）时显示；FEIXIANG/ZHONGHUI 无回传不显示。
+ * 渠道未知（无批次 id / 渠道映射缺失 / 拉取失败）一律不显示（fail-closed，注释见页面
+ * channelByBatch 加载处）；点击时的 isOnlinePushChannel 拦截与后端
+ * PUSH_CHANNEL_UNSUPPORTED 仍为兜底双保险。
+ */
+export function sourcePushButtonVisible(
+  record: Pick<FulfillmentExport, 'import_batch_id' | 'tracking_import_batch_id'>,
+  channelByBatch: ReadonlyMap<string, SourceChannel | undefined | null>,
+): boolean {
+  const id = record.import_batch_id ?? record.tracking_import_batch_id;
+  if (!id) return false;
+  return isOnlinePushChannel(channelByBatch.get(id));
+}
+
+export type SourceReturnPushOutcomeKind = 'SUCCESS' | 'UNKNOWN' | 'REJECTED' | 'OTHER';
+
+/**
+ * 票 11：来源回填在线推送结果的运营提示——区分「平台明确拒绝（REJECTED）」与
+ * 「结果未知（UNKNOWN，push_error.unknown_outcome=true）」。结果未知时必须先到平台
+ * 核实是否已受理，再决定是否重推，避免重复受理造成重复发货。
+ */
+export function sourceReturnPushOutcome(pushed: SourceReturnExport | null): {
+  kind: SourceReturnPushOutcomeKind;
+  text: string;
+} {
+  if (!pushed) return { kind: 'OTHER', text: '推送状态未知' };
+  switch (pushed.push_status) {
+    case 'SUCCESS':
+      return {
+        kind: 'SUCCESS',
+        text: `已推送到平台（${pushed.push_platform_ref ?? '已受理'}），平台收货后订单状态将同步为已发货`,
+      };
+    case 'FAILED':
+      if (pushed.push_error?.unknown_outcome === true) {
+        return {
+          kind: 'UNKNOWN',
+          text: '结果未知：请先到平台核实是否已受理，再决定是否重推；确认未受理后可再次点击「推送平台」重试',
+        };
+      }
+      // P2：平台原始响应全文已并入 push_error.platform_response（含 request_id），
+      // 提示里透出平台请求号便于人工在平台定位本次拒绝。
+      const requestId = pushed.push_error?.platform_response?.request_id;
+      return {
+        kind: 'REJECTED',
+        text: `推送失败：${pushed.push_error?.message ?? pushed.push_error?.code ?? '平台拒绝'}${requestId ? `（平台请求 ${requestId}）` : ''}`,
+      };
+    default:
+      return { kind: 'OTHER', text: `推送状态：${pushed.push_status ?? '未知'}` };
+  }
 }
 
 export interface ShipmentPage extends PageMeta {
@@ -1053,6 +1181,93 @@ export interface JdClientStatus {
   credentials_configured: boolean;
   tenant_configured: boolean;
   live_ready: boolean;
+}
+
+// ---------- 中汇好泰 PMS 商品录入（pms_openapi.md） ----------
+
+/** GET /api/v1/zhonghui-pms/status —— 连接模式、凭据与登录态。 */
+export interface ZhonghuiPmsStatus {
+  client_mode: 'MOCK' | 'REAL';
+  credentials_configured: boolean;
+  live_ready: boolean;
+  authenticated: boolean;
+}
+
+/** GET /api/v1/zhonghui-pms/captcha —— 登录图片验证码（img 为 Base64 PNG）。 */
+export interface ZhonghuiPmsCaptcha {
+  captcha_no: string;
+  img: string;
+}
+
+/** POST /api/v1/zhonghui-pms/login —— 验证码登录结果（token 只在服务端内存）。 */
+export interface ZhonghuiPmsLoginResult {
+  success: boolean;
+  business_code: string;
+  message?: string;
+}
+
+/** GET /api/v1/zhonghui-pms/options —— 可用品牌与资质（批量上传覆盖字段候选）。 */
+export interface ZhonghuiPmsBrand {
+  brand_id: string;
+  brand_name: string;
+}
+
+export interface ZhonghuiPmsCertification {
+  certification_id: string;
+  certification_name: string;
+  commencement_date?: string;
+  inspection_end_date?: string;
+}
+
+export interface ZhonghuiPmsLogistics {
+  logist_id: string;
+  logist_name: string;
+}
+
+export interface ZhonghuiPmsOptions {
+  brands: ZhonghuiPmsBrand[];
+  certifications: ZhonghuiPmsCertification[];
+  logistics: ZhonghuiPmsLogistics[];
+}
+
+/** POST /api/v1/zhonghui-pms/batch-uploads —— 逐商品结果。 */
+export interface ZhonghuiPmsBatchUploadItem {
+  sku_id: string;
+  sku_code: string;
+  goods_name: string;
+  success: boolean;
+  business_code: string;
+  message: string;
+  /** 商品列表校验后确认的 PMS 商品 id（十进制字符串，创建后查询 goodsInfos 回填）。 */
+  goods_id?: string | null;
+  /** PMS 商品审核/上架状态文本（如 待平台审核/待上架）。 */
+  pms_status?: string | null;
+  /** 非阻断提示（如 商品缺少主图）。 */
+  warning?: string | null;
+}
+
+export interface ZhonghuiPmsBatchUploadResult {
+  batch_id: string;
+  batch_no: string;
+  status: 'PENDING' | 'COMPLETED';
+  total: number;
+  succeeded: number;
+  failed: number;
+  items: ZhonghuiPmsBatchUploadItem[];
+}
+
+/** GET /api/v1/zhonghui-pms/upload-batches/{id} —— 批次详情（恢复/审计）。 */
+export interface ZhonghuiPmsUploadBatchDetail {
+  batch_id: string;
+  batch_no: string;
+  status: 'PENDING' | 'COMPLETED';
+  total: number;
+  succeeded: number;
+  failed: number;
+  created_by: string;
+  created_at?: string | null;
+  completed_at?: string | null;
+  items: ZhonghuiPmsBatchUploadItem[];
 }
 
 export interface AuditLog {

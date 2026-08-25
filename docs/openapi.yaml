@@ -1925,6 +1925,126 @@ paths:
           description: Non-historical SKU fields updated
           content: { application/json: { schema: { $ref: '#/components/schemas/SkuRecord' } } }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  # 中汇好泰 PMS 商品录入（外部系统对接，契约见仓库根目录 pms_openapi.md）：
+  # 从商品档案批量上传商品。登录需人工输入图片验证码；token 只在服务端内存缓存。
+  /api/v1/zhonghui-pms/status:
+    get:
+      tags: [MasterData]
+      operationId: getZhonghuiPmsStatus
+      summary: 中汇 PMS 连接模式、凭据与登录态
+      responses:
+        '200':
+          description: 连接模式（MOCK/REAL）、凭据是否配置、是否就绪、当前登录态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ZhonghuiPmsStatus' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/captcha:
+    get:
+      tags: [MasterData]
+      operationId: getZhonghuiPmsCaptcha
+      summary: 获取中汇 PMS 登录图片验证码
+      responses:
+        '200':
+          description: captcha_no 与 Base64 PNG（无 data URI 前缀）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ZhonghuiPmsCaptcha' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/login:
+    post:
+      tags: [MasterData]
+      operationId: loginZhonghuiPms
+      summary: 提交验证码完成中汇 PMS 登录
+      description: 幂等：同幂等键+同请求重放首次登录结果；payload 不含密码。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ZhonghuiPmsLoginRequest' }
+      responses:
+        '200':
+          description: 登录结果（token 不对外暴露）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ZhonghuiPmsLoginResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/logout:
+    post:
+      tags: [MasterData]
+      operationId: logoutZhonghuiPms
+      summary: 清除中汇 PMS 内存登录会话
+      description: 幂等操作（重复登出无害）；token 不对外暴露。
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: 登出结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success]
+                properties:
+                  success: { type: boolean }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/options:
+    get:
+      tags: [MasterData]
+      operationId: getZhonghuiPmsOptions
+      summary: 中汇 PMS 可用品牌/资质/物流（批量上传覆盖字段候选）
+      description: 需已登录（登录后才查询品牌/资质/物流）。
+      responses:
+        '200':
+          description: 品牌/资质/物流列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ZhonghuiPmsOptions' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/batch-uploads:
+    post:
+      tags: [MasterData]
+      operationId: batchUploadZhonghuiPmsGoods
+      summary: 从商品档案批量上传商品到中汇 PMS
+      description: >
+        每个 SKU 对应一个 PMS 商品；幂等：同幂等键+同请求重放首次批次结果（不重复调 PMS 创建），
+        同键+不同请求返回 409。先持久化批次意图（PENDING），再经中汇图片上传接口把主图换为公网 URL
+        后创建商品，逐商品回写结果并做商品列表校验（goodsId/审核状态）；单商品失败不回滚其他商品。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ZhonghuiPmsBatchUploadRequest' }
+      responses:
+        '200':
+          description: 批次结果（含批次标识与逐商品结果）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ZhonghuiPmsBatchUploadResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/zhonghui-pms/upload-batches/{batch_id}:
+    get:
+      tags: [MasterData]
+      operationId: getZhonghuiPmsUploadBatch
+      summary: 中汇 PMS 批量上传批次详情（恢复/审计）
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema: { type: string, description: 批次标识（十进制字符串） }
+      responses:
+        '200':
+          description: 批次与逐商品结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ZhonghuiPmsUploadBatchDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/source-sku-mappings:
     get:
       tags: [MasterData]
@@ -4374,6 +4494,142 @@ components:
             items:
               type: array
               items: { $ref: '#/components/schemas/SkuRecord' }
+    # ---- 中汇好泰 PMS 商品录入（pms_openapi.md） ----
+    ZhonghuiPmsStatus:
+      type: object
+      required: [client_mode, credentials_configured, live_ready, authenticated]
+      properties:
+        client_mode: { type: string, enum: [MOCK, REAL] }
+        credentials_configured: { type: boolean }
+        live_ready: { type: boolean }
+        authenticated: { type: boolean }
+    ZhonghuiPmsCaptcha:
+      type: object
+      required: [captcha_no, img]
+      properties:
+        captcha_no: { type: string }
+        img: { type: string, description: Base64 PNG（无 data URI 前缀） }
+    ZhonghuiPmsLoginRequest:
+      type: object
+      required: [auth_code, captcha_no]
+      properties:
+        auth_code: { type: string, description: 人工识别图片验证码后的输入值 }
+        captcha_no: { type: string }
+    ZhonghuiPmsLoginResult:
+      type: object
+      required: [success, business_code]
+      properties:
+        success: { type: boolean }
+        business_code: { type: string }
+        message: { type: string }
+    ZhonghuiPmsBrand:
+      type: object
+      properties:
+        brand_id: { type: string, description: 标识符（十进制字符串） }
+        brand_name: { type: string }
+    ZhonghuiPmsCertification:
+      type: object
+      properties:
+        certification_id: { type: string, description: 标识符（十进制字符串） }
+        certification_name: { type: string }
+        commencement_date: { type: string }
+        inspection_end_date: { type: string }
+    ZhonghuiPmsLogistics:
+      type: object
+      properties:
+        logist_id: { type: string, description: 标识符（十进制字符串） }
+        logist_name: { type: string }
+    ZhonghuiPmsOptions:
+      type: object
+      required: [brands, certifications, logistics]
+      properties:
+        brands:
+          type: array
+          items: { $ref: '#/components/schemas/ZhonghuiPmsBrand' }
+        certifications:
+          type: array
+          items: { $ref: '#/components/schemas/ZhonghuiPmsCertification' }
+        logistics:
+          type: array
+          items: { $ref: '#/components/schemas/ZhonghuiPmsLogistics' }
+    ZhonghuiPmsBatchUploadRequest:
+      type: object
+      required: [sku_ids]
+      properties:
+        sku_ids:
+          type: array
+          items: { type: string }
+          description: 商品档案 SKU id（每个 SKU 对应一个 PMS 商品）
+        overrides:
+          type: object
+          description: >
+            覆盖字段（优先于 app.zhonghui-pms.defaults 配置默认值）。
+            标识符与 BigDecimal 数量按 api-contract §3.1 以十进制字符串传输。
+          properties:
+            brand_id: { type: string, description: 标识符（十进制字符串） }
+            certification_type: { type: string, description: 标识符（十进制字符串） }
+            certification_id: { type: string, description: 标识符（十进制字符串） }
+            third_id: { type: string, description: 标识符（十进制字符串） }
+            limit_area_temp_id: { type: string, description: 标识符（十进制字符串） }
+            goods_tax: { type: string, description: 税率（十进制字符串） }
+            logistics_carrier: { type: string, description: 物流公司 id 逗号连接，如 "1,20" }
+            producing_area: { type: string }
+            goods_num: { type: string, description: 库存（十进制字符串） }
+            sale_unit: { type: string }
+            origincountry: { type: string, description: 标识符（十进制字符串） }
+            goods_price: { type: string, description: 售价（十进制字符串） }
+            supply_price: { type: string, description: 供货价（十进制字符串） }
+    ZhonghuiPmsBatchUploadResult:
+      type: object
+      required: [batch_id, batch_no, status, total, succeeded, failed, items]
+      properties:
+        batch_id: { type: string, description: 批次标识（十进制字符串） }
+        batch_no: { type: string }
+        status: { type: string, enum: [PENDING, COMPLETED] }
+        total: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ZhonghuiPmsBatchUploadItem' }
+    ZhonghuiPmsBatchUploadItem:
+      type: object
+      required: [sku_id, sku_code, goods_name, success, business_code, message]
+      properties:
+        sku_id: { type: string }
+        sku_code: { type: string }
+        goods_name: { type: string }
+        success: { type: boolean }
+        business_code: { type: string }
+        message: { type: string }
+        goods_id:
+          type: string
+          nullable: true
+          description: 商品列表校验后确认的 PMS 商品 id（十进制字符串）
+        pms_status:
+          type: string
+          nullable: true
+          description: PMS 商品审核/上架状态文本，审核与上架状态以 / 连接（如 待平台审核/待上架）
+        warning:
+          type: string
+          nullable: true
+          description: 非阻断提示（如 商品缺少主图）
+    ZhonghuiPmsUploadBatchDetail:
+      type: object
+      required: [batch_id, batch_no, status, total, succeeded, failed, created_by, items]
+      properties:
+        batch_id: { type: string, description: 批次标识（十进制字符串） }
+        batch_no: { type: string }
+        status: { type: string, enum: [PENDING, COMPLETED] }
+        total: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ZhonghuiPmsBatchUploadItem' }
     AuthoritativeSkuCatalogDuplicateCode:
       type: object
       required: [jd_code, source_rows, jd_names]
@@ -4620,7 +4876,7 @@ components:
       required: [file_ref, url]
       properties:
         file_ref: { type: string, description: 受控引用，写入 products.main_image_ref }
-        url: { type: string, description: 可访问 URL（/api/v1/product-images?ref=...） }
+        url: { type: string, description: '可访问 URL（/api/v1/product-images?ref=...）' }
     SkuWrite:
       type: object
       required: [provider_id, product_id, specification, unit]

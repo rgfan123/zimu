@@ -4,7 +4,7 @@
 
 **Blocked by:** 01, 02, D4（收货人字段补抓——缺收货人则 confirm 被 blocker 拒）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 登录/游标/分页拉取/transform 全链路跑通
 - [ ] 订单（含收货人，D4 后）进入批次，confirm 后履约导出可生成
@@ -27,3 +27,15 @@
 
 - [ ] 收货人字段完整，**不因缺收货人产生 NEED_REVIEW**（本票成败判据）
 - [ ] `pullOrderChanges` 不在本票范围内（交 14）
+
+---
+
+## Answer (2026-08-19)
+
+**Status: resolved**
+
+Java Connector 在线拉取已实现：`JufubaoPullClient`（GET g.jufubao.cn 种 JFB_SESSION_CID → login-by-username 表单登录 3 JWT + CSRF 头 → orders/query 分页 page_token 游标）+ `JufubaoOrderTransform`（真实抓包 JSON → `StructuredOrderRow`：main_order_id→sourceRef、sub_order_id→sourceLineRef、product_list→items、receiver 留空 + `receiver_missing: true`、rawSnapshot 浅层脱敏）+ `JufubaoConnector.pullOrders`（→ `SourceImportService.importStructured` 结构化管线）。测试 `JufubaoConnectorTest` 9 例 + `JufubaoOrderTransformTest` 4 例通过（HAR 真实样例）。
+
+遗留风险：
+- **票 15（收货人字段）仍是 blocker**：receiver 留空 → 订单进批次后行 NEED_REVIEW，需人工在复核补收货人；「不因缺收货人产生 NEED_REVIEW」验收项未闭环
+- 聚福宝规格/单位无契约字段（占位「—」/「件」）；JFB_SESSION_CID 跨域 cookie 需真实运行确认

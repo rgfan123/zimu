@@ -5,6 +5,7 @@
 **Blocked by:** 10 — Meta-Agent 工具面；11 — 异步任务基建 + 定义域写端点（设计源：meta-agent-platform 票 06、12）。
 
 **Status:** ready-for-agent
+**GitHub:** https://github.com/rgfan123/zimu/issues/14
 
 - [ ] 自然语言 → 草稿全链路：202 → 轮询 → 草稿 JSON（含门禁结果、建议用例 PENDING 记录）
 - [ ] 澄清路径（信息不足）返回 NEEDS_INPUT + 澄清问题；冲突 slug 拒绝不改名

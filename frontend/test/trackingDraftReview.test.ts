@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildTrackingDraftConfirmCommand,
+  buildTrackingDraftRejectCommand,
   initialTrackingDraftReviewForm,
   trackingDraftBlockingIssues,
   trackingDraftIssueLabel,
@@ -219,3 +220,37 @@ test('unknown validation codes never leak as untranslated internal fields', () =
     ['存在暂不支持的校验问题，请联系管理员处理'],
   );
 });
+
+test('a stuck tracking draft can be rejected with a required reason, independent of blocking issues', () => {
+  const stuck = draft();
+  stuck.task_candidates = [];
+  stuck.validation_issues = ['TASK_NOT_FOUND'];
+
+  // 拒绝不受确认阻断项限制：这正是死胡同草稿的出口
+  const command = buildTrackingDraftRejectCommand(stuck, 7, '  任务号不存在，来源信息有误退回  ');
+  assert.deepEqual(command, {
+    expected_draft_revision: 4,
+    expected_case_version: 7,
+    reason: '任务号不存在，来源信息有误退回',
+  });
+
+  assert.throws(
+    () => buildTrackingDraftRejectCommand(stuck, 7, '   '),
+    /理由/,
+  );
+});
+
+test('a closed or versionless tracking draft cannot produce a reject command', () => {
+  assert.throws(
+    () => buildTrackingDraftRejectCommand(draft(), undefined, '理由'),
+    /复核版本/,
+  );
+
+  const closed = draft();
+  closed.status = 'REJECTED';
+  assert.throws(
+    () => buildTrackingDraftRejectCommand(closed, 7, '理由'),
+    /不是待处理状态/,
+  );
+});
+

@@ -6,8 +6,8 @@
 
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Alert, Button, Card, Col, Empty, Row, Space, Table, Typography } from 'antd';
-import { AlertOutlined, CarOutlined, InboxOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
+import { Card, Col, Empty, Row, Space, Table, Typography } from 'antd';
+import { AlertOutlined, CarOutlined, InboxOutlined, WarningOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { EChartsOption } from 'echarts';
 import dayjs from 'dayjs';
@@ -18,6 +18,7 @@ import { reasonLabel } from '@/constants/labels';
 import { ATTENTION_COLORS } from '@/pages/shared/semanticStatus';
 import { saasChartPalette, saasVisualTokens } from '@/theme/saasTheme';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import Chart from '@/components/Chart';
 import KpiCard from '@/components/KpiCard';
 
@@ -194,22 +195,20 @@ export default function DashboardPage() {
     );
   }, [summary]);
 
+  /** 页面级错误态：整体请求失败时整块切换为 PageState，重试语义与替换前一致（reload）。 */
+  if (error) {
+    return (
+      <PageState
+        state="error"
+        message="工作台数据加载失败"
+        description={errorMessage(error)}
+        onRetry={reload}
+      />
+    );
+  }
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {error ? (
-        <Alert
-          type="error"
-          showIcon
-          message="工作台数据加载失败"
-          description={errorMessage(error)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={reload}>
-              重试
-            </Button>
-          }
-        />
-      ) : null}
-
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} xl={6}>
           <KpiCard

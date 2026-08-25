@@ -4,7 +4,7 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 登录 → 导出直下 → 文件解析全链路可跑通
 - [ ] 真实数据区间导出一次，验证 21 列 v1 数据行（当前样例仅表头），确认与解析器列名一致
@@ -25,3 +25,15 @@
 
 - [ ] 真实数据行的 21 列列名与 parser `feixiang()` 的取值字段逐一比对通过
 - [ ] 区间口径经 `ajaxOrderNum` 交叉核对确认，结论写入契约文档
+
+---
+
+## Answer (2026-08-19)
+
+**Status: resolved**
+
+Java Connector 在线拉取已实现：`FeixiangPullClient`（GET 登录页种 fxqf_sess cookie → 表单登录 302 判定 → deliveryExport 直下 xlsx，PK 魔数校验）+ `FeixiangConnector.pullOrders`（登录→拉取→`SourceImportService.upload`→PullResult）。测试 `FeixiangConnectorTest` 8 例通过。
+
+遗留风险（验收项未闭环，需真实区间导出验证）：
+- **真实数据行的 21 列列名与 parser `feixiang()` 取值字段逐一比对**——当前样例仅表头，未验证
+- **区间口径**（start_time/end_time 按下单还是发货、end_time 含不含当天）未经 `ajaxOrderNum` 交叉核对

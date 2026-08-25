@@ -113,6 +113,7 @@ public class ShipmentJdOutboundService {
     private final JdWriteOpsService jdWrite;
     private final JDWarehouseService jdWarehouse;
     private final ShipmentJdStockCheckService stockChecks;
+    private final JdReceiverAddressNormalizer addressNormalizer;
     private final Set<String> authorizedOperators;
     private final String clientMode;
     private final TransactionTemplate requiresNew;
@@ -127,6 +128,7 @@ public class ShipmentJdOutboundService {
             JdWriteOpsService jdWrite,
             JDWarehouseService jdWarehouse,
             @Lazy ShipmentJdStockCheckService stockChecks,
+            JdReceiverAddressNormalizer addressNormalizer,
             @Value("${app.jd.outbound-authorized-operators:}") String authorizedOperators,
             @Value("${app.jd.client-mode:MOCK}") String clientMode,
             PlatformTransactionManager transactionManager) {
@@ -139,6 +141,7 @@ public class ShipmentJdOutboundService {
         this.jdWrite = jdWrite;
         this.jdWarehouse = jdWarehouse;
         this.stockChecks = stockChecks;
+        this.addressNormalizer = addressNormalizer;
         this.authorizedOperators = java.util.Arrays.stream(authorizedOperators.split(","))
                 .map(String::trim)
                 .filter(value -> !value.isEmpty())
@@ -266,8 +269,9 @@ public class ShipmentJdOutboundService {
 
     /**
      * 只读生成京东结构化收货地址候选（jd-real-sdk-switch 04）。
-     * 候选来自来源表格原始单元格（彩食鲜的省/市/区/详细地址列），只用于人工确认；
-     * 未确认前不参与建单。非彩食鲜或缺少结构化列时 candidate 为 null。
+     * 优先取来源表格结构化单元格（彩食鲜的省/市/区/详细地址列）；缺少结构化列时，
+     * 用确定性行政区划词典拆分自由文本快照作为候选。候选只用于人工确认，
+     * 未确认前不参与建单；任一路径无法唯一解析时 candidate 为 null，落到人工。
      */
     @Transactional(readOnly = true)
     public List<Map<String, Object>> receiverAddressCandidates(
@@ -319,20 +323,51 @@ public class ShipmentJdOutboundService {
             row.put("county", rs.getString("jd_receiver_county"));
             row.put("town", rs.getString("jd_receiver_town"));
             row.put("detail_address", rs.getString("jd_receiver_detail_address"));
-            Map<String, Object> candidate = new LinkedHashMap<>();
-            candidate.put("province", rs.getString("source_province"));
-            candidate.put("city", rs.getString("source_city"));
-            candidate.put("county", rs.getString("source_county"));
-            candidate.put("town", null);
-            candidate.put("detail_address", rs.getString("source_detail_address"));
-            boolean complete = hasText(rs.getString("source_province"))
-                    && hasText(rs.getString("source_city"))
-                    && hasText(rs.getString("source_county"))
-                    && hasText(rs.getString("source_detail_address"));
-            row.put("candidate", complete ? candidate : null);
-            row.put("candidate_incomplete", !complete);
+            Map<String, Object> candidate = candidateFromSourceColumns(
+                    rs.getString("source_province"),
+                    rs.getString("source_city"),
+                    rs.getString("source_county"),
+                    rs.getString("source_detail_address"));
+            if (candidate == null) {
+                candidate = candidateFromFreeText(rs.getString("receiver_address_snapshot"));
+            }
+            row.put("candidate", candidate);
+            row.put("candidate_incomplete", candidate == null);
             return row;
         }, params.toArray());
+    }
+
+    /** 来源表格自带省/市/区/详细地址四列时直接作为候选；缺任一列返回 null。 */
+    private Map<String, Object> candidateFromSourceColumns(
+            String province, String city, String county, String detailAddress) {
+        if (!hasText(province) || !hasText(city) || !hasText(county) || !hasText(detailAddress)) {
+            return null;
+        }
+        return candidateMap(province, city, county, detailAddress);
+    }
+
+    /** 来源无结构化列时，用确定性行政区划词典拆分自由文本；解析不完整返回 null。 */
+    private Map<String, Object> candidateFromFreeText(String freeText) {
+        if (!hasText(freeText)) {
+            return null;
+        }
+        return addressNormalizer.normalize(freeText)
+                .map(normalized -> candidateMap(
+                        normalized.province(), normalized.city(),
+                        normalized.county(), normalized.detailAddress()))
+                .orElse(null);
+    }
+
+    /** 组装候选响应的公共形状（province/city/county/town/detail_address）。 */
+    private Map<String, Object> candidateMap(
+            String province, String city, String county, String detailAddress) {
+        Map<String, Object> candidate = new LinkedHashMap<>();
+        candidate.put("province", province);
+        candidate.put("city", city);
+        candidate.put("county", county);
+        candidate.put("town", null);
+        candidate.put("detail_address", detailAddress);
+        return candidate;
     }
 
     private Map<String, Object> doConfirmReceiverAddress(

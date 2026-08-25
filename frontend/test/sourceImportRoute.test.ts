@@ -207,6 +207,92 @@ test('successful source import shows accepted row details before whole-batch con
   assert.ok(control('确认本批次（已接收 1 行）'));
 });
 
+test('platform refresh opens the returned batch and final confirmation reuses the guarded fulfillment command', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/fulfillment-exports')) {
+      return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
+    }
+    if (url === '/api/v1/platform-orders/refresh' && init?.method === 'POST') {
+      return jsonResponse({
+        channels: [{
+          channel: 'CAISHIXIAN', status: 'OK', batch_id: '23', batch_no: 'IMP-CSX-23',
+          row_counts: { total: 1, accepted: 1, need_review: 0, rejected: 0 },
+        }],
+        date_begin: '2026-08-20', date_end: '2026-08-20',
+      });
+    }
+    if (url === '/api/v1/import-batches/23') {
+      return jsonResponse({
+        id: '23', batch_no: 'IMP-CSX-23', batch_type: 'SOURCE_ORDER', import_mode: 'NEW',
+        revision_no: 1, source_channel: 'CAISHIXIAN', template_family: 'CSX_ORDER', template_version: '1',
+        template_fingerprint: 'fixture', original_file_name: 'caishixian.xlsx', content_sha256: 'c'.repeat(64),
+        status: 'COMPLETED', confirmed_at: null,
+        row_counts: { total: 1, accepted: 1, need_review: 0, rejected: 0 },
+        generated_fulfillment_export_ids: [], received_at: '2026-08-20T07:31:35Z',
+      });
+    }
+    if (url === '/api/v1/import-batches/23/rows?page=0&size=200&status=ACCEPTED') {
+      return jsonResponse({
+        items: [{
+          id: '231', sheet_name: '待发货明细', sheet_index: 0, row_index: 2,
+          raw_cells: { '商品编号': '2047705', '商品名称': '子牧牛腱子500g*2' },
+          source_order_ref: 'CSX-ORDER-023', status: 'ACCEPTED', error_code: null, error_detail: {},
+          order_id: '2301', order_line_id: '2302',
+        }],
+        page: 0, size: 200, total_elements: 1, total_pages: 1,
+      });
+    }
+    if (url === '/api/v1/import-batches/23/confirm' && init?.method === 'POST') {
+      return jsonResponse({
+        id: '23', batch_no: 'IMP-CSX-23', batch_type: 'SOURCE_ORDER', import_mode: 'NEW',
+        revision_no: 1, source_channel: 'CAISHIXIAN', template_family: 'CSX_ORDER', template_version: '1',
+        template_fingerprint: 'fixture', original_file_name: 'caishixian.xlsx', content_sha256: 'c'.repeat(64),
+        status: 'COMPLETED', confirmed_at: '2026-08-20T07:40:00Z', confirmed_by: 'tester',
+        row_counts: { total: 1, accepted: 1, need_review: 0, rejected: 0 },
+        generated_fulfillment_export_ids: [], received_at: '2026-08-20T07:31:35Z',
+        outbound_routing: { jd_sdk_shipment_ids: ['501'] },
+      });
+    }
+    throw new Error(`unexpected request: ${init?.method ?? 'GET'} ${url}`);
+  };
+
+  const container = document.querySelector<HTMLDivElement>('#root');
+  assert.ok(container);
+  mountedRoot = createRoot(container);
+  await act(async () => {
+    mountedRoot?.render(createElement(
+      MemoryRouter,
+      { initialEntries: ['/fulfillment/sales-outbound'], future: { v7_startTransition: true, v7_relativeSplatPath: true } },
+      createElement(App),
+    ));
+  });
+  await waitFor(() => assert.match(bodyText(), /刷新三平台订单/));
+
+  await act(async () => control('刷新三平台订单').click());
+  await waitFor(() => assert.match(bodyText(), /批次 IMP-CSX-23/));
+  assert.ok(control('核对并确认发货'));
+
+  await act(async () => control('核对并确认发货').click());
+  await waitFor(() => assert.match(bodyText(), /确认本批次（已接收 1 行）/));
+  assert.match(bodyText(), /确认明细/);
+  assert.ok(requests.includes('GET /api/v1/import-batches/23'));
+  assert.ok(requests.includes('GET /api/v1/import-batches/23/rows?page=0&size=200&status=ACCEPTED'));
+  assert.equal(requests.some((request) => request.includes('/confirm')), false);
+
+  await act(async () => control('确认本批次（已接收 1 行）').click());
+  const popconfirmOk = [...document.querySelectorAll<HTMLElement>('.ant-popconfirm-buttons button')]
+    .find((candidate) => candidate.textContent?.includes('确认本批次'));
+  assert.ok(popconfirmOk, 'missing platform-refresh batch confirmation button');
+  await act(async () => popconfirmOk.click());
+
+  await waitFor(() => assert.match(bodyText(), /本批次已确认/));
+  assert.ok(requests.includes('POST /api/v1/import-batches/23/confirm'));
+});
+
 test('confirming the batch passes a popconfirm and marks accepted rows as confirmed', async () => {
   globalThis.fetch = async (input, init) => {
     const url = String(input);

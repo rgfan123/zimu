@@ -2,6 +2,7 @@ import { apiRequest } from '../../api/client';
 import { trustedWriteHeaders } from '../../api/writeHeaders';
 import type {
   ConfirmTrackingDraftCommand,
+  RejectTrackingDraftCommand,
   TrackingDraftDetail,
 } from './trackingDraftReview';
 
@@ -41,6 +42,12 @@ export const trackingDraftReviewApi = {
     }),
   confirm: (draftId: string, command: ConfirmTrackingDraftCommand) =>
     apiRequest<TrackingDraftDetail>(`/api/v1/tracking-drafts/${draftId}/confirm`, {
+      method: 'POST',
+      body: command,
+      headers: trustedWriteHeaders(),
+    }),
+  reject: (draftId: string, command: RejectTrackingDraftCommand) =>
+    apiRequest<TrackingDraftDetail>(`/api/v1/tracking-drafts/${draftId}/reject`, {
       method: 'POST',
       body: command,
       headers: trustedWriteHeaders(),

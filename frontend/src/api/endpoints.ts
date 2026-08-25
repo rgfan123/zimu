@@ -70,9 +70,16 @@ import type {
   SourceChannel,
   SourceReturnExport,
   TrackingImportBatch,
+  ZhonghuiPmsBatchUploadResult,
+  ZhonghuiPmsCaptcha,
+  ZhonghuiPmsLoginResult,
+  ZhonghuiPmsOptions,
+  ZhonghuiPmsStatus,
+  ZhonghuiPmsUploadBatchDetail,
 } from './types';
 import { trustedWriteHeaders, type TrustedWriteHeaderOptions } from './writeHeaders';
 import { continuationExportRequest } from './continuationExport';
+import { zhonghuiPmsBatchIdempotencyKey } from './zhonghuiPmsIdempotency';
 import {
   shipmentJdOutboundIdempotencyKey,
   shipmentJdOutboundSubmitRequest,
@@ -297,6 +304,47 @@ export const skusApi = {
     active?: boolean;
   }) =>
     apiRequest<SkuRecord>(`/api/v1/skus/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
+};
+
+/** GET/POST /api/v1/product-bundles，GET/PATCH /api/v1/product-bundles/{id} —— 静态礼包 BOM 主数据。 */
+export const productBundlesApi = {
+  list: (query: MasterDataListQuery = {}) =>
+    apiRequest<MasterDataPage>('/api/v1/product-bundles', { params: query as Record<string, QueryValue> }),
+  detail: (id: string) => apiRequest<MasterDataRecord>(`/api/v1/product-bundles/${id}`),
+  create: (body: {
+    bundle_code: string;
+    bundle_name: string;
+    category_id?: string;
+    barcode?: string;
+    description?: string;
+    tax_rate?: string;
+    settlement_cost?: string;
+    status?: 'DRAFT' | 'ACTIVE' | 'INACTIVE';
+    items: {
+      sku_id: string;
+      quantity_per_bundle: string;
+      emg_code_snapshot?: string;
+      source_text_snapshot?: string;
+    }[];
+  }) =>
+    apiRequest<MasterDataRecord>('/api/v1/product-bundles', { method: 'POST', body, headers: writeHeaders() }),
+  update: (id: string, body: {
+    expected_version: number;
+    bundle_name?: string;
+    category_id?: string;
+    barcode?: string | null;
+    description?: string;
+    tax_rate?: string;
+    settlement_cost?: string;
+    status?: 'DRAFT' | 'ACTIVE' | 'INACTIVE';
+    items?: {
+      sku_id: string;
+      quantity_per_bundle: string;
+      emg_code_snapshot?: string;
+      source_text_snapshot?: string;
+    }[];
+  }) =>
+    apiRequest<MasterDataRecord>(`/api/v1/product-bundles/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
 
 /** GET/POST /api/v1/source-sku-mappings，GET/PATCH /api/v1/source-sku-mappings/{id}。 */
@@ -583,6 +631,13 @@ export const fileOperationsApi = {
   sourceReturns: (sourceBatchId: string) =>
     apiRequest<SourceReturnExport[]>(`/api/v1/import-batches/${sourceBatchId}/source-return-exports`),
   downloadSourceReturn: (id: string) => downloadFile(`/api/v1/source-return-exports/${id}/file`, `来源回填-${id}`),
+  /** 票 11：来源回填文件在线推送（彩食鲜/聚福宝，人工触发 + 幂等闸门）。 */
+  pushSourceReturn: (id: string) =>
+    apiRequest<SourceReturnExport>(`/api/v1/source-return-exports/${id}/push`, {
+      method: 'POST',
+      body: {},
+      headers: writeHeaders(),
+    }),
 };
 
 // ---------- 采购工单 ----------
@@ -712,6 +767,52 @@ export const channelMessagesApi = {
     }),
   /** GET /api/v1/channel-messages/{id} —— 只返回审核过的白名单字段。 */
   detail: (id: string) => apiRequest<ChannelMessageDetail>(`/api/v1/channel-messages/${id}`),
+};
+
+// ---------- 中汇好泰 PMS 商品录入（pms_openapi.md） ----------
+
+/**
+ * 从商品档案批量上传商品到中汇 PMS。
+ * 流程：GET status → GET captcha → POST login（人工输入验证码）→ POST batch-uploads。
+ * token 只在服务端内存缓存，前端拿不到也不会回传。
+ */
+export const zhonghuiPmsApi = {
+  /** GET /api/v1/zhonghui-pms/status —— 连接模式与登录态。 */
+  status: () => apiRequest<ZhonghuiPmsStatus>('/api/v1/zhonghui-pms/status'),
+
+  /** GET /api/v1/zhonghui-pms/captcha —— 登录图片验证码（img 为 Base64 PNG）。 */
+  captcha: () => apiRequest<ZhonghuiPmsCaptcha>('/api/v1/zhonghui-pms/captcha'),
+
+  /** POST /api/v1/zhonghui-pms/login —— 提交图片验证码完成登录。 */
+  login: (authCode: string, captchaNo: string) =>
+    apiRequest<ZhonghuiPmsLoginResult>('/api/v1/zhonghui-pms/login', {
+      method: 'POST',
+      body: { auth_code: authCode, captcha_no: captchaNo },
+      headers: writeHeaders(),
+    }),
+
+  /** POST /api/v1/zhonghui-pms/logout —— 清除内存登录会话。 */
+  logout: () =>
+    apiRequest<{ success: boolean }>('/api/v1/zhonghui-pms/logout', {
+      method: 'POST',
+      body: {},
+      headers: writeHeaders(),
+    }),
+
+  /** GET /api/v1/zhonghui-pms/options —— 可用品牌与资质（覆盖字段候选）。 */
+  options: () => apiRequest<ZhonghuiPmsOptions>('/api/v1/zhonghui-pms/options'),
+
+  /** POST /api/v1/zhonghui-pms/batch-uploads —— 批量上传（同幂等键重放首次结果，不重复建商品）。 */
+  batchUpload: (body: { sku_ids: string[]; overrides?: Record<string, unknown> }) =>
+    apiRequest<ZhonghuiPmsBatchUploadResult>('/api/v1/zhonghui-pms/batch-uploads', {
+      method: 'POST',
+      body,
+      headers: writeHeaders({ idempotencyKey: zhonghuiPmsBatchIdempotencyKey(body) }),
+    }),
+
+  /** GET /api/v1/zhonghui-pms/upload-batches/{id} —— 批次详情（恢复/审计）。 */
+  batchDetail: (id: string) =>
+    apiRequest<ZhonghuiPmsUploadBatchDetail>(`/api/v1/zhonghui-pms/upload-batches/${encodeURIComponent(id)}`),
 };
 
 /**

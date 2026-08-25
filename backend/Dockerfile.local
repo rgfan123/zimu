@@ -1,0 +1,17 @@
+# 本地部署变体：直接使用宿主机已打包的 jar（绕过容器内 Maven 网络依赖）。
+# 用法: docker build -f backend/Dockerfile.local -t zimu-fulfillment-backend:latest .
+FROM eclipse-temurin:21-jre-alpine
+
+# 三平台订单刷新/回传通道（platform-pull/push）：容器内直接执行拉取与回填脚本（python3 + requests）。
+# 回传文件的 xlsx 解析由 Java 侧（POI）完成，脚本只收结构化输入，无需容器内 openpyxl。
+RUN apk add --no-cache python3 py3-requests \
+    && addgroup -S app \
+    && adduser -S -G app app \
+    && mkdir -p /var/lib/zimu-fulfillment/files \
+    && mkdir -p /app/platform-pull-work \
+    && chown -R app:app /var/lib/zimu-fulfillment /app/platform-pull-work
+WORKDIR /app
+COPY backend/target/fulfillment-hub-0.1.0-SNAPSHOT.jar app.jar
+USER app
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

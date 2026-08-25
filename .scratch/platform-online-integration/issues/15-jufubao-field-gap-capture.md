@@ -26,6 +26,7 @@
 **Blocked by:** None — can start immediately（三张 HITL 票里这张最急）
 
 **Status:** needs-user
+**GitHub:** https://github.com/rgfan123/zimu/issues/32
 
 - [ ] 收货人姓名/电话/地址字段路径已确认并写入 `jufubao-supplier-export-api.md` §5.2
 - [ ] 物流公司字典快照入库

@@ -6,7 +6,9 @@
 
 **Blocked by:** 05 — 受控创建京东出库单
 
-**Status:** blocked-external
+**Status:** resolved
+
+> 2026-08-19 复核：真实 `querySoOrder` 回填已于 2026-08-18 在 jd-real-sdk-switch 07 下实测通过（真实运单 JDVA46541389064 等 4 单回填成功、彩食鲜回填表 source_return_exports id=2 生成），原 blocked-external 阻塞解除，收口为 resolved。
 
 **Claimed by:** codex-root
 

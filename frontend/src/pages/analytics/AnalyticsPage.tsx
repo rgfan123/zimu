@@ -57,17 +57,30 @@ import {
   topProductsOption,
   trendOption,
 } from './chartOptions';
-import AnalyticsChart from './AnalyticsChart';
-import AnalyticsKpiCard from './AnalyticsKpiCard';
+import Chart, { type ChartLoadingOptions } from '@/components/Chart';
+import KpiCard from '@/components/KpiCard';
 import { parseChannels, serializeChannels } from './analyticsFilters';
 import { analyticsCssVariables, analyticsVisualSystem } from './analyticsTheme';
 import './analytics.css';
+
+/**
+ * 经营分析加载态遮罩（原 AnalyticsChart 视觉契约 → 通用 Chart 的 loadingOption）：
+ * 品牌色指示器 + 次级文案色 + 抬升面半透明遮罩 + 2px 线宽。
+ */
+const analyticsLoading: ChartLoadingOptions = {
+  text: '加载中…',
+  color: analyticsVisualSystem.states.loading,
+  textColor: saasVisualTokens.text.secondary,
+  maskColor: `${saasVisualTokens.surface.raised}e8`,
+  lineWidth: 2,
+};
 
 const BLUE = analyticsVisualSystem.chartColors.trend.orders;
 const TEAL = analyticsVisualSystem.chartColors.trend.quantity;
 
 const RANGE_LABEL: Record<RangeKey, string> = { today: '今日', '7d': '近 7 天', '30d': '近 30 天', custom: '自定义' };
 type MarkerStyle = CSSProperties & { '--analytics-marker-color': string };
+type KpiAccentStyle = CSSProperties & { '--analytics-kpi-accent': string };
 
 function markerStyle(color: string): MarkerStyle {
   return { '--analytics-marker-color': color };
@@ -375,7 +388,7 @@ export default function AnalyticsPage() {
   /** 图表面孔：有 option 出图（加载态遮罩）；无 option 且加载中出骨架；否则空态。 */
   const chartOf = (opt: EChartsOption | null) =>
     opt ? (
-      <AnalyticsChart option={opt} height={236} loading={loading} />
+      <Chart option={opt} height={236} loading={loading} loadingOption={analyticsLoading} />
     ) : loading ? (
       <Skeleton active paragraph={{ rows: 4 }} />
     ) : (
@@ -478,14 +491,25 @@ export default function AnalyticsPage() {
         {/* KPI 六卡（决策 D：卡底 sparkline + 环比） */}
         <div className="analytics-overview-grid" style={{ gridColumn: 'span 12' }}>
           {kpis.map((k) => (
-            <AnalyticsKpiCard
+            <KpiCard
               key={k.key}
               title={k.title}
               value={k.value}
               unit={k.unit}
-              accent={k.tone.accent}
-              emphasis={k.tone.emphasis}
+              color={k.tone.accent}
+              className={`analytics-kpi-card analytics-kpi-card--${k.tone.emphasis}`}
+              style={{ '--analytics-kpi-accent': k.tone.accent } as KpiAccentStyle}
+              ariaLabel={`${k.title}：${k.value == null ? '暂无数据' : `${nf.format(k.value)} ${k.unit}`}`}
+              valueFormatter={(v) => (v == null ? '—' : nf.format(Number(v)))}
+              valueSize={k.tone.emphasis === 'priority' ? 28 : 24}
+              dot
               spark={k.spark}
+              sparkHeight={34}
+              sparkLineWidth={k.tone.emphasis === 'regular' ? 1.25 : 1.75}
+              sparkAnimationDuration={160}
+              sparkArea={false}
+              sparkAriaLabel={`${k.title}趋势`}
+              showEmptySpark
               loading={loading}
               extra={<DeltaTag cur={k.value} prev={k.prev} invert={k.invert} />}
             />
@@ -647,7 +671,7 @@ export default function AnalyticsPage() {
           onToggle={toggleTxt}
           chart={
             heatOpt ? (
-              <AnalyticsChart option={heatOpt} height={236} loading={loading} onChartClick={onHeatClick} ariaLabel="渠道与商品实际发货量热力图" />
+              <Chart option={heatOpt} height={236} loading={loading} onChartClick={onHeatClick} ariaLabel="渠道与商品实际发货量热力图" loadingOption={analyticsLoading} />
             ) : loading ? (
               <Skeleton active paragraph={{ rows: 4 }} />
             ) : (

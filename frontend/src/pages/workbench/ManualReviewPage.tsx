@@ -35,6 +35,7 @@ import type {
   ReviewCaseStatus,
 } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import {
   ATTENTION_COLORS,
   operationalAlertStatusSemantic,
@@ -56,6 +57,7 @@ import {
   jdSkuMappingRerunResultMessage,
   jdSkuMappingReviewPermissions,
 } from './jdSkuMappingReview';
+import { jdStockBlockers, jdStockReviewEvidence } from './jdStockReview';
 import OrderDraftReviewPanel from './OrderDraftReviewPanel';
 import TrackingDraftReviewPanel from './TrackingDraftReviewPanel';
 import {
@@ -489,6 +491,12 @@ export default function ManualReviewPage() {
   const jdSkuEvidence = selected && selectedAction === 'JD_SKU_MAPPING'
     ? jdSkuMappingReviewEvidence(selected.detail)
     : [];
+  const jdStockEvidence = selected && selectedAction === 'JD_STOCK'
+    ? jdStockReviewEvidence(selected.detail)
+    : [];
+  const jdStockReasons = selected && selectedAction === 'JD_STOCK'
+    ? jdStockBlockers(selected.detail)
+    : [];
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -511,59 +519,75 @@ export default function ManualReviewPage() {
       </Card>
 
       {view === 'REVIEWS' ? (
-        <>
-          {queue.error ? <Alert type="error" showIcon message="复核队列加载失败" description={errorMessage(queue.error)} /> : null}
-          <Card size="small">
-            <Space wrap>
-              <Typography.Text type="secondary">状态</Typography.Text>
-              <Select<ReviewCaseStatus>
-                value={status} style={{ width: 130 }}
-                onChange={(value) => { setStatus(value); setPage(0); }}
-                options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value: value as ReviewCaseStatus, label }))}
+        queue.error ? (
+          <PageState
+            state="error"
+            message="复核队列加载失败"
+            description={errorMessage(queue.error)}
+            onRetry={queue.reload}
+          />
+        ) : (
+          <>
+            <Card size="small">
+              <Space wrap>
+                <Typography.Text type="secondary">状态</Typography.Text>
+                <Select<ReviewCaseStatus>
+                  value={status} style={{ width: 130 }}
+                  onChange={(value) => { setStatus(value); setPage(0); }}
+                  options={Object.entries(STATUS_LABELS).map(([value, label]) => ({ value: value as ReviewCaseStatus, label }))}
+                />
+                <Typography.Text type="secondary">责任团队</Typography.Text>
+                <Select allowClear placeholder="全部团队" value={team} style={{ width: 160 }} onChange={(value) => { setTeam(value); setPage(0); }} options={TEAM_OPTIONS} />
+                <Button icon={<ReloadOutlined />} onClick={queue.reload}>刷新</Button>
+                <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{queue.data?.total_elements ?? 0} 项</Typography.Text>
+              </Space>
+            </Card>
+            <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
+              <Table<ReviewCase>
+                rowKey="id" loading={queue.loading} columns={reviewColumns} dataSource={items} scroll={{ x: 900 }}
+                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有复核事项" /> }}
+                pagination={{
+                  current: page + 1, pageSize: size, total: queue.data?.total_elements ?? 0, showSizeChanger: true,
+                  showTotal: (total) => `共 ${total} 项`, onChange: (nextPage, nextSize) => { setPage(nextPage - 1); setSize(nextSize); },
+                }}
               />
-              <Typography.Text type="secondary">责任团队</Typography.Text>
-              <Select allowClear placeholder="全部团队" value={team} style={{ width: 160 }} onChange={(value) => { setTeam(value); setPage(0); }} options={TEAM_OPTIONS} />
-              <Button icon={<ReloadOutlined />} onClick={queue.reload}>刷新</Button>
-              <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{queue.data?.total_elements ?? 0} 项</Typography.Text>
-            </Space>
-          </Card>
-          <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
-            <Table<ReviewCase>
-              rowKey="id" loading={queue.loading} columns={reviewColumns} dataSource={items} scroll={{ x: 900 }}
-              locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有复核事项" /> }}
-              pagination={{
-                current: page + 1, pageSize: size, total: queue.data?.total_elements ?? 0, showSizeChanger: true,
-                showTotal: (total) => `共 ${total} 项`, onChange: (nextPage, nextSize) => { setPage(nextPage - 1); setSize(nextSize); },
-              }}
-            />
-          </Card>
-        </>
+            </Card>
+          </>
+        )
       ) : (
-        <>
-          {alerts.error ? <Alert type="error" showIcon message="运营提醒加载失败" description={errorMessage(alerts.error)} /> : null}
-          <Card size="small">
-            <Space wrap>
-              <Typography.Text type="secondary">状态</Typography.Text>
-              <Select<OperationalAlertStatus>
-                value={alertStatus} style={{ width: 130 }}
-                onChange={(value) => { setAlertStatus(value); setAlertPage(0); }}
-                options={Object.entries(ALERT_STATUS_LABELS).map(([value, label]) => ({ value: value as OperationalAlertStatus, label }))}
+        alerts.error ? (
+          <PageState
+            state="error"
+            message="运营提醒加载失败"
+            description={errorMessage(alerts.error)}
+            onRetry={alerts.reload}
+          />
+        ) : (
+          <>
+            <Card size="small">
+              <Space wrap>
+                <Typography.Text type="secondary">状态</Typography.Text>
+                <Select<OperationalAlertStatus>
+                  value={alertStatus} style={{ width: 130 }}
+                  onChange={(value) => { setAlertStatus(value); setAlertPage(0); }}
+                  options={Object.entries(ALERT_STATUS_LABELS).map(([value, label]) => ({ value: value as OperationalAlertStatus, label }))}
+                />
+                <Button icon={<ReloadOutlined />} onClick={alerts.reload}>刷新</Button>
+                <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{alerts.data?.total_elements ?? 0} 项</Typography.Text>
+              </Space>
+            </Card>
+            <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
+              <Table<OperationalAlert>
+                rowKey="id" loading={alerts.loading} columns={alertColumns} dataSource={alertItems} scroll={{ x: 900 }}
+                locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有运营提醒" /> }}
+                pagination={{
+                  current: alertPage + 1, pageSize: alertSize, total: alerts.data?.total_elements ?? 0, showSizeChanger: true,
+                  showTotal: (total) => `共 ${total} 项`, onChange: (nextPage, nextSize) => { setAlertPage(nextPage - 1); setAlertSize(nextSize); },
+                }}
               />
-              <Button icon={<ReloadOutlined />} onClick={alerts.reload}>刷新</Button>
-              <Typography.Text strong style={{ color: ATTENTION_COLORS.waiting }}>{alerts.data?.total_elements ?? 0} 项</Typography.Text>
-            </Space>
-          </Card>
-          <Card size="small" styles={{ body: { padding: '4px 8px' } }}>
-            <Table<OperationalAlert>
-              rowKey="id" loading={alerts.loading} columns={alertColumns} dataSource={alertItems} scroll={{ x: 900 }}
-              locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有运营提醒" /> }}
-              pagination={{
-                current: alertPage + 1, pageSize: alertSize, total: alerts.data?.total_elements ?? 0, showSizeChanger: true,
-                showTotal: (total) => `共 ${total} 项`, onChange: (nextPage, nextSize) => { setAlertPage(nextPage - 1); setAlertSize(nextSize); },
-              }}
-            />
-          </Card>
-        </>
+            </Card>
+          </>
+        )
       )}
 
       <Drawer
@@ -612,6 +636,38 @@ export default function ManualReviewPage() {
                 </Typography.Paragraph>
               )}
             </div>
+            {selectedAction === 'JD_STOCK' ? (
+              <div>
+                <Typography.Text strong>京东库存判定</Typography.Text>
+                {jdStockReasons.length ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    style={{ marginTop: 8 }}
+                    message={`阻断原因：${jdStockReasons.join('；')}`}
+                  />
+                ) : null}
+                {jdStockEvidence.length ? (
+                  <Table
+                    size="small"
+                    rowKey={(item) => item.evidenceKey}
+                    pagination={false}
+                    style={{ marginTop: 8 }}
+                    dataSource={jdStockEvidence}
+                    columns={[
+                      { title: '商品', dataIndex: 'productLabel', width: 240 },
+                      { title: '京东商品', dataIndex: 'goodsLabel', width: 170 },
+                      { title: '需求', dataIndex: 'demandLabel', width: 100 },
+                      { title: '库存观测', dataIndex: 'observationLabel' },
+                    ]}
+                  />
+                ) : (
+                  <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+                    当前事项未包含可公开的库存观测，请重跑库存核对以刷新证据。
+                  </Typography.Paragraph>
+                )}
+              </div>
+            ) : null}
             {selectedAction === 'JD_SKU_MAPPING' && selected.status === 'OPEN' ? (
               <>
                 <Alert

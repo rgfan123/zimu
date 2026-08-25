@@ -30,7 +30,7 @@ test('production navigation keeps the workbench limited to six daily operations'
       { path: '/workbench/channel-messages', label: '渠道消息' },
       { path: '/fulfillment/tasks', label: '履约任务' },
       { path: '/procurement/tickets', label: '采购协同' },
-      { path: '/fulfillment/sales-outbound', label: '文件作业' },
+      { path: '/fulfillment/sales-outbound', label: '销售出库' },
       { path: '/fulfillment/shipments', label: '发货记录' },
     ],
   );
@@ -133,6 +133,69 @@ test('orders stay canonical and inventory has one business-level overview', () =
     section: '库存中心',
     page: '总库存',
   });
+});
+
+test('order presets collapse into one visible menu item while old URLs stay routable', () => {
+  const orders = findNavigationNode(appNavigation, '/orders');
+
+  // 菜单只保留「全部订单」一个可见叶子
+  const visibleChildren = orders?.children?.filter(({ hideInMenu }) => !hideInMenu);
+  assert.deepEqual(visibleChildren, [{ path: '/orders', label: '全部订单' }]);
+
+  // 旧直达 URL 仍可路由（隐藏节点不进入可见菜单树）
+  const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
+  const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
+  for (const oldPath of ['/orders/pending', '/orders/exceptions', '/orders/tracking']) {
+    assert.equal(findNavigationNode(appNavigation, oldPath)?.hideInMenu, true);
+    assert.equal(visiblePaths.includes(oldPath), false);
+    assert.equal(routablePaths.includes(oldPath), true);
+  }
+
+  // 旧 URL 语义不变：顶栏归属与页面名仍按各自叶子解析
+  assert.deepEqual(navigationContext('/orders/pending', ''), {
+    section: '订单中心',
+    page: '待处理',
+  });
+  assert.deepEqual(navigationContext('/orders/exceptions', ''), {
+    section: '订单中心',
+    page: '异常订单',
+  });
+  assert.deepEqual(navigationContext('/orders/tracking', ''), {
+    section: '订单中心',
+    page: '订单追踪',
+  });
+  assert.deepEqual(navigationContext('/orders', ''), {
+    section: '订单中心',
+    page: '全部订单',
+  });
+});
+
+test('demo order page stays routable but is hidden from the sidebar menu', () => {
+  const demo = findNavigationNode(appNavigation, '/demo/order');
+
+  assert.equal(demo?.hideInMenu, true);
+  assert.equal(
+    flattenNavigationLeaves(visibleNavigationTree(appNavigation)).some(({ path }) => path === '/demo/order'),
+    false,
+  );
+  assert.equal(routableNavigationLeaves(appNavigation).some(({ path }) => path === '/demo/order'), true);
+  assert.deepEqual(navigationContext('/demo/order', ''), {
+    section: '模拟下单',
+    page: '模拟下单',
+  });
+});
+
+test('platform upload pages stay out of the sidebar menu and are reachable by route', () => {
+  const upload = findNavigationNode(appNavigation, '/upload-platform');
+  assert.equal(upload?.hideInMenu, true);
+  assert.equal(findNavigationNode(appNavigation, '/upload-platform/zhonghui')?.label, '中汇渠道平台');
+  assert.deepEqual(navigationContext('/upload-platform/zhonghui', ''), {
+    section: '上传平台',
+    page: '中汇渠道平台',
+  });
+  // 隐藏节点不进入可见菜单树
+  const visible = visibleNavigationTree(appNavigation);
+  assert.equal(findNavigationNode(visible, '/upload-platform'), undefined);
 });
 
 test('production navigation has no duplicate leaf paths', () => {

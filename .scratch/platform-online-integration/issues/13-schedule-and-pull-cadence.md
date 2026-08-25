@@ -9,6 +9,7 @@
 **Blocked by:** 07 或 08 或 09（任一 Connector 落地）
 
 **Status:** ready-for-agent
+**GitHub:** https://github.com/rgfan123/zimu/issues/28
 
 - [ ] 三渠道按错峰表定时执行，单实例不重入
 - [ ] 单次失败自动重试，最终失败写 `last_error`，不产生空批次

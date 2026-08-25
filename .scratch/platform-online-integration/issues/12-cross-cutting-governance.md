@@ -5,6 +5,7 @@
 **Blocked by:** None — can start immediately（与各票并行推进）
 
 **Status:** ready-for-agent
+**GitHub:** https://github.com/rgfan123/zimu/issues/27
 
 - [ ] 凭据轮换日程与责任人已定，脚本从环境变量读取不变
 - [ ] 三平台 golden 样本入库（脱敏），拉取校验引用

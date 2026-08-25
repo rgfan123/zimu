@@ -5,6 +5,7 @@
 **Blocked by:** 03 — INVARIANT 评测数据化；05 — B/C 路径收敛（PREVIEW 运行需 Adapter 路径）；08 — 门禁引擎（设计源：meta-agent-platform 票 07、12）。
 
 **Status:** ready-for-agent
+**GitHub:** https://github.com/rgfan123/zimu/issues/12
 
 - [ ] 202 → 轮询闭环（任务含门禁结果）；两处任务入口（人工建草稿）行为一致
 - [ ] confirm 前全量门禁复跑、全绿才可确认；联动确认该版本 PENDING 用例

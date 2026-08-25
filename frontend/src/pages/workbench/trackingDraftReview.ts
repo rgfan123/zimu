@@ -65,6 +65,12 @@ export interface ConfirmTrackingDraftCommand {
   remark: string;
 }
 
+export interface RejectTrackingDraftCommand {
+  expected_draft_revision: number;
+  expected_case_version: number;
+  reason: string;
+}
+
 const ISSUE_LABELS: Record<string, string> = {
   TRACKING_NO_MISSING: '原始消息缺少运单号',
   TASK_NOT_FOUND: '系统中不存在该发货任务号',
@@ -170,6 +176,29 @@ export function buildTrackingDraftConfirmCommand(
     carrier_code: text(form.carrier_code),
     actual_quantity: null,
     remark: text(form.remark),
+  };
+}
+
+/** 拒绝命令：草稿/事项期望版本 + 拒绝理由；拒绝是 stuck 草稿的唯一出口，不校验确认阻断项。 */
+export function buildTrackingDraftRejectCommand(
+  draft: TrackingDraftDetail,
+  reviewCaseVersion: number | null | undefined,
+  reason: string,
+): RejectTrackingDraftCommand {
+  if (draft.status !== 'OPEN') {
+    throw new Error('运单草稿不是待处理状态');
+  }
+  if (reviewCaseVersion == null || !Number.isInteger(reviewCaseVersion)) {
+    throw new Error('运单草稿缺少可处理的复核版本');
+  }
+  const normalizedReason = reason.trim();
+  if (!normalizedReason) {
+    throw new Error('拒绝运单草稿必须填写理由');
+  }
+  return {
+    expected_draft_revision: draft.revision,
+    expected_case_version: reviewCaseVersion as number,
+    reason: normalizedReason,
   };
 }
 

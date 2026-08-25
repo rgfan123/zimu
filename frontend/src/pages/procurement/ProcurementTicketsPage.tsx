@@ -2,19 +2,21 @@
  * 部门协同 · 采购工单（GET /api/v1/procurement-tickets + 详情）。
  * 缺货时向采购部门发起的协同工单；可连续接收多个部分回执（append-only），
  * 直到缺口补齐、人工取消剩余量或失败转人工（CONTEXT.md 采购工单 / 采购回执）。
- * 本页为列表 + 详情展示（含回执回填结果），写操作（retry / cancel-remaining）不在本票范围。
+ * 本页为列表 + 详情展示（含回执回填结果）；写操作（retry / cancel-remaining）确认
+ * 按确认动作规范在详情 Drawer 内以内联表单完成（issue #43，不叠 Modal）。
  */
 
 import { useMemo, useState } from 'react';
-import { App as AntApp, Alert, Button, Descriptions, Drawer, Input, Modal, Select, Space, Table, Timeline, Typography } from 'antd';
+import { App as AntApp, Alert, Button, Descriptions, Drawer, Input, Select, Space, Table, Timeline, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { errorMessage } from '@/api/client';
 import { procurementApi } from '@/api/endpoints';
 import type { ProcurementStatus, ProcurementTicket } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { AdminEmpty, AdminFailureAlert, AdminLoading, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
-import { adminPageState, adminStatusPresentation } from '@/pages/shared/adminVisual';
+import { adminFailurePresentation, adminPageState, adminStatusPresentation } from '@/pages/shared/adminVisual';
 import '@/pages/shared/adminSurface.css';
 
 const PROCUREMENT_STATUSES: ProcurementStatus[] = ['PENDING', 'SUCCESS', 'PARTIAL', 'FAILED', 'CANCELLED'];
@@ -94,13 +96,18 @@ export default function ProcurementTicketsPage() {
   const detailState = adminPageState(detail.loading, detail.error, Boolean(detailData));
 
   if (listState === 'loading') {
-    return <div className="admin-page"><AdminLoading description="正在加载采购工单…" /></div>;
+    return (
+      <div className="admin-page">
+        <PageState state="loading" description="正在加载采购工单…" />
+      </div>
+    );
   }
 
   if (listState === 'error') {
+    const presentation = adminFailurePresentation(list.error, '采购工单加载失败');
     return (
       <div className="admin-page">
-        <AdminFailureAlert error={list.error} title="采购工单加载失败" onRetry={list.reload} />
+        <PageState state="error" message={presentation.title} description={presentation.description} onRetry={list.reload} />
       </div>
     );
   }
@@ -183,6 +190,47 @@ export default function ProcurementTicketsPage() {
               ) : null}
             </Space>
 
+            {action ? (
+              <div className="admin-surface admin-surface--padded">
+                <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                  <Typography.Text strong>{action === 'retry' ? '重试采购工单' : '取消剩余缺口'}</Typography.Text>
+                  <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
+                    {action === 'retry'
+                      ? '系统会保留原工单并创建关联重试工单。'
+                      : '仅取消尚未补齐的数量，已经发生的到货和发货事实不会回滚。'}
+                  </Typography.Paragraph>
+                  <Input.TextArea
+                    rows={4}
+                    maxLength={1000}
+                    showCount
+                    value={actionNote}
+                    onChange={(event) => setActionNote(event.target.value)}
+                    placeholder="请输入处理依据"
+                  />
+                  <Space>
+                    <Button
+                      type="primary"
+                      danger={action === 'cancel'}
+                      loading={submitting}
+                      disabled={submitting || !actionNote.trim()}
+                      onClick={submitAction}
+                    >
+                      确认提交
+                    </Button>
+                    <Button
+                      disabled={submitting}
+                      onClick={() => {
+                        setAction(null);
+                        setActionNote('');
+                      }}
+                    >
+                      返回
+                    </Button>
+                  </Space>
+                </Space>
+              </div>
+            ) : null}
+
             <div className="admin-detail-section">
               <Typography.Text className="admin-detail-section__heading" strong>条目（{detailData.items?.length ?? 0}）</Typography.Text>
               <Table
@@ -246,37 +294,6 @@ export default function ProcurementTicketsPage() {
           </Space>
         ) : null}
       </Drawer>
-
-      <Modal
-        title={action === 'retry' ? '重试采购工单' : '取消剩余缺口'}
-        open={Boolean(action)}
-        okText="确认提交"
-        cancelText="返回"
-        okButtonProps={{ danger: action === 'cancel', disabled: submitting || !actionNote.trim() }}
-        cancelButtonProps={{ disabled: submitting }}
-        confirmLoading={submitting}
-        onOk={submitAction}
-        closable={!submitting}
-        maskClosable={!submitting}
-        keyboard={!submitting}
-        onCancel={() => {
-          if (submitting) return;
-          setAction(null);
-          setActionNote('');
-        }}
-      >
-        <Typography.Paragraph type="secondary">
-          {action === 'retry' ? '系统会保留原工单并创建关联重试工单。' : '仅取消尚未补齐的数量，已经发生的到货和发货事实不会回滚。'}
-        </Typography.Paragraph>
-        <Input.TextArea
-          rows={4}
-          maxLength={1000}
-          showCount
-          value={actionNote}
-          onChange={(event) => setActionNote(event.target.value)}
-          placeholder="请输入处理依据"
-        />
-      </Modal>
     </div>
   );
 }

@@ -2,6 +2,7 @@
 
 Type: task
 Status: claimed
+GitHub: https://github.com/rgfan123/zimu/issues/34
 Blocked by: 03 — 连接生命周期与运维可见性, 04 — 接收链路适配与固定回执, 05 — 多媒体证据接收适配
 Claimed by: zed-agent
 

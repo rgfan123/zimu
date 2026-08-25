@@ -23,7 +23,9 @@ import {
 import { CheckOutlined, FileSearchOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { attr } from '@/pages/shared/MasterDataCrud';
-import { AdminEmpty, AdminFailureAlert, AdminLoading, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
+import { AdminEmpty, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
+import { adminFailurePresentation } from '@/pages/shared/adminVisual';
+import { PageState } from '@/pages/shared/PageState';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
 import { providerSkuMappingReferencesApi, providerSkuMappingsApi, providersApi, skusApi, sourceSkuMappingsApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
@@ -327,8 +329,15 @@ function JdPiecesPanel() {
     },
   ];
 
-  if (loading) return <AdminLoading description="正在加载京东件数换算候选…" />;
-  if (error) return <AdminFailureAlert error={error} title="京东件数换算加载失败" onRetry={reload} />;
+  if (loading) {
+    return <PageState state="loading" description="正在加载京东件数换算候选…" />;
+  }
+  if (error) {
+    const presentation = adminFailurePresentation(error, '京东件数换算加载失败');
+    return (
+      <PageState state="error" message={presentation.title} description={presentation.description} onRetry={reload} />
+    );
+  }
 
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -519,8 +528,15 @@ function SourceSkuMatrix() {
     })),
   ], [matrix.channels]);
 
-  if (loading) return <AdminLoading description="正在加载 SKU 映射矩阵…" />;
-  if (error) return <AdminFailureAlert error={error} title="SKU 映射加载失败" onRetry={reload} />;
+  if (loading) {
+    return <PageState state="loading" description="正在加载 SKU 映射矩阵…" />;
+  }
+  if (error) {
+    const presentation = adminFailurePresentation(error, 'SKU 映射加载失败');
+    return (
+      <PageState state="error" message={presentation.title} description={presentation.description} onRetry={reload} />
+    );
+  }
 
   const channelOptions = SOURCE_MAPPING_CHANNELS.map((channel) => ({
     value: channel,

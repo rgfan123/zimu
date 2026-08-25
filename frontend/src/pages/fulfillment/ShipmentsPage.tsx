@@ -13,6 +13,7 @@ import { jdWarehouseApi, providersApi, shipmentsApi } from '@/api/endpoints';
 import type { JdClientStatus, JdReceiverAddressCandidate, Shipment, ShipmentJdOutboundPreview, ShipmentStatus } from '@/api/types';
 import { CHANNEL_LABELS, SHIPMENT_STATUS_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { shipmentTimeLabel } from '@/presentation/shipment';
 import {
   jdReceiverAddressBatchIdempotencyKey,
@@ -238,11 +239,9 @@ function JdReceiverAddressPanel() {
               <Input maxLength={255} />
             </Form.Item>
           </Form>
-          <Alert
-            type="info"
-            showIcon
-            message="保存只更新本页确认值；仍需勾选该行并执行「批量确认」才会写入，未确认不参与建单。"
-          />
+          <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
+            保存只更新本页确认值；仍需勾选该行并执行「批量确认」才会写入，未确认不参与建单。
+          </Typography.Paragraph>
         </Space>
       </Modal>
     </Card>
@@ -386,22 +385,19 @@ export default function ShipmentsPage() {
 
   const err = list.error || providers.error;
 
+  if (err) {
+    return (
+      <PageState
+        state="error"
+        message="Shipment 加载失败"
+        description={errorMessage(err)}
+        onRetry={list.reload}
+      />
+    );
+  }
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {err ? (
-        <Alert
-          type="error"
-          showIcon
-          message="Shipment 加载失败"
-          description={errorMessage(err)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={list.reload}>
-              重试
-            </Button>
-          }
-        />
-      ) : null}
-
       <Card size="small" style={{ borderRadius: 10, boxShadow: '0 1px 2px rgba(16,24,40,.05), 0 2px 8px rgba(16,24,40,.06)' }}>
         <Space wrap>
           <span style={{ color: '#7a8699', fontSize: 13 }}>履约方</span>
@@ -542,11 +538,26 @@ export default function ShipmentsPage() {
                               {jdConfirmation.cargos.map((cargo) => (
                                 <li key={`${cargo.orderLine}-${cargo.goodsNo}`}>
                                   {cargo.goodsName}
-                                  {cargo.goodsNo ? `（SKU ${cargo.goodsNo}）` : ''}
+                                  {cargo.goodsNo ? `（EMG ${cargo.goodsNo}）` : ''}
                                   {' '}× {Number.isFinite(cargo.planQuantity) ? cargo.planQuantity.toLocaleString('zh-CN') : '—'} 件
                                 </li>
                               ))}
                             </ul>
+                          </div>
+                        ) : null}
+                        {detail.data?.receiver ? (
+                          <div style={{ background: '#f7f8fa', borderRadius: 8, padding: '8px 10px' }}>
+                            <div style={{ fontWeight: 600, marginBottom: 4 }}>收货人信息：</div>
+                            <div>{detail.data.receiver.name}</div>
+                            <div style={{ color: '#7a8699', fontSize: 12 }}>
+                              {[
+                                detail.data.receiver.province,
+                                detail.data.receiver.city,
+                                detail.data.receiver.district,
+                                detail.data.receiver.town,
+                                detail.data.receiver.address,
+                              ].filter(Boolean).join(' ')}
+                            </div>
                           </div>
                         ) : null}
                       </Space>

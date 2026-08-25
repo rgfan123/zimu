@@ -9,7 +9,7 @@
 ## 1. 设计结论
 
 - PostgreSQL 使用 `app` 业务 schema 与 `analytics` 分析 schema。
-- 当前权威快照共 53 张业务表、4 个分析视图和 1 个操作视图。
+- 当前权威快照共 56 张业务表、4 个分析视图和 1 个操作视图。
 - 有限且仍可能演进的状态值使用 `VARCHAR + CHECK`；可扩展的 OrderEvent 类型使用目录表。
 - 所有业务时间使用 `TIMESTAMPTZ`；Java 使用 `Instant`。来源 Excel 的无时区时间按 `Asia/Shanghai` 解释，分析视图也按上海自然日分桶。
 - 所有数量使用 `NUMERIC(18,3)`；应用写入前必须拒绝超过三位小数的输入，不能依赖数据库隐式舍入。
@@ -50,7 +50,7 @@ erDiagram
 
 ## 3. 表清单
 
-### 3.1 客户、商品与履约方主数据（10）
+### 3.1 客户、商品与履约方主数据（13）
 
 | 表 | 职责 | 关键约束 |
 |---|---|---|
@@ -58,6 +58,9 @@ erDiagram
 | `customer_source_refs` | 来源客户身份映射 | `(source_channel, source_customer_ref)` 唯一；不得按电话自动合并 |
 | `categories` | 商品品类树 | code 唯一；禁止自指父级 |
 | `products` | 商品族 | 规格、单位和履约方不放在 Product |
+| `product_bundles` | 静态礼包主数据（礼包 = 商品族属性 + BOM） | `bundle_code`/`barcode` 唯一；`DRAFT/ACTIVE/INACTIVE` 状态机；`ACTIVE` 前置至少一个组件；履约方由组件触发器推导维护；被订单引用禁止删除 |
+| `bundle_items` | 静态礼包组件清单 | `(bundle_id, sort_no)` 与 `(bundle_id, sku_id)` 唯一；单份用量正整数；同礼包组件须同属一个履约方 |
+| `bundle_aliases` | 礼包识别别名（镜像 `sku_aliases`） | 只用于识别建议，不自动建立业务映射 |
 | `fulfillment_providers` | 京东云仓或第三方履约方 | `provider_code` 生成后不可变；保存运单 SLA |
 | `skus` | 公司唯一可履约 SKU | `SKU-{provider_code}-{6位全局流水号}`；provider 不可变 |
 | `sku_aliases` | 人工检索候选别名 | 只用于建议，不自动建立业务映射 |
@@ -74,7 +77,7 @@ erDiagram
 | `import_batches` | SOURCE_ORDER 或 PROVIDER_TRACKING 文件批次 | 一个批次只能属于一个来源渠道或履约方；运单回传必须显式关联原 `fulfillment_export`；文件 hash 按该范围幂等；REVISION 与父批次同类型、同渠道/履约方/原导出、同模板族且版本号连续 |
 | `raw_import_rows` | 原 Sheet/行号/单元格快照 | 原始坐标和 `raw_cells` 不可修改；状态可以推进 |
 | `orders` | 长期 CanonicalOrder 头 | 三平台 BUSINESS 订单必须关联 SOURCE_ORDER 导入批次；WECOM 内部接口与隔离 Demo 不伪造文件血缘；Receiver 与结账信息快照；乐观锁 `lock_version` |
-| `order_lines` | CanonicalOrder 商品行 | SINGLE/CUSTOM_BUNDLE；权威 `processing_stage` 在行级；普通行保存来源数量与映射乘数快照，约束其乘积等于 Canonical 请求量 |
+| `order_lines` | CanonicalOrder 商品行 | SINGLE/CUSTOM_BUNDLE；权威 `processing_stage` 在行级；普通行保存来源数量与映射乘数快照，约束其乘积等于 Canonical 请求量；`bundle_id` 静态礼包命中时非空（当单定制为 NULL，SINGLE 行为 NULL） |
 | `order_line_components` | 当单礼包组件快照 | 同一礼包只允许一个 provider；组件总量必须等于礼包份数×单礼包用量 |
 | `order_versions` | 每次已提交领域变化的完整 JSONB 快照 | `(order_id, version_no)` 唯一；只追加，不用于覆盖式回滚 |
 

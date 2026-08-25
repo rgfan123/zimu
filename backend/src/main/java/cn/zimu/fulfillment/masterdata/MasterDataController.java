@@ -7,6 +7,8 @@ import cn.zimu.fulfillment.common.web.WriteCommands;
 import cn.zimu.fulfillment.customer.CustomerJdCodeImport;
 import cn.zimu.fulfillment.customer.CustomerPatch;
 import cn.zimu.fulfillment.customer.CustomerWrite;
+import cn.zimu.fulfillment.product.BundlePatch;
+import cn.zimu.fulfillment.product.BundleWrite;
 import cn.zimu.fulfillment.product.NamedCodePatch;
 import cn.zimu.fulfillment.product.NamedCodeWrite;
 import cn.zimu.fulfillment.product.ProductPatch;
@@ -98,6 +100,25 @@ public class MasterDataController {
             @Valid @RequestBody ProductPatch body, @RequestHeader("Idempotency-Key") String key,
             @RequestHeader("X-Operator") String operator) {
         return WriteCommands.respond(service.patchProduct(id(id), body, WriteCommands.requireIdempotencyKey(key), WriteCommands.writeContext(operator)));
+    }
+
+    @GetMapping("/product-bundles") public PageResponse<MasterDataRecord> productBundles(
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(200) int size,
+            @RequestParam(name = "query", required = false) String query) {
+        return service.productBundles(page, size, query);
+    }
+    @GetMapping("/product-bundles/{id}") public MasterDataRecord productBundle(@PathVariable String id) {
+        return service.productBundle(id(id));
+    }
+    @PostMapping("/product-bundles") public ResponseEntity<?> createProductBundle(@Valid @RequestBody BundleWrite body,
+            @RequestHeader("Idempotency-Key") String key, @RequestHeader("X-Operator") String operator) {
+        return WriteCommands.respond(service.createProductBundle(body, WriteCommands.requireIdempotencyKey(key), WriteCommands.writeContext(operator)));
+    }
+    @PatchMapping("/product-bundles/{id}") public ResponseEntity<?> patchProductBundle(@PathVariable String id,
+            @Valid @RequestBody BundlePatch body, @RequestHeader("Idempotency-Key") String key,
+            @RequestHeader("X-Operator") String operator) {
+        return WriteCommands.respond(service.patchProductBundle(id(id), body, WriteCommands.requireIdempotencyKey(key), WriteCommands.writeContext(operator)));
     }
 
     @GetMapping("/skus") public PageResponse<MasterDataRecord> skus(@RequestParam(defaultValue = "0") @Min(0) int page,

@@ -78,7 +78,7 @@ class SkuSearchApiTest {
                 .anySatisfy(item -> assertThat(item.get("id")).isEqualTo(jdSkuId));
         assertThat(byNameAndJd.get("total_elements")).isEqualTo(1);
 
-        // 商品档案投影只展示当前启用的京东履约方映射；第三方 SKU 没有京东 EMG 编号。
+        // 京东履约方映射的 EMG 编号在档案投影中透出；无京东映射的 SKU 为 null
         ResponseEntity<Map> mapping = http.exchange(
                 "/api/v1/provider-sku-mappings",
                 HttpMethod.POST,
@@ -89,8 +89,18 @@ class SkuSearchApiTest {
                         writeHeaders("sku-search-mapping-001", "req-sku-search-mapping-001")),
                 Map.class);
         assertThat(mapping.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(attributes(projectedSku(jdSkuId))).containsEntry("jd_emg_no", "EMG-SEARCH-0001");
-        assertThat(attributes(projectedSku(tpSkuId))).containsEntry("jd_emg_no", null);
+
+        Map<String, Object> jdProjected = projectedSku(jdSkuId);
+        Map<String, Object> tpProjected = projectedSku(tpSkuId);
+        assertThat(attributes(jdProjected)).containsEntry("jd_emg_no", "EMG-SEARCH-0001");
+        assertThat(attributes(tpProjected)).containsEntry("jd_emg_no", null);
+        for (Map<String, Object> item : List.of(jdProjected, tpProjected)) {
+            // 商品层投影：版本与商品层价格供档案编辑弹窗 PATCH /products 使用
+            assertThat(attributes(item).get("product_version")).isInstanceOf(Number.class);
+            assertThat(attributes(item)).containsEntry("product_purchase_price", null);
+            assertThat(attributes(item)).containsEntry("product_retail_price", null);
+            assertThat(attributes(item)).containsEntry("product_other_cost", null);
+        }
 
         ResponseEntity<Map> inactiveMapping = http.exchange(
                 "/api/v1/provider-sku-mappings/" + mapping.getBody().get("id"),

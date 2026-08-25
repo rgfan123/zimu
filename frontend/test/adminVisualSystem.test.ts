@@ -156,8 +156,14 @@ test('admin write flows preserve form wiring, themed feedback and disabled submi
     fileURLToPath(new URL('../src/pages/product/SkuMappingsPage.tsx', import.meta.url)),
     'utf8',
   );
-  assert.match(procurement, /disabled: submitting \|\| !actionNote\.trim\(\)/);
-  assert.match(procurement, /cancelButtonProps=\{\{ disabled: submitting \}\}/);
+  assert.match(procurement, /disabled=\{submitting \|\| !actionNote\.trim\(\)\}/);
+  assert.match(procurement, /danger=\{action === 'cancel'\}/);
+  assert.match(procurement, /disabled=\{submitting\}/);
+  assert.doesNotMatch(
+    procurement,
+    /<Modal\b/,
+    'issue #43: procurement write confirmations stay inline inside the Drawer instead of stacking a Modal',
+  );
   assert.match(connectors, /okButtonProps=\{\{ disabled: submitting \}\}/);
   assert.match(connectors, /cancelButtonProps=\{\{ disabled: submitting \}\}/);
   assert.match(skuMappings, /disabled: confirming \|\| !skuId/);
@@ -165,9 +171,11 @@ test('admin write flows preserve form wiring, themed feedback and disabled submi
 });
 
 test('JD tool feedback stays inside the active application theme context', () => {
+  // issue #40 收敛后，5 个京东查询页的反馈统一由共享骨架 JdQueryPage 提供；
+  // JdWarehousePage 与骨架组件都必须走 AntApp 上下文，禁止静态 message。
   for (const relativePath of [
     '../src/pages/fulfillment/JdWarehousePage.tsx',
-    '../src/pages/fulfillment/JdOrderQueryPage.tsx',
+    '../src/pages/shared/JdQueryPage.tsx',
   ]) {
     const source = readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8');
     assert.match(source, /AntApp\.useApp\(\)/, `${relativePath} must get feedback from the active App context`);

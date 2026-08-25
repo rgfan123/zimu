@@ -1,0 +1,11 @@
+[mcp_servers.fulfillment-hub-mcp]
+command = "docker"
+args = [
+    "compose",
+    "exec",
+    "-T",
+    "backend",
+    "sh",
+    "-c",
+    "MCP_ENABLED=true MCP_AGENT_IDENTITY=mcp-gateway JD_OUTBOUND_AUTHORIZED_OPERATORS=mcp-gateway JD_LOP_WRITE_MODE=ON JD_LOP_CLIENT_MODE=MOCK LOGGING_FILE_NAME=/tmp/mcp-gateway.log java -jar /app/app.jar --server.port=0 --logging.console.enabled=false",
+]

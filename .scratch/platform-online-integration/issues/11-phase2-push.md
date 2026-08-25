@@ -5,6 +5,7 @@
 **Blocked by:** D11 补抓（彩食鲜/飞象），09（聚福宝拉单链路就绪）
 
 **Status:** ready-for-agent
+**GitHub:** https://github.com/rgfan123/zimu/issues/26
 
 - [ ] 聚福宝发货结果自动回传成功，失败可重试、可人工介入
 - [ ] 回传结果与订单状态同步（SYNCED/SYNC_FAILED 语义）

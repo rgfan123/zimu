@@ -1,41 +1,50 @@
 package cn.zimu.fulfillment.connector;
 
-import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
-import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.file.SourceImportService;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * 三平台订单数据刷新编排（人工触发，Phase 0 脚本通道）。
+ * 三平台订单数据刷新编排（人工触发，Java Connector 优先、脚本通道兜底）。
  *
- * <p>对每个渠道：读取本地凭据文件 → 进程内执行对应拉取脚本（超时熔断）→
- * 产物文件（彩食鲜/飞象 xlsx）自动上传为 NEW 导入批次（内容哈希幂等，
- * 重复刷新不产生重复批次）→ 聚福宝 JSON 缺收货人字段，只报告拉取数量。
- * 全程审计；单渠道失败不阻断其他渠道。
+ * <p>对每个渠道（第二轮评审 F1 接线）：<b>优先走 Java Connector</b>
+ * （{@link PlatformConnector#pullOrders}，内部已调
+ * {@link SourceImportService#upload}/{@code importStructured} 建 NEW 批次，内容哈希幂等）→
+ * Connector 缺失或能力未接入（{@code CONNECTOR_CAPABILITY_UNAVAILABLE}）时回退脚本通道
+ * （进程内执行 scripts/*_fetch_orders.py，产物自动上传，与文件导入同管线）。
+ * 聚福宝 JSON 直连缺收货人字段，只报告拉取数量。全程审计；单渠道失败不阻断其他渠道。
+ *
+ * <p>幂等取舍（A1）：refresh 会真实调用外部平台拉取（不可重放），因此幂等键仅做格式校验
+ * （{@code WriteCommands.requireIdempotencyKey}，≥8 字符）防重复点击；真正的重复防护由
+ * 导入批次内容哈希幂等承担（重复拉取命中既有批次/订单，不产生重复批次）。
+ *
+ * <p>自动确认（F5）：{@code app.platform-pull.auto-confirm} 配置项本轮恒不打开（默认 false）——
+ * 人工闸门（ImportBatch confirm）保留，配置项仅作后续「拉取后自动确认」预留，本服务不实现
+ * 自动确认逻辑。
  */
 @Service
 public class PlatformOrderRefreshService {
@@ -44,16 +53,30 @@ public class PlatformOrderRefreshService {
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final List<String> DEFAULT_CHANNELS = List.of("CAISHIXIAN", "JUFUBAO", "FEIXIANG");
+    /** Connector 能力缺失业务码：命中时回退脚本通道（F1）。 */
+    private static final String CAPABILITY_UNAVAILABLE = "CONNECTOR_CAPABILITY_UNAVAILABLE";
 
-    /** 渠道 → 脚本文件名与凭据文件名。 */
-    private static final Map<String, String[]> CHANNEL_SCRIPTS = Map.of(
-            "CAISHIXIAN", new String[]{"caishixian_fetch_orders.py", "csx-credentials.txt"},
-            "JUFUBAO", new String[]{"jufubao_fetch_orders.py", "jufubao-credentials.txt"},
-            "FEIXIANG", new String[]{"feixiang_fetch_orders.py", "feixiang-credentials.txt"});
+    /** 渠道 → 脚本规格（脚本文件名 + 凭据文件名 + 凭据环境变量名）。A10：以 record 取代 String[] 结伴。 */
+    private static final Map<String, ChannelScriptSpec> CHANNEL_SCRIPTS = Map.of(
+            "CAISHIXIAN", new ChannelScriptSpec(
+                    "caishixian_fetch_orders.py", "csx-credentials.txt",
+                    List.of("CSX_USERNAME", "CSX_PASSWORD", "CSX_SUPPLIER_CODE")),
+            "JUFUBAO", new ChannelScriptSpec(
+                    "jufubao_fetch_orders.py", "jufubao-credentials.txt",
+                    List.of("JFUBAO_USERNAME", "JFUBAO_PASSWORD")),
+            "FEIXIANG", new ChannelScriptSpec(
+                    "feixiang_fetch_orders.py", "feixiang-credentials.txt",
+                    List.of("FEIXIANG_USERNAME", "FEIXIANG_PASSWORD")));
 
     private final SourceImportService sourceImportService;
     private final AuditLogService auditLogService;
-    private final ObjectMapper objectMapper;
+    private final JdbcTemplate jdbc;
+    private final PlatformPullSingleFlight singleFlight;
+    private final PlatformScriptRunner scriptRunner;
+    /** F1：渠道 → Java Connector（Spring 收集 List<PlatformConnector> 后按 channel() 建索引，同 ConnectorService）。 */
+    private final Map<SourceChannel, PlatformConnector> connectors;
+    /** F5：自动确认配置项（本轮恒不自动确认，仅预留；见类注释）。 */
+    private final boolean autoConfirm;
 
     private final Path scriptsDir;
     private final Path credentialsDir;
@@ -64,20 +87,34 @@ public class PlatformOrderRefreshService {
     PlatformOrderRefreshService(
             SourceImportService sourceImportService,
             AuditLogService auditLogService,
-            ObjectMapper objectMapper,
+            JdbcTemplate jdbc,
+            PlatformPullSingleFlight singleFlight,
+            PlatformScriptRunner scriptRunner,
+            List<PlatformConnector> platformConnectors,
             @Value("${app.platform-pull.scripts-dir:${java.io.tmpdir}/zimu-platform-pull-scripts}") String scriptsDir,
             @Value("${app.platform-pull.credentials-dir:${java.io.tmpdir}/zimu-platform-pull-credentials}") String credentialsDir,
             @Value("${app.platform-pull.work-dir:${java.io.tmpdir}/zimu-platform-pull}") String workDir,
             @Value("${app.platform-pull.script-timeout:PT10M}") Duration scriptTimeout,
-            @Value("${app.platform-pull.default-days:30}") int defaultDays) {
+            @Value("${app.platform-pull.default-days:30}") int defaultDays,
+            @Value("${app.platform-pull.auto-confirm:false}") boolean autoConfirm) {
         this.sourceImportService = sourceImportService;
         this.auditLogService = auditLogService;
-        this.objectMapper = objectMapper;
+        this.jdbc = jdbc;
+        this.singleFlight = singleFlight;
+        this.scriptRunner = scriptRunner;
+        Map<SourceChannel, PlatformConnector> collected = new EnumMap<>(SourceChannel.class);
+        platformConnectors.forEach(connector -> collected.put(connector.channel(), connector));
+        this.connectors = collected;
+        this.autoConfirm = autoConfirm;
         this.scriptsDir = Path.of(scriptsDir);
         this.credentialsDir = Path.of(credentialsDir);
         this.workDir = Path.of(workDir);
         this.scriptTimeout = scriptTimeout;
         this.defaultDays = defaultDays;
+        if (autoConfirm) {
+            // F5：本轮未实现自动确认逻辑；配置项仅作预留，打开时告警避免误以为已生效。
+            log.warn("app.platform-pull.auto-confirm=true 但本轮未实现自动确认逻辑（人工闸门保留），配置项仅作预留");
+        }
     }
 
     public Map<String, Object> refresh(PlatformOrderRefreshController.RefreshRequest body, CommandContext context) {
@@ -91,6 +128,15 @@ public class PlatformOrderRefreshService {
         for (String channel : channels) {
             results.add(refreshChannel(channel, begin, end, context));
         }
+        if (results.stream().noneMatch(result -> "OK".equals(result.get("status")))) {
+            // A11：全渠道 SKIPPED/FAILED 且无任何 OK → 502（保持 {business_code, message, http_status} 错误契约）。
+            throw new BusinessException(
+                    502,
+                    "PLATFORM_REFRESH_ALL_FAILED",
+                    "所有渠道刷新均未成功（SKIPPED 或 FAILED），请查看各渠道 message 后重试",
+                    List.of(),
+                    Map.of("channels", results));
+        }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("channels", results);
         out.put("date_begin", begin.format(DAY));
@@ -102,78 +148,174 @@ public class PlatformOrderRefreshService {
         long started = System.nanoTime();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("channel", channel);
-        String[] spec = CHANNEL_SCRIPTS.get(channel);
-        if (spec == null) {
-            result.put("status", "SKIPPED");
-            result.put("message", "不支持的渠道: " + channel);
-            return result;
-        }
-        Path script = scriptsDir.resolve(spec[0]);
-        Path credentialFile = credentialsDir.resolve(spec[1]);
-        if (!Files.isRegularFile(script)) {
-            result.put("status", "FAILED");
-            result.put("message", "拉取脚本不存在: " + script);
-            return result;
-        }
-        if (!Files.isRegularFile(credentialFile)) {
-            result.put("status", "FAILED");
-            result.put("message", "凭据文件不存在: " + credentialFile + "（请先在 data-local/ 配置对应凭据）");
-            return result;
-        }
-
-        Path outDir;
-        try {
-            outDir = Files.createTempDirectory(workDir, channel.toLowerCase() + "-");
-        } catch (IOException ex) {
-            result.put("status", "FAILED");
-            result.put("message", "创建工作目录失败: " + ex.getMessage());
-            return result;
-        }
-
-        List<String> command = buildCommand(channel, script, begin, end, outDir);
-        try {
-            runScript(command, credentialFile, result);
-            Path artifact = newestFile(outDir);
-            if (artifact == null) {
+        List<String> command = null;
+        try (PlatformPullSingleFlight.Lease pullLease = singleFlight.tryAcquire(channel)) {
+            if (!pullLease.acquired()) {
+                result.put("status", "SKIPPED");
+                result.put("message", "该渠道已有拉取任务进行中，本次未重复发起");
+                return finish(
+                        channel, begin, end, context, result, "PLATFORM_PULL_IN_PROGRESS", command, started);
+            }
+            // F1：优先走 Java Connector（内部已调 SourceImportService 建批次，不再走脚本）。
+            PullResult pull = connectorPull(channel, begin, end);
+            if (pull != null) {
+                if (pull.ok()) {
+                    result.put("status", "OK");
+                    result.put("message", pull.message());
+                    result.put("order_count", pull.pulledCount());
+                    if (pull.importBatch() != null) {
+                        result.put("batch_id", pull.importBatch().id());
+                        result.put("batch_no", pull.importBatch().batchNo());
+                        result.put("row_counts", pull.importBatch().rowCounts());
+                    }
+                    return finish(channel, begin, end, context, result, null, command, started);
+                }
+                if (!CAPABILITY_UNAVAILABLE.equals(pull.businessCode())) {
+                    // 凭据缺失/平台错误/网络失败等真实失败：渠道 FAILED，不回退脚本（避免双重拉取）。
+                    result.put("status", "FAILED");
+                    result.put("message", pull.message());
+                    return finish(channel, begin, end, context, result, pull.businessCode(), command, started);
+                }
+                log.info("渠道 {} 的 Connector 未接入在线拉取（{}），回退脚本通道", channel, pull.businessCode());
+            }
+            // ---- 脚本通道（兜底）：Connector 缺失或能力未接入 ----
+            ChannelScriptSpec spec = CHANNEL_SCRIPTS.get(channel);
+            if (spec == null) {
+                result.put("status", "SKIPPED");
+                result.put("message", "不支持的渠道: " + channel);
+                return finish(channel, begin, end, context, result, null, command, started);
+            }
+            Path script = scriptsDir.resolve(spec.scriptName());
+            Path credentialFile = credentialsDir.resolve(spec.credentialFile());
+            if (!Files.isRegularFile(script)) {
                 result.put("status", "FAILED");
-                result.put("message", "脚本执行完成但未产出文件");
-                return result;
+                result.put("message", "拉取脚本不存在: " + script);
+                return finish(channel, begin, end, context, result, null, command, started);
             }
-            if ("JUFUBAO".equals(channel)) {
-                handleJufubaoJson(artifact, result);
-            } else {
-                importXlsx(channel, artifact, result, context);
+            if (!Files.isRegularFile(credentialFile)
+                    && spec.credentialEnvNames().stream().noneMatch(key -> System.getenv(key) != null)) {
+                result.put("status", "FAILED");
+                result.put("message", "凭据缺失: " + credentialFile
+                        + "（请配置 " + spec.credentialEnvNames() + " 环境变量，或先在 data-local/ 配置对应凭据）");
+                return finish(channel, begin, end, context, result, null, command, started);
             }
-            audit(context, channel, "refresh", Map.of(
-                    "command", command,
-                    "date_begin", begin.format(DAY),
-                    "date_end", end.format(DAY)), result, "OK");
-        } catch (ScriptFailedException ex) {
+            Path outDir = scriptRunner.createTempDirectory(workDir, channel.toLowerCase() + "-");
+            try {
+                command = buildCommand(channel, script, begin, end, outDir);
+                PlatformScriptRunner.ScriptExecution exec = scriptRunner.run(
+                        command, scriptRunner.readCredentials(credentialFile, spec.credentialEnvNames()), scriptTimeout);
+                if (exec.timedOut()) {
+                    throw new PlatformScriptRunner.PlatformScriptException("拉取脚本执行超时（" + scriptTimeout + "）");
+                }
+                if (exec.exitCode() != 0) {
+                    throw new PlatformScriptRunner.PlatformScriptException(
+                            "拉取脚本退出码 " + exec.exitCode() + ": " + PlatformScriptRunner.tail(exec.output(), 1200));
+                }
+                result.put("script_output", PlatformScriptRunner.tail(exec.output(), 400));
+                Path artifact = newestFile(outDir);
+                if (artifact == null) {
+                    result.put("status", "FAILED");
+                    result.put("message", "脚本执行完成但未产出文件");
+                    return finish(channel, begin, end, context, result, null, command, started);
+                }
+                if ("JUFUBAO".equals(channel)) {
+                    handleJufubaoJson(artifact, result);
+                } else {
+                    importXlsx(channel, artifact, result, context);
+                }
+                return finish(channel, begin, end, context, result, null, command, started);
+            } finally {
+                // A6：临时目录含拉取产物（聚福宝 payload.json 含收货人电话/地址），执行后必须清理。
+                scriptRunner.deleteRecursively(outDir);
+            }
+        } catch (PlatformScriptRunner.PlatformScriptException ex) {
             result.put("status", "FAILED");
             result.put("message", ex.getMessage());
-            audit(context, channel, "refresh", Map.of(
-                    "command", command,
-                    "date_begin", begin.format(DAY),
-                    "date_end", end.format(DAY)), result, "SCRIPT_FAILED");
+            return finish(channel, begin, end, context, result, "SCRIPT_FAILED", command, started);
         } catch (BusinessException ex) {
             result.put("status", "FAILED");
             result.put("message", ex.getMessage());
-            audit(context, channel, "refresh", Map.of(
-                    "command", command,
-                    "date_begin", begin.format(DAY),
-                    "date_end", end.format(DAY)), result, ex.getBusinessCode());
+            return finish(channel, begin, end, context, result, ex.getBusinessCode(), command, started);
         } catch (Exception ex) {
             log.error("平台订单刷新失败: channel={}", channel, ex);
             result.put("status", "FAILED");
             result.put("message", "刷新失败: " + ex.getMessage());
-            audit(context, channel, "refresh", Map.of(
-                    "command", command,
-                    "date_begin", begin.format(DAY),
-                    "date_end", end.format(DAY)), result, "INTERNAL_ERROR");
-        } finally {
-            result.put("latency_ms", (int) ((System.nanoTime() - started) / 1_000_000));
+            return finish(channel, begin, end, context, result, "INTERNAL_ERROR", command, started);
         }
+    }
+
+    /**
+     * F1：按渠道查 Java Connector 并执行在线拉取（PullCursor.initial(since, until)，Asia/Shanghai 窗口）。
+     * 渠道名非法或无对应 Connector bean 时返回 null，调用方走脚本兜底。
+     */
+    private PullResult connectorPull(String channel, LocalDate begin, LocalDate end) {
+        SourceChannel sourceChannel;
+        try {
+            sourceChannel = SourceChannel.valueOf(channel);
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+        PlatformConnector connector = connectors.get(sourceChannel);
+        if (connector == null) {
+            return null;
+        }
+        OffsetDateTime since = begin.atStartOfDay(SHANGHAI).toOffsetDateTime();
+        OffsetDateTime until = end.atStartOfDay(SHANGHAI).toOffsetDateTime();
+        return connector.pullOrders(PullCursor.initial(since, until));
+    }
+
+    /** A9：审计在结果组装完成后调用，传入真实 latency_ms；响应 payload 为含 latency_ms 的最终结果。 */
+    private Map<String, Object> finish(
+            String channel,
+            LocalDate begin,
+            LocalDate end,
+            CommandContext context,
+            Map<String, Object> result,
+            String businessCode,
+            List<String> command,
+            long started) {
+        int latencyMs = (int) ((System.nanoTime() - started) / 1_000_000);
+        result.put("latency_ms", latencyMs);
+        if (businessCode == null) {
+            businessCode = "OK".equals(result.get("status")) ? "OK"
+                    : "SKIPPED".equals(result.get("status")) ? "SKIPPED" : "REFRESH_FAILED";
+        }
+        result.put("business_code", businessCode);
+        updatePullState(channel, result);
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("date_begin", begin.format(DAY));
+        request.put("date_end", end.format(DAY));
+        if (command != null) {
+            request.put("command", command);
+        }
+        audit(context, channel, "refresh", request, result, businessCode, latencyMs);
         return result;
+    }
+
+    /** 成功更新 last_pull_at 并清空 last_error；失败写入 last_error；SKIPPED 不动。 */
+    private void updatePullState(String channel, Map<String, Object> result) {
+        String status = String.valueOf(result.get("status"));
+        if ("OK".equals(status)) {
+            jdbc.update(
+                    """
+                    UPDATE app.connector_configs
+                    SET last_pull_at=CURRENT_TIMESTAMP, last_error=NULL, updated_at=CURRENT_TIMESTAMP
+                    WHERE source_channel=?
+                    """,
+                    channel);
+        } else if ("FAILED".equals(status)) {
+            Map<String, Object> error = Map.of(
+                    "status", status,
+                    "message", String.valueOf(result.getOrDefault("message", "")));
+            jdbc.update(
+                    """
+                    UPDATE app.connector_configs
+                    SET last_error=?::jsonb, updated_at=CURRENT_TIMESTAMP
+                    WHERE source_channel=?
+                    """,
+                    PlatformScriptRunner.writeJson(error),
+                    channel);
+        }
     }
 
     /** 组装渠道拉取命令；彩食鲜用 export 模式（xlsx），飞象直下 xlsx，聚福宝 JSON。 */
@@ -197,56 +339,6 @@ public class PlatformOrderRefreshService {
             default -> throw new IllegalArgumentException("unsupported channel " + channel);
         }
         return command;
-    }
-
-    private void runScript(List<String> command, Path credentialFile, Map<String, Object> result)
-            throws ScriptFailedException, IOException {
-        log.info("执行平台拉取: {}", command);
-        ProcessBuilder builder = new ProcessBuilder(command);
-        builder.environment().putAll(readCredentials(credentialFile));
-        builder.redirectErrorStream(true);
-        Process process = builder.start();
-        StringBuilder output = new StringBuilder();
-        boolean finished;
-        try {
-            finished = process.waitFor(scriptTimeout.toSeconds(), TimeUnit.SECONDS);
-        } catch (InterruptedException ex) {
-            Thread.currentThread().interrupt();
-            process.destroyForcibly();
-            throw new ScriptFailedException("拉取脚本被中断");
-        }
-        try (var reader = process.inputReader(StandardCharsets.UTF_8)) {
-            char[] buffer = new char[4096];
-            int read;
-            while ((read = reader.read(buffer)) != -1) {
-                output.append(buffer, 0, read);
-            }
-        }
-        if (!finished) {
-            process.destroyForcibly();
-            throw new ScriptFailedException("拉取脚本执行超时（" + scriptTimeout + "）");
-        }
-        int exit = process.exitValue();
-        if (exit != 0) {
-            throw new ScriptFailedException("拉取脚本退出码 " + exit + ": " + tail(output.toString(), 1200));
-        }
-        result.put("script_output", tail(output.toString(), 400));
-    }
-
-    /** 解析本地凭据文件（KEY=VALUE 行，忽略 # 注释与空行）。 */
-    private Map<String, String> readCredentials(Path file) throws IOException {
-        Map<String, String> env = new LinkedHashMap<>();
-        for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                continue;
-            }
-            int eq = trimmed.indexOf('=');
-            if (eq > 0) {
-                env.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
-            }
-        }
-        return env;
     }
 
     /** 取目录内最新文件（脚本产物），忽略空目录。 */
@@ -291,7 +383,7 @@ public class PlatformOrderRefreshService {
     /** 聚福宝 JSON 直连缺收货人字段（票 15 blocker）：只报告数量，不自动导入。 */
     private void handleJufubaoJson(Path artifact, Map<String, Object> result) {
         try {
-            Map<String, Object> payload = objectMapper.readValue(
+            Map<String, Object> payload = PlatformScriptRunner.parseJson(
                     Files.readString(artifact, StandardCharsets.UTF_8),
                     new TypeReference<Map<String, Object>>() {});
             Object orders = payload.get("orders");
@@ -300,7 +392,7 @@ public class PlatformOrderRefreshService {
             result.put("order_count", count);
             result.put("message", "已拉取聚福宝待发货订单 " + count + " 单（JSON 直连缺收货人字段，未自动导入，请人工导表上传）");
             result.put("file_name", artifact.getFileName().toString());
-        } catch (IOException ex) {
+        } catch (IOException | IllegalStateException ex) {
             result.put("status", "FAILED");
             result.put("message", "解析聚福宝拉取结果失败: " + ex.getMessage());
         }
@@ -312,20 +404,16 @@ public class PlatformOrderRefreshService {
             String operation,
             Map<String, Object> request,
             Map<String, Object> response,
-            String businessCode) {
-        auditLogService.record(new AuditLogService.AuditCommand()
-                .dataScope(DataScope.BUSINESS)
-                .requestId(context.requestId())
-                .traceId(context.traceId())
-                .operator(context.operator())
-                .actorType(AuditActorType.HUMAN)
+            String businessCode,
+            int latencyMs) {
+        auditLogService.record(PlatformScriptRunner.baseAuditCommand(context)
                 .service("platform-pull." + channel)
                 .operation(operation)
                 .requestPayload(request)
                 .responsePayload(response)
                 .httpStatus(200)
                 .businessCode(businessCode)
-                .latencyMs(0));
+                .latencyMs(latencyMs));
     }
 
     private static LocalDate parseDay(String value, LocalDate fallback) {
@@ -335,13 +423,6 @@ public class PlatformOrderRefreshService {
         return LocalDate.parse(value, DAY);
     }
 
-    private static String tail(String text, int max) {
-        return text.length() <= max ? text : text.substring(text.length() - max);
-    }
-
-    private static final class ScriptFailedException extends RuntimeException {
-        ScriptFailedException(String message) {
-            super(message);
-        }
-    }
+    /** A10：渠道脚本规格——脚本文件名 + 凭据文件名 + 凭据环境变量名（取代 String[] 结伴）。 */
+    private record ChannelScriptSpec(String scriptName, String credentialFile, List<String> credentialEnvNames) {}
 }

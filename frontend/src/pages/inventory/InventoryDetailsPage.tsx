@@ -4,7 +4,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { inventoryApi } from '@/api/endpoints';
 import type { InventoryDetailCapability, InventoryDetailsResponse } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
-import { AdminFailureAlert, AdminLoading } from '@/pages/shared/AdminVisualComponents';
+import { adminFailurePresentation } from '@/pages/shared/adminVisual';
+import { PageState } from '@/pages/shared/PageState';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
 import '@/pages/shared/adminSurface.css';
 import './inventoryOverview.css';
@@ -47,14 +48,19 @@ export default function InventoryDetailsPage() {
   );
 
   if (details.loading) {
-    return <div className="admin-page"><AdminLoading description="正在加载专业库存明细…" /></div>;
+    return (
+      <div className="admin-page">
+        <PageState state="loading" description="正在加载专业库存明细…" />
+      </div>
+    );
   }
   if (details.error) {
+    const presentation = adminFailurePresentation(details.error, '专业库存明细加载失败');
     return (
       <div className="admin-page">
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Link to={returnTo}><ArrowLeftOutlined /> 返回总库存</Link>
-          <AdminFailureAlert error={details.error} title="专业库存明细加载失败" onRetry={details.reload} />
+          <PageState state="error" message={presentation.title} description={presentation.description} onRetry={details.reload} />
         </Space>
       </div>
     );

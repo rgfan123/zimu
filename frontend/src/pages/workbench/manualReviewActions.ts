@@ -6,7 +6,7 @@ import type {
   VersionedNoteCommand,
 } from '@/api/types';
 
-export type ReviewAction = 'CUSTOMER' | 'SKU' | 'JD_SKU_MAPPING' | 'SOURCE_FOLLOWUP' | 'ORDER_DRAFT' | 'TRACKING_DRAFT' | 'NAVIGATE';
+export type ReviewAction = 'CUSTOMER' | 'SKU' | 'JD_SKU_MAPPING' | 'JD_STOCK' | 'SOURCE_FOLLOWUP' | 'ORDER_DRAFT' | 'TRACKING_DRAFT' | 'NAVIGATE';
 
 function detailString(item: ReviewCase, key: string): string {
   const value = item.detail[key];
@@ -28,6 +28,7 @@ export function reviewAction(item: ReviewCase): ReviewAction {
   if (item.reason_code === 'CUSTOMER_MATCH_REQUIRED') return 'CUSTOMER';
   if (item.reason_code === 'SKU_MAPPING_REQUIRED' || item.reason_code === 'MAPPING_MULTIPLIER') return 'SKU';
   if (item.reason_code === 'JD_SKU_MAPPING_BLOCKED' && item.subject_type === 'SHIPMENT') return 'JD_SKU_MAPPING';
+  if (item.reason_code === 'JD_STOCK_BLOCKED' && item.subject_type === 'SHIPMENT') return 'JD_STOCK';
   if (item.reason_code === 'MULTI_SHIPMENT_SOURCE_FOLLOWUP') return 'SOURCE_FOLLOWUP';
   if (item.reason_code === 'WECOM_ORDER_DRAFT' && item.subject_type === 'ORDER_DRAFT') return 'ORDER_DRAFT';
   if (item.reason_code === 'WECOM_TRACKING_DRAFT' && item.subject_type === 'TRACKING_DRAFT') return 'TRACKING_DRAFT';
