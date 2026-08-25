@@ -4,6 +4,7 @@
 
 import { useState } from 'react';
 import { Button, Input, Select, Space, Tag, Typography } from 'antd';
+import { CloudUploadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import MasterDataCrud, { attr, type CrudField } from '@/pages/shared/MasterDataCrud';
@@ -20,10 +21,12 @@ import {
   commercialPriceLabel,
 } from './skuCommercialPrice';
 import { leadTimeLabel, listingPeriodLabel, marginLabel } from './productArchiveFields';
+import PlatformUploadModal from './PlatformUploadModal';
 
 export default function SkusPage() {
   const [providerId, setProviderId] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState<string | undefined>();
+  const [platformUploadOpen, setPlatformUploadOpen] = useState(false);
   const providerOptions = useProviderOptions();
   const categoryOptions = useCategoryOptions();
   const providerLabels = new Map(providerOptions.map(({ value, label }) => [String(value), label]));
@@ -143,6 +146,7 @@ export default function SkusPage() {
   ];
 
   return (
+    <>
     <MasterDataCrud
       filters={
         <Space wrap>
@@ -164,6 +168,10 @@ export default function SkusPage() {
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
             新建会同时创建商品及首个 SKU；后续可在基础信息中维护完整商品资料。
           </Typography.Text>
+          <Button size="small" type="primary" ghost icon={<CloudUploadOutlined />}
+                  onClick={() => setPlatformUploadOpen(true)}>
+            上架
+          </Button>
           <Button size="small"><Link to="/product/products">管理商品名称</Link></Button>
           <Button size="small"><Link to="/product/categories">管理品类</Link></Button>
         </Space>
@@ -176,5 +184,12 @@ export default function SkusPage() {
       createFields={createFields}
       updateFields={updateFields}
     />
+      <PlatformUploadModal
+        open={platformUploadOpen}
+        onClose={() => setPlatformUploadOpen(false)}
+        query={searchQuery}
+        providerId={providerId}
+      />
+    </>
   );
 }

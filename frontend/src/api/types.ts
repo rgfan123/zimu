@@ -1457,3 +1457,74 @@ export interface OrderAssistantConfig {
   service_ready: boolean;
   demo_mode: boolean;
 }
+
+/* ── 中汇 PMS 上传通道（契约 components.schemas 的 StatusView/CaptchaView/... 投影） ── */
+
+/** 非机密就绪投影：客户端模式、默认关闭的写门闩、凭据与会话状态。 */
+export interface ZhonghuiPmsStatus {
+  client_mode: 'MOCK' | 'REAL';
+  write_mode: 'OFF' | 'ON';
+  /** 仅当 client_mode=REAL 且 write_mode=ON 时为 true。 */
+  external_writes_enabled: boolean;
+  credentials_configured: boolean;
+  /** 仅当两道写门闩与全部 REAL 凭据都就绪时为 true。 */
+  live_ready: boolean;
+  authenticated: boolean;
+}
+
+export interface ZhonghuiPmsCaptcha {
+  captcha_no: string;
+  /** Base64 PNG，不含 data URI 前缀。 */
+  img: string;
+}
+
+export interface ZhonghuiPmsLoginResult {
+  success: boolean;
+  business_code: string;
+  message: string;
+}
+
+export interface ZhonghuiPmsBrand {
+  brand_id: string;
+  brand_name: string;
+}
+
+export interface ZhonghuiPmsCertification {
+  certification_id: string;
+  certification_name: string;
+  commencement_date: string;
+  inspection_end_date: string;
+}
+
+export interface ZhonghuiPmsLogistics {
+  logist_id: string;
+  logist_name: string;
+}
+
+export interface ZhonghuiPmsOptions {
+  brands: ZhonghuiPmsBrand[];
+  certifications: ZhonghuiPmsCertification[];
+  logistics: ZhonghuiPmsLogistics[];
+}
+
+export interface ZhonghuiPmsBatchUploadItem {
+  sku_id: string;
+  sku_code: string | null;
+  goods_name: string | null;
+  success: boolean;
+  business_code: string | null;
+  message: string | null;
+  goods_id?: string | null;
+  pms_status?: string | null;
+  warning?: string | null;
+}
+
+export interface ZhonghuiPmsBatchUploadResult {
+  batch_id: string;
+  batch_no: string;
+  status: 'PENDING' | 'COMPLETED';
+  total: number;
+  succeeded: number;
+  failed: number;
+  items: ZhonghuiPmsBatchUploadItem[];
+}

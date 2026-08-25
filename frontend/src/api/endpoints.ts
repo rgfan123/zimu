@@ -92,9 +92,18 @@ import type {
   SourceChannel,
   SourceReturnExport,
   TrackingImportBatch,
+  ZhonghuiPmsBatchUploadResult,
+  ZhonghuiPmsCaptcha,
+  ZhonghuiPmsLoginResult,
+  ZhonghuiPmsOptions,
+  ZhonghuiPmsStatus,
 } from './types';
 import { trustedWriteHeaders, type TrustedWriteHeaderOptions } from './writeHeaders';
 import { continuationExportRequest } from './continuationExport';
+import {
+  zhonghuiPmsBatchIdempotencyKey,
+  type ZhonghuiPmsBatchUploadBody,
+} from './zhonghuiPmsIdempotency';
 import {
   shipmentJdOutboundIdempotencyKey,
   shipmentJdOutboundSubmitRequest,
@@ -935,4 +944,38 @@ export const agentRunsApi = {
     apiRequest<TokenUsageSummaryResponse>('/api/v1/agent-runs/token-usage', {
       params: query as Record<string, QueryValue>,
     }),
+};
+
+
+/**
+ * 中汇 PMS 上传通道（`/api/v1/zhonghui-pms`）。
+ *
+ * 后端早已完备（7 个端点 + 5 个迁移），此前前端零调用、界面不可达；本对象是补回的调用入口。
+ * 写端点的幂等取舍：login 每次都是新会话意图，用随机键；batchUpload 用
+ * {@link zhonghuiPmsBatchIdempotencyKey} 生成的稳定键，同一批 SKU + 相同覆盖字段重放首次结果，
+ * 不会在 PMS 侧重复建商品。
+ */
+export const zhonghuiPmsApi = {
+  status: () => apiRequest<ZhonghuiPmsStatus>('/api/v1/zhonghui-pms/status'),
+  captcha: () => apiRequest<ZhonghuiPmsCaptcha>('/api/v1/zhonghui-pms/captcha'),
+  options: () => apiRequest<ZhonghuiPmsOptions>('/api/v1/zhonghui-pms/options'),
+  login: (authCode: string, captchaNo: string) =>
+    apiRequest<ZhonghuiPmsLoginResult>('/api/v1/zhonghui-pms/login', {
+      method: 'POST',
+      body: { auth_code: authCode, captcha_no: captchaNo },
+      headers: writeHeaders(),
+    }),
+  logout: () =>
+    apiRequest<{ success: boolean }>('/api/v1/zhonghui-pms/logout', {
+      method: 'POST',
+      headers: writeHeaders(),
+    }),
+  batchUpload: (body: ZhonghuiPmsBatchUploadBody) =>
+    apiRequest<ZhonghuiPmsBatchUploadResult>('/api/v1/zhonghui-pms/batch-uploads', {
+      method: 'POST',
+      body,
+      headers: writeHeaders({ idempotencyKey: zhonghuiPmsBatchIdempotencyKey(body) }),
+    }),
+  batch: (batchId: string) =>
+    apiRequest<ZhonghuiPmsBatchUploadResult>(`/api/v1/zhonghui-pms/upload-batches/${batchId}`),
 };
