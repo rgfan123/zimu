@@ -71,7 +71,7 @@ class BusinessFollowUpApiTest {
         assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(replayed.getBody()).isEqualTo(created.getBody());
         assertThat(created.getBody())
-                .containsEntry("message_submission_id", Math.toIntExact(submissionId))
+                .containsEntry("message_submission_id", String.valueOf(submissionId))
                 .containsEntry("stage", "PENDING_ORGANIZATION")
                 .containsEntry("processing_status", "NOT_STARTED")
                 .containsEntry("source_revision", 1)
@@ -85,7 +85,23 @@ class BusinessFollowUpApiTest {
                 new HttpEntity<>(readHeaders()),
                 Map.class);
         assertThat(detail.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(detail.getBody()).isEqualTo(created.getBody());
+        assertThat(detail.getBody())
+                .containsEntry("id", id)
+                .containsEntry("employee_draft", "客户希望先看牛肩切片样品，再确认月结正式订单");
+        ResponseEntity<Map> page = http.exchange(
+                "/api/v1/business-followups?page=0&size=20",
+                HttpMethod.GET,
+                new HttpEntity<>(readHeaders()),
+                Map.class);
+        Map<?, ?> summary = (Map<?, ?>) ((java.util.List<?>) page.getBody().get("items")).getFirst();
+        assertThat(summary.containsKey("employee_draft")).isFalse();
+        assertThat(summary.get("task_failure_code")).isNull();
+        String idempotencySnapshot = jdbc.queryForObject(
+                "SELECT response_snapshot::text FROM app.idempotency_registry "
+                        + "WHERE scope = 'business_followup.create' AND idempotency_key = ?",
+                String.class,
+                "followup-create-001");
+        assertThat(idempotencySnapshot).doesNotContain("客户希望先看牛肩切片样品");
         String auditPayload = jdbc.queryForObject(
                 """
                 SELECT coalesce(request_payload::text, '') || coalesce(response_payload::text, '')
@@ -148,6 +164,18 @@ class BusinessFollowUpApiTest {
                 .containsEntry("agent_slug", "data-query-agent")
                 .containsEntry("agent_version", 1)
                 .containsEntry("task_status", "PENDING");
+        jdbc.update(
+                "UPDATE app.async_tasks SET last_error = ? WHERE payload_ref LIKE ?",
+                "password=must-not-leak",
+                "business-followup:" + id + ":%");
+        ResponseEntity<Map> sanitizedDetail = http.exchange(
+                "/api/v1/business-followups/" + id,
+                HttpMethod.GET,
+                new HttpEntity<>(readHeaders()),
+                Map.class);
+        assertThat(sanitizedDetail.getBody())
+                .containsEntry("task_failure_code", "MODEL_CALL_FAILED");
+        assertThat(String.valueOf(sanitizedDetail.getBody())).doesNotContain("must-not-leak");
 
         ResponseEntity<Map> drifted = organize(
                 id,
@@ -229,6 +257,35 @@ class BusinessFollowUpApiTest {
     }
 
     @Test
+    void organizeIdempotencyKeyIsBoundToTheFollowUpPathTarget() {
+        String firstId = String.valueOf(create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-idem-first"),
+                        "employee_draft", "第一个跟进"),
+                "followup-idem-first-create").getBody().get("id"));
+        String secondId = String.valueOf(create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-idem-second"),
+                        "employee_draft", "第二个跟进"),
+                "followup-idem-second-create").getBody().get("id"));
+        Map<String, Object> request = Map.of(
+                "agent_slug", "data-query-agent",
+                "agent_version", 1);
+
+        ResponseEntity<Map> first = organize(firstId, request, "followup-cross-target-key");
+        ResponseEntity<Map> second = organize(secondId, request, "followup-cross-target-key");
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        assertThat(second.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(second.getBody()).containsEntry("business_code", "IDEMPOTENCY_CONFLICT");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.async_tasks WHERE payload_ref LIKE ?",
+                        Integer.class,
+                        "business-followup:" + secondId + ":%"))
+                .isZero();
+    }
+
+    @Test
     void missingAgentFailsClosedWithoutQueuingWork() {
         ResponseEntity<Map> created = create(
                 Map.of(
@@ -251,14 +308,42 @@ class BusinessFollowUpApiTest {
         assertThat(count).isZero();
     }
 
+    @Test
+    void persistedAgentDisableWinsOverAStaleInMemoryRegistrySnapshot() {
+        ResponseEntity<Map> created = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-agent-disabled"),
+                        "employee_draft", "禁用 Agent 不应运行"),
+                "followup-agent-disabled-create");
+        String id = String.valueOf(created.getBody().get("id"));
+        jdbc.update(
+                "UPDATE app.agent_definitions SET enabled = false "
+                        + "WHERE agent_slug = 'data-query-agent' AND version = 1");
+        try {
+            ResponseEntity<Map> response = organize(
+                    id,
+                    Map.of("agent_slug", "data-query-agent", "agent_version", 1),
+                    "followup-agent-disabled-start");
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+            assertThat(response.getBody()).containsEntry("business_code", "AGENT_NOT_ENABLED");
+        } finally {
+            jdbc.update(
+                    "UPDATE app.agent_definitions SET enabled = true "
+                            + "WHERE agent_slug = 'data-query-agent' AND version = 1");
+        }
+    }
+
     private ResponseEntity<Map> create(Map<String, Object> body, String key) {
+        Map<String, Object> request = new java.util.LinkedHashMap<>(body);
+        request.computeIfPresent("message_submission_id", (ignored, value) -> String.valueOf(value));
         HttpHeaders headers = readHeaders();
         headers.set("Idempotency-Key", key);
         headers.setContentType(MediaType.APPLICATION_JSON);
         return http.exchange(
                 "/api/v1/business-followups",
                 HttpMethod.POST,
-                new HttpEntity<>(body, headers),
+                new HttpEntity<>(request, headers),
                 Map.class);
     }
 

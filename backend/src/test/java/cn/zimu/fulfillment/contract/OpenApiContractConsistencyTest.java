@@ -171,6 +171,34 @@ class OpenApiContractConsistencyTest {
                 .isFalse();
     }
 
+    @Test
+    void businessFollowUpContractUsesSnakeCaseStringIdsAndRequiredWriteHeaders() {
+        Map<String, Object> handwritten = parse(readHandwrittenContract());
+        Map<String, Object> schemas = map(map(handwritten.get("components")).get("schemas"));
+        Map<String, Object> createProperties = map(map(schemas.get("CreateRequest")).get("properties"));
+        assertThat(createProperties.keySet())
+                .containsExactlyInAnyOrder("message_submission_id", "employee_draft");
+        assertThat(createProperties).doesNotContainKeys("messageSubmissionId", "employeeDraft");
+        assertThat(String.valueOf(map(createProperties.get("message_submission_id")).get("$ref")))
+                .endsWith("/Identifier");
+
+        Map<String, Object> summaryProperties =
+                map(map(schemas.get("BusinessFollowUpSummaryDto")).get("properties"));
+        assertThat(summaryProperties).containsKeys(
+                "id", "followup_no", "message_submission_id", "source_message_id");
+        assertThat(summaryProperties).doesNotContainKey("employee_draft");
+
+        Map<String, Object> contractPaths = paths(handwritten);
+        for (String path : List.of(
+                "/api/v1/business-followups",
+                "/api/v1/business-followups/{followup_id}/organize")) {
+            Map<String, Object> post = map(map(contractPaths.get(path)).get("post"));
+            assertThat(list(post.get("parameters")))
+                    .anySatisfy(parameter -> assertThat(String.valueOf(map(parameter).get("$ref")))
+                            .endsWith("/IdempotencyKey"));
+        }
+    }
+
     /** 门禁本体：生成契约与手写评审契约的结构化比对，漂移即失败并打印差异。 */
     @Test
     void generatedContractMatchesHandwrittenReviewContract() {

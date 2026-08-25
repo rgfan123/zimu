@@ -2,13 +2,12 @@ package cn.zimu.fulfillment.followup;
 
 import java.time.OffsetDateTime;
 
-/** Authorized Business Follow-up projection; raw channel evidence stays referenced by ID. */
-public record BusinessFollowUpDto(
+/** Minimum-necessary list/write projection; sensitive draft text is detail-only. */
+public record BusinessFollowUpSummaryDto(
         String id,
         String followupNo,
         String messageSubmissionId,
         String sourceMessageId,
-        String employeeDraft,
         int sourceRevision,
         String stage,
         String processingStatus,

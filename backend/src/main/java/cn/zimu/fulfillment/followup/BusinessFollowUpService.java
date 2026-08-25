@@ -10,6 +10,7 @@ import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
+import cn.zimu.fulfillment.message.MessagePublicProjectionSanitizer;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
@@ -24,7 +25,20 @@ public class BusinessFollowUpService {
 
     static final String ORGANIZE_TASK_TYPE = "BUSINESS_FOLLOWUP_ORGANIZE";
 
-    private static final String SELECT_PROJECTION = """
+    private static final String SELECT_SUMMARY = """
+            SELECT bf.id, bf.followup_no, bf.message_submission_id,
+                   ms.source_message_id, bf.source_revision,
+                   bf.stage, bf.processing_status, bf.created_by,
+                   bf.designated_reviewer, bf.agent_slug, bf.agent_version,
+                   task.status AS task_status, task.attempts AS task_attempts,
+                   task.last_error AS task_last_error, bf.created_at, bf.updated_at
+            FROM app.business_followups bf
+            JOIN app.message_submissions ms ON ms.id = bf.message_submission_id
+            LEFT JOIN app.async_tasks task
+              ON task.idempotency_key = bf.organization_task_key
+            """;
+
+    private static final String SELECT_DETAIL = """
             SELECT bf.id, bf.followup_no, bf.message_submission_id,
                    ms.source_message_id, bf.employee_draft, bf.source_revision,
                    bf.stage, bf.processing_status, bf.created_by,
@@ -54,7 +68,7 @@ public class BusinessFollowUpService {
     }
 
     @Transactional
-    public BusinessFollowUpDto create(CreateCommand command, CommandContext context) {
+    public BusinessFollowUpSummaryDto create(CreateCommand command, CommandContext context) {
         requireSubmission(command.messageSubmissionId());
         List<Long> inserted = jdbc.query(
                 """
@@ -71,7 +85,7 @@ public class BusinessFollowUpService {
         long id = inserted.isEmpty()
                 ? requireIdForSubmission(command.messageSubmissionId())
                 : inserted.getFirst();
-        BusinessFollowUpDto result = detail(id);
+        BusinessFollowUpSummaryDto result = summary(id);
         if (!inserted.isEmpty()) {
             recordAudit(
                     context,
@@ -87,14 +101,15 @@ public class BusinessFollowUpService {
     }
 
     @Transactional
-    public BusinessFollowUpDto organize(
-            long id, OrganizeCommand command, CommandContext context) {
-        AgentDefinition agent = requireCurrentAgent(command.agentSlug(), command.agentVersion());
+    public BusinessFollowUpSummaryDto organize(
+            OrganizeCommand command, CommandContext context) {
+        long id = command.followupId();
         LockedFollowUp followUp = lock(id);
+        AgentDefinition agent = requireCurrentAgent(command.agentSlug(), command.agentVersion());
         if (followUp.agentSlug() != null) {
             if (followUp.agentSlug().equals(agent.agentSlug())
                     && followUp.agentVersion().equals(agent.version())) {
-                return detail(id);
+                return summary(id);
             }
             throw BusinessException.conflict(
                     "FOLLOWUP_ALREADY_ORGANIZING", "该跟进已指定另一个 Agent 版本");
@@ -118,7 +133,7 @@ public class BusinessFollowUpService {
                 "business-followup:" + id + ":revision:" + followUp.sourceRevision(),
                 taskKey,
                 3);
-        BusinessFollowUpDto result = detail(id);
+        BusinessFollowUpSummaryDto result = summary(id);
         recordAudit(
                 context,
                 "business_followup.organize",
@@ -135,8 +150,8 @@ public class BusinessFollowUpService {
     @Transactional(readOnly = true)
     public BusinessFollowUpDto detail(long id) {
         List<BusinessFollowUpDto> rows = jdbc.query(
-                SELECT_PROJECTION + " WHERE bf.id = ?",
-                BusinessFollowUpService::map,
+                SELECT_DETAIL + " WHERE bf.id = ?",
+                BusinessFollowUpService::mapDetail,
                 id);
         return rows.stream()
                 .findFirst()
@@ -144,14 +159,14 @@ public class BusinessFollowUpService {
     }
 
     @Transactional(readOnly = true)
-    public PageResponse<BusinessFollowUpDto> list(int page, int size, String stage) {
+    public PageResponse<BusinessFollowUpSummaryDto> list(int page, int size, String stage) {
         String filter = stage == null || stage.isBlank() ? "" : " WHERE bf.stage = ?";
         Object[] queryArgs = stage == null || stage.isBlank()
                 ? new Object[] {size, (long) page * size}
                 : new Object[] {stage, size, (long) page * size};
-        List<BusinessFollowUpDto> items = jdbc.query(
-                SELECT_PROJECTION + filter + " ORDER BY bf.updated_at DESC, bf.id DESC LIMIT ? OFFSET ?",
-                BusinessFollowUpService::map,
+        List<BusinessFollowUpSummaryDto> items = jdbc.query(
+                SELECT_SUMMARY + filter + " ORDER BY bf.updated_at DESC, bf.id DESC LIMIT ? OFFSET ?",
+                BusinessFollowUpService::mapSummary,
                 queryArgs);
         Long total = stage == null || stage.isBlank()
                 ? jdbc.queryForObject("SELECT count(*) FROM app.business_followups", Long.class)
@@ -197,6 +212,22 @@ public class BusinessFollowUpService {
                     "AGENT_VERSION_MISMATCH",
                     "Agent 版本已变化，当前版本: " + current.version());
         }
+        List<AgentState> persisted = jdbc.query(
+                """
+                SELECT enabled, status
+                FROM app.agent_definitions
+                WHERE agent_slug = ? AND version = ?
+                FOR SHARE
+                """,
+                (rs, row) -> new AgentState(rs.getBoolean("enabled"), rs.getString("status")),
+                slug,
+                version);
+        if (persisted.isEmpty()
+                || !persisted.getFirst().enabled()
+                || !"active".equals(persisted.getFirst().status())) {
+            throw BusinessException.unprocessable(
+                    "AGENT_NOT_ENABLED", "必须选择当前已启用的 Agent");
+        }
         return current;
     }
 
@@ -212,6 +243,16 @@ public class BusinessFollowUpService {
                         rs.getInt("source_revision"),
                         rs.getString("agent_slug"),
                         rs.getObject("agent_version", Integer.class)),
+                id);
+        return rows.stream()
+                .findFirst()
+                .orElseThrow(() -> BusinessException.notFound("Business Follow-up 不存在: " + id));
+    }
+
+    private BusinessFollowUpSummaryDto summary(long id) {
+        List<BusinessFollowUpSummaryDto> rows = jdbc.query(
+                SELECT_SUMMARY + " WHERE bf.id = ?",
+                BusinessFollowUpService::mapSummary,
                 id);
         return rows.stream()
                 .findFirst()
@@ -249,12 +290,12 @@ public class BusinessFollowUpService {
                 .businessCode(businessCode));
     }
 
-    private static BusinessFollowUpDto map(ResultSet rs, int rowNumber) throws SQLException {
+    private static BusinessFollowUpDto mapDetail(ResultSet rs, int rowNumber) throws SQLException {
         return new BusinessFollowUpDto(
-                rs.getLong("id"),
+                rs.getString("id"),
                 rs.getString("followup_no"),
-                rs.getLong("message_submission_id"),
-                rs.getLong("source_message_id"),
+                rs.getString("message_submission_id"),
+                rs.getString("source_message_id"),
                 rs.getString("employee_draft"),
                 rs.getInt("source_revision"),
                 rs.getString("stage"),
@@ -265,14 +306,39 @@ public class BusinessFollowUpService {
                 rs.getObject("agent_version", Integer.class),
                 rs.getString("task_status"),
                 rs.getObject("task_attempts", Integer.class),
-                rs.getString("task_last_error"),
+                MessagePublicProjectionSanitizer.stableFailureCode(
+                        rs.getString("task_last_error")),
+                rs.getObject("created_at", java.time.OffsetDateTime.class),
+                rs.getObject("updated_at", java.time.OffsetDateTime.class));
+    }
+
+    private static BusinessFollowUpSummaryDto mapSummary(ResultSet rs, int rowNumber)
+            throws SQLException {
+        return new BusinessFollowUpSummaryDto(
+                rs.getString("id"),
+                rs.getString("followup_no"),
+                rs.getString("message_submission_id"),
+                rs.getString("source_message_id"),
+                rs.getInt("source_revision"),
+                rs.getString("stage"),
+                rs.getString("processing_status"),
+                rs.getString("created_by"),
+                rs.getString("designated_reviewer"),
+                rs.getString("agent_slug"),
+                rs.getObject("agent_version", Integer.class),
+                rs.getString("task_status"),
+                rs.getObject("task_attempts", Integer.class),
+                MessagePublicProjectionSanitizer.stableFailureCode(
+                        rs.getString("task_last_error")),
                 rs.getObject("created_at", java.time.OffsetDateTime.class),
                 rs.getObject("updated_at", java.time.OffsetDateTime.class));
     }
 
     public record CreateCommand(long messageSubmissionId, String employeeDraft) {}
 
-    public record OrganizeCommand(String agentSlug, int agentVersion) {}
+    public record OrganizeCommand(long followupId, String agentSlug, int agentVersion) {}
 
     private record LockedFollowUp(int sourceRevision, String agentSlug, Integer agentVersion) {}
+
+    private record AgentState(boolean enabled, String status) {}
 }

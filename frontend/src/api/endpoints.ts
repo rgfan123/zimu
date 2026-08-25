@@ -27,6 +27,7 @@ import type {
   BusinessFollowUpCreateInput,
   BusinessFollowUpOrganizeInput,
   BusinessFollowUpPage,
+  BusinessFollowUpSummary,
   ChannelMessageDetail,
   ChannelMessagePage,
   MessageSubmissionDetail,
@@ -860,16 +861,16 @@ export const businessFollowUpsApi = {
     apiRequest<BusinessFollowUpPage>('/api/v1/business-followups', {
       params: query as Record<string, QueryValue>,
     }),
-  detail: (id: number) =>
+  detail: (id: string) =>
     apiRequest<BusinessFollowUp>(`/api/v1/business-followups/${id}`),
   create: (body: BusinessFollowUpCreateInput) =>
-    apiRequest<BusinessFollowUp>('/api/v1/business-followups', {
+    apiRequest<BusinessFollowUpSummary>('/api/v1/business-followups', {
       method: 'POST',
       body,
       headers: writeHeaders(),
     }),
-  organize: (id: number, body: BusinessFollowUpOrganizeInput) =>
-    apiRequest<BusinessFollowUp>(`/api/v1/business-followups/${id}/organize`, {
+  organize: (id: string, body: BusinessFollowUpOrganizeInput) =>
+    apiRequest<BusinessFollowUpSummary>(`/api/v1/business-followups/${id}/organize`, {
       method: 'POST',
       body,
       headers: writeHeaders(),

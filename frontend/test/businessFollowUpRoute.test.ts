@@ -30,4 +30,16 @@ test('workbench shows stage and Agent processing as separate columns', () => {
   assert.match(page, /Agent 处理/);
   assert.match(page, /证据版本/);
   assert.match(page, /指定 \+1/);
+  assert.match(page, /businessFollowUpsApi\.detail/);
+  assert.match(page, /Button type="link"/);
+});
+
+test('channel evidence owns the follow-up creation entry and carries a string submission id', () => {
+  const messages = source('src/pages/workbench/ChannelMessagesPage.tsx');
+  const page = source('src/pages/workbench/BusinessFollowUpsPage.tsx');
+  const types = source('src/api/types.ts');
+  assert.match(messages, /创建客户跟进/);
+  assert.match(messages, /submission_id=/);
+  assert.match(page, /readOnly/);
+  assert.match(types, /message_submission_id: string/);
 });

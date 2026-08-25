@@ -1428,12 +1428,11 @@ export type BusinessFollowUpProcessingStatus =
   | 'SUCCEEDED'
   | 'FAILED';
 
-export interface BusinessFollowUp {
-  id: number;
+export interface BusinessFollowUpSummary {
+  id: string;
   followup_no: string;
-  message_submission_id: number;
-  source_message_id: number;
-  employee_draft: string;
+  message_submission_id: string;
+  source_message_id: string;
   source_revision: number;
   stage: BusinessFollowUpStage;
   processing_status: BusinessFollowUpProcessingStatus;
@@ -1443,17 +1442,21 @@ export interface BusinessFollowUp {
   agent_version?: number | null;
   task_status?: MessageTaskStatusCode | null;
   task_attempts?: number | null;
-  task_last_error?: string | null;
+  task_failure_code?: string | null;
   created_at: string;
   updated_at: string;
 }
 
+export interface BusinessFollowUp extends BusinessFollowUpSummary {
+  employee_draft: string;
+}
+
 export interface BusinessFollowUpPage extends PageMeta {
-  items: BusinessFollowUp[];
+  items: BusinessFollowUpSummary[];
 }
 
 export interface BusinessFollowUpCreateInput {
-  message_submission_id: number;
+  message_submission_id: string;
   employee_draft: string;
 }
 

@@ -4122,14 +4122,18 @@ paths:
         - { name: page, in: query, schema: { type: integer, minimum: 0, default: 0 } }
         - { name: size, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 20 } }
         - { name: stage, in: query, schema: { type: string } }
+        - $ref: '#/components/parameters/Operator'
       responses:
         '200':
           description: Business follow-up page
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/PageResponseBusinessFollowUpDto' }
+              schema: { $ref: '#/components/schemas/PageResponseBusinessFollowUpSummaryDto' }
     post:
       summary: Capture an authorized employee draft against immutable message evidence
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
       requestBody:
         required: true
         content:
@@ -4140,12 +4144,13 @@ paths:
           description: Business follow-up captured
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/BusinessFollowUpDto' }
+              schema: { $ref: '#/components/schemas/BusinessFollowUpSummaryDto' }
   /api/v1/business-followups/{followup_id}:
     get:
       summary: Read one authorized business follow-up
       parameters:
         - { name: followup_id, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/Operator'
       responses:
         '200':
           description: Business follow-up detail
@@ -4157,6 +4162,8 @@ paths:
       summary: Explicitly dispatch the current draft to an active Agent version
       parameters:
         - { name: followup_id, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
       requestBody:
         required: true
         content:
@@ -4167,7 +4174,7 @@ paths:
           description: Organization task accepted
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/BusinessFollowUpDto' }
+              schema: { $ref: '#/components/schemas/BusinessFollowUpSummaryDto' }
 
 components:
   securitySchemes:
@@ -4261,50 +4268,56 @@ components:
   schemas:
     CreateRequest:
       type: object
-      required: [messageSubmissionId, employeeDraft]
+      required: [message_submission_id, employee_draft]
       properties:
-        messageSubmissionId: { type: integer, format: int64, minimum: 1 }
-        employeeDraft: { type: string, minLength: 1, maxLength: 20000 }
+        message_submission_id: { $ref: '#/components/schemas/Identifier' }
+        employee_draft: { type: string, minLength: 1, maxLength: 20000 }
     OrganizeRequest:
       type: object
-      required: [agentSlug, agentVersion]
+      required: [agent_slug, agent_version]
       properties:
-        agentSlug: { type: string, minLength: 1, maxLength: 64 }
-        agentVersion: { type: integer, format: int32, minimum: 1 }
-    BusinessFollowUpDto:
+        agent_slug: { type: string, minLength: 1, maxLength: 64 }
+        agent_version: { type: integer, format: int32, minimum: 1 }
+    BusinessFollowUpSummaryDto:
       type: object
       required:
-        [id, followupNo, messageSubmissionId, sourceMessageId, employeeDraft,
-         sourceRevision, stage, processingStatus, createdBy, createdAt, updatedAt]
+        [id, followup_no, message_submission_id, source_message_id,
+         source_revision, stage, processing_status, created_by, created_at, updated_at]
       properties:
-        id: { type: integer, format: int64 }
-        followupNo: { type: string }
-        messageSubmissionId: { type: integer, format: int64 }
-        sourceMessageId: { type: integer, format: int64 }
-        employeeDraft: { type: string }
-        sourceRevision: { type: integer, format: int32 }
+        id: { $ref: '#/components/schemas/Identifier' }
+        followup_no: { type: string }
+        message_submission_id: { $ref: '#/components/schemas/Identifier' }
+        source_message_id: { $ref: '#/components/schemas/Identifier' }
+        source_revision: { type: integer, format: int32 }
         stage: { type: string, enum: [PENDING_ORGANIZATION, ORGANIZING, DRAFT_READY] }
-        processingStatus: { type: string, enum: [NOT_STARTED, PENDING, RUNNING, SUCCEEDED, FAILED] }
-        createdBy: { type: string }
-        designatedReviewer: { type: string, nullable: true }
-        agentSlug: { type: string, nullable: true }
-        agentVersion: { type: integer, format: int32, nullable: true }
-        taskStatus: { type: string, nullable: true }
-        taskAttempts: { type: integer, format: int32, nullable: true }
-        taskLastError: { type: string, nullable: true }
-        createdAt: { type: string, format: date-time }
-        updatedAt: { type: string, format: date-time }
-    PageResponseBusinessFollowUpDto:
+        processing_status: { type: string, enum: [NOT_STARTED, PENDING, RUNNING, SUCCEEDED, FAILED] }
+        created_by: { type: string }
+        designated_reviewer: { type: string, nullable: true }
+        agent_slug: { type: string, nullable: true }
+        agent_version: { type: integer, format: int32, nullable: true }
+        task_status: { type: string, nullable: true }
+        task_attempts: { type: integer, format: int32, nullable: true }
+        task_failure_code: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    BusinessFollowUpDto:
+      allOf:
+        - $ref: '#/components/schemas/BusinessFollowUpSummaryDto'
+        - type: object
+          required: [employee_draft]
+          properties:
+            employee_draft: { type: string }
+    PageResponseBusinessFollowUpSummaryDto:
       type: object
-      required: [items, page, size, total, totalPages]
+      required: [items, page, size, total_elements, total_pages]
       properties:
         items:
           type: array
-          items: { $ref: '#/components/schemas/BusinessFollowUpDto' }
+          items: { $ref: '#/components/schemas/BusinessFollowUpSummaryDto' }
         page: { type: integer, format: int32 }
         size: { type: integer, format: int32 }
-        total: { type: integer, format: int64 }
-        totalPages: { type: integer, format: int32 }
+        total_elements: { type: integer, format: int64 }
+        total_pages: { type: integer, format: int32 }
     Identifier:
       type: string
       pattern: '^[1-9][0-9]*$'

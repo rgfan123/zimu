@@ -11,8 +11,9 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import { ReloadOutlined, SyncOutlined } from '@ant-design/icons';
+import { FileAddOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import { useNavigate } from 'react-router-dom';
 import DataTable from '@/components/DataTable';
 import PageShell from '@/components/PageShell';
 import { errorMessage } from '@/api/client';
@@ -29,6 +30,7 @@ import {
 } from './channelMessageView';
 
 export default function ChannelMessagesPage() {
+  const navigate = useNavigate();
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(20);
   const [selected, setSelected] = useState<ChannelMessageSummary | null>(null);
@@ -145,6 +147,9 @@ export default function ChannelMessagesPage() {
               error={submission.error ?? reinterpretError}
               reinterpreting={reinterpreting}
               onReinterpret={runReinterpret}
+              onCreateFollowUp={submissionId
+                ? () => navigate(`/workbench/business-followups?submission_id=${encodeURIComponent(submissionId)}`)
+                : undefined}
             />
           </Space>
         ) : detail.error ? (
@@ -174,12 +179,14 @@ function SubmissionSection({
   error,
   reinterpreting,
   onReinterpret,
+  onCreateFollowUp,
 }: {
   submission: MessageSubmissionDetail | null;
   loading: boolean;
   error: unknown;
   reinterpreting: boolean;
   onReinterpret: () => void;
+  onCreateFollowUp?: () => void;
 }) {
   if (loading) {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="解释状态加载中…" />;
@@ -204,9 +211,16 @@ function SubmissionSection({
         </Space>
       }
       extra={
-        <Button size="small" icon={<SyncOutlined />} loading={reinterpreting} onClick={onReinterpret}>
-          重新解释
-        </Button>
+        <Space>
+          {onCreateFollowUp ? (
+            <Button size="small" icon={<FileAddOutlined />} onClick={onCreateFollowUp}>
+              创建客户跟进
+            </Button>
+          ) : null}
+          <Button size="small" icon={<SyncOutlined />} loading={reinterpreting} onClick={onReinterpret}>
+            重新解释
+          </Button>
+        </Space>
       }
     >
       <Space direction="vertical" size={16} style={{ width: '100%' }}>

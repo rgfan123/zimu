@@ -11,6 +11,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
@@ -45,8 +46,8 @@ public class BusinessFollowUpController {
             @Valid @RequestBody CreateRequest request) {
         CommandContext context = WriteCommands.writeContext(operator);
         BusinessFollowUpService.CreateCommand command = new BusinessFollowUpService.CreateCommand(
-                request.messageSubmissionId(), request.employeeDraft());
-        IdempotentResult<BusinessFollowUpDto> result = idempotency.execute(
+                WriteCommands.parseIdentifier(request.messageSubmissionId()), request.employeeDraft());
+        IdempotentResult<BusinessFollowUpSummaryDto> result = idempotency.execute(
                 "business_followup.create",
                 WriteCommands.requireIdempotencyKey(key),
                 command,
@@ -65,13 +66,13 @@ public class BusinessFollowUpController {
         CommandContext context = WriteCommands.writeContext(operator);
         BusinessFollowUpService.OrganizeCommand command =
                 new BusinessFollowUpService.OrganizeCommand(
-                        request.agentSlug(), request.agentVersion());
-        IdempotentResult<BusinessFollowUpDto> result = idempotency.execute(
+                        id, request.agentSlug(), request.agentVersion());
+        IdempotentResult<BusinessFollowUpSummaryDto> result = idempotency.execute(
                 "business_followup.organize",
                 WriteCommands.requireIdempotencyKey(key),
                 command,
                 202,
-                () -> service.organize(id, command, context));
+                () -> service.organize(command, context));
         return WriteCommands.respond(result);
     }
 
@@ -84,7 +85,7 @@ public class BusinessFollowUpController {
     }
 
     @GetMapping
-    public PageResponse<BusinessFollowUpDto> list(
+    public PageResponse<BusinessFollowUpSummaryDto> list(
             @RequestHeader(value = "X-Operator", required = false) String operator,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(200) int size,
@@ -100,7 +101,7 @@ public class BusinessFollowUpController {
     }
 
     public record CreateRequest(
-            @Positive long messageSubmissionId,
+            @NotBlank @Pattern(regexp = "^[1-9][0-9]*$") String messageSubmissionId,
             @NotBlank @Size(max = 20_000) String employeeDraft) {}
 
     public record OrganizeRequest(
