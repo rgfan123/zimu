@@ -66,14 +66,44 @@
 | `codex/release-migration-compat-87c03ba` | `0058936` | 同上 |
 | `codex/source-channel-52col` | `dae9bda` | 同上 |
 
-已合入：`codex/agent-observability-129` 快进合并（token 计量看板 #129 + 企微业务卡片层 #87/#88）。
+已合入：
+- `codex/agent-observability-129` 快进合并（token 计量看板 #129 + 企微业务卡片层 #87/#88）。
+- `codex/jufubao-shipment-source-sync-20260824` → `299dd32`（#128 评审缺口修复，39 文件 +1367/-128，
+  零冲突、不含迁移；补进收件人事实归一化、来源同步批次命令、导入客户身份等 7 个主干缺失文件）。
+
+### 第二轮删除（2026-08-25，全部复验「master 缺失文件 = 0」后删）
+
+| 分支 | SHA | 判定依据 |
+|---|---|---|
+| `codex/issue-111-recon-workbench` | `a4df74e` | 主干 `ade3d9a` 同主题 |
+| `codex/issue-84-resend-snapshot` | `fefb928` | 主干 `4345182`；其 V50 是主干 **V49** 的改号旧副本，主干版还修正了 REMINDER 回填（`i.id < d.id`），严格更优 |
+| `codex/issues-117-116-zhonghui` | `7521cd2` | 主干 `f883475` + `851181d` |
+| `codex/issues-84-86-wecom-tracking` | `c43915c` | 主干 `788b7a6` + `4472ede` |
+| `codex/issues-87-88-wecom-card` | `336ff31` | 主干 `2237ff6` |
+| `codex/jd-shipment-submission-plan` | `9595f37` | **重复重构**：主干用 Preparer/Executor 做了同一件事 |
+| `codex/jufubao-convergence-20260824-recovered` | `0e99be4` | 主干 `1b34370`；其 V53 与主干 V54 DDL 完全相同，只差改号说明 |
+| `codex/jufubao-shipment-source-sync-20260824` | `2f1461f` | 已合入 `299dd32` |
+| `codex/mixed-provider-bundle` | `f7c8382` | 主干 `53863b3` + `5de71c3` |
+| `codex/product-search-emg-20260824` | `43d8581` | `findJdProviderSkuCodes` 已在 `ProviderSkuRepository.java:44`，唯一差异是一句注释措辞 |
+| `codex/source-attribution-correction` | `dde64fd` | 主干 `3910c9e` |
+| `codex/root-backend-wip-snapshot-20260822` | `9d5d1e9` | 被 `-complete` 覆盖 |
+| `integration/agent-platform2` | `680513e` | 主干缺失文件 0 |
+
+本地分支 29 → 13，worktree 24 → 10。恢复：`git branch <name> <sha>`。
+
+### 明确保留、别删
+
+- `snapshot/live-wip-20260825` —— 票 02 中汇上传前端 4 个文件的唯一副本。
+- `codex/root-backend-wip-snapshot-20260822-complete` —— 票 01 `SourceReturnPushService` 的 cherry-pick 源。
+- `codex/root-wip-live-20260822` —— **就是主工作目录 `/Users/jerry/Documents/子牧` 本身**，164 个未提交改动挂在上面。
+- `codex/agent-observability-129` —— 有会话在 `/private/tmp/zimu-129` 上活跃推进。
 
 ## 待办 / 未处理
 
 - 远端分支（`origin/codex/*`）一律未动，删远端需要单独确认。
-- `codex/issue-84-resend-snapshot` 带 `V50__wecom_export_delivery_generation_fencing.sql`，
-  而主干 V50 已被 `V50__zhonghui_pms_stable_upload_intent.sql` 占用 —— **合并前必须先化解撞号**
-  （参考 `66e6faf` 化解 V53 撞号的做法）。
+- ~~`codex/issue-84-resend-snapshot` 的 V50 撞号~~ —— **此项作废**：查证后主干已把同一迁移
+  收编为 `V49__wecom_export_delivery_generation_fencing.sql`，实现也齐（`FulfillmentExportWecomDeliveryFinalizer`
+  的 `initial_generation` / `SUPERSEDED` / 按代际收窄关告警）。分支上的 V50 只是改号前旧副本，无需合并，已删。
 - `jry/` 拷贝落后主干 145 个提交，是否继续维护这条线待定。
 - live 工作区仍有 164 个脏文件与 20 MB 未跟踪生成物；`.gitignore` 已在 `048737a` 补齐
   （原先只写了 `output/` 单数，实际目录是 `outputs/`），live 分支合入主干后即可生效。
