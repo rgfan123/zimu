@@ -8,8 +8,8 @@
 
 | 票 | 目标模块 | 等级 | 规模 | 状态 |
 |---|---|---|---|---|
-| 01 | `JdGoodsNameMatch` 比对内核归一 | P0 缺陷 | 半天 | 内核部分已随本效力落地 |
-| 02 | `ShipmentStatus` + 生命周期判定 | P1 | 4 处分歧先收，27 文件挂棘轮 | ready-for-agent |
+| 01 | `JdGoodsNameMatch` 比对内核归一 | P0 缺陷 | 半天 | 已并 master `343233f` |
+| 02 | `ShipmentStatus` + 生命周期判定 | P1 | 4 处 Java 判定已收，SQL 点位挂棘轮 | 已实现，待集成门禁 |
 | 03 | `JdIscGateway` + `JdPiiProjection` | P1 | ~1000-1400 行纯删 | ready-for-agent |
 | 04 | `JdSubmissionState` + Plan 类型化投影 | P2 | 出库集群内部 | ready-for-agent |
 | 05 | `LeasedTaskLoop` worker 骨架 | P2 | 8 worker ≈600 行收拢 | ready-for-agent |
@@ -18,9 +18,13 @@
 
 ## 关键证据点位（核对过的）
 
-- Shipment 生命周期 4 写法：`connector/sync/SourceSyncFactsReader.java:62`、
-  `recon/OutboundReconService.java:973`、`fulfillment/ShipmentJdTrackingBackfillService.java:751`、
-  `file/TrackingFileService.java:469`；裸 SQL 27 文件/57 处（`app.shipments`）。
+- Shipment 生命周期（**票 02 实施时核实修正**）：`SourceSyncFactsReader:62` 与
+  `OutboundReconService:973` 是同一条规则的两份复制；
+  `ShipmentJdTrackingBackfillService:751` 是**不同问题**（可否回填运单）；
+  `file/TrackingFileService.java:469` 属运单导入文件「结果」列的另一套词汇表
+  （**误报，不得并入**）。另收编 `ShipmentJdOutboundPreparer:53/228`。
+  取值权威 = `V1__baseline.sql:446` CHECK 约束；SQL 内联 8 处 + V2/V3/V6 视图未收编，
+  清单写在 `ShipmentStatus` javadoc。
 - connector/jd：7 份 client 内核（110 行差 5 行）、`SUCCESS_CODES` ×7、PII 脱敏 ×6
   （+`recon/OutboundReconService.java:954`、`connector/jufubao/JufubaoOrderTransform.java:290` 变体）；
   规范实现在 `common/audit/SecretRedactor.java:55`。

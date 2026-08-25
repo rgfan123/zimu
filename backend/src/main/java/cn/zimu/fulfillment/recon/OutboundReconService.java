@@ -8,6 +8,7 @@ import cn.zimu.fulfillment.common.web.RequestContext;
 import cn.zimu.fulfillment.connector.jd.JDWarehouseService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import cn.zimu.fulfillment.fulfillment.JdOutboundStatus;
+import cn.zimu.fulfillment.fulfillment.ShipmentStatus;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
@@ -969,11 +970,12 @@ public class OutboundReconService {
         return semanticLabel(internalStatusSemantic(status));
     }
 
+    /** 内部发货批次状态 → 展示语义；状态词汇由 {@link ShipmentStatus} 唯一裁决（票 02）。 */
     private static JdOutboundStatus.Semantic internalStatusSemantic(String status) {
-        if ("SHIPPED".equals(status) || "DELIVERED".equals(status)) {
+        if (ShipmentStatus.isShipped(status)) {
             return JdOutboundStatus.Semantic.SHIPPED;
         }
-        if ("FAILED".equals(status)) {
+        if (ShipmentStatus.isFailed(status)) {
             return JdOutboundStatus.Semantic.EXCEPTION;
         }
         return JdOutboundStatus.Semantic.PENDING;

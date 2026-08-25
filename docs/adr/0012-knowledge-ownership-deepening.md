@@ -14,10 +14,14 @@ status: accepted
 静态常量或复制粘贴的形式散落在多个包里，谁都能改、没人拥有：
 
 - **Shipment 生命周期没有模块**：`app.shipments` 被 27 个文件、10 个包直接写 SQL
-  （57 处）；「已完成发货」这一条规则存在 4 种互不一致的写法
-  （SourceSyncFactsReader `SHIPPED||DELIVERED`、OutboundReconService 同、
-  ShipmentJdTrackingBackfillService `CREATED||SHIPPED`、TrackingFileService
-  `SHIPPED/PARTIAL/FAILED`）。Order 有 entity/enum/repository，Shipment 什么都没有。
+  （57 处），没有枚举、没有实体；Order 有 entity/enum/repository，Shipment 什么都没有。
+  **票 02 实施时核实并修正**：「已发货 = SHIPPED|DELIVERED」的口径其实全库**一致**，
+  真正的问题是这条规则被复制在 Java 2 处 + 内嵌 SQL 8 处 + V2/V3/V6 视图且无人拥有；
+  TrackingBackfill 的 `CREATED|SHIPPED` 是**另一个问题**（可否回填运单）不是 bug，
+  TrackingFileService 的 `SHIPPED/PARTIAL/FAILED` 是运单导入文件「结果」列的**第三套
+  词汇表**（`PARTIAL` 不是合法 shipment_status）。扫描报告的「4 种互不一致」是误报，
+  盲目统一会把导入文件语义混进发货生命周期。定性由「活跃冲突」改为「无主复制」，
+  收拢必要性不变：状态增改要人肉找齐十几处。
 - **connector/jd 七胞胎**：7 个 ISC client 的 execute/normalize/audit 逐字节复制
   （110 行里只差 5 行）、`SUCCESS_CODES` 复制 7 份、HTTP 边界 PII 脱敏复制 6 份
   （另有 recon/jufubao 两处变体），每份 Javadoc 都自述「与 SecretRedactor 对齐」。

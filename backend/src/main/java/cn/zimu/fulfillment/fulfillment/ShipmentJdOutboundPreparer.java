@@ -50,7 +50,6 @@ public class ShipmentJdOutboundPreparer {
             // 外层成功但内层缺失时 normalize 可能仅保留这些成功码，仍属部分响应。
             "0", "200", "1000", "10000", "SUCCESS");
 
-    private static final String SHIPMENT_STATUS_CREATED = "CREATED";
     private static final String PASS = "PASS";
     private static final String BLOCKED = "BLOCKED";
     private static final String SOURCE_PROVIDER_CONFIG = "fulfillment_providers.config.";
@@ -225,7 +224,7 @@ public class ShipmentJdOutboundPreparer {
                     "fulfillment_providers.provider_type", "fulfillment provider master data",
                     "仅京东云仓（JD_WAREHOUSE）发货批次可提交京东出库单");
         }
-        if (SHIPMENT_STATUS_CREATED.equals(state.shipmentStatus())) {
+        if (ShipmentStatus.acceptsOutboundSubmit(state.shipmentStatus())) {
             pass(validations, "shipment.status", "shipments.shipment_status");
         } else {
             block(
