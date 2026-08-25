@@ -42,12 +42,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** 将已经过订单应用层门禁的行按单一履约方生成不可变文件。 */
 @Service
-class ProviderFileService implements ContinuationExportGenerator, ReadySourceBatchExporter {
+public class ProviderFileService implements ContinuationExportGenerator, ReadySourceBatchExporter {
 
     private static final ClassPathResource BUILT_IN_JD_TEMPLATE =
             new ClassPathResource("templates/jd-cold-chain-order-template.xlsx");
 
-    static final List<String> THIRD_PARTY_HEADERS = List.of(
+    public static final List<String> THIRD_PARTY_HEADERS = List.of(
             "导出批次号", "出库单号", "导出明细号", "履约方编码", "履约方名称", "内部订单号",
             "来源渠道", "来源订单号", "订单行号", "礼包分组标识", "收件人", "电话", "地址", "履约方SKU编码",
             "品名", "规格", "单位", "请求发货数量", "结果", "实际发货数量", "快递公司", "物流单号", "发货时间", "异常原因");
