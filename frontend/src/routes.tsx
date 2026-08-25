@@ -29,12 +29,7 @@ import DashboardPage from '@/pages/dashboard/DashboardPage';
 import { BundlesPage, CategoriesPage, ProductsPage, SkuMappingsPage, SkusPage } from '@/pages/product';
 import {
   FulfillmentTasksPage,
-  JdBasicInfoQueryPage,
-  JdOrderQueryPage,
-  JdReturnQueryPage,
-  JdSerialQueryPage,
-  JdStockQueryPage,
-  JdWarehousePage,
+  JdToolsPage,
   OutboundReconPage,
   SalesOutboundPage,
   ShipmentsPage,
@@ -106,12 +101,14 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/system/config': <SystemConfigPage />,
   '/system/fulfillment-providers': <FulfillmentProvidersPage />,
   '/system/operators': <OperatorsPage />,
-  '/fulfillment/jd-warehouse': <JdWarehousePage />,
-  '/fulfillment/jd-basicinfo': <JdBasicInfoQueryPage />,
-  '/fulfillment/jd-stock': <JdStockQueryPage />,
-  '/fulfillment/jd-serial': <JdSerialQueryPage />,
-  '/fulfillment/jd-order': <JdOrderQueryPage />,
-  '/fulfillment/jd-return': <JdReturnQueryPage />,
+  '/system/jd-tools': <JdToolsPage />,
+  // 六个京东查询工具并入「京东工具」页内 Tab；旧 URL 直达同一页并定位到对应 Tab。
+  '/fulfillment/jd-warehouse': <JdToolsPage />,
+  '/fulfillment/jd-basicinfo': <JdToolsPage />,
+  '/fulfillment/jd-stock': <JdToolsPage />,
+  '/fulfillment/jd-serial': <JdToolsPage />,
+  '/fulfillment/jd-order': <JdToolsPage />,
+  '/fulfillment/jd-return': <JdToolsPage />,
   '/demo/order': <DemoOrderPage />,
 };
 

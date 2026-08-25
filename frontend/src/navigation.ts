@@ -23,8 +23,8 @@ export const appNavigation = [
       { path: '/workbench/reviews', label: '复核收件箱' },
       // Issue #64 运营提醒独立路由：上下文二级入口（复核页 ↔ 提醒页互为切换），随复核收件箱移入本板块。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
-      // Issue #110：采购工作台（建议区等 #121/#118 供数，工单区今天即真数）。
-      { path: '/workbench/procurement', label: '采购工作台' },
+      // Issue #110：采购工作台（建议区等 #121/#118 供数，工单区今天即真数）。UIUX-10 #144：采购入口去重后唯一入口。
+      { path: '/workbench/procurement', label: '采购' },
       { path: '/workbench/recon', label: '对账工作台' },
     ],
   },
@@ -35,7 +35,8 @@ export const appNavigation = [
     children: [
       { path: '/workbench/channel-messages', label: '渠道消息' },
       { path: '/fulfillment/tasks', label: '履约任务' },
-      { path: '/procurement/tickets', label: '采购协同' },
+      // UIUX-10 #144：采购入口去重——唯一采购入口在我的工作台（/workbench/procurement），本页保留直达。
+      { path: '/procurement/tickets', label: '采购协同', hideInMenu: true },
       // 低频专用查询（Issue #98 准入规则）：隐藏菜单、保留路由与上下文入口，见 docs/agents/navigation-admission.md。
       { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
       { path: '/fulfillment/sales-outbound', label: '文件作业' },
@@ -61,9 +62,10 @@ export const appNavigation = [
     children: [
       { path: '/agents', label: 'Agent 列表' },
       { path: '/agents/runs', label: '运行记录' },
-      { path: '/agents/cost', label: '消耗看板' },
-      { path: '/agents/fulfillment-file', label: '履约单据助手' },
-      { path: '/agents/new', label: '创建 Agent' },
+      // UIUX-10 #144：消耗看板 / 履约单据助手降为隐藏直达（列表页内可进入）；创建入口在列表页按钮。
+      { path: '/agents/cost', label: '消耗看板', hideInMenu: true },
+      { path: '/agents/fulfillment-file', label: '履约单据助手', hideInMenu: true },
+      { path: '/agents/new', label: '创建 Agent', hideInMenu: true },
       { path: '/agents/:slug', label: 'Agent 详情', hideInMenu: true },
       { path: '/agents/runs/:runId', label: '运行详情', hideInMenu: true },
       { path: '/agents/:slug/evals', label: '评测用例', hideInMenu: true },
@@ -99,18 +101,14 @@ export const appNavigation = [
       { path: '/system/fulfillment-providers', label: '履约方配置' },
       // Issue #89：内部运营人员登记（姓名、企微 userid、所属责任团队）——系统管理配置主线入口
       { path: '/system/operators', label: '运营人员' },
-      {
-        path: '/system/jd-tools',
-        label: '京东工具',
-        children: [
-          { path: '/fulfillment/jd-warehouse', label: '连接与出库查询' },
-          { path: '/fulfillment/jd-basicinfo', label: '基础资料查询' },
-          { path: '/fulfillment/jd-stock', label: '库存原始查询' },
-          { path: '/fulfillment/jd-serial', label: '序列号查询' },
-          { path: '/fulfillment/jd-order', label: '京东专业单据' },
-          { path: '/fulfillment/jd-return', label: '退货退供查询' },
-        ],
-      },
+      // UIUX-10 #144：京东工具收敛为单入口（/system/jd-tools 页内 Tab），六个查询页保留隐藏直达。
+      { path: '/system/jd-tools', label: '京东工具' },
+      { path: '/fulfillment/jd-warehouse', label: '连接与出库查询', hideInMenu: true },
+      { path: '/fulfillment/jd-basicinfo', label: '基础资料查询', hideInMenu: true },
+      { path: '/fulfillment/jd-stock', label: '库存原始查询', hideInMenu: true },
+      { path: '/fulfillment/jd-serial', label: '序列号查询', hideInMenu: true },
+      { path: '/fulfillment/jd-order', label: '京东专业单据', hideInMenu: true },
+      { path: '/fulfillment/jd-return', label: '退货退供查询', hideInMenu: true },
     ],
   },
   // Issue #104：Demo 页不再出现在日常菜单（URL 保留可直达，降级 ≠ 删除）。

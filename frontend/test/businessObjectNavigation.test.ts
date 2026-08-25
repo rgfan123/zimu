@@ -30,8 +30,8 @@ test('my-workbench section leads the navigation with the role workbenches (Issue
       { path: '/workbench/reviews', label: '复核收件箱', hideInMenu: false },
       // Issue #64 运营提醒：上下文二级入口，随复核收件箱移入我的工作台。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
-      // Issue #110：采购工作台露出，我的工作台可见入口达到 spec D6 的 4 个。
-      { path: '/workbench/procurement', label: '采购工作台', hideInMenu: false },
+      // Issue #110：采购工作台露出，我的工作台可见入口达到 spec D6 的 4 个；UIUX-10 #144 更名为「采购」。
+      { path: '/workbench/procurement', label: '采购', hideInMenu: false },
       { path: '/workbench/recon', label: '对账工作台', hideInMenu: false },
     ],
   );
@@ -45,7 +45,8 @@ test('operations section keeps only the daily high-frequency entries within the 
     [
       { path: '/workbench/channel-messages', label: '渠道消息', hideInMenu: false },
       { path: '/fulfillment/tasks', label: '履约任务', hideInMenu: false },
-      { path: '/procurement/tickets', label: '采购协同', hideInMenu: false },
+      // UIUX-10 #144：采购入口去重——唯一采购入口在我的工作台，本页降级为隐藏直达。
+      { path: '/procurement/tickets', label: '采购协同', hideInMenu: true },
       { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
       { path: '/fulfillment/sales-outbound', label: '文件作业', hideInMenu: false },
       { path: '/fulfillment/shipments', label: '发货记录', hideInMenu: false },
@@ -64,7 +65,7 @@ test('demoted query tools stay routable and keep their section context', () => {
   const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
   const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
 
-  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts', '/demo/order']) {
+  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts', '/demo/order', '/procurement/tickets', '/agents/cost', '/agents/fulfillment-file', '/agents/new']) {
     const node = findNavigationNode(appNavigation, path);
     assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
     assert.equal(visiblePaths.includes(path), false, `${path} 不得出现在可见菜单`);
@@ -97,25 +98,35 @@ test('demoted query tools stay routable and keep their section context', () => {
   });
 });
 
-test('production navigation nests the six legacy JD URLs under system tools', () => {
+test('京东工具收敛为单入口，六个查询页保留隐藏直达', () => {
   const jdTools = findNavigationNode(appNavigation, '/system/jd-tools');
 
   assert.equal(jdTools?.label, '京东工具');
-  assert.deepEqual(
-    jdTools?.children?.map(({ path, label }) => ({ path, label })),
-    [
-      { path: '/fulfillment/jd-warehouse', label: '连接与出库查询' },
-      { path: '/fulfillment/jd-basicinfo', label: '基础资料查询' },
-      { path: '/fulfillment/jd-stock', label: '库存原始查询' },
-      { path: '/fulfillment/jd-serial', label: '序列号查询' },
-      { path: '/fulfillment/jd-order', label: '京东专业单据' },
-      { path: '/fulfillment/jd-return', label: '退货退供查询' },
-    ],
-  );
+  assert.equal(jdTools?.children, undefined, '京东工具必须是单入口叶子（页内 Tab 切换）');
+  for (const path of ['/fulfillment/jd-warehouse', '/fulfillment/jd-basicinfo', '/fulfillment/jd-stock', '/fulfillment/jd-serial', '/fulfillment/jd-order', '/fulfillment/jd-return']) {
+    const node = findNavigationNode(appNavigation, path);
+    assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
+  }
   assert.deepEqual(navigationContext('/fulfillment/jd-stock', ''), {
-    section: '系统管理 / 京东工具',
+    section: '系统管理',
     page: '库存原始查询',
   });
+  assert.deepEqual(navigationContext('/system/jd-tools', ''), {
+    section: '系统管理',
+    page: '京东工具',
+  });
+});
+
+test('采购入口全站唯一（我的工作台），Agent 中心收敛为列表/运行记录两入口', () => {
+  const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
+  const procurementVisible = visiblePaths.filter((path) => path.startsWith('/workbench/procurement') || path.startsWith('/procurement/'));
+  assert.deepEqual(procurementVisible, ['/workbench/procurement'], '采购相关可见入口只能有一个（我的工作台「采购」）');
+  const agents = findNavigationNode(appNavigation, '/agents');
+  assert.deepEqual(
+    agents?.children?.filter(({ hideInMenu }) => !hideInMenu)?.map(({ path }) => path),
+    ['/agents', '/agents/runs'],
+    'Agent 中心可见入口收敛为 Agent 列表 + 运行记录',
+  );
 });
 
 test('provider configuration is a provider-neutral system page', () => {
