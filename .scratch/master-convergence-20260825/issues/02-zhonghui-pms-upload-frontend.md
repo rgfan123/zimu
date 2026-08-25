@@ -4,7 +4,7 @@
 
 **Blocked by:** 无
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## 背景 —— 后端建好了，没人能用
 
@@ -79,3 +79,18 @@
 
 - 本票与 01 票同源：都是 2026-08-25 master 收敛盘点查出的「schema/后端已落地、写路径或界面从没进主干」的遗漏。
 - 4 个前端文件在补回主干前，唯一副本是 `snapshot/live-wip-20260825`，删除该分支前请先完成本票。
+
+## Resolution（2026-08-25 已完成）
+
+合入 master：`0790920`（实现提交 `e506896`，分支 `feat/zhonghui-upload-ui`）。
+
+与票面的一处偏差：验收标准原写「从主导航可进入」，实际入口做在**商品档案页工具栏的
+「上架」按钮** → `PlatformUploadModal` 选渠道 → 带当前筛选（搜索词/履约方）跳
+`/upload-platform/zhonghui`。理由：该页是二级流程页而非独立岗位视图，按 ADR 0002
+不占主导航位。「无需手敲 URL」的实质要求已满足。
+
+类型按 openapi 的 StatusView/CaptchaView/LoginView/OptionsView/BatchUploadView 逐字段投影，
+未自行发明字段。
+
+验证：`npm test` 全绿 —— 单测 515/515、组件测试 8/8；`tsc --noEmit` 无错。
+新增 7 例覆盖稳定幂等键与覆盖字段序列化。

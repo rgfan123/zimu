@@ -4,7 +4,7 @@
 
 **Blocked by:** 无
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## 背景 —— 这是一个死 schema
 
@@ -70,3 +70,21 @@
 ## Comments
 
 - 合规红线未变：平台拉取每平台每日 ≤2 次；本票是**推送**通道，但同样人工触发、不做自动重试风暴。
+
+## Resolution（2026-08-25 已完成）
+
+合入 master：`2e1b415`（实现提交 `4f7f123`，分支 `feat/source-return-push`）。
+
+实现直接取自 `codex/root-backend-wip-snapshot-20260822-complete`，**对当时主干零编译错误** ——
+它依赖的 `PlatformScriptRunner` 等 seam 主干都已具备，无需按预想做结构适配。
+
+意外佐证：`docker-compose.yml:127` 早已配好 `APP_PLATFORM_PULL_PUSH_STALE_TIMEOUT`，
+`./scripts` 也早已挂成 `/app/platform-pull-scripts:ro` —— 配置铺好了、代码没进来，
+坐实这是漏活而非新做。
+
+顺带修正原 WIP 一处放错：测试包声明 `cn.zimu.fulfillment.file` 却放在 `connector/zhonghui/`
+目录下，已归位到 `file/`。
+
+验证：`SourceReturnPushServiceTest` 7/7、`ExcelClosedLoopApiTest` 19/19（2 skipped，
+确认新构造器参数没打破 Spring 装配）、`OpenApiContractConsistencyTest` 3/3、
+`mvn test-compile` 通过。
