@@ -10,7 +10,7 @@
 |---|---|---|---|---|
 | 01 | `JdGoodsNameMatch` 比对内核归一 | P0 缺陷 | 半天 | 已并 master `343233f` |
 | 02 | `ShipmentStatus` + 生命周期判定 | P1 | 4 处 Java 判定已收，SQL 点位挂棘轮 | 已实现，待集成门禁 |
-| 03 | `JdIscGateway` + `JdPiiProjection` | P1 | ~1000-1400 行纯删 | ready-for-agent |
+| 03 | `JdIscGateway` + `JdPiiProjection` | P1 | 主源码 −1029 行 | 阶段一二已实现；阶段三（Mock/REAL 形状）待 Docker |
 | 04 | `JdSubmissionState` + Plan 类型化投影 | P2 | 出库集群内部 | ready-for-agent |
 | 05 | `LeasedTaskLoop` worker 骨架 | P2 | 8 worker ≈600 行收拢 | ready-for-agent |
 | 06 | 挂账清理（ExportWecom 状态机 / MasterData 拆分 / PlatformRefresh 归接缝 / MCP 参数 / internal 镜像 / POI 接缝） | P3 | 改到哪补到哪 | 挂账 |
@@ -25,9 +25,12 @@
   （**误报，不得并入**）。另收编 `ShipmentJdOutboundPreparer:53/228`。
   取值权威 = `V1__baseline.sql:446` CHECK 约束；SQL 内联 8 处 + V2/V3/V6 视图未收编，
   清单写在 `ShipmentStatus` javadoc。
-- connector/jd：7 份 client 内核（110 行差 5 行）、`SUCCESS_CODES` ×7、PII 脱敏 ×6
-  （+`recon/OutboundReconService.java:954`、`connector/jufubao/JufubaoOrderTransform.java:290` 变体）；
-  规范实现在 `common/audit/SecretRedactor.java:55`。
+- connector/jd（**票 03 阶段一二已收编**）：7 份 client 内核收进 `JdIscGateway`、
+  6 份 PII 剔除收进 `JdPiiProjection`。实施时核实：那「差的 5 行」是要害——
+  warehouse 独有审计白名单（保护收件人 PII，拍平即泄漏）、basicinfo 独有
+  `requestID` 大写兜底，二者均已保留。`recon/OutboundReconService.java:954`（maskName）
+  与 `connector/jufubao/JufubaoOrderTransform.java:290`（mask）是**掩码**语义，
+  与 HTTP 边界的**剔除**语义不同，未并入；`common/audit/SecretRedactor.java:55` 同理。
 - retryable/对账 ×4：`ShipmentJdOutboundService`（2 处内联）、
   `connector/wecom/card/JdOutboundFailureCard.retryable`（注释自称「同源」）、
   `JdShipmentSubmissionPlan.PriorSubmission.requiresReconciliation`。
