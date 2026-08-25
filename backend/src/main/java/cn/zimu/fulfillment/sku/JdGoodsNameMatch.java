@@ -5,12 +5,13 @@ import java.util.List;
 /**
  * 京东商品名称比对内核：归一化与相互包含判定的唯一实现。
  *
- * <p>映射核对（{@link JdSkuMappingCheckService}，advisory）与出库门禁
- * （{@link ShipmentJdSkuMappingGateService}，fail-closed）此前各持一份逐字节相同的
- * normalize/包含判定，而参照字段集与「无参照名」的裁决方向相反，操作员在核对页与
- * 提交时会得到矛盾答案（设计收敛票 01）。内核归一后比对规则只此一处；参照名取哪些
- * 字段、{@link Verdict#NO_REFERENCE} 如何执法仍由调用方按各自语义决定，但必须对
- * 三值裁决显式表态，不允许把「没有参照名」吞成比对结论。
+ * <p>映射核对（{@link JdSkuMappingCheckService}）与出库门禁
+ * （{@link ShipmentJdSkuMappingGateService}）此前各持一份逐字节相同的
+ * normalize/包含判定，且对「无参照名」各自吞掉：核对静默放行，门禁并入
+ * NAME_MISMATCH 警示——两条 advisory 口径不一致（名称比对在门禁侧从来只出警示、
+ * 不阻断提交，阻断只由 issues 里的映射缺失/商品失效类问题决定）。内核归一后比对
+ * 规则只此一处；参照名取哪些字段、{@link Verdict#NO_REFERENCE} 如何呈现仍由调用方
+ * 决定，但必须对三值裁决显式表态，不允许把「没有参照名」吞成比对结论（设计收敛票 01）。
  */
 final class JdGoodsNameMatch {
 

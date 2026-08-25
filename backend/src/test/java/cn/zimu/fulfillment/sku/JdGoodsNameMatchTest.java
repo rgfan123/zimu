@@ -57,5 +57,7 @@ class JdGoodsNameMatchTest {
     void blankRemoteNameKeepsLegacyContainsSemantics() {
         assertThat(JdGoodsNameMatch.verdict("   ", List.of("标准箱")))
                 .isEqualTo(Verdict.MATCHED);
+        assertThat(JdGoodsNameMatch.verdict(null, List.of("标准箱")))
+                .isEqualTo(Verdict.MATCHED);
     }
 }

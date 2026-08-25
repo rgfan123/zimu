@@ -622,8 +622,10 @@ public class ShipmentJdSkuMappingGateService {
     }
 
     /**
-     * 门禁执法语义：MATCHED 才放行；无参照名（NO_REFERENCE）与不命中同样拦截，
-     * fail-closed 不变。比对规则由 {@link JdGoodsNameMatch} 唯一实现（设计收敛票 01）。
+     * 名称比对在本门禁只产生 NAME_MISMATCH 警示、从不阻断提交（阻断只由 issues 决定，
+     * 见 applyRemoteFacts 的 warnings 通道与既有回归测试）。MATCHED 时不追加警示；
+     * NO_REFERENCE 与不命中同样归入警示，行为与重构前逐位一致。
+     * 比对规则由 {@link JdGoodsNameMatch} 唯一实现（设计收敛票 01）。
      */
     private boolean nameMatches(SkuSubject subject, MappingRow mapping, String remoteName) {
         return JdGoodsNameMatch.verdict(

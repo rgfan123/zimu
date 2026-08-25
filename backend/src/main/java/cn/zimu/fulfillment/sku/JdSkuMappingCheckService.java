@@ -145,8 +145,9 @@ public class JdSkuMappingCheckService {
                 goodsName, Arrays.asList(mapping.specification(), mapping.providerSkuName()))) {
             case MISMATCHED -> nameMismatch.add(diff(mapping, "NAME_MISMATCH",
                     "京东商品名『" + goodsName + "』与系统名称（规格/履约方名称）不一致"));
-            // 无参照名不再静默放行：出库门禁（ShipmentJdSkuMappingGateService）此时退回
-            // 订单行商品名快照比对，核对页必须把这个不可预测点亮出来（设计收敛票 01）。
+            // 无参照名不再静默放行：出库门禁（ShipmentJdSkuMappingGateService）此时只剩
+            // 订单行商品名快照可比，比不上会出 NAME_MISMATCH 警示（不阻断提交）——核对页
+            // 必须把这个口径差亮出来，而不是替门禁保持沉默（设计收敛票 01）。
             case NO_REFERENCE -> nameMismatch.add(diff(mapping, "NAME_REFERENCE_MISSING",
                     "系统侧没有可比对的参照名（规格与 external_codes.provider_sku_name 均为空），"
                             + "无法核对京东商品名『" + goodsName + "』，请补 provider_sku_name"));
