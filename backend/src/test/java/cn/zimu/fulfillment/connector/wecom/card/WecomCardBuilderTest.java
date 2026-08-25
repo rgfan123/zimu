@@ -19,7 +19,7 @@ class WecomCardBuilderTest {
     @Test
     void taskIdIsAlwaysPresentOnTheRenderedCard() {
         ObjectNode card = WecomCardBuilder.buttonInteraction(TASK_ID).title("标题").build();
-        assertThat(card.path("task_id").asText()).isEqualTo("review:1:v0");
+        assertThat(card.path("task_id").asText()).isEqualTo("review_1_v0");
         assertThat(card.path("card_type").asText()).isEqualTo("button_interaction");
     }
 

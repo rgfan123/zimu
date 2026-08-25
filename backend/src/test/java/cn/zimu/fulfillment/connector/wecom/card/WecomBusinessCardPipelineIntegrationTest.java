@@ -212,7 +212,7 @@ class WecomBusinessCardPipelineIntegrationTest {
                 "SELECT id FROM app.operational_alerts WHERE alert_no='ALERT-CARD-1'", Long.class);
 
         var card = registry.find(OperationalAlertCard.DOMAIN).orElseThrow().render(alertId, 0).orElseThrow();
-        assertThat(card.path("task_id").asText()).isEqualTo("alert:" + alertId + ":v0");
+        assertThat(card.path("task_id").asText()).isEqualTo("alert_" + alertId + "_v0");
         assertThat(card.path("main_title").path("desc").asText()).isEqualTo("ALERT-CARD-1");
         assertThat(card.path("sub_title_text").asText()).isEqualTo("京东出库连续失败");
         // 深链已配 base-url。aibot Button 无 url 字段，深链由 card_action 承载

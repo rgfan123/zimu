@@ -117,8 +117,8 @@ class PreShipConfirmCardTest {
     void task_id编进订单版本_点旧卡必然撞版本冲突() {
         ObjectNode card = PreShipConfirmCard.render(realOrder());
 
-        assertThat(card.path("task_id").asText()).isEqualTo("preship:4:v1");
-        assertThat(WecomTaskId.parse("preship:4:v1"))
+        assertThat(card.path("task_id").asText()).isEqualTo("preship_4_v1");
+        assertThat(WecomTaskId.parse("preship_4_v1"))
                 .get()
                 .matches(id -> id.matchesCurrent(PreShipConfirmCard.DOMAIN, 4L, 1L))
                 .matches(id -> !id.matchesCurrent(PreShipConfirmCard.DOMAIN, 4L, 2L));

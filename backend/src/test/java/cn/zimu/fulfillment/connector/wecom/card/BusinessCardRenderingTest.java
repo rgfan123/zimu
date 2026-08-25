@@ -22,7 +22,7 @@ class BusinessCardRenderingTest {
                 1234, 0, "RC-20260825-001", "客户未命中", "订单里的客户名在主数据里零命中",
                 "履约运营", "SO-20260825-77", "08-25 09:30", "https://zimu.test/review/1234"));
 
-        assertThat(card.path("task_id").asText()).isEqualTo("review:1234:v0");
+        assertThat(card.path("task_id").asText()).isEqualTo("review_1234_v0");
         List<String> keys = callbackKeys(card);
         assertThat(keys).containsExactly(ReviewCaseCard.CLAIM_BUTTON_KEY);
         // resolveCustomer / resolveSku 都要选客户、选 SKU，零参数按钮承载不了
@@ -47,7 +47,7 @@ class BusinessCardRenderingTest {
                 "京东出库连续 3 次失败", "SHIP-42", "RECONCILIATION_REQUIRED",
                 "https://zimu.test/alerts/5678"));
 
-        assertThat(card.path("task_id").asText()).isEqualTo("alert:5678:v2");
+        assertThat(card.path("task_id").asText()).isEqualTo("alert_5678_v2");
         assertThat(callbackKeys(card)).containsExactly(OperationalAlertCard.ACKNOWLEDGE_BUTTON_KEY);
         assertThat(fieldValue(card, "级别")).isEqualTo(OperationalAlertCard.Severity.RED.label());
         assertThat(card.path("sub_title_text").asText()).isEqualTo("京东出库连续 3 次失败");
@@ -71,7 +71,7 @@ class BusinessCardRenderingTest {
         assertThat(card.path("card_type").asText()).isEqualTo("text_notice");
         // 动作已完成：任何回调按钮都是在诱导第二次外部副作用（京东建单）
         assertThat(callbackKeys(card)).isEmpty();
-        assertThat(card.path("task_id").asText()).isEqualTo("batch:7:v3");
+        assertThat(card.path("task_id").asText()).isEqualTo("batch_7_v3");
         // 两条出库通道分别报数
         assertThat(fieldValue(card, "京东")).isEqualTo("9 单");
         assertThat(fieldValue(card, "导出")).isEqualTo("3 单");
