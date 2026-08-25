@@ -112,7 +112,8 @@ public class FulfillmentReadService {
                 orderId));
         if (!exists) throw BusinessException.notFound("订单不存在");
         List<Map<String, Object>> result = jdbc.query(
-                "SELECT s.* " + SHIPMENT_FROM + " AND s.order_id=? ORDER BY s.shipment_sequence, s.id",
+                "SELECT s.*, o.order_no, o.receiver_name, c.customer_name " + SHIPMENT_FROM
+                        + " AND s.order_id=? ORDER BY s.shipment_sequence, s.id",
                 (rs, row) -> shipment(rs), orderId);
         result.forEach(this::hydrateShipment);
         return result.stream().map(this::orderShipmentView).toList();
@@ -192,9 +193,11 @@ public class FulfillmentReadService {
     private List<Map<String, Object>> shipmentsForFulfillment(long fulfillmentId) {
         List<Map<String, Object>> result = jdbc.query(
                 """
-                SELECT DISTINCT s.* FROM app.shipments s
+                SELECT DISTINCT s.*, o.order_no, o.receiver_name, c.customer_name
+                FROM app.shipments s
                 JOIN app.shipment_items si ON si.shipment_id=s.id
                 JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
+                LEFT JOIN app.customers c ON c.id=o.customer_id
                 WHERE si.fulfillment_id=? ORDER BY s.shipment_sequence, s.id
                 """,
                 (rs, row) -> shipment(rs), fulfillmentId);
