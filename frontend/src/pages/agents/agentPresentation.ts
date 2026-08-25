@@ -16,6 +16,7 @@ import type {
   AgentToolItem,
   AgentListState,
   AgentStatus,
+  ImportBatchStage,
   ModelVisibility,
   RunMode,
   RunOutcome,
@@ -536,4 +537,20 @@ export function coverageNote(item: TokenUsageSummaryItem): CoverageNote {
       `${item.runs} 次运行中 ${item.runs_without_token_usage} 次无计量` +
       `（未配置模型 / 进程中断），下方求和为下界而非全量`,
   };
+}
+
+// ---------- 履约单据 Agent：四段完成度 ----------
+
+/**
+ * 某段是否已走完。
+ *
+ * **线上没有 `complete` 字段**：后端 `ImportBatchProgress.Stage#complete()` 不符合
+ * bean getter 命名，Jackson 不会把它序列化出去（由 `ImportBatchProgressJsonContractTest`
+ * 断言）。所以界面只能按后端同一条规则自己派生——规则改动必须两侧同步。
+ *
+ * 未接入的段**不算走完**：`supported=false` 时 total/done 恒为 0，若不先判 supported，
+ * 「这段还没接进来」会被渲染成「已完成」，正好是本页最不能出的那种误读。
+ */
+export function importBatchStageComplete(stage: ImportBatchStage): boolean {
+  return stage.supported && stage.total > 0 && stage.done === stage.total && stage.blocked === 0;
 }

@@ -48,7 +48,7 @@ test('import issue rows expose actionable source fields without dumping raw cell
     status: 'NEED_REVIEW',
     error_code: 'SKU_MATCH',
     error_detail: {
-      order_line_exception: 'SKU_MAPPING_REQUIRED',
+      order_line_exceptions: ['SKU_MAPPING_REQUIRED'],
       sql: 'select * from app.skus',
     },
     jd_cargos: [],
@@ -233,7 +233,7 @@ test('import rows show the source SKU fulfillment ownership (JD vs third-party)'
     raw_cells: { '商品编号': '2047707' },
     status: 'NEED_REVIEW',
     error_code: 'SKU_MATCH',
-    error_detail: { order_line_exception: 'SKU_MAPPING_REQUIRED' },
+    error_detail: { order_line_exceptions: ['SKU_MAPPING_REQUIRED'] },
   });
   assert.equal(unmapped.fulfillmentType, null);
 });
@@ -279,7 +279,141 @@ test('import row specification falls back to internal SKU default when source om
     raw_cells: { '商品编号': '2047829' },
     status: 'NEED_REVIEW',
     error_code: 'SKU_MATCH',
-    error_detail: { order_line_exception: 'SKU_MAPPING_REQUIRED' },
+    error_detail: { order_line_exceptions: ['SKU_MAPPING_REQUIRED'] },
   });
   assert.equal(unmapped.specification, '—');
+});
+
+test('rejection reason reads the plural order_line_exceptions array the backend actually writes', () => {
+  // 后端 SourceImportService 写的是复数数组；旧代码读单数字符串键，该分支恒为空。
+  const row = (exceptions: unknown, errorCode: string | null = null) => presentImportRow({
+    id: 'row-51',
+    sheet_name: '待发货明细',
+    sheet_index: 0,
+    row_index: 52,
+    raw_cells: { '商品编号': '2047705' },
+    source_order_ref: 'WQ-ORDER-001',
+    status: 'NEED_REVIEW',
+    error_code: errorCode,
+    error_detail: { order_line_exceptions: exceptions },
+  });
+
+  assert.equal(row(['SKU_MAPPING_CONFLICT']).reason, '来源商品对应多个 SKU，需要人工确认');
+  // 一行拆多行时两个不同的异常码都要说出来，只取首个会瞒掉另一半
+  assert.equal(
+    row(['SKU_MAPPING_REQUIRED', 'SKU_MAPPING_CONFLICT']).reason,
+    '来源商品尚未建立 SKU 映射；来源商品对应多个 SKU，需要人工确认',
+  );
+  // 同一文案去重，不重复刷屏
+  assert.equal(
+    row(['SKU_MAPPING_REQUIRED', 'SKU_MAPPING_REQUIRED']).reason,
+    '来源商品尚未建立 SKU 映射',
+  );
+  // 行级异常码优先于 error_code：数组说得比映射后的粗粒度码更细
+  assert.equal(
+    row(['SKU_MAPPING_CONFLICT'], 'JD_CODE_CONFLICT').reason,
+    '来源商品对应多个 SKU，需要人工确认',
+  );
+});
+
+test('unregistered line exception codes fail closed instead of leaking backend text', () => {
+  const leaked = presentImportRow({
+    id: 'row-52',
+    sheet_name: '待发货明细',
+    sheet_index: 0,
+    row_index: 53,
+    raw_cells: { '商品编号': '2047705' },
+    status: 'NEED_REVIEW',
+    error_code: 'SKU_MATCH',
+    error_detail: {
+      order_line_exceptions: ['BRAND_NEW_BACKEND_CODE', { code: 'not-a-string' }],
+      message: 'org.postgresql.util.PSQLException: relation app.skus',
+    },
+  });
+  // 未登记码整条丢弃后退回 error_code 文案，绝不把英文码或后端自由文本透给 operator
+  assert.equal(leaked.reason, '来源商品尚未建立 SKU 映射');
+  assert.doesNotMatch(JSON.stringify(leaked), /BRAND_NEW_BACKEND_CODE|PSQLException/);
+
+  // 后端解析期拒绝行一律写 NEED_REVIEW —— 全仓没有任何代码把 raw_import_rows.status
+  // 写成 REJECTED（只在 SourceImportService:636 的读侧过滤白名单里出现），
+  // 所以线上真正会被 operator 看到的兜底句是「该行需要人工复核」。
+  const noneKnown = presentImportRow({
+    id: 'row-53',
+    sheet_name: '待发货明细',
+    sheet_index: 0,
+    row_index: 54,
+    raw_cells: { '商品编号': '2047705' },
+    status: 'NEED_REVIEW',
+    error_detail: { order_line_exceptions: ['BRAND_NEW_BACKEND_CODE'] },
+  });
+  assert.equal(noneKnown.reason, '该行需要人工复核');
+});
+
+test('malformed error_detail shapes degrade to the error_code reason', () => {
+  const shape = (detail: Record<string, unknown>) => presentImportRow({
+    id: 'row-54',
+    sheet_name: '待发货明细',
+    sheet_index: 0,
+    row_index: 55,
+    raw_cells: { '商品编号': '2047705' },
+    status: 'NEED_REVIEW',
+    error_code: 'SKU_MATCH',
+    error_detail: detail,
+  }).reason;
+
+  assert.equal(shape({ order_line_exceptions: 'SKU_MAPPING_CONFLICT' }), '来源商品尚未建立 SKU 映射');
+  assert.equal(shape({ order_line_exceptions: null }), '来源商品尚未建立 SKU 映射');
+  assert.equal(shape({ order_line_exceptions: [] }), '来源商品尚未建立 SKU 映射');
+  assert.equal(shape({}), '来源商品尚未建立 SKU 映射');
+});
+
+test('every source-file rejection code names its own blocker instead of the generic fallback', () => {
+  // SourceFileParser 逐行拒绝码全集 + SourceImportService.markReview / Connector reviewRequired；
+  // 任何一条落到兜底句 = operator 分不清退款单、售后单还是行号重复。
+  const expected: Array<[string, string]> = [
+    ['IMPORT_VALIDATION', '来源文件的必填值或同单收货信息需要核对'],
+    ['QUANTITY_SCALE', '商品数量最多支持三位小数'],
+    ['SOURCE_LINE_REF_REQUIRED', '来源行缺少子订单 ID，无法定位到唯一来源行'],
+    ['SOURCE_ORDER_TYPE_BLOCKED', '来源行不是可发货的实体销售订单'],
+    ['SOURCE_ORDER_STATUS_BLOCKED', '来源子订单状态不是明确的待发货状态'],
+    ['SOURCE_ORDER_ALREADY_FULFILLED', '来源行已有发货、收货或物流事实，不再重复发货'],
+    ['SOURCE_ORDER_REFUND_BLOCKED', '来源行存在退款事实，已停止发货'],
+    ['SOURCE_ORDER_AFTER_SALES_BLOCKED', '来源行存在售后事实，已停止发货'],
+    ['SOURCE_LINE_REF_DUPLICATE', '同一来源订单内子订单 ID 重复，需在来源文件内去重'],
+    ['JUFUBAO_RECEIVER_REQUIRED', '来源订单缺少完整收货信息'],
+    ['JUFUBAO_QUANTITY_INVALID', '来源订单商品数量缺失或不是正整数'],
+    ['JUFUBAO_CREATED_TIME_REQUIRED', '来源订单缺少有效的创建时间'],
+    ['SOURCE_SKU_MAPPING_REQUIRED', '来源商品尚未建立 SKU 映射'],
+    ['PROVIDER_SKU_MAPPING_REQUIRED', '内部 SKU 尚未建立履约方商品编码映射'],
+    ['MAPPING_MULTIPLIER', '来源 SKU 映射缺少有效的数量换算倍数'],
+  ];
+
+  for (const [code, reason] of expected) {
+    const row = presentImportRow({
+      id: `row-${code}`,
+      sheet_name: '待发货明细',
+      sheet_index: 0,
+      row_index: 60,
+      raw_cells: { '商品编号': '2047705' },
+      source_order_ref: 'WQ-ORDER-002',
+      status: 'NEED_REVIEW',
+      error_code: code,
+      error_detail: { message: '万齐来源行存在退款事实' },
+    });
+    assert.equal(row.reason, reason, `${code} 应有专属文案，而非通用兜底句`);
+  }
+});
+
+test('the safe-message allowlist still wins over the code map', () => {
+  const row = presentImportRow({
+    id: 'row-61',
+    sheet_name: '待发货明细',
+    sheet_index: 0,
+    row_index: 62,
+    raw_cells: {},
+    status: 'NEED_REVIEW',
+    error_code: 'IMPORT_VALIDATION',
+    error_detail: { message: '数量必须大于 0' },
+  });
+  assert.equal(row.reason, '数量必须大于 0');
 });

@@ -19,6 +19,7 @@ import type {
   ImportBatchProgress,
   ImportBatchStage,
 } from '@/api/agentTypes';
+import { importBatchStageComplete } from './agentPresentation';
 import PageShell from '@/components/PageShell';
 
 const READ_ONLY_NOTE =
@@ -37,13 +38,19 @@ function StageCard({ stage }: { stage: ImportBatchStage }) {
       </Card>
     );
   }
-  const blocked = stage.blocked ?? 0;
+  const blocked = stage.blocked;
   return (
-    <Card size="small" title={<Space>{stage.name}{stage.complete ? <Tag color="success">已完成</Tag> : null}</Space>}>
-      <Typography.Text style={{ fontSize: 22, fontWeight: 600 }}>
-        {stage.done ?? 0}
-      </Typography.Text>
-      <Typography.Text type="secondary"> / {stage.total ?? 0}</Typography.Text>
+    <Card
+      size="small"
+      title={
+        <Space>
+          {stage.name}
+          {importBatchStageComplete(stage) ? <Tag color="success">已完成</Tag> : null}
+        </Space>
+      }
+    >
+      <Typography.Text style={{ fontSize: 22, fontWeight: 600 }}>{stage.done}</Typography.Text>
+      <Typography.Text type="secondary"> / {stage.total}</Typography.Text>
       <br />
       {blocked > 0 ? (
         <Tag color="error">{blocked} 项卡住</Tag>
@@ -68,7 +75,7 @@ const BLOCKER_COLUMNS: ColumnsType<ImportBatchBlocker> = [
   { title: '条数', dataIndex: 'count', width: 80 },
   {
     title: '样本业务号',
-    dataIndex: 'sampleNo',
+    dataIndex: 'sample_no',
     width: 200,
     render: (value: string | null) =>
       value ? (
@@ -90,6 +97,10 @@ export default function FulfillmentFilePage() {
 
   const parsedId = Number(batchId.trim());
   const validId = Number.isSafeInteger(parsedId) && parsedId > 0;
+  // 四段固定顺序：完成判定与分段卡片共用同一个数组，段序只写一次
+  const stages = progress
+    ? [progress.intake, progress.outbound, progress.tracking, progress.source_return]
+    : [];
 
   const run = async (mode: 'progress' | 'assess') => {
     if (!validId) return;
@@ -155,15 +166,12 @@ export default function FulfillmentFilePage() {
       {progress ? (
         <>
           <Descriptions bordered size="small" column={{ xs: 1, sm: 2, lg: 4 }}>
-            <Descriptions.Item label="批次号">{progress.batchNo}</Descriptions.Item>
-            <Descriptions.Item label="来源渠道">{progress.sourceChannel || '未标注'}</Descriptions.Item>
+            <Descriptions.Item label="批次号">{progress.batch_no}</Descriptions.Item>
+            <Descriptions.Item label="来源渠道">{progress.source_channel || '未标注'}</Descriptions.Item>
             <Descriptions.Item label="批次状态">{progress.status}</Descriptions.Item>
             <Descriptions.Item label="当前卡在">
               {progress.blockers.length === 0 && !progress.intake.supported ? '—' : null}
-              {progress.intake.complete &&
-              progress.outbound.complete &&
-              progress.tracking.complete &&
-              progress.sourceReturn.complete ? (
+              {stages.every(importBatchStageComplete) ? (
                 <Tag color="success">四段已走完</Tag>
               ) : (
                 <Tag color="processing">见下方分段</Tag>
@@ -172,7 +180,7 @@ export default function FulfillmentFilePage() {
           </Descriptions>
 
           <Row gutter={[16, 16]}>
-            {[progress.intake, progress.outbound, progress.tracking, progress.sourceReturn].map((stage) => (
+            {stages.map((stage) => (
               <Col xs={24} sm={12} xl={6} key={stage.name}>
                 <StageCard stage={stage} />
               </Col>
@@ -209,9 +217,9 @@ export default function FulfillmentFilePage() {
           title={
             <Space>
               Agent 解读
-              {result.assessment.requiresHuman ? <Tag color="warning">需要人工</Tag> : null}
+              {result.assessment.requires_human ? <Tag color="warning">需要人工</Tag> : null}
               <Typography.Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
-                {result.model ?? '—'} · {result.promptVersion ?? '—'}
+                {result.model ?? '—'} · {result.prompt_version ?? '—'}
               </Typography.Text>
             </Space>
           }
@@ -221,9 +229,9 @@ export default function FulfillmentFilePage() {
               {result.assessment.summary}
             </Typography.Paragraph>
 
-            {result.assessment.stageNotes.length > 0 ? (
+            {result.assessment.stage_notes.length > 0 ? (
               <ul style={{ marginBottom: 0, paddingInlineStart: 20 }}>
-                {result.assessment.stageNotes.map((note) => (
+                {result.assessment.stage_notes.map((note) => (
                   <li key={note.stage}>
                     <Typography.Text strong>{note.stage}</Typography.Text>：{note.note}
                   </li>
@@ -234,14 +242,14 @@ export default function FulfillmentFilePage() {
             <div>
               <Typography.Text strong>建议后续动作</Typography.Text>
               <ul style={{ marginBottom: 0, paddingInlineStart: 20 }}>
-                {result.assessment.suggestedActions.map((action) => (
+                {result.assessment.suggested_actions.map((action) => (
                   <li key={action.action}>
                     {action.action}
                     <Typography.Text type="secondary"> —— 依据：{action.reason}</Typography.Text>
-                    {action.targetNo ? (
+                    {action.target_no ? (
                       <Typography.Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
                         {' '}
-                        {action.targetNo}
+                        {action.target_no}
                       </Typography.Text>
                     ) : null}
                   </li>
@@ -249,12 +257,12 @@ export default function FulfillmentFilePage() {
               </ul>
             </div>
 
-            {result.assessment.missingFields.length > 0 ? (
+            {result.assessment.missing_fields.length > 0 ? (
               <Alert
                 showIcon
                 type="info"
                 message="事实不足以判断下一步"
-                description={`缺少：${result.assessment.missingFields.join('、')}`}
+                description={`缺少：${result.assessment.missing_fields.join('、')}`}
               />
             ) : null}
           </Space>

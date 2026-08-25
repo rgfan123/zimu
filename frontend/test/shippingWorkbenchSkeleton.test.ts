@@ -118,3 +118,67 @@ test('告警区显示打开的运营告警并链接提醒中心', async () => {
     a.getAttribute('href') === '/workbench/alerts');
   assert.ok(alertsLink, '提醒中心入口必须存在');
 });
+
+/**
+ * 京东建单阻塞项就地可见（发货台一页闭环）：
+ * 事故当天的动线是「发货台看不到原因 → 跳发货单页看到一行长文本 → 跳系统管理」。
+ * 本例锁住第一段：结构化阻塞必须在发货台本页按修复位置分组显示，并给出就地入口。
+ */
+test('预览阻断事项在发货台展开真实阻塞，并提供就地处置入口', async () => {
+  window.localStorage.clear();
+  const blockers = [
+    {
+      code: 'JD_SHIPMENT_OUTBOUND_CONFIG_MISSING',
+      path: 'sourceNo',
+      source: 'fulfillment_providers.config.sourceNo',
+      correction_target: 'fulfillment provider configuration',
+      message: '履约方配置缺少京东标识 sourceNo，请先补齐后再建单',
+    },
+    {
+      code: 'JD_SHIPMENT_OUTBOUND_CUSTOMER_CODE_MISSING',
+      path: 'customerInfo.customerCode',
+      source: 'fulfillment_providers.config.customerCode',
+      correction_target: 'fulfillment provider configuration',
+      message: '履约方配置缺少青龙业主号 customerCode，请先补齐',
+    },
+    {
+      code: 'JD_SHIPMENT_OUTBOUND_CONFIG_MISSING',
+      path: 'receiverInfo.townPolicy',
+      source: 'fulfillment_providers.config.townRequired',
+      correction_target: 'fulfillment provider address policy',
+      message: '履约方配置缺少显式乡镇必填策略 townRequired',
+    },
+  ];
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/api/v1/review-cases')) {
+      if (url.includes('size=1')) return jsonResponse({ ...page([]), total_elements: 1 });
+      return jsonResponse({
+        ...page([
+          reviewCaseFixture('77', {
+            reasonCode: 'JD_SHIPMENT_OUTBOUND_PREVIEW_BLOCKED',
+            team: 'FULFILLMENT_OPS',
+            caseNo: 'RC-JD-PREVIEW-DEMO',
+            subjectType: 'SHIPMENT',
+            subjectId: '1',
+            detail: { message: '京东出库请求预览存在阻断项', blockers },
+          }),
+        ]),
+        total_elements: 1,
+      });
+    }
+    return jsonResponse(page([]));
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /RC-JD-PREVIEW-DEMO/, '阻塞事项必须渲染'));
+  const text = harness.bodyText();
+
+  assert.ok(text.includes('RC-JD-PREVIEW-DEMO'), '发货台应显示事项编号，而不是只给一个计数');
+  assert.ok(text.includes('履约方配置 2 项'), '阻塞必须按修复位置分组，而不是拼成一行长文本');
+  assert.ok(text.includes('履约方地址策略 1 项'), '第二个修复位置也要独立成组');
+  assert.ok(text.includes('就地处置'), '必须提供就地入口，而不是把人踢去别的页面');
+
+  // 三条阻塞里有两个不同 code 却同属「履约方配置」——按 code 分组会拆成三组，这里锁住不会
+  assert.ok(!text.includes('履约方配置 1 项'), '同一修复位置的不同 code 不得被拆开');
+});

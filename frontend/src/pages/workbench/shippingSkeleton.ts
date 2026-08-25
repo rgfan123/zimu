@@ -16,6 +16,8 @@ export interface ReviewGroupView {
 
 /** 京东门禁/接口异常类原因码：0 项时合并为一个保留组。 */
 export const JD_GATE_REASON_CODES: readonly string[] = [
+  // 建单预览阻断：出现时整批确认就发不出去，属于「必须第一时间看见」的定义本身
+  'JD_SHIPMENT_OUTBOUND_PREVIEW_BLOCKED',
   'JD_SKU_MAPPING_BLOCKED',
   'JD_STOCK_BLOCKED',
   'MULTIPLE_TRACKINGS_FOR_OUTBOUND',

@@ -1,4 +1,4 @@
-import type { ExportUsageStatus, ImportRowCounts, RawImportRow, RawRowStatus, TrackingBatchRow } from '@/api/types';
+import type { ExportUsageStatus, ImportRowCounts, RawImportRow, RawImportRowErrorDetail, RawRowStatus, TrackingBatchRow } from '@/api/types';
 
 export function summarizeImportBatch(counts: ImportRowCounts): string {
   return `共 ${counts.total} 行，已接收 ${counts.accepted} 行，待复核 ${counts.need_review} 行，拒绝 ${counts.rejected} 行`;
@@ -49,15 +49,46 @@ export interface ImportRowView {
 const SOURCE_SKU_HEADERS = ['商品编号', '商品ID', '商品编码', '商品条码', '订单商品ID', 'SKU', 'SKU编码'];
 const SOURCE_PRODUCT_HEADERS = ['商品名称', '品名', '产品名称'];
 
+/**
+ * 导入行阻断原因码 → 中文文案。覆盖后端能写进 `raw_import_rows.error_code`
+ * 与 `error_detail.order_line_exceptions[]` 的全部取值：
+ *
+ * - 解析期拒绝码（`SourceFileParser` 直写 error_code）：IMPORT_VALIDATION、QUANTITY_SCALE、
+ *   SOURCE_* 七个万齐来源行门禁码；
+ * - 订单行异常码（`order_line_exceptions[]` 原码，及 `SourceImportService.importErrorCode`
+ *   映射后的 error_code）：SKU_MAPPING_REQUIRED→SKU_MATCH、SKU_MAPPING_CONFLICT→JD_CODE_CONFLICT；
+ * - 结构化导入 Connector 的 `StructuredOrderRow.reviewRequired` code：JUFUBAO_*；
+ * - 复核事项部分闭环后 `ReviewCaseResolutionService` 回写的 review reason_code：
+ *   CUSTOMER_MATCH_REQUIRED→CUSTOMER_MATCH，以及 ELSE 分支原样落库的映射族原因码。
+ *
+ * fail-closed：未登记的码一律落兜底句，禁止把后端英文码或自由文本直接透给 operator。
+ */
 const IMPORT_REASON_BY_CODE: Record<string, string> = {
+  // 解析期：必填值 / 数量格式
   IMPORT_VALIDATION: '来源文件的必填值或同单收货信息需要核对',
   QUANTITY_SCALE: '商品数量最多支持三位小数',
+  // 解析期：来源行门禁（不可发货的来源事实，需回源头处理而非改文件）
+  SOURCE_LINE_REF_REQUIRED: '来源行缺少子订单 ID，无法定位到唯一来源行',
+  SOURCE_ORDER_TYPE_BLOCKED: '来源行不是可发货的实体销售订单',
+  SOURCE_ORDER_STATUS_BLOCKED: '来源子订单状态不是明确的待发货状态',
+  SOURCE_ORDER_ALREADY_FULFILLED: '来源行已有发货、收货或物流事实，不再重复发货',
+  SOURCE_ORDER_REFUND_BLOCKED: '来源行存在退款事实，已停止发货',
+  SOURCE_ORDER_AFTER_SALES_BLOCKED: '来源行存在售后事实，已停止发货',
+  SOURCE_LINE_REF_DUPLICATE: '同一来源订单内子订单 ID 重复，需在来源文件内去重',
+  // 客户 / SKU 映射族（error_code 与 order_line_exceptions 两种口径同时登记）
   CUSTOMER_MATCH: '客户身份尚未建立明确映射',
   CUSTOMER_MATCH_REQUIRED: '客户身份尚未建立明确映射',
   SKU_MATCH: '来源商品尚未建立 SKU 映射',
   JD_CODE_CONFLICT: 'SKU 映射或京东商品编码存在冲突',
   SKU_MAPPING_REQUIRED: '来源商品尚未建立 SKU 映射',
   SKU_MAPPING_CONFLICT: '来源商品对应多个 SKU，需要人工确认',
+  SOURCE_SKU_MAPPING_REQUIRED: '来源商品尚未建立 SKU 映射',
+  PROVIDER_SKU_MAPPING_REQUIRED: '内部 SKU 尚未建立履约方商品编码映射',
+  MAPPING_MULTIPLIER: '来源 SKU 映射缺少有效的数量换算倍数',
+  // 结构化导入（Connector transform 判定来源证据不足以建单）
+  JUFUBAO_RECEIVER_REQUIRED: '来源订单缺少完整收货信息',
+  JUFUBAO_QUANTITY_INVALID: '来源订单商品数量缺失或不是正整数',
+  JUFUBAO_CREATED_TIME_REQUIRED: '来源订单缺少有效的创建时间',
 };
 
 const SAFE_IMPORT_MESSAGES = new Set([
@@ -81,6 +112,24 @@ function firstText(cells: Record<string, unknown>, keys: string[]): string {
   return '—';
 }
 
+/**
+ * 后端写的是复数数组 `error_detail.order_line_exceptions`（`SourceImportService` 逐行
+ * 收集该来源行拆出的全部订单行异常码），一行拆多行时可能同时带多个不同的码，
+ * 因此逐个取文案并去重后合并展示——只取首个会瞒掉另一半阻断原因。
+ * 未登记的码按 fail-closed 丢弃，全部未登记时返回空串交由 error_code 兜底。
+ */
+function lineExceptionReason(detail: RawImportRowErrorDetail): string {
+  const codes = detail.order_line_exceptions;
+  if (!Array.isArray(codes)) return '';
+  const reasons: string[] = [];
+  for (const code of codes) {
+    if (typeof code !== 'string') continue;
+    const reason = IMPORT_REASON_BY_CODE[code];
+    if (reason && !reasons.includes(reason)) reasons.push(reason);
+  }
+  return reasons.join('；');
+}
+
 function importIssueReason(row: RawImportRow): string {
   if (row.status === 'ACCEPTED') {
     return row.order_id && row.order_line_id
@@ -91,9 +140,10 @@ function importIssueReason(row: RawImportRow): string {
   const safeMessage = typeof detail.message === 'string' ? detail.message.trim() : '';
   if (SAFE_IMPORT_MESSAGES.has(safeMessage)) return safeMessage;
 
-  const lineException = typeof detail.order_line_exception === 'string' ? detail.order_line_exception : '';
-  return IMPORT_REASON_BY_CODE[lineException]
-    ?? IMPORT_REASON_BY_CODE[row.error_code ?? '']
+  const lineExceptions = lineExceptionReason(detail);
+  if (lineExceptions) return lineExceptions;
+
+  return IMPORT_REASON_BY_CODE[row.error_code ?? '']
     ?? (row.status === 'REJECTED' ? '该行未被接收，请核对源文件后重新导入' : '该行需要人工复核');
 }
 

@@ -105,7 +105,13 @@ export function page(items: unknown[], size = 20) {
 /** 复核事项 DTO 测试夹具：工作台/复核队列等 route 测试共用同一形状，避免逐文件复制。 */
 export function reviewCaseFixture(
   id: string,
-  overrides: { reasonCode?: string; team?: string; status?: string; orderId?: string; caseNo?: string } = {},
+  overrides: {
+    reasonCode?: string; team?: string; status?: string; orderId?: string; caseNo?: string;
+    /** 覆盖 subject（京东建单预览阻断挂在 SHIPMENT 上，不是 ORDER_LINE）。 */
+    subjectType?: string; subjectId?: string;
+    /** detail 载荷；预览阻断事项在此携带结构化 blockers。 */
+    detail?: Record<string, unknown>;
+  } = {},
 ) {
   return {
     id,
@@ -116,9 +122,9 @@ export function reviewCaseFixture(
     status: overrides.status ?? 'OPEN',
     order_id: overrides.orderId ?? '101',
     order_line_id: '201',
-    subject_type: 'ORDER_LINE',
-    subject_id: '201',
-    detail: {},
+    subject_type: overrides.subjectType ?? 'ORDER_LINE',
+    subject_id: overrides.subjectId ?? '201',
+    detail: overrides.detail ?? {},
     suggestions: [],
     allowed_actions: ['RESOLVE_MANUALLY'],
     version: 0,

@@ -12,6 +12,7 @@ import {
   formatJson,
   formatLatency,
   formatTime,
+  importBatchStageComplete,
   modelVisibilityPresentation,
   rangeToStartedParams,
   runModePresentation,
@@ -28,6 +29,7 @@ import {
 import type {
   AgentEvalCaseItem,
   AgentListItem,
+  ImportBatchStage,
   RunToolCallItem,
 } from '../src/api/agentTypes.ts';
 
@@ -303,3 +305,24 @@ function agentItem(
     tools: [],
   };
 }
+
+// ---------- 履约单据 Agent：四段完成度在前端派生 ----------
+
+function importBatchStage(overrides: Partial<ImportBatchStage> = {}): ImportBatchStage {
+  return { name: '收表', total: 10, done: 10, blocked: 0, supported: true, ...overrides };
+}
+
+test('已接入且全部做完、无阻塞才算走完', () => {
+  assert.equal(importBatchStageComplete(importBatchStage()), true);
+  assert.equal(importBatchStageComplete(importBatchStage({ done: 9 })), false);
+  assert.equal(importBatchStageComplete(importBatchStage({ blocked: 1 })), false);
+});
+
+test('未接入的段不算走完：supported=false 时 total/done 恒为 0，不能读成「已完成」', () => {
+  const unsupported = importBatchStage({ supported: false, total: 0, done: 0 });
+  assert.equal(importBatchStageComplete(unsupported), false);
+});
+
+test('已接入但一件都没有的段不算走完——0/0 是「还没东西」而不是「做完了」', () => {
+  assert.equal(importBatchStageComplete(importBatchStage({ total: 0, done: 0 })), false);
+});

@@ -13,6 +13,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { platformOrdersApi } from '@/api/endpoints';
 import { useAsync } from '@/hooks/useAsync';
 import { errorMessage } from '@/api/client';
+import { extractBlockerCases, mergeBlockers, groupBlockers, PREVIEW_BLOCKED_REASON, type BlockerCase } from './blockerGrouping';
+import { JdBlockerFixDrawer } from './JdBlockerFixDrawer';
 import { readStoredWorkbenchRole } from '@/workbenchRole';
 import { reviewTeamForRole } from '@/components/layout/useRailBadges';
 import { alertsQueueUrl, reviewsQueueUrl } from '../shared/reviewQueueUrl';
@@ -194,6 +196,14 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
   const total = preview.data?.total_elements ?? null;
   const partial = total !== null && total > REVIEW_PREVIEW_SIZE;
 
+  // 结构化阻塞项就在这批事项的 DTO 里（review_cases.detail.blockers），
+  // 此前被 groupReviewPreview 数完 reason_code 就丢掉。不额外发请求。
+  const blockerCases = useMemo(
+    () => extractBlockerCases(preview.data?.items ?? []),
+    [preview.data],
+  );
+  const [fixing, setFixing] = useState<BlockerCase | null>(null);
+
   return (
     <section className="zs-sec" id="zs-review">
       <div className="zs-card">
@@ -222,26 +232,56 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
                     {group.label}
                     <span className="zs-c">{group.count} 项</span>
                   </summary>
-                  <div className="zs-rqi">
-                    <div className="zs-w">
-                      {group.count === 0 ? (
-                        <div className="zs-l2 zs-muted">{JD_GATE_ZERO_COPY}</div>
-                      ) : (
-                        <div className="zs-l2">同类事项 {group.count} 项，在收件箱按此类型预筛后逐条处理。</div>
-                      )}
-                    </div>
-                    {group.count > 0 ? (
-                      <div className="zs-a">
-                        <Link to={group.url}>去处理</Link>
+                  {group.reasonCode === PREVIEW_BLOCKED_REASON && blockerCases.length > 0 ? (
+                    blockerCases.map((blockerCase) => (
+                      <div className="zs-rqi" key={blockerCase.caseId}>
+                        <div className="zs-w">
+                          <div className="zs-l1">
+                            {blockerCase.caseNo ?? `事项 ${blockerCase.caseId}`}
+                            <span className="zs-c">{blockerCase.blockers.length} 项</span>
+                          </div>
+                          <div className="zs-l2">
+                            {groupBlockers(blockerCase.blockers)
+                              .map((g) => `${g.label} ${g.items.length} 项`)
+                              .join(' · ')}
+                          </div>
+                        </div>
+                        <div className="zs-a">
+                          <button type="button" className="zs-lnk" onClick={() => setFixing(blockerCase)}>
+                            就地处置
+                          </button>
+                        </div>
                       </div>
-                    ) : null}
-                  </div>
+                    ))
+                  ) : (
+                    <div className="zs-rqi">
+                      <div className="zs-w">
+                        {group.count === 0 ? (
+                          <div className="zs-l2 zs-muted">{JD_GATE_ZERO_COPY}</div>
+                        ) : (
+                          <div className="zs-l2">同类事项 {group.count} 项，在收件箱按此类型预筛后逐条处理。</div>
+                        )}
+                      </div>
+                      {group.count > 0 ? (
+                        <div className="zs-a">
+                          <Link to={group.url}>去处理</Link>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </details>
               ))}
             </div>
           )}
         </div>
       </div>
+      <JdBlockerFixDrawer
+        open={fixing !== null}
+        shipmentId={fixing?.shipmentId ?? null}
+        blockers={fixing ? mergeBlockers([fixing]) : []}
+        onClose={() => setFixing(null)}
+        onResolved={() => preview.reload?.()}
+      />
     </section>
   );
 }

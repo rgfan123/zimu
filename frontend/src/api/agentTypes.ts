@@ -241,17 +241,27 @@ export interface MetaAgentOutcome {
 
 // ---------- 履约单据 Agent（Excel 四段闭环） ----------
 
+/**
+ * 以下形状**全部按线上 snake_case 写**，与后端 Java record 的 camelCase 字段名无关。
+ *
+ * 后端 `JacksonConfig` 对全契约启用 SNAKE_CASE（docs/api-contract.md §3.1），而
+ * `ImportBatchProgress` / `FulfillmentFileRunResult` 没有任何 `@JsonProperty` 覆写，
+ * 所以线上就是 `batch_no` / `source_return` / `prompt_version`。客户端也没有 camelize 层
+ * （见 src/api/client.ts）——这里照抄 camelCase 会让整页崩在 `progress.source_return`。
+ * 真实键名由后端 `ImportBatchProgressJsonContractTest` /
+ * `FulfillmentFileRunResultJsonContractTest` 钉死。
+ */
+
 export interface ImportBatchStage {
   name: string;
   /**
-   * 该段是否已接入。**false 时 total/done/blocked 不会返回**——
-   * 「该段不适用」与「0 待办」是完全不同的行动信号。
+   * 该段是否已接入。**false 时 total/done/blocked 恒为 0 且无意义**——
+   * 「该段不适用」与「0 待办」是完全不同的行动信号，界面必须先判 supported。
    */
   supported: boolean;
-  total?: number;
-  done?: number;
-  blocked?: number;
-  complete?: boolean;
+  total: number;
+  done: number;
+  blocked: number;
 }
 
 export interface ImportBatchBlocker {
@@ -260,33 +270,33 @@ export interface ImportBatchBlocker {
   code: string;
   count: number;
   /** 可去后台搜的业务号 */
-  sampleNo: string | null;
+  sample_no: string | null;
 }
 
 export interface ImportBatchProgress {
-  batchId: number;
-  batchNo: string;
-  batchType: string;
-  sourceChannel: string | null;
+  batch_id: number;
+  batch_no: string;
+  batch_type: string;
+  source_channel: string | null;
   status: string;
-  revisionNo: number;
-  receivedAt: string | null;
-  processedAt: string | null;
+  revision_no: number;
+  received_at: string | null;
+  processed_at: string | null;
   intake: ImportBatchStage;
   outbound: ImportBatchStage;
   tracking: ImportBatchStage;
-  sourceReturn: ImportBatchStage;
+  source_return: ImportBatchStage;
   blockers: ImportBatchBlocker[];
 }
 
 export interface FulfillmentFileAssessment {
-  batchNo: string;
-  currentStage: string | null;
+  batch_no: string;
+  current_stage: string | null;
   summary: string;
-  stageNotes: Array<{ stage: string; note: string }>;
-  suggestedActions: Array<{ action: string; reason: string; targetNo: string | null }>;
-  requiresHuman: boolean;
-  missingFields: string[];
+  stage_notes: Array<{ stage: string; note: string }>;
+  suggested_actions: Array<{ action: string; reason: string; target_no: string | null }>;
+  requires_human: boolean;
+  missing_fields: string[];
 }
 
 export interface FulfillmentFileRunResult {
@@ -296,6 +306,6 @@ export interface FulfillmentFileRunResult {
   assessment: FulfillmentFileAssessment | null;
   provider: string | null;
   model: string | null;
-  promptVersion: string | null;
+  prompt_version: string | null;
   error: string | null;
 }

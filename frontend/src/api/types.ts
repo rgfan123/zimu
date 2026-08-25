@@ -866,6 +866,34 @@ export interface PlatformOrderRefreshResult {
   date_end?: string;
 }
 
+/**
+ * `raw_import_rows.error_detail` 的已知键。
+ *
+ * **故意不加索引签名**：本类型存在的唯一理由就是让键名拼错在编译期炸掉。曾经前端读
+ * 单数 `order_line_exception`、后端写复数 `order_line_exceptions`，名字对不上导致该
+ * 分支恒为空、无声退化到粗粒度 error_code 文案——加了 `[key: string]: unknown` 就等于
+ * 把这个缺陷放回来。后端新增键不会让编译失败（线上 JSON 的多余属性不触发 TS 的
+ * excess property check），所以不需要索引签名兜底。
+ *
+ * **值一律 `unknown`**：这是不可信的线上数据，且三个写入方各写各的形状。类型只守键名，
+ * 值形状必须在读取处运行时校验（见 `fileOperations.ts` 的 `lineExceptionReason`
+ * 与 `SAFE_IMPORT_MESSAGES`）。标成 `string[]` 会让 `typeof code === 'string'` 这类
+ * 守卫显得多余而被后人删掉，正是要避免的。
+ *
+ * 写入方与实际形状：
+ * - `message`（string）：`SourceFileParser` 逐行校验、`SourceImportService.markReview`、
+ *   `StructuredOrderRow.reviewRequired`（Connector 结构化导入）
+ * - `order_line_exceptions`（string[]）：`SourceImportService:202-204`，该来源行拆出的
+ *   全部订单行异常码；一行拆多行时会同时带多个不同的码
+ * - `review_case_reason`（string）：`ReviewCaseResolutionService:565-577`，复核部分闭环后
+ *   回写仍未闭环的原因码
+ */
+export interface RawImportRowErrorDetail {
+  message?: unknown;
+  order_line_exceptions?: unknown;
+  review_case_reason?: unknown;
+}
+
 /** 来源文件原始行血缘；raw_cells 仅由展示层白名单取值，不得整体渲染。 */
 export interface RawImportRow {
   id: string;
@@ -876,7 +904,7 @@ export interface RawImportRow {
   source_order_ref?: string | null;
   status: RawRowStatus;
   error_code?: string | null;
-  error_detail?: Record<string, unknown> | null;
+  error_detail?: RawImportRowErrorDetail | null;
   order_id?: string | null;
   order_line_id?: string | null;
   /** 渠道模板解析投影（白名单：receiver_name/receiver_phone/receiver_address/product_name/quantity/specification/source_sku_ref），供确认明细核对解析是否正确。 */
