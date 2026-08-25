@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import cn.zimu.fulfillment.connector.jd.JdIscGateway;
 import cn.zimu.fulfillment.common.audit.AuditLog;
 import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
@@ -36,6 +37,7 @@ class JdWriteOpsClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdWriteOpsClient service = new JdWriteOpsClient(
+                new JdIscGateway(
                 contractMapper,
                 auditLogService(),
                 "https://api.jdl.com",
@@ -43,7 +45,7 @@ class JdWriteOpsClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU0001",
+                "EBU0001"),
                 "on");
         com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformPoService.addPoOrder
                 .JdlApiResponseBase<PoCreateResponse> envelope =
@@ -84,6 +86,7 @@ class JdWriteOpsClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdWriteOpsClient service = new JdWriteOpsClient(
+                new JdIscGateway(
                 contractMapper,
                 new AuditLogService(repository, new ObjectMapper(), mock(EntityManager.class)),
                 "https://api.jdl.com",
@@ -91,7 +94,7 @@ class JdWriteOpsClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "",
+                ""),
                 "on");
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain
                 .JdlOpenPlatformCustomerService.addOrUpdateCustomerInfo.JdlApiResponseBase();
@@ -139,6 +142,7 @@ class JdWriteOpsClientRequestMappingTest {
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         // SoCreateOrderRequest 无顶层 ownerNo 字段，构造器 ownerNo 传空避免严格 mapper 报未知属性
         JdWriteOpsClient service = new JdWriteOpsClient(
+                new JdIscGateway(
                 contractMapper,
                 auditLogService(),
                 "https://api.jdl.com",
@@ -146,7 +150,7 @@ class JdWriteOpsClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "",
+                ""),
                 "on");
         com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformSoService.addSoOrder
                 .JdlApiResponseBase<SoCreateResponse> envelope =

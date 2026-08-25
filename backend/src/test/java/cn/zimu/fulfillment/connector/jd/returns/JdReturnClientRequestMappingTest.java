@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import cn.zimu.fulfillment.connector.jd.JdIscGateway;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,6 +27,7 @@ class JdReturnClientRequestMappingTest {
 
     private JdReturnClient client() {
         return new JdReturnClient(
+                new JdIscGateway(
                 new ObjectMapper().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE),
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -33,7 +35,7 @@ class JdReturnClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001");
+                "EBU000000000001"));
     }
 
     @Test

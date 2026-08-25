@@ -35,6 +35,7 @@ class JdWarehouseClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdWarehouseClient service = new JdWarehouseClient(
+                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -42,7 +43,7 @@ class JdWarehouseClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "CURRENT-CONFIG-OWNER");
+                "CURRENT-CONFIG-OWNER"));
         com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformSellerService.queryWarehouseInfo
                         .JdlApiListResponseBase<com.lop.open.api.sdk.domain.IntegratedSupplyChain
                                 .JdlOpenPlatformSellerService.queryWarehouseInfo.WarehouseEntity>
@@ -80,6 +81,7 @@ class JdWarehouseClientRequestMappingTest {
         AuditLogService audits = new AuditLogService(
                 auditLogs, contractMapper, mock(EntityManager.class));
         JdWarehouseClient service = new JdWarehouseClient(
+                new JdIscGateway(
                 contractMapper,
                 audits,
                 "https://api.jdl.com",
@@ -87,7 +89,7 @@ class JdWarehouseClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "");
+                ""));
 
         SoQueryResponse data = new SoQueryResponse();
         data.setErpDeliveryNo("ERP-DELIVERY-AUDIT-001");
@@ -172,7 +174,15 @@ class JdWarehouseClientRequestMappingTest {
         AuditLogService audits = new AuditLogService(
                 auditLogs, contractMapper, mock(EntityManager.class));
         JdWarehouseClient service = new JdWarehouseClient(
-                contractMapper, audits, "", "", "", "", "", "");
+                new JdIscGateway(
+                contractMapper,
+                audits,
+                "",
+                "",
+                "",
+                "",
+                "",
+                ""));
 
         JdResult result = service.createOutboundOrder(Map.of(
                 "warehouseNo", "WAREHOUSE-SAFE-REF",

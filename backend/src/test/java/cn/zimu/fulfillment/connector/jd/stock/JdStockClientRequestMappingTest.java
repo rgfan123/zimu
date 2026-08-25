@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import cn.zimu.fulfillment.connector.jd.JdIscGateway;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -311,6 +312,7 @@ class JdStockClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         return new JdStockClient(
+                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -318,6 +320,6 @@ class JdStockClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 PIN,
-                OWNER_NO);
+                OWNER_NO));
     }
 }
