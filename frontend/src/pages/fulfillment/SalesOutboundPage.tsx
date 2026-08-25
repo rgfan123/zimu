@@ -17,6 +17,7 @@ import { fileOperationsApi, fulfillmentExportsApi, providersApi } from '@/api/en
 import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportWecomState, ImportBatch, TrackingImportBatch } from '@/api/types';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
 import {
   FILE_JOB_BATCH_PARAM,
@@ -857,6 +858,18 @@ export default function SalesOutboundPage() {
 
   const err = list.error || providers.error;
 
+  /** 页面级错误态：列表或履约方目录加载失败时整块切换为 PageState，重试语义与替换前一致（reload）。 */
+  if (err) {
+    return (
+      <PageState
+        state="error"
+        message="销售出库加载失败"
+        description={errorMessage(err)}
+        onRetry={list.reload}
+      />
+    );
+  }
+
   return (
     <PageShell
       title="销售出库"
@@ -886,9 +899,6 @@ export default function SalesOutboundPage() {
           columns={columns}
           dataSource={list.data?.items ?? []}
           loading={list.loading}
-          error={err}
-          onRetry={list.reload}
-          errorTitle="销售出库加载失败"
           size="middle"
           scroll={{ x: 1300 }}
           pagination={{

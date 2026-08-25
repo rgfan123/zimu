@@ -194,6 +194,20 @@ test('orders stay canonical and inventory has one business-level overview', () =
   });
 });
 
+test('order presets collapse into one visible entry while direct URLs stay routable', () => {
+  const orders = findNavigationNode(appNavigation, '/orders');
+  const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
+  const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
+
+  const visibleChildren = orders?.children?.filter(({ hideInMenu }) => !hideInMenu) ?? [];
+  assert.equal(visibleChildren.length, 1, '订单中心菜单只剩「全部订单」一个入口');
+  assert.equal(visibleChildren[0]?.label, '全部订单');
+  for (const presetPath of ['/orders/pending', '/orders/exceptions', '/orders/tracking']) {
+    assert.equal(visiblePaths.includes(presetPath), false, `${presetPath} 不再出现在菜单`);
+    assert.equal(routablePaths.includes(presetPath), true, `${presetPath} 直达仍可路由（书签不失效）`);
+  }
+});
+
 test('production navigation has no duplicate leaf paths', () => {
   const paths = flattenNavigationLeaves(appNavigation).map(({ path }) => path);
   assert.equal(new Set(paths).size, paths.length);

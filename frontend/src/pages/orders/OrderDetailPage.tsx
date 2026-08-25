@@ -15,6 +15,7 @@ import { ordersApi, providersApi } from '@/api/endpoints';
 import type { OrderLine, OrderShipment, OrderStatus } from '@/api/types';
 import { reasonLabel } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import OrderTimeline from '@/components/OrderTimeline';
 import PageShell from '@/components/PageShell';
 import StatusTag from '@/components/StatusTag';
@@ -176,17 +177,14 @@ export default function OrderDetailPage() {
 
   if (detailQuery.error) {
     return (
-      <Alert
-        type="error"
-        showIcon
-        message="订单详情加载失败"
-        description={errorMessage(detailQuery.error)}
-        action={
-          <Button size="small" icon={<ReloadOutlined />} onClick={detailQuery.reload}>
-            重试
-          </Button>
-        }
-      />
+      <PageShell title="订单详情">
+        <PageState
+          state="error"
+          message="订单详情加载失败"
+          description={errorMessage(detailQuery.error)}
+          onRetry={detailQuery.reload}
+        />
+      </PageShell>
     );
   }
 

@@ -17,6 +17,7 @@ import { jdWarehouseApi, providersApi, shipmentsApi } from '@/api/endpoints';
 import type { JdClientStatus, JdReceiverAddressCandidate, Shipment, ShipmentJdOutboundPreview, ShipmentStatus } from '@/api/types';
 import { CHANNEL_LABELS, SHIPMENT_STATUS_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { shipmentTimeLabel } from '@/presentation/shipment';
 import {
   jdReceiverAddressBatchIdempotencyKey,
@@ -390,6 +391,18 @@ export default function ShipmentsPage() {
 
   const err = list.error || providers.error;
 
+  /** 页面级错误态：列表或履约方目录加载失败时整块切换为 PageState，重试语义与替换前一致（reload）。 */
+  if (err) {
+    return (
+      <PageState
+        state="error"
+        message="Shipment 加载失败"
+        description={errorMessage(err)}
+        onRetry={list.reload}
+      />
+    );
+  }
+
   return (
     <PageShell
       title="发货记录"
@@ -417,9 +430,6 @@ export default function ShipmentsPage() {
           columns={columns}
           dataSource={list.data?.items ?? []}
           loading={list.loading}
-          error={err}
-          onRetry={list.reload}
-          errorTitle="Shipment 加载失败"
           size="middle"
           pagination={{
             current: page + 1,

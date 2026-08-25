@@ -48,9 +48,10 @@ export const appNavigation = [
     label: '订单中心',
     children: [
       { path: '/orders', label: '全部订单' },
-      { path: '/orders/pending', label: '待处理' },
-      { path: '/orders/exceptions', label: '异常订单' },
-      { path: '/orders/tracking', label: '订单追踪' },
+      // 预设视图并入「全部订单」页内切换（Segmented），旧 URL 保留为隐藏直达路径，书签不失效。
+      { path: '/orders/pending', label: '待处理', hideInMenu: true },
+      { path: '/orders/exceptions', label: '异常订单', hideInMenu: true },
+      { path: '/orders/tracking', label: '订单追踪', hideInMenu: true },
       { path: '/orders/:orderId', label: '订单详情', hideInMenu: true },
     ],
   },

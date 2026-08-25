@@ -111,7 +111,53 @@ test('订单追踪 route defaults to the SHIPPED status', async () => {
   assert.match(harness.bodyText(), /订单追踪/);
 });
 
-test('order list failure surfaces the DataTable error state with a working retry', async () => {
+test('订单中心页内 Segmented 切换预设并同步 URL（旧直达路径互通）', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = ordersFetch(requests, []);
+
+  await harness.mount(['/orders']);
+  await harness.waitFor(() => assert.ok(requests.some((url) => url.startsWith('/api/v1/orders?'))));
+
+  const segmented = document.querySelector('[aria-label="订单视图预设"]');
+  assert.ok(segmented, '合并页必须渲染页内 Segmented 视图切换器');
+  const pendingItem = [...segmented.querySelectorAll<HTMLElement>('.ant-segmented-item')]
+    .find((item) => item.textContent?.includes('待处理'));
+  assert.ok(pendingItem, 'Segmented 必须包含「待处理」预设');
+  await harness.dispatchEvent(pendingItem, new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+  await harness.waitFor(() => assert.equal(harness.location(), '/orders/pending'));
+  await harness.waitFor(() => assert.ok(
+    requests.some((url) => url.includes('processing_stage=NEED_REVIEW')),
+    '切到「待处理」后订单请求必须带上 NEED_REVIEW 阶段筛选',
+  ));
+});
+
+test('list failure switches the whole page to the PageState error with retry', async () => {
+  let calls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === '/api/v1/fulfillment-providers') return jsonResponse([]);
+    calls += 1;
+    if (calls === 1) return jsonResponse({ message: 'raw list failure' }, 500);
+    return jsonResponse(ordersPage([orderSummary('101', 'ORD-101')]));
+  };
+
+  await harness.mount(['/orders']);
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /订单列表加载失败/));
+  assert.ok(
+    [...document.querySelectorAll<HTMLButtonElement>('button')]
+      .some((button) => button.textContent?.includes('重试')),
+    'PageState 错误态必须暴露重试按钮',
+  );
+
+  const retry = [...document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('重试'));
+  await harness.dispatchEvent(retry, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /ORD-101/));
+});
+
+test('order list failure switches the whole page to the PageState error with a working retry', async () => {
   let calls = 0;
   const requests: string[] = [];
   globalThis.fetch = async (input) => {

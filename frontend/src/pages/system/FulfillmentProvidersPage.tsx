@@ -28,11 +28,10 @@ import PageShell from '@/components/PageShell';
 import {
   AdminCategoryTag,
   AdminEmpty,
-  AdminFailureAlert,
-  AdminLoading,
   AdminStatusTag,
 } from '@/pages/shared/AdminVisualComponents';
-import { adminPageState } from '@/pages/shared/adminVisual';
+import { adminFailurePresentation, adminPageState } from '@/pages/shared/adminVisual';
+import { PageState } from '@/pages/shared/PageState';
 import '@/pages/shared/adminSurface.css';
 
 /** 京东建单所需标识（jd-real-sdk-switch 01）；customerCode 属 02 票客户级字段，不在此列。 */
@@ -246,13 +245,18 @@ export default function FulfillmentProvidersPage() {
   const viewState = adminPageState(loading, error, rows.length > 0);
 
   if (viewState === 'loading') {
-    return <div className="admin-page"><AdminLoading description="正在加载履约方目录…" /></div>;
+    return (
+      <div className="admin-page">
+        <PageState state="loading" description="正在加载履约方目录…" />
+      </div>
+    );
   }
 
   if (viewState === 'error') {
+    const presentation = adminFailurePresentation(error, '履约方目录加载失败');
     return (
       <div className="admin-page">
-        <AdminFailureAlert error={error} title="履约方目录加载失败" onRetry={reload} />
+        <PageState state="error" message={presentation.title} description={presentation.description} onRetry={reload} />
       </div>
     );
   }

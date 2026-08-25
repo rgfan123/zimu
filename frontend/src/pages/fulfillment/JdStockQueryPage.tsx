@@ -25,6 +25,7 @@ import PageShell from '@/components/PageShell';
 import { apiRequest, errorMessage, type QueryValue } from '@/api/client';
 import type { JdQueryResult } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { jdConnectionSemantic } from '@/pages/shared/semanticStatus';
 import { jdStockQueryPrefill, type JdStockQueryKind } from './jdQueryPrefill';
 
@@ -396,12 +397,11 @@ export default function JdStockQueryPage() {
       <Card size="small">
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
           {sdkStatus.error ? (
-            <Alert
-              type="error"
-              showIcon
+            <PageState
+              state="error"
               message="京东库存查询连接状态加载失败"
               description={errorMessage(sdkStatus.error)}
-              action={<Button size="small" onClick={sdkStatus.reload}>重试</Button>}
+              onRetry={sdkStatus.reload}
             />
           ) : null}
           {mode === 'REAL' && sdkStatus.data && !sdkStatus.data.live_ready ? (

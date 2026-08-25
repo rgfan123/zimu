@@ -8,7 +8,9 @@ import FilterBar from '@/components/FilterBar';
 import PageShell from '@/components/PageShell';
 import { inventoryApi } from '@/api/endpoints';
 import { useAsync } from '@/hooks/useAsync';
-import { AdminEmpty, AdminFailureAlert, AdminLoading } from '@/pages/shared/AdminVisualComponents';
+import { AdminEmpty } from '@/pages/shared/AdminVisualComponents';
+import { adminFailurePresentation } from '@/pages/shared/adminVisual';
+import { PageState } from '@/pages/shared/PageState';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
 import '@/pages/shared/adminSurface.css';
 import './inventoryOverview.css';
@@ -195,13 +197,18 @@ export default function InventoryOverviewPage() {
   ];
 
   if (overview.loading) {
-    return <div className="admin-page"><AdminLoading description="正在加载库存观测…" /></div>;
+    return (
+      <div className="admin-page">
+        <PageState state="loading" description="正在加载库存观测…" />
+      </div>
+    );
   }
 
   if (overview.error) {
+    const presentation = adminFailurePresentation(overview.error, '总库存加载失败');
     return (
       <div className="admin-page">
-        <AdminFailureAlert error={overview.error} title="总库存加载失败" onRetry={overview.reload} />
+        <PageState state="error" message={presentation.title} description={presentation.description} onRetry={overview.reload} />
       </div>
     );
   }

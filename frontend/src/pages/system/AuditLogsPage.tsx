@@ -17,9 +17,10 @@ import PageShell from '@/components/PageShell';
 import {
   AdminCategoryTag,
   AdminEmpty,
-  AdminFailureAlert,
   AdminStatusTag,
 } from '@/pages/shared/AdminVisualComponents';
+import { PageState } from '@/pages/shared/PageState';
+import { errorMessage } from '@/api/client';
 import {
   auditOperationLabel,
   auditServiceLabel,
@@ -106,7 +107,12 @@ export default function AuditLogsPage() {
     <div className="admin-page">
       <PageShell title="操作审计">
         {list.error ? (
-          <AdminFailureAlert error={list.error} title="审计记录加载失败" onRetry={list.reload} />
+          <PageState
+            state="error"
+            message="审计记录加载失败"
+            description={errorMessage(list.error)}
+            onRetry={list.reload}
+          />
         ) : null}
 
         <FilterBar
@@ -195,9 +201,14 @@ export default function AuditLogsPage() {
             </div>
           </Space>
         ) : detail.loading ? (
-          <AdminEmpty description="加载中…" />
+          <PageState state="loading" description="正在加载审计详情…" />
         ) : detail.error ? (
-          <AdminFailureAlert error={detail.error} title="审计详情加载失败" onRetry={detail.reload} />
+          <PageState
+            state="error"
+            message="审计详情加载失败"
+            description={errorMessage(detail.error)}
+            onRetry={detail.reload}
+          />
         ) : null}
       </Drawer>
     </div>

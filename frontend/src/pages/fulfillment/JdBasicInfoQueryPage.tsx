@@ -26,6 +26,7 @@ import { errorMessage } from '@/api/client';
 import { jdBasicInfoApi, type BasicInfoQuery } from '@/api/basicinfoEndpoints';
 import type { JdQueryResult } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { jdConnectionSemantic } from '@/pages/shared/semanticStatus';
 
 interface ParamField {
@@ -294,12 +295,11 @@ export default function JdBasicInfoQueryPage() {
       <Card size="small">
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
           {sdkStatus.error ? (
-            <Alert
-              type="error"
-              showIcon
+            <PageState
+              state="error"
               message="连接状态加载失败"
               description={errorMessage(sdkStatus.error)}
-              action={<Button size="small" onClick={sdkStatus.reload}>重试</Button>}
+              onRetry={sdkStatus.reload}
             />
           ) : null}
           <Space align="start" size={12} style={{ width: '100%' }} wrap>

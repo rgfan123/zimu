@@ -18,11 +18,8 @@ import {
   SettingOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons';
-import OrderTrackingPage from '@/pages/orders/OrderTrackingPage';
 import OrderDetailPage from '@/pages/orders/OrderDetailPage';
-import ExceptionOrdersPage from '@/pages/orders/ExceptionOrdersPage';
 import OrdersPage from '@/pages/orders/OrdersPage';
-import PendingOrdersPage from '@/pages/orders/PendingOrdersPage';
 import InventoryOverviewPage from '@/pages/inventory/InventoryOverviewPage';
 import InventoryDetailsPage from '@/pages/inventory/InventoryDetailsPage';
 import { AuditLogsPage } from '@/pages/system';
@@ -81,9 +78,10 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/fulfillment/shipments': <ShipmentsPage />,
   '/fulfillment/outbound-recon': <OutboundReconPage />,
   '/orders': <OrdersPage />,
-  '/orders/pending': <PendingOrdersPage />,
-  '/orders/exceptions': <ExceptionOrdersPage />,
-  '/orders/tracking': <OrderTrackingPage />,
+  // 预设视图已并入「全部订单」页内切换；旧 URL 直达同一合并组件，由 OrdersPage 按 pathname 解析预设。
+  '/orders/pending': <OrdersPage />,
+  '/orders/exceptions': <OrdersPage />,
+  '/orders/tracking': <OrdersPage />,
   '/orders/:orderId': <OrderDetailPage />,
   '/agents': <AgentsListPage />,
   '/agents/runs': <AgentRunsPage />,

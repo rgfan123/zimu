@@ -17,8 +17,9 @@ import { useAsync } from '@/hooks/useAsync';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
 import PageShell from '@/components/PageShell';
-import { AdminEmpty, AdminFailureAlert, AdminLoading, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
-import { adminPageState, adminStatusPresentation } from '@/pages/shared/adminVisual';
+import { AdminEmpty, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
+import { adminFailurePresentation, adminPageState, adminStatusPresentation } from '@/pages/shared/adminVisual';
+import { PageState } from '@/pages/shared/PageState';
 import '@/pages/shared/adminSurface.css';
 
 const PROCUREMENT_STATUSES: ProcurementStatus[] = ['PENDING', 'SUCCESS', 'PARTIAL', 'FAILED', 'CANCELLED'];
@@ -98,13 +99,18 @@ export default function ProcurementTicketsPage() {
   const detailState = adminPageState(detail.loading, detail.error, Boolean(detailData));
 
   if (listState === 'loading') {
-    return <div className="admin-page"><AdminLoading description="正在加载采购工单…" /></div>;
+    return (
+      <div className="admin-page">
+        <PageState state="loading" description="正在加载采购工单…" />
+      </div>
+    );
   }
 
   if (listState === 'error') {
+    const presentation = adminFailurePresentation(list.error, '采购工单加载失败');
     return (
       <div className="admin-page">
-        <AdminFailureAlert error={list.error} title="采购工单加载失败" onRetry={list.reload} />
+        <PageState state="error" message={presentation.title} description={presentation.description} onRetry={list.reload} />
       </div>
     );
   }
@@ -160,9 +166,14 @@ export default function ProcurementTicketsPage() {
         styles={{ body: { padding: '16px 20px' } }}
       >
         {detailState === 'loading' ? (
-          <AdminLoading description="正在加载采购工单详情…" />
+          <PageState state="loading" description="正在加载采购工单详情…" />
         ) : detailState === 'error' ? (
-          <AdminFailureAlert error={detail.error} title="采购工单详情加载失败" onRetry={detail.reload} />
+          <PageState
+            state="error"
+            message="采购工单详情加载失败"
+            description={errorMessage(detail.error)}
+            onRetry={detail.reload}
+          />
         ) : detailData ? (
           <Space direction="vertical" size={20} style={{ width: '100%' }}>
             <Descriptions
