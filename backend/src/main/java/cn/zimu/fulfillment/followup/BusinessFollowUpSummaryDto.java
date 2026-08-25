@@ -21,6 +21,8 @@ public record BusinessFollowUpSummaryDto(
         String createdBy,
         @JsonProperty("designated_reviewer")
         String designatedReviewer,
+        @JsonProperty("designated_reviewer_operator_id")
+        String designatedReviewerOperatorId,
         @JsonProperty("agent_slug")
         String agentSlug,
         @JsonProperty("agent_version")

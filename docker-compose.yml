@@ -43,6 +43,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the deployment environment}
       APP_ADMIN_USER: ${APP_ADMIN_USER:?set APP_ADMIN_USER in the deployment environment}
       APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:?set APP_ADMIN_PASSWORD in the deployment environment}
+      APP_GATEWAY_ASSERTION_TOKEN: ${APP_GATEWAY_ASSERTION_TOKEN:-}
       APP_INTERNAL_SERVICE_NAME: ${APP_INTERNAL_SERVICE_NAME:-}
       APP_INTERNAL_SERVICE_TOKEN: ${APP_INTERNAL_SERVICE_TOKEN:-}
       REDIS_HOST: redis
@@ -254,6 +255,8 @@ services:
       APP_ADMIN_USER: ${APP_ADMIN_USER:?set APP_ADMIN_USER in the deployment environment}
       APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:?set APP_ADMIN_PASSWORD in the deployment environment}
       APP_ADMIN_PASSWORD_MIN_LENGTH: "${APP_ADMIN_PASSWORD_MIN_LENGTH:-16}"
+      APP_OPERATOR_HTPASSWD_B64: ${APP_OPERATOR_HTPASSWD_B64:-}
+      APP_GATEWAY_ASSERTION_TOKEN: ${APP_GATEWAY_ASSERTION_TOKEN:-}
       # Edge Basic Auth defaults on; set false only for controlled LAN acceptance
       # (the nginx entrypoint logs a warning and the gateway becomes open to any
       # client that can reach it).

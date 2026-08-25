@@ -3,6 +3,8 @@ package cn.zimu.fulfillment.connector.wecom.card;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.security.SecureRandom;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -18,6 +20,9 @@ import org.springframework.stereotype.Service;
 @Service
 public class WecomBusinessCardStore {
 
+    public static final String RESTART_OUTCOME_UNKNOWN = "WECOM_CARD_RESTART_OUTCOME_UNKNOWN";
+    private static final SecureRandom RANDOM = new SecureRandom();
+
     private final JdbcTemplate jdbc;
 
     public WecomBusinessCardStore(JdbcTemplate jdbc) {
@@ -25,8 +30,8 @@ public class WecomBusinessCardStore {
     }
 
     /**
-     * 建卡。task_id 的唯一约束顺带保证同一 (域, 实体, 版本) 不会重复建卡——
-     * 重复入队返回既有行（扫描器每轮都会重扫同一实体，重复是常态而非异常）。
+     * 建卡。实体版本唯一约束保证重复扫描只返回既有行；首次插入时另生成 128-bit
+     * 随机授权引用并固化进 task_id，避免可猜实体编号本身成为回调能力。
      *
      * <p>用 {@code ON CONFLICT DO NOTHING} 而**不是**捕获 DuplicateKeyException：
      * PostgreSQL 在约束冲突时会中止整个事务，catch 之后的补查询必然撞
@@ -38,26 +43,44 @@ public class WecomBusinessCardStore {
             WecomTaskId taskId,
             WecomBusinessCardSource.RouteType routeType,
             String chatId) {
+        WecomTaskId authorized = taskId.authorizationRef() == null
+                ? taskId.authorize(randomAuthorizationRef())
+                : taskId;
         List<Long> inserted = jdbc.query(
                 """
                 INSERT INTO app.wecom_business_cards
                     (card_domain, entity_id, entity_version, task_id, route_type, chat_id)
                 VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (task_id) DO NOTHING
+                ON CONFLICT (card_domain, entity_id, entity_version) DO NOTHING
                 RETURNING id
                 """,
                 (rs, rowNum) -> rs.getLong(1),
                 taskId.domain(),
                 taskId.entityId(),
                 taskId.version(),
-                taskId.value(),
+                authorized.value(),
                 routeType.name(),
                 chatId);
         if (!inserted.isEmpty()) {
             return load(inserted.getFirst());
         }
-        return findByTaskId(taskId.value())
+        return findByEntity(taskId.domain(), taskId.entityId(), taskId.version())
                 .orElseThrow(() -> new IllegalStateException("task_id 冲突但找不到既有行: " + taskId));
+    }
+
+    public Optional<WecomBusinessCard> findByEntity(String domain, long entityId, long entityVersion) {
+        return jdbc.query(
+                        SELECT + " WHERE card_domain=? AND entity_id=? AND entity_version=?",
+                        (rs, rowNum) -> map(rs),
+                        domain, entityId, entityVersion)
+                .stream()
+                .findFirst();
+    }
+
+    private static String randomAuthorizationRef() {
+        byte[] bytes = new byte[16];
+        RANDOM.nextBytes(bytes);
+        return HexFormat.of().formatHex(bytes);
     }
 
     public WecomBusinessCard load(long cardId) {
@@ -87,6 +110,14 @@ public class WecomBusinessCardStore {
 
     /** 认领发送权：只有 PENDING/FAILED 可以发；SENT/SENDING/SUPERSEDED 跳过；UNKNOWN 禁止盲发。 */
     public CardSendPermit beginSend(long cardId) {
+        return beginSend(cardId, 1);
+    }
+
+    /**
+     * 认领发送权。任务重新领取时若卡仍为 SENDING，说明上一进程可能已经
+     * 提交给企微、但没来得及保存 ACK。此时用 CAS 单调收口到 UNKNOWN，绝不盲发。
+     */
+    public CardSendPermit beginSend(long cardId, int taskAttempt) {
         Integer attempt = jdbc.query(
                         """
                         UPDATE app.wecom_business_cards
@@ -103,6 +134,16 @@ public class WecomBusinessCardStore {
         if (attempt != null) {
             return new CardSendPermit(CardSendAction.SEND, attempt);
         }
+        if (taskAttempt > 1) {
+            jdbc.update(
+                    """
+                    UPDATE app.wecom_business_cards
+                    SET status = 'UNKNOWN', last_error = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND status = 'SENDING'
+                    """,
+                    RESTART_OUTCOME_UNKNOWN,
+                    cardId);
+        }
         String status = load(cardId).status();
         return new CardSendPermit(
                 "UNKNOWN".equals(status) ? CardSendAction.SKIP_UNKNOWN : CardSendAction.SKIP_HANDLED,
@@ -115,7 +156,7 @@ public class WecomBusinessCardStore {
                 UPDATE app.wecom_business_cards
                 SET status = 'SENT', request_id = ?, acknowledged_at = ?, last_error = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status IN ('SENDING', 'UNKNOWN')
                 """,
                 requestId,
                 OffsetDateTime.ofInstant(
@@ -124,21 +165,21 @@ public class WecomBusinessCardStore {
     }
 
     public void recordRetryable(long cardId, String errorCode) {
-        transition(cardId, "FAILED", errorCode);
+        transitionFromSending(cardId, "FAILED", errorCode);
     }
 
     /** 外部效果未知：留在 UNKNOWN，后续不再自动重发，等人判定。 */
     public void recordUnknown(long cardId, String errorCode) {
-        transition(cardId, "UNKNOWN", errorCode);
+        transitionFromSending(cardId, "UNKNOWN", errorCode);
     }
 
     public void recordFailed(long cardId, String errorCode) {
-        transition(cardId, "FAILED", errorCode);
+        transitionFromSending(cardId, "FAILED", errorCode);
     }
 
     /** 事实已变（实体已处置/版本已推进）：这张卡不该发出去。 */
     public void recordSuperseded(long cardId, String reasonCode) {
-        transition(cardId, "SUPERSEDED", reasonCode);
+        transitionFromSending(cardId, "SUPERSEDED", reasonCode);
     }
 
     // ------------------------------------------------------------------
@@ -150,12 +191,12 @@ public class WecomBusinessCardStore {
             FROM app.wecom_business_cards
             """;
 
-    private void transition(long cardId, String status, String errorCode) {
+    private void transitionFromSending(long cardId, String status, String errorCode) {
         jdbc.update(
                 """
                 UPDATE app.wecom_business_cards
                 SET status = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status = 'SENDING'
                 """,
                 status,
                 errorCode == null ? null : errorCode.substring(0, Math.min(128, errorCode.length())),

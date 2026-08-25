@@ -34,16 +34,23 @@ app:
     poll-ms: ${FOLLOWUP_WORKER_POLL_MS:500}
     lease-seconds: ${FOLLOWUP_WORKER_LEASE_SECONDS:120}
     backoff-seconds: ${FOLLOWUP_WORKER_BACKOFF_SECONDS:5}
+  followup-approval-worker:
+    enabled: ${FOLLOWUP_APPROVAL_WORKER_ENABLED:false}
+    poll-ms: ${FOLLOWUP_APPROVAL_WORKER_POLL_MS:500}
+    lease-seconds: ${FOLLOWUP_APPROVAL_WORKER_LEASE_SECONDS:30}
   scheduling:
     # 生产默认启用；测试可整体关闭，避免缓存的 Spring context 继续轮询已销毁的 Testcontainer。
     enabled: ${SCHEDULED_TASKS_ENABLED:true}
-    # 当前 11 条 @Scheduled 触发流各有独立 lane；代码将配置值限制在 11..32。
-    pool-size: ${SCHEDULED_TASK_POOL_SIZE:11}
+    # 当前 12 条 @Scheduled 触发流各有独立 lane；代码将配置值限制在 12..32。
+    pool-size: ${SCHEDULED_TASK_POOL_SIZE:12}
   gateway:
     basic-auth:
       # 全部 /api 请求都会在后端复验 Nginx 提供的 Basic Auth；缺失时默认拒绝。
       username: ${APP_ADMIN_USER:}
       password: ${APP_ADMIN_PASSWORD:}
+    identity-assertion:
+      # 可选逐人身份模式：Nginx 验证多用户凭据后用独立高熵 token 向后端证明 $remote_user。
+      token: ${APP_GATEWAY_ASSERTION_TOKEN:}
   internal-auth:
     # 全部 /internal 请求使用独立服务身份；任一项缺失都会拒绝，而不是退回 X-Operator 自报身份。
     service-name: ${APP_INTERNAL_SERVICE_NAME:}
@@ -162,6 +169,13 @@ app:
       jd-outbound:
         type: ${WECOM_CARD_JD_OUTBOUND_ROUTE_TYPE:GROUP}
         chat-id: ${WECOM_CARD_JD_OUTBOUND_CHAT_ID:}
+      # 客户跟进卡默认单聊指定 +1；只有显式配置 GROUP 时才改投群聊脱敏卡。
+      followup-draft:
+        type: ${WECOM_CARD_FOLLOWUP_DRAFT_ROUTE_TYPE:SINGLE}
+        chat-id: ${WECOM_CARD_FOLLOWUP_DRAFT_CHAT_ID:}
+      followup-result:
+        type: ${WECOM_CARD_FOLLOWUP_RESULT_ROUTE_TYPE:SINGLE}
+        chat-id: ${WECOM_CARD_FOLLOWUP_RESULT_CHAT_ID:}
   agent-worker:
     # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
     enabled: ${AGENT_WORKER_ENABLED:true}

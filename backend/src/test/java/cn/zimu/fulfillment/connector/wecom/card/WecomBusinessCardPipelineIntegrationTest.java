@@ -2,6 +2,12 @@ package cn.zimu.fulfillment.connector.wecom.card;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import cn.zimu.fulfillment.connector.wecom.card.source.BusinessFollowUpDraftCardSource;
+import cn.zimu.fulfillment.connector.wecom.card.source.BusinessFollowUpResultCardSource;
+import cn.zimu.fulfillment.connector.wecom.card.source.CardDeepLinks;
+import cn.zimu.fulfillment.message.ChannelMessageCommand;
+import cn.zimu.fulfillment.message.MessageSubmissionService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -58,11 +64,20 @@ class WecomBusinessCardPipelineIntegrationTest {
     @Autowired
     private WecomBusinessCardRouteProperties routes;
 
+    @Autowired
+    private MessageSubmissionService submissions;
+
+    @Autowired
+    private ObjectMapper mapper;
+
     @BeforeEach
     void reset() {
         // 投递行与告警都要清：扫描用例断言「扫得到 / 扫不到」，上一个用例遗留的告警会污染结果
         jdbc.execute("TRUNCATE app.wecom_business_cards RESTART IDENTITY CASCADE");
         jdbc.execute("TRUNCATE app.operational_alerts RESTART IDENTITY CASCADE");
+        jdbc.execute(
+                "TRUNCATE app.business_followup_approvals, app.business_followup_draft_versions,"
+                        + " app.business_followups RESTART IDENTITY CASCADE");
     }
 
     @Test
@@ -81,7 +96,145 @@ class WecomBusinessCardPipelineIntegrationTest {
                         ReviewCaseCard.DOMAIN,
                         OperationalAlertCard.DOMAIN,
                         BatchConfirmedCard.DOMAIN,
-                        JdOutboundFailureCard.DOMAIN);
+                        JdOutboundFailureCard.DOMAIN,
+                        BusinessFollowUpDraftCard.DOMAIN,
+                        BusinessFollowUpResultCard.DOMAIN);
+    }
+
+    @Test
+    void readyFollowupDraftRoutesToTheDesignatedActiveOperatorAndIsScannedOnce() {
+        FollowupFixture fixture = seedReadyFollowup();
+        WecomBusinessCardSource source = registry.find(BusinessFollowUpDraftCard.DOMAIN).orElseThrow();
+
+        assertThat(source.route(fixture.followupId())).get()
+                .satisfies(route -> {
+                    assertThat(route.type()).isEqualTo(WecomBusinessCardSource.RouteType.SINGLE);
+                    assertThat(route.chatId()).isEqualTo(fixture.reviewerUserid());
+                });
+        assertThat(source.pending(OffsetDateTime.now().minusHours(1), 20))
+                .contains(WecomTaskId.ofVersion(
+                        BusinessFollowUpDraftCard.DOMAIN, fixture.followupId(), 1));
+        enqueuer.enqueue(WecomTaskId.ofVersion(
+                BusinessFollowUpDraftCard.DOMAIN, fixture.followupId(), 1));
+
+        ObjectNodePair cards = renderBothRoutes(source, fixture.followupId(), 1);
+        assertThat(cards.single().toString())
+                .contains("BF-", "张三", "已核对，等待 +1", "13800138000", "上海市浦东新区某路 1 号", "原切牛排")
+                .doesNotContain("不应上卡的自由文本");
+        assertThat(cards.group().toString())
+                .contains("已脱敏", "张*", "138****8000", "上海市浦东新区某路…")
+                .doesNotContain("张三", "13800138000", "某路 1 号");
+
+        jdbc.update(
+                "UPDATE app.business_followup_draft_versions SET status='NEEDS_INPUT'"
+                        + " WHERE followup_id=? AND version=1",
+                fixture.followupId());
+        jdbc.update("UPDATE app.business_followups SET stage='NEEDS_INPUT' WHERE id=?", fixture.followupId());
+        assertThat(source.render(fixture.followupId(), 1)).get()
+                .as("NEEDS_INPUT 草稿必须通知 +1，但不得暴露确认回调")
+                .satisfies(card -> assertThat(card.toString())
+                        .contains("不可确认", "需要补充")
+                        .doesNotContain(BusinessFollowUpDraftCard.CONFIRM_BUTTON_KEY));
+
+        assertThat(source.pending(OffsetDateTime.now().minusHours(1), 20))
+                .doesNotContain(WecomTaskId.ofVersion(
+                        BusinessFollowUpDraftCard.DOMAIN, fixture.followupId(), 1));
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM information_schema.columns"
+                                + " WHERE table_schema='app' AND table_name='wecom_business_cards'"
+                                + " AND column_name IN ('content','body','payload')",
+                        Integer.class))
+                .as("通用 outbox 不持久化卡片正文")
+                .isZero();
+
+        jdbc.update(
+                "UPDATE app.internal_operators SET active=FALSE WHERE id=?",
+                fixture.reviewerOperatorId());
+        assertThat(source.route(fixture.followupId()))
+                .as("指定 +1 停用后，单聊或配置群聊都不应绕过人员门禁")
+                .isEmpty();
+    }
+
+    @Test
+    void resultSourceRendersOnlyAfterTheApprovalDecisionWasApplied() {
+        FollowupFixture fixture = seedReadyFollowup();
+        Long eventId = jdbc.queryForObject(
+                """
+                INSERT INTO app.wecom_events (event_type, msgid, raw_payload)
+                VALUES ('business_followup_card_event', ?, '{}'::jsonb)
+                RETURNING id
+                """,
+                Long.class,
+                "followup-result-" + java.util.UUID.randomUUID());
+        Long approvalId = jdbc.queryForObject(
+                """
+                INSERT INTO app.business_followup_approvals
+                    (followup_id, draft_version, designated_reviewer_operator_id,
+                     decided_by_operator_id, decision, source_kind, source_event_id, request_id,
+                     idempotency_key, request_fingerprint)
+                VALUES (?, 1, ?, ?, 'CONFIRM', 'WECOM_CARD', ?, ?, ?, ?)
+                RETURNING id
+                """,
+                Long.class,
+                fixture.followupId(),
+                fixture.reviewerOperatorId(),
+                fixture.reviewerOperatorId(),
+                eventId,
+                "request-" + java.util.UUID.randomUUID(),
+                "confirm-1",
+                "a".repeat(64));
+        WecomBusinessCardSource source = registry.find(BusinessFollowUpResultCard.DOMAIN).orElseThrow();
+
+        assertThat(source.render(approvalId, 1)).isEmpty();
+        jdbc.update(
+                "UPDATE app.business_followup_draft_versions SET status='CONFIRMED'"
+                        + " WHERE followup_id=? AND version=1",
+                fixture.followupId());
+        jdbc.update(
+                "UPDATE app.business_followups SET stage='CONFIRMED',"
+                        + " current_confirmed_draft_version=1 WHERE id=?",
+                fixture.followupId());
+
+        assertThat(source.render(approvalId, 1))
+                .as("草稿状态已改但 Approval 尚未应用时仍不得播报")
+                .isEmpty();
+        jdbc.update(
+                "UPDATE app.business_followup_approvals"
+                        + " SET application_status='APPLIED', applied_at=CURRENT_TIMESTAMP"
+                        + " WHERE id=?",
+                approvalId);
+        assertThat(source.render(approvalId, 1)).get()
+                .satisfies(card -> assertThat(card.toString())
+                        .contains("followup-result_" + approvalId + "_v1", "已确认", "跟进审批人"));
+        jdbc.update(
+                "UPDATE app.business_followups SET stage='PENDING_APPROVAL' WHERE id=?",
+                fixture.followupId());
+        assertThat(source.render(approvalId, 1))
+                .as("结果卡由不可变 Approval 和草稿处置结果决定，不跟随 Follow-up 当前阶段漂移")
+                .isPresent();
+        assertThat(source.pending(OffsetDateTime.now().minusHours(1), 20))
+                .contains(WecomTaskId.ofVersion(BusinessFollowUpResultCard.DOMAIN, approvalId, 1));
+        jdbc.update(
+                "UPDATE app.business_followup_approvals"
+                        + " SET application_status='FAILED', application_failure_code='FOLLOWUP_APPROVAL_APPLY_FAILED',"
+                        + " applied_at=NULL WHERE id=?",
+                approvalId);
+        assertThat(source.render(approvalId, 1)).get()
+                .satisfies(card -> assertThat(card.toString())
+                        .contains("处理失败", "FOLLOWUP_APPROVAL_APPLY"));
+    }
+
+    @Test
+    void resultSourceFailsClosedWhenNoDeepLinkBaseIsConfigured() {
+        WecomBusinessCardSource resultSource =
+                new BusinessFollowUpResultCardSource(jdbc, routes, new CardDeepLinks("  "));
+        WecomBusinessCardSource draftSource =
+                new BusinessFollowUpDraftCardSource(jdbc, mapper, routes, new CardDeepLinks("  "));
+
+        assertThat(resultSource.route(1)).isEmpty();
+        assertThat(resultSource.pending(OffsetDateTime.now().minusHours(1), 20)).isEmpty();
+        assertThat(draftSource.route(1)).isEmpty();
+        assertThat(draftSource.pending(OffsetDateTime.now().minusHours(1), 20)).isEmpty();
     }
 
     @Test
@@ -103,9 +256,12 @@ class WecomBusinessCardPipelineIntegrationTest {
         assertThat(first).isPresent();
         assertThat(second).isEqualTo(first);
         assertThat(jdbc.queryForObject(
-                        "SELECT count(*) FROM app.wecom_business_cards WHERE task_id = ?",
+                        "SELECT count(*) FROM app.wecom_business_cards"
+                                + " WHERE card_domain=? AND entity_id=? AND entity_version=?",
                         Integer.class,
-                        taskId.value()))
+                        taskId.domain(),
+                        taskId.entityId(),
+                        taskId.version()))
                 .isEqualTo(1);
     }
 
@@ -153,6 +309,38 @@ class WecomBusinessCardPipelineIntegrationTest {
     }
 
     @Test
+    void reclaimedSendingAttemptBecomesUnknownAndStaleFailureCannotOverwriteIt() {
+        long cardId = enqueuer.enqueue(WecomTaskId.ofVersion(OperationalAlertCard.DOMAIN, 61, 0)).orElseThrow();
+        assertThat(store.beginSend(cardId, 1).action())
+                .isEqualTo(WecomBusinessCardStore.CardSendAction.SEND);
+
+        // 模拟进程在外部提交附近崩溃：任务租约过期后第二次 claim。
+        assertThat(store.beginSend(cardId, 2).action())
+                .isEqualTo(WecomBusinessCardStore.CardSendAction.SKIP_UNKNOWN);
+        assertThat(store.load(cardId).status()).isEqualTo("UNKNOWN");
+        assertThat(jdbc.queryForObject(
+                        "SELECT last_error FROM app.wecom_business_cards WHERE id = ?",
+                        String.class,
+                        cardId))
+                .isEqualTo(WecomBusinessCardStore.RESTART_OUTCOME_UNKNOWN);
+
+        // 旧进程的迟到失败不能把 UNKNOWN 降级成可重试 FAILED。
+        store.recordRetryable(cardId, "WECOM_CONNECTION_RESET");
+        assertThat(store.load(cardId).status()).isEqualTo("UNKNOWN");
+    }
+
+    @Test
+    void lateAcknowledgementCanReconcileAnUnknownCardToSent() {
+        long cardId = enqueuer.enqueue(WecomTaskId.ofVersion(OperationalAlertCard.DOMAIN, 62, 0)).orElseThrow();
+        store.beginSend(cardId, 1);
+        store.beginSend(cardId, 2);
+
+        store.recordSent(cardId, "req-late-ack", java.time.Instant.now());
+
+        assertThat(store.load(cardId).status()).isEqualTo("SENT");
+    }
+
+    @Test
     void retryableFailureBecomesSendableAgain() {
         long cardId = enqueuer.enqueue(WecomTaskId.ofVersion(OperationalAlertCard.DOMAIN, 7, 0)).orElseThrow();
         store.beginSend(cardId);
@@ -167,6 +355,8 @@ class WecomBusinessCardPipelineIntegrationTest {
     void sentCardIsTheOnlyOneThatCanAuthorizeACallback() {
         long cardId = enqueuer.enqueue(WecomTaskId.ofVersion(OperationalAlertCard.DOMAIN, 8, 0)).orElseThrow();
         String taskId = store.load(cardId).taskId();
+        assertThat(taskId).matches("alert_8_v0_[0-9a-f]{32}");
+        assertThat(taskId).isNotEqualTo("alert_8_v0");
 
         // 未送达的卡不该有人能点
         assertThat(store.findSentByTaskId(taskId)).isEmpty();
@@ -209,7 +399,7 @@ class WecomBusinessCardPipelineIntegrationTest {
                 "SELECT id FROM app.operational_alerts WHERE alert_no='ALERT-CARD-1'", Long.class);
 
         var card = registry.find(OperationalAlertCard.DOMAIN).orElseThrow().render(alertId, 0).orElseThrow();
-        assertThat(card.path("task_id").asText()).isEqualTo("alert:" + alertId + ":v0");
+        assertThat(card.path("task_id").asText()).isEqualTo("alert_" + alertId + "_v0");
         assertThat(card.path("main_title").path("desc").asText()).isEqualTo("ALERT-CARD-1");
         assertThat(card.path("sub_title_text").asText()).isEqualTo("京东出库连续失败");
         // 深链已配 base-url，按钮应带上
@@ -328,4 +518,131 @@ class WecomBusinessCardPipelineIntegrationTest {
                 alertNo,
                 orderId);
     }
+
+    private ObjectNodePair renderBothRoutes(
+            WecomBusinessCardSource source, long followupId, long draftVersion) {
+        return new ObjectNodePair(
+                source.render(
+                                followupId,
+                                draftVersion,
+                                new WecomBusinessCardSource.Route(
+                                        WecomBusinessCardSource.RouteType.SINGLE, "reviewer"))
+                        .orElseThrow(),
+                source.render(
+                                followupId,
+                                draftVersion,
+                                new WecomBusinessCardSource.Route(
+                                        WecomBusinessCardSource.RouteType.GROUP, "wr-group"))
+                        .orElseThrow());
+    }
+
+    private FollowupFixture seedReadyFollowup() {
+        String suffix = java.util.UUID.randomUUID().toString();
+        long submissionId = submissions.submit(new ChannelMessageCommand(
+                "corp-card",
+                "connection-card",
+                "bot-card",
+                "message-" + suffix,
+                "chat-card",
+                "single",
+                "employee-card",
+                "text",
+                "客户跟进",
+                null,
+                null,
+                mapper.createObjectNode().put("message_id", suffix)));
+        String userid = "followup-card-" + suffix.substring(0, 8);
+        Long reviewerId = jdbc.queryForObject(
+                """
+                INSERT INTO app.internal_operators
+                    (display_name, responsible_team, wecom_userid, active)
+                VALUES ('跟进审批人', 'CUSTOMER_OPS', ?, TRUE)
+                RETURNING id
+                """,
+                Long.class,
+                userid);
+        Long followupId = jdbc.queryForObject(
+                """
+                INSERT INTO app.business_followups
+                    (message_submission_id, employee_draft, stage, processing_status,
+                     created_by, designated_reviewer, designated_reviewer_operator_id,
+                     agent_slug, agent_version)
+                VALUES (?, '原始材料', 'PENDING_APPROVAL', 'SUCCEEDED', '测试人',
+                        '跟进审批人', ?, 'customer-followup-agent', 1)
+                RETURNING id
+                """,
+                Long.class,
+                submissionId,
+                reviewerId);
+        String content = """
+                {"title":"张三跟进草稿","summary":"已核对，等待 +1",
+                 "requires_human":false,"missing_fields":[],"facts":[
+                  {"source":"KEHUZX","label":"备注","value":"不应上卡的自由文本"},
+                  {"source":"KEHUZX","label":"客户编号","value":"KH-260826-001"},
+                  {"source":"KEHUZX","label":"客户名称","value":"张三"},
+                  {"source":"KEHUZX","label":"手机号","value":"13800138000"},
+                  {"source":"KEHUZX","label":"收货地址","value":"上海市浦东新区某路 1 号"}]}
+                """;
+        jdbc.update(
+                """
+                INSERT INTO app.business_followup_draft_versions
+                    (followup_id, version, source_revision, status, agent_run_id,
+                     agent_slug, agent_version, content, zimu_source_summary,
+                     kehuzx_source_summary, upstream_refs)
+                VALUES (?, 1, 1, 'READY', ?, 'customer-followup-agent', 1,
+                        CAST(? AS jsonb), '{}'::jsonb, '{}'::jsonb, '[]'::jsonb)
+                """,
+                followupId,
+                "run-" + suffix,
+                content);
+        jdbc.update(
+                "UPDATE app.business_followups SET current_draft_version=1 WHERE id=?",
+                followupId);
+        Long orderDraftId = jdbc.queryForObject(
+                """
+                INSERT INTO app.order_drafts
+                    (draft_no, submission_id, source_order_no, receiver_name,
+                     receiver_phone, receiver_address, settlement_method, missing_fields)
+                VALUES (?, ?, ?, '张三', '13800138000', '上海市浦东新区某路 1 号',
+                        '月结', '[]'::jsonb)
+                RETURNING id
+                """,
+                Long.class,
+                "OD-FOLLOWUP-" + suffix,
+                submissionId,
+                "SOURCE-FOLLOWUP-" + suffix);
+        jdbc.update(
+                """
+                INSERT INTO app.order_draft_lines
+                    (order_draft_id, line_no, product_name_raw, spec_raw, unit_raw, quantity)
+                VALUES (?, 1, '原切牛排', '500g', '盒', 2)
+                """,
+                orderDraftId);
+        jdbc.update(
+                """
+                UPDATE app.business_followup_draft_versions
+                SET content = jsonb_set(content, '{order_snapshot}', jsonb_build_object(
+                    'order_draft_id', CAST(? AS text),
+                    'revision', 0,
+                    'status', 'OPEN',
+                    'receiver_name', '张三',
+                    'receiver_phone', '13800138000',
+                    'receiver_address', '上海市浦东新区某路 1 号',
+                    'settlement_method', '月结',
+                    'missing_fields', '[]'::jsonb,
+                    'items', jsonb_build_array(jsonb_build_object(
+                        'line_no', 1, 'product_name', '原切牛排', 'spec', '500g',
+                        'quantity', 2, 'unit', '盒'))))
+                WHERE followup_id=? AND version=1
+                """,
+                String.valueOf(orderDraftId),
+                followupId);
+        return new FollowupFixture(followupId, reviewerId, userid);
+    }
+
+    private record FollowupFixture(long followupId, long reviewerOperatorId, String reviewerUserid) {}
+
+    private record ObjectNodePair(
+            com.fasterxml.jackson.databind.node.ObjectNode single,
+            com.fasterxml.jackson.databind.node.ObjectNode group) {}
 }

@@ -12,6 +12,8 @@ import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
+import cn.zimu.fulfillment.followup.BusinessFollowUpCardInteractionOutcome;
+import cn.zimu.fulfillment.followup.BusinessFollowUpCardInteractionService;
 import cn.zimu.fulfillment.order.card.CardConfirmationResult;
 import cn.zimu.fulfillment.order.card.CardConfirmationStatus;
 import cn.zimu.fulfillment.order.card.CardFallbackStatus;
@@ -59,6 +61,7 @@ class WecomMessageDispatchHandlerTest {
         registry.add("app.wecom-notification.enabled", () -> "false");
         registry.add("app.wecom-order-draft-card.enabled", () -> "false");
         registry.add("app.agent-worker.enabled", () -> "false");
+        registry.add("app.wecom-business-card.base-url", () -> "https://zimu.example.test");
     }
 
     @Autowired private WecomMessageDispatchHandler handler;
@@ -68,6 +71,7 @@ class WecomMessageDispatchHandlerTest {
     @MockitoBean private MessageSubmissionService submissionService;
     @MockitoBean private WecomConnectionManager connectionManager;
     @MockitoBean private WecomOrderDraftCardInteractionService cardInteractions;
+    @MockitoBean private BusinessFollowUpCardInteractionService followUpCardInteractions;
     @MockitoBean private WecomOutboundGateway outboundGateway;
 
     @BeforeEach
@@ -272,7 +276,7 @@ class WecomMessageDispatchHandlerTest {
         verify(connectionManager).respondUpdateUntil(eq("REQ-11"), update.capture(), anyLong());
         assertThat(update.getValue().path("response_type").asText()).isEqualTo("update_template_card");
         assertThat(update.getValue().path("template_card").path("task_id").asText())
-                .isEqualTo("order-draft:42");
+                .isEqualTo("order-draft_42_v0");
         assertThat(update.getValue().path("template_card").path("main_title").path("title").asText())
                 .isEqualTo("订单已确认");
         assertThat(update.getValue().path("template_card").path("main_title").path("desc").asText())
@@ -288,6 +292,45 @@ class WecomMessageDispatchHandlerTest {
                         eq(null),
                         eq(null));
         verify(outboundGateway, never()).send(any());
+    }
+
+    @Test
+    void followUpDecisionUsesItsDomainHandlerAndReturnsAcceptedBeforeAsyncProjection() {
+        JsonNode frame = followUpCardEvent("EVT-FOLLOWUP", "REQ-FOLLOWUP", "reviewer-1");
+        when(followUpCardInteractions.handle(frame)).thenReturn(
+                new BusinessFollowUpCardInteractionOutcome(
+                        "EVT-FOLLOWUP",
+                        "REQ-FOLLOWUP",
+                        "followup-draft_42_v1",
+                        "reviewer-1",
+                        "claim-followup",
+                        false,
+                        "ACCEPTED",
+                        "FOLLOWUP_APPROVAL_ACCEPTED",
+                        "BF-0000000042",
+                        "reviewer-1",
+                        91L));
+
+        handler.onFrame("aibot_event_callback", frame);
+
+        ArgumentCaptor<JsonNode> update = ArgumentCaptor.forClass(JsonNode.class);
+        verify(connectionManager).respondUpdateUntil(
+                eq("REQ-FOLLOWUP"), update.capture(), anyLong());
+        assertThat(update.getValue().path("template_card").path("main_title").path("title").asText())
+                .isEqualTo("操作已受理");
+        assertThat(update.getValue().path("template_card").path("task_id").asText())
+                .isEqualTo("followup-draft_42_v1");
+        assertThat(update.getValue().path("template_card").path("card_action").path("url").asText())
+                .isEqualTo("https://zimu.example.test/workbench/business-followups?followup_id=42");
+        verify(followUpCardInteractions).recordUpdateOutcome(
+                eq("EVT-FOLLOWUP"),
+                eq("claim-followup"),
+                eq(CardUpdateStatus.SENT),
+                eq(CardFallbackStatus.NOT_ATTEMPTED),
+                anyInt(),
+                eq(null),
+                eq(null));
+        verify(cardInteractions, never()).handle(frame);
     }
 
     @Test
@@ -346,7 +389,7 @@ class WecomMessageDispatchHandlerTest {
                 .thenReturn(new CardInteractionOutcome(
                         "EVT-3D",
                         "REQ-11D",
-                        "order-draft:42",
+                        "order-draft_42_v0",
                         42L,
                         "chat-card",
                         new CardConfirmationResult(
@@ -376,7 +419,7 @@ class WecomMessageDispatchHandlerTest {
                 .thenReturn(new CardInteractionOutcome(
                         "EVT-3E",
                         "REQ-11E",
-                        "order-draft:42",
+                        "order-draft_42_v0",
                         42L,
                         "chat-card",
                         new CardConfirmationResult(
@@ -444,7 +487,18 @@ class WecomMessageDispatchHandlerTest {
                         + "\"from\":{\"userid\":\"" + sender + "\"},\"msgtype\":\"event\","
                         + "\"event\":{\"eventtype\":\"template_card_event\","
                         + "\"template_card_event\":{\"event_key\":\"confirm_order\","
-                        + "\"task_id\":\"order-draft:42\"}}}}"
+                        + "\"task_id\":\"order-draft_42_v0\"}}}}"
+        );
+    }
+
+    private JsonNode followUpCardEvent(String messageId, String requestId, String sender) {
+        return json(
+                "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\"" + requestId
+                        + "\"},\"body\":{\"msgid\":\"" + messageId + "\",\"aibotid\":\"bot-1\","
+                        + "\"chattype\":\"single\",\"from\":{\"userid\":\"" + sender + "\"},"
+                        + "\"msgtype\":\"event\",\"event\":{\"eventtype\":\"template_card_event\","
+                        + "\"template_card_event\":{\"event_key\":\"confirm_followup\","
+                        + "\"task_id\":\"followup-draft_42_v1\"}}}}"
         );
     }
 
@@ -452,7 +506,7 @@ class WecomMessageDispatchHandlerTest {
         return new CardInteractionOutcome(
                 "EVT-3",
                 "REQ-11",
-                "order-draft:42",
+                "order-draft_42_v0",
                 42L,
                 "chat-card",
                 new CardConfirmationResult(

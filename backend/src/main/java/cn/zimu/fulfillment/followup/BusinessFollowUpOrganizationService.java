@@ -9,6 +9,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -55,13 +56,19 @@ public class BusinessFollowUpOrganizationService {
         List<String> customerIdentifiers = customerIdentifiersForModel(work.employeeDraft());
         kehuzxTools.authorizeRun(runId, customerIdentifiers);
         try {
-            String input = mapper.writeValueAsString(Map.of(
-                    "source", "ZIMU",
-                    "followup_id", String.valueOf(work.followupId()),
-                    "followup_no", work.followupNo(),
-                    "message_submission_id", String.valueOf(work.submissionId()),
-                    "source_revision", work.sourceRevision(),
-                    "customer_identifiers", customerIdentifiers));
+            Map<String, Object> inputFacts = new LinkedHashMap<>();
+            inputFacts.put("source", "ZIMU");
+            inputFacts.put("followup_id", String.valueOf(work.followupId()));
+            inputFacts.put("followup_no", work.followupNo());
+            inputFacts.put("message_submission_id", String.valueOf(work.submissionId()));
+            inputFacts.put("source_revision", work.sourceRevision());
+            inputFacts.put("customer_identifiers", customerIdentifiers);
+            if (work.redoApprovalId() != null && work.redoFeedback() != null) {
+                inputFacts.put("redo_feedback", Map.of(
+                        "approval_id", String.valueOf(work.redoApprovalId()),
+                        "reason", work.redoFeedback()));
+            }
+            String input = mapper.writeValueAsString(inputFacts);
             AgentRunResult result = invokeWithLeaseHeartbeat(task, owner, lease, work, runId, input);
             if (result.outcome() == AgentOutcome.FAILED || result.outcome() == AgentOutcome.REJECTED) {
                 throw new FollowUpOrganizationException(
@@ -137,8 +144,17 @@ public class BusinessFollowUpOrganizationService {
         List<Work> rows = jdbc.query(
                 """
                 SELECT bf.id, bf.followup_no, bf.message_submission_id, bf.employee_draft,
-                       bf.source_revision, bf.agent_slug, bf.agent_version
+                       bf.source_revision, bf.agent_slug, bf.agent_version,
+                       redo.id AS redo_approval_id, redo.reason AS redo_feedback
                 FROM app.business_followups bf
+                LEFT JOIN LATERAL (
+                    SELECT a.id, a.reason
+                    FROM app.business_followup_approvals a
+                    WHERE a.followup_id=bf.id AND a.decision='REDO'
+                      AND a.application_status='APPLIED'
+                    ORDER BY a.decided_at DESC, a.id DESC
+                    LIMIT 1
+                ) redo ON TRUE
                 WHERE bf.id = ?
                 """,
                 (rs, row) -> new Work(
@@ -148,7 +164,9 @@ public class BusinessFollowUpOrganizationService {
                         rs.getString("employee_draft"),
                         rs.getInt("source_revision"),
                         rs.getString("agent_slug"),
-                        rs.getInt("agent_version")),
+                        rs.getInt("agent_version"),
+                        rs.getObject("redo_approval_id", Long.class),
+                        rs.getString("redo_feedback")),
                 ref.followupId());
         Work work = rows.stream().findFirst()
                 .orElseThrow(() -> new FollowUpOrganizationException("FOLLOWUP_NOT_FOUND"));
@@ -168,7 +186,9 @@ public class BusinessFollowUpOrganizationService {
             String employeeDraft,
             int sourceRevision,
             String agentSlug,
-            int agentVersion) {}
+            int agentVersion,
+            Long redoApprovalId,
+            String redoFeedback) {}
 
     record PayloadRef(long followupId, int sourceRevision) {
         static PayloadRef parse(String value) {

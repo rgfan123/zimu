@@ -5,10 +5,16 @@ public record CommandContext(
         String requestId,
         String traceId,
         String operator,
-        String authenticatedOperator) {
+        String authenticatedOperator,
+        AuthenticationKind authenticationKind) {
+
+    public CommandContext(
+            String requestId, String traceId, String operator, String authenticatedOperator) {
+        this(requestId, traceId, operator, authenticatedOperator, AuthenticationKind.SHARED_BASIC);
+    }
 
     /** 非 HTTP 用例的兼容构造器；不得将其视为已通过身份认证。 */
     public CommandContext(String requestId, String traceId, String operator) {
-        this(requestId, traceId, operator, null);
+        this(requestId, traceId, operator, null, AuthenticationKind.NONE);
     }
 }

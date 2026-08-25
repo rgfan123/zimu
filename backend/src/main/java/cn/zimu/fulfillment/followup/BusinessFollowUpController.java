@@ -68,13 +68,41 @@ public class BusinessFollowUpController {
         CommandContext context = WriteCommands.writeContext(operator);
         BusinessFollowUpService.OrganizeCommand command =
                 new BusinessFollowUpService.OrganizeCommand(
-                        id, request.agentSlug(), request.agentVersion());
+                        id,
+                        request.agentSlug(),
+                        request.agentVersion(),
+                        WriteCommands.parseIdentifier(request.reviewerOperatorId()));
         IdempotentResult<BusinessFollowUpSummaryDto> result = idempotency.execute(
                 "business_followup.organize",
                 WriteCommands.requireIdempotencyKey(key),
                 command,
                 202,
                 () -> service.organize(command, context));
+        return WriteCommands.respond(result);
+    }
+
+    @PostMapping("/{followup_id}/decisions")
+    public ResponseEntity<?> decide(
+            @PathVariable("followup_id") String followupId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key,
+            @RequestHeader(value = "X-Operator", required = false) String operator,
+            @Valid @RequestBody DecideRequest request) {
+        long id = WriteCommands.parseIdentifier(followupId);
+        String idempotencyKey = WriteCommands.requireIdempotencyKey(key);
+        CommandContext context = WriteCommands.writeContext(operator);
+        BusinessFollowUpService.DecideCommand command = new BusinessFollowUpService.DecideCommand(
+                id,
+                request.expectedDraftVersion(),
+                request.decision(),
+                request.reason(),
+                idempotencyKey,
+                request.capability());
+        IdempotentResult<BusinessFollowUpDto> result = idempotency.execute(
+                "business_followup.decide",
+                idempotencyKey,
+                command,
+                202,
+                () -> service.decide(command, context));
         return WriteCommands.respond(result);
     }
 
@@ -123,5 +151,28 @@ public class BusinessFollowUpController {
             @JsonProperty("agent_version")
                     @Schema(requiredMode = Schema.RequiredMode.REQUIRED, minimum = "1")
                     @Positive
-                    int agentVersion) {}
+                    int agentVersion,
+            @JsonProperty("reviewer_operator_id")
+                    @Schema(requiredMode = Schema.RequiredMode.REQUIRED, pattern = "^[1-9][0-9]*$")
+                    @NotBlank
+                    @Pattern(regexp = "^[1-9][0-9]*$")
+                    String reviewerOperatorId) {}
+
+    public record DecideRequest(
+            @JsonProperty("expected_draft_version")
+                    @Schema(requiredMode = Schema.RequiredMode.REQUIRED, minimum = "1")
+                    @Positive
+                    int expectedDraftVersion,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED,
+                    allowableValues = {"CONFIRM", "REDO", "NEEDS_INPUT", "PAUSE"})
+                    @NotBlank
+                    @Pattern(regexp = "^(CONFIRM|REDO|NEEDS_INPUT|PAUSE)$")
+                    String decision,
+            @Size(max = 2000)
+                    String reason,
+            @Schema(requiredMode = Schema.RequiredMode.REQUIRED, minLength = 1, maxLength = 128)
+                    @NotBlank
+                    @Size(max = 128)
+                    @Pattern(regexp = "^[0-9a-f]{32}$")
+                    String capability) {}
 }

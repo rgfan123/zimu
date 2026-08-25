@@ -14,11 +14,11 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 public class ScheduledTaskPoolConfiguration {
 
     /** The application currently has eleven independent {@code @Scheduled} trigger streams. */
-    static final int MINIMUM_POOL_SIZE = 11;
+    static final int MINIMUM_POOL_SIZE = 12;
     static final int MAXIMUM_POOL_SIZE = 32;
 
     @Bean(name = "taskScheduler")
-    ThreadPoolTaskScheduler taskScheduler(@Value("${app.scheduling.pool-size:11}") int configuredSize) {
+    ThreadPoolTaskScheduler taskScheduler(@Value("${app.scheduling.pool-size:12}") int configuredSize) {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(Math.max(MINIMUM_POOL_SIZE, Math.min(MAXIMUM_POOL_SIZE, configuredSize)));
         scheduler.setThreadNamePrefix("zimu-scheduled-");

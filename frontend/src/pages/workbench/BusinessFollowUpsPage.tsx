@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react';
 import { App, Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, List, Modal, Select, Space, Tag, Typography } from 'antd';
 import { FileSearchOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { agentsApi, businessFollowUpsApi } from '@/api/endpoints';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { agentsApi, businessFollowUpsApi, operatorsApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import type {
   BusinessFollowUp,
   BusinessFollowUpCreateInput,
+  BusinessFollowUpDecisionInput,
   BusinessFollowUpSummary,
 } from '@/api/types';
 import DataTable from '@/components/DataTable';
@@ -19,6 +20,9 @@ const STAGE_LABELS: Record<BusinessFollowUpSummary['stage'], string> = {
   ORGANIZING: '整理中',
   DRAFT_READY: '草稿待核对',
   NEEDS_INPUT: '待补充/复核',
+  PENDING_APPROVAL: '待 +1 确认',
+  CONFIRMED: '已确认',
+  PAUSED: '暂不推进',
 };
 
 const PROCESSING_LABELS: Record<BusinessFollowUpSummary['processing_status'], string> = {
@@ -29,24 +33,53 @@ const PROCESSING_LABELS: Record<BusinessFollowUpSummary['processing_status'], st
   FAILED: '失败',
 };
 
+const DECISION_BY_QUERY: Record<string, BusinessFollowUpDecisionInput['decision']> = {
+  redo: 'REDO',
+  supplement: 'NEEDS_INPUT',
+  pause: 'PAUSE',
+};
+
+const DECISION_LABELS: Record<BusinessFollowUpDecisionInput['decision'], string> = {
+  CONFIRM: '确认',
+  REDO: '让 Agent 重做',
+  NEEDS_INPUT: '需要补充',
+  PAUSE: '暂不推进',
+};
+
 export default function BusinessFollowUpsPage() {
   const { message } = App.useApp();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const sourceSubmissionId = searchParams.get('submission_id');
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(20);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const decisionQuery = searchParams.get('decision');
+  const decision = decisionQuery ? DECISION_BY_QUERY[decisionQuery] : undefined;
+  const linkedFollowupId = searchParams.get('followup_id');
+  const expectedDraftVersion = Number(searchParams.get('expected_draft_version'));
+  const decisionCapability = new URLSearchParams(location.hash.replace(/^#/, '')).get('capability');
+  const validDecisionLink = Number.isSafeInteger(expectedDraftVersion)
+    && expectedDraftVersion > 0
+    && Boolean(decisionCapability);
+  const [selectedId, setSelectedId] = useState<string | null>(linkedFollowupId);
   const [organizeTarget, setOrganizeTarget] = useState<BusinessFollowUpSummary | null>(null);
   const [saving, setSaving] = useState(false);
   const [writeError, setWriteError] = useState<Error | null>(null);
-  const [organizeForm] = Form.useForm<{ agent: string }>();
+  const [organizeForm] = Form.useForm<{ agent: string; reviewer: string }>();
+  const [decisionForm] = Form.useForm<{ reason: string }>();
   const list = useAsync(() => businessFollowUpsApi.list({ page, size }), [page, size]);
   const detail = useAsync(
     () => (selectedId ? businessFollowUpsApi.detail(selectedId) : Promise.resolve(null)),
     [selectedId],
   );
   const agents = useAsync(() => agentsApi.list(), []);
+  const operators = useAsync(
+    () => (organizeTarget
+      ? operatorsApi.list({ page: 0, size: 200 })
+      : Promise.resolve(null)),
+    [organizeTarget?.id],
+  );
   const agentOptions = (agents.data?.items ?? [])
     .filter((agent) => agent.slug === 'customer-followup-agent'
       && agent.state === 'RUNNING'
@@ -55,6 +88,12 @@ export default function BusinessFollowUpsPage() {
       value: `${agent.slug}@${agent.current_version}`,
       label: `${agent.name} · ${agent.slug} · v${agent.current_version}`,
     }));
+  const reviewerOptions = (operators.data?.items ?? [])
+    .filter((operator) => operator.active && Boolean(operator.wecom_userid))
+    .map((operator) => ({
+      value: operator.id,
+      label: `${operator.display_name} · ${operator.responsible_team} · ${operator.wecom_userid}`,
+    }));
 
   useEffect(() => {
     const selectedAgent = organizeForm.getFieldValue('agent');
@@ -62,6 +101,10 @@ export default function BusinessFollowUpsPage() {
       organizeForm.resetFields();
     }
   }, [agentOptions, organizeForm]);
+
+  useEffect(() => {
+    if (linkedFollowupId) setSelectedId(linkedFollowupId);
+  }, [linkedFollowupId]);
 
   const closeCreate = () => setSearchParams({});
 
@@ -85,9 +128,10 @@ export default function BusinessFollowUpsPage() {
     setOrganizeTarget(row);
     organizeForm.resetFields();
     agents.reload();
+    operators.reload();
   };
 
-  const organize = async (values: { agent: string }) => {
+  const organize = async (values: { agent: string; reviewer: string }) => {
     if (!organizeTarget) return;
     if (!agentOptions.some((option) => option.value === values.agent)) {
       organizeForm.resetFields();
@@ -102,6 +146,7 @@ export default function BusinessFollowUpsPage() {
       await businessFollowUpsApi.organize(organizeTarget.id, {
         agent_slug: agentSlug,
         agent_version: Number(versionText),
+        reviewer_operator_id: values.reviewer,
       });
       setOrganizeTarget(null);
       list.reload();
@@ -110,6 +155,43 @@ export default function BusinessFollowUpsPage() {
       setWriteError(error instanceof Error ? error : new Error(String(error)));
       organizeForm.resetFields();
       agents.reload();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const closeDecision = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('followup_id');
+    next.delete('decision');
+    next.delete('expected_draft_version');
+    next.delete('capability');
+    navigate({
+      pathname: location.pathname,
+      search: next.toString() ? `?${next.toString()}` : '',
+      hash: '',
+    }, { replace: true });
+    decisionForm.resetFields();
+  };
+
+  const submitDecision = async (values: { reason: string }) => {
+    if (!linkedFollowupId || !decision || !Number.isSafeInteger(expectedDraftVersion)
+      || expectedDraftVersion < 1 || !decisionCapability) return;
+    setSaving(true);
+    setWriteError(null);
+    try {
+      await businessFollowUpsApi.decide(linkedFollowupId, {
+        expected_draft_version: expectedDraftVersion,
+        decision,
+        reason: values.reason,
+        capability: decisionCapability,
+      });
+      closeDecision();
+      detail.reload();
+      list.reload();
+      message.success(`已受理：${DECISION_LABELS[decision]}`);
+    } catch (error) {
+      setWriteError(error instanceof Error ? error : new Error(String(error)));
     } finally {
       setSaving(false);
     }
@@ -247,10 +329,22 @@ export default function BusinessFollowUpsPage() {
             style={{ marginBottom: 16 }}
           />
         ) : null}
+        {operators.error ? (
+          <Alert
+            type="error"
+            showIcon
+            message="+1 审批人目录加载失败"
+            action={<Button size="small" onClick={operators.reload}>重试</Button>}
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         {!agents.loading && !agents.error && agentOptions.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有可用的 Agent 版本" />
         ) : null}
-        <Form<{ agent: string }> form={organizeForm} layout="vertical" onFinish={organize}>
+        {!operators.loading && !operators.error && reviewerOptions.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有已绑定企微的 active +1 审批人" />
+        ) : null}
+        <Form<{ agent: string; reviewer: string }> form={organizeForm} layout="vertical" onFinish={organize}>
           <Form.Item name="agent" label="当前启用的 Agent 版本" rules={[{ required: true }]}>
             <Select
               loading={agents.loading}
@@ -259,12 +353,21 @@ export default function BusinessFollowUpsPage() {
               options={agentOptions}
             />
           </Form.Item>
+          <Form.Item name="reviewer" label="指定 +1 审批人" rules={[{ required: true }]}>
+            <Select
+              loading={operators.loading}
+              disabled={operators.loading || Boolean(operators.error) || reviewerOptions.length === 0}
+              placeholder="请选择已启用且已绑定企微的内部运营人员"
+              options={reviewerOptions}
+            />
+          </Form.Item>
           <Button
             type="primary"
             htmlType="submit"
             icon={<RobotOutlined />}
             loading={saving}
-            disabled={agents.loading || Boolean(agents.error) || agentOptions.length === 0}
+            disabled={agents.loading || Boolean(agents.error) || agentOptions.length === 0
+              || operators.loading || Boolean(operators.error) || reviewerOptions.length === 0}
           >
             确认发起异步整理
           </Button>
@@ -289,6 +392,46 @@ export default function BusinessFollowUpsPage() {
           />
         ) : detail.data ? <FollowUpDetail detail={detail.data} /> : null}
       </Drawer>
+
+      <Modal
+        title={decision ? DECISION_LABELS[decision] : '提交客户跟进决定'}
+        open={Boolean(linkedFollowupId && decision)}
+        footer={null}
+        onCancel={closeDecision}
+        destroyOnHidden
+      >
+        {writeError ? <Alert type="error" showIcon message={errorMessage(writeError)} style={{ marginBottom: 16 }} /> : null}
+        {!validDecisionLink ? (
+          <Alert type="error" showIcon message="决定链接无效或缺少版本授权，请回到最新企微卡片重试" />
+        ) : !detail.data?.latest_draft ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在读取当前草稿版本…" />
+        ) : detail.data.latest_draft.version !== expectedDraftVersion ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={`卡片草稿 v${expectedDraftVersion} 已被 v${detail.data.latest_draft.version} 取代`}
+            description="该链接不能修改新版业务事实，请从最新企微卡片重新进入。"
+          />
+        ) : (
+          <Form<{ reason: string }> form={decisionForm} layout="vertical" onFinish={submitDecision}>
+            <Alert
+              type="info"
+              showIcon
+              message={`跟进 ${detail.data.followup_no} · 草稿 v${detail.data.latest_draft.version}`}
+              description="提交后只记录人工决定并进入异步处理；不会在当前请求内调用模型或外部写接口。"
+              style={{ marginBottom: 16 }}
+            />
+            <Form.Item
+              name="reason"
+              label={decision === 'REDO' ? '重做反馈' : decision === 'NEEDS_INPUT' ? '需要补充什么' : '暂停原因'}
+              rules={[{ required: true }, { max: 2000 }]}
+            >
+              <Input.TextArea rows={5} maxLength={2000} showCount />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" loading={saving}>确认提交</Button>
+          </Form>
+        )}
+      </Modal>
     </PageShell>
   );
 }
@@ -320,6 +463,46 @@ function FollowUpDetail({ detail }: { detail: BusinessFollowUp }) {
       {detail.latest_draft ? <DraftEvidence draft={detail.latest_draft} /> : (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未生成整理草稿" />
       )}
+      <Card size="small" title="草稿版本轨迹">
+        <List
+          size="small"
+          dataSource={detail.draft_versions ?? []}
+          locale={{ emptyText: '尚无草稿版本' }}
+          renderItem={(draft) => (
+            <List.Item>
+              <Space>
+                <Tag>v{draft.version}</Tag>
+                <Tag color={draft.status === 'CONFIRMED' ? 'green' : 'default'}>{draft.status}</Tag>
+                <Typography.Text type="secondary">Agent run {draft.agent_run_id}</Typography.Text>
+              </Space>
+            </List.Item>
+          )}
+        />
+      </Card>
+      <Card size="small" title="+1 决策证据">
+        <List
+          size="small"
+          dataSource={detail.approvals ?? []}
+          locale={{ emptyText: '尚无 +1 决策' }}
+          renderItem={(approval) => (
+            <List.Item>
+              <Space direction="vertical" size={2}>
+                <Typography.Text strong>
+                  v{approval.draft_version} · {approval.decision} · {approval.decided_by}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  来源 {approval.source_kind} · 事件 {approval.source_event_message_id ?? '—'} · 请求 {approval.request_id}
+                </Typography.Text>
+                {approval.reason ? <Typography.Text>原因/反馈：{approval.reason}</Typography.Text> : null}
+                <Typography.Text type={approval.application_status === 'FAILED' ? 'danger' : 'secondary'}>
+                  异步投影 {approval.application_status}
+                  {approval.application_failure_code ? ` · ${approval.application_failure_code}` : ''}
+                </Typography.Text>
+              </Space>
+            </List.Item>
+          )}
+        />
+      </Card>
     </Space>
   );
 }
@@ -333,7 +516,7 @@ function DraftEvidence({ draft }: { draft: NonNullable<BusinessFollowUp['latest_
       <Card
         size="small"
         title={draft.content.title || `整理草稿 v${draft.version}`}
-        extra={<Tag color={draft.status === 'DRAFT' ? 'green' : 'orange'}>{draft.status}</Tag>}
+        extra={<Tag color={draft.status === 'READY' ? 'green' : 'orange'}>{draft.status}</Tag>}
       >
         <Typography.Paragraph>{draft.content.summary || '暂无摘要'}</Typography.Paragraph>
         {draft.content.agent_suggestion ? (
@@ -365,6 +548,12 @@ function DraftEvidence({ draft }: { draft: NonNullable<BusinessFollowUp['latest_
             description={draft.content.missing_fields.join('、')}
             style={{ marginTop: 12 }}
           />
+        ) : null}
+        {draft.content.risks?.length ? (
+          <Alert type="warning" showIcon message="风险" description={draft.content.risks.join('；')} style={{ marginTop: 12 }} />
+        ) : null}
+        {draft.content.recommended_actions?.length ? (
+          <Alert type="info" showIcon message="建议后续动作" description={draft.content.recommended_actions.join('；')} style={{ marginTop: 12 }} />
         ) : null}
       </Card>
 

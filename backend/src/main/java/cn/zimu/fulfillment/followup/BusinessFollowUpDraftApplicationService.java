@@ -96,6 +96,7 @@ public class BusinessFollowUpDraftApplicationService {
         ArrayNode refs = mapper.createArrayNode();
         for (RemoteEvidence item : evidence) {
             ObjectNode call = calls.addObject();
+            call.put("evidence_id", String.valueOf(item.id()));
             call.put("tool", item.toolName());
             call.put("response_digest", item.responseDigest());
             call.put("contract_version", item.contractVersion());
@@ -112,7 +113,12 @@ public class BusinessFollowUpDraftApplicationService {
             refs.addObject().put("entity_type", "customer").put("id", selectedCustomerId);
         }
 
-        JsonNode content = validated.content();
+        ObjectNode content = validated.content();
+        // Persist the server's final evidence/ownership/redaction decision. The model may request
+        // more review, but it can never mark a draft confirmable by writing requires_human=false.
+        content.put("requires_human", requiresInput);
+        content.set("order_snapshot", orderSnapshot(work.submissionId()));
+        content.set("tool_call_refs", toolCallRefs(result.runId()));
         jdbc.update(
                 """
                 INSERT INTO app.business_followup_draft_versions
@@ -125,7 +131,7 @@ public class BusinessFollowUpDraftApplicationService {
                 work.followupId(),
                 version,
                 work.sourceRevision(),
-                requiresInput ? "NEEDS_INPUT" : "DRAFT",
+                requiresInput ? "NEEDS_INPUT" : "READY",
                 result.runId(),
                 work.agentSlug(),
                 work.agentVersion(),
@@ -140,7 +146,7 @@ public class BusinessFollowUpDraftApplicationService {
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                requiresInput ? "NEEDS_INPUT" : "DRAFT_READY",
+                requiresInput ? "NEEDS_INPUT" : "PENDING_APPROVAL",
                 version,
                 work.followupId());
         if (requiresInput) {
@@ -224,13 +230,91 @@ public class BusinessFollowUpDraftApplicationService {
     private List<RemoteEvidence> evidence(String runId) {
         return jdbc.query(
                 """
-                SELECT tool_name, response_digest, response_payload,
+                SELECT id, tool_name, response_digest, response_payload,
                        contract_version, upstream_commit, queried_at
                 FROM app.kehuzx_read_evidence
                 WHERE agent_run_id = ? ORDER BY id
                 """,
                 (rs, row) -> mapEvidence(rs),
                 runId);
+    }
+
+    /** Immutable deterministic order facts captured into this Business Follow-up draft version. */
+    private ObjectNode orderSnapshot(long submissionId) {
+        List<ObjectNode> rows = jdbc.query(
+                """
+                SELECT id, revision, status, receiver_name, receiver_phone, receiver_address,
+                       settlement_method, missing_fields::text AS missing_fields
+                FROM app.order_drafts
+                WHERE submission_id=?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (rs, row) -> {
+                    ObjectNode snapshot = mapper.createObjectNode();
+                    long orderDraftId = rs.getLong("id");
+                    snapshot.put("order_draft_id", String.valueOf(orderDraftId));
+                    snapshot.put("revision", rs.getLong("revision"));
+                    snapshot.put("status", rs.getString("status"));
+                    putNullable(snapshot, "receiver_name", rs.getString("receiver_name"));
+                    putNullable(snapshot, "receiver_phone", rs.getString("receiver_phone"));
+                    putNullable(snapshot, "receiver_address", rs.getString("receiver_address"));
+                    putNullable(snapshot, "settlement_method", rs.getString("settlement_method"));
+                    try {
+                        snapshot.set("missing_fields", mapper.readTree(rs.getString("missing_fields")));
+                    } catch (Exception ex) {
+                        snapshot.set("missing_fields", mapper.createArrayNode().add("ORDER_SNAPSHOT_INVALID"));
+                    }
+                    ArrayNode items = snapshot.putArray("items");
+                    jdbc.query(
+                            """
+                            SELECT line_no, product_name_raw, spec_raw, unit_raw, quantity
+                            FROM app.order_draft_lines
+                            WHERE order_draft_id=?
+                            ORDER BY line_no
+                            """,
+                            (line, index) -> {
+                                ObjectNode item = items.addObject();
+                                item.put("line_no", line.getInt("line_no"));
+                                putNullable(item, "product_name", line.getString("product_name_raw"));
+                                putNullable(item, "spec", line.getString("spec_raw"));
+                                putNullable(item, "unit", line.getString("unit_raw"));
+                                if (line.getBigDecimal("quantity") != null) {
+                                    item.put("quantity", line.getBigDecimal("quantity"));
+                                }
+                                return index;
+                            },
+                            orderDraftId);
+                    return snapshot;
+                },
+                submissionId);
+        return rows.isEmpty() ? mapper.createObjectNode() : rows.getFirst();
+    }
+
+    private static void putNullable(ObjectNode target, String field, String value) {
+        if (value != null && !value.isBlank()) {
+            target.put(field, value);
+        }
+    }
+
+    private ArrayNode toolCallRefs(String runId) {
+        ArrayNode refs = mapper.createArrayNode();
+        jdbc.query(
+                """
+                SELECT id, sequence_no, tool_name
+                FROM app.agent_tool_calls
+                WHERE run_id=?
+                ORDER BY sequence_no, id
+                """,
+                (rs, row) -> {
+                    refs.addObject()
+                            .put("id", String.valueOf(rs.getLong("id")))
+                            .put("sequence_no", rs.getInt("sequence_no"))
+                            .put("tool_name", rs.getString("tool_name"));
+                    return row;
+                },
+                runId);
+        return refs;
     }
 
     private List<String> failureCodes(String runId) {
@@ -315,6 +399,23 @@ public class BusinessFollowUpDraftApplicationService {
                     missing.add(redactText(item.asText()));
                 }
             });
+        }
+        ArrayNode questions = content.putArray("questions");
+        missing.forEach(item -> questions.add("请补充或确认：" + item.asText()));
+        ArrayNode risks = content.putArray("risks");
+        if (selectedCustomerId == null) {
+            risks.add("客户身份尚未通过唯一候选核对");
+        }
+        if (requiresHuman) {
+            risks.add("当前版本仍有待补充或人工判断项，禁止直接确认");
+        }
+        ArrayNode recommendedActions = content.putArray("recommended_actions");
+        if (selectedCustomerId == null) {
+            recommendedActions.add("补充唯一客户编号后重新整理");
+        } else if (requiresHuman) {
+            recommendedActions.add("补齐缺失项并生成新的不可覆盖草稿版本");
+        } else {
+            recommendedActions.add("由指定 +1 核对当前版本并决定后续动作");
         }
         return new ContentValidation(
                 content, requiresHuman, unsupported, pii, projection.ownershipUnproven());
@@ -479,6 +580,7 @@ public class BusinessFollowUpDraftApplicationService {
     private RemoteEvidence mapEvidence(ResultSet rs) throws SQLException {
         try {
             return new RemoteEvidence(
+                    rs.getLong("id"),
                     rs.getString("tool_name"),
                     rs.getString("response_digest"),
                     mapper.readTree(rs.getString("response_payload")),
@@ -615,6 +717,7 @@ public class BusinessFollowUpDraftApplicationService {
     private record LockedFollowUp(long submissionId, int sourceRevision, Integer currentDraftVersion) {}
 
     private record RemoteEvidence(
+            long id,
             String toolName,
             String responseDigest,
             JsonNode payload,

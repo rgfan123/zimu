@@ -160,7 +160,7 @@ class BusinessFollowUpApiTest {
         assertThat(started.getBody())
                 .containsEntry("stage", "ORGANIZING")
                 .containsEntry("processing_status", "PENDING")
-                .containsEntry("designated_reviewer", "manager-zhang")
+                .containsEntry("designated_reviewer", "跟进审批人")
                 .containsEntry("agent_slug", "customer-followup-agent")
                 .containsEntry("agent_version", 1)
                 .containsEntry("task_status", "PENDING");
@@ -257,6 +257,50 @@ class BusinessFollowUpApiTest {
     }
 
     @Test
+    void sameAgentVersionCannotReplayOrganizationWithADifferentReviewer() {
+        ResponseEntity<Map> created = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-reviewer-idempotency"),
+                        "employee_draft", "审批人是组织命令的一部分"),
+                "followup-reviewer-idempotency-create");
+        String id = String.valueOf(created.getBody().get("id"));
+        long firstReviewer = reviewerOperatorId();
+        long secondReviewer = jdbc.queryForObject(
+                """
+                INSERT INTO app.internal_operators
+                    (display_name, responsible_team, wecom_userid, active)
+                VALUES ('另一位跟进审批人', 'CUSTOMER_OPS', ?, true)
+                RETURNING id
+                """,
+                Long.class,
+                "followup-reviewer-" + UUID.randomUUID());
+
+        ResponseEntity<Map> started = organize(
+                id,
+                Map.of(
+                        "agent_slug", "customer-followup-agent",
+                        "agent_version", 1,
+                        "reviewer_operator_id", String.valueOf(firstReviewer)),
+                "followup-reviewer-idempotency-start-1");
+        ResponseEntity<Map> conflicting = organize(
+                id,
+                Map.of(
+                        "agent_slug", "customer-followup-agent",
+                        "agent_version", 1,
+                        "reviewer_operator_id", String.valueOf(secondReviewer)),
+                "followup-reviewer-idempotency-start-2");
+
+        assertThat(started.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        assertThat(conflicting.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(conflicting.getBody())
+                .containsEntry("business_code", "FOLLOWUP_ALREADY_ORGANIZING");
+        assertThat(jdbc.queryForObject(
+                "SELECT designated_reviewer_operator_id FROM app.business_followups WHERE id=?",
+                Long.class,
+                Long.parseLong(id))).isEqualTo(firstReviewer);
+    }
+
+    @Test
     void organizeIdempotencyKeyIsBoundToTheFollowUpPathTarget() {
         String firstId = String.valueOf(create(
                 Map.of(
@@ -348,14 +392,36 @@ class BusinessFollowUpApiTest {
     }
 
     private ResponseEntity<Map> organize(String id, Map<String, Object> body, String key) {
+        Map<String, Object> request = new java.util.LinkedHashMap<>(body);
+        request.putIfAbsent("reviewer_operator_id", String.valueOf(reviewerOperatorId()));
         HttpHeaders headers = readHeaders();
         headers.set("Idempotency-Key", key);
         headers.setContentType(MediaType.APPLICATION_JSON);
         return http.exchange(
                 "/api/v1/business-followups/" + id + "/organize",
                 HttpMethod.POST,
-                new HttpEntity<>(body, headers),
+                new HttpEntity<>(request, headers),
                 Map.class);
+    }
+
+    private long reviewerOperatorId() {
+        Long existing = jdbc.query(
+                        "SELECT id FROM app.internal_operators WHERE wecom_userid='followup-reviewer'",
+                        (rs, row) -> rs.getLong(1))
+                .stream()
+                .findFirst()
+                .orElse(null);
+        if (existing != null) {
+            return existing;
+        }
+        return jdbc.queryForObject(
+                """
+                INSERT INTO app.internal_operators
+                    (display_name, responsible_team, wecom_userid, active)
+                VALUES ('跟进审批人', 'CUSTOMER_OPS', 'followup-reviewer', true)
+                RETURNING id
+                """,
+                Long.class);
     }
 
     private HttpHeaders readHeaders() {

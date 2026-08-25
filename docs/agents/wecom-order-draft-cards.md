@@ -6,7 +6,7 @@
 
 ## 2. 发送与外部效果栅栏
 
-草稿与 `wecom_order_draft_cards`、`WECOM_ORDER_DRAFT_CARD` 异步任务在同一事务创建。卡片固定使用 `task_id=order-draft:{draft_id}`，并同时固化 `route_type` 与目标：群聊保存 `GROUP + chatid`，单聊保存 `SINGLE + 发送人 userid`，不能仅凭两类标识的字符串恰好相同跨路由授权。
+草稿与 `wecom_order_draft_cards`、`WECOM_ORDER_DRAFT_CARD` 异步任务在同一事务创建。卡片固定使用协议安全、带版本断言且不可猜的 `task_id=order-draft_{draft_id}_v{draft_revision}_{128-bit授权引用}`，实体与版本只从该持久化投递行取得；同时固化 `route_type` 与目标：群聊保存 `GROUP + chatid`，单聊保存 `SINGLE + 发送人 userid`，不能仅凭两类标识的字符串恰好相同跨路由授权。
 
 发送状态为 `PENDING → SENDING → SENT`。只有外部调用明确尚未提交时才回到 `PENDING` 重试；平台非零 `errcode` ACK 是明确拒绝，进入 `FAILED`；ACK 超时、缺少合法 `errcode`、提交后断线或进程在 `SENDING` 崩溃都进入 `UNKNOWN`，禁止盲目重发，避免同一草稿重复卡片。真正触网前还会重新读取草稿：只有状态仍为 `OPEN` 且 revision 与卡片固化的 `draft_revision` 相同才发送；草稿已关闭或 revision 已变化时进入 `SUPERSEDED` 并成功终结异步任务，不发送一张点击必然过期的旧卡。
 
@@ -33,7 +33,7 @@
       "title": "订单已确认",
       "desc": "OD-... · 操作人：userid · 2026-08-23 20:00:00"
     },
-    "task_id": "order-draft:123"
+    "task_id": "order-draft_123_v0_0123456789abcdef0123456789abcdef"
   }
 }
 ```

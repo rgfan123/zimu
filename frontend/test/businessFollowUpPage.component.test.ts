@@ -19,7 +19,7 @@ function installDom() {
     url: 'http://localhost/workbench/business-followups',
   });
   for (const key of [
-    'window', 'document', 'navigator', 'HTMLElement', 'HTMLInputElement', 'SVGElement',
+    'window', 'document', 'navigator', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'SVGElement',
     'Element', 'Document', 'Node', 'ShadowRoot', 'MutationObserver', 'Event', 'MouseEvent',
   ] as const) {
     Object.defineProperty(globalThis, key, {
@@ -197,6 +197,15 @@ test('opening organize disables stale cached Agent options while the catalog ref
       }
       return new Promise<Response>((resolve) => { finishRefresh = resolve; });
     }
+    if (url.startsWith('/api/v1/operators?')) {
+      return jsonResponse({
+        items: [{
+          id: '7', display_name: '跟进审批人', responsible_team: 'CUSTOMER_OPS',
+          wecom_userid: 'followup-reviewer', active: true, version: 0,
+        }],
+        page: 0, size: 200, total_elements: 1, total_pages: 1,
+      });
+    }
     throw new Error(`unexpected request ${url}`);
   };
 
@@ -284,4 +293,69 @@ test('detail keeps Zimu employee material separate from Kehuzx verified read evi
   assert.match(text, /KEHUZX.*客户编号.*KH-C-001/);
   assert.match(text, /契约 kehuzx-mcp-v1.*提交 c6a2418/);
   assert.match(text, /上游引用：customer:kehuzx-customer-1/);
+});
+
+test('card deep link requires feedback and submits a version-fenced REST decision', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const detail = {
+    ...summary(),
+    stage: 'PENDING_APPROVAL',
+    processing_status: 'SUCCEEDED',
+    designated_reviewer: '跟进审批人',
+    employee_draft: '只在后台显示的员工材料',
+    latest_draft: {
+      version: 3,
+      status: 'READY',
+      agent_run_id: 'run_decision',
+      agent_slug: 'customer-followup-agent',
+      agent_version: 1,
+      content: { title: '草稿 v3', summary: '等待核对', facts: [], requires_human: false, missing_fields: [] },
+      zimu_source_summary: {
+        source: 'ZIMU', followup_id: '9007199254740993', followup_no: 'BF-0000000001',
+        message_submission_id: '9007199254740995', source_revision: 1,
+      },
+      kehuzx_source_summary: { source: 'KEHUZX', candidate_count: 1, failures: [], calls: [] },
+      upstream_refs: [],
+      created_at: '2026-08-26T04:00:01Z',
+    },
+    draft_versions: [],
+    approvals: [],
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (url.startsWith('/api/v1/business-followups?')) {
+      return jsonResponse({ items: [detail], page: 0, size: 20, total_elements: 1, total_pages: 1 });
+    }
+    if (url === '/api/v1/agents') return jsonResponse({ items: [] });
+    if (url === '/api/v1/business-followups/9007199254740993' && init?.method !== 'POST') {
+      return jsonResponse(detail);
+    }
+    if (url === '/api/v1/business-followups/9007199254740993/decisions' && init?.method === 'POST') {
+      return jsonResponse(detail, 202);
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+
+  await mountRoute('/workbench/business-followups?followup_id=9007199254740993'
+    + '&expected_draft_version=3&decision=redo#capability=0123456789abcdef0123456789abcdef');
+  await waitFor(() => assert.match(bodyText(), /让 Agent 重做/));
+  const textarea = document.querySelector<HTMLTextAreaElement>('textarea');
+  assert.ok(textarea);
+  const { Simulate } = await import('react-dom/test-utils');
+  await act(async () => { Simulate.change(textarea, { target: { value: '按新预算范围重做' } }); });
+  const submit = [...document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === '确认提交');
+  assert.ok(submit);
+  await act(async () => { submit.click(); });
+
+  await waitFor(() => assert.ok(requests.some(({ url, init: request }) =>
+    url.endsWith('/decisions') && request?.method === 'POST')));
+  const posted = requests.find(({ url, init: request }) => url.endsWith('/decisions') && request?.method === 'POST');
+  assert.deepEqual(JSON.parse(String(posted?.init?.body)), {
+    expected_draft_version: 3,
+    decision: 'REDO',
+    reason: '按新预算范围重做',
+    capability: '0123456789abcdef0123456789abcdef',
+  });
 });

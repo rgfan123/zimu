@@ -18,8 +18,8 @@ import org.springframework.stereotype.Component;
  * <p>领取失败时进入抑制窗口而不是继续空转——数据库不可用时每秒重试只会把日志刷满，
  * 且抢占本就紧张的连接（这套栈有过连接耗尽的历史）。
  *
- * <p>Runner 抛出未捕获异常时把任务判失败而不是让它烂在 SENDING：投递行已经是 SENDING，
- * 不收口就永远不会被再次认领。
+ * <p>Runner 抛出未捕获异常时保守收口：若投递行已是 SENDING，外部提交可能已发生，
+ * 必须收口为 UNKNOWN 等待对账，不得降级成可重试 FAILED。
  */
 @Component
 public class WecomBusinessCardWorker {
@@ -88,10 +88,10 @@ public class WecomBusinessCardWorker {
         }
     }
 
-    /** 兜底收口：投递行留在 SENDING 就永远不会被再次认领，必须显式判失败。 */
+    /** 兜底收口：SENDING 表示可能已外发，只能单调进 UNKNOWN，禁止盲发。 */
     private void recover(AsyncTaskStore.AsyncTask task) {
         try {
-            cards.recordRetryable(WecomBusinessCardRunner.cardId(task), UNHANDLED);
+            cards.recordUnknown(WecomBusinessCardRunner.cardId(task), UNHANDLED);
         } catch (RuntimeException ignored) {
             // 投递行收口失败不掩盖任务收口
         }

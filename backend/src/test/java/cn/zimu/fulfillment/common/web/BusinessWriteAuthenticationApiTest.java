@@ -18,6 +18,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -30,6 +31,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         properties = {
             "app.gateway.basic-auth.username=business-admin",
             "app.gateway.basic-auth.password=business-admin-password",
+            "app.gateway.identity-assertion.token=gateway-assertion-token-for-tests-123456",
             "app.internal-auth.service-name=trusted-order-intake",
             "app.internal-auth.bearer-token=internal-service-token-for-tests"
         })
@@ -52,6 +54,9 @@ class BusinessWriteAuthenticationApiTest {
 
     @Autowired
     private TestRestTemplate http;
+
+    @Autowired
+    private JdbcTemplate jdbc;
 
     @Test
     void forgedOperatorCannotReadTheDirectBusinessApi() {
@@ -84,6 +89,39 @@ class BusinessWriteAuthenticationApiTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).containsKeys("items", "total_elements");
+    }
+
+    @Test
+    void trustedGatewayAssertionAuthorizesItsExactPerUserIdentity() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Operator", "reviewer-wecom-1");
+        headers.set("X-Authenticated-Operator", "reviewer-wecom-1");
+        headers.set("X-Gateway-Assertion", "gateway-assertion-token-for-tests-123456");
+
+        ResponseEntity<Map> response = http.exchange(
+                "/api/v1/customers",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void forgedPerUserHeaderWithoutTheGatewayAssertionIsRejected() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Operator", "reviewer-wecom-1");
+        headers.set("X-Authenticated-Operator", "reviewer-wecom-1");
+        headers.set("X-Gateway-Assertion", "wrong-token");
+
+        ResponseEntity<Map> response = http.exchange(
+                "/api/v1/customers",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(response.getBody()).containsEntry("business_code", "AUTHENTICATED_OPERATOR_REQUIRED");
     }
 
     @Test
@@ -139,6 +177,32 @@ class BusinessWriteAuthenticationApiTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody()).containsEntry("code", "AUTH-DIRECT-MATCHING");
+    }
+
+    @Test
+    void sharedBasicCannotAuthorizeAPlusOneDecisionEvenWhenUsernameMatchesAnOperator() {
+        jdbc.update(
+                """
+                INSERT INTO app.internal_operators
+                    (display_name, responsible_team, wecom_userid, active)
+                VALUES ('共享管理员', 'CUSTOMER_OPS', 'business-admin', true)
+                ON CONFLICT (wecom_userid) WHERE wecom_userid IS NOT NULL DO NOTHING
+                """);
+        HttpHeaders headers = writeHeaders("business-admin", "shared-basic-followup-decision-001");
+        headers.setBasicAuth("business-admin", "business-admin-password");
+
+        ResponseEntity<Map> response = http.exchange(
+                "/api/v1/business-followups/1/decisions",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "expected_draft_version", 1,
+                        "decision", "REDO",
+                        "reason", "共享账号不能代表 +1",
+                        "capability", "0123456789abcdef0123456789abcdef"), headers),
+                Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(response.getBody()).containsEntry("business_code", "FOLLOWUP_APPROVER_AUTH_REQUIRED");
     }
 
     @Test

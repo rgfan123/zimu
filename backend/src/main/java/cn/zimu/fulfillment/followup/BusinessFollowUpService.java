@@ -9,11 +9,21 @@ import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.common.web.AuthenticationKind;
+import cn.zimu.fulfillment.connector.wecom.card.WecomBusinessCard;
+import cn.zimu.fulfillment.connector.wecom.card.WecomBusinessCardStore;
+import cn.zimu.fulfillment.connector.wecom.card.WecomTaskId;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
+import cn.zimu.fulfillment.operator.InternalOperator;
+import cn.zimu.fulfillment.operator.InternalOperatorRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -32,6 +42,7 @@ public class BusinessFollowUpService {
                    ms.source_message_id, bf.source_revision,
                    bf.stage, bf.processing_status, bf.created_by,
                    bf.designated_reviewer, bf.agent_slug, bf.agent_version,
+                   bf.designated_reviewer_operator_id,
                    task.status AS task_status, task.attempts AS task_attempts,
                    task.last_error AS task_last_error, bf.created_at, bf.updated_at
             FROM app.business_followups bf
@@ -45,6 +56,7 @@ public class BusinessFollowUpService {
                    ms.source_message_id, bf.employee_draft, bf.source_revision,
                    bf.stage, bf.processing_status, bf.created_by,
                    bf.designated_reviewer, bf.agent_slug, bf.agent_version,
+                   bf.designated_reviewer_operator_id,
                    task.status AS task_status, task.attempts AS task_attempts,
                    task.last_error AS task_last_error,
                    draft.version AS draft_version, draft.status AS draft_status,
@@ -70,18 +82,24 @@ public class BusinessFollowUpService {
     private final AgentRegistryHolder agents;
     private final AuditLogService audits;
     private final ObjectMapper mapper;
+    private final InternalOperatorRepository operators;
+    private final WecomBusinessCardStore cards;
 
     public BusinessFollowUpService(
             JdbcTemplate jdbc,
             AsyncTaskStore tasks,
             AgentRegistryHolder agents,
             AuditLogService audits,
-            ObjectMapper mapper) {
+            ObjectMapper mapper,
+            InternalOperatorRepository operators,
+            WecomBusinessCardStore cards) {
         this.jdbc = jdbc;
         this.tasks = tasks;
         this.agents = agents;
         this.audits = audits;
         this.mapper = mapper;
+        this.operators = operators;
+        this.cards = cards;
     }
 
     @Transactional
@@ -123,24 +141,31 @@ public class BusinessFollowUpService {
         long id = command.followupId();
         LockedFollowUp followUp = lock(id);
         AgentDefinition agent = requireCurrentAgent(command.agentSlug(), command.agentVersion());
+        InternalOperator reviewer = requireReviewer(command.reviewerOperatorId());
         if (followUp.agentSlug() != null) {
             if (followUp.agentSlug().equals(agent.agentSlug())
-                    && followUp.agentVersion().equals(agent.version())) {
+                    && followUp.agentVersion().equals(agent.version())
+                    && followUp.reviewerOperatorId() != null
+                    && followUp.reviewerOperatorId().equals(reviewer.getId())) {
                 return summary(id);
             }
+
             throw BusinessException.conflict(
                     "FOLLOWUP_ALREADY_ORGANIZING", "该跟进已指定另一个 Agent 版本");
         }
-        String taskKey = "business-followup-organize:" + id + ":" + followUp.sourceRevision();
+        String taskKey = "business-followup-organize:" + id + ":" + followUp.sourceRevision()
+                + ":reviewer:" + reviewer.getId();
         jdbc.update(
                 """
                 UPDATE app.business_followups
                 SET stage = 'ORGANIZING', processing_status = 'PENDING',
-                    designated_reviewer = ?, agent_slug = ?, agent_version = ?,
+                    designated_reviewer = ?, designated_reviewer_operator_id = ?,
+                    agent_slug = ?, agent_version = ?,
                     organization_task_key = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                context.operator(),
+                reviewer.getDisplayName(),
+                reviewer.getId(),
                 agent.agentSlug(),
                 agent.version(),
                 taskKey,
@@ -158,10 +183,170 @@ public class BusinessFollowUpService {
                         "followup_id", id,
                         "source_revision", followUp.sourceRevision(),
                         "agent_slug", agent.agentSlug(),
-                        "agent_version", agent.version()),
+                        "agent_version", agent.version(),
+                        "reviewer_operator_id", reviewer.getId()),
                 202,
                 "BUSINESS_FOLLOWUP_ORGANIZATION_QUEUED");
         return result;
+    }
+
+    @Transactional
+    public BusinessFollowUpDto decide(DecideCommand command, CommandContext context) {
+        BusinessFollowUpApprovalDecision decision;
+        try {
+            decision = BusinessFollowUpApprovalDecision.valueOf(command.decision());
+        } catch (RuntimeException ex) {
+            throw BusinessException.badRequest("FOLLOWUP_DECISION_INVALID", "无法识别的客户跟进决定");
+        }
+        String reason = command.reason() == null ? null : command.reason().strip();
+        if (decision != BusinessFollowUpApprovalDecision.CONFIRM
+                && (reason == null || reason.isBlank())) {
+            throw BusinessException.badRequest(
+                    "FOLLOWUP_DECISION_REASON_REQUIRED", "重做、补充或暂停必须填写原因或反馈");
+        }
+        if (reason != null && reason.isBlank()) {
+            reason = null;
+        }
+        if (reason != null && reason.length() > 2000) {
+            throw BusinessException.badRequest(
+                    "FOLLOWUP_DECISION_REASON_TOO_LONG", "决定原因不能超过 2000 字");
+        }
+        if (context.authenticationKind() != AuthenticationKind.GATEWAY_ASSERTION
+                || context.authenticatedOperator() == null
+                || context.authenticatedOperator().isBlank()) {
+            throw new BusinessException(
+                    403, "FOLLOWUP_APPROVER_AUTH_REQUIRED", "客户跟进决定需要受信网关的逐人认证主体");
+        }
+        InternalOperator authenticatedActor = operators
+                .findByWecomUseridAndActiveTrue(context.authenticatedOperator())
+                .orElseThrow(() -> new BusinessException(
+                        403, "FOLLOWUP_APPROVER_NOT_REGISTERED", "登录主体不是已启用的内部运营人员"));
+        String capabilityTaskId;
+        try {
+            capabilityTaskId = WecomTaskId.ofVersion(
+                            "followup-draft", command.followupId(), command.expectedDraftVersion())
+                    .authorize(command.capability())
+                    .value();
+        } catch (IllegalArgumentException ex) {
+            throw new BusinessException(
+                    403, "FOLLOWUP_DECISION_CAPABILITY_INVALID", "决定链接授权引用无效");
+        }
+        WecomBusinessCard capability = cards.findSentByTaskId(capabilityTaskId)
+                .filter(card -> "followup-draft".equals(card.cardDomain()))
+                .filter(card -> card.entityId() == command.followupId())
+                .filter(card -> card.entityVersion() == command.expectedDraftVersion())
+                .orElseThrow(() -> new BusinessException(
+                        403, "FOLLOWUP_DECISION_CAPABILITY_INVALID", "决定链接无效、未送达或已与草稿版本失配"));
+        if ("SINGLE".equals(capability.routeType())
+                && !capability.chatId().equals(context.authenticatedOperator())) {
+            throw new BusinessException(
+                    403, "FOLLOWUP_APPROVER_ROUTE_MISMATCH", "登录主体不是该单聊卡的收件人");
+        }
+        InternalOperator actor = authenticatedActor;
+        List<DecisionTarget> targets = jdbc.query(
+                """
+                SELECT bf.current_draft_version, bf.designated_reviewer_operator_id,
+                       d.status AS draft_status,
+                       CASE WHEN d.content #>> '{order_snapshot,order_draft_id}' ~ '^[1-9][0-9]*$'
+                            THEN (d.content #>> '{order_snapshot,order_draft_id}')::bigint END AS order_draft_id,
+                       CASE WHEN d.content #>> '{order_snapshot,revision}' ~ '^[0-9]+$'
+                            THEN (d.content #>> '{order_snapshot,revision}')::bigint END AS order_draft_revision,
+                       d.content #>> '{order_snapshot,status}' AS order_draft_status
+                FROM app.business_followups bf
+                JOIN app.business_followup_draft_versions d
+                  ON d.followup_id=bf.id AND d.version=bf.current_draft_version
+                WHERE bf.id=?
+                FOR UPDATE OF bf, d
+                """,
+                (rs, row) -> new DecisionTarget(
+                        rs.getObject("current_draft_version", Integer.class),
+                        rs.getObject("designated_reviewer_operator_id", Long.class),
+                        rs.getString("draft_status"),
+                        rs.getObject("order_draft_id", Long.class),
+                        rs.getObject("order_draft_revision", Long.class),
+                        rs.getString("order_draft_status")),
+                command.followupId());
+        if (targets.isEmpty()) {
+            throw BusinessException.notFound("Business Follow-up 当前草稿不存在: " + command.followupId());
+        }
+        DecisionTarget target = targets.getFirst();
+        boolean actionableDraft = "READY".equals(target.draftStatus())
+                || (decision != BusinessFollowUpApprovalDecision.CONFIRM
+                        && "NEEDS_INPUT".equals(target.draftStatus()));
+        if (target.version() == null
+                || target.version() != command.expectedDraftVersion()
+                || !actionableDraft) {
+            throw BusinessException.conflict("FOLLOWUP_CARD_STALE", "该客户跟进草稿版本已被取代");
+        }
+        if (decision == BusinessFollowUpApprovalDecision.CONFIRM
+                && !target.orderSnapshotCurrent(lockOrderState(target.orderDraftId()))) {
+            throw BusinessException.conflict(
+                    "FOLLOWUP_ORDER_SNAPSHOT_STALE", "卡片展示的 OrderDraft 事实已变化或不完整");
+        }
+        if (target.reviewerOperatorId() == null
+                || !target.reviewerOperatorId().equals(actor.getId())) {
+            throw new BusinessException(403, "FOLLOWUP_APPROVER_NOT_DESIGNATED", "认证主体不是当前指定 +1");
+        }
+        Boolean decided = jdbc.queryForObject(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM app.business_followup_approvals
+                    WHERE followup_id=? AND draft_version=?
+                )
+                """,
+                Boolean.class,
+                command.followupId(),
+                command.expectedDraftVersion());
+        if (Boolean.TRUE.equals(decided)) {
+            throw BusinessException.conflict(
+                    "FOLLOWUP_DRAFT_ALREADY_DECIDED", "该客户跟进草稿已经处理");
+        }
+        String fingerprint = digest(command.followupId() + "\n" + command.expectedDraftVersion()
+                + "\n" + decision.name() + "\n" + (reason == null ? "" : reason)
+                + "\n" + actor.getId());
+        long approvalId = jdbc.query(
+                        """
+                        INSERT INTO app.business_followup_approvals
+                            (followup_id, draft_version, designated_reviewer_operator_id,
+                             order_draft_id, order_draft_revision,
+                             decided_by_operator_id, decision, reason, source_kind, source_event_id,
+                             request_id, idempotency_key, request_fingerprint, decided_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REST', NULL, ?, ?, ?, CURRENT_TIMESTAMP)
+                        RETURNING id
+                        """,
+                        (rs, row) -> rs.getLong(1),
+                        command.followupId(),
+                        command.expectedDraftVersion(),
+                        target.reviewerOperatorId(),
+                        target.orderDraftId(),
+                        target.orderDraftRevision(),
+                        actor.getId(),
+                        decision.name(),
+                        reason,
+                        context.requestId(),
+                        command.idempotencyKey(),
+                        fingerprint)
+                .getFirst();
+        tasks.enqueue(
+                BusinessFollowUpApprovalApplication.TASK_TYPE,
+                "followup-approval:" + approvalId,
+                "followup-approval:" + approvalId,
+                3);
+        jdbc.update(
+                "UPDATE app.business_followups SET processing_status='PENDING', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                command.followupId());
+        recordAudit(
+                context,
+                "business_followup.approval.accept",
+                Map.of(
+                        "followup_id", command.followupId(),
+                        "draft_version", command.expectedDraftVersion(),
+                        "approval_id", approvalId,
+                        "decision", decision.name(),
+                        "reason_present", reason != null),
+                202,
+                "FOLLOWUP_APPROVAL_ACCEPTED");
+        return detail(command.followupId());
     }
 
     @Transactional(readOnly = true)
@@ -170,9 +355,31 @@ public class BusinessFollowUpService {
                 SELECT_DETAIL + " WHERE bf.id = ?",
                 this::mapDetail,
                 id);
-        return rows.stream()
+        BusinessFollowUpDto base = rows.stream()
                 .findFirst()
                 .orElseThrow(() -> BusinessException.notFound("Business Follow-up 不存在: " + id));
+        return new BusinessFollowUpDto(
+                base.id(),
+                base.followupNo(),
+                base.messageSubmissionId(),
+                base.sourceMessageId(),
+                base.employeeDraft(),
+                base.sourceRevision(),
+                base.stage(),
+                base.processingStatus(),
+                base.createdBy(),
+                base.designatedReviewer(),
+                base.designatedReviewerOperatorId(),
+                base.agentSlug(),
+                base.agentVersion(),
+                base.taskStatus(),
+                base.taskAttempts(),
+                base.taskFailureCode(),
+                base.latestDraft(),
+                draftVersions(id),
+                approvals(id),
+                base.createdAt(),
+                base.updatedAt());
     }
 
     @Transactional(readOnly = true)
@@ -252,10 +459,21 @@ public class BusinessFollowUpService {
         return current;
     }
 
+    private InternalOperator requireReviewer(long operatorId) {
+        return operators.findById(operatorId)
+                .filter(InternalOperator::isActive)
+                .filter(operator -> operator.getWecomUserid() != null
+                        && !operator.getWecomUserid().isBlank())
+                .orElseThrow(() -> BusinessException.unprocessable(
+                        "FOLLOWUP_REVIEWER_NOT_PUSHABLE",
+                        "指定 +1 必须是已启用且已绑定企微 userid 的内部运营人员"));
+    }
+
     private LockedFollowUp lock(long id) {
         List<LockedFollowUp> rows = jdbc.query(
                 """
-                SELECT source_revision, agent_slug, agent_version
+                SELECT source_revision, agent_slug, agent_version,
+                       designated_reviewer_operator_id
                 FROM app.business_followups
                 WHERE id = ?
                 FOR UPDATE
@@ -263,7 +481,8 @@ public class BusinessFollowUpService {
                 (rs, row) -> new LockedFollowUp(
                         rs.getInt("source_revision"),
                         rs.getString("agent_slug"),
-                        rs.getObject("agent_version", Integer.class)),
+                        rs.getObject("agent_version", Integer.class),
+                        rs.getObject("designated_reviewer_operator_id", Long.class)),
                 id);
         return rows.stream()
                 .findFirst()
@@ -289,6 +508,28 @@ public class BusinessFollowUpService {
             throw BusinessException.badRequest("EMPLOYEE_DRAFT_TOO_LONG", "员工大体草稿不能超过 20000 字");
         }
         return value;
+    }
+
+    private OrderState lockOrderState(Long orderDraftId) {
+        if (orderDraftId == null) {
+            return null;
+        }
+        return jdbc.query(
+                        "SELECT revision, status FROM app.order_drafts WHERE id=? FOR UPDATE",
+                        (rs, row) -> new OrderState(rs.getLong("revision"), rs.getString("status")),
+                        orderDraftId)
+                .stream()
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static String digest(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 
     private void recordAudit(
@@ -323,12 +564,15 @@ public class BusinessFollowUpService {
                 rs.getString("processing_status"),
                 rs.getString("created_by"),
                 rs.getString("designated_reviewer"),
+                rs.getString("designated_reviewer_operator_id"),
                 rs.getString("agent_slug"),
                 rs.getObject("agent_version", Integer.class),
                 rs.getString("task_status"),
                 rs.getObject("task_attempts", Integer.class),
                 BusinessFollowUpFailureProjection.project(rs.getString("task_last_error")),
                 mapDraft(rs),
+                List.of(),
+                List.of(),
                 rs.getObject("created_at", java.time.OffsetDateTime.class),
                 rs.getObject("updated_at", java.time.OffsetDateTime.class));
     }
@@ -351,6 +595,59 @@ public class BusinessFollowUpService {
                 rs.getObject("draft_created_at", java.time.OffsetDateTime.class));
     }
 
+    private List<BusinessFollowUpDraftDto> draftVersions(long followupId) {
+        return jdbc.query(
+                """
+                SELECT version AS draft_version, status AS draft_status,
+                       agent_run_id AS draft_agent_run_id, agent_slug AS draft_agent_slug,
+                       agent_version AS draft_agent_version, content::text AS draft_content,
+                       zimu_source_summary::text AS draft_zimu_source_summary,
+                       kehuzx_source_summary::text AS draft_kehuzx_source_summary,
+                       upstream_refs::text AS draft_upstream_refs, created_at AS draft_created_at
+                FROM app.business_followup_draft_versions
+                WHERE followup_id=?
+                ORDER BY version DESC
+                """,
+                (rs, row) -> mapDraft(rs),
+                followupId);
+    }
+
+    private List<BusinessFollowUpApprovalDto> approvals(long followupId) {
+        return jdbc.query(
+                """
+                SELECT a.id, a.draft_version, a.order_draft_id, a.order_draft_revision,
+                       a.designated_reviewer_operator_id,
+                       a.decided_by_operator_id, actor.display_name AS decided_by,
+                       a.decision, a.reason, a.source_kind,
+                       e.msgid AS source_event_message_id,
+                       a.request_id, a.application_status,
+                       a.application_failure_code, a.applied_at, a.decided_at
+                FROM app.business_followup_approvals a
+                JOIN app.internal_operators actor ON actor.id=a.decided_by_operator_id
+                LEFT JOIN app.wecom_events e ON e.id=a.source_event_id
+                WHERE a.followup_id=?
+                ORDER BY a.id DESC
+                """,
+                (rs, row) -> new BusinessFollowUpApprovalDto(
+                        rs.getString("id"),
+                        rs.getInt("draft_version"),
+                        rs.getString("order_draft_id"),
+                        rs.getObject("order_draft_revision", Long.class),
+                        rs.getString("designated_reviewer_operator_id"),
+                        rs.getString("decided_by_operator_id"),
+                        rs.getString("decided_by"),
+                        rs.getString("decision"),
+                        rs.getString("reason"),
+                        rs.getString("source_kind"),
+                        rs.getString("source_event_message_id"),
+                        rs.getString("request_id"),
+                        rs.getString("application_status"),
+                        rs.getString("application_failure_code"),
+                        rs.getObject("applied_at", java.time.OffsetDateTime.class),
+                        rs.getObject("decided_at", java.time.OffsetDateTime.class)),
+                followupId);
+    }
+
     private JsonNode json(ResultSet rs, String column) throws SQLException {
         try {
             return mapper.readTree(rs.getString(column));
@@ -371,6 +668,7 @@ public class BusinessFollowUpService {
                 rs.getString("processing_status"),
                 rs.getString("created_by"),
                 rs.getString("designated_reviewer"),
+                rs.getString("designated_reviewer_operator_id"),
                 rs.getString("agent_slug"),
                 rs.getObject("agent_version", Integer.class),
                 rs.getString("task_status"),
@@ -382,9 +680,41 @@ public class BusinessFollowUpService {
 
     public record CreateCommand(long messageSubmissionId, String employeeDraft) {}
 
-    public record OrganizeCommand(long followupId, String agentSlug, int agentVersion) {}
+    public record OrganizeCommand(
+            long followupId, String agentSlug, int agentVersion, long reviewerOperatorId) {}
 
-    private record LockedFollowUp(int sourceRevision, String agentSlug, Integer agentVersion) {}
+    public record DecideCommand(
+            long followupId,
+            int expectedDraftVersion,
+            String decision,
+            String reason,
+            String idempotencyKey,
+            String capability) {}
+
+    private record LockedFollowUp(
+            int sourceRevision,
+            String agentSlug,
+            Integer agentVersion,
+            Long reviewerOperatorId) {}
+
+    private record DecisionTarget(
+            Integer version,
+            Long reviewerOperatorId,
+            String draftStatus,
+            Long orderDraftId,
+            Long orderDraftRevision,
+            String orderDraftStatus) {
+        boolean orderSnapshotCurrent(OrderState current) {
+            return orderDraftId != null
+                    && orderDraftRevision != null
+                    && current != null
+                    && current.revision() == orderDraftRevision
+                    && "OPEN".equals(orderDraftStatus)
+                    && "OPEN".equals(current.status());
+        }
+    }
+
+    private record OrderState(long revision, String status) {}
 
     private record AgentState(boolean enabled, String status) {}
 }

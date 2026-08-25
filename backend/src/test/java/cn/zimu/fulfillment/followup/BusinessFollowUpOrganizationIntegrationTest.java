@@ -13,6 +13,7 @@ import cn.zimu.fulfillment.message.AsyncTaskStore;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -74,6 +75,65 @@ class BusinessFollowUpOrganizationIntegrationTest {
     }
 
     @Test
+    void redoFeedbackIsVersionedIntoTheNextAgentInput() throws Exception {
+        AtomicReference<String> observedInput = new AtomicReference<>();
+        when(agents.invokePinnedWithRunId(eq("customer-followup-agent"), eq(1), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    observedInput.set(invocation.getArgument(3));
+                    return agentResult("run_redo_feedback", true, List.of());
+                });
+        long followupId = queued("redo-feedback");
+        long operatorId = jdbc.queryForObject(
+                """
+                INSERT INTO app.internal_operators
+                    (display_name, responsible_team, wecom_userid, active)
+                VALUES ('重做审批人', 'CUSTOMER_OPS', ?, true)
+                RETURNING id
+                """,
+                Long.class,
+                "redo-reviewer-" + UUID.randomUUID());
+        jdbc.update(
+                """
+                INSERT INTO app.business_followup_draft_versions
+                    (followup_id, version, source_revision, status, agent_run_id,
+                     agent_slug, agent_version, content, zimu_source_summary,
+                     kehuzx_source_summary, upstream_refs)
+                VALUES (?, 1, 1, 'SUPERSEDED', 'run_redo_source',
+                        'customer-followup-agent', 1, '{}'::jsonb, '{}'::jsonb,
+                        '{}'::jsonb, '[]'::jsonb)
+                """,
+                followupId);
+        jdbc.update(
+                "UPDATE app.business_followups SET current_draft_version=1 WHERE id=?",
+                followupId);
+        long approvalId = jdbc.queryForObject(
+                """
+                INSERT INTO app.business_followup_approvals
+                    (followup_id, draft_version, designated_reviewer_operator_id,
+                     decided_by_operator_id, decision, reason, source_kind,
+                     request_id, idempotency_key, request_fingerprint,
+                     application_status, applied_at)
+                VALUES (?, 1, ?, ?, 'REDO', '按客户新预算范围重做', 'REST',
+                        ?, ?, repeat('a', 64), 'APPLIED', CURRENT_TIMESTAMP)
+                RETURNING id
+                """,
+                Long.class,
+                followupId,
+                operatorId,
+                operatorId,
+                "req-redo-" + UUID.randomUUID(),
+                "idem-redo-" + UUID.randomUUID());
+
+        runWorkerOnce();
+
+        JsonNode input = mapper.readTree(observedInput.get());
+        assertThat(input.path("redo_feedback").path("approval_id").asText())
+                .isEqualTo(String.valueOf(approvalId));
+        assertThat(input.path("redo_feedback").path("reason").asText())
+                .isEqualTo("按客户新预算范围重做");
+    }
+
+    @Test
     void uniqueRemoteCustomerProducesVersionedDraftWithSeparateSources() {
         long followupId = queued("unique-customer");
         when(agents.invokePinnedWithRunId(eq("customer-followup-agent"), eq(1), any(), any(), any())).thenAnswer(invocation -> {
@@ -102,24 +162,27 @@ class BusinessFollowUpOrganizationIntegrationTest {
         assertThat(jdbc.queryForObject(
                         "SELECT stage FROM app.business_followups WHERE id = ?",
                         String.class, followupId))
-                .isEqualTo("DRAFT_READY");
+                .isEqualTo("PENDING_APPROVAL");
         Map<String, Object> draft = jdbc.queryForMap(
                 """
                 SELECT version, status, agent_run_id,
                        zimu_source_summary::text AS zimu,
                        kehuzx_source_summary::text AS kehuzx,
-                       upstream_refs::text AS refs
+                       upstream_refs::text AS refs,
+                       content::text AS content
                 FROM app.business_followup_draft_versions WHERE followup_id = ?
                 """,
                 followupId);
         assertThat(draft)
                 .containsEntry("version", 1)
-                .containsEntry("status", "DRAFT")
+                .containsEntry("status", "READY")
                 .containsEntry("agent_run_id", "run_unique_customer");
         assertThat(String.valueOf(draft.get("zimu"))).contains("ZIMU");
         assertThat(String.valueOf(draft.get("kehuzx")))
                 .contains("KEHUZX", "kehuzx-mcp-v1", "c6a2418");
         assertThat(String.valueOf(draft.get("refs"))).contains("kehuzx-customer-1");
+        assertThat(String.valueOf(draft.get("content")))
+                .contains("risks", "questions", "recommended_actions", "由指定 +1 核对");
     }
 
     @Test
@@ -326,9 +389,29 @@ class BusinessFollowUpOrganizationIntegrationTest {
                 context).id());
         followUps.organize(
                 new BusinessFollowUpService.OrganizeCommand(
-                        followupId, "customer-followup-agent", 1),
+                        followupId, "customer-followup-agent", 1, reviewerOperatorId()),
                 context);
         return followupId;
+    }
+
+    private long reviewerOperatorId() {
+        Long existing = jdbc.query(
+                        "SELECT id FROM app.internal_operators WHERE wecom_userid='followup-reviewer'",
+                        (rs, row) -> rs.getLong(1))
+                .stream()
+                .findFirst()
+                .orElse(null);
+        if (existing != null) {
+            return existing;
+        }
+        return jdbc.queryForObject(
+                """
+                INSERT INTO app.internal_operators
+                    (display_name, responsible_team, wecom_userid, active)
+                VALUES ('跟进审批人', 'CUSTOMER_OPS', 'followup-reviewer', true)
+                RETURNING id
+                """,
+                Long.class);
     }
 
     private void recordCustomerEvidence(String runId, List<Map<String, Object>> items) {

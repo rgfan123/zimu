@@ -1420,7 +1420,10 @@ export type BusinessFollowUpStage =
   | 'PENDING_ORGANIZATION'
   | 'ORGANIZING'
   | 'DRAFT_READY'
-  | 'NEEDS_INPUT';
+  | 'NEEDS_INPUT'
+  | 'PENDING_APPROVAL'
+  | 'CONFIRMED'
+  | 'PAUSED';
 
 export type BusinessFollowUpProcessingStatus =
   | 'NOT_STARTED'
@@ -1439,6 +1442,7 @@ export interface BusinessFollowUpSummary {
   processing_status: BusinessFollowUpProcessingStatus;
   created_by: string;
   designated_reviewer?: string | null;
+  designated_reviewer_operator_id?: string | null;
   agent_slug?: string | null;
   agent_version?: number | null;
   task_status?: MessageTaskStatusCode | null;
@@ -1451,6 +1455,8 @@ export interface BusinessFollowUpSummary {
 export interface BusinessFollowUp extends BusinessFollowUpSummary {
   employee_draft: string;
   latest_draft?: BusinessFollowUpDraft | null;
+  draft_versions: BusinessFollowUpDraft[];
+  approvals: BusinessFollowUpApproval[];
 }
 
 export interface BusinessFollowUpDraftFact {
@@ -1461,7 +1467,7 @@ export interface BusinessFollowUpDraftFact {
 
 export interface BusinessFollowUpDraft {
   version: number;
-  status: 'DRAFT' | 'NEEDS_INPUT';
+  status: 'READY' | 'NEEDS_INPUT' | 'SUPERSEDED' | 'CONFIRMED' | 'PAUSED';
   agent_run_id: string;
   agent_slug: string;
   agent_version: number;
@@ -1472,6 +1478,27 @@ export interface BusinessFollowUpDraft {
     facts?: BusinessFollowUpDraftFact[];
     requires_human?: boolean;
     missing_fields?: string[];
+    questions?: string[];
+    risks?: string[];
+    recommended_actions?: string[];
+    order_snapshot?: {
+      order_draft_id?: string;
+      revision?: number;
+      status?: 'OPEN' | 'CONFIRMED' | 'REJECTED';
+      receiver_name?: string;
+      receiver_phone?: string;
+      receiver_address?: string;
+      settlement_method?: string;
+      missing_fields?: string[];
+      items?: Array<{
+        line_no: number;
+        product_name?: string;
+        spec?: string;
+        quantity?: number;
+        unit?: string;
+      }>;
+    };
+    tool_call_refs?: Array<{ id: string; sequence_no: number; tool_name: string }>;
   };
   zimu_source_summary: {
     source: 'ZIMU';
@@ -1493,6 +1520,7 @@ export interface BusinessFollowUpDraft {
     >;
     calls: Array<{
       tool: string;
+      evidence_id: string;
       response_digest: string;
       contract_version: string;
       upstream_commit?: string | null;
@@ -1515,6 +1543,33 @@ export interface BusinessFollowUpCreateInput {
 export interface BusinessFollowUpOrganizeInput {
   agent_slug: string;
   agent_version: number;
+  reviewer_operator_id: string;
+}
+
+export interface BusinessFollowUpDecisionInput {
+  expected_draft_version: number;
+  decision: 'CONFIRM' | 'REDO' | 'NEEDS_INPUT' | 'PAUSE';
+  reason?: string;
+  capability: string;
+}
+
+export interface BusinessFollowUpApproval {
+  id: string;
+  draft_version: number;
+  order_draft_id?: string | null;
+  order_draft_revision?: number | null;
+  designated_reviewer_operator_id: string;
+  decided_by_operator_id: string;
+  decided_by: string;
+  decision: 'CONFIRM' | 'REDO' | 'NEEDS_INPUT' | 'PAUSE';
+  reason?: string | null;
+  source_kind: 'WECOM_CARD' | 'REST';
+  source_event_message_id?: string | null;
+  request_id: string;
+  application_status: 'PENDING' | 'APPLIED' | 'FAILED' | 'SUPERSEDED';
+  application_failure_code?: string | null;
+  applied_at?: string | null;
+  decided_at: string;
 }
 
 // ---------- Demo ----------

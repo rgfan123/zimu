@@ -210,11 +210,13 @@ class OpenApiContractConsistencyTest {
         Map<String, Object> generatedOrganize =
                 map(map(generatedSchemas.get("OrganizeRequest")).get("properties"));
         assertThat(generatedOrganize.keySet())
-                .containsExactlyInAnyOrder("agent_slug", "agent_version");
+                .containsExactlyInAnyOrder("agent_slug", "agent_version", "reviewer_operator_id");
         assertThat(String.valueOf(map(generatedOrganize.get("agent_version")).get("minimum")))
                 .isEqualTo("1");
+        assertThat(map(generatedOrganize.get("reviewer_operator_id")))
+                .containsEntry("type", "string");
         assertThat(list(map(generatedSchemas.get("OrganizeRequest")).get("required")))
-                .contains("agent_slug", "agent_version");
+                .contains("agent_slug", "agent_version", "reviewer_operator_id");
         Map<String, Object> generatedPage =
                 map(map(generatedSchemas.get("PageResponseBusinessFollowUpSummaryDto"))
                         .get("properties"));

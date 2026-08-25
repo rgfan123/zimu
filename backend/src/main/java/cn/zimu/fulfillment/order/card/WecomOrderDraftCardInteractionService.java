@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.order.card;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.connector.wecom.card.WecomTaskId;
 import cn.zimu.fulfillment.order.OrderDraftQueryService;
 import cn.zimu.fulfillment.order.dto.OrderDraftDetailDto;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -15,7 +16,7 @@ import org.springframework.stereotype.Service;
 public class WecomOrderDraftCardInteractionService {
 
     private static final Logger log = LoggerFactory.getLogger(WecomOrderDraftCardInteractionService.class);
-    private static final String TASK_PREFIX = "order-draft:";
+    private static final String TASK_DOMAIN = "order-draft";
 
     private final WecomOrderDraftCardEventStore events;
     private final OrderDraftCardConfirmationService confirmations;
@@ -34,7 +35,7 @@ public class WecomOrderDraftCardInteractionService {
     }
 
     public CardInteractionOutcome handle(JsonNode frame) {
-        CardEventInput input = input(frame);
+        CardEventInput input = verifiedLinkage(input(frame));
         if (input.messageId().isBlank()) {
             throw BusinessException.badRequest("WECOM_CARD_EVENT_MSGID_REQUIRED", "企微卡片事件缺少 msgid");
         }
@@ -93,6 +94,16 @@ public class WecomOrderDraftCardInteractionService {
                 false,
                 claim.claimToken(),
                 claim.attempt());
+    }
+
+    private CardEventInput verifiedLinkage(CardEventInput input) {
+        OrderDraftCard delivery = cards.findByTaskId(input.taskId())
+                .or(() -> cards.findSentByTaskId(input.taskId()))
+                .orElse(null);
+        return new CardEventInput(
+                input.messageId(), input.requestId(), input.botId(), input.chatId(), input.chatType(),
+                input.actorUserid(), input.createTime(), input.eventKey(), input.taskId(),
+                delivery == null ? null : delivery.orderDraftId(), input.rawPayload(), input.replyTarget());
     }
 
     private CardInteractionOutcome inProgress(CardEventInput input, CardEventClaim claim) {
@@ -163,10 +174,16 @@ public class WecomOrderDraftCardInteractionService {
                     List.of());
         }
         if (input.orderDraftId() == null) {
+            boolean looksLikePersistedDelivery = WecomTaskId.parse(input.taskId())
+                    .filter(value -> TASK_DOMAIN.equals(value.domain()))
+                    .filter(value -> value.authorizationRef() != null)
+                    .isPresent();
             return result(
                     CardConfirmationStatus.REJECTED,
                     null,
-                    "WECOM_CARD_TASK_ID_INVALID",
+                    looksLikePersistedDelivery
+                            ? "WECOM_ORDER_DRAFT_CARD_NOT_SENT"
+                            : "WECOM_CARD_TASK_ID_INVALID",
                     input.actorUserid(),
                     List.of());
         }
@@ -304,14 +321,11 @@ public class WecomOrderDraftCardInteractionService {
     }
 
     private static Long draftId(String taskId) {
-        if (taskId == null || !taskId.matches("order-draft:[1-9][0-9]*")) {
-            return null;
-        }
-        try {
-            return Long.valueOf(taskId.substring(TASK_PREFIX.length()));
-        } catch (NumberFormatException ex) {
-            return null;
-        }
+        return WecomTaskId.parse(taskId)
+                .filter(parsed -> TASK_DOMAIN.equals(parsed.domain()))
+                .map(WecomTaskId::entityId)
+                .filter(id -> id > 0)
+                .orElse(null);
     }
 
     private static String bounded(String value, int maxLength) {

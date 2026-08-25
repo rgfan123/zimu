@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.followup;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.OffsetDateTime;
+import java.util.List;
 
 /** Authorized Business Follow-up projection; raw channel evidence stays referenced by ID. */
 public record BusinessFollowUpDto(
@@ -23,6 +24,8 @@ public record BusinessFollowUpDto(
         String createdBy,
         @JsonProperty("designated_reviewer")
         String designatedReviewer,
+        @JsonProperty("designated_reviewer_operator_id")
+        String designatedReviewerOperatorId,
         @JsonProperty("agent_slug")
         String agentSlug,
         @JsonProperty("agent_version")
@@ -35,6 +38,9 @@ public record BusinessFollowUpDto(
         String taskFailureCode,
         @JsonProperty("latest_draft")
         BusinessFollowUpDraftDto latestDraft,
+        @JsonProperty("draft_versions")
+        List<BusinessFollowUpDraftDto> draftVersions,
+        List<BusinessFollowUpApprovalDto> approvals,
         @JsonProperty("created_at")
         OffsetDateTime createdAt,
         @JsonProperty("updated_at")
