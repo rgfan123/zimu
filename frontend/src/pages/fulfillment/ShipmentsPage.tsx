@@ -11,6 +11,7 @@ import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
+import LongCode from '@/components/LongCode';
 import PageShell from '@/components/PageShell';
 import { errorMessage } from '@/api/client';
 import { jdWarehouseApi, providersApi, shipmentsApi } from '@/api/endpoints';
@@ -341,7 +342,7 @@ export default function ShipmentsPage() {
   };
 
   const columns: ColumnsType<Shipment> = [
-    { title: '发货单号', dataIndex: 'shipment_no', width: 160, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
+    { title: '发货单号', dataIndex: 'shipment_no', width: 160, render: (v: string) => <LongCode value={v} width={140} /> },
     { title: '订单号', dataIndex: 'order_id', width: 180, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
     { title: '出库单号', dataIndex: 'outbound_order_no', width: 140, render: (v?: string) => v ?? '—' },
     { title: '批次', dataIndex: 'shipment_sequence', width: 70, align: 'right' },

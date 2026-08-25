@@ -15,6 +15,7 @@ import { fulfillmentsApi, providersApi } from '@/api/endpoints';
 import type { ContinuationExportResult, Fulfillment, FulfillmentDetail, FulfillmentOutcome, ShippingProgress } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
+import LongCode from '@/components/LongCode';
 import {
   FULFILLMENT_OUTCOME_SEMANTIC,
   SHIPPING_PROGRESS_SEMANTIC,
@@ -113,7 +114,7 @@ export default function FulfillmentTasksPage() {
   };
 
   const columns: ColumnsType<Fulfillment> = [
-    { title: '履约单号', dataIndex: 'fulfillment_no', width: 170, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
+    { title: '履约单号', dataIndex: 'fulfillment_no', width: 170, render: (v: string) => <LongCode value={v} width={150} /> },
     { title: '履约方', dataIndex: 'provider_id', width: 150, render: (v?: string) => providerName(v) },
     { title: '申请数量', dataIndex: 'requested_quantity', width: 100, align: 'right', render: num },
     { title: '累计已发', dataIndex: 'cumulative_shipped_quantity', width: 100, align: 'right', render: num },

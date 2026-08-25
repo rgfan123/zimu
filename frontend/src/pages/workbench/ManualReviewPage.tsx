@@ -37,6 +37,7 @@ import {
 import { readStoredWorkbenchRole } from '@/workbenchRole';
 import { reviewTeamForRole } from '@/components/layout/useRailBadges';
 import QueueTable from './queueTable';
+import LongCode from '@/components/LongCode';
 import ReviewCaseDrawer from './ReviewCaseDrawer';
 import { useQueuePagination } from './queuePagination';
 import { REASON_LABELS, REVIEW_STATUS_LABELS, TEAM_LABELS, TEAM_OPTIONS } from './queuePresentation';
@@ -134,7 +135,7 @@ export default function ManualReviewPage() {
   }
 
   const reviewColumns: ColumnsType<ReviewCase> = [
-    { title: '复核单号', dataIndex: 'case_no', width: 145 },
+    { title: '复核单号', dataIndex: 'case_no', width: 170, render: (v: string) => <LongCode value={v} width={150} /> },
     { title: '待办事项', dataIndex: 'reason_code', width: 190, render: (value: string) => reasonLabel(value) },
     { title: '责任团队', dataIndex: 'responsible_team', width: 115, render: (value: string) => TEAM_LABELS[value] ?? value },
     {
