@@ -139,8 +139,10 @@ export default function ManualReviewPage() {
     { title: '待办事项', dataIndex: 'reason_code', width: 190, render: (value: string) => reasonLabel(value) },
     { title: '责任团队', dataIndex: 'responsible_team', width: 115, render: (value: string) => TEAM_LABELS[value] ?? value },
     {
-      title: '关联订单', dataIndex: 'order_id', width: 90,
-      render: (value?: string) => value ? <Typography.Link onClick={() => navigate(`/orders/${value}`)}>#{value}</Typography.Link> : '—',
+      title: '关联订单', dataIndex: 'order_no', width: 170,
+      render: (value?: string, record?: ReviewCase) => value
+        ? <LongCode value={value} to={record?.order_id ? `/orders/${record.order_id}` : undefined} width={150} />
+        : (record?.order_id ? <Typography.Link onClick={() => navigate(`/orders/${record.order_id}`)}>#{record.order_id}</Typography.Link> : '—'),
     },
     {
       title: '状态', dataIndex: 'status', width: 85,

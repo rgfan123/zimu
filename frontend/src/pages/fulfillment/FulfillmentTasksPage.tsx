@@ -115,6 +115,9 @@ export default function FulfillmentTasksPage() {
 
   const columns: ColumnsType<Fulfillment> = [
     { title: '履约单号', dataIndex: 'fulfillment_no', width: 170, render: (v: string) => <LongCode value={v} width={150} /> },
+    { title: '关联订单号', dataIndex: 'order_no', width: 170, render: (v?: string) => (v ? <LongCode value={v} width={150} /> : '—') },
+    { title: '客户', dataIndex: 'customer_name', width: 120, ellipsis: true, render: (v?: string) => v ?? '—' },
+    { title: '收货人', dataIndex: 'receiver_name', width: 100, ellipsis: true, render: (v?: string) => v ?? '—' },
     { title: '履约方', dataIndex: 'provider_id', width: 150, render: (v?: string) => providerName(v) },
     { title: '申请数量', dataIndex: 'requested_quantity', width: 100, align: 'right', render: num },
     { title: '累计已发', dataIndex: 'cumulative_shipped_quantity', width: 100, align: 'right', render: num },
