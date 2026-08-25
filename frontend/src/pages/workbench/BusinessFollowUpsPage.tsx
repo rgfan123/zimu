@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { App, Alert, Button, Descriptions, Drawer, Empty, Form, Input, Modal, Select, Space, Tag, Typography } from 'antd';
 import { FileSearchOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -39,6 +39,7 @@ export default function BusinessFollowUpsPage() {
   const [organizeTarget, setOrganizeTarget] = useState<BusinessFollowUpSummary | null>(null);
   const [saving, setSaving] = useState(false);
   const [writeError, setWriteError] = useState<Error | null>(null);
+  const [organizeForm] = Form.useForm<{ agent: string }>();
   const list = useAsync(() => businessFollowUpsApi.list({ page, size }), [page, size]);
   const detail = useAsync(
     () => (selectedId ? businessFollowUpsApi.detail(selectedId) : Promise.resolve(null)),
@@ -51,6 +52,13 @@ export default function BusinessFollowUpsPage() {
       value: `${agent.slug}@${agent.current_version}`,
       label: `${agent.name} · ${agent.slug} · v${agent.current_version}`,
     }));
+
+  useEffect(() => {
+    const selectedAgent = organizeForm.getFieldValue('agent');
+    if (selectedAgent && !agentOptions.some((option) => option.value === selectedAgent)) {
+      organizeForm.resetFields();
+    }
+  }, [agentOptions, organizeForm]);
 
   const closeCreate = () => setSearchParams({});
 
@@ -72,11 +80,18 @@ export default function BusinessFollowUpsPage() {
   const openOrganize = (row: BusinessFollowUpSummary) => {
     setWriteError(null);
     setOrganizeTarget(row);
+    organizeForm.resetFields();
     agents.reload();
   };
 
   const organize = async (values: { agent: string }) => {
     if (!organizeTarget) return;
+    if (!agentOptions.some((option) => option.value === values.agent)) {
+      organizeForm.resetFields();
+      agents.reload();
+      setWriteError(new Error('Agent 版本已变化，请重新选择'));
+      return;
+    }
     const [agentSlug, versionText] = values.agent.split('@');
     setSaving(true);
     setWriteError(null);
@@ -90,6 +105,7 @@ export default function BusinessFollowUpsPage() {
       message.success('已提交 Agent 整理任务');
     } catch (error) {
       setWriteError(error instanceof Error ? error : new Error(String(error)));
+      organizeForm.resetFields();
       agents.reload();
     } finally {
       setSaving(false);
@@ -206,6 +222,7 @@ export default function BusinessFollowUpsPage() {
         footer={null}
         onCancel={() => setOrganizeTarget(null)}
         destroyOnHidden
+        forceRender
       >
         {writeError ? <Alert type="error" showIcon message={errorMessage(writeError)} style={{ marginBottom: 16 }} /> : null}
         {agents.error ? (
@@ -220,11 +237,11 @@ export default function BusinessFollowUpsPage() {
         {!agents.loading && !agents.error && agentOptions.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有可用的 Agent 版本" />
         ) : null}
-        <Form<{ agent: string }> layout="vertical" onFinish={organize}>
+        <Form<{ agent: string }> form={organizeForm} layout="vertical" onFinish={organize}>
           <Form.Item name="agent" label="当前启用的 Agent 版本" rules={[{ required: true }]}>
             <Select
               loading={agents.loading}
-              disabled={Boolean(agents.error) || agentOptions.length === 0}
+              disabled={agents.loading || Boolean(agents.error) || agentOptions.length === 0}
               placeholder="请选择，不自动默认"
               options={agentOptions}
             />
@@ -234,7 +251,7 @@ export default function BusinessFollowUpsPage() {
             htmlType="submit"
             icon={<RobotOutlined />}
             loading={saving}
-            disabled={Boolean(agents.error) || agentOptions.length === 0}
+            disabled={agents.loading || Boolean(agents.error) || agentOptions.length === 0}
           >
             确认发起异步整理
           </Button>

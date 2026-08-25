@@ -179,3 +179,42 @@ test('evidence route prefills a read-only string identifier without numeric coer
   assert.ok(source);
   assert.equal(source.readOnly, true);
 });
+
+test('opening organize disables stale cached Agent options while the catalog refreshes', async () => {
+  let agentCalls = 0;
+  let finishRefresh: ((response: Response) => void) | undefined;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/business-followups?')) {
+      return jsonResponse({ items: [summary()], page: 0, size: 20, total_elements: 1, total_pages: 1 });
+    }
+    if (url === '/api/v1/agents') {
+      agentCalls += 1;
+      if (agentCalls === 1) {
+        return jsonResponse({
+          items: [{ slug: 'customer-followup-agent', name: '客户跟进', state: 'RUNNING', current_version: 1 }],
+        });
+      }
+      return new Promise<Response>((resolve) => { finishRefresh = resolve; });
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+
+  await mountRoute('/workbench/business-followups');
+  await waitFor(() => assert.match(bodyText(), /发起整理/));
+  const startButton = [...document.querySelectorAll('button')]
+    .find((button) => button.textContent?.trim() === '发起整理');
+  assert.ok(startButton);
+  await act(async () => { startButton.click(); });
+  await waitFor(() => assert.match(bodyText(), /由 \+1 发起整理/));
+  const submit = [...document.querySelectorAll('button')]
+    .find((button) => button.textContent?.includes('确认发起异步整理'));
+  assert.ok(submit);
+  assert.equal(submit.disabled, true);
+  assert.ok(finishRefresh);
+  await act(async () => {
+    finishRefresh?.(jsonResponse({
+      items: [{ slug: 'customer-followup-agent', name: '客户跟进', state: 'RUNNING', current_version: 2 }],
+    }));
+  });
+});

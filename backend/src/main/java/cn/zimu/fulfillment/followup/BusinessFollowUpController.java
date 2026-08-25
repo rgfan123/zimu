@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.followup;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
@@ -13,6 +14,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
+import io.swagger.v3.oas.annotations.media.Schema;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -101,10 +103,25 @@ public class BusinessFollowUpController {
     }
 
     public record CreateRequest(
-            @NotBlank @Pattern(regexp = "^[1-9][0-9]*$") String messageSubmissionId,
-            @NotBlank @Size(max = 20_000) String employeeDraft) {}
+            @JsonProperty("message_submission_id")
+                    @Schema(requiredMode = Schema.RequiredMode.REQUIRED, pattern = "^[1-9][0-9]*$")
+                    @NotBlank
+                    @Pattern(regexp = "^[1-9][0-9]*$")
+                    String messageSubmissionId,
+            @JsonProperty("employee_draft")
+                    @Schema(requiredMode = Schema.RequiredMode.REQUIRED, minLength = 1, maxLength = 20000)
+                    @NotBlank
+                    @Size(max = 20_000)
+                    String employeeDraft) {}
 
     public record OrganizeRequest(
-            @NotBlank @Size(max = 64) String agentSlug,
-            @Positive int agentVersion) {}
+            @JsonProperty("agent_slug")
+                    @Schema(requiredMode = Schema.RequiredMode.REQUIRED, minLength = 1, maxLength = 64)
+                    @NotBlank
+                    @Size(max = 64)
+                    String agentSlug,
+            @JsonProperty("agent_version")
+                    @Schema(requiredMode = Schema.RequiredMode.REQUIRED, minimum = "1")
+                    @Positive
+                    int agentVersion) {}
 }

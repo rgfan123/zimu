@@ -197,6 +197,29 @@ class OpenApiContractConsistencyTest {
                     .anySatisfy(parameter -> assertThat(String.valueOf(map(parameter).get("$ref")))
                             .endsWith("/IdempotencyKey"));
         }
+
+        Map<String, Object> generated = parse(fetchGeneratedSpec());
+        Map<String, Object> generatedSchemas =
+                map(map(generated.get("components")).get("schemas"));
+        Map<String, Object> generatedCreate =
+                map(map(generatedSchemas.get("CreateRequest")).get("properties"));
+        assertThat(generatedCreate.keySet())
+                .containsExactlyInAnyOrder("message_submission_id", "employee_draft");
+        assertThat(map(generatedCreate.get("message_submission_id")))
+                .containsEntry("type", "string");
+        Map<String, Object> generatedOrganize =
+                map(map(generatedSchemas.get("OrganizeRequest")).get("properties"));
+        assertThat(generatedOrganize.keySet())
+                .containsExactlyInAnyOrder("agent_slug", "agent_version");
+        assertThat(String.valueOf(map(generatedOrganize.get("agent_version")).get("minimum")))
+                .isEqualTo("1");
+        assertThat(list(map(generatedSchemas.get("OrganizeRequest")).get("required")))
+                .contains("agent_slug", "agent_version");
+        Map<String, Object> generatedPage =
+                map(map(generatedSchemas.get("PageResponseBusinessFollowUpSummaryDto"))
+                        .get("properties"));
+        assertThat(generatedPage).containsKeys("total_elements", "total_pages");
+        assertThat(generatedPage).doesNotContainKeys("totalElements", "totalPages");
     }
 
     /** 门禁本体：生成契约与手写评审契约的结构化比对，漂移即失败并打印差异。 */
