@@ -175,7 +175,7 @@ export default function DashboardPage() {
   /** 页面级错误态：整体请求失败时内容区整块切换为 PageState（保留页头），重试语义与替换前一致（reload）。 */
   if (error) {
     return (
-      <PageShell title="工作台">
+      <PageShell title="调度台">
         <PageState
           state="error"
           message="工作台数据加载失败"
@@ -187,7 +187,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <PageShell title="工作台">
+    <PageShell title="调度台">
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} xl={6}>
           <KpiCard

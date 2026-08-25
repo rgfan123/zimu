@@ -1,5 +1,5 @@
 /**
- * 履约中心 · 销售出库（GET /api/v1/fulfillment-exports + 详情 + 文件下载）。
+ * 文件作业（旧名「销售出库」；UIUX-08 #142 同页同名统一为菜单名）。
  * 履约导出 = 发货前交给履约方（京东/第三方）的发货指令文件；下载后进入回传闭环，
  * 使用状态见 ExportUsageStatus。文件一旦生成即形成履约承诺（CONTEXT.md 履约导出）。
  */
@@ -864,7 +864,7 @@ export default function SalesOutboundPage() {
     return (
       <PageState
         state="error"
-        message="销售出库加载失败"
+        message="文件作业加载失败"
         description={errorMessage(err)}
         onRetry={list.reload}
       />
@@ -873,7 +873,7 @@ export default function SalesOutboundPage() {
 
   return (
     <PageShell
-      title="销售出库"
+      title="文件作业"
       description="履约导出 = 发货前交给履约方（京东/第三方）的发货指令文件；下载后进入回传闭环，文件一旦生成即形成履约承诺。"
       actions={
         <Space size={12}>
