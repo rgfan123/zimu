@@ -42,6 +42,7 @@ import {
 import ProcurementTicketsPage, { ProcurementPriceComparePage } from '@/pages/procurement';
 import { ReviewQueueCompatRoute, AlertsQueuePage, ShippingWorkbenchPage, ReconWorkbenchPage, ProcurementWorkbenchPage } from '@/pages/workbench';
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
+import BusinessFollowUpsPage from '@/pages/workbench/BusinessFollowUpsPage';
 import ZhonghuiChannelPage from '@/pages/upload/ZhonghuiChannelPage';
 import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage } from '@/pages/system';
 import {
@@ -68,6 +69,7 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/workbench/reviews': <ReviewQueueCompatRoute />,
   '/workbench/alerts': <AlertsQueuePage />,
   '/workbench/channel-messages': <ChannelMessagesPage />,
+  '/workbench/business-followups': <BusinessFollowUpsPage />,
   '/workbench/shipping': <ShippingWorkbenchPage />,
   '/workbench/procurement': <ProcurementWorkbenchPage />,
   '/workbench/recon': <ReconWorkbenchPage />,

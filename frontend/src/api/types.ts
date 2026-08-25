@@ -1414,6 +1414,54 @@ export interface MessageSubmissionDetail {
   created_at: string;
 }
 
+// ---------- Business Follow-up ----------
+
+export type BusinessFollowUpStage =
+  | 'PENDING_ORGANIZATION'
+  | 'ORGANIZING'
+  | 'DRAFT_READY';
+
+export type BusinessFollowUpProcessingStatus =
+  | 'NOT_STARTED'
+  | 'PENDING'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED';
+
+export interface BusinessFollowUp {
+  id: number;
+  followup_no: string;
+  message_submission_id: number;
+  source_message_id: number;
+  employee_draft: string;
+  source_revision: number;
+  stage: BusinessFollowUpStage;
+  processing_status: BusinessFollowUpProcessingStatus;
+  created_by: string;
+  designated_reviewer?: string | null;
+  agent_slug?: string | null;
+  agent_version?: number | null;
+  task_status?: MessageTaskStatusCode | null;
+  task_attempts?: number | null;
+  task_last_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BusinessFollowUpPage extends PageMeta {
+  items: BusinessFollowUp[];
+}
+
+export interface BusinessFollowUpCreateInput {
+  message_submission_id: number;
+  employee_draft: string;
+}
+
+export interface BusinessFollowUpOrganizeInput {
+  agent_slug: string;
+  agent_version: number;
+}
+
 // ---------- Demo ----------
 
 export interface DemoScenario {

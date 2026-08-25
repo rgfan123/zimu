@@ -23,6 +23,10 @@ import type {
 import type {
   AuditLog,
   AuditLogPage,
+  BusinessFollowUp,
+  BusinessFollowUpCreateInput,
+  BusinessFollowUpOrganizeInput,
+  BusinessFollowUpPage,
   ChannelMessageDetail,
   ChannelMessagePage,
   MessageSubmissionDetail,
@@ -847,6 +851,27 @@ export const messageSubmissionsApi = {
     apiRequest<MessageSubmissionDetail>(`/api/v1/message-submissions/${id}/reinterpret`, {
       method: 'POST',
       body: {},
+      headers: writeHeaders(),
+    }),
+};
+
+export const businessFollowUpsApi = {
+  list: (query: Pick<PageQuery, 'page' | 'size'> & { stage?: string } = {}) =>
+    apiRequest<BusinessFollowUpPage>('/api/v1/business-followups', {
+      params: query as Record<string, QueryValue>,
+    }),
+  detail: (id: number) =>
+    apiRequest<BusinessFollowUp>(`/api/v1/business-followups/${id}`),
+  create: (body: BusinessFollowUpCreateInput) =>
+    apiRequest<BusinessFollowUp>('/api/v1/business-followups', {
+      method: 'POST',
+      body,
+      headers: writeHeaders(),
+    }),
+  organize: (id: number, body: BusinessFollowUpOrganizeInput) =>
+    apiRequest<BusinessFollowUp>(`/api/v1/business-followups/${id}/organize`, {
+      method: 'POST',
+      body,
       headers: writeHeaders(),
     }),
 };

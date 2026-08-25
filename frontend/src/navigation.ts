@@ -21,6 +21,7 @@ export const appNavigation = [
     children: [
       { path: '/workbench/shipping', label: '今日发货工作台' },
       { path: '/workbench/reviews', label: '复核收件箱' },
+      { path: '/workbench/business-followups', label: '客户跟进' },
       // Issue #64 运营提醒独立路由：上下文二级入口（复核页 ↔ 提醒页互为切换），随复核收件箱移入本板块。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       // Issue #110：采购工作台（建议区等 #121/#118 供数，工单区今天即真数）。
