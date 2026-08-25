@@ -227,6 +227,8 @@ test('real details route presents stale cached JD capabilities without confusing
   globalThis.fetch = async (input) => {
     const url = String(input);
     requestedUrls.push(url);
+    if (url === '/api/v1/fulfillment-providers') return jsonResponse([]);
+    if (url.startsWith('/api/v1/skus?')) return jsonResponse({ items: [], page: 0, size: 500, total_elements: 0, total_pages: 0 });
     if (url.startsWith('/api/v1/inventory/overview')) {
       return jsonResponse({
         items: [],
@@ -287,11 +289,10 @@ test('real details route presents stale cached JD capabilities without confusing
   assert.equal(new URL(returnLink.href).pathname + new URL(returnLink.href).search, returnTo);
 
   await act(async () => returnLink.click());
-  await waitFor(() => assert.equal(requestedUrls.length, 2));
-  assert.equal(
-    requestedUrls[1],
-    '/api/v1/inventory/overview?page=2&size=50&provider_id=12&sku_id=34&warehouse_code=WH-A',
-  );
+  await waitFor(() => assert.ok(
+    requestedUrls.includes('/api/v1/inventory/overview?page=2&size=50&provider_id=12&sku_id=34&warehouse_code=WH-A'),
+    '返回总库存必须带原筛选条件重新查询总库存页',
+  ));
 });
 
 test('real details route renders unsupported provider capabilities as not integrated without fake results', async () => {
