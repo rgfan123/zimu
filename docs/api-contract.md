@@ -136,6 +136,13 @@
 | GET | `/api/v1/import-batches/{batch_id}/rows` | 逐行查看原值、解析结果、订单/行血缘和错误 |
 | GET | `/api/v1/import-batches/{batch_id}/source-return-exports` | 阶段性/最终来源回填版本 |
 | GET | `/api/v1/source-return-exports/{export_id}/file` | 下载指定来源回填版本并写 AuditLog |
+| POST | `/api/v1/source-return-exports/{export_id}/push` | 人工触发把回填文件推回来源平台（彩食鲜/聚福宝）；真实外呼不可重放，幂等由 `push_status` 状态机承担 |
+
+来源回填推送是人工触发的一次性外呼：`Idempotency-Key` 只做格式校验挡重复点击，真正的幂等闸门是
+`push_status` 状态机——`NOT_PUSHED`/`FAILED` 与超时的 `PUSHING` 可抢占，新鲜 `PUSHING` 与 `SUCCESS` 一律 409。
+脚本在事务外执行，不持有数据库连接。脚本结果不可解析或超时按「结果未知」记为 `FAILED`，
+并明确提示先到平台核实再决定是否重推，绝不报成功。推送成功或进行中的批次不允许再做来源归因订正
+（`SOURCE_ATTRIBUTION_RETURN_PUSH_UNSAFE`）。
 
 来源文件先留存整文件和 RawImportRow，再按行容错。同文件哈希重放返回既有批次。`REVISION` 必须传 `parent_import_batch_id`；系统不根据相似内容猜测修订。
 

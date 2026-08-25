@@ -1217,6 +1217,28 @@ paths:
             application/octet-stream:
               schema: { type: string, format: binary }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/source-return-exports/{export_id}/push:
+    parameters:
+      - $ref: '#/components/parameters/ExportId'
+    post:
+      tags: [Exports]
+      operationId: pushSourceReturnExport
+      description: >-
+        Operator-triggered delivery of the source return workbook back to the originating platform
+        (Caishixian / Jufubao). The call really reaches the external platform and is not replayable:
+        Idempotency-Key is format-checked only to swallow double clicks, while true idempotency is
+        enforced by the push_status state machine (NOT_PUSHED/FAILED and stale PUSHING may claim;
+        fresh PUSHING and SUCCESS are rejected with 409).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: Terminal push outcome for this export version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceReturnPushResult' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/fulfillments:
     get:
       tags: [Fulfillments]
@@ -6184,6 +6206,22 @@ components:
         valid: { type: boolean }
         invalidation_reason: { type: string, nullable: true }
         push_status: { type: string, enum: [NOT_PUSHED, PUSHING, SUCCESS, FAILED] }
+    SourceReturnPushResult:
+      type: object
+      required: [id, batch_no, push_status, message]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        batch_no: { type: string }
+        push_status: { type: string, enum: [NOT_PUSHED, PUSHING, SUCCESS, FAILED] }
+        pushed_at: { type: string, format: date-time, nullable: true }
+        pushed_by: { type: string, nullable: true }
+        push_platform_ref: { type: string, nullable: true, description: Platform-side reference returned on acceptance }
+        push_error: { type: object, additionalProperties: true, nullable: true }
+        message:
+          type: string
+          description: >-
+            Operator-facing outcome. An unknown script result is recorded as FAILED with an explicit
+            "verify on the platform before retrying" message rather than being reported as success.
     SourceAttributionCorrectionWrite:
       type: object
       required: [source_channel_display_name, reason]
