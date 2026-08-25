@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Drawer, Form, Input, Select, Space } from 'antd';
+import { Alert, Button, Drawer, Form, Input, Popconfirm, Select, Space, message } from 'antd';
 
-import { providersApi, shipmentsApi } from '../../api/endpoints';
-import type { FulfillmentProvider, ShipmentJdOutboundPreview } from '../../api/types';
+import { jdWarehouseApi, providersApi, shipmentsApi } from '../../api/endpoints';
+import type {
+  FulfillmentProvider, JdClientStatus, Shipment, ShipmentJdOutboundPreview,
+} from '../../api/types';
+import {
+  canSubmitJdOutbound, jdOutboundConfirmationDetail, jdOutboundConfirmationTitle,
+  jdOutboundPresentation, jdOutboundRuntimeGate,
+} from '../fulfillment/shipmentJdOutbound';
 import { errorMessage } from '@/api/client';
 import { groupBlockers, type BlockerItem, type BlockerGroupView } from './blockerGrouping';
 
@@ -59,7 +65,10 @@ export function JdBlockerFixDrawer({
 }: JdBlockerFixDrawerProps) {
   const [form] = Form.useForm();
   const [provider, setProvider] = useState<FulfillmentProvider | null>(null);
+  const [shipment, setShipment] = useState<Shipment | null>(null);
+  const [runtime, setRuntime] = useState<JdClientStatus | null>(null);
   const [preview, setPreview] = useState<ShipmentJdOutboundPreview | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [saveError, setSaveError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
@@ -89,11 +98,17 @@ export function JdBlockerFixDrawer({
     setLoadError(null);
     (async () => {
       try {
-        const shipment = await shipmentsApi.detail(shipmentId);
-        if (!shipment.provider_id) throw new Error('该发货批次未绑定履约方，无法定位配置');
-        const found = (await providersApi.list()).find((p) => p.id === shipment.provider_id);
-        if (!found) throw new Error(`未找到履约方 ${shipment.provider_id}`);
-        if (!cancelled) setProvider(found);
+        const loaded = await shipmentsApi.detail(shipmentId);
+        if (!loaded.provider_id) throw new Error('该发货批次未绑定履约方，无法定位配置');
+        const found = (await providersApi.list()).find((p) => p.id === loaded.provider_id);
+        if (!found) throw new Error(`未找到履约方 ${loaded.provider_id}`);
+        // 运行时状态是高危外部写的前置门禁：读不到就一律禁止建单（不是默认放行）
+        const status = await jdWarehouseApi.status().catch(() => null);
+        if (!cancelled) {
+          setShipment(loaded);
+          setProvider(found);
+          setRuntime(status);
+        }
       } catch (error) {
         if (!cancelled) setLoadError(error);
       }
@@ -103,8 +118,12 @@ export function JdBlockerFixDrawer({
 
   const rerunPreview = useCallback(async () => {
     if (!shipmentId) return;
-    const next = await shipmentsApi.previewJdOutbound(shipmentId);
+    const [next, refreshed] = await Promise.all([
+      shipmentsApi.previewJdOutbound(shipmentId),
+      shipmentsApi.detail(shipmentId),
+    ]);
     setPreview(next);
+    setShipment(refreshed);
     if (next.blockers.length === 0) onResolved?.();
   }, [shipmentId, onResolved]);
 
@@ -136,6 +155,45 @@ export function JdBlockerFixDrawer({
     }
   }, [provider, form, rerunPreview]);
 
+  // 建单门禁完整复用发货单页的纯函数，避免两处各判一套后悄悄漂移。
+  const presentation = jdOutboundPresentation(shipment?.jd_outbound);
+  const runtimeGate = jdOutboundRuntimeGate(runtime);
+  const confirmation = jdOutboundConfirmationDetail(preview, shipment?.jd_outbound?.erp_delivery_no);
+  const confirmTitle = jdOutboundConfirmationTitle(
+    runtimeGate.mode, runtimeGate.confirmation, confirmation.erpDeliveryNo,
+  );
+  const canSubmit = canSubmitJdOutbound({
+    selectedShipmentId: shipmentId ?? undefined,
+    detailShipmentId: shipment?.id,
+    previewShipmentId: preview?.shipment_id,
+    isJdShipment: provider?.provider_type === 'JD_WAREHOUSE',
+    presentationAllowsSubmit: presentation.canSubmit,
+    detailLoading: false,
+    detailError: Boolean(loadError),
+    previewSubmittable: preview?.submittable === true,
+    previewLoading: false,
+    previewError: false,
+    runtimeReady: runtimeGate.ready,
+    runtimeLoading: false,
+    runtimeError: runtime === null,
+    submitting,
+  });
+
+  const submit = useCallback(async () => {
+    if (!shipmentId || !canSubmit) return;
+    setSubmitting(true);
+    try {
+      const result = await shipmentsApi.submitJdOutbound(shipmentId);
+      message.success(`京东出库单 ${result.erp_delivery_no} 已提交`);
+      await rerunPreview();
+      onResolved?.();
+    } catch (error) {
+      setSaveError(error);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [shipmentId, canSubmit, rerunPreview, onResolved]);
+
   return (
     <Drawer
       title="就地处置京东建单阻塞"
@@ -149,16 +207,64 @@ export function JdBlockerFixDrawer({
       ) : null}
 
       {cleared ? (
-        <Alert
-          type="success"
-          showIcon
-          message="阻塞已全部解除"
-          description={
-            preview?.erp_delivery_no
-              ? `出库单号 ${preview.erp_delivery_no}，可在发货单页提交建单。`
-              : '可在发货单页提交建单。'
-          }
-        />
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Alert
+            type="success"
+            showIcon
+            message="阻塞已全部解除"
+            description={
+              confirmation.erpDeliveryNo
+                ? `商户出库号 ${confirmation.erpDeliveryNo}，可直接提交建单。`
+                : '可直接提交建单。'
+            }
+          />
+          {!runtimeGate.ready ? (
+            <Alert
+              type="error"
+              showIcon
+              message={runtimeGate.mode === 'REAL' ? '真实京东连接尚未就绪' : '京东运行环境尚未确认'}
+              description={runtimeGate.mode === 'REAL'
+                ? '凭据或租户配置未通过 readiness，系统已禁止建单。'
+                : '运行状态读取失败或尚未完成，系统已默认禁止建单。'}
+            />
+          ) : null}
+          {saveError ? (
+            <Alert type="error" showIcon message="建单失败" description={errorMessage(saveError)} />
+          ) : null}
+          <Popconfirm
+            title={confirmTitle}
+            description={(
+              <Space direction="vertical" size={6} style={{ maxWidth: 420 }}>
+                <span>系统会再次执行 SKU 映射、数量换算和实时库存门禁。</span>
+                {confirmation.erpDeliveryNo ? (
+                  <span>商户出库号：<span style={{ fontVariantNumeric: 'tabular-nums' }}>{confirmation.erpDeliveryNo}</span></span>
+                ) : null}
+                {confirmation.cargos.length > 0 ? (
+                  <div style={{ background: '#f7f8fa', borderRadius: 8, padding: '8px 10px' }}>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>本次将提交以下 SKU×数量：</div>
+                    <ul style={{ margin: 0, paddingInlineStart: 16 }}>
+                      {confirmation.cargos.map((cargo) => (
+                        <li key={`${cargo.orderLine}-${cargo.goodsNo}`}>
+                          {cargo.goodsName}
+                          {cargo.goodsNo ? `（SKU ${cargo.goodsNo}）` : ''}
+                          {' '}× {Number.isFinite(cargo.planQuantity) ? cargo.planQuantity.toLocaleString('zh-CN') : '—'} 件
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </Space>
+            )}
+            okText="确认提交"
+            cancelText="取消"
+            onConfirm={submit}
+            disabled={!canSubmit}
+          >
+            <Button type="primary" loading={submitting} disabled={!canSubmit}>
+              {presentation.actionLabel}
+            </Button>
+          </Popconfirm>
+        </Space>
       ) : (
         <>
           <Alert
