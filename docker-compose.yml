@@ -109,6 +109,15 @@ services:
       # backend/.env.wecom.local（0600，git-ignored）；environment 块不得覆盖，缺文件时不建连、应用正常启动。
       WECOM_WS_URL: ${WECOM_WS_URL:-wss://openws.work.weixin.qq.com}
       WECOM_HEARTBEAT_INTERVAL_SECONDS: ${WECOM_HEARTBEAT_INTERVAL_SECONDS:-30}
+      # 通用业务卡（复核 / 告警 / 整批确认播报 / 京东出库失败）：application.yml 引用了这些键，
+      # 但此处此前未透传——.env 里配了也进不了容器，表现为「未配置企微会话路由，跳过发卡」。
+      # 与 AGENT_* 是同一类漏配。四类卡各自独立配群：未配即不发，是部署选择不是故障。
+      WECOM_BUSINESS_CARD_ENABLED: ${WECOM_BUSINESS_CARD_ENABLED:-}
+      WECOM_BUSINESS_CARD_BASE_URL: ${WECOM_BUSINESS_CARD_BASE_URL:-}
+      WECOM_CARD_REVIEW_CHAT_ID: ${WECOM_CARD_REVIEW_CHAT_ID:-}
+      WECOM_CARD_ALERT_CHAT_ID: ${WECOM_CARD_ALERT_CHAT_ID:-}
+      WECOM_CARD_BATCH_CHAT_ID: ${WECOM_CARD_BATCH_CHAT_ID:-}
+      WECOM_CARD_JD_OUTBOUND_CHAT_ID: ${WECOM_CARD_JD_OUTBOUND_CHAT_ID:-}
       MESSAGE_INTERPRETER_PROVIDER: ${MESSAGE_INTERPRETER_PROVIDER:-}
       MESSAGE_INTERPRETER_MODEL: ${MESSAGE_INTERPRETER_MODEL:-}
       MESSAGE_INTERPRETER_PROMPT_VERSION: ${MESSAGE_INTERPRETER_PROMPT_VERSION:-}
