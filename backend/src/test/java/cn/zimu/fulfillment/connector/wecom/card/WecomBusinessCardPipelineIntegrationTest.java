@@ -75,13 +75,16 @@ class WecomBusinessCardPipelineIntegrationTest {
     }
 
     @Test
-    void allFourCardDomainsAreRegistered() {
+    void allCardDomainsAreRegistered() {
+        // 名册是棘轮：新增一个域必须在这里显式登记。忘了登记的表现是
+        // 「这类卡从来不发」——没有任何报错，只能靠人发现。
         assertThat(registry.domains())
                 .containsExactlyInAnyOrder(
                         ReviewCaseCard.DOMAIN,
                         OperationalAlertCard.DOMAIN,
                         BatchConfirmedCard.DOMAIN,
-                        JdOutboundFailureCard.DOMAIN);
+                        JdOutboundFailureCard.DOMAIN,
+                        PreShipConfirmCard.DOMAIN);
     }
 
     @Test

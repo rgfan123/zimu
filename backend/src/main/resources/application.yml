@@ -144,6 +144,12 @@ app:
       jd-outbound:
         type: ${WECOM_CARD_JD_OUTBOUND_ROUTE_TYPE:GROUP}
         chat-id: ${WECOM_CARD_JD_OUTBOUND_CHAT_ID:}
+      # 发货前确认卡：卡面带收货人手机号与详细地址，**只能单聊**。
+      # 缺省 SINGLE 不是省事，是让「配错成群」变成显式动作而不是默认结果；
+      # 即便配成 GROUP，PreShipConfirmCardSource#route 也会挡下来不发。
+      preship:
+        type: ${WECOM_CARD_PRESHIP_ROUTE_TYPE:SINGLE}
+        chat-id: ${WECOM_CARD_PRESHIP_CHAT_ID:}
   agent-worker:
     # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
     enabled: ${AGENT_WORKER_ENABLED:true}
