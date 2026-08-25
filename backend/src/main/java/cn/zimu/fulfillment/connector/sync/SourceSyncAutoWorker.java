@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.connector.sync;
 
+import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import java.util.List;
@@ -86,19 +87,25 @@ public class SourceSyncAutoWorker {
         for (Long shipmentId : candidates) {
             try {
                 syncOne(shipmentId);
+            } catch (BusinessException business) {
+                // 业务阻断是预期路径：阻断项已由 execute 落复核事项，这里只记稳定码
+                log.info("自动回传未执行 shipment={} code={}", shipmentId, business.getBusinessCode());
             } catch (RuntimeException exception) {
-                // 单条失败不拖垮整轮：阻断项已由 execute 落复核事项，这里只记稳定码
-                log.info(
-                        "自动回传未执行 shipment={} code={}",
+                // 非业务异常是真故障，必须带类型与消息——只打 UNEXPECTED 等于把诊断线索丢了
+                log.warn(
+                        "自动回传异常 shipment={} type={} message={}",
                         shipmentId,
-                        exception instanceof BusinessException business ? business.getBusinessCode() : "UNEXPECTED");
+                        exception.getClass().getSimpleName(),
+                        exception.getMessage());
             }
         }
     }
 
     private void syncOne(long shipmentId) {
         CommandContext context = context();
-        SourceSyncCheck check = service.check(shipmentId, context, null);
+        // 审计主体记 SYSTEM 而不是 HUMAN：自动执行确实不是人点的，写成 HUMAN 会污染
+        // 「谁做的」这一事实。actorType 传 null 会在审计写入处炸成非业务异常。
+        SourceSyncCheck check = service.check(shipmentId, context, AuditActorType.SYSTEM);
         if (!check.ready()) {
             // 未就绪不是异常：检查侧已按需落复核事项，人工在发货台可见
             return;
