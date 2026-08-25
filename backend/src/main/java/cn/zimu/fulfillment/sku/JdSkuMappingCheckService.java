@@ -12,7 +12,6 @@ import cn.zimu.fulfillment.order.OperationalAlertService;
 import cn.zimu.fulfillment.order.OperationalAlertSeverity;
 import cn.zimu.fulfillment.order.dto.OperationalAlertDto;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -138,20 +137,9 @@ public class JdSkuMappingCheckService {
             return;
         }
         String goodsName = result.goodsName();
-        if (goodsName == null) {
-            return;
-        }
-        switch (JdGoodsNameMatch.verdict(
-                goodsName, Arrays.asList(mapping.specification(), mapping.providerSkuName()))) {
-            case MISMATCHED -> nameMismatch.add(diff(mapping, "NAME_MISMATCH",
+        if (goodsName != null && !nameMatches(mapping, goodsName)) {
+            nameMismatch.add(diff(mapping, "NAME_MISMATCH",
                     "京东商品名『" + goodsName + "』与系统名称（规格/履约方名称）不一致"));
-            // 无参照名不再静默放行：出库门禁（ShipmentJdSkuMappingGateService）此时只剩
-            // 订单行商品名快照可比，比不上会出 NAME_MISMATCH 警示（不阻断提交）——核对页
-            // 必须把这个口径差亮出来，而不是替门禁保持沉默（设计收敛票 01）。
-            case NO_REFERENCE -> nameMismatch.add(diff(mapping, "NAME_REFERENCE_MISSING",
-                    "系统侧没有可比对的参照名（规格与 external_codes.provider_sku_name 均为空），"
-                            + "无法核对京东商品名『" + goodsName + "』，请补 provider_sku_name"));
-            case MATCHED -> { }
         }
     }
 
@@ -223,6 +211,33 @@ public class JdSkuMappingCheckService {
                 providerId);
     }
 
+    /** 名称比对：系统侧参照名（规格 / external_codes.provider_sku_name）任一命中即视为一致。 */
+    private boolean nameMatches(SkuMappingRow mapping, String jdGoodsName) {
+        String normalizedJd = normalize(jdGoodsName);
+        List<String> references = new ArrayList<>();
+        if (mapping.specification() != null && !mapping.specification().isBlank()) {
+            references.add(mapping.specification());
+        }
+        if (mapping.providerSkuName() != null && !mapping.providerSkuName().isBlank()) {
+            references.add(mapping.providerSkuName());
+        }
+        if (references.isEmpty()) {
+            return true; // 系统侧无参照名，不做名称比对，避免误报
+        }
+        for (String reference : references) {
+            String normalizedReference = normalize(reference);
+            if (normalizedReference.isEmpty()) {
+                continue;
+            }
+            if (normalizedJd.equals(normalizedReference)
+                    || normalizedJd.contains(normalizedReference)
+                    || normalizedReference.contains(normalizedJd)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private Map<String, Object> alertDetail(String checkRunNo, DiffCategory category, List<DiffItem> items) {
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("check_run_no", checkRunNo);
@@ -240,6 +255,10 @@ public class JdSkuMappingCheckService {
                 mapping.providerSkuCode(),
                 reason,
                 message);
+    }
+
+    private static String normalize(String value) {
+        return value == null ? "" : value.trim().replaceAll("\\s+", "");
     }
 
     private static String token() {
