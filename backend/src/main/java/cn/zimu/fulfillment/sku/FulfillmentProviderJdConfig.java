@@ -23,15 +23,31 @@ public final class FulfillmentProviderJdConfig {
 
     public static final List<String> KNOWN_KEYS = List.of(
             "sourceNo", "warehouseNo", "pin", "erpShopNo", "salesPlatformSource",
-            "ownerNo", "shopNo", "carrierNo", "townRequired", "outboundMode", "customerCode");
+            "ownerNo", "shopNo", "carrierNo", "townRequired", "outboundMode", "customerCode",
+            "addressAnalysis");
 
     /** 建单路由模式：SDK 直连或导单文件；缺省为 FILE（不改变历史批次处置方式）。 */
     public static final String OUTBOUND_MODE_SDK = "SDK";
     public static final String OUTBOUND_MODE_FILE = "FILE";
 
+    /**
+     * 收货地址解析模式（京东 addSoOrder 的 receiverInfo.addressAnalysis）。
+     *
+     * <p>官方枚举（docs/research/jdl-api-367/json/1596-addSoOrder.json）：
+     * 0 不解析、1 通过客户门店编码解析、2 通过收件人地址解析四级地址。
+     * 本系统只放行 0 与 2——1 依赖客户门店编码体系，我们不维护该体系。
+     *
+     * <p><b>缺省不配 = 不启用</b>：保持既有「四级地址人工确认」路径一字不变。
+     * 配成 2 时改为把完整原始地址交给京东解析，省/市/区/镇不再由我方必填。
+     * 这不是放松管控而是换了权威源：此前是我方词典猜（且猜得不好），现在是京东自己解析。
+     */
+    public static final String ADDRESS_ANALYSIS_NONE = "0";
+    public static final String ADDRESS_ANALYSIS_BY_RECEIVER_ADDRESS = "2";
+
     private static final Set<String> SECRET_KEYS = Set.of("pin");
     private static final String TOWN_REQUIRED = "townRequired";
     private static final String OUTBOUND_MODE = "outboundMode";
+    private static final String ADDRESS_ANALYSIS = "addressAnalysis";
 
     private FulfillmentProviderJdConfig() {}
 
@@ -72,6 +88,14 @@ public final class FulfillmentProviderJdConfig {
                 throw BusinessException.unprocessable(
                         "FULFILLMENT_PROVIDER_CONFIG_OUTBOUND_MODE_INVALID",
                         "outboundMode 只接受 SDK 或 FILE；缺省为 FILE（保持导单文件路径）");
+            }
+            if (ADDRESS_ANALYSIS.equals(key)
+                    && !ADDRESS_ANALYSIS_NONE.equals(text)
+                    && !ADDRESS_ANALYSIS_BY_RECEIVER_ADDRESS.equals(text)) {
+                throw BusinessException.unprocessable(
+                        "FULFILLMENT_PROVIDER_CONFIG_ADDRESS_ANALYSIS_INVALID",
+                        "addressAnalysis 只接受 0（不解析）或 2（京东按收件人地址解析四级地址）；"
+                                + "枚举值 1 依赖客户门店编码体系，本系统不维护");
             }
             validated.put(key, text);
         }
