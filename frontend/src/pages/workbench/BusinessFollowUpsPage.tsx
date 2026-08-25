@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App, Alert, Button, Descriptions, Drawer, Empty, Form, Input, Modal, Select, Space, Tag, Typography } from 'antd';
+import { App, Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, List, Modal, Select, Space, Tag, Typography } from 'antd';
 import { FileSearchOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -18,6 +18,7 @@ const STAGE_LABELS: Record<BusinessFollowUpSummary['stage'], string> = {
   PENDING_ORGANIZATION: '待发起整理',
   ORGANIZING: '整理中',
   DRAFT_READY: '草稿待核对',
+  NEEDS_INPUT: '待补充/复核',
 };
 
 const PROCESSING_LABELS: Record<BusinessFollowUpSummary['processing_status'], string> = {
@@ -47,7 +48,9 @@ export default function BusinessFollowUpsPage() {
   );
   const agents = useAsync(() => agentsApi.list(), []);
   const agentOptions = (agents.data?.items ?? [])
-    .filter((agent) => agent.state === 'RUNNING' && agent.current_version !== null)
+    .filter((agent) => agent.slug === 'customer-followup-agent'
+      && agent.state === 'RUNNING'
+      && agent.current_version !== null)
     .map((agent) => ({
       value: `${agent.slug}@${agent.current_version}`,
       label: `${agent.name} · ${agent.slug} · v${agent.current_version}`,
@@ -209,8 +212,18 @@ export default function BusinessFollowUpsPage() {
           <Form.Item name="message_submission_id" label="已选消息证据" rules={[{ required: true }]}>
             <Input readOnly />
           </Form.Item>
-          <Form.Item name="employee_draft" label="员工大体草稿" rules={[{ required: true }, { max: 20000 }]}>
-            <Input.TextArea rows={6} maxLength={20000} showCount />
+          <Form.Item
+            name="employee_draft"
+            label="员工大体草稿"
+            extra="自动核对需包含唯一 Kehuzx 客户编号（格式 KH-YYMMDD-NNN）；自由文本不会发送给模型。"
+            rules={[{ required: true }, { max: 20000 }]}
+          >
+            <Input.TextArea
+              rows={6}
+              maxLength={20000}
+              showCount
+              placeholder="例如：客户 KH-260826-001 希望确认样品和后续订单"
+            />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={saving}>先建档，不运行模型</Button>
         </Form>
@@ -304,6 +317,106 @@ function FollowUpDetail({ detail }: { detail: BusinessFollowUp }) {
           {detail.employee_draft}
         </Typography.Paragraph>
       </div>
+      {detail.latest_draft ? <DraftEvidence draft={detail.latest_draft} /> : (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未生成整理草稿" />
+      )}
+    </Space>
+  );
+}
+
+function DraftEvidence({ draft }: { draft: NonNullable<BusinessFollowUp['latest_draft']> }) {
+  const calls = draft.kehuzx_source_summary.calls ?? [];
+  const failures = draft.kehuzx_source_summary.failures ?? [];
+  const facts = draft.content.facts ?? [];
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Card
+        size="small"
+        title={draft.content.title || `整理草稿 v${draft.version}`}
+        extra={<Tag color={draft.status === 'DRAFT' ? 'green' : 'orange'}>{draft.status}</Tag>}
+      >
+        <Typography.Paragraph>{draft.content.summary || '暂无摘要'}</Typography.Paragraph>
+        {draft.content.agent_suggestion ? (
+          <Alert
+            type="info"
+            showIcon
+            message="Agent 建议（未核实，不作为 Kehuzx 事实）"
+            description={draft.content.agent_suggestion}
+            style={{ marginBottom: 12 }}
+          />
+        ) : null}
+        <List
+          size="small"
+          dataSource={facts}
+          locale={{ emptyText: '暂无可核对事实' }}
+          renderItem={(fact) => (
+            <List.Item>
+              <Tag color={fact.source === 'ZIMU' ? 'blue' : 'purple'}>{fact.source}</Tag>
+              <Typography.Text strong>{fact.label}：</Typography.Text>
+              <Typography.Text>{fact.value}</Typography.Text>
+            </List.Item>
+          )}
+        />
+        {draft.content.missing_fields?.length ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="仍需人工补充"
+            description={draft.content.missing_fields.join('、')}
+            style={{ marginTop: 12 }}
+          />
+        ) : null}
+      </Card>
+
+      <Card size="small" title="来源对账">
+        {failures.length ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="Kehuzx 读取未完成，草稿不可确认"
+            description={`稳定错误码：${failures.join('、')}`}
+            style={{ marginBottom: 12 }}
+          />
+        ) : null}
+        <Descriptions
+          size="small"
+          column={1}
+          items={[
+            {
+              key: 'zimu',
+              label: <Tag color="blue">ZIMU</Tag>,
+              children: `跟进 ${draft.zimu_source_summary.followup_no} · 提交 ${draft.zimu_source_summary.message_submission_id} · 证据版本 ${draft.zimu_source_summary.source_revision}`,
+            },
+            {
+              key: 'kehuzx',
+              label: <Tag color="purple">KEHUZX</Tag>,
+              children: `客户候选 ${draft.kehuzx_source_summary.candidate_count} 个 · 远端读取 ${calls.length} 次`,
+            },
+          ]}
+        />
+        <List
+          size="small"
+          dataSource={calls}
+          locale={{ emptyText: '没有成功的 Kehuzx 远端读取；需人工复核' }}
+          renderItem={(call) => (
+            <List.Item>
+              <Space direction="vertical" size={2}>
+                <Typography.Text code>{call.tool}</Typography.Text>
+                <Typography.Text type="secondary">
+                  契约 {call.contract_version} · 提交 {call.upstream_commit || '未配置'} · 查询 {call.queried_at}
+                </Typography.Text>
+                <Typography.Text type="secondary">响应摘要 {call.response_digest}</Typography.Text>
+              </Space>
+            </List.Item>
+          )}
+        />
+        {draft.upstream_refs.length ? (
+          <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+            上游引用：{draft.upstream_refs.map((ref) => `${ref.entity_type}:${ref.id}`).join('；')}
+          </Typography.Paragraph>
+        ) : null}
+      </Card>
+      <Typography.Text type="secondary">Agent run：{draft.agent_run_id}</Typography.Text>
     </Space>
   );
 }

@@ -1419,7 +1419,8 @@ export interface MessageSubmissionDetail {
 export type BusinessFollowUpStage =
   | 'PENDING_ORGANIZATION'
   | 'ORGANIZING'
-  | 'DRAFT_READY';
+  | 'DRAFT_READY'
+  | 'NEEDS_INPUT';
 
 export type BusinessFollowUpProcessingStatus =
   | 'NOT_STARTED'
@@ -1449,6 +1450,57 @@ export interface BusinessFollowUpSummary {
 
 export interface BusinessFollowUp extends BusinessFollowUpSummary {
   employee_draft: string;
+  latest_draft?: BusinessFollowUpDraft | null;
+}
+
+export interface BusinessFollowUpDraftFact {
+  source: 'ZIMU' | 'KEHUZX';
+  label: string;
+  value: string;
+}
+
+export interface BusinessFollowUpDraft {
+  version: number;
+  status: 'DRAFT' | 'NEEDS_INPUT';
+  agent_run_id: string;
+  agent_slug: string;
+  agent_version: number;
+  content: {
+    title?: string;
+    summary?: string;
+    agent_suggestion?: string;
+    facts?: BusinessFollowUpDraftFact[];
+    requires_human?: boolean;
+    missing_fields?: string[];
+  };
+  zimu_source_summary: {
+    source: 'ZIMU';
+    followup_id: string;
+    followup_no: string;
+    message_submission_id: string;
+    source_revision: number;
+  };
+  kehuzx_source_summary: {
+    source: 'KEHUZX';
+    candidate_count: number;
+    failures: Array<
+      | 'KEHUZX_NOT_CONFIGURED'
+      | 'KEHUZX_UNREACHABLE'
+      | 'KEHUZX_TIMEOUT'
+      | 'KEHUZX_AUTH_REJECTED'
+      | 'KEHUZX_CONTRACT_DRIFT'
+      | 'KEHUZX_TOOL_FAILED'
+    >;
+    calls: Array<{
+      tool: string;
+      response_digest: string;
+      contract_version: string;
+      upstream_commit?: string | null;
+      queried_at: string;
+    }>;
+  };
+  upstream_refs: Array<{ entity_type: string; id: string }>;
+  created_at: string;
 }
 
 export interface BusinessFollowUpPage extends PageMeta {

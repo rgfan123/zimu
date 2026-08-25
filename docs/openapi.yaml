@@ -4289,7 +4289,7 @@ components:
         message_submission_id: { $ref: '#/components/schemas/Identifier' }
         source_message_id: { $ref: '#/components/schemas/Identifier' }
         source_revision: { type: integer, format: int32 }
-        stage: { type: string, enum: [PENDING_ORGANIZATION, ORGANIZING, DRAFT_READY] }
+        stage: { type: string, enum: [PENDING_ORGANIZATION, ORGANIZING, DRAFT_READY, NEEDS_INPUT] }
         processing_status: { type: string, enum: [NOT_STARTED, PENDING, RUNNING, SUCCEEDED, FAILED] }
         created_by: { type: string }
         designated_reviewer: { type: string, nullable: true }
@@ -4307,6 +4307,64 @@ components:
           required: [employee_draft]
           properties:
             employee_draft: { type: string }
+            latest_draft:
+              allOf:
+                - $ref: '#/components/schemas/BusinessFollowUpDraftDto'
+              nullable: true
+    BusinessFollowUpDraftDto:
+      type: object
+      required:
+        [version, status, agent_run_id, agent_slug, agent_version, content,
+         zimu_source_summary, kehuzx_source_summary, upstream_refs, created_at]
+      properties:
+        version: { type: integer, format: int32, minimum: 1 }
+        status: { type: string, enum: [DRAFT, NEEDS_INPUT] }
+        agent_run_id: { type: string, minLength: 1 }
+        agent_slug: { type: string, minLength: 1 }
+        agent_version: { type: integer, format: int32, minimum: 1 }
+        content: { type: object, additionalProperties: true }
+        zimu_source_summary:
+          type: object
+          required: [source, followup_id, followup_no, message_submission_id, source_revision]
+          properties:
+            source: { type: string, enum: [ZIMU] }
+            followup_id: { $ref: '#/components/schemas/Identifier' }
+            followup_no: { type: string }
+            message_submission_id: { $ref: '#/components/schemas/Identifier' }
+            source_revision: { type: integer, format: int32, minimum: 1 }
+        kehuzx_source_summary:
+          type: object
+          required: [source, candidate_count, calls, failures]
+          properties:
+            source: { type: string, enum: [KEHUZX] }
+            candidate_count: { type: integer, format: int32, minimum: 0 }
+            failures:
+              type: array
+              items:
+                type: string
+                enum:
+                  [KEHUZX_NOT_CONFIGURED, KEHUZX_UNREACHABLE, KEHUZX_TIMEOUT,
+                   KEHUZX_AUTH_REJECTED, KEHUZX_CONTRACT_DRIFT, KEHUZX_TOOL_FAILED]
+            calls:
+              type: array
+              items:
+                type: object
+                required: [tool, response_digest, contract_version, queried_at]
+                properties:
+                  tool: { type: string }
+                  response_digest: { type: string, pattern: '^[0-9a-f]{64}$' }
+                  contract_version: { type: string }
+                  upstream_commit: { type: string, nullable: true }
+                  queried_at: { type: string, format: date-time }
+        upstream_refs:
+          type: array
+          items:
+            type: object
+            required: [entity_type, id]
+            properties:
+              entity_type: { type: string }
+              id: { type: string }
+        created_at: { type: string, format: date-time }
     PageResponseBusinessFollowUpSummaryDto:
       type: object
       required: [items, page, size, total_elements, total_pages]

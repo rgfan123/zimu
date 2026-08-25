@@ -29,6 +29,11 @@ server:
   port: ${SERVER_PORT:8080}
 
 app:
+  followup-worker:
+    enabled: ${FOLLOWUP_WORKER_ENABLED:false}
+    poll-ms: ${FOLLOWUP_WORKER_POLL_MS:500}
+    lease-seconds: ${FOLLOWUP_WORKER_LEASE_SECONDS:120}
+    backoff-seconds: ${FOLLOWUP_WORKER_BACKOFF_SECONDS:5}
   scheduling:
     # 生产默认启用；测试可整体关闭，避免缓存的 Spring context 继续轮询已销毁的 Testcontainer。
     enabled: ${SCHEDULED_TASKS_ENABLED:true}
@@ -84,6 +89,19 @@ app:
     poll-ms: ${MESSAGE_WORKER_POLL_MS:500}
     lease-seconds: ${MESSAGE_WORKER_LEASE_SECONDS:30}
     backoff-seconds: ${MESSAGE_WORKER_BACKOFF_SECONDS:5}
+  kehuzx:
+    mcp:
+      # #130: dedicated read-token boundary. Missing configuration leaves Zimu healthy and the
+      # follow-up task fail-closed; this token must never carry Kehuzx write scope.
+      enabled: ${KEHUZX_MCP_ENABLED:false}
+      endpoint: ${KEHUZX_MCP_ENDPOINT:}
+      read-token: ${KEHUZX_MCP_FOLLOWUP_READ_TOKEN:}
+      allowed-host: ${KEHUZX_MCP_ALLOWED_HOST:kehuzx-mcp}
+      allowed-port: ${KEHUZX_MCP_ALLOWED_PORT:8000}
+      connect-timeout: ${KEHUZX_MCP_CONNECT_TIMEOUT:PT3S}
+      read-timeout: ${KEHUZX_MCP_READ_TIMEOUT:PT10S}
+      contract-version: ${KEHUZX_MCP_CONTRACT_VERSION:kehuzx-mcp-v1}
+      upstream-commit: ${KEHUZX_MCP_UPSTREAM_COMMIT:}
   wecom-tracking-file-worker:
     # Issue #86：单聊 file 专用确定性解析队列；默认跟随消息 Worker 总开关，且从不调用模型。
     enabled: ${WECOM_TRACKING_FILE_WORKER_ENABLED:${MESSAGE_WORKER_ENABLED:true}}

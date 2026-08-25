@@ -145,7 +145,7 @@ class BusinessFollowUpApiTest {
                 "followup-organize-create-001");
         String id = String.valueOf(created.getBody().get("id"));
         Map<String, Object> request = Map.of(
-                "agent_slug", "data-query-agent",
+                "agent_slug", "customer-followup-agent",
                 "agent_version", 1);
 
         ResponseEntity<Map> started = organize(id, request, "followup-organize-start-001");
@@ -161,7 +161,7 @@ class BusinessFollowUpApiTest {
                 .containsEntry("stage", "ORGANIZING")
                 .containsEntry("processing_status", "PENDING")
                 .containsEntry("designated_reviewer", "manager-zhang")
-                .containsEntry("agent_slug", "data-query-agent")
+                .containsEntry("agent_slug", "customer-followup-agent")
                 .containsEntry("agent_version", 1)
                 .containsEntry("task_status", "PENDING");
         jdbc.update(
@@ -174,12 +174,12 @@ class BusinessFollowUpApiTest {
                 new HttpEntity<>(readHeaders()),
                 Map.class);
         assertThat(sanitizedDetail.getBody())
-                .containsEntry("task_failure_code", "MODEL_CALL_FAILED");
+                .containsEntry("task_failure_code", "FOLLOWUP_ORGANIZATION_FAILED");
         assertThat(String.valueOf(sanitizedDetail.getBody())).doesNotContain("must-not-leak");
 
         ResponseEntity<Map> drifted = organize(
                 id,
-                Map.of("agent_slug", "data-query-agent", "agent_version", 999),
+                Map.of("agent_slug", "customer-followup-agent", "agent_version", 999),
                 "followup-organize-start-002");
         assertThat(drifted.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(drifted.getBody())
@@ -237,7 +237,7 @@ class BusinessFollowUpApiTest {
                 "followup-concurrent-create-001");
         String id = String.valueOf(created.getBody().get("id"));
         Map<String, Object> request = Map.of(
-                "agent_slug", "data-query-agent",
+                "agent_slug", "customer-followup-agent",
                 "agent_version", 1);
 
         try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
@@ -269,7 +269,7 @@ class BusinessFollowUpApiTest {
                         "employee_draft", "第二个跟进"),
                 "followup-idem-second-create").getBody().get("id"));
         Map<String, Object> request = Map.of(
-                "agent_slug", "data-query-agent",
+                "agent_slug", "customer-followup-agent",
                 "agent_version", 1);
 
         ResponseEntity<Map> first = organize(firstId, request, "followup-cross-target-key");
@@ -300,7 +300,7 @@ class BusinessFollowUpApiTest {
                 "followup-agent-missing-start");
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
-        assertThat(response.getBody()).containsEntry("business_code", "AGENT_NOT_ENABLED");
+        assertThat(response.getBody()).containsEntry("business_code", "FOLLOWUP_AGENT_REQUIRED");
         Integer count = jdbc.queryForObject(
                 "SELECT count(*) FROM app.async_tasks WHERE payload_ref LIKE ?",
                 Integer.class,
@@ -318,11 +318,11 @@ class BusinessFollowUpApiTest {
         String id = String.valueOf(created.getBody().get("id"));
         jdbc.update(
                 "UPDATE app.agent_definitions SET enabled = false "
-                        + "WHERE agent_slug = 'data-query-agent' AND version = 1");
+                        + "WHERE agent_slug = 'customer-followup-agent' AND version = 1");
         try {
             ResponseEntity<Map> response = organize(
                     id,
-                    Map.of("agent_slug", "data-query-agent", "agent_version", 1),
+                    Map.of("agent_slug", "customer-followup-agent", "agent_version", 1),
                     "followup-agent-disabled-start");
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
@@ -330,7 +330,7 @@ class BusinessFollowUpApiTest {
         } finally {
             jdbc.update(
                     "UPDATE app.agent_definitions SET enabled = true "
-                            + "WHERE agent_slug = 'data-query-agent' AND version = 1");
+                            + "WHERE agent_slug = 'customer-followup-agent' AND version = 1");
         }
     }
 

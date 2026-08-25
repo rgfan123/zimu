@@ -20,9 +20,9 @@ import org.springframework.dao.DataIntegrityViolationException;
  * <p>真实 PostgreSQL（Testcontainers，{@link AgentTestcontainersBase}）+ 完整应用启动
  * （Flyway 执行全部迁移）后，断言：
  * <ul>
- *   <li>DB 是定义唯一真源：上下文无代码定义 bean 残留（T02），active 种子恰为 5 个
+ *   <li>DB 是定义唯一真源：上下文无代码定义 bean 残留（T02），active 种子恰为 7 个
  *       （procurement-price-agent / data-query-agent / intent-recognition / meta-agent /
- *       source-sync-reviewer），
+ *       source-sync-reviewer / fulfillment-file-agent / customer-followup-agent），
  *       procurement-price-agent version=2、其余 version=1、status='active'、allow_write 仅 meta-agent 为 true、守卫豁免为空，
  *       注册表（holder 当前实例）按 status='active' AND enabled=true 可解析全部 slug；</li>
  *   <li>meta-agent 播种行：version=1、status='active'、allow_write=true、enabled=true、
@@ -68,7 +68,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                     .as("代码定义 bean %s 必须已删除", beanName)
                     .isInstanceOf(org.springframework.beans.factory.NoSuchBeanDefinitionException.class);
         }
-        // 种子为唯一来源：active 定义恰为 6 个，身份与版本链字段与迁移播种一致
+        // 种子为唯一来源：active 定义恰为 7 个，身份与版本链字段与迁移播种一致
         List<DefinitionRow> active = jdbc.query(
                 "SELECT agent_slug, name, description, system_prompt, prompt_version, model_ref, "
                         + "enabled, version, status, allow_write, tool_whitelist::text, guard_exemptions::text "
@@ -77,14 +77,17 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
         assertThat(active).extracting(DefinitionRow::slug)
                 .containsExactlyInAnyOrder(
                         "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent",
-                        "source-sync-reviewer", "fulfillment-file-agent");
+                        "source-sync-reviewer", "fulfillment-file-agent", "customer-followup-agent");
         assertThat(active).allSatisfy(row -> {
             assertThat(row.version()).isEqualTo("procurement-price-agent".equals(row.slug()) ? 2 : 1);
             assertThat(row.status()).isEqualTo("active");
             assertThat(row.enabled()).isTrue();
             assertThat(row.allowWrite()).as("仅 meta-agent 允许写（%s）", row.slug())
                     .isEqualTo("meta-agent".equals(row.slug()));
-            assertThat(row.guardExemptions()).isEmpty();
+            assertThat(row.guardExemptions())
+                    .isEqualTo("customer-followup-agent".equals(row.slug())
+                            ? List.of("PII")
+                            : List.of());
             assertThat(row.systemPrompt()).isNotBlank();
             if ("intent-recognition".equals(row.slug())) {
                 assertThat(row.toolWhitelist()).as("意图识别无工具调用（单次分类接缝）").isEmpty();
@@ -92,12 +95,12 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                 assertThat(row.toolWhitelist()).isNotEmpty();
             }
         });
-        // 运行条件 status='active' AND enabled=true：注册表（holder 当前实例）可解析全部 6 slug
+        // 运行条件 status='active' AND enabled=true：注册表（holder 当前实例）可解析全部 7 slug
         AgentRegistryHolder holder = context.getBean(AgentRegistryHolder.class);
         assertThat(holder.current().slugs())
                 .containsExactlyInAnyOrder(
                         "procurement-price-agent", "data-query-agent", "intent-recognition", "meta-agent",
-                        "source-sync-reviewer", "fulfillment-file-agent");
+                        "source-sync-reviewer", "fulfillment-file-agent", "customer-followup-agent");
         assertThat(holder.current().isEnabled("procurement-price-agent")).isTrue();
         assertThat(holder.current().isEnabled("meta-agent")).isTrue();
     }

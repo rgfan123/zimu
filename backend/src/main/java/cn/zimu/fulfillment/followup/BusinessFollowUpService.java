@@ -10,7 +10,8 @@ import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
-import cn.zimu.fulfillment.message.MessagePublicProjectionSanitizer;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
@@ -24,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class BusinessFollowUpService {
 
     static final String ORGANIZE_TASK_TYPE = "BUSINESS_FOLLOWUP_ORGANIZE";
+    static final String ORGANIZATION_AGENT_SLUG = "customer-followup-agent";
 
     private static final String SELECT_SUMMARY = """
             SELECT bf.id, bf.followup_no, bf.message_submission_id,
@@ -44,27 +46,42 @@ public class BusinessFollowUpService {
                    bf.stage, bf.processing_status, bf.created_by,
                    bf.designated_reviewer, bf.agent_slug, bf.agent_version,
                    task.status AS task_status, task.attempts AS task_attempts,
-                   task.last_error AS task_last_error, bf.created_at, bf.updated_at
+                   task.last_error AS task_last_error,
+                   draft.version AS draft_version, draft.status AS draft_status,
+                   draft.agent_run_id AS draft_agent_run_id,
+                   draft.agent_slug AS draft_agent_slug,
+                   draft.agent_version AS draft_agent_version,
+                   draft.content::text AS draft_content,
+                   draft.zimu_source_summary::text AS draft_zimu_source_summary,
+                   draft.kehuzx_source_summary::text AS draft_kehuzx_source_summary,
+                   draft.upstream_refs::text AS draft_upstream_refs,
+                   draft.created_at AS draft_created_at,
+                   bf.created_at, bf.updated_at
             FROM app.business_followups bf
             JOIN app.message_submissions ms ON ms.id = bf.message_submission_id
             LEFT JOIN app.async_tasks task
               ON task.idempotency_key = bf.organization_task_key
+            LEFT JOIN app.business_followup_draft_versions draft
+              ON draft.followup_id = bf.id AND draft.version = bf.current_draft_version
             """;
 
     private final JdbcTemplate jdbc;
     private final AsyncTaskStore tasks;
     private final AgentRegistryHolder agents;
     private final AuditLogService audits;
+    private final ObjectMapper mapper;
 
     public BusinessFollowUpService(
             JdbcTemplate jdbc,
             AsyncTaskStore tasks,
             AgentRegistryHolder agents,
-            AuditLogService audits) {
+            AuditLogService audits,
+            ObjectMapper mapper) {
         this.jdbc = jdbc;
         this.tasks = tasks;
         this.agents = agents;
         this.audits = audits;
+        this.mapper = mapper;
     }
 
     @Transactional
@@ -151,7 +168,7 @@ public class BusinessFollowUpService {
     public BusinessFollowUpDto detail(long id) {
         List<BusinessFollowUpDto> rows = jdbc.query(
                 SELECT_DETAIL + " WHERE bf.id = ?",
-                BusinessFollowUpService::mapDetail,
+                this::mapDetail,
                 id);
         return rows.stream()
                 .findFirst()
@@ -202,6 +219,10 @@ public class BusinessFollowUpService {
     }
 
     private AgentDefinition requireCurrentAgent(String slug, int version) {
+        if (!ORGANIZATION_AGENT_SLUG.equals(slug)) {
+            throw BusinessException.unprocessable(
+                    "FOLLOWUP_AGENT_REQUIRED", "客户跟进只能使用专属只读 Agent");
+        }
         AgentDefinition current = agents.current().bySlug(slug);
         if (current == null || !current.enabled() || current.status() != AgentStatus.ACTIVE) {
             throw BusinessException.unprocessable(
@@ -290,7 +311,7 @@ public class BusinessFollowUpService {
                 .businessCode(businessCode));
     }
 
-    private static BusinessFollowUpDto mapDetail(ResultSet rs, int rowNumber) throws SQLException {
+    private BusinessFollowUpDto mapDetail(ResultSet rs, int rowNumber) throws SQLException {
         return new BusinessFollowUpDto(
                 rs.getString("id"),
                 rs.getString("followup_no"),
@@ -306,10 +327,36 @@ public class BusinessFollowUpService {
                 rs.getObject("agent_version", Integer.class),
                 rs.getString("task_status"),
                 rs.getObject("task_attempts", Integer.class),
-                MessagePublicProjectionSanitizer.stableFailureCode(
-                        rs.getString("task_last_error")),
+                BusinessFollowUpFailureProjection.project(rs.getString("task_last_error")),
+                mapDraft(rs),
                 rs.getObject("created_at", java.time.OffsetDateTime.class),
                 rs.getObject("updated_at", java.time.OffsetDateTime.class));
+    }
+
+    private BusinessFollowUpDraftDto mapDraft(ResultSet rs) throws SQLException {
+        Integer version = rs.getObject("draft_version", Integer.class);
+        if (version == null) {
+            return null;
+        }
+        return new BusinessFollowUpDraftDto(
+                version,
+                rs.getString("draft_status"),
+                rs.getString("draft_agent_run_id"),
+                rs.getString("draft_agent_slug"),
+                rs.getInt("draft_agent_version"),
+                json(rs, "draft_content"),
+                json(rs, "draft_zimu_source_summary"),
+                json(rs, "draft_kehuzx_source_summary"),
+                json(rs, "draft_upstream_refs"),
+                rs.getObject("draft_created_at", java.time.OffsetDateTime.class));
+    }
+
+    private JsonNode json(ResultSet rs, String column) throws SQLException {
+        try {
+            return mapper.readTree(rs.getString(column));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            throw new SQLException("invalid persisted business follow-up draft JSON", ex);
+        }
     }
 
     private static BusinessFollowUpSummaryDto mapSummary(ResultSet rs, int rowNumber)
@@ -328,8 +375,7 @@ public class BusinessFollowUpService {
                 rs.getObject("agent_version", Integer.class),
                 rs.getString("task_status"),
                 rs.getObject("task_attempts", Integer.class),
-                MessagePublicProjectionSanitizer.stableFailureCode(
-                        rs.getString("task_last_error")),
+                BusinessFollowUpFailureProjection.project(rs.getString("task_last_error")),
                 rs.getObject("created_at", java.time.OffsetDateTime.class),
                 rs.getObject("updated_at", java.time.OffsetDateTime.class));
     }

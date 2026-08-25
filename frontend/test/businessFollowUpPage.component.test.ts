@@ -218,3 +218,70 @@ test('opening organize disables stale cached Agent options while the catalog ref
     }));
   });
 });
+
+test('detail keeps Zimu employee material separate from Kehuzx verified read evidence', async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/business-followups?')) {
+      return jsonResponse({
+        items: [{ ...summary(), stage: 'DRAFT_READY', processing_status: 'SUCCEEDED' }],
+        page: 0, size: 20, total_elements: 1, total_pages: 1,
+      });
+    }
+    if (url === '/api/v1/agents') return jsonResponse({ items: [] });
+    if (url === '/api/v1/business-followups/9007199254740993') {
+      return jsonResponse({
+        ...summary(),
+        stage: 'DRAFT_READY',
+        processing_status: 'SUCCEEDED',
+        employee_draft: '员工说客户想先看样品',
+        latest_draft: {
+          version: 1,
+          status: 'DRAFT',
+          agent_run_id: 'run_source_evidence',
+          agent_slug: 'customer-followup-agent',
+          agent_version: 1,
+          content: {
+            title: '华北餐饮跟进',
+            summary: 'Kehuzx 已匹配唯一客户',
+            agent_suggestion: '建议先确认样品需求',
+            facts: [
+              { source: 'ZIMU', label: '员工材料', value: '希望先看样品' },
+              { source: 'KEHUZX', label: '客户编号', value: 'KH-C-001' },
+            ],
+            requires_human: false,
+            missing_fields: [],
+          },
+          zimu_source_summary: {
+            source: 'ZIMU', followup_id: '9007199254740993', followup_no: 'BF-0000000001',
+            message_submission_id: '9007199254740995', source_revision: 1,
+          },
+          kehuzx_source_summary: {
+            source: 'KEHUZX', candidate_count: 1, failures: [],
+            calls: [{
+              tool: 'search_customers', response_digest: 'a'.repeat(64),
+              contract_version: 'kehuzx-mcp-v1', upstream_commit: 'c6a2418',
+              queried_at: '2026-08-26T04:00:00Z',
+            }],
+          },
+          upstream_refs: [{ entity_type: 'customer', id: 'kehuzx-customer-1' }],
+          created_at: '2026-08-26T04:00:01Z',
+        },
+      });
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+
+  await mountRoute('/workbench/business-followups');
+  await waitFor(() => assert.match(bodyText(), /BF-0000000001/));
+  const detailButton = [...document.querySelectorAll('button')]
+    .find((button) => button.textContent?.trim() === '详情');
+  assert.ok(detailButton);
+  await act(async () => { detailButton.click(); });
+  await waitFor(() => assert.match(bodyText(), /华北餐饮跟进/));
+  const text = bodyText();
+  assert.match(text, /ZIMU.*员工材料.*希望先看样品/);
+  assert.match(text, /KEHUZX.*客户编号.*KH-C-001/);
+  assert.match(text, /契约 kehuzx-mcp-v1.*提交 c6a2418/);
+  assert.match(text, /上游引用：customer:kehuzx-customer-1/);
+});

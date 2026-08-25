@@ -391,6 +391,10 @@ const EVENT_FIELD_LABELS: Record<string, string> = {
 };
 
 const REVIEW_FIELD_LABELS: Record<string, string> = {
+  business_followup_id: '客户跟进编号',
+  followup_reason_code: '客户跟进复核原因',
+  followup_trace_id: '客户跟进追踪号',
+  agent_run_id: 'Agent 运行编号',
   shipment_id: '发货批次编号',
   check_run_no: '映射核对批次',
   source_customer_ref: '来源客户编号',

@@ -40,6 +40,19 @@ public final class MessagePublicProjectionSanitizer {
     private static final String PAIRING_REASON = "LINE_PAIRING_UNRESOLVED";
     private static final String PAIRING_MESSAGE =
             "批量运单无法建立逐行姓名—运单号对应关系，系统不按两个列表的位置猜测配对";
+    private static final Set<String> FOLLOWUP_REASONS = Set.of(
+            "KEHUZX_CUSTOMER_NOT_RESOLVED", "KEHUZX_CUSTOMER_AMBIGUOUS",
+            "KEHUZX_ENTITY_OWNERSHIP_UNPROVEN", "FOLLOWUP_PII_REDACTED",
+            "FOLLOWUP_FACT_NOT_EVIDENCED", "FOLLOWUP_REQUIRES_HUMAN",
+            "KEHUZX_NOT_CONFIGURED", "KEHUZX_UNREACHABLE", "KEHUZX_TIMEOUT",
+            "KEHUZX_AUTH_REJECTED", "KEHUZX_CONTRACT_DRIFT", "KEHUZX_TOOL_FAILED",
+            "AGENT_MODEL_NOT_CONFIGURED", "AGENT_MODEL_CALL_FAILED", "AGENT_OUTPUT_INVALID",
+            "AGENT_NOT_FOUND", "AGENT_DISABLED", "AGENT_VERSION_MISMATCH", "PII_GUARDED",
+            "FOLLOWUP_INPUT_INVALID", "FOLLOWUP_NOT_FOUND", "FOLLOWUP_SOURCE_SUPERSEDED",
+            "FOLLOWUP_AGENT_NOT_PINNED", "FOLLOWUP_TASK_REF_INVALID", "FOLLOWUP_TASK_LEASE_LOST",
+            "FOLLOWUP_ORGANIZATION_FAILED");
+    private static final Pattern FOLLOWUP_ID = Pattern.compile("[1-9][0-9]{0,18}");
+    private static final Pattern FOLLOWUP_TRACE = Pattern.compile("(?:run_|followup-task-)[A-Za-z0-9_]{1,60}");
 
     private MessagePublicProjectionSanitizer() {}
 
@@ -124,6 +137,20 @@ public final class MessagePublicProjectionSanitizer {
             if (!pairingEvidence.isEmpty()) {
                 safe.put("model_output", pairingEvidence);
             }
+        }
+        copyKnownValue(safe, "followup_reason_code", source.get("followup_reason_code"), 64, FOLLOWUP_REASONS);
+        String followupId = stringValue(source.get("business_followup_id"));
+        if (followupId != null && FOLLOWUP_ID.matcher(followupId).matches()) {
+            safe.put("business_followup_id", followupId);
+        }
+        String traceId = stringValue(source.get("followup_trace_id"));
+        if (traceId != null && FOLLOWUP_TRACE.matcher(traceId).matches()) {
+            safe.put("followup_trace_id", traceId);
+        }
+        String agentRunId = stringValue(source.get("agent_run_id"));
+        if (agentRunId != null && agentRunId.startsWith("run_")
+                && FOLLOWUP_TRACE.matcher(agentRunId).matches()) {
+            safe.put("agent_run_id", agentRunId);
         }
         return safe;
     }

@@ -33,6 +33,8 @@ public record BusinessFollowUpDto(
         Integer taskAttempts,
         @JsonProperty("task_failure_code")
         String taskFailureCode,
+        @JsonProperty("latest_draft")
+        BusinessFollowUpDraftDto latestDraft,
         @JsonProperty("created_at")
         OffsetDateTime createdAt,
         @JsonProperty("updated_at")
