@@ -6,7 +6,6 @@ import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import cn.zimu.fulfillment.connector.jd.JdIscGateway;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -70,7 +69,6 @@ class JdOrderClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdOrderClient service = new JdOrderClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -78,7 +76,7 @@ class JdOrderClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
         var envelope = new JdlApiPageResponseBase<OrderNosResult>();
         envelope.setCode("1000");
         envelope.setMessage("ok");
@@ -125,7 +123,6 @@ class JdOrderClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdOrderClient service = new JdOrderClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -133,7 +130,7 @@ class JdOrderClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
         var envelope = new JdlApiResponseBase<EclpOrderNoResponse>();
         envelope.setCode("1000");
         envelope.setMessage("ok");
@@ -166,7 +163,6 @@ class JdOrderClientRequestMappingTest {
     @Test
     void adjustmentCommandMapsSdkFieldsWithPinAndOwnerNo() throws Exception {
         JdOrderClient service = new JdOrderClient(
-                new JdIscGateway(
                 contractMapper(),
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -174,7 +170,7 @@ class JdOrderClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformInsideService.queryInsideOrder.JdlApiResponseBase();
         envelope.setCode("1000");
         envelope.setMessage("ok");
@@ -217,7 +213,6 @@ class JdOrderClientRequestMappingTest {
     @Test
     void destroyCommandMapsSdkFieldsWithPinAndOwnerNo() throws Exception {
         JdOrderClient service = new JdOrderClient(
-                new JdIscGateway(
                 contractMapper(),
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -225,7 +220,7 @@ class JdOrderClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformUlService.ulQuery.JdlApiResponseBase<UlQueryResponse>();
         envelope.setCode("1000");
         envelope.setMessage("ok");
@@ -264,7 +259,6 @@ class JdOrderClientRequestMappingTest {
     @Test
     void exceptionCommandMapsOrderNosIntoSdkListFields() throws Exception {
         JdOrderClient service = new JdOrderClient(
-                new JdIscGateway(
                 contractMapper(),
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -272,7 +266,7 @@ class JdOrderClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
         // SDK 请求 DTO（ExceptionOrderQueryRequest）把单号定义为 List 字段；envelope 用分页结构。
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformExceptionService.queryExceptionOrderList.JdlApiPageResponseBase<ExceptionOrderInfoResult>();
         envelope.setCode("1000");
@@ -325,7 +319,6 @@ class JdOrderClientRequestMappingTest {
     @Test
     void purchaseCommandMapsSdkFieldsWithPinAndOwnerNo() throws Exception {
         JdOrderClient service = new JdOrderClient(
-                new JdIscGateway(
                 contractMapper(),
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -333,7 +326,7 @@ class JdOrderClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformPoService.queryPoOrderDetail.JdlApiResponseBase<PoOrderResult>();
         envelope.setCode("1000");
         envelope.setMessage("ok");
@@ -382,7 +375,6 @@ class JdOrderClientRequestMappingTest {
     @Test
     void processedCommandMapsSdkFieldsWithPin() throws Exception {
         JdOrderClient service = new JdOrderClient(
-                new JdIscGateway(
                 contractMapper(),
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -390,7 +382,7 @@ class JdOrderClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
         var envelope = new JdlApiResponseBaseeclp();
         envelope.setCode("1000");
         envelope.setMessage("ok");
@@ -424,7 +416,6 @@ class JdOrderClientRequestMappingTest {
     @Test
     void deliveryTimeCommandMapsSdkFieldsWithPin() throws Exception {
         JdOrderClient service = new JdOrderClient(
-                new JdIscGateway(
                 contractMapper(),
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -432,7 +423,7 @@ class JdOrderClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
         var envelope = new BaseResponse<WaybillDeliveryTimeDTO>();
         envelope.setCode("1000");
         envelope.setMessage("ok");
@@ -469,7 +460,6 @@ class JdOrderClientRequestMappingTest {
     @Test
     void cityTrackCommandMapsSdkFieldsWithPin() throws Exception {
         JdOrderClient service = new JdOrderClient(
-                new JdIscGateway(
                 contractMapper(),
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -477,7 +467,7 @@ class JdOrderClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformTrajectoryService.queryCityTrack.JdlApiResponseBase<CityTrackResponse>();
         envelope.setCode("1000");
         envelope.setMessage("ok");

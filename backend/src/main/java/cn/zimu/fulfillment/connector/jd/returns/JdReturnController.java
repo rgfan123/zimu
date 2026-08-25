@@ -1,6 +1,5 @@
 package cn.zimu.fulfillment.connector.jd.returns;
 
-import cn.zimu.fulfillment.connector.jd.JdPiiProjection;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,7 +43,7 @@ public class JdReturnController {
         putIfPresent(request, "returnToWarehouseDetailsFlag", returnToWarehouseDetailsFlag);
         putIfPresent(request, "returnToWarehouseBatAttrModelFlag", returnToWarehouseBatAttrModelFlag);
         putIfPresent(request, "serialNoModelFlag", serialNoModelFlag);
-        return JdPiiProjection.redactPersonalData(service.queryRtwOrderList(request));
+        return redactPersonalData(service.queryRtwOrderList(request));
     }
 
     /** 退货入库单详情：默认返回明细、批次属性与序列号。 */
@@ -54,7 +53,7 @@ public class JdReturnController {
             @RequestParam(name = "return_to_warehouse_details_flag", required = false) Integer returnToWarehouseDetailsFlag,
             @RequestParam(name = "return_to_warehouse_bat_attr_model_flag", required = false) Integer returnToWarehouseBatAttrModelFlag,
             @RequestParam(name = "serial_no_model_flag", required = false) Integer serialNoModelFlag) {
-        return JdPiiProjection.redactPersonalData(service.queryRtwOrderDetail(Map.of(
+        return redactPersonalData(service.queryRtwOrderDetail(Map.of(
                 "erpReturnToWarehouseNo", erpReturnToWarehouseNo,
                 "returnToWarehouseDetailsFlag", returnToWarehouseDetailsFlag == null ? 1 : returnToWarehouseDetailsFlag,
                 "returnToWarehouseBatAttrModelFlag",
@@ -69,7 +68,7 @@ public class JdReturnController {
             @RequestParam(name = "return_to_supplier_detail_flag", required = false) Integer returnToSupplierDetailFlag,
             @RequestParam(name = "return_to_supplier_batch_flag", required = false) Integer returnToSupplierBatchFlag,
             @RequestParam(name = "serial_no_model_flag", required = false) Integer serialNoModelFlag) {
-        return JdPiiProjection.redactPersonalData(service.queryReturnToSupplier(Map.of(
+        return redactPersonalData(service.queryReturnToSupplier(Map.of(
                 "erpReturnToSupplierNo", erpReturnToSupplierNo,
                 "returnToSupplierDetailFlag", returnToSupplierDetailFlag == null ? 1 : returnToSupplierDetailFlag,
                 "returnToSupplierBatchFlag", returnToSupplierBatchFlag == null ? 1 : returnToSupplierBatchFlag,
@@ -82,6 +81,68 @@ public class JdReturnController {
         }
     }
 
+    private JdResult redactPersonalData(JdResult result) {
+        return new JdResult(
+                result.success(),
+                result.businessCode(),
+                result.message(),
+                result.requestId(),
+                sanitize(result.data()));
+    }
 
+    private Object sanitize(Object value) {
+        if (value instanceof Map<?, ?> values) {
+            Map<String, Object> safe = new LinkedHashMap<>();
+            values.forEach((key, item) -> {
+                String field = String.valueOf(key);
+                if (!personalField(field)) {
+                    safe.put(field, sanitize(item));
+                }
+            });
+            return safe;
+        }
+        if (value instanceof List<?> values) {
+            return values.stream().map(this::sanitize).toList();
+        }
+        return value;
+    }
 
+    /**
+     * HTTP 边界 PII 规则（6 个 JD controller 统一口径）：联系人/客户容器键（receiverinfo/
+     * senderinfo/consignee/customerinfo 等）整块剔除；phone/mobile/telephone/email/fax/address
+     * 按精确键或后缀匹配剔除，键先归一化为小写（覆盖 SDK camelCase 如 transporterPhone/backEmail），
+     * 与 SecretRedactor.isPersonalDataKey 对齐。
+     */
+    private boolean personalField(String field) {
+        String normalized = field.toLowerCase(Locale.ROOT);
+        return normalized.contains("customerinfo")
+                || normalized.contains("receiverinfo")
+                || normalized.contains("senderinfo")
+                || normalized.contains("consignee")
+                || normalized.contains("contactinfo")
+                || normalized.contains("recipientinfo")
+                || normalized.equals("phone")
+                || normalized.equals("mobile")
+                || normalized.equals("telephone")
+                || normalized.equals("email")
+                || normalized.equals("fax")
+                || normalized.equals("address")
+                || normalized.endsWith("phone")
+                || normalized.endsWith("mobile")
+                || normalized.endsWith("telephone")
+                || normalized.endsWith("email")
+                || normalized.endsWith("fax")
+                || normalized.endsWith("address")
+                // 个人角色姓名键（transporterName/shipperName/operateName/linkmanName 等）：
+                // 以 name 结尾且含个人角色词才剔除；业务实体名（ownerName/shopName/goodsName 等）不受影响
+                || (normalized.endsWith("name")
+                        && (normalized.contains("transporter")
+                                || normalized.contains("shipper")
+                                || normalized.contains("operator")
+                                || normalized.contains("operate")
+                                || normalized.contains("linkman")
+                                || normalized.contains("contact")
+                                || normalized.contains("receiver")
+                                || normalized.contains("sender")));
+    }
 }

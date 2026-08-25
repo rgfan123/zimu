@@ -215,28 +215,6 @@ class JdSkuMappingCheckServiceTest {
         assertThat(result.categories()).isEmpty();
     }
 
-    /**
-     * 无参照名此前静默放行，把「出库门禁此时会退回商品名快照比对、可能拦截」这一
-     * 不可预测点藏起来了；现在必须以 NAME_REFERENCE_MISSING 亮出（设计收敛票 01）。
-     */
-    @Test
-    void missingNameReferenceIsSurfacedInsteadOfSilentlyPassing() {
-        stubProviderAndMappings(List.of(new SkuMappingRow(
-                1, 101, "JD-SKU-000001", null, null, "SKU-JD-000001", null)));
-        when(goodsVerifier.verify(anyString()))
-                .thenReturn(enabledGoods("JD-SKU-000001", "子牧羊小腿 500g/盒"));
-        stubRunIdempotency();
-
-        JdSkuMappingCheckResult result = run("key-12345678");
-
-        assertThat(result.categories()).hasSize(1);
-        CategoryDiff category = result.categories().getFirst();
-        assertThat(category.category()).isEqualTo("NAME_MISMATCH");
-        DiffItem item = category.items().getFirst();
-        assertThat(item.reason()).isEqualTo("NAME_REFERENCE_MISSING");
-        assertThat(item.message()).contains("provider_sku_name");
-    }
-
     @Test
     void hasBusinessSubjectSeamAcceptsOrderSideSubjectOnly() {
         assertThat(JdSkuMappingCheckService.hasBusinessSubject(

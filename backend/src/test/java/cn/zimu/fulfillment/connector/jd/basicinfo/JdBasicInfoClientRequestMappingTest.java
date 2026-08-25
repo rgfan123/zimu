@@ -6,7 +6,6 @@ import static org.mockito.Mockito.mockConstruction;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import cn.zimu.fulfillment.connector.jd.JdIscGateway;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -33,7 +32,6 @@ class JdBasicInfoClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -41,7 +39,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
 
         var page = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformCustomerService
                 .queryCustomer.JdlOpenPage();
@@ -82,7 +80,6 @@ class JdBasicInfoClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -90,7 +87,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                ""));
+                "");
 
         // 供应商查询 envelope 字段是 setRequestID（大写 D），序列化后为 requestID 而非 requestId。
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformSupplierService
@@ -126,7 +123,6 @@ class JdBasicInfoClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -134,7 +130,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                ""));
+                "");
 
         // 未授权业务码 2001：外层 code 成功、内层 code=2001，应归一化为失败结果并保留业务码与消息。
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformCustomerService
@@ -162,7 +158,6 @@ class JdBasicInfoClientRequestMappingTest {
     @Test
     void missingCredentialsReturnNormalizedFailureWithoutNetworkCall() {
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 new ObjectMapper(),
                 mock(AuditLogService.class),
                 "",
@@ -170,7 +165,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "",
                 "",
                 "",
-                ""));
+                "");
 
         JdResult result = service.queryShops(Map.of("shopNo", "S001"));
 
@@ -184,7 +179,6 @@ class JdBasicInfoClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -192,7 +186,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                ""));
+                "");
 
         try (var clients = mockConstruction(JdlClient.class, (client, context) ->
                 when(client.execute(ArgumentMatchers.any()))
@@ -210,7 +204,6 @@ class JdBasicInfoClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -218,7 +211,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                ""));
+                "");
 
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformGISService
                 .queryWarehouseCoverages.JdlApiListResponseBase();
@@ -256,7 +249,6 @@ class JdBasicInfoClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -264,7 +256,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
 
         var basicInfoResult = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformGoodsService
                 .queryGoodsInfo.GoodsBasicInfoResult();
@@ -318,7 +310,6 @@ class JdBasicInfoClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -326,7 +317,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
 
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformShopService
                 .queryShopInfo.JdlApiListResponseBase<com.lop.open.api.sdk.domain.IntegratedSupplyChain
@@ -364,7 +355,6 @@ class JdBasicInfoClientRequestMappingTest {
         ObjectMapper contractMapper = new ObjectMapper()
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -372,7 +362,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
 
         var page = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformGoodsService
                 .queryShopGoodsInfo.ShopGoodsInfoPageResult();
@@ -425,7 +415,6 @@ class JdBasicInfoClientRequestMappingTest {
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
         JdBasicInfoClient service = new JdBasicInfoClient(
-                new JdIscGateway(
                 contractMapper,
                 mock(AuditLogService.class),
                 "https://api.jdl.com",
@@ -433,7 +422,7 @@ class JdBasicInfoClientRequestMappingTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                "EBU000000000001"));
+                "EBU000000000001");
 
         var envelope = new com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformGoodsService
                 .queryGoodsLevelCategories.JdlApiResponseBase<com.lop.open.api.sdk.domain.IntegratedSupplyChain

@@ -8,7 +8,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import cn.zimu.fulfillment.connector.jd.JdIscGateway;
 import cn.zimu.fulfillment.common.audit.AuditLog;
 import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
@@ -192,7 +191,6 @@ class JdWriteOpsGateTest {
         AuditLogRepository repository = auditRepository();
         ObjectMapper contractMapper = new ObjectMapper();
         JdWriteOpsClient client = new JdWriteOpsClient(
-                new JdIscGateway(
                 contractMapper,
                 new AuditLogService(repository, new ObjectMapper(), mock(EntityManager.class)),
                 "https://api.jdl.com",
@@ -200,7 +198,7 @@ class JdWriteOpsGateTest {
                 "app-secret",
                 "access-token",
                 "merchant-pin",
-                ""),
+                "",
                 "OFF");
 
         JdResult result = client.customerCreate(Map.of("customerName", "某客户"));

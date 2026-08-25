@@ -135,6 +135,15 @@ app:
       jd-outbound:
         type: ${WECOM_CARD_JD_OUTBOUND_ROUTE_TYPE:GROUP}
         chat-id: ${WECOM_CARD_JD_OUTBOUND_CHAT_ID:}
+  source-sync:
+    auto:
+      # 来源平台自动回传：默认关闭。这是往【客户的平台】写数据，与京东建单（自己的仓）性质不同。
+      # 开启后省掉的只有「人点按钮」，五道门禁（平台可读/订单可写/地址未变/物流公司命中字典/工作簿已生成）
+      # 与幂等、外部写租约、check-hash 陈旧判定全部保留。未配 operator 时 fail-closed 不启动。
+      enabled: ${SOURCE_SYNC_AUTO_ENABLED:false}
+      operator: ${SOURCE_SYNC_AUTO_OPERATOR:}
+      poll-ms: ${SOURCE_SYNC_AUTO_POLL_MS:60000}
+      batch-size: ${SOURCE_SYNC_AUTO_BATCH_SIZE:20}
   agent-worker:
     # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
     enabled: ${AGENT_WORKER_ENABLED:true}

@@ -1,6 +1,5 @@
 package cn.zimu.fulfillment.connector.jd.basicinfo;
 
-import cn.zimu.fulfillment.connector.jd.JdPiiProjection;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -65,12 +64,12 @@ public class JdBasicInfoController {
         putIfPresent(request, "customerName", customerName);
         putIfPresent(request, "pageSize", pageSize);
         putIfPresent(request, "currentPage", currentPage);
-        return JdPiiProjection.redactPersonalData(service.queryCustomers(request));
+        return redactPersonalData(service.queryCustomers(request));
     }
 
     @GetMapping("/sellers")
     public JdResult sellers() {
-        return JdPiiProjection.redactPersonalData(service.querySellers(Map.of()));
+        return redactPersonalData(service.querySellers(Map.of()));
     }
 
     @GetMapping("/shops")
@@ -82,7 +81,7 @@ public class JdBasicInfoController {
         putIfPresent(request, "ownerNo", ownerNo);
         putIfPresent(request, "shopNo", shopNo);
         putIfPresent(request, "erpShopNo", erpShopNo);
-        return JdPiiProjection.redactPersonalData(service.queryShops(request));
+        return redactPersonalData(service.queryShops(request));
     }
 
     @GetMapping("/shop-goods")
@@ -104,7 +103,7 @@ public class JdBasicInfoController {
         putIfPresent(request, "shopGoodsNoMin", shopGoodsNoMin);
         putIfPresent(request, "pageSize", pageSize);
         putIfPresent(request, "currentPage", currentPage);
-        return JdPiiProjection.redactPersonalData(service.queryShopGoods(request));
+        return redactPersonalData(service.queryShopGoods(request));
     }
 
     @GetMapping("/suppliers")
@@ -116,7 +115,7 @@ public class JdBasicInfoController {
         putIfPresent(request, "ownerNo", ownerNo);
         putIfPresent(request, "supplierNos", supplierNos);
         putIfPresent(request, "isvSupplierNos", isvSupplierNos);
-        return JdPiiProjection.redactPersonalData(service.querySuppliers(request));
+        return redactPersonalData(service.querySuppliers(request));
     }
 
     @GetMapping("/goods-categories")
@@ -128,7 +127,7 @@ public class JdBasicInfoController {
         putIfPresent(request, "firstCategoryCode", firstCategoryCode);
         putIfPresent(request, "secondCategoryCode", secondCategoryCode);
         putIfPresent(request, "thirdCategoryCode", thirdCategoryCode);
-        return JdPiiProjection.redactPersonalData(service.queryGoodsCategories(request));
+        return redactPersonalData(service.queryGoodsCategories(request));
     }
 
     @GetMapping("/warehouse-coverages")
@@ -146,7 +145,7 @@ public class JdBasicInfoController {
         putIfPresent(request, "county", county);
         putIfPresent(request, "town", town);
         putIfPresent(request, "detailAddress", detailAddress);
-        return JdPiiProjection.redactPersonalData(service.queryWarehouseCoverages(request));
+        return redactPersonalData(service.queryWarehouseCoverages(request));
     }
 
     /** 商品信息查询（按京东商品编码 goodsNo / 商家 ERP 商品编码 erpGoodsNo 查询）。 */
@@ -163,11 +162,73 @@ public class JdBasicInfoController {
         putIfPresent(request, "barCode", barCode);
         putIfPresent(request, "pageSize", pageSize);
         putIfPresent(request, "currentPage", currentPage);
-        return JdPiiProjection.redactPersonalData(service.queryGoodsInfo(request));
+        return redactPersonalData(service.queryGoodsInfo(request));
     }
 
+    private JdResult redactPersonalData(JdResult result) {
+        return new JdResult(
+                result.success(),
+                result.businessCode(),
+                result.message(),
+                result.requestId(),
+                sanitize(result.data()));
+    }
 
+    private Object sanitize(Object value) {
+        if (value instanceof Map<?, ?> values) {
+            Map<String, Object> safe = new LinkedHashMap<>();
+            values.forEach((key, item) -> {
+                String field = String.valueOf(key);
+                if (!personalField(field)) {
+                    safe.put(field, sanitize(item));
+                }
+            });
+            return safe;
+        }
+        if (value instanceof List<?> values) {
+            return values.stream().map(this::sanitize).toList();
+        }
+        return value;
+    }
 
+    /**
+     * HTTP 边界 PII 规则（6 个 JD controller 统一口径）：联系人/客户容器键（receiverinfo/
+     * senderinfo/consignee/customerinfo 等）整块剔除；phone/mobile/telephone/email/fax/address
+     * 按精确键或后缀匹配剔除，键先归一化为小写（覆盖 SDK camelCase 如 transporterPhone/backEmail），
+     * 与 SecretRedactor.isPersonalDataKey 对齐。
+     */
+    private boolean personalField(String field) {
+        String normalized = field.toLowerCase(Locale.ROOT);
+        return normalized.contains("customerinfo")
+                || normalized.contains("receiverinfo")
+                || normalized.contains("senderinfo")
+                || normalized.contains("consignee")
+                || normalized.contains("contactinfo")
+                || normalized.contains("recipientinfo")
+                || normalized.equals("phone")
+                || normalized.equals("mobile")
+                || normalized.equals("telephone")
+                || normalized.equals("email")
+                || normalized.equals("fax")
+                || normalized.equals("address")
+                || normalized.endsWith("phone")
+                || normalized.endsWith("mobile")
+                || normalized.endsWith("telephone")
+                || normalized.endsWith("email")
+                || normalized.endsWith("fax")
+                || normalized.endsWith("address")
+                // 个人角色姓名键（transporterName/shipperName/operateName/linkmanName 等）：
+                // 以 name 结尾且含个人角色词才剔除；业务实体名（ownerName/shopName/goodsName 等）不受影响
+                || (normalized.endsWith("name")
+                        && (normalized.contains("transporter")
+                                || normalized.contains("shipper")
+                                || normalized.contains("operator")
+                                || normalized.contains("operate")
+                                || normalized.contains("linkman")
+                                || normalized.contains("contact")
+                                || normalized.contains("receiver")
+                                || normalized.contains("sender")));
+    }
 
     private void putIfPresent(Map<String, Object> request, String key, Object value) {
         if (value != null && !value.toString().isBlank()) {

@@ -3,7 +3,6 @@ package cn.zimu.fulfillment.connector.jd.order;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.web.RequestContext;
-import cn.zimu.fulfillment.connector.jd.JdPiiProjection;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayOutputStream;
@@ -66,7 +65,7 @@ public class JdOrderController {
             @RequestParam(name = "shop_no", required = false) String shopNo,
             @RequestParam(name = "current_page", required = false) String currentPage,
             @RequestParam(name = "page_size", required = false) String pageSize) {
-        return JdPiiProjection.redactPersonalData(service.queryOrderNosByPage(
+        return redactPersonalData(service.queryOrderNosByPage(
                 orderNosCommand(startDate, endDate, startFinishDate, endFinishDate,
                         status, orderType, shopNo, currentPage, pageSize)));
     }
@@ -123,7 +122,7 @@ public class JdOrderController {
         put(command, "endTime", normalizeTime(endTime));
         putInt(command, "status", status);
         putInt(command, "bizType", bizType);
-        return JdPiiProjection.redactPersonalData(service.queryAdjustment(command));
+        return redactPersonalData(service.queryAdjustment(command));
     }
 
     @GetMapping("/destroy-orders")
@@ -139,7 +138,7 @@ public class JdOrderController {
         putInt(command, "destroyItemListFlag", destroyItemListFlag);
         putInt(command, "destroyBatchItemListFlag", destroyBatchItemListFlag);
         putInt(command, "returnDestroyDataFlag", returnDestroyDataFlag);
-        return JdPiiProjection.redactPersonalData(service.queryDestroy(command));
+        return redactPersonalData(service.queryDestroy(command));
     }
 
     @GetMapping("/exceptions")
@@ -163,7 +162,7 @@ public class JdOrderController {
         put(command, "endDate", endDate);
         putInt(command, "currentPage", currentPage);
         putInt(command, "pageSize", pageSize);
-        return JdPiiProjection.redactPersonalData(service.queryException(command));
+        return redactPersonalData(service.queryException(command));
     }
 
     @GetMapping("/purchase-orders")
@@ -189,7 +188,7 @@ public class JdOrderController {
         putInt(command, "purchaseItemRejectFlag", purchaseItemRejectFlag);
         putInt(command, "serialNoModelFlag", serialNoModelFlag);
         putInt(command, "purchaseBookFlag", purchaseBookFlag);
-        return JdPiiProjection.redactPersonalData(service.queryPurchase(command));
+        return redactPersonalData(service.queryPurchase(command));
     }
 
     @GetMapping("/processed-orders")
@@ -199,7 +198,7 @@ public class JdOrderController {
         Map<String, Object> command = new LinkedHashMap<>();
         put(command, "processedNo", processedNo);
         put(command, "erpProcessedNo", erpProcessedNo);
-        return JdPiiProjection.redactPersonalData(service.queryProcessed(command));
+        return redactPersonalData(service.queryProcessed(command));
     }
 
     @GetMapping("/operate-relations")
@@ -209,7 +208,7 @@ public class JdOrderController {
         Map<String, Object> command = new LinkedHashMap<>();
         put(command, "erpOrderNo", erpOrderNo);
         put(command, "orderType", orderType);
-        return JdPiiProjection.redactPersonalData(service.queryOperateRelation(command));
+        return redactPersonalData(service.queryOperateRelation(command));
     }
 
     @GetMapping("/delivery-times")
@@ -223,7 +222,7 @@ public class JdOrderController {
         put(command, "customerCode", customerCode);
         put(command, "shunt", shunt);
         put(command, "dynamicTimeFlag", dynamicTimeFlag);
-        return JdPiiProjection.redactPersonalData(service.queryDeliveryTime(command));
+        return redactPersonalData(service.queryDeliveryTime(command));
     }
 
     @GetMapping("/city-tracks")
@@ -233,7 +232,7 @@ public class JdOrderController {
         Map<String, Object> command = new LinkedHashMap<>();
         put(command, "deliveryNo", deliveryNo);
         put(command, "customerCode", customerCode);
-        return JdPiiProjection.redactPersonalData(service.queryCityTrack(command));
+        return redactPersonalData(service.queryCityTrack(command));
     }
 
     private Map<String, Object> orderNosCommand(
@@ -391,6 +390,69 @@ public class JdOrderController {
                 .businessCode(result.businessCode()));
     }
 
+    private JdResult redactPersonalData(JdResult result) {
+        return new JdResult(
+                result.success(),
+                result.businessCode(),
+                result.message(),
+                result.requestId(),
+                sanitize(result.data()));
+    }
 
+    private Object sanitize(Object value) {
+        if (value instanceof Map<?, ?> values) {
+            Map<String, Object> safe = new LinkedHashMap<>();
+            values.forEach((key, item) -> {
+                String field = String.valueOf(key);
+                if (!personalField(field)) {
+                    safe.put(field, sanitize(item));
+                }
+            });
+            return safe;
+        }
+        if (value instanceof List<?> values) {
+            return values.stream().map(this::sanitize).toList();
+        }
+        return value;
+    }
 
+    /**
+     * HTTP 边界 PII 规则（6 个 JD controller 统一口径）：联系人/客户容器键（receiverinfo/
+     * senderinfo/consignee/customerinfo/contactinfo 等）整块剔除；phone/mobile/telephone/email/fax/address
+     * 按精确键或后缀匹配剔除；个人角色姓名键（transporterName/shipperName/operateName 等）按
+     * 「以 name 结尾 + 含个人角色词」剔除；键先归一化为小写（覆盖 SDK camelCase 如 transporterPhone），
+     * 与 SecretRedactor.isPersonalDataKey 对齐。业务实体名（ownerName/shopName/goodsName 等）保留。
+     */
+    private boolean personalField(String field) {
+        String normalized = field.toLowerCase(Locale.ROOT);
+        return normalized.contains("customerinfo")
+                || normalized.contains("receiverinfo")
+                || normalized.contains("senderinfo")
+                || normalized.contains("consignee")
+                || normalized.contains("contactinfo")
+                || normalized.contains("recipientinfo")
+                || normalized.equals("phone")
+                || normalized.equals("mobile")
+                || normalized.equals("telephone")
+                || normalized.equals("email")
+                || normalized.equals("fax")
+                || normalized.equals("address")
+                || normalized.endsWith("phone")
+                || normalized.endsWith("mobile")
+                || normalized.endsWith("telephone")
+                || normalized.endsWith("email")
+                || normalized.endsWith("fax")
+                || normalized.endsWith("address")
+                // 个人角色姓名键（transporterName/shipperName/operateName/linkmanName 等）：
+                // 以 name 结尾且含个人角色词才剔除；业务实体名（ownerName/shopName/goodsName 等）不受影响
+                || (normalized.endsWith("name")
+                        && (normalized.contains("transporter")
+                                || normalized.contains("shipper")
+                                || normalized.contains("operator")
+                                || normalized.contains("operate")
+                                || normalized.contains("linkman")
+                                || normalized.contains("contact")
+                                || normalized.contains("receiver")
+                                || normalized.contains("sender")));
+    }
 }
