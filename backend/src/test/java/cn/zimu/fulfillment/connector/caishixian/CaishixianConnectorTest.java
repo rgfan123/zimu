@@ -106,6 +106,28 @@ class CaishixianConnectorTest {
     }
 
     @Test
+    void anExplicitUploadRejectionUsesAStableInternalOutcomeCategory() {
+        when(shipmentGateway.inspect("main-1", "sub-1")).thenReturn(
+                new CaishixianShipmentGateway.PlatformOrderSnapshot(
+                        true, "42", "main-1", "sub-1", 3, "待发货",
+                        "张三", "13800000000", "河南省郑州市金水区1号",
+                        BigDecimal.ONE));
+        when(shipmentGateway.carrierOptions()).thenReturn(
+                List.of(new CaishixianShipmentGateway.CarrierOption("JD", "京东物流")));
+        when(shipmentGateway.upload(any(SourceShipmentArtifact.class), any())).thenAnswer(invocation -> {
+            invocation.getArgument(1, cn.zimu.fulfillment.connector.ExternalWritePermit.class)
+                    .beforeExternalWrite();
+            return CaishixianShipmentGateway.UploadAck.rejected("110511000", "字段校验失败");
+        });
+
+        SourceSyncResult result = connector.pushShipmentResult(shipment(), () -> {});
+
+        assertThat(result.businessCode()).isEqualTo("CAISHIXIAN_UPLOAD_REJECTED");
+        assertThat(result.message()).contains("110511000");
+        verify(shipmentGateway, never()).awaitVerified(anyString(), anyString(), anyString());
+    }
+
+    @Test
     void legacyUnguardedPushIsRejectedBeforeAnyPlatformWrite() {
         SourceSyncResult result = connector.pushShipmentResult(shipment());
 

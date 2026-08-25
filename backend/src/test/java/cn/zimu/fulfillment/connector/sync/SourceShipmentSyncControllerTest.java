@@ -37,6 +37,26 @@ class SourceShipmentSyncControllerTest {
         assertThat(response.getBody()).isSameAs(check);
     }
 
+    @Test
+    void batchExecuteReturnsThePerShipmentOutcomeWithoutCollapsingFailures() {
+        SourceShipmentSyncService service = mock(SourceShipmentSyncService.class);
+        SourceShipmentSyncController controller = new SourceShipmentSyncController(service);
+        SourceSyncBatchExecuteCommand command = new SourceSyncBatchExecuteCommand(List.of(
+                new SourceSyncBatchExecuteCommand.Item(7L, "a".repeat(64), "batch-item-7")));
+        SourceSyncBatchOutcome outcome = new SourceSyncBatchOutcome(List.of(
+                new SourceSyncBatchOutcome.Item(
+                        7L, false, false, 422, "SOURCE_SYNC_CHECK_BLOCKED",
+                        "来源回传检查存在阻断项", null, null)));
+        when(service.executeBatch(eq(command), any())).thenReturn(outcome);
+        RequestContext.set(new RequestContext("req-batch", "trace-batch", "ops", "ops"));
+
+        ResponseEntity<SourceSyncBatchOutcome> response = controller.executeBatch(command, "ops");
+
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
+        assertThat(response.getBody()).isSameAs(outcome);
+        assertThat(response.getBody().failureCount()).isEqualTo(1);
+    }
+
     private SourceSyncCheck check() {
         SourceSyncFacts facts = new SourceSyncFacts(
                 7, 8, SourceChannel.JUFUBAO, "main", "sub", "张三", "13800000000", "地址",

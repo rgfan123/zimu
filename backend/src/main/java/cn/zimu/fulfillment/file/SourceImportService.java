@@ -379,8 +379,9 @@ public class SourceImportService {
                         .httpStatus(200));
                 continue;
             }
+            CanonicalOrderInput canonicalInput = resolveStructuredCustomer(channel, order.canonicalInput());
             OrderDetailDto created = orderCreateService.createImported(
-                            order.canonicalInput(),
+                            canonicalInput,
                             batchId,
                             "pull-" + batchNo + "-" + orderIndex,
                             context,
@@ -401,6 +402,42 @@ public class SourceImportService {
         return finalizeBatch(batchId, started, context, AuditActorType.SYSTEM,
                 "source-order-structured-import", "source-orders.importStructured",
                 Map.of("batch_no", batchNo, "content_sha256", contentSha));
+    }
+
+    /**
+     * 在线 transform 只计算确定性的 CONTACT-* 候选；真正的 Customer/source-ref 创建必须
+     * 留在导入事务内，保证订单创建时映射已经可见。平台提供的稳定会员编号保持原样。
+     */
+    private CanonicalOrderInput resolveStructuredCustomer(
+            SourceChannel channel,
+            CanonicalOrderInput input) {
+        CustomerInput candidate = input.customer();
+        if (candidate == null
+                || candidate.customerCode() != null
+                || candidate.sourceCustomerRef() == null
+                || !candidate.sourceCustomerRef().startsWith("CONTACT-")) {
+            return input;
+        }
+        Receiver receiver = input.receiver();
+        CustomerInput resolved = importedCustomers.resolve(
+                channel,
+                receiver == null ? null : receiver.name(),
+                receiver == null ? null : receiver.phone());
+        if (!Objects.equals(candidate.sourceCustomerRef(), resolved.sourceCustomerRef())) {
+            throw BusinessException.unprocessable(
+                    "STRUCTURED_CUSTOMER_IDENTITY_MISMATCH",
+                    "结构化订单的客户身份与收货信息不一致，已停止创建订单");
+        }
+        return new CanonicalOrderInput(
+                input.source(),
+                input.sourceRef(),
+                input.sourceVersion(),
+                resolved,
+                input.receiver(),
+                input.items(),
+                input.settlement(),
+                input.remark(),
+                input.evidenceRefs());
     }
 
     /** 预检测：同渠道同来源单号的订单已存在（同事务内可读自身写入）。 */

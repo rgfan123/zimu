@@ -207,6 +207,40 @@ class JufubaoConnectorTest {
     }
 
     @Test
+    void usesTheSameConservativePhoneNormalizationForCheckAndExecution() {
+        FakeGateway gateway = new FakeGateway(
+                List.of(
+                        JufubaoShipmentGateway.OrderState.noDelivery("sub-phone-format"),
+                        JufubaoShipmentGateway.OrderState.notPending("sub-phone-format")),
+                new JufubaoShipmentGateway.ShipmentDetail(
+                        detail(1).products(),
+                        new JufubaoShipmentGateway.ReceiverSnapshot(
+                                RECEIVER_NAME, "+86 (138) 0000-0000", RECEIVER_ADDRESS),
+                        ""),
+                carriers(),
+                JufubaoShipmentGateway.SubmitResult.accepted("req-phone-format"));
+        SourceShipmentResult command = new SourceShipmentResult(
+                SourceChannel.JUFUBAO,
+                "main-phone-format",
+                "sub-phone-format",
+                BigDecimal.ONE,
+                "SHIPPED",
+                "京东物流",
+                "JDVA-PHONE-FORMAT",
+                null,
+                RECEIVER_NAME,
+                "13800000000",
+                RECEIVER_ADDRESS,
+                1L,
+                SourceShipmentArtifact.empty());
+
+        SourceSyncResult result = connector(gateway).pushShipmentResult(command);
+
+        assertThat(result.success()).isTrue();
+        assertThat(gateway.submitCount).isEqualTo(1);
+    }
+
+    @Test
     void blocksSubmitWhenTheCanonicalProductOrCompanyWritePlanChangesAfterCheck() {
         FakeGateway gateway = new FakeGateway(
                 List.of(
@@ -354,7 +388,7 @@ class JufubaoConnectorTest {
         SourceSyncResult unknown = connector(unknownGateway)
                 .pushShipmentResult(shipment("sub-2", "京东物流", "JDVA456"));
 
-        assertThat(rejected.businessCode()).isEqualTo("InvalidArgument");
+        assertThat(rejected.businessCode()).isEqualTo("JUFUBAO_SHIPMENT_REJECTED");
         assertThat(rejected.message()).isEqualTo("聚福宝拒绝发货请求（业务码：InvalidArgument）");
         assertThat(rejected.platformRef()).isEqualTo("req-r");
         assertThat(unknown.businessCode()).isEqualTo("RECONCILIATION_REQUIRED");

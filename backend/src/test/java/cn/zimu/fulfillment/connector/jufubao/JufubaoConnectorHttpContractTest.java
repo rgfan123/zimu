@@ -101,7 +101,7 @@ class JufubaoConnectorHttpContractTest {
 
         SourceSyncResult result = connector().pushShipmentResult(shipmentCommand());
 
-        assertThat(result.businessCode()).isEqualTo("InvalidArgument");
+        assertThat(result.businessCode()).isEqualTo("JUFUBAO_RECEIVE_REJECTED");
         assertThat(result.message()).isEqualTo("聚福宝拒绝接单请求（业务码：InvalidArgument）");
         assertThat(result.platformRef()).isEqualTo("req-receive-rejected");
         assertThat(orderQueries).hasValue(1);
@@ -172,7 +172,7 @@ class JufubaoConnectorHttpContractTest {
         SourceSyncResult result = connector.pushShipmentResult(shipmentCommand());
 
         assertThat(result.success()).isFalse();
-        assertThat(result.businessCode()).isEqualTo("InvalidArgument");
+        assertThat(result.businessCode()).isEqualTo("JUFUBAO_SHIPMENT_REJECTED");
         assertThat(result.message()).isEqualTo("聚福宝拒绝发货请求（业务码：InvalidArgument）");
         assertThat(result.platformRef()).isEqualTo("req-rejected");
         assertThat(orderQueries).hasValue(1);

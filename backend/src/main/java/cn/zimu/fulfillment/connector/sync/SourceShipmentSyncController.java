@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/** 授权人工的 Shipment 来源回传入口；无批量平台写入口。 */
+/** 授权人工的 Shipment 来源回传入口；批量入口仍逐 Shipment 独立执行。 */
 @RestController
 @RequestMapping("/api/v1/shipments")
 @Validated
@@ -47,6 +47,13 @@ public class SourceShipmentSyncController {
                 WriteCommands.parseIdentifier(id), body,
                 WriteCommands.requireIdempotencyKey(idempotencyKey),
                 WriteCommands.writeContext(operator)));
+    }
+
+    @PostMapping("/source-sync/batch-execute")
+    public ResponseEntity<SourceSyncBatchOutcome> executeBatch(
+            @Valid @RequestBody SourceSyncBatchExecuteCommand body,
+            @RequestHeader("X-Operator") String operator) {
+        return ResponseEntity.ok(service.executeBatch(body, WriteCommands.writeContext(operator)));
     }
 
     @PostMapping("/{id}/source-sync/reconcile")

@@ -8,6 +8,7 @@ import cn.zimu.fulfillment.connector.ExternalWritePermit;
 import cn.zimu.fulfillment.connector.PullCursor;
 import cn.zimu.fulfillment.connector.PullResult;
 import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
+import cn.zimu.fulfillment.connector.SourceReceiverNormalizer;
 import cn.zimu.fulfillment.connector.SourceShipmentResult;
 import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.file.SourceImportService;
@@ -189,7 +190,7 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
             if (uploaded.outcome() == CaishixianShipmentGateway.UploadAck.Outcome.REJECTED) {
                 String code = safeCode(uploaded.platformCode());
                 return SourceSyncResult.failed(
-                        code,
+                        "CAISHIXIAN_UPLOAD_REJECTED",
                         "彩食鲜明确拒绝发货回填（业务码：" + code + "）");
             }
             CaishixianShipmentGateway.Verification verification = shipmentGateway.awaitVerified(
@@ -247,9 +248,9 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
     private boolean sameReceiver(
             SourceShipmentResult result,
             CaishixianShipmentGateway.PlatformOrderSnapshot platform) {
-        return normalizeText(result.receiverName()).equals(normalizeText(platform.receiverName()))
-                && normalizePhone(result.receiverPhone()).equals(normalizePhone(platform.receiverPhone()))
-                && normalizeText(result.receiverAddress()).equals(normalizeText(platform.receiverAddress()));
+        return SourceReceiverNormalizer.sameName(result.receiverName(), platform.receiverName())
+                && SourceReceiverNormalizer.samePhone(result.receiverPhone(), platform.receiverPhone())
+                && SourceReceiverNormalizer.sameAddress(result.receiverAddress(), platform.receiverAddress());
     }
 
     private SourceSyncResult reconciliationRequired(String message, String platformRef) {
@@ -269,12 +270,4 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
         return value != null && !value.isBlank();
     }
 
-    private static String normalizeText(String value) {
-        return value == null ? "" : value.trim().replaceAll("\\s+", " ");
-    }
-
-    private static String normalizePhone(String value) {
-        String normalized = value == null ? "" : value.trim().replaceAll("[\\s()-]", "");
-        return normalized.startsWith("+86") ? normalized.substring(3) : normalized;
-    }
 }

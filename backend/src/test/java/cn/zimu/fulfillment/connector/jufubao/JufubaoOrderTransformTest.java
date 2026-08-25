@@ -59,9 +59,9 @@ class JufubaoOrderTransformTest {
         assertThat(canonical.sourceRef()).isEqualTo("m947785003453677929");
         assertThat(canonical.source()).isEqualTo(SourceChannel.JUFUBAO);
 
-        // 客户 = 供应商名
-        assertThat(canonical.customer().name()).isEqualTo("京诚乾元");
-        assertThat(canonical.customer().sourceCustomerRef()).isEqualTo("京诚乾元");
+        // supplier_name 是供应商证据；缺少收货人时不得冒充 Customer 身份。
+        assertThat(canonical.customer().name()).isEqualTo("待匹配客户");
+        assertThat(canonical.customer().sourceCustomerRef()).isEqualTo("UNRESOLVED");
 
         // orders/query 没有可信收货人契约：不造空 Receiver，整行进入人工复核。
         assertThat(canonical.receiver()).isNull();
@@ -114,6 +114,44 @@ class JufubaoOrderTransformTest {
     }
 
     @Test
+    void derivesCustomerIdentityFromReceiverInsteadOfSupplier() {
+        Map<String, Object> firstOrder = Map.of(
+                "main_order_id", "main-customer-a",
+                "sub_order_id", "sub-customer-a",
+                "supplier_name", "同一供应商",
+                "created_time", 1786929554,
+                "product_list", List.of(Map.of(
+                        "product_id", 1,
+                        "product_name", "商品",
+                        "product_num", 1)));
+        Map<String, Object> secondOrder = Map.of(
+                "main_order_id", "main-customer-b",
+                "sub_order_id", "sub-customer-b",
+                "supplier_name", "同一供应商",
+                "created_time", 1786929554,
+                "product_list", List.of(Map.of(
+                        "product_id", 1,
+                        "product_name", "商品",
+                        "product_num", 1)));
+
+        StructuredOrderRow first = transform.toRow(firstOrder, new JufubaoShipmentGateway.ShipmentDetail(
+                List.of(),
+                new JufubaoShipmentGateway.ReceiverSnapshot("收货人甲", "13800000001", "地址甲"),
+                "logistics"));
+        StructuredOrderRow second = transform.toRow(secondOrder, new JufubaoShipmentGateway.ShipmentDetail(
+                List.of(),
+                new JufubaoShipmentGateway.ReceiverSnapshot("收货人乙", "13800000002", "地址乙"),
+                "logistics"));
+
+        assertThat(first.canonicalInput().customer().name()).isEqualTo("收货人甲");
+        assertThat(second.canonicalInput().customer().name()).isEqualTo("收货人乙");
+        assertThat(first.canonicalInput().customer().sourceCustomerRef())
+                .startsWith("CONTACT-")
+                .isNotEqualTo(second.canonicalInput().customer().sourceCustomerRef());
+        assertThat(first.canonicalInput().customer().sourceCustomerRef()).doesNotContain("同一供应商");
+    }
+
+    @Test
     void masksShortSensitiveValuesFully() {
         Map<String, Object> order = Map.of(
                 "main_order_id", "m1",
@@ -128,7 +166,7 @@ class JufubaoOrderTransformTest {
         StructuredOrderRow row = transform.toRow(order);
 
         assertThat(row.rawSnapshot().get("supplier_name")).isEqualTo("***");
-        assertThat(row.canonicalInput().customer().name()).isEqualTo("张三");
+        assertThat(row.canonicalInput().customer().name()).isEqualTo("待匹配客户");
         assertThat(row.canonicalInput().items().get(0).quantity()).isEqualTo("2");
     }
 

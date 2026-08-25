@@ -12,6 +12,7 @@ import cn.zimu.fulfillment.connector.sync.SourceSyncBlocker;
 import cn.zimu.fulfillment.connector.sync.SourceSyncCheck;
 import cn.zimu.fulfillment.connector.sync.SourceSyncFacts;
 import cn.zimu.fulfillment.connector.sync.SourceSyncProjection;
+import cn.zimu.fulfillment.connector.sync.SourceSyncStatus;
 import cn.zimu.fulfillment.fulfillment.FulfillmentController;
 import cn.zimu.fulfillment.fulfillment.FulfillmentReadService;
 import cn.zimu.fulfillment.inventory.InventoryDetailsService;
@@ -343,8 +344,6 @@ public class McpDomainReadTools {
         ObjectNode result = mapper.createObjectNode();
         result.put("shipment_id", check.shipmentId());
         result.put("ready", check.ready());
-        result.put("check_hash", check.checkHash());
-        result.put("artifact_hash", check.artifactHash());
 
         SourceSyncFacts internal = check.internal();
         SourcePlatformCheckResult platform = check.platform();
@@ -437,9 +436,53 @@ public class McpDomainReadTools {
                 .map(McpDomainReadTools::safeBlockerCode)
                 .distinct()
                 .forEach(blockerCodes::add);
+        result.put("outcome_category", safeSourceSyncOutcome(check));
+        result.put("next_action", safeSourceSyncNextAction(check));
         result.put("advisory", true);
         result.put("write_allowed", false);
         return result;
+    }
+
+    private static String safeSourceSyncOutcome(SourceSyncCheck check) {
+        SourceSyncStatus status = check.projection() == null ? null : check.projection().status();
+        if (status == SourceSyncStatus.SYNCED) {
+            return "VERIFIED_SUCCESS";
+        }
+        if (status == SourceSyncStatus.RECONCILIATION_REQUIRED) {
+            return "RESULT_UNKNOWN";
+        }
+        if (status == SourceSyncStatus.SYNC_FAILED) {
+            return isExplicitPlatformRejection(check.projection().lastErrorCode())
+                    ? "PLATFORM_REJECTED"
+                    : "SAFE_FAILURE";
+        }
+        if (status == SourceSyncStatus.SYNCING) {
+            return "IN_PROGRESS";
+        }
+        return check.ready() ? "READY_TO_CONFIRM" : "BLOCKED";
+    }
+
+    private static String safeSourceSyncNextAction(SourceSyncCheck check) {
+        SourceSyncStatus status = check.projection() == null ? null : check.projection().status();
+        if (status == SourceSyncStatus.SYNCED) {
+            return "NO_ACTION_REQUIRED";
+        }
+        if (status == SourceSyncStatus.RECONCILIATION_REQUIRED) {
+            return "RECONCILE_PLATFORM_STATE";
+        }
+        if (status == SourceSyncStatus.SYNC_FAILED) {
+            return "FIX_AND_RECHECK";
+        }
+        if (status == SourceSyncStatus.SYNCING) {
+            return "WAIT_FOR_RECOVERY_OR_RECONCILIATION";
+        }
+        return check.ready() ? "HUMAN_CONFIRM_THEN_EXECUTE" : "FIX_BLOCKERS_AND_RECHECK";
+    }
+
+    private static boolean isExplicitPlatformRejection(String code) {
+        return "JUFUBAO_RECEIVE_REJECTED".equals(code)
+                || "JUFUBAO_SHIPMENT_REJECTED".equals(code)
+                || "CAISHIXIAN_UPLOAD_REJECTED".equals(code);
     }
 
     private static boolean hasBlocker(SourceSyncCheck check, String code) {

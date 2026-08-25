@@ -270,13 +270,14 @@ class FulfillmentExportWecomResendStopApiTest {
         assertThat(deliveryCount(exportId, "INITIAL")).isEqualTo(2);
 
         // 新任务执行成功：sent_at/due/提醒时间线以新 ack 重置；告警自动关闭
+        Instant expectedAckAt = Instant.now().plusSeconds(60);
         wecom.sendResult = new WecomSendResult(
-                WecomSendStatus.SUCCESS, "resend-ack-2", Instant.now().plusSeconds(60), null, null, false);
+                WecomSendStatus.SUCCESS, "resend-ack-2", expectedAckAt, null, null, false);
         claimAndRun(exportId, "INITIAL", 2);
         state = stateRow(exportId);
         assertThat(state.get("status")).isEqualTo("ACTIVE");
         assertThat(instant(state.get("initial_sent_at")).getEpochSecond())
-                .isEqualTo(Instant.now().plusSeconds(60).getEpochSecond());
+                .isEqualTo(expectedAckAt.getEpochSecond());
         assertThat(state.get("next_reminder_at")).isEqualTo(state.get("tracking_due_at"));
         assertThat(openAlertCount(exportId)).isZero();
         assertThat(resolvedAlertCount(exportId)).isEqualTo(1);

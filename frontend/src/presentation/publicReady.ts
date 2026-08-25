@@ -135,6 +135,39 @@ function quantityFactGroups(): FactGroup[] {
   }];
 }
 
+function sourceSyncStatusText(detail: Record<string, unknown>): string | null {
+  const status = scalarValue(detail.status);
+  if (status === 'PENDING') return '等待重新检查';
+  if (status === 'SYNCING') return '正在回传';
+  if (status === 'SYNCED') return '已验证同步成功';
+  if (status === 'SYNC_FAILED') return '安全失败，等待修正';
+  if (status === 'RECONCILIATION_REQUIRED') return '结果未知，等待人工对账';
+  return null;
+}
+
+function sourceSyncNextStep(detail: Record<string, unknown>): string {
+  const status = scalarValue(detail.status);
+  if (status === 'SYNCED') {
+    return '无需操作；来源平台已验证同步成功';
+  }
+  if (status === 'RECONCILIATION_REQUIRED') {
+    return '先到来源平台核对是否已受理，再提交人工对账结论；禁止直接重试';
+  }
+  if (status === 'SYNC_FAILED') {
+    return '修正业务代码对应问题后重新检查并再次确认';
+  }
+  if (Array.isArray(detail.blocker_codes) && detail.blocker_codes.length > 0) {
+    return '按阻断代码修正 Shipment、数量、收货信息或平台配置后重新检查';
+  }
+  return '核对来源平台与 Shipment 当前事实后重新检查';
+}
+
+function sourceSyncBlockerCodesText(detail: Record<string, unknown>): string | null {
+  const blockers = scalarValue(detail.blocker_codes);
+  if (blockers !== null) return blockers;
+  return scalarValue(detail.status) === 'SYNCED' ? '无阻断' : null;
+}
+
 /**
  * SKU 映射复核抽屉的固定展示字段（含来源文件位置）。只读取白名单内的键（fail-closed），
  * 缺失/空白时以「来源未提供」呈现，而不是整行消失——静默丢弃正是本票要消灭的行为。
@@ -190,6 +223,10 @@ const SKU_MAPPING_FACT_GROUP: FactGroup = {
  *   REVISION_FIELD_LABELS 白名单过滤；改前/改后值截断；收货电话不在 diff 字段内）。
  * - export_batch_no / template_version：已导出履约文件的批次号与模板版本。
  * - source_version / change_reason：来源版本与声明的变更原因（#71 已放行 change_reason）。
+ *
+ * SOURCE_SYNC_BLOCKED：
+ * - status / business_code / blocker_codes：来源回传模块生成的稳定处理结果与代码；
+ *   不读取 message、check_hash、平台载荷或 receiver PII。下一步只由受控状态与阻断代码派生。
  */
 const REVIEW_FACT_GROUPS: Record<string, FactGroup[]> = {
   // SKU 映射家族沿用 #71 确立的固定字段结构，与其余家族同一渲染路径。
@@ -211,6 +248,15 @@ const REVIEW_FACT_GROUPS: Record<string, FactGroup[]> = {
         label: '处理说明',
         value: (detail) => WECOM_TRACKING_FILE_FAILURE_MESSAGES[trackingFileFailureCode(detail)],
       },
+    ],
+  }],
+  SOURCE_SYNC_BLOCKED: [{
+    title: '来源回传处理依据',
+    fields: [
+      { key: 'status', label: '来源回传状态', value: sourceSyncStatusText },
+      { key: 'business_code', label: '业务代码' },
+      { key: 'blocker_codes', label: '阻断代码', value: sourceSyncBlockerCodesText },
+      { key: 'next_action', label: '下一步', value: sourceSyncNextStep },
     ],
   }],
   CUSTOMER_MATCH_REQUIRED: [

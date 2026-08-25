@@ -160,6 +160,7 @@
 | POST | `/api/v1/shipments/{shipment_id}/jd-so-order` | 将整个 Shipment 批次聚合为一张京东出库单（addSoOrder），Idempotency-Key 幂等重放；`app.jd.write-mode=OFF` 时拒绝，失败阶段与诊断码落 Shipment 级集成记录 |
 | GET | `/api/v1/shipments/{shipment_id}/source-sync/check` | 聚福宝/彩食鲜来源回传前的完整即时事实核对；仅认证人工可读，响应 `Cache-Control: no-store`，不产生平台写 |
 | POST | `/api/v1/shipments/{shipment_id}/source-sync/execute` | 以刚查看的 `check_hash` 确认并执行一次 Shipment 级回传；每次外部写前复验租约，只有平台终态已验证才成功 |
+| POST | `/api/v1/shipments/source-sync/batch-execute` | 最多 100 张 Shipment 的逐单回传；每项独立携带 `shipment_id`、`expected_check_hash` 与 `idempotency_key`，逐项返回成功/失败且互不回滚 |
 | POST | `/api/v1/shipments/{shipment_id}/source-sync/reconcile` | 对外部效果未知的执行作三态人工对账；命令回显原 intent 全部稳定字段和 `lock_version`，不自动重提 |
 
 `FulfillmentExport` 在所有前置复核通过后自动生成，不提供「生成发货表」人工命令。一份文件只属于一个 FulfillmentProvider。
@@ -343,6 +344,7 @@ public interface PlatformConnector {
 4. `reconcile` 必须回显原 intent 的 check hash、来源行、承运商、运单和版本，并再次核对当前事实。`ACCEPTED` 不再写平台并转 `SYNCED`；`NOT_ACCEPTED` 释放原平台 intent 后回到 `PENDING`；`UNCERTAIN` 保持隔离。
 5. 在线 begin 与来源回填文件进入 `PUSHING` 竞争同一 Shipment 行锁。任一侧已占用或在线已成功/待对账时，另一侧失败关闭；失效的文件 artifact 也不能重新 claim。
 6. `execute` 审计记录 allowlist 校验后的平台请求引用与端到端外部调用耗时；请求/响应摘要只含哈希、状态和“字段存在”标记，不复制 receiver、凭据或平台原始报文。
+7. `batch-execute` 只编排既有单 Shipment `execute`：每项使用自己的检查哈希和幂等键，任一项被阻断、冲突或异常都只形成该项结果，已成功项不得被整批事务回滚；`RECONCILIATION_REQUIRED` 仍禁止普通重试。
 
 ### 6.3 京东 ISC 写接口收口
 
@@ -429,6 +431,7 @@ Agent 可以提建议，但上述终局动作必须由管理后台人员确认�
 | `get_order` | `order_id` | OrderDetail | 否 |
 | `get_order_timeline` | `order_id` | OrderEvent 列表 | 否 |
 | `get_shipment` | `shipment_id` | Shipment/Tracking 详情 | 否 |
+| `check_shipment_source_sync` | `shipment_id` | PII 安全的 receiver/数量比较、状态、`blocker_codes`、`outcome_category` 与 `next_action`；只作建议且 `write_allowed=false` | 否 |
 | `search_skus` | `query`, `provider_id?`, `page`, `size` | SKU 候选页 | 否 |
 | `create_internal_order` | `idempotency_key` + OpenAPI `InternalOrderInput` | OrderDetail；可能同时产生 ReviewCase | 是，创建订单 |
 | `suggest_customer_match` | `idempotency_key`, `review_case_id`, `expected_version`, `customer_id?`, `create_customer_suggestion?`, `reason` | 追加建议后的 ReviewCase | 只追加建议，不确认映射 |

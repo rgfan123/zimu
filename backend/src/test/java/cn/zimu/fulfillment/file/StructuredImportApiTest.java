@@ -13,6 +13,7 @@ import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.customer.ImportedCustomerIdentity;
 import cn.zimu.fulfillment.order.OrderCreateService;
 import cn.zimu.fulfillment.order.domain.LineType;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
@@ -78,6 +79,16 @@ class StructuredImportApiTest {
                 SELECT customer_id, 'CAISHIXIAN', 'CSX-MEMBER-001'
                 FROM app.customer_source_refs WHERE source_channel='WECOM'
                 ON CONFLICT (source_channel, source_customer_ref) DO NOTHING
+                """);
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                SELECT 'JUFUBAO', 'JFB-PRODUCT-001', '子牧羊小腿', '标准箱', 2.000, sku_id, true
+                FROM app.source_channel_skus
+                WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-TP-001'
+                ON CONFLICT (source_channel, source_sku_ref) DO NOTHING
                 """);
         jdbc.update(
                 """
@@ -243,6 +254,92 @@ class StructuredImportApiTest {
                 "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
                 Integer.class, ref);
         assertThat(orders).isEqualTo(1);
+    }
+
+    @Test
+    void jufubaoStructuredImportCreatesTheDeterministicReceiverCustomerMapping() {
+        String ref = orderRef("JFB-ORDER-CUSTOMER");
+        String receiverName = "聚福宝收货人";
+        String receiverPhone = "13800000000";
+        String sourceCustomerRef = ImportedCustomerIdentity.from(receiverName, receiverPhone)
+                .sourceCustomerRef();
+        ImportedCustomerIdentity legacyIdentity = ImportedCustomerIdentity.legacyFrom(
+                receiverName, "+86 （138） 0000-0000");
+        long legacyCustomerId = jdbc.queryForObject(
+                """
+                INSERT INTO app.customers(customer_code, customer_name, profile)
+                VALUES (?, ?, jsonb_build_object(
+                    'identity_name', ?, 'identity_phone', ?, 'identity_source', 'SOURCE_ORDER_IMPORT'))
+                RETURNING id
+                """,
+                Long.class,
+                "CUST-LEGACY-" + SEQ.get(),
+                receiverName,
+                legacyIdentity.normalizedName(),
+                legacyIdentity.normalizedPhone());
+        jdbc.update(
+                """
+                INSERT INTO app.customer_source_refs(customer_id, source_channel, source_customer_ref)
+                VALUES (?, 'JUFUBAO', ?)
+                """,
+                legacyCustomerId,
+                legacyIdentity.sourceCustomerRef());
+        CanonicalOrderInput input = new CanonicalOrderInput(
+                SourceChannel.JUFUBAO,
+                ref,
+                "v1",
+                new CustomerInput(null, sourceCustomerRef, receiverName),
+                new Receiver(receiverName, receiverPhone, "河南省", "郑州市", "金水区", null, "测试路 1 号"),
+                List.of(new OrderItemInput(
+                        ref + "-L1",
+                        LineType.SINGLE,
+                        null,
+                        "JFB-PRODUCT-001",
+                        "子牧羊小腿",
+                        "标准箱",
+                        "箱",
+                        "2",
+                        null)),
+                new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                "jufubao-customer-identity-test",
+                List.of());
+
+        Map<String, Object> result = sourceImportService.importStructured(
+                SourceChannel.JUFUBAO,
+                List.of(new StructuredOrderRow(ref, ref + "-L1", input, Map.of("source_ref", ref))),
+                batchNo(),
+                ctx());
+
+        assertThat(result.get("status")).isEqualTo("COMPLETED");
+        Map<String, Object> mapping = jdbc.queryForMap(
+                """
+                SELECT csr.source_customer_ref, csr.customer_id, o.customer_id order_customer_id,
+                       o.order_status
+                FROM app.customer_source_refs csr
+                JOIN app.orders o ON o.source_channel=csr.source_channel
+                  AND o.source_ref=? AND o.customer_id=csr.customer_id
+                WHERE csr.source_channel='JUFUBAO' AND csr.source_customer_ref=?
+                """,
+                ref,
+                sourceCustomerRef);
+        assertThat(mapping)
+                .containsEntry("source_customer_ref", sourceCustomerRef)
+                .containsEntry("order_status", "SKU_MAPPED");
+        assertThat(mapping.get("customer_id")).isEqualTo(mapping.get("order_customer_id"));
+        assertThat(((Number) mapping.get("customer_id")).longValue()).isEqualTo(legacyCustomerId);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.customers WHERE customer_name=?",
+                Integer.class,
+                receiverName)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.review_cases rc
+                JOIN app.orders o ON o.id=rc.order_id
+                WHERE o.source_channel='JUFUBAO' AND o.source_ref=?
+                  AND rc.reason_code='CUSTOMER_MATCH_REQUIRED' AND rc.status='OPEN'
+                """,
+                Integer.class,
+                ref)).isZero();
     }
 
     @Test

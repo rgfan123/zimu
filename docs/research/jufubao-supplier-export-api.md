@@ -91,7 +91,7 @@ username `京诚乾元`（partner_id=161，real_name 邹皕芃）；登录前需
 | `/order-public/v1/logistics-company/options` 等 `/options` 系列 | GET | 物流公司/订单类型/配送方式等字典 |
 | `/stat-supplier/v1/out-service/trade-order-trending` 等 | GET | 数据看板 |
 
-### 4.1 发货回传 `POST /order-supplier/v1/logistics/multi-send`（记录，未实现）
+### 4.1 历史批量回传 `POST /order-supplier/v1/logistics/multi-send`（非当前主线）
 
 ```json
 {"is_need_logistics":"Y","company_id":65,
@@ -115,7 +115,7 @@ JFUBAO_COOKIE="JFB_SESSION_CID=...; JFB-ADMIN-ACCESS-TOKEN=..." python3 scripts/
 - 默认 `tab=no_delivery` 近 30 天，落 `data-local/聚福宝订单-no_delivery-YYYY-MM-DD.json`；`--dry-run` / `--force` / `--page-size` / `--tab`
 - 登录自动完成（前端页面种 JFB_SESSION_CID → 表单登录 → session 保存 3 个 JWT cookie），无验证码（本次 `is_second_verify=false`）
 
-### 5.2 JSON → CanonicalOrder 映射建议（后续）
+### 5.2 JSON → CanonicalOrder 映射（当前主线）
 
 JSON 字段可直接映射项目 CanonicalOrder，无需 Excel 指纹：
 - `main_order_id` → source order reference（对应 Excel 闭环 `主单号`）
@@ -123,11 +123,16 @@ JSON 字段可直接映射项目 CanonicalOrder，无需 Excel 指纹：
 - `product_list[].product_id/product_name` → source product reference/snapshot（`商品编号`语义）
 - `product_list[].product_num` → requested quantity（`下单数量`）
 - `order_status=NO_DELIVERY` → 待发货状态
-- 收货人信息注意：orders/query 的 list 对象未直接含收货人（在 multi-send-form / sub-order-info 或 product_list 内），如需收货人字段需补抓 `sub-order-info` 确认
+- `orders/query` 的 list 对象不承担完整收货人契约；HAR 已确认 `sub-order-info` 的
+  `receipt_user_name`、`receipt_phone_number`、`location` 是单订单发货表单的 receiver 来源。
+  当前 Connector 拉单时按子单读取并补全，缺失或不一致失败关闭。
 
-### 5.3 发货回传（未来）
+### 5.3 发货回传（已收敛到 Shipment source-sync）
 
-`multi-send` 契约已记录，可与京东/第三方发货结果回填打通（SourceReturn 目标），先记后做。
+当前在线主线是 Shipment 级 `check → execute → reconcile`，聚福宝 Adapter 使用
+`receive-order`（仅 `NO_RECEIPT`）→ 地址确认 → `sub-order-info` →
+`sub-order-send` → 写后终态核验。`multi-send` 只保留为历史批量路径证据，不能绕过
+Shipment 幂等、人工确认或写后验证。
 
 ## 6. 缺口与风险
 
@@ -137,6 +142,6 @@ JSON 字段可直接映射项目 CanonicalOrder，无需 Excel 指纹：
 | access token 有效期 | ~12.8h；refresh 15 天 | 脚本每次运行自动登录（成本低）；长期运行需补 refresh 逻辑 |
 | JFB_SESSION_CID 来源 | 登录前需前端页面种下 | 脚本已先 GET 前端页再登录 |
 | 时区口径 | created_time_range 的 epoch 起点（当天 00:00 所属时区）待验证 | 与页面筛选结果交叉核对 |
-| 收货人字段 | orders/query list 未含收货人明细 | 需补抓 sub-order-info / multi-send-form 确认字段路径 |
-| 字典 | company_id 等需按 options 接口维护映射 | 补抓/手工维护 logistics-company/options 快照 |
-| 合规 | 登录 + 查询属供应商后台官方功能接口化 | 保持低频（每日 1-2 次） |
+| 收货人字段 | orders/query list 未含收货人明细 | 已由 HAR 与脱敏契约确认 `sub-order-info` 字段；缺失/漂移阻断 |
+| 字典 | company_id 等需按 options 接口维护映射 | 每次执行按 logistics-company/options 实时确定性映射，禁止硬编码 |
+| 频率 | 未发现一方官方频控契约 | 不实现固定“每日 1-2 次”等伪限制；仅遵守实际响应、超时和受控并发策略 |

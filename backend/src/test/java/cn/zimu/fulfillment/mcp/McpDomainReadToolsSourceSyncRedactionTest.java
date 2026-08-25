@@ -121,8 +121,12 @@ class McpDomainReadToolsSourceSyncRedactionTest {
         assertThat(result.get("blocker_codes")).hasSize(2);
         assertThat(result.get("blocker_codes").toString())
                 .contains("SOURCE_PLATFORM_CARRIER_UNMAPPED", "SOURCE_SYNC_BLOCKED");
+        assertThat(result.get("outcome_category").asText()).isEqualTo("BLOCKED");
+        assertThat(result.get("next_action").asText()).isEqualTo("FIX_BLOCKERS_AND_RECHECK");
         assertThat(result.get("advisory").asBoolean()).isTrue();
         assertThat(result.get("write_allowed").asBoolean()).isFalse();
+        assertThat(result.has("check_hash")).isFalse();
+        assertThat(result.has("artifact_hash")).isFalse();
 
         String serialized = result.toString();
         assertThat(serialized)
@@ -180,10 +184,56 @@ class McpDomainReadToolsSourceSyncRedactionTest {
         assertThat(result.get("receiver_comparison").get("all_match").asBoolean()).isFalse();
         assertThat(result.get("quantity_comparison").get("matches").asBoolean()).isFalse();
         assertThat(result.get("platform_summary").get("available").asBoolean()).isFalse();
+        assertThat(result.get("outcome_category").asText()).isEqualTo("BLOCKED");
+        assertThat(result.get("next_action").asText()).isEqualTo("FIX_BLOCKERS_AND_RECHECK");
         assertThat(result.toString())
                 .doesNotContain(RECEIVER_NAME)
                 .doesNotContain(RECEIVER_PHONE)
                 .doesNotContain(RECEIVER_ADDRESS)
                 .doesNotContain(TRACKING_NUMBER);
+    }
+
+    @Test
+    void sourceSyncProjectionNamesAnExplicitPlatformRejectionWithoutReturningTheRawCode() {
+        SourceSyncFacts internal = new SourceSyncFacts(
+                43L,
+                25L,
+                SourceChannel.JUFUBAO,
+                "source-order",
+                "source-line",
+                RECEIVER_NAME,
+                RECEIVER_PHONE,
+                RECEIVER_ADDRESS,
+                BigDecimal.ONE,
+                BigDecimal.ONE,
+                BigDecimal.ONE,
+                "FULLY_FULFILLED",
+                "JD",
+                "京东物流",
+                "京东物流",
+                TRACKING_NUMBER);
+        SourceSyncCheck check = new SourceSyncCheck(
+                43L,
+                false,
+                "safe-check-hash",
+                "safe-artifact-hash",
+                internal,
+                SourcePlatformCheckResult.unavailable(SourceChannel.JUFUBAO),
+                List.of(),
+                new SourceSyncProjection(
+                        SourceSyncStatus.SYNC_FAILED,
+                        1,
+                        2L,
+                        "JUFUBAO_SHIPMENT_REJECTED",
+                        "平台原始拒绝文本",
+                        null));
+
+        JsonNode result = McpDomainReadTools.safeSourceSyncProjection(check, new ObjectMapper());
+
+        assertThat(result.get("outcome_category").asText()).isEqualTo("PLATFORM_REJECTED");
+        assertThat(result.get("next_action").asText()).isEqualTo("FIX_AND_RECHECK");
+        assertThat(result.toString())
+                .doesNotContain("JUFUBAO_SHIPMENT_REJECTED")
+                .doesNotContain("平台原始拒绝文本");
     }
 }

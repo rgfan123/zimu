@@ -1,20 +1,17 @@
 package cn.zimu.fulfillment.connector.sync;
 
 import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
+import cn.zimu.fulfillment.connector.SourceReceiverNormalizer;
 import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
-import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
 
 /** 确定性差异裁决。仅保守格式归一；绝不以模糊相似度放行姓名或地址。 */
 @Component
 public final class SourceSyncPolicy {
 
-    private static final Pattern SPACES = Pattern.compile("\\s+");
-    private static final Pattern PHONE_FORMATTING = Pattern.compile("[\\s()\uFF08\uFF09-]+");
     private final SourceSyncHash hashes;
 
     public SourceSyncPolicy(SourceSyncHash hashes) {
@@ -73,13 +70,13 @@ public final class SourceSyncPolicy {
             List<SourceSyncBlocker> blockers,
             SourceSyncFacts internal,
             SourcePlatformCheckResult platform) {
-        if (!normalizeText(internal.receiverName()).equals(normalizeText(platform.receiverName()))) {
+        if (!SourceReceiverNormalizer.sameName(internal.receiverName(), platform.receiverName())) {
             block(blockers, "SOURCE_RECEIVER_NAME_MISMATCH", "receiver.name", "内部与平台收货人姓名不一致");
         }
-        if (!normalizePhone(internal.receiverPhone()).equals(normalizePhone(platform.receiverPhone()))) {
+        if (!SourceReceiverNormalizer.samePhone(internal.receiverPhone(), platform.receiverPhone())) {
             block(blockers, "SOURCE_RECEIVER_PHONE_MISMATCH", "receiver.phone", "内部与平台收货电话不一致");
         }
-        if (!normalizeText(internal.receiverAddress()).equals(normalizeText(platform.receiverAddress()))) {
+        if (!SourceReceiverNormalizer.sameAddress(internal.receiverAddress(), platform.receiverAddress())) {
             block(blockers, "SOURCE_RECEIVER_ADDRESS_MISMATCH", "receiver.address", "内部与平台收货地址不一致");
         }
     }
@@ -90,15 +87,6 @@ public final class SourceSyncPolicy {
             block(blockers, "SOURCE_PLATFORM_SENDABLE_QUANTITY_MISMATCH", "sendable_source_quantity",
                     "内部拟回传来源份数与平台当前可发数量不一致");
         }
-    }
-
-    static String normalizeText(String value) {
-        return value == null ? "" : SPACES.matcher(value.strip()).replaceAll(" ");
-    }
-
-    static String normalizePhone(String value) {
-        String normalized = PHONE_FORMATTING.matcher(normalizeText(value)).replaceAll("").toLowerCase(Locale.ROOT);
-        return normalized.startsWith("+86") ? normalized.substring(3) : normalized;
     }
 
     private static boolean writableState(

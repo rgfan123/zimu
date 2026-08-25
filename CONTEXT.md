@@ -76,7 +76,7 @@
 - **ShippingProgress**：NOT_SHIPPED / PARTIALLY_SHIPPED / SHIPPED；按实际发货数量计算
 - **ProcessingStage**：每条 OrderLine 独立保存 NEED_REVIEW / READY_TO_EXPORT / WAITING_PROVIDER / TRACKING_RECEIVED / RETURN_FILE_READY / COMPLETED / EXCEPTION；采购分支另有 PROCUREMENT_IN_PROGRESS
 - **ShipmentStatus**：P0 使用 CREATED → SHIPPED，或 CREATED → FAILED；DELIVERED 仅为未来接入京东 SDK/物流轨迹后的终态，不参与当前 Excel 闭环完成判定
-- **SyncStatus**：PENDING → SYNCED；SYNC_FAILED →（重试）→ SYNCED
+- **SyncStatus**：PENDING / SYNC_FAILED →（新鲜 check + 人工确认）→ SYNCING → SYNCED / SYNC_FAILED / RECONCILIATION_REQUIRED；待对账只允许人工三态裁决
 - **ProcurementStatus**：PENDING → SUCCESS / PARTIAL / FAILED；订单取消 → CANCELLED
 - **FulfillmentOutcome**：IN_PROGRESS → FULLY_FULFILLED / PARTIALLY_FULFILLED / CANCELLED
 - 多行订单：行级独立推进；订单进度摘要取最差进度，处理健康度另行聚合
