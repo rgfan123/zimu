@@ -186,10 +186,16 @@ public final class WecomCardBuilder {
                 ObjectNode node = list.addObject()
                         .put("text", button.text())
                         .put("style", button.style().protocolValue());
+                // aibot 模板卡的 Button 结构只有 text / style / key（官方 101032 参数表）。
+                // 此前按企业应用卡片的写法补了 type=2 / type=1+url——那是另一套协议的字段。
+                // 平台对多余字段不报错（生产 15 张卡 errcode=0），所以「发送成功」一直掩盖着
+                // 「按钮可能没渲染出来」：至今 wecom_events 里 template_card_event 零命中。
                 if (button.key() != null) {
-                    node.put("type", 2).put("key", button.key());
+                    node.put("key", button.key());
                 } else {
-                    node.put("type", 1).put("url", button.url());
+                    // 跳转按钮在 aibot 协议里无处安放；整卡跳转请改用 card_action。
+                    throw new IllegalStateException(
+                            "aibot 模板卡不支持跳转按钮（Button 只有 text/style/key）；请改用 cardAction");
                 }
             }
         }

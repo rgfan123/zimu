@@ -54,8 +54,7 @@ public final class ReviewCaseCard {
                 .field("创建", view.createdAtLabel())
                 .callbackButton("我来处理", CLAIM_BUTTON_KEY, ButtonStyle.PRIMARY);
         if (view.detailUrl() != null && !view.detailUrl().isBlank()) {
-            builder.jumpButton("去后台处理", view.detailUrl(), ButtonStyle.SECONDARY)
-                    .cardAction(view.detailUrl());
+            builder.cardAction(view.detailUrl());
         }
         return builder.build();
     }
