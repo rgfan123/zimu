@@ -41,6 +41,7 @@ import ReviewCaseDrawer from './ReviewCaseDrawer';
 import { useQueuePagination } from './queuePagination';
 import { REASON_LABELS, REVIEW_STATUS_LABELS, TEAM_LABELS, TEAM_OPTIONS } from './queuePresentation';
 import { reasonLabel } from '@/constants/labels';
+import { formatDateTime } from '@/format/dateTime';
 
 /** 路由层兼容门：旧 view=alerts 链接重定向到新提醒路由，其余原样渲染复核页。 */
 export function ReviewQueueCompatRoute() {
@@ -144,7 +145,7 @@ export default function ManualReviewPage() {
       title: '状态', dataIndex: 'status', width: 85,
       render: (value: ReviewCaseStatus) => <Tag color={reviewCaseStatusSemantic(value)}>{REVIEW_STATUS_LABELS[value] ?? value}</Tag>,
     },
-    { title: '进入队列时间', dataIndex: 'created_at', width: 150, render: (value: string) => dayjs(value).format('YYYY-MM-DD HH:mm') },
+    { title: '进入队列时间', dataIndex: 'created_at', width: 150, render: (value: string) => formatDateTime(value) },
     { title: '操作', key: 'action', width: 90, fixed: 'right', render: (_, item) => <Typography.Link onClick={() => setSelected(item)}>查看处理</Typography.Link> },
   ];
 

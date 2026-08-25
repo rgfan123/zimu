@@ -16,6 +16,7 @@ import type { OrderLine, OrderShipment, OrderStatus } from '@/api/types';
 import { reasonLabel, SETTLEMENT_METHOD_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
+import { formatDateTimeSeconds } from '@/format/dateTime';
 import OrderTimeline from '@/components/OrderTimeline';
 import PageShell from '@/components/PageShell';
 import StatusTag from '@/components/StatusTag';
@@ -267,8 +268,8 @@ export default function OrderDetailPage() {
                 },
                 { key: 'settlement', label: '结账方式', children: detail.settlement.method ? SETTLEMENT_METHOD_LABELS[detail.settlement.method] ?? detail.settlement.method : '—' },
                 { key: 'progress', label: '行进度', children: `${detail.completed_count}/${detail.total_count}` },
-                { key: 'created_at', label: '创建时间', children: dayjs(detail.created_at).format('YYYY-MM-DD HH:mm:ss') },
-                { key: 'updated_at', label: '更新时间', children: detail.updated_at ? dayjs(detail.updated_at).format('YYYY-MM-DD HH:mm:ss') : '—' },
+                { key: 'created_at', label: '创建时间', children: formatDateTimeSeconds(detail.created_at) },
+                { key: 'updated_at', label: '更新时间', children: detail.updated_at ? formatDateTimeSeconds(detail.updated_at) : '—' },
                 { key: 'version', label: '数据版本', children: detail.version },
                 { key: 'remark', label: '备注', span: 3, children: detail.remark ?? '—' },
               ]}

@@ -2,6 +2,7 @@ import type {
   InventoryOverviewItem,
   InventoryOverviewResponse,
 } from '@/api/types';
+import { formatDateTime } from '../../format/dateTime.ts';
 
 export type { InventoryOverviewItem, InventoryOverviewResponse } from '@/api/types';
 
@@ -11,19 +12,7 @@ export interface InventoryObservationPresentation {
 }
 
 export function inventoryTimeLabel(value: string | null): string {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime())
-    ? '—'
-    : new Intl.DateTimeFormat('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-        timeZone: 'Asia/Shanghai',
-      }).format(parsed);
+  return formatDateTime(value);
 }
 
 function normalizedDecimal(value: string): string {

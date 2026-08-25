@@ -12,6 +12,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
 import PageShell from '@/components/PageShell';
+import { formatDateTime } from '@/format/dateTime';
 import { ApiError, errorMessage } from '@/api/client';
 import { fileOperationsApi, fulfillmentExportsApi, providersApi } from '@/api/endpoints';
 import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportWecomState, ImportBatch, TrackingImportBatch } from '@/api/types';
@@ -749,12 +750,12 @@ export default function SalesOutboundPage() {
     { title: '履约方', dataIndex: 'provider_id', width: 150, render: (v?: string) => providerName(v) },
     { title: '导出类型', dataIndex: 'export_kind', width: 110 },
     { title: '模板版本', dataIndex: 'template_version', width: 110, render: (v?: string) => v ?? '—' },
-    { title: '生成时间', dataIndex: 'generated_at', width: 170, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
+    { title: '生成时间', dataIndex: 'generated_at', width: 170, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatDateTime(v)}</span> },
     {
       title: '回传截止',
       dataIndex: 'tracking_due_at',
       width: 170,
-      render: (v?: string) => (v ? <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> : '—'),
+      render: (v?: string) => (v ? <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatDateTime(v)}</span> : '—'),
     },
     {
       title: '使用状态',

@@ -72,7 +72,7 @@ test('overview warnings expose stale and partial coverage without claiming compa
 
   assert.deepEqual(inventoryOverviewWarnings(response), [
     '当前观测覆盖 1/3 个履约方、2/7 个 SKU，未观测范围不计为零库存。',
-    '当前筛选范围有 1 条库存观测超过时效策略 PT15M；最早观测 2026/08/12 09:02，请重新查询后再用于履约判断。',
+    '当前筛选范围有 1 条库存观测超过时效策略 PT15M；最早观测 2026-08-12 09:02，请重新查询后再用于履约判断。',
   ]);
 });
 

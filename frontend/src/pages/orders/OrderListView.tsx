@@ -17,6 +17,7 @@ import { CHANNEL_LABELS, ORDER_STATUS_LABELS, PROCESSING_HEALTH_LABELS, PROCESSI
 import { usePagedOrders } from '@/hooks/usePagedOrders';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
+import { formatDateTime } from '@/format/dateTime';
 import StatusTag from '@/components/StatusTag';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
@@ -150,7 +151,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
         title: '创建时间',
         dataIndex: 'created_at',
         width: 170,
-        render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm'),
+        render: (v: string) => formatDateTime(v),
       },
       {
         title: '操作',
