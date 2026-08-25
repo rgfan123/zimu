@@ -89,6 +89,52 @@ class ExcelClosedLoopApiTest {
     @Autowired SourceShipmentSyncService sourceShipmentSyncService;
     @MockitoBean JufubaoShipmentGateway jufubaoGateway;
 
+    /**
+     * 京东租户标识改为取自 fulfillment_providers.config（原先硬编码在 ProviderFileService）。
+     * 播种的是与 docs/onboarding-handoff.md 一致的联调值，因此下方导出断言逐字不变——
+     * 断言不变、来源改变，正好证明这些值现在确实流经配置而不是常量。
+     */
+    @BeforeEach
+    void seedJdProviderIdentifiers() {
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config = config || ?::jsonb
+                WHERE provider_type='JD_WAREHOUSE'
+                """,
+                """
+                {"sourceNo":"ISV0020000000079","ownerNo":"EBU4418056064528",
+                 "shopNo":"ESP0020008943717","customerCode":"010K5064550",
+                 "warehouseNo":"118085840","carrierNo":"CYS0000010",
+                 "pin":"京诚乾元01","salesPlatformSource":"6","townRequired":false}
+                """);
+    }
+
+    @Test
+    void jdExportFailsClosedWhenProviderConfigLacksTenantIdentifiers() throws Exception {
+        // 抽掉一个京东标识后导出必须失败，而不是回落到任何常量。
+        // 硬编码时代这条路无从失败——正是本次修复要消灭的沉默分支。
+        addExplicitJdFeixiangMapping();
+        jdbc.update(
+                "UPDATE app.fulfillment_providers SET config = config - 'warehouseNo' "
+                        + "WHERE provider_type='JD_WAREHOUSE'");
+
+        ResponseEntity<Map> uploaded = uploadRaw(
+                "jd-source-missing-config.csv",
+                feixiangSingleCsv("FX-JD-FAILCLOSED-001", "FX-PRODUCT-JD-001", "1"),
+                "source-import-jd-failclosed-001");
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        // 导出发生在批次确认，不在上传：门闩必须挡在这里
+        ResponseEntity<Map> confirmed = confirmBatch(
+                uploaded.getBody().get("id").toString(), "confirm-jd-failclosed-001");
+
+        assertThat(confirmed.getStatusCode().is2xxSuccessful())
+                .as("缺少 warehouseNo 时不得产出京东导出")
+                .isFalse();
+        assertThat(String.valueOf(confirmed.getBody())).contains("warehouseNo");
+    }
+
     @BeforeEach
     void addExplicitFeixiangMappings() {
         jdbc.update(

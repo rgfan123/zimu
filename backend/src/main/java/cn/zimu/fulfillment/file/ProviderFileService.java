@@ -769,19 +769,62 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
         }
     }
 
+    /**
+     * 京东租户标识：一律取自 {@code fulfillment_providers.config}，缺失即阻断导出。
+     *
+     * <p>本方法过去把 sourceNo/ownerNo/shopNo/customerCode/warehouseNo/carrierNo/pin/
+     * salesPlatformSource 八个值硬编码在源码里，与 SDK 建单路径
+     * （{@code ShipmentJdOutboundPreparer}，明确要求「identifiers come from the selected
+     * FulfillmentProvider configuration, never hard-coded」并在缺失时 fail-closed）互相矛盾：
+     * 同一个履约方，导出走硬编码常量、建单走配置，改一处不影响另一处，是错配的温床。
+     * 更糟的是 {@code pin} 是京东授权凭据，硬编码等于把凭据提交进 Git，且无法轮换。
+     *
+     * <p>现在两条路共用一份配置。缺配置时导出失败而不是发出可能错误的单据——
+     * 与建单侧同样的 fail-closed 语义。
+     */
+    private String requiredJdConfig(Map<String, Object> config, String key) {
+        Object value = config.get(key);
+        if (value == null || value.toString().isBlank()) {
+            throw BusinessException.unprocessable(
+                    "JD_EXPORT_PROVIDER_CONFIG_MISSING",
+                    "履约方配置缺少京东标识 " + key + "，请在「系统管理 → 履约方」补齐后再导出");
+        }
+        return value.toString();
+    }
+
+    /** 履约方京东配置整体读取；行级导出复用同一份，避免逐字段查库。 */
+    private Map<String, Object> jdProviderConfig(long providerId) {
+        String raw = jdbc.queryForObject(
+                "SELECT config::text FROM app.fulfillment_providers WHERE id=?", String.class, providerId);
+        if (raw == null || raw.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(raw, new TypeReference<Map<String, Object>>() {});
+        } catch (JsonProcessingException ex) {
+            throw BusinessException.unprocessable(
+                    "JD_EXPORT_PROVIDER_CONFIG_INVALID",
+                    "履约方配置不是合法 JSON 对象，无法导出；请检查履约方 " + providerId + " 的配置");
+        }
+    }
+
     private Map<String, Object> jdOutputCells(PlannedExportRow planned) {
         ExportRow source = planned.source();
+        Map<String, Object> config = jdProviderConfig(source.providerId());
         Map<String, Object> cells = new LinkedHashMap<>();
         cells.put("*isv出库单号", planned.shipment().outboundOrderNo());
-        cells.put("*ISV来源编号", "ISV0020000000079");
-        cells.put("*事业部编号", "EBU4418056064528");
-        cells.put("*店铺编号", "ESP0020008943717");
-        cells.put("青龙业主号", "010K5064550");
-        cells.put("*仓库编号", "118085840");
-        cells.put("*承运商编号", "CYS0000010");
-        cells.put("*授权码pin", "京诚乾元01");
+        cells.put("*ISV来源编号", requiredJdConfig(config, "sourceNo"));
+        cells.put("*事业部编号", requiredJdConfig(config, "ownerNo"));
+        cells.put("*店铺编号", requiredJdConfig(config, "shopNo"));
+        cells.put("青龙业主号", requiredJdConfig(config, "customerCode"));
+        cells.put("*仓库编号", requiredJdConfig(config, "warehouseNo"));
+        cells.put("*承运商编号", requiredJdConfig(config, "carrierNo"));
+        cells.put("*授权码pin", requiredJdConfig(config, "pin"));
         cells.put("销售平台订单号", source.sourceRef());
-        cells.put("*销售平台来源", 6);
+        // 京东模板此列是数值；配置以字符串保存（JD config 的形状校验只收非空字符串），
+        // 能解析成整数就还原为数值，否则原样落字符串而不是猜一个默认值。
+        String platformSource = requiredJdConfig(config, "salesPlatformSource");
+        cells.put("*销售平台来源", parseIntOrText(platformSource));
         if (source.orderedAt() != null) {
             cells.put("销售平台下单时间", JD_TIME.format(source.orderedAt()));
         }
@@ -797,6 +840,15 @@ class ProviderFileService implements ContinuationExportGenerator, ReadySourceBat
         cells.put("*商品的出库数量", source.requestedQuantity().intValueExact());
         cells.put("仓配产品", "LL-HD-M");
         return cells;
+    }
+
+    /** 数值列的宽容解析：可解析即数值，否则原样字符串（不猜默认值）。 */
+    private static Object parseIntOrText(String text) {
+        try {
+            return Integer.valueOf(text.trim());
+        } catch (NumberFormatException ex) {
+            return text;
+        }
     }
 
     private Map<String, Integer> jdColumns() {
