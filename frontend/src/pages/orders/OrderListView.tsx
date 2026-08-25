@@ -187,7 +187,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
     ];
   }, []);
 
-  const searchWithRange = (range: [Dayjs | null, Dayjs | null] | null) => {
+  const searchWithRange = (range: [Dayjs | null, Dayjs | null] | null, overrides: Partial<OrderListQuery> = {}) => {
     const patch: Partial<OrderListQuery> = {
       source_channel: channel,
       order_status: status,
@@ -195,6 +195,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
       processing_health: health,
       provider_id: providerId,
       query: keyword.trim() || undefined,
+      ...overrides,
     };
     if (range?.[0] && range[1]) {
       patch.date_from = range[0].format('YYYY-MM-DD');
@@ -212,6 +213,16 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
   const handleDateChange = (range: [Dayjs | null, Dayjs | null] | null) => {
     setDateRange(range);
     searchWithRange(range);
+  };
+
+  /** 下拉改动即生效（UIUX-07 #141）：与日期区间同口径，传入新值避开过期闭包。 */
+  const handleFilterChange = (patch: Partial<OrderListQuery>) => {
+    if (patch.source_channel !== undefined) setChannel(patch.source_channel);
+    if (patch.order_status !== undefined) setStatus(patch.order_status);
+    if (patch.processing_stage !== undefined) setStage(patch.processing_stage);
+    if (patch.processing_health !== undefined) setHealth(patch.processing_health);
+    if (patch.provider_id !== undefined) setProviderId(patch.provider_id);
+    searchWithRange(dateRange, patch);
   };
 
   const handleReset = () => {
@@ -290,7 +301,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
           placeholder="履约方"
           style={{ width: 160 }}
           value={providerId}
-          onChange={setProviderId}
+          onChange={(value) => handleFilterChange({ provider_id: value })}
           loading={providers.loading}
           disabled={providers.error !== null}
           options={(providers.data ?? []).map((provider) => ({
@@ -303,7 +314,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
           placeholder="来源渠道"
           style={{ width: 130 }}
           value={channel}
-          onChange={setChannel}
+          onChange={(value) => handleFilterChange({ source_channel: value })}
           options={Object.entries(CHANNEL_LABELS).map(([value, label]) => ({ value, label }))}
         />
         <Select
@@ -311,7 +322,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
           placeholder="订单状态"
           style={{ width: 140 }}
           value={status}
-          onChange={setStatus}
+          onChange={(value) => handleFilterChange({ order_status: value })}
           options={Object.entries(ORDER_STATUS_LABELS).map(([value, label]) => ({ value, label }))}
         />
         <Select
@@ -319,7 +330,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
           placeholder="处理阶段"
           style={{ width: 150 }}
           value={stage}
-          onChange={setStage}
+          onChange={(value) => handleFilterChange({ processing_stage: value })}
           options={Object.entries(PROCESSING_STAGE_LABELS).map(([value, label]) => ({ value, label }))}
         />
         <Select
@@ -327,7 +338,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
           placeholder="健康度"
           style={{ width: 120 }}
           value={health}
-          onChange={setHealth}
+          onChange={(value) => handleFilterChange({ processing_health: value })}
           options={Object.entries(PROCESSING_HEALTH_LABELS).map(([value, label]) => ({ value, label }))}
         />
         <RangePicker
