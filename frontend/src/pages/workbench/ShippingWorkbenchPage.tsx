@@ -15,6 +15,7 @@ import { useAsync } from '@/hooks/useAsync';
 import { errorMessage } from '@/api/client';
 import { extractBlockerCases, mergeBlockers, groupBlockers, PREVIEW_BLOCKED_REASON, type BlockerCase } from './blockerGrouping';
 import { JdBlockerFixDrawer } from './JdBlockerFixDrawer';
+import { presentAwaitingTracking } from './awaitingTracking';
 import { readStoredWorkbenchRole } from '@/workbenchRole';
 import { reviewTeamForRole } from '@/components/layout/useRailBadges';
 import { alertsQueueUrl, reviewsQueueUrl } from '../shared/reviewQueueUrl';
@@ -178,6 +179,7 @@ export default function ShippingWorkbenchPage() {
       </section>
 
       <ReviewPreviewSection team={team} reviewOpen={counts.reviewOpen} />
+      <AwaitingTrackingSection />
       <AlertsSection />
     </div>
   );
@@ -282,6 +284,94 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
         onClose={() => setFixing(null)}
         onResolved={() => preview.reload?.()}
       />
+    </section>
+  );
+}
+
+/**
+ * 已发出待回单：回答「这单在等什么」。
+ *
+ * 京东与第三方等的东西完全不同——前者是系统按 60s 一轮自动查询京东
+ * （ShipmentJdTrackingPoller），后者是**等人回传运单文件**，系统只能催。
+ * 混在一栏里会让人以为第三方那几单也在自动推进，所以分两组、各自写明在等谁。
+ */
+function AwaitingTrackingSection() {
+  const data = useAsync(async () => {
+    const [shipmentsRes, providersRes] = await Promise.all([
+      fetch('/api/v1/shipments?shipment_status=CREATED&size=50', { headers: { Accept: 'application/json' } }),
+      fetch('/api/v1/fulfillment-providers', { headers: { Accept: 'application/json' } }),
+    ]);
+    if (!shipmentsRes.ok) throw new Error(`发货批次加载失败（${shipmentsRes.status}）`);
+    if (!providersRes.ok) throw new Error(`履约方加载失败（${providersRes.status}）`);
+    const shipments = (await shipmentsRes.json()) as { items?: unknown[] };
+    const providers = (await providersRes.json()) as Array<{ id?: unknown; provider_type?: unknown }>;
+    const typeById = new Map<string, string>();
+    for (const provider of providers) {
+      if (typeof provider?.id === 'string' && typeof provider?.provider_type === 'string') {
+        typeById.set(provider.id, provider.provider_type);
+      }
+    }
+    return presentAwaitingTracking(shipments.items ?? [], typeById);
+  }, []);
+
+  const view = data.data;
+
+  return (
+    <section className="zs-sec" id="zs-awaiting">
+      <div className="zs-card">
+        <div className="zs-hd">
+          <h3>已发出待回单</h3>
+          {view && view.total > 0 ? <span className="zs-tag">{view.total} 单</span> : null}
+        </div>
+        <div className="zs-bd zs-flush">
+          {data.loading ? (
+            <div className="zs-hint" style={{ padding: '12px 16px' }}>正在加载…</div>
+          ) : data.error ? (
+            <div className="zs-hint" style={{ padding: '12px 16px' }}>加载失败：{errorMessage(data.error)}</div>
+          ) : !view || view.total === 0 ? (
+            <div className="zs-hint" style={{ padding: '12px 16px' }}>当前没有等待回单的批次。</div>
+          ) : (
+            <div className="zs-rq" style={{ padding: 12 }}>
+              <details className="zs-rqg" open={view.jd.length > 0}>
+                <summary>
+                  京东 SDK · 系统自动查询
+                  <span className="zs-c">{view.jd.length} 单</span>
+                </summary>
+                {view.jd.length === 0 ? (
+                  <div className="zs-rqi"><div className="zs-w"><div className="zs-l2 zs-muted">今天没有。</div></div></div>
+                ) : view.jd.map((row) => (
+                  <div className="zs-rqi" key={row.shipmentId}>
+                    <div className="zs-w">
+                      <div className="zs-l1">{row.shipmentNo}</div>
+                      <div className="zs-l2">
+                        出库号 {row.erpDeliveryNo ?? '——'}
+                        {' · '}已查询 {row.attempts} 次
+                        {row.lastQueryAt ? ` · 上次 ${new Date(row.lastQueryAt).toLocaleString('zh-CN')}` : ' · 尚未查询'}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </details>
+              <details className="zs-rqg" open={view.thirdParty.length > 0}>
+                <summary>
+                  第三方 · 等对方回传运单
+                  <span className="zs-c">{view.thirdParty.length} 单</span>
+                </summary>
+                {view.thirdParty.length === 0 ? (
+                  <div className="zs-rqi"><div className="zs-w"><div className="zs-l2 zs-muted">今天没有。</div></div></div>
+                ) : view.thirdParty.map((row) => (
+                  <div className="zs-rqi" key={row.shipmentId}>
+                    <div className="zs-w">
+                      <div className="zs-l1">{row.shipmentNo}</div>
+                      <div className="zs-l2">已导出发货清单，等对方回传运单文件——系统不会自动获取。</div>
+                    </div>
+                  </div>
+                ))}
+              </details>
+            </div>
+          )}
+        </div>
+      </div>
     </section>
   );
 }
