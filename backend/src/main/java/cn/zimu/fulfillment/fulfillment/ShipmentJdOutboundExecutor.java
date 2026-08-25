@@ -6,7 +6,7 @@ import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.jd.JDWarehouseService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import cn.zimu.fulfillment.connector.jd.write.JdWriteOpsService;
-import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundPreviewSnapshot.Blocker;
+import cn.zimu.fulfillment.fulfillment.JdShipmentSubmissionPlan.Blocker;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Map;
@@ -66,9 +66,9 @@ public class ShipmentJdOutboundExecutor {
                 return reconcileUncertainSubmit(intent, context);
             }
             IdempotentResult<Map<String, Object>> checked = stockChecks.check(
-                    intent.preview().shipmentId(),
+                    intent.plan().shipmentId(),
                     "jd-submit-stock-" + ShipmentJdOutboundPreparer.sha256(idempotencyKey + ":" + intent.retryCount()
-                            + ":" + intent.preview().requestHash()),
+                            + ":" + intent.plan().requestHash()),
                     context);
             Map<String, Object> stock = checked.replayed()
                     ? objectMapper.convertValue(checked.replayedBody(), new TypeReference<>() {})
@@ -77,14 +77,14 @@ public class ShipmentJdOutboundExecutor {
                 return SubmitExternalResult.validationFailure(
                         "JD_STOCK_CHECK_BLOCKED", "京东实时库存判定未通过，出库单未创建");
             }
-            if (!Objects.equals(intent.preview().requestHash(), ShipmentJdOutboundPreparer.text(stock.get("preview_hash")))) {
+            if (!Objects.equals(intent.plan().requestHash(), ShipmentJdOutboundPreparer.text(stock.get("preview_hash")))) {
                 return SubmitExternalResult.validationFailure(
                         "JD_STOCK_PREVIEW_CHANGED", "库存判定使用的预览已变化，出库单未创建");
             }
-            ShipmentJdOutboundPreviewSnapshot immediate =
-                    preparer.preparePreviewInNewTransaction(intent.preview().shipmentId());
-            if (immediate.shipmentVersion() != intent.preview().shipmentVersion()
-                    || !Objects.equals(immediate.requestHash(), intent.preview().requestHash())) {
+            JdShipmentSubmissionPlan immediate =
+                    preparer.planInNewTransaction(intent.plan().shipmentId());
+            if (immediate.shipmentVersion() != intent.plan().shipmentVersion()
+                    || !Objects.equals(immediate.requestHash(), intent.plan().requestHash())) {
                 return SubmitExternalResult.validationFailure(
                         "JD_SHIPMENT_OUTBOUND_PREVIEW_CHANGED", "发货批次在库存复查后已变化，出库单未创建");
             }
@@ -94,16 +94,16 @@ public class ShipmentJdOutboundExecutor {
             }
             JdResult result;
             try {
-                result = jdWrite.orderSoCreate(intent.preview().request());
+                result = jdWrite.orderSoCreate(intent.plan().request());
             } catch (RuntimeException exception) {
-                log.warn("JD orderSoCreate adapter failed for shipment {}", intent.preview().shipmentId());
+                log.warn("JD orderSoCreate adapter failed for shipment {}", intent.plan().shipmentId());
                 result = new JdResult(false, "SDK_CALL_FAILED", "京东出库单提交调用失败", null, null);
             }
             return SubmitExternalResult.submitted(result);
         } catch (BusinessException exception) {
             return SubmitExternalResult.validationFailure(exception.getBusinessCode(), exception.getMessage());
         } catch (RuntimeException exception) {
-            log.warn("JD outbound pre-submit validation failed for shipment {}", intent.preview().shipmentId());
+            log.warn("JD outbound pre-submit validation failed for shipment {}", intent.plan().shipmentId());
             return SubmitExternalResult.validationFailure(
                     "PRE_SUBMIT_CHECK_FAILED", "京东提交前复查失败，出库单未创建");
         }
@@ -116,7 +116,7 @@ public class ShipmentJdOutboundExecutor {
     private SubmitExternalResult reconcileUncertainSubmit(SubmitIntent intent, CommandContext context) {
         try {
             Map<String, Object> reconciliationRequest = Map.of(
-                    "erpDeliveryNo", intent.preview().erpDeliveryNo(),
+                    "erpDeliveryNo", intent.plan().erpDeliveryNo(),
                     "deliveryItemFlag", 1,
                     "deliveryPackageFlag", 0,
                     "deliveryStatusFlag", 1);
@@ -127,26 +127,26 @@ public class ShipmentJdOutboundExecutor {
                 reconciliation = null;
             }
             audits.recordReconciliationQuery(
-                    intent.preview().shipmentId(),
-                    intent.preview().orderId(),
+                    intent.plan().shipmentId(),
+                    intent.plan().orderId(),
                     context,
                     reconciliationRequest,
                     reconciliation,
                     reconciliation != null && extractDeliveryNo(reconciliation) != null,
                     reconciliation != null && Objects.equals(
-                            intent.preview().erpDeliveryNo(), extractErpDeliveryNo(reconciliation)));
+                            intent.plan().erpDeliveryNo(), extractErpDeliveryNo(reconciliation)));
             if (reconciliation != null
                     && reconciliation.success()
                     && extractDeliveryNo(reconciliation) != null
                     && Objects.equals(
-                            intent.preview().erpDeliveryNo(), extractErpDeliveryNo(reconciliation))) {
+                            intent.plan().erpDeliveryNo(), extractErpDeliveryNo(reconciliation))) {
                 return SubmitExternalResult.submitted(reconciliation);
             }
             return SubmitExternalResult.validationFailure(
                     "RECONCILIATION_REQUIRED",
                     "上次京东写结果不确定，按原 erpDeliveryNo 查询未确认结果，禁止再次创建");
         } catch (RuntimeException exception) {
-            log.warn("JD outbound reconciliation failed for shipment {}", intent.preview().shipmentId());
+            log.warn("JD outbound reconciliation failed for shipment {}", intent.plan().shipmentId());
             return SubmitExternalResult.validationFailure(
                     "RECONCILIATION_REQUIRED",
                     "上次京东写结果不确定，对账查询或审计未完成，禁止再次创建");
@@ -183,18 +183,14 @@ public class ShipmentJdOutboundExecutor {
         return null;
     }
 
-    /** 第二阶段的外部写意图：稳定预览快照 + 重试计数 + 客户端模式，单调不可变。 */
+    /** 第二阶段的外部写意图：稳定提交计划 + 重试计数 + 客户端模式，单调不可变。 */
     public record SubmitIntent(
-            ShipmentJdOutboundPreviewSnapshot preview,
+            JdShipmentSubmissionPlan plan,
             int retryCount,
-            String previousSyncStatus,
-            String previousErrorCode,
             String clientMode) {
 
         public boolean requiresReconciliation() {
-            return ShipmentJdOutboundPreparer.SYNC_STATUS_SUBMITTING.equals(previousSyncStatus)
-                    || (ShipmentJdOutboundPreparer.SYNC_STATUS_SYNC_FAILED.equals(previousSyncStatus)
-                            && ShipmentJdOutboundPreparer.UNCERTAIN_EXTERNAL_RESULTS.contains(previousErrorCode));
+            return plan.priorSubmission() != null && plan.priorSubmission().requiresReconciliation();
         }
     }
 

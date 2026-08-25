@@ -76,6 +76,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Autowired TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
     @Autowired ShipmentJdOutboundService outboundService;
+    @Autowired ShipmentJdOutboundPreparer planner;
     @Autowired ShipmentJdTrackingBackfillService backfillService;
     @Autowired ShipmentJdTrackingPoller poller;
     @Autowired ControlledJdWarehouseClient jd;
@@ -1594,7 +1595,7 @@ class ShipmentJdTrackingBackfillApiTest {
         String uniqueSuffix = suffix + "-" + UUID.randomUUID().toString().substring(0, 8);
         Fact fact = createOrder(uniqueSuffix, items);
         long shipmentId = createShipment(fact);
-        ShipmentJdOutboundPreviewSnapshot preview = outboundService.preparePreview(shipmentId);
+        JdShipmentSubmissionPlan preview = planner.plan(shipmentId);
         assertThat(preview.submittable()).isTrue();
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> cargoRequest = (List<Map<String, Object>>) preview.request().get("cargoInfos");

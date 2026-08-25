@@ -1,9 +1,9 @@
 package cn.zimu.fulfillment.fulfillment;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
-import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundPreviewSnapshot.Blocker;
-import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundPreviewSnapshot.StockDemand;
-import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundPreviewSnapshot.Validation;
+import cn.zimu.fulfillment.fulfillment.JdShipmentSubmissionPlan.Blocker;
+import cn.zimu.fulfillment.fulfillment.JdShipmentSubmissionPlan.StockDemand;
+import cn.zimu.fulfillment.fulfillment.JdShipmentSubmissionPlan.Validation;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,9 +27,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * 京东出库单构造单元：一个 Shipment 及其全部 ShipmentItems 聚合为唯一一张京东出库单请求
- * （addSoOrder payload），产出不可变 {@link ShipmentJdOutboundPreviewSnapshot}。
+ * （addSoOrder payload），产出不可变 {@link JdShipmentSubmissionPlan}。
  *
- * <p>预览 HTTP、库存判定和真实建单都必须消费本单元产出的这一份快照，不得另建
+ * <p>预览 HTTP、库存判定和真实建单都必须消费本单元产出的这一份计划，不得另建
  * SKU/数量/地址映射逻辑。本单元只做加锁读取与请求构造：不触发京东写操作、不写审计、
  * 不编排业务事务（独立事务由调用方/编排单元决定），因此出库编排与库存校验都可以
  * 单向依赖它，双方不再互相依赖。
@@ -38,14 +38,14 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class ShipmentJdOutboundPreparer {
 
     /** 出库编排与库存判定共用的建单资格/集成状态常量。 */
-    public static final String READY_TO_EXPORT = "READY_TO_EXPORT";
-    public static final String WAITING_PROVIDER = "WAITING_PROVIDER";
-    public static final String FULFILLING = "FULFILLING";
-    public static final String JD_WAREHOUSE = "JD_WAREHOUSE";
-    public static final String SYNC_STATUS_SUBMITTING = "SUBMITTING";
-    public static final String SYNC_STATUS_SUBMITTED = "SUBMITTED";
-    public static final String SYNC_STATUS_SYNC_FAILED = "SYNC_FAILED";
-    public static final Set<String> UNCERTAIN_EXTERNAL_RESULTS = Set.of(
+    static final String READY_TO_EXPORT = "READY_TO_EXPORT";
+    static final String WAITING_PROVIDER = "WAITING_PROVIDER";
+    static final String FULFILLING = "FULFILLING";
+    static final String JD_WAREHOUSE = "JD_WAREHOUSE";
+    static final String SYNC_STATUS_SUBMITTING = "SUBMITTING";
+    static final String SYNC_STATUS_SUBMITTED = "SUBMITTED";
+    static final String SYNC_STATUS_SYNC_FAILED = "SYNC_FAILED";
+    static final Set<String> UNCERTAIN_EXTERNAL_RESULTS = Set.of(
             "SDK_CALL_FAILED", "EMPTY_RESPONSE_CODE", "UNKNOWN", "RECONCILIATION_REQUIRED",
             // 外层成功但内层缺失时 normalize 可能仅保留这些成功码，仍属部分响应。
             "0", "200", "1000", "10000", "SUCCESS");
@@ -85,26 +85,26 @@ public class ShipmentJdOutboundPreparer {
     }
 
     /**
-     * 构建不带审计、不触发京东写操作的应用快照。后续库存判定只消费此 seam，
+     * 构建不带审计、不触发京东写操作的内部提交计划。后续库存判定只消费此 seam，
      * 不得复制本服务的数量换算或请求映射。查询期间锁定 Shipment 事实，避免请求组装内部漂移。
      */
     @Transactional
-    public ShipmentJdOutboundPreviewSnapshot preparePreview(long shipmentId) {
-        return preparePreview(lockContext(shipmentId));
+    JdShipmentSubmissionPlan plan(long shipmentId) {
+        return plan(lockContext(shipmentId));
     }
 
-    /** 在独立事务中重建并锁定同一 typed preview；用于提交意图与库存复查前的事实重建。 */
-    public ShipmentJdOutboundPreviewSnapshot preparePreviewInNewTransaction(long shipmentId) {
-        ShipmentJdOutboundPreviewSnapshot snapshot =
-                requiresNew.execute(status -> preparePreview(lockContext(shipmentId)));
-        if (snapshot == null) {
-            throw new IllegalStateException("JD outbound preview transaction returned no snapshot");
+    /** 在独立事务中重建并锁定同一提交计划；用于提交意图与库存复查前的事实重建。 */
+    JdShipmentSubmissionPlan planInNewTransaction(long shipmentId) {
+        JdShipmentSubmissionPlan plan =
+                requiresNew.execute(status -> plan(lockContext(shipmentId)));
+        if (plan == null) {
+            throw new IllegalStateException("JD outbound planning transaction returned no plan");
         }
-        return snapshot;
+        return plan;
     }
 
-    /** 预览与提交共用的唯一请求构建器；预览收集所有 blocker，提交仅消费其通过结果。 */
-    public ShipmentJdOutboundPreviewSnapshot preparePreview(Context state) {
+    /** 预览、库存与提交共用的唯一请求构建器；调用者只能消费其确定性结果。 */
+    private JdShipmentSubmissionPlan plan(Context state) {
         Map<String, Object> request = new LinkedHashMap<>();
         List<Validation> validations = new ArrayList<>();
         List<Blocker> blockers = new ArrayList<>();
@@ -188,12 +188,25 @@ public class ShipmentJdOutboundPreparer {
                         ((Number) cargo.get("planQuantity")).intValue()))
                 .toList();
         cargos.forEach(cargo -> cargo.remove("skuId"));
-        return new ShipmentJdOutboundPreviewSnapshot(
+        return new JdShipmentSubmissionPlan(
                 state.id(),
                 state.shipmentVersion(),
                 state.orderId(),
                 state.providerId(),
+                state.providerType(),
                 state.outboundOrderNo(),
+                state.jdOutbound() == null
+                        ? null
+                        : new JdShipmentSubmissionPlan.PriorSubmission(
+                                state.jdOutbound().syncStatus(),
+                                state.jdOutbound().requestHash(),
+                                state.jdOutbound().retryCount(),
+                                state.jdOutbound().lastErrorCode(),
+                                state.jdOutbound().clientMode()),
+                state.items().stream()
+                        .map(item -> new JdShipmentSubmissionPlan.OrderLineState(
+                                item.orderLineId(), item.processingStage()))
+                        .toList(),
                 request,
                 sha256(json(request)),
                 stockDemands,
@@ -414,7 +427,7 @@ public class ShipmentJdOutboundPreparer {
     }
 
     /** 供审计/编排单元把预览 blocker 呈现为稳定 JSON 结构。 */
-    public static Map<String, Object> blockerMap(Blocker blocker) {
+    static Map<String, Object> blockerMap(Blocker blocker) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("code", blocker.code());
         result.put("path", blocker.path());
@@ -450,7 +463,7 @@ public class ShipmentJdOutboundPreparer {
      * 以 NO KEY UPDATE 串行同一 Shipment 的预览/提交，但保持与失败留痕 REQUIRES_NEW 所需的
      * 外键 KEY SHARE 兼容，避免同一请求在两个事务间自锁。再锁全部 ShipmentItem 的 Fulfillment/OrderLine。
      */
-    public Context lockContext(long shipmentId) {
+    private Context lockContext(long shipmentId) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("JD outbound preview lock requires an active database transaction");
         }
@@ -634,7 +647,7 @@ public class ShipmentJdOutboundPreparer {
     }
 
     /** 稳定请求哈希/幂等键散列；对外保持原实现。 */
-    public static String sha256(String value) {
+    static String sha256(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(
                     value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
@@ -643,23 +656,23 @@ public class ShipmentJdOutboundPreparer {
         }
     }
 
-    public static String text(Object value) {
+    static String text(Object value) {
         return value == null || value.toString().isBlank() ? null : value.toString();
     }
 
-    public static boolean hasText(String value) {
+    static boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
 
-    public static String requiredText(String value) {
+    static String requiredText(String value) {
         return value == null ? null : value.trim();
     }
 
-    public static String optionalText(String value) {
+    static String optionalText(String value) {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
-    public record Item(
+    private record Item(
             long fulfillmentId,
             BigDecimal instructedQuantity,
             long orderLineId,
@@ -671,7 +684,7 @@ public class ShipmentJdOutboundPreparer {
             String processingStage) {
     }
 
-    public record Component(
+    private record Component(
             long orderLineId,
             int componentNo,
             long skuId,
@@ -680,21 +693,15 @@ public class ShipmentJdOutboundPreparer {
             String unit) {
     }
 
-    public record JdOutbound(
+    private record JdOutbound(
             String syncStatus,
             String requestHash,
             int retryCount,
             String lastErrorCode,
             String clientMode) {
-
-        public boolean requiresReconciliation() {
-            return SYNC_STATUS_SUBMITTING.equals(syncStatus)
-                    || (SYNC_STATUS_SYNC_FAILED.equals(syncStatus)
-                            && UNCERTAIN_EXTERNAL_RESULTS.contains(lastErrorCode));
-        }
     }
 
-    public record Context(
+    private record Context(
             long id,
             String shipmentNo,
             String outboundOrderNo,

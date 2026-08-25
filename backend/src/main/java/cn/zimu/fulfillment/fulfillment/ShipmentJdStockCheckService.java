@@ -34,7 +34,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
- * 使用 Ticket 02 的 immutable preview 作为唯一数量来源，执行 Shipment 级京东实时库存判定。
+ * 使用 Ticket 02 的 immutable plan 作为唯一数量来源，执行 Shipment 级京东实时库存判定。
  * 库存查询是 advisory fact：不预占、不改变履约方、不创建采购单，提交前仍必须重新查询。
  */
 @Service
@@ -83,27 +83,27 @@ public class ShipmentJdStockCheckService {
                 SCOPE,
                 idempotencyKey,
                 200,
-                () -> preparer.preparePreview(shipmentId),
-                preview -> Map.of(
+                () -> preparer.plan(shipmentId),
+                plan -> Map.of(
                         "shipment_id", shipmentId,
-                        "shipment_version", preview.shipmentVersion(),
-                        "preview_hash", preview.requestHash()),
-                preview -> probe(preview, idempotencyKey, context),
-                (preview, probe) -> persist(preview, probe, context));
+                        "shipment_version", plan.shipmentVersion(),
+                        "preview_hash", plan.requestHash()),
+                plan -> probe(plan, idempotencyKey, context),
+                (plan, probe) -> persist(plan, probe, context));
     }
 
     private Probe probe(
-            ShipmentJdOutboundPreviewSnapshot preview,
+            JdShipmentSubmissionPlan plan,
             String stockIdempotencyKey,
             CommandContext context) {
-        if (!preview.submittable()) {
+        if (!plan.submittable()) {
             throw BusinessException.conflict(
                     "JD_STOCK_PREVIEW_BLOCKED",
                     "当前京东出库预览仍有阻断项，请先修复预览后再查询库存");
         }
 
         IdempotentResult<Map<String, Object>> gateResult = skuGate.check(
-                preview.shipmentId(),
+                plan.shipmentId(),
                 "jd-stock-gate-" + UUID.randomUUID().toString(),
                 context);
         Map<String, Object> gate = gateResult.replayed()
@@ -123,8 +123,8 @@ public class ShipmentJdStockCheckService {
         String localGateFingerprint = requiredText(
                 gate.get("local_gate_fingerprint"), "local_gate_fingerprint");
 
-        List<Demand> demands = aggregateDemands(preview.stockDemands());
-        Map<String, Object> request = stockRequest(preview, demands);
+        List<Demand> demands = aggregateDemands(plan.stockDemands());
+        Map<String, Object> request = stockRequest(plan, demands);
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("JD stock query must run outside a database transaction");
         }
@@ -134,17 +134,17 @@ public class ShipmentJdStockCheckService {
         } catch (RuntimeException exception) {
             result = new JdResult(false, "CLIENT_EXCEPTION", "京东库存查询调用失败", null, null);
         }
-        return evaluate(result, preview, demands, localGateFingerprint);
+        return evaluate(result, plan, demands, localGateFingerprint);
     }
 
     private Map<String, Object> persist(
-            ShipmentJdOutboundPreviewSnapshot prepared,
+            JdShipmentSubmissionPlan prepared,
             Probe probe,
             CommandContext context) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("JD stock result persistence requires a database transaction");
         }
-        ShipmentJdOutboundPreviewSnapshot current = preparer.preparePreview(prepared.shipmentId());
+        JdShipmentSubmissionPlan current = preparer.plan(prepared.shipmentId());
         if (current.shipmentVersion() != prepared.shipmentVersion()
                 || !Objects.equals(current.requestHash(), prepared.requestHash())
                 || !current.submittable()) {
@@ -222,7 +222,7 @@ public class ShipmentJdStockCheckService {
 
     private Probe evaluate(
             JdResult result,
-            ShipmentJdOutboundPreviewSnapshot preview,
+            JdShipmentSubmissionPlan plan,
             List<Demand> demands,
             String localGateFingerprint) {
         Instant observedAt = Instant.now();
@@ -247,7 +247,7 @@ public class ShipmentJdStockCheckService {
                     localGateFingerprint);
         }
 
-        String warehouse = text(preview.request().get("warehouseNo"));
+        String warehouse = text(plan.request().get("warehouseNo"));
         List<Map<String, Object>> blockers = new ArrayList<>();
         List<StockObservation> observations = new ArrayList<>();
         for (Demand demand : demands) {
@@ -317,9 +317,9 @@ public class ShipmentJdStockCheckService {
                 stock.signum() == 0 && usable.signum() == 0 ? "OBSERVED_ZERO" : "OBSERVED");
     }
 
-    private List<Demand> aggregateDemands(List<ShipmentJdOutboundPreviewSnapshot.StockDemand> source) {
+    private List<Demand> aggregateDemands(List<JdShipmentSubmissionPlan.StockDemand> source) {
         Map<String, Demand> values = new LinkedHashMap<>();
-        for (ShipmentJdOutboundPreviewSnapshot.StockDemand item : source) {
+        for (JdShipmentSubmissionPlan.StockDemand item : source) {
             String key = item.skuId() + ":" + item.goodsNo();
             Demand current = values.get(key);
             int quantity = current == null
@@ -337,12 +337,12 @@ public class ShipmentJdStockCheckService {
     }
 
     private Map<String, Object> stockRequest(
-            ShipmentJdOutboundPreviewSnapshot preview, List<Demand> demands) {
-        Map<String, Object> customer = map(preview.request().get("customerInfo"));
+            JdShipmentSubmissionPlan plan, List<Demand> demands) {
+        Map<String, Object> customer = map(plan.request().get("customerInfo"));
         Map<String, Object> request = new LinkedHashMap<>();
-        request.put("pin", preview.request().get("pin"));
+        request.put("pin", plan.request().get("pin"));
         request.put("ownerNo", customer.get("ownerNo"));
-        request.put("warehouseNo", preview.request().get("warehouseNo"));
+        request.put("warehouseNo", plan.request().get("warehouseNo"));
         request.put("stockIndexes", "1");
         request.put("goodsNo", String.join(",", demands.stream().map(Demand::goodsNo).distinct().toList()));
         request.put("goodsLevel", "100");
@@ -354,7 +354,7 @@ public class ShipmentJdStockCheckService {
     }
 
     private Long reconcileCase(
-            ShipmentJdOutboundPreviewSnapshot preview,
+            JdShipmentSubmissionPlan plan,
             Probe probe,
             Map<Long, SkuLabel> skuLabels,
             boolean passed,
@@ -366,7 +366,7 @@ public class ShipmentJdStockCheckService {
                 FOR UPDATE
                 """,
                 Long.class,
-                preview.shipmentId(),
+                plan.shipmentId(),
                 BLOCK_REASON);
         if (passed) {
             if (existing.isEmpty()) return null;
@@ -380,15 +380,15 @@ public class ShipmentJdStockCheckService {
                     """,
                     json(Map.of(
                             "resolution_type", "JD_STOCK_RECHECK_PASSED",
-                            "preview_hash", preview.requestHash(),
+                            "preview_hash", plan.requestHash(),
                             "not_reserved", true)),
                     operator,
                     existing.getFirst());
             return null;
         }
         String detail = json(Map.of(
-                "shipment_id", String.valueOf(preview.shipmentId()),
-                "preview_hash", preview.requestHash(),
+                "shipment_id", String.valueOf(plan.shipmentId()),
+                "preview_hash", plan.requestHash(),
                 "blockers", probe.blockers(),
                 "observations", probe.observations().stream()
                         .map(row -> observationMap(row, skuLabels))
@@ -396,7 +396,7 @@ public class ShipmentJdStockCheckService {
                 "not_reserved", true,
                 "maintenance_action", Map.of(
                         "action", "RERUN_JD_STOCK_CHECK",
-                        "api", "/api/v1/shipments/" + preview.shipmentId() + "/jd-stock-check")));
+                        "api", "/api/v1/shipments/" + plan.shipmentId() + "/jd-stock-check")));
         if (existing.isEmpty()) {
             jdbc.update(
                     """
@@ -408,8 +408,8 @@ public class ShipmentJdStockCheckService {
                     """,
                     "RC-JD-STOCK-" + token(),
                     BLOCK_REASON,
-                    preview.orderId(),
-                    preview.shipmentId(),
+                    plan.orderId(),
+                    plan.shipmentId(),
                     detail);
         } else {
             jdbc.update(
@@ -423,21 +423,21 @@ public class ShipmentJdStockCheckService {
                 WHERE shipment_id=? AND reason_code=? AND status='OPEN'
                 """,
                 Long.class,
-                preview.shipmentId(),
+                plan.shipmentId(),
                 BLOCK_REASON);
     }
 
     private Map<String, Object> response(
-            ShipmentJdOutboundPreviewSnapshot preview,
+            JdShipmentSubmissionPlan plan,
             Probe probe,
             Map<Long, SkuLabel> skuLabels,
             boolean passed,
             Long reviewCaseId) {
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("shipment_id", String.valueOf(preview.shipmentId()));
-        response.put("shipment_version", preview.shipmentVersion());
-        response.put("preview_hash", preview.requestHash());
-        response.put("target_warehouse_code", text(preview.request().get("warehouseNo")));
+        response.put("shipment_id", String.valueOf(plan.shipmentId()));
+        response.put("shipment_version", plan.shipmentVersion());
+        response.put("preview_hash", plan.requestHash());
+        response.put("target_warehouse_code", text(plan.request().get("warehouseNo")));
         response.put("stock_status", passed ? "PASSED" : "BLOCKED");
         response.put("observation_status", overallObservation(probe.observations()));
         response.put("observed_at", probe.observedAt());
