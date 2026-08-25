@@ -18,6 +18,7 @@ import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -620,20 +621,17 @@ public class ShipmentJdSkuMappingGateService {
         return Map.of("code", code, "message", message);
     }
 
+    /**
+     * 门禁执法语义：MATCHED 才放行；无参照名（NO_REFERENCE）与不命中同样拦截，
+     * fail-closed 不变。比对规则由 {@link JdGoodsNameMatch} 唯一实现（设计收敛票 01）。
+     */
     private boolean nameMatches(SkuSubject subject, MappingRow mapping, String remoteName) {
-        String normalizedRemote = normalize(remoteName);
-        for (String candidate : List.of(
-                subject.productName() == null ? "" : subject.productName(),
-                text(mapping.externalCodes().get("provider_sku_name")) == null
-                        ? ""
-                        : text(mapping.externalCodes().get("provider_sku_name")))) {
-            String normalized = normalize(candidate);
-            if (!normalized.isEmpty()
-                    && (normalizedRemote.equals(normalized)
-                            || normalizedRemote.contains(normalized)
-                            || normalized.contains(normalizedRemote))) return true;
-        }
-        return false;
+        return JdGoodsNameMatch.verdict(
+                        remoteName,
+                        Arrays.asList(
+                                subject.productName(),
+                                text(mapping.externalCodes().get("provider_sku_name"))))
+                == JdGoodsNameMatch.Verdict.MATCHED;
     }
 
     private Map<String, Object> jsonMap(String json) {
@@ -656,10 +654,6 @@ public class ShipmentJdSkuMappingGateService {
 
     private static String text(Object value) {
         return value == null || value.toString().isBlank() ? null : value.toString();
-    }
-
-    private static String normalize(String value) {
-        return value == null ? "" : value.trim().replaceAll("\\s+", "");
     }
 
     private static String token() {
