@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.connector.jd.serial;
 
+import cn.zimu.fulfillment.connector.jd.JdPiiProjection;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,7 +43,7 @@ public class JdSerialController {
         putIfPresent(request, "endDate", endDate);
         putIfPresent(request, "pageSize", pageSize);
         putIfPresent(request, "currentPage", currentPage);
-        return redactPersonalData(service.queryJdMallSerial(request));
+        return JdPiiProjection.redactPersonalData(service.queryJdMallSerial(request));
     }
 
     /** 序列号条件查询：按事业部、仓库、业务类型等条件分页查询序列号。 */
@@ -65,7 +66,7 @@ public class JdSerialController {
         putIfPresent(request, "endDate", endDate);
         putIfPresent(request, "currentPage", currentPage);
         putIfPresent(request, "pageSize", pageSize);
-        return redactPersonalData(service.querySerialByCondition(request));
+        return JdPiiProjection.redactPersonalData(service.querySerialByCondition(request));
     }
 
     /** 序列号流向查询：按商品编码 + 序列号查询出入库流向。 */
@@ -78,7 +79,7 @@ public class JdSerialController {
         putIfPresent(request, "goodsNo", goodsNo);
         putIfPresent(request, "serialNo", serialNo);
         putIfPresent(request, "queryType", queryType);
-        return redactPersonalData(service.querySerialFlow(request));
+        return JdPiiProjection.redactPersonalData(service.querySerialFlow(request));
     }
 
     /** 序列号内部查询：按商品编码分页查询在库序列号。 */
@@ -93,7 +94,7 @@ public class JdSerialController {
         putIfPresent(request, "queryType", queryType);
         putIfPresent(request, "pageSize", pageSize);
         putIfPresent(request, "currentPage", currentPage);
-        return redactPersonalData(service.querySerialInside(request));
+        return JdPiiProjection.redactPersonalData(service.querySerialInside(request));
     }
 
     private void putIfPresent(Map<String, Object> request, String key, Object value) {
@@ -106,68 +107,6 @@ public class JdSerialController {
         }
     }
 
-    private JdResult redactPersonalData(JdResult result) {
-        return new JdResult(
-                result.success(),
-                result.businessCode(),
-                result.message(),
-                result.requestId(),
-                sanitize(result.data()));
-    }
 
-    private Object sanitize(Object value) {
-        if (value instanceof Map<?, ?> values) {
-            Map<String, Object> safe = new LinkedHashMap<>();
-            values.forEach((key, item) -> {
-                String field = String.valueOf(key);
-                if (!personalField(field)) {
-                    safe.put(field, sanitize(item));
-                }
-            });
-            return safe;
-        }
-        if (value instanceof List<?> values) {
-            return values.stream().map(this::sanitize).toList();
-        }
-        return value;
-    }
 
-    /**
-     * HTTP 边界 PII 规则（6 个 JD controller 统一口径）：联系人/客户容器键（receiverinfo/
-     * senderinfo/consignee/customerinfo 等）整块剔除；phone/mobile/telephone/email/fax/address
-     * 按精确键或后缀匹配剔除，键先归一化为小写（覆盖 SDK camelCase 如 transporterPhone/backEmail），
-     * 与 SecretRedactor.isPersonalDataKey 对齐。
-     */
-    private boolean personalField(String field) {
-        String normalized = field.toLowerCase(Locale.ROOT);
-        return normalized.contains("customerinfo")
-                || normalized.contains("receiverinfo")
-                || normalized.contains("senderinfo")
-                || normalized.contains("consignee")
-                || normalized.contains("contactinfo")
-                || normalized.contains("recipientinfo")
-                || normalized.equals("phone")
-                || normalized.equals("mobile")
-                || normalized.equals("telephone")
-                || normalized.equals("email")
-                || normalized.equals("fax")
-                || normalized.equals("address")
-                || normalized.endsWith("phone")
-                || normalized.endsWith("mobile")
-                || normalized.endsWith("telephone")
-                || normalized.endsWith("email")
-                || normalized.endsWith("fax")
-                || normalized.endsWith("address")
-                // 个人角色姓名键（transporterName/shipperName/operateName/linkmanName 等）：
-                // 以 name 结尾且含个人角色词才剔除；业务实体名（ownerName/shopName/goodsName 等）不受影响
-                || (normalized.endsWith("name")
-                        && (normalized.contains("transporter")
-                                || normalized.contains("shipper")
-                                || normalized.contains("operator")
-                                || normalized.contains("operate")
-                                || normalized.contains("linkman")
-                                || normalized.contains("contact")
-                                || normalized.contains("receiver")
-                                || normalized.contains("sender")));
-    }
 }
