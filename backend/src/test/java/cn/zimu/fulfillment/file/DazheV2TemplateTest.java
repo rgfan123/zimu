@@ -96,6 +96,20 @@ class DazheV2TemplateTest {
     }
 
     @Test
+    void 表尾合计行被跳过_不产生NEED_REVIEW行() throws Exception {
+        // 生产实证（批次 28 第 8 行）：只有「合计」带 SUM 公式、身份列全空的表尾行
+        // 被解析成一行落 NEED_REVIEW，一行合计把六张真订单的批次确认全部拖住
+        List<String> summaryRow = List.of("", "", "", "", "", "", "", "", "SUM(I2:I7)", "", "");
+        byte[] bytes = workbook(DAZHE_V2_HEADERS, List.of(dazheV2Row(), summaryRow));
+
+        ParsedSourceFile parsed = new SourceFileParser().parse(bytes);
+
+        assertThat(parsed.rows()).hasSize(1);
+        assertThat(parsed.rows().getFirst().sourceOrderRef())
+                .isEqualTo("ZXYPM209901010000000000000001");
+    }
+
+    @Test
     void 行解析用主订单号当订单标识_商品名称当商品标识() throws Exception {
         byte[] bytes = workbook(DAZHE_V2_HEADERS, List.of(dazheV2Row()));
 

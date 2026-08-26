@@ -184,6 +184,9 @@ class SourceFileParser {
                         && isWangqiPurchaseTotal(cells)) {
                     continue;
                 }
+                if (candidate.channel() == SourceChannel.DAZHE && isDazheV2(cells) && isDazheV2Summary(cells)) {
+                    continue;
+                }
                 rows.add(map(candidate.channel(), candidate.sheet().getSheetName(), candidate.sheetIndex(), index + 1, cells));
             }
             List<ParsedSourceRow> validatedRows = candidate.channel() == SourceChannel.WANQI
@@ -603,6 +606,20 @@ class SourceFileParser {
     private boolean isJufubaoSummary(Map<String, String> cells) {
         return cells.values().stream().map(String::strip)
                 .anyMatch(value -> "供应商汇总".equals(value) || "汇总".equals(value));
+    }
+
+    /**
+     * 大者 v2 的合计行：表尾只有「合计」列带 SUM 公式、身份列全空。
+     *
+     * <p>生产实证（批次 28 第 8 行）：{@code {"合计": "SUM(I2:I7)", 其余全空}} 被解析成一行、
+     * 落 NEED_REVIEW，而批次确认要求全行 ACCEPTED——一行合计把六张真订单全部拖住。
+     * 判定条件用「身份列全空」而不是「值里含 SUM」：公式文本随导出工具变（有的给公式、
+     * 有的给算好的数字），身份列空才是合计行不变的本质。
+     */
+    private boolean isDazheV2Summary(Map<String, String> cells) {
+        return value(cells, "主订单号").isBlank()
+                && value(cells, "收件人").isBlank()
+                && value(cells, "商品名称").isBlank();
     }
 
     private boolean isWangqiPurchaseTotal(Map<String, String> cells) {
