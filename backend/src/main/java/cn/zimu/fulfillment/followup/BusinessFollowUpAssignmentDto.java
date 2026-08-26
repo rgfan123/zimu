@@ -32,6 +32,12 @@ public record BusinessFollowUpAssignmentDto(
         String executionTaskKey,
         @JsonProperty("request_id")
         String requestId,
+        @JsonProperty("payload_hash")
+        String payloadHash,
+        @JsonProperty("confirmed_by_operator_id")
+        String confirmedByOperatorId,
+        @JsonProperty("confirmed_by")
+        String confirmedBy,
         @JsonProperty("external_entity_type")
         String externalEntityType,
         @JsonProperty("external_entity_id")

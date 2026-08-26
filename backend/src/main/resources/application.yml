@@ -109,11 +109,23 @@ app:
       endpoint: ${KEHUZX_MCP_ENDPOINT:}
       read-token: ${KEHUZX_MCP_FOLLOWUP_READ_TOKEN:}
       allowed-host: ${KEHUZX_MCP_ALLOWED_HOST:kehuzx-mcp}
-      allowed-port: ${KEHUZX_MCP_ALLOWED_PORT:8000}
+      allowed-port: ${KEHUZX_MCP_ALLOWED_PORT:9100}
       connect-timeout: ${KEHUZX_MCP_CONNECT_TIMEOUT:PT3S}
       read-timeout: ${KEHUZX_MCP_READ_TIMEOUT:PT10S}
       contract-version: ${KEHUZX_MCP_CONTRACT_VERSION:kehuzx-mcp-v1}
       upstream-commit: ${KEHUZX_MCP_UPSTREAM_COMMIT:}
+    mcp-write:
+      # #131: separate deterministic Worker identity, never an Agent tool.
+      enabled: ${KEHUZX_MCP_WRITE_ENABLED:false}
+      endpoint: ${KEHUZX_MCP_WRITE_ENDPOINT:}
+      write-token: ${KEHUZX_MCP_WRITE_TOKEN:}
+      approval-signing-key: ${KEHUZX_MCP_APPROVAL_SIGNING_KEY:}
+      allowed-host: ${KEHUZX_MCP_WRITE_ALLOWED_HOST:kehuzx-mcp}
+      allowed-port: ${KEHUZX_MCP_WRITE_ALLOWED_PORT:9100}
+      connect-timeout: ${KEHUZX_MCP_WRITE_CONNECT_TIMEOUT:PT3S}
+      read-timeout: ${KEHUZX_MCP_WRITE_READ_TIMEOUT:PT10S}
+      max-response-bytes: ${KEHUZX_MCP_WRITE_MAX_RESPONSE_BYTES:1048576}
+      approval-ttl-seconds: ${KEHUZX_MCP_APPROVAL_TTL_SECONDS:120}
   wecom-tracking-file-worker:
     # Issue #86：单聊 file 专用确定性解析队列；默认跟随消息 Worker 总开关，且从不调用模型。
     enabled: ${WECOM_TRACKING_FILE_WORKER_ENABLED:${MESSAGE_WORKER_ENABLED:true}}

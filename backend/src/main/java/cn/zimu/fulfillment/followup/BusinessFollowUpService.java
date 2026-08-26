@@ -653,14 +653,18 @@ public class BusinessFollowUpService {
     private List<BusinessFollowUpAssignmentDto> assignments(long followupId) {
         return jdbc.query(
                 """
-                SELECT id, followup_id, draft_version, approval_id, agent_run_id,
-                       task_type, logical_target, assignee_type, assignee_ref, status,
-                       due_at, priority, idempotency_key, execution_task_key, request_id,
-                       external_entity_type, external_entity_id, result_code,
-                       created_at, started_at, completed_at, updated_at
-                FROM app.business_followup_assignments
-                WHERE followup_id=?
-                ORDER BY created_at ASC, id ASC
+                SELECT x.id, x.followup_id, x.draft_version, x.approval_id, x.agent_run_id,
+                       x.task_type, x.logical_target, x.assignee_type, x.assignee_ref, x.status,
+                       x.due_at, x.priority, x.idempotency_key, x.execution_task_key, x.request_id,
+                       x.payload_hash, a.decided_by_operator_id,
+                       actor.display_name AS decided_by,
+                       x.external_entity_type, x.external_entity_id, x.result_code,
+                       x.created_at, x.started_at, x.completed_at, x.updated_at
+                FROM app.business_followup_assignments x
+                JOIN app.business_followup_approvals a ON a.id=x.approval_id
+                JOIN app.internal_operators actor ON actor.id=a.decided_by_operator_id
+                WHERE x.followup_id=?
+                ORDER BY x.created_at ASC, x.id ASC
                 """,
                 (rs, row) -> new BusinessFollowUpAssignmentDto(
                         rs.getString("id"),
@@ -678,6 +682,9 @@ public class BusinessFollowUpService {
                         rs.getString("idempotency_key"),
                         rs.getString("execution_task_key"),
                         rs.getString("request_id"),
+                        rs.getString("payload_hash"),
+                        rs.getString("decided_by_operator_id"),
+                        rs.getString("decided_by"),
                         rs.getString("external_entity_type"),
                         rs.getString("external_entity_id"),
                         rs.getString("result_code"),

@@ -4456,6 +4456,9 @@ components:
         idempotency_key: { type: string, minLength: 1 }
         execution_task_key: { type: string, minLength: 1 }
         request_id: { type: string, nullable: true }
+        payload_hash: { type: string, pattern: '^[0-9a-f]{64}$', nullable: true }
+        confirmed_by_operator_id: { $ref: '#/components/schemas/Identifier', nullable: true }
+        confirmed_by: { type: string, nullable: true }
         external_entity_type: { type: string, nullable: true }
         external_entity_id: { type: string, nullable: true }
         result_code: { type: string, nullable: true }

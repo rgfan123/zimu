@@ -16,6 +16,7 @@ public class BusinessFollowUpAssignmentWorker {
     private static final Logger log = LoggerFactory.getLogger(BusinessFollowUpAssignmentWorker.class);
     private final AsyncTaskStore tasks;
     private final BusinessFollowUpAssignmentApplication application;
+    private final BusinessFollowUpCustomerAssignmentExecutor customerExecutor;
     private final boolean enabled;
     private final Duration lease;
     private final Duration backoff;
@@ -24,11 +25,13 @@ public class BusinessFollowUpAssignmentWorker {
     public BusinessFollowUpAssignmentWorker(
             AsyncTaskStore tasks,
             BusinessFollowUpAssignmentApplication application,
+            BusinessFollowUpCustomerAssignmentExecutor customerExecutor,
             @Value("${app.followup-assignment-worker.enabled:false}") boolean enabled,
             @Value("${app.followup-assignment-worker.lease-seconds:30}") long leaseSeconds,
             @Value("${app.followup-assignment-worker.backoff-seconds:5}") long backoffSeconds) {
         this.tasks = tasks;
         this.application = application;
+        this.customerExecutor = customerExecutor;
         this.enabled = enabled;
         this.lease = Duration.ofSeconds(Math.max(1, leaseSeconds));
         this.backoff = Duration.ofSeconds(Math.max(1, backoffSeconds));
@@ -56,7 +59,7 @@ public class BusinessFollowUpAssignmentWorker {
                 else application.project(task, owner);
             } else if (BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE.equals(task.taskType())) {
                 if ("FINALIZING".equals(task.status())) application.resumeExecutionFinalization(task, owner);
-                else application.execute(task, owner);
+                else customerExecutor.execute(task, owner);
             } else {
                 throw new IllegalArgumentException("Unsupported Assignment task type: " + task.taskType());
             }
@@ -64,11 +67,21 @@ public class BusinessFollowUpAssignmentWorker {
             log.warn("Business Follow-up Assignment task {} failed", task.id(), ex);
             if ("FINALIZING".equals(task.status())) return;
             if (BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE.equals(task.taskType())) {
-                application.recordExecutionFailure(task, owner, "ASSIGNMENT_EXECUTION_FAILED", backoff);
+                application.recordExecutionFailure(task, owner, stableCode(ex), backoff);
             } else {
                 application.recordProjectionFailure(
                         task, owner, "ASSIGNMENT_PROJECTION_FAILED", backoff);
             }
         }
+    }
+
+    private static String stableCode(RuntimeException failure) {
+        if (failure instanceof KehuzxReadException read) {
+            return read.code().name();
+        }
+        if (failure instanceof KehuzxWriteException write) {
+            return write.code().name();
+        }
+        return "ASSIGNMENT_EXECUTION_FAILED";
     }
 }

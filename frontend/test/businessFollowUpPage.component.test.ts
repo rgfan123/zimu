@@ -385,6 +385,9 @@ test('detail shows each confirmed follow-up Assignment with its approval, agent 
       idempotency_key: 'followup:9007199254740993:v3:customer:KH-260826-001',
       execution_task_key: 'followup-assignment:71',
       request_id: 'req_assignment_71',
+      payload_hash: 'a'.repeat(64),
+      confirmed_by_operator_id: '17',
+      confirmed_by: '王审批',
       external_entity_type: 'sample_request',
       external_entity_id: 'sample-19',
       result_code: 'UPSTREAM_REJECTED',
@@ -415,6 +418,7 @@ test('detail shows each confirmed follow-up Assignment with its approval, agent 
   const text = bodyText();
   assert.match(text, /KEHUZX_CUSTOMER_LINK.*FAILED/);
   assert.match(text, /Approval 61.*草稿 v3.*Agent run run_confirmed_v3/);
+  assert.match(text, /确认人 王审批/);
   assert.match(text, /DETERMINISTIC_MCP.*kehuzx:customer-write.*优先级 NORMAL/);
-  assert.match(text, /请求 req_assignment_71.*外部结果 sample_request:sample-19.*UPSTREAM_REJECTED/);
+  assert.match(text, /请求 req_assignment_71.*Payload a{64}.*外部结果 sample_request:sample-19.*UPSTREAM_REJECTED/);
 });

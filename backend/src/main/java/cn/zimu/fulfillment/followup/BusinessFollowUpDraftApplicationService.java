@@ -67,13 +67,19 @@ public class BusinessFollowUpDraftApplicationService {
         List<String> failureCodes = failureCodes(result.runId());
         Set<String> customerIds = customerIds(evidence);
         boolean customerSearchConverged = customerSearchConverged(evidence);
+        boolean emptyCustomerSearchConverged = emptyCustomerSearchConverged(evidence);
+        boolean customerSearchCompleted = customerSearchConverged || emptyCustomerSearchConverged;
+        LocalCustomer localCustomer = localCustomer(work.submissionId());
         String selectedCustomerId = customerIds.size() == 1
                 ? customerIds.iterator().next()
                 : null;
+        boolean canCreateCustomer = customerIds.isEmpty()
+                && emptyCustomerSearchConverged
+                && localCustomer != null;
         ContentValidation validated = validateContent(result.output(), evidence, selectedCustomerId);
         boolean requiresInput = result.outcome() == AgentOutcome.NEEDS_INPUT
-                || customerIds.size() != 1
-                || !customerSearchConverged
+                || (selectedCustomerId == null && !canCreateCustomer)
+                || !customerSearchCompleted
                 || validated.requiresHuman()
                 || validated.unsupportedFact()
                 || validated.piiRedacted()
@@ -111,9 +117,27 @@ public class BusinessFollowUpDraftApplicationService {
         }
         if (selectedCustomerId != null) {
             refs.addObject().put("entity_type", "customer").put("id", selectedCustomerId);
+        } else if (canCreateCustomer) {
+            refs.addObject()
+                    .put("entity_type", "zimu_customer")
+                    .put("id", String.valueOf(localCustomer.id()));
         }
 
         ObjectNode content = validated.content();
+        ObjectNode customerAssignment = content.putObject("customer_assignment");
+        if (selectedCustomerId != null) {
+            customerAssignment.put("mode", "LINK");
+            customerAssignment.put("kehuzx_customer_id", selectedCustomerId);
+        } else if (canCreateCustomer) {
+            customerAssignment.put("mode", "CREATE");
+            customerAssignment.put("zimu_customer_id", String.valueOf(localCustomer.id()));
+            customerAssignment.put("customer_name", localCustomer.name());
+            content.put("summary", "Kehuzx 无匹配客户；将按 Zimu 客户主数据创建新客户，等待 +1 核对。");
+            ((ArrayNode) content.path("risks")).removeAll();
+            ArrayNode actions = (ArrayNode) content.path("recommended_actions");
+            actions.removeAll();
+            actions.add("由指定 +1 核对并确认创建 Kehuzx 客户");
+        }
         // Persist the server's final evidence/ownership/redaction decision. The model may request
         // more review, but it can never mark a draft confirmable by writing requires_human=false.
         content.put("requires_human", requiresInput);
@@ -243,10 +267,12 @@ public class BusinessFollowUpDraftApplicationService {
     private ObjectNode orderSnapshot(long submissionId) {
         List<ObjectNode> rows = jdbc.query(
                 """
-                SELECT id, revision, status, receiver_name, receiver_phone, receiver_address,
-                       settlement_method, missing_fields::text AS missing_fields
-                FROM app.order_drafts
-                WHERE submission_id=?
+                SELECT od.id, od.revision, od.status, od.customer_id, c.customer_name,
+                       od.receiver_name, od.receiver_phone, od.receiver_address,
+                       od.settlement_method, od.missing_fields::text AS missing_fields
+                FROM app.order_drafts od
+                LEFT JOIN app.customers c ON c.id=od.customer_id
+                WHERE od.submission_id=?
                 ORDER BY id DESC
                 LIMIT 1
                 """,
@@ -256,6 +282,10 @@ public class BusinessFollowUpDraftApplicationService {
                     snapshot.put("order_draft_id", String.valueOf(orderDraftId));
                     snapshot.put("revision", rs.getLong("revision"));
                     snapshot.put("status", rs.getString("status"));
+                    if (rs.getObject("customer_id") != null) {
+                        snapshot.put("customer_id", rs.getString("customer_id"));
+                        putNullable(snapshot, "customer_name", rs.getString("customer_name"));
+                    }
                     putNullable(snapshot, "receiver_name", rs.getString("receiver_name"));
                     putNullable(snapshot, "receiver_phone", rs.getString("receiver_phone"));
                     putNullable(snapshot, "receiver_address", rs.getString("receiver_address"));
@@ -289,6 +319,24 @@ public class BusinessFollowUpDraftApplicationService {
                 },
                 submissionId);
         return rows.isEmpty() ? mapper.createObjectNode() : rows.getFirst();
+    }
+
+    private LocalCustomer localCustomer(long submissionId) {
+        return jdbc.query(
+                        """
+                        SELECT c.id, c.customer_name
+                        FROM app.order_drafts od
+                        JOIN app.customers c ON c.id=od.customer_id
+                        WHERE od.submission_id=? AND c.status='ACTIVE'
+                        ORDER BY od.id DESC
+                        LIMIT 1
+                        """,
+                        (rs, row) -> new LocalCustomer(
+                                rs.getLong("id"), rs.getString("customer_name")),
+                        submissionId)
+                .stream()
+                .findFirst()
+                .orElse(null);
     }
 
     private static void putNullable(ObjectNode target, String field, String value) {
@@ -625,6 +673,22 @@ public class BusinessFollowUpDraftApplicationService {
                         data.path("items").get(0).path("code").asText(""));
     }
 
+    private static boolean emptyCustomerSearchConverged(List<RemoteEvidence> evidence) {
+        List<JsonNode> envelopes = evidence.stream()
+                .filter(item -> "search_customers".equals(item.toolName()))
+                .map(RemoteEvidence::payload)
+                .toList();
+        if (envelopes.size() != 1) {
+            return false;
+        }
+        JsonNode envelope = envelopes.getFirst();
+        JsonNode data = envelope.path("data");
+        return !envelope.path("authorized_customer_code").asText("").isBlank()
+                && data.path("total").asInt(-1) == 0
+                && data.path("items").isArray()
+                && data.path("items").isEmpty();
+    }
+
     private static void collectRefs(
             String tool, JsonNode envelope, ArrayNode refs, String selectedCustomerId) {
         if (selectedCustomerId == null) {
@@ -735,6 +799,8 @@ public class BusinessFollowUpDraftApplicationService {
     private record FactKey(String label, String value) {}
 
     private record FactProjection(Set<FactKey> facts, boolean ownershipUnproven) {}
+
+    private record LocalCustomer(long id, String name) {}
 
     private record OwnershipResult(boolean unproven) {}
 }

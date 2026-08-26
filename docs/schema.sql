@@ -7104,7 +7104,9 @@ CREATE TABLE app.business_followup_assignments (
     draft_version INTEGER NOT NULL CHECK (draft_version > 0),
     approval_id BIGINT NOT NULL,
     agent_run_id VARCHAR(64) NOT NULL CHECK (btrim(agent_run_id) <> ''),
-    task_type VARCHAR(64) NOT NULL CHECK (task_type IN ('KEHUZX_CUSTOMER_LINK')),
+    task_type VARCHAR(64) NOT NULL CHECK (
+        task_type IN ('KEHUZX_CUSTOMER_LINK', 'KEHUZX_CUSTOMER_CREATE')
+    ),
     logical_target VARCHAR(255) NOT NULL CHECK (btrim(logical_target) <> ''),
     assignee_type VARCHAR(24) NOT NULL CHECK (assignee_type IN (
         'INTERNAL_OPERATOR', 'TEAM', 'DETERMINISTIC_MCP', 'SPECIALIST_AGENT'
@@ -7120,6 +7122,9 @@ CREATE TABLE app.business_followup_assignments (
     idempotency_key VARCHAR(255) NOT NULL CHECK (btrim(idempotency_key) <> ''),
     execution_task_key VARCHAR(255) NOT NULL CHECK (btrim(execution_task_key) <> ''),
     request_id VARCHAR(128) CHECK (request_id IS NULL OR btrim(request_id) <> ''),
+    payload_hash VARCHAR(64) CHECK (
+        payload_hash IS NULL OR payload_hash ~ '^[0-9a-f]{64}$'
+    ),
     external_entity_type VARCHAR(64),
     external_entity_id VARCHAR(128),
     result_code VARCHAR(64) CHECK (
@@ -7150,10 +7155,15 @@ CREATE TABLE app.business_followup_assignments (
         (status = 'PENDING' AND started_at IS NULL AND completed_at IS NULL
             AND result_code IS NULL AND external_entity_type IS NULL)
         OR (status = 'RUNNING' AND started_at IS NOT NULL AND completed_at IS NULL
-            AND result_code IS NULL AND request_id IS NOT NULL)
+            AND result_code IS NULL
+            AND (task_type = 'KEHUZX_CUSTOMER_LINK' OR request_id IS NOT NULL))
         OR (status = 'WAITING_HUMAN' AND started_at IS NOT NULL AND completed_at IS NULL
             AND result_code IS NOT NULL)
-        OR (status IN ('SUCCEEDED', 'RECONCILIATION_REQUIRED')
+        OR (status = 'SUCCEEDED'
+            AND started_at IS NOT NULL AND completed_at IS NOT NULL
+            AND result_code IS NOT NULL
+            AND (task_type = 'KEHUZX_CUSTOMER_LINK' OR request_id IS NOT NULL))
+        OR (status = 'RECONCILIATION_REQUIRED'
             AND started_at IS NOT NULL AND completed_at IS NOT NULL
             AND result_code IS NOT NULL AND request_id IS NOT NULL)
         OR (status = 'FAILED'
@@ -7162,7 +7172,12 @@ CREATE TABLE app.business_followup_assignments (
     ),
     CONSTRAINT business_followup_assignment_success_result_check CHECK (
         status <> 'SUCCEEDED'
-        OR (result_code = 'KEHUZX_CUSTOMER_LINKED'
+        OR (task_type = 'KEHUZX_CUSTOMER_LINK'
+            AND result_code = 'KEHUZX_CUSTOMER_LINKED'
+            AND external_entity_type = 'KEHUZX_CUSTOMER'
+            AND external_entity_id IS NOT NULL)
+        OR (task_type = 'KEHUZX_CUSTOMER_CREATE'
+            AND result_code = 'KEHUZX_CUSTOMER_CREATED'
             AND external_entity_type = 'KEHUZX_CUSTOMER'
             AND external_entity_id IS NOT NULL)
     )
@@ -7174,6 +7189,10 @@ CREATE INDEX idx_business_followup_assignments_followup
 CREATE INDEX idx_business_followup_assignments_due
     ON app.business_followup_assignments(status, due_at, id)
     WHERE status IN ('PENDING', 'RUNNING', 'WAITING_HUMAN', 'RECONCILIATION_REQUIRED');
+
+CREATE INDEX idx_business_followup_assignments_request
+    ON app.business_followup_assignments(request_id)
+    WHERE request_id IS NOT NULL;
 
 -- Upgrade-safe backfill: confirmations applied before V61 still receive exactly one projection task.
 INSERT INTO app.async_tasks (task_type, payload_ref, idempotency_key, max_attempts)

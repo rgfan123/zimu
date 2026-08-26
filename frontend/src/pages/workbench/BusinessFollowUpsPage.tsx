@@ -520,6 +520,7 @@ function FollowUpDetail({ detail }: { detail: BusinessFollowUp }) {
                 <Typography.Text type="secondary">
                   Approval {assignment.approval_id} · 草稿 v{assignment.draft_version}
                   {' · '}Agent run {assignment.agent_run_id}
+                  {' · '}确认人 {assignment.confirmed_by ?? '—'}
                 </Typography.Text>
                 <Typography.Text type="secondary">
                   {assignment.assignee_type} · {assignment.assignee_ref} · 优先级 {assignment.priority}
@@ -528,6 +529,7 @@ function FollowUpDetail({ detail }: { detail: BusinessFollowUp }) {
                 <Typography.Text type={assignment.status === 'FAILED'
                   || assignment.status === 'RECONCILIATION_REQUIRED' ? 'danger' : 'secondary'}>
                   请求 {assignment.request_id ?? '—'}
+                  {' · '}Payload {assignment.payload_hash ?? '—'}
                   {' · '}外部结果 {assignment.external_entity_type && assignment.external_entity_id
                     ? `${assignment.external_entity_type}:${assignment.external_entity_id}` : '—'}
                   {' · '}{assignment.result_code ?? '尚无结果码'}

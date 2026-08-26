@@ -3,10 +3,12 @@ package cn.zimu.fulfillment.followup;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import cn.zimu.fulfillment.message.AsyncTaskStore;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -27,14 +29,19 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 })
 class BusinessFollowUpAssignmentIntegrationTest {
 
+    private static final String TEST_PAYLOAD_HASH = "a".repeat(64);
+
     @Container
     @ServiceConnection
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Autowired BusinessFollowUpAssignmentApplication assignments;
+    @Autowired BusinessFollowUpCustomerAssignmentExecutor customerExecutor;
+    @Autowired KehuzxWriteGateway writeGateway;
     @Autowired BusinessFollowUpService followUps;
     @Autowired AsyncTaskStore tasks;
     @Autowired JdbcTemplate jdbc;
+    @Autowired ObjectMapper mapper;
 
     @Test
     void appliedConfirmationProjectsOneCustomerLinkAndWaitsForTheTicket131Executor() {
@@ -131,6 +138,320 @@ class BusinessFollowUpAssignmentIntegrationTest {
     }
 
     @Test
+    void existingCustomerIsVerifiedByExactReadBackAndLinkedOnce() {
+        Fixture fixture = confirmed("customer-existing-link");
+        enqueueProjection(fixture.approvalId(), "existing-link");
+        AsyncTaskStore.AsyncTask projection = claim(
+                BusinessFollowUpAssignmentApplication.PROJECTION_TASK_TYPE,
+                "projection-existing-link");
+        assignments.project(projection, "projection-existing-link");
+        AsyncTaskStore.AsyncTask execution = claim(
+                BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE,
+                "execution-existing-link");
+        AtomicInteger calls = new AtomicInteger();
+        KehuzxReadGateway gateway = (tool, arguments) -> {
+            calls.incrementAndGet();
+            assertThat(tool).isEqualTo("get_customer_detail");
+            assertThat(arguments).containsEntry("customer_id", "customer-existing-link");
+            return mapper.createObjectNode()
+                    .set("customer", mapper.createObjectNode().put("id", "customer-existing-link"));
+        };
+
+        new BusinessFollowUpCustomerAssignmentExecutor(
+                        jdbc, assignments, gateway, writeGateway, mapper)
+                .execute(execution, "execution-existing-link");
+
+        assertThat(calls).hasValue(1);
+        assertThat(jdbc.queryForMap(
+                        """
+                        SELECT status, request_id, external_entity_type,
+                               external_entity_id, result_code
+                        FROM app.business_followup_assignments WHERE followup_id=?
+                        """,
+                        fixture.followupId()))
+                .containsEntry("status", "SUCCEEDED")
+                .containsEntry("request_id", null)
+                .containsEntry("external_entity_type", "KEHUZX_CUSTOMER")
+                .containsEntry("external_entity_id", "customer-existing-link")
+                .containsEntry("result_code", "KEHUZX_CUSTOMER_LINKED");
+    }
+
+    @Test
+    void customerLinkSupersededBeforeReadBackNeverCallsMcp() {
+        Fixture fixture = confirmed("customer-stale-before-read");
+        enqueueProjection(fixture.approvalId(), "stale-before-read");
+        AsyncTaskStore.AsyncTask projection = claim(
+                BusinessFollowUpAssignmentApplication.PROJECTION_TASK_TYPE,
+                "projection-stale-before-read");
+        assignments.project(projection, "projection-stale-before-read");
+        jdbc.update(
+                "UPDATE app.business_followups SET current_confirmed_draft_version=NULL WHERE id=?",
+                fixture.followupId());
+        jdbc.update(
+                "UPDATE app.business_followup_draft_versions SET status='SUPERSEDED' "
+                        + "WHERE followup_id=? AND version=1",
+                fixture.followupId());
+        AsyncTaskStore.AsyncTask execution = claim(
+                BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE,
+                "execution-stale-before-read");
+        AtomicInteger calls = new AtomicInteger();
+        KehuzxReadGateway gateway = (tool, arguments) -> {
+            calls.incrementAndGet();
+            return mapper.createObjectNode();
+        };
+
+        new BusinessFollowUpCustomerAssignmentExecutor(
+                        jdbc, assignments, gateway, writeGateway, mapper)
+                .execute(execution, "execution-stale-before-read");
+
+        assertThat(calls).hasValue(0);
+        assertThat(jdbc.queryForMap(
+                        "SELECT status, request_id, result_code FROM app.business_followup_assignments "
+                                + "WHERE followup_id=?",
+                        fixture.followupId()))
+                .containsEntry("status", "FAILED")
+                .containsEntry("request_id", null)
+                .containsEntry("result_code", "ASSIGNMENT_SUPERSEDED");
+    }
+
+    @Test
+    void confirmedZimuCustomerCreatesOneApprovalAttributedKehuzxCustomer() {
+        long zimuCustomerId = jdbc.queryForObject(
+                """
+                INSERT INTO app.customers (customer_code, customer_name)
+                VALUES (?, '北辰餐饮') RETURNING id
+                """,
+                Long.class,
+                "CUS-ASSIGN-" + UUID.randomUUID());
+        Fixture fixture = confirmed("unused-create-target");
+        jdbc.update(
+                """
+                UPDATE app.business_followup_draft_versions
+                SET upstream_refs=CAST(? AS jsonb),
+                    content=jsonb_set(content, '{customer_assignment}', CAST(? AS jsonb), true)
+                WHERE followup_id=? AND version=1
+                """,
+                "[{\"entity_type\":\"zimu_customer\",\"id\":\"" + zimuCustomerId + "\"}]",
+                "{\"mode\":\"CREATE\",\"zimu_customer_id\":\"" + zimuCustomerId
+                        + "\",\"customer_name\":\"北辰餐饮\"}",
+                fixture.followupId());
+        enqueueProjection(fixture.approvalId(), "customer-create");
+        assignments.project(
+                claim(BusinessFollowUpAssignmentApplication.PROJECTION_TASK_TYPE, "create-projector"),
+                "create-projector");
+        AsyncTaskStore.AsyncTask execution = claim(
+                BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE, "create-executor");
+        AtomicInteger writes = new AtomicInteger();
+        KehuzxWriteGateway writer = new KehuzxWriteGateway() {
+            @Override
+            public KehuzxWriteResult execute(KehuzxApprovalGrantSigner.Approval approval) {
+                writes.incrementAndGet();
+                assertThat(approval.operation()).isEqualTo("create_customer");
+                assertThat(approval.logicalTarget()).isEqualTo("customer:zimu-" + zimuCustomerId);
+                assertThat(approval.operatorName()).isEqualTo("Assignment +1");
+                assertThat(approval.payload())
+                        .containsEntry("customer_name", "北辰餐饮")
+                        .containsEntry("source", "Zimu BusinessFollowUp");
+                return new KehuzxWriteResult(
+                        KehuzxWriteStatus.SUCCEEDED,
+                        approval.requestId(),
+                        approval.idempotencyKey(),
+                        mapper.createObjectNode().put("customer_id", "kehuzx-created-1"),
+                        null,
+                        null,
+                        "customer",
+                        "kehuzx-created-1");
+            }
+
+            @Override
+            public KehuzxWriteResult reconcile(String requestId) {
+                throw new AssertionError("first submission must not reconcile");
+            }
+        };
+        KehuzxReadGateway neverRead = (tool, arguments) -> {
+            throw new AssertionError("customer creation must not use the read gateway");
+        };
+        jdbc.update(
+                "UPDATE app.customers SET customer_name='审批后改名不应生效' WHERE id=?",
+                zimuCustomerId);
+
+        new BusinessFollowUpCustomerAssignmentExecutor(
+                        jdbc, assignments, neverRead, writer, mapper)
+                .execute(execution, "create-executor");
+
+        assertThat(writes).hasValue(1);
+        assertThat(jdbc.queryForMap(
+                        """
+                        SELECT task_type, logical_target, status, request_id, payload_hash,
+                               external_entity_type, external_entity_id, result_code
+                        FROM app.business_followup_assignments WHERE followup_id=?
+                        """,
+                        fixture.followupId()))
+                .containsEntry("task_type", "KEHUZX_CUSTOMER_CREATE")
+                .containsEntry("logical_target", "customer:zimu-" + zimuCustomerId)
+                .containsEntry("status", "SUCCEEDED")
+                .containsEntry("external_entity_type", "KEHUZX_CUSTOMER")
+                .containsEntry("external_entity_id", "kehuzx-created-1")
+                .containsEntry("result_code", "KEHUZX_CUSTOMER_CREATED");
+    }
+
+    @Test
+    void persistedCustomerCreateIntentReconcilesBeforeAnyReplay() {
+        long zimuCustomerId = jdbc.queryForObject(
+                """
+                INSERT INTO app.customers (customer_code, customer_name)
+                VALUES (?, '重启恢复客户') RETURNING id
+                """,
+                Long.class,
+                "CUS-RECONCILE-" + UUID.randomUUID());
+        Fixture fixture = confirmed("unused-reconcile-target");
+        jdbc.update(
+                """
+                UPDATE app.business_followup_draft_versions
+                SET upstream_refs=CAST(? AS jsonb),
+                    content=jsonb_set(content, '{customer_assignment}', CAST(? AS jsonb), true)
+                WHERE followup_id=? AND version=1
+                """,
+                "[{\"entity_type\":\"zimu_customer\",\"id\":\"" + zimuCustomerId + "\"}]",
+                "{\"mode\":\"CREATE\",\"zimu_customer_id\":\"" + zimuCustomerId
+                        + "\",\"customer_name\":\"重启恢复客户\"}",
+                fixture.followupId());
+        enqueueProjection(fixture.approvalId(), "create-reconcile");
+        assignments.project(
+                claim(BusinessFollowUpAssignmentApplication.PROJECTION_TASK_TYPE, "reconcile-projector"),
+                "reconcile-projector");
+        AsyncTaskStore.AsyncTask execution = claim(
+                BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE, "reconcile-executor");
+        long assignmentId = jdbc.queryForObject(
+                "SELECT id FROM app.business_followup_assignments WHERE followup_id=?",
+                Long.class,
+                fixture.followupId());
+        Map<String, Object> payload = Map.of(
+                "customer_name", "重启恢复客户",
+                "source", "Zimu BusinessFollowUp");
+        String requestId = "zimu-assignment-" + assignmentId;
+        assertThat(assignments.beginExecution(
+                        execution,
+                        "reconcile-executor",
+                        requestId,
+                        KehuzxApprovalGrantSigner.payloadHash(mapper, payload)))
+                .isEqualTo(
+                        BusinessFollowUpAssignmentApplication.ExecutionStartDisposition.READY_TO_SUBMIT);
+        AtomicInteger reconciliations = new AtomicInteger();
+        KehuzxWriteGateway writer = new KehuzxWriteGateway() {
+            @Override
+            public KehuzxWriteResult execute(KehuzxApprovalGrantSigner.Approval approval) {
+                throw new AssertionError("persisted create intent must reconcile before replay");
+            }
+
+            @Override
+            public KehuzxWriteResult reconcile(String observedRequestId) {
+                reconciliations.incrementAndGet();
+                assertThat(observedRequestId).isEqualTo(requestId);
+                return new KehuzxWriteResult(
+                        KehuzxWriteStatus.SUCCEEDED,
+                        requestId,
+                        null,
+                        mapper.createObjectNode().put("customer_id", "kehuzx-reconciled-1"),
+                        null,
+                        null,
+                        "customer",
+                        "kehuzx-reconciled-1");
+            }
+        };
+
+        new BusinessFollowUpCustomerAssignmentExecutor(
+                        jdbc,
+                        assignments,
+                        (tool, arguments) -> mapper.createObjectNode(),
+                        writer,
+                        mapper)
+                .execute(execution, "reconcile-executor");
+
+        assertThat(reconciliations).hasValue(1);
+        assertThat(jdbc.queryForMap(
+                        """
+                        SELECT status, request_id, external_entity_id, result_code
+                        FROM app.business_followup_assignments WHERE id=?
+                        """,
+                        assignmentId))
+                .containsEntry("status", "SUCCEEDED")
+                .containsEntry("request_id", requestId)
+                .containsEntry("external_entity_id", "kehuzx-reconciled-1")
+                .containsEntry("result_code", "KEHUZX_CUSTOMER_CREATED");
+    }
+
+    @Test
+    void unavailableReconciliationNeverTurnsAPersistedCreateIntoKnownFailure() {
+        long zimuCustomerId = jdbc.queryForObject(
+                """
+                INSERT INTO app.customers (customer_code, customer_name)
+                VALUES (?, '待人工对账客户') RETURNING id
+                """,
+                Long.class,
+                "CUS-RECON-UNKNOWN-" + UUID.randomUUID());
+        Fixture fixture = confirmed("unused-reconcile-unknown-target");
+        jdbc.update(
+                """
+                UPDATE app.business_followup_draft_versions
+                SET upstream_refs=CAST(? AS jsonb),
+                    content=jsonb_set(content, '{customer_assignment}', CAST(? AS jsonb), true)
+                WHERE followup_id=? AND version=1
+                """,
+                "[{\"entity_type\":\"zimu_customer\",\"id\":\"" + zimuCustomerId + "\"}]",
+                "{\"mode\":\"CREATE\",\"zimu_customer_id\":\"" + zimuCustomerId
+                        + "\",\"customer_name\":\"待人工对账客户\"}",
+                fixture.followupId());
+        enqueueProjection(fixture.approvalId(), "create-reconcile-unknown");
+        assignments.project(
+                claim(BusinessFollowUpAssignmentApplication.PROJECTION_TASK_TYPE, "unknown-projector"),
+                "unknown-projector");
+        AsyncTaskStore.AsyncTask execution = claim(
+                BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE, "unknown-reconciler");
+        long assignmentId = jdbc.queryForObject(
+                "SELECT id FROM app.business_followup_assignments WHERE followup_id=?",
+                Long.class,
+                fixture.followupId());
+        Map<String, Object> payload = Map.of(
+                "customer_name", "待人工对账客户",
+                "source", "Zimu BusinessFollowUp");
+        String requestId = "zimu-assignment-" + assignmentId;
+        assignments.beginExecution(
+                execution,
+                "unknown-reconciler",
+                requestId,
+                KehuzxApprovalGrantSigner.payloadHash(mapper, payload));
+        KehuzxWriteGateway unavailable = new KehuzxWriteGateway() {
+            @Override
+            public KehuzxWriteResult execute(KehuzxApprovalGrantSigner.Approval approval) {
+                throw new AssertionError("an uncertain persisted request must not be replayed");
+            }
+
+            @Override
+            public KehuzxWriteResult reconcile(String observedRequestId) {
+                throw new KehuzxWriteException(
+                        KehuzxWriteException.Code.KEHUZX_WRITE_TIMEOUT);
+            }
+        };
+
+        new BusinessFollowUpCustomerAssignmentExecutor(
+                        jdbc,
+                        assignments,
+                        (tool, arguments) -> mapper.createObjectNode(),
+                        unavailable,
+                        mapper)
+                .execute(execution, "unknown-reconciler");
+
+        assertThat(jdbc.queryForMap(
+                        "SELECT status, request_id, result_code FROM app.business_followup_assignments "
+                                + "WHERE id=?",
+                        assignmentId))
+                .containsEntry("status", "RECONCILIATION_REQUIRED")
+                .containsEntry("request_id", requestId)
+                .containsEntry("result_code", "KEHUZX_WRITE_OUTCOME_UNKNOWN");
+    }
+
+    @Test
     void supersededConfirmedVersionHasNoAssignmentSideEffect() {
         Fixture fixture = confirmed("customer-stale-link");
         jdbc.update(
@@ -187,7 +508,10 @@ class BusinessFollowUpAssignmentIntegrationTest {
         AsyncTaskStore.AsyncTask successfulExecution = claim(
                 BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE, "execution-success");
         assertThat(assignments.beginExecution(
-                        successfulExecution, "execution-success", "request-outcome-success"))
+                        successfulExecution,
+                        "execution-success",
+                        "request-outcome-success",
+                        TEST_PAYLOAD_HASH))
                 .isEqualTo(BusinessFollowUpAssignmentApplication.ExecutionStartDisposition.READY_TO_SUBMIT);
         assignments.recordExecutionOutcome(
                 successfulExecution,
@@ -200,7 +524,10 @@ class BusinessFollowUpAssignmentIntegrationTest {
         AsyncTaskStore.AsyncTask uncertainExecution = claim(
                 BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE, "execution-unknown");
         assignments.beginExecution(
-                uncertainExecution, "execution-unknown", "request-outcome-unknown");
+                uncertainExecution,
+                "execution-unknown",
+                "request-outcome-unknown",
+                TEST_PAYLOAD_HASH);
         assignments.recordExecutionOutcome(
                 uncertainExecution,
                 "execution-unknown",
@@ -240,7 +567,10 @@ class BusinessFollowUpAssignmentIntegrationTest {
         AsyncTaskStore.AsyncTask abandoned = claim(
                 BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE, "execution-abandoned");
         assertThat(assignments.beginExecution(
-                        abandoned, "execution-abandoned", "request-crash-window"))
+                        abandoned,
+                        "execution-abandoned",
+                        "request-crash-window",
+                        TEST_PAYLOAD_HASH))
                 .isEqualTo(BusinessFollowUpAssignmentApplication.ExecutionStartDisposition.READY_TO_SUBMIT);
         jdbc.update(
                 "UPDATE app.async_tasks SET lease_until=CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id=?",
@@ -249,7 +579,10 @@ class BusinessFollowUpAssignmentIntegrationTest {
         AsyncTaskStore.AsyncTask reclaimed = claim(
                 BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE, "execution-reclaimed");
         assertThat(assignments.beginExecution(
-                        reclaimed, "execution-reclaimed", "request-crash-window"))
+                        reclaimed,
+                        "execution-reclaimed",
+                        "request-crash-window",
+                        TEST_PAYLOAD_HASH))
                 .isEqualTo(
                         BusinessFollowUpAssignmentApplication.ExecutionStartDisposition.RECONCILE_EXISTING);
         assignments.recordExecutionOutcome(
@@ -395,7 +728,8 @@ class BusinessFollowUpAssignmentIntegrationTest {
                 """,
                 execution.id());
 
-        new BusinessFollowUpAssignmentWorker(tasks, assignments, true, 30, 1).poll();
+        new BusinessFollowUpAssignmentWorker(
+                tasks, assignments, customerExecutor, true, 30, 1).poll();
 
         assertThat(jdbc.queryForMap(
                         "SELECT status, result_code FROM app.business_followup_assignments WHERE followup_id=?",
@@ -413,7 +747,11 @@ class BusinessFollowUpAssignmentIntegrationTest {
         assignments.project(projection, "projection-finalizing-unknown");
         AsyncTaskStore.AsyncTask execution = claim(
                 BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE, "unknown-executor");
-        assignments.beginExecution(execution, "unknown-executor", "request-finalizing-unknown");
+        assignments.beginExecution(
+                execution,
+                "unknown-executor",
+                "request-finalizing-unknown",
+                TEST_PAYLOAD_HASH);
         jdbc.update(
                 """
                 UPDATE app.async_tasks
@@ -424,7 +762,8 @@ class BusinessFollowUpAssignmentIntegrationTest {
                 """,
                 execution.id());
 
-        new BusinessFollowUpAssignmentWorker(tasks, assignments, true, 30, 1).poll();
+        new BusinessFollowUpAssignmentWorker(
+                tasks, assignments, customerExecutor, true, 30, 1).poll();
 
         assertThat(jdbc.queryForMap(
                         "SELECT status, request_id, result_code FROM app.business_followup_assignments "
@@ -459,7 +798,8 @@ class BusinessFollowUpAssignmentIntegrationTest {
                         + "WHERE followup_id=? AND version=1",
                 fixture.followupId());
 
-        new BusinessFollowUpAssignmentWorker(tasks, assignments, true, 30, 1).poll();
+        new BusinessFollowUpAssignmentWorker(
+                tasks, assignments, customerExecutor, true, 30, 1).poll();
 
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.business_followup_assignments WHERE followup_id=?",
@@ -483,13 +823,16 @@ class BusinessFollowUpAssignmentIntegrationTest {
                 oldTask.idempotencyKey() + ":new-start",
                 3);
 
-        assertThat(assignments.beginExecution(oldTask, "old-start-owner", "must-not-submit"))
+        assertThat(assignments.beginExecution(
+                        oldTask, "old-start-owner", "must-not-submit", TEST_PAYLOAD_HASH))
                 .isEqualTo(BusinessFollowUpAssignmentApplication.ExecutionStartDisposition.DO_NOT_EXECUTE);
         assertThat(jdbc.queryForMap(
-                        "SELECT status, request_id FROM app.business_followup_assignments WHERE followup_id=?",
+                        "SELECT status, request_id, result_code FROM app.business_followup_assignments "
+                                + "WHERE followup_id=?",
                         fixture.followupId()))
-                .containsEntry("status", "PENDING")
-                .containsEntry("request_id", null);
+                .containsEntry("status", "FAILED")
+                .containsEntry("request_id", null)
+                .containsEntry("result_code", "ASSIGNMENT_SUPERSEDED");
 
         AsyncTaskStore.AsyncTask newer = claim(
                 BusinessFollowUpAssignmentApplication.EXECUTION_TASK_TYPE, "new-start-owner");

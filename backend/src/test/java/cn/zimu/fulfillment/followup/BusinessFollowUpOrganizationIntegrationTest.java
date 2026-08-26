@@ -248,6 +248,60 @@ class BusinessFollowUpOrganizationIntegrationTest {
     }
 
     @Test
+    void zeroRemoteMatchWithExactZimuCustomerProducesConfirmableCreateIntent() {
+        long followupId = queued("zero-remote-known-zimu-customer");
+        long submissionId = jdbc.queryForObject(
+                "SELECT message_submission_id FROM app.business_followups WHERE id=?",
+                Long.class,
+                followupId);
+        long customerId = jdbc.queryForObject(
+                """
+                INSERT INTO app.customers (customer_code, customer_name)
+                VALUES (?, '北辰餐饮') RETURNING id
+                """,
+                Long.class,
+                "CUS-FOLLOWUP-" + UUID.randomUUID());
+        jdbc.update(
+                """
+                INSERT INTO app.order_drafts
+                    (draft_no, submission_id, source_order_no, customer_id, revision)
+                VALUES (?, ?, ?, ?, 1)
+                """,
+                "DRAFT-FOLLOWUP-" + UUID.randomUUID(),
+                submissionId,
+                "SOURCE-FOLLOWUP-" + UUID.randomUUID(),
+                customerId);
+        when(agents.invokePinnedWithRunId(
+                        eq("customer-followup-agent"), eq(1), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    String runId = "run_zero_remote_known_zimu";
+                    recordCustomerEvidence(runId, List.of());
+                    return agentResult(runId, false, List.of());
+                });
+
+        runWorkerOnce();
+
+        assertThat(jdbc.queryForMap(
+                        """
+                        SELECT bf.stage, d.status,
+                               d.content -> 'customer_assignment' ->> 'mode' AS mode,
+                               d.content -> 'customer_assignment' ->> 'customer_name' AS customer_name,
+                               d.upstream_refs @> CAST(? AS jsonb) AS has_zimu_customer
+                        FROM app.business_followups bf
+                        JOIN app.business_followup_draft_versions d
+                          ON d.followup_id=bf.id AND d.version=bf.current_draft_version
+                        WHERE bf.id=?
+                        """,
+                        "[{\"entity_type\":\"zimu_customer\",\"id\":\"" + customerId + "\"}]",
+                        followupId))
+                .containsEntry("stage", "PENDING_APPROVAL")
+                .containsEntry("status", "READY")
+                .containsEntry("mode", "CREATE")
+                .containsEntry("customer_name", "北辰餐饮")
+                .containsEntry("has_zimu_customer", true);
+    }
+
+    @Test
     void modelRequiresHumanWinsEvenWithOneCustomer() {
         long followupId = queued("model-needs-human");
         when(agents.invokePinnedWithRunId(eq("customer-followup-agent"), eq(1), any(), any(), any())).thenAnswer(invocation -> {

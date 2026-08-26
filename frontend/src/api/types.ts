@@ -1476,6 +1476,9 @@ export interface BusinessFollowUpAssignment {
   idempotency_key: string;
   execution_task_key: string;
   request_id?: string | null;
+  payload_hash?: string | null;
+  confirmed_by_operator_id?: string | null;
+  confirmed_by?: string | null;
   external_entity_type?: string | null;
   external_entity_id?: string | null;
   result_code?: string | null;

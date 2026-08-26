@@ -68,13 +68,19 @@ public class BusinessFollowUpAssignmentApplication {
             return;
         }
 
-        List<String> customerRefs = customerRefs(facts.upstreamRefs());
-        String logicalTarget = customerRefs.size() == 1
+        List<String> customerRefs = refs(facts.upstreamRefs(), "customer");
+        List<String> zimuCustomerRefs = refs(facts.upstreamRefs(), "zimu_customer");
+        boolean link = customerRefs.size() == 1 && zimuCustomerRefs.isEmpty();
+        boolean create = zimuCustomerRefs.size() == 1 && customerRefs.isEmpty();
+        String taskType = create ? "KEHUZX_CUSTOMER_CREATE" : "KEHUZX_CUSTOMER_LINK";
+        String logicalTarget = link
                 ? "kehuzx-customer:" + customerRefs.getFirst()
-                : "followup:" + facts.followupId() + ":customer-unresolved";
-        boolean executable = customerRefs.size() == 1;
+                : create
+                        ? "customer:zimu-" + zimuCustomerRefs.getFirst()
+                        : "followup:" + facts.followupId() + ":customer-unresolved";
+        boolean executable = link || create;
         String idempotencyKey = "followup-assignment:" + facts.followupId()
-                + ":v" + facts.draftVersion() + ":KEHUZX_CUSTOMER_LINK:" + logicalTarget;
+                + ":v" + facts.draftVersion() + ":" + taskType + ":" + logicalTarget;
         String executionTaskKey = "followup-assignment-execute:" + idempotencyKey;
         Long insertedId = jdbc.query(
                         """
@@ -83,7 +89,7 @@ public class BusinessFollowUpAssignmentApplication {
                              task_type, logical_target, assignee_type, assignee_ref,
                              status, due_at, priority, idempotency_key, execution_task_key,
                              started_at, result_code)
-                        VALUES (?, ?, ?, ?, 'KEHUZX_CUSTOMER_LINK', ?, 'DETERMINISTIC_MCP',
+                        VALUES (?, ?, ?, ?, ?, ?, 'DETERMINISTIC_MCP',
                                 'kehuzx:customer-write', ?, CURRENT_TIMESTAMP + INTERVAL '1 day',
                                 'NORMAL', ?, ?,
                                 CASE WHEN ? THEN NULL ELSE CURRENT_TIMESTAMP END,
@@ -96,6 +102,7 @@ public class BusinessFollowUpAssignmentApplication {
                         facts.draftVersion(),
                         facts.approvalId(),
                         facts.agentRunId(),
+                        taskType,
                         logicalTarget,
                         executable ? "PENDING" : "WAITING_HUMAN",
                         idempotencyKey,
@@ -110,11 +117,12 @@ public class BusinessFollowUpAssignmentApplication {
                         """
                         SELECT id FROM app.business_followup_assignments
                         WHERE followup_id=? AND draft_version=?
-                          AND task_type='KEHUZX_CUSTOMER_LINK' AND logical_target=?
+                          AND task_type=? AND logical_target=?
                         """,
                         Long.class,
                         facts.followupId(),
                         facts.draftVersion(),
+                        taskType,
                         logicalTarget)
                 : insertedId;
         if (executable) {
@@ -167,15 +175,42 @@ public class BusinessFollowUpAssignmentApplication {
     /** Durable result seam consumed by the deterministic MCP executor introduced in #131. */
     @Transactional
     public ExecutionStartDisposition beginExecution(
-            AsyncTaskStore.AsyncTask task, String owner, String externalRequestId) {
+            AsyncTaskStore.AsyncTask task,
+            String owner,
+            String externalRequestId,
+            String payloadHash) {
         String requestId = blankToNull(externalRequestId);
         if (requestId == null) {
             throw new IllegalArgumentException("Assignment external request id is required");
         }
+        if (payloadHash == null || !payloadHash.matches("^[0-9a-f]{64}$")) {
+            throw new IllegalArgumentException("Assignment payload hash is invalid");
+        }
         long assignmentId = executionAssignmentId(task);
         List<ExecutionState> rows = jdbc.query(
-                "SELECT status, request_id FROM app.business_followup_assignments WHERE id=? FOR UPDATE",
-                (rs, row) -> new ExecutionState(rs.getString("status"), rs.getString("request_id")),
+                """
+                SELECT x.status, x.request_id, x.payload_hash, x.draft_version,
+                       a.application_status, a.decision,
+                       bf.current_confirmed_draft_version,
+                       d.status AS draft_status
+                FROM app.business_followup_assignments x
+                JOIN app.business_followup_approvals a ON a.id=x.approval_id
+                JOIN app.business_followups bf ON bf.id=x.followup_id
+                JOIN app.business_followup_draft_versions d
+                  ON d.followup_id=x.followup_id AND d.version=x.draft_version
+                WHERE x.id=?
+                FOR UPDATE OF x, a, bf, d
+                """,
+                (rs, row) -> new ExecutionState(
+                        rs.getString("status"),
+                        rs.getString("request_id"),
+                        rs.getString("payload_hash"),
+                        "APPLIED".equals(rs.getString("application_status"))
+                                && "CONFIRM".equals(rs.getString("decision"))
+                                && rs.getObject("current_confirmed_draft_version", Integer.class) != null
+                                && rs.getInt("current_confirmed_draft_version")
+                                        == rs.getInt("draft_version")
+                                && "CONFIRMED".equals(rs.getString("draft_status"))),
                 assignmentId);
         if (rows.isEmpty()) {
             throw new IllegalStateException("Assignment not found: " + assignmentId);
@@ -184,27 +219,103 @@ public class BusinessFollowUpAssignmentApplication {
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
             throw new IllegalStateException("Assignment execution lease lost: " + task.id());
         }
-        if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED) {
+        ExecutionState state = rows.getFirst();
+        if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED
+                || !state.currentConfirmed()) {
+            finalizeSupersededExecution(assignmentId, state.requestId());
             tasks.succeedOwned(task.id(), owner);
             return ExecutionStartDisposition.DO_NOT_EXECUTE;
         }
-        ExecutionState state = rows.getFirst();
-        if ("RUNNING".equals(state.status()) && requestId.equals(state.requestId())) {
+        if ("RUNNING".equals(state.status())
+                && requestId.equals(state.requestId())
+                && payloadHash.equals(state.payloadHash())) {
             return ExecutionStartDisposition.RECONCILE_EXISTING;
         }
         int updated = jdbc.update(
                 """
                 UPDATE app.business_followup_assignments
-                SET status='RUNNING', request_id=?, started_at=CURRENT_TIMESTAMP,
+                SET status='RUNNING', request_id=?, payload_hash=?, started_at=CURRENT_TIMESTAMP,
                     completed_at=NULL, result_code=NULL, updated_at=CURRENT_TIMESTAMP
                 WHERE id=? AND status='PENDING' AND request_id IS NULL
                 """,
                 requestId,
+                payloadHash,
                 assignmentId);
         if (updated != 1) {
             throw new IllegalStateException("Assignment execution intent is no longer writable: " + assignmentId);
         }
         return ExecutionStartDisposition.READY_TO_SUBMIT;
+    }
+
+    /** Starts or resumes a read-only link verification without fabricating a write request id. */
+    @Transactional
+    public ExecutionStartDisposition beginReadExecution(
+            AsyncTaskStore.AsyncTask task, String owner, String payloadHash) {
+        if (payloadHash == null || !payloadHash.matches("^[0-9a-f]{64}$")) {
+            throw new IllegalArgumentException("Assignment payload hash is invalid");
+        }
+        long assignmentId = executionAssignmentId(task);
+        List<ExecutionState> rows = lockExecutionState(assignmentId);
+        if (rows.isEmpty()) {
+            throw new IllegalStateException("Assignment not found: " + assignmentId);
+        }
+        AsyncTaskStore.ApplicationFence fence = tasks.lockApplicationFence(task.id(), owner);
+        if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
+            throw new IllegalStateException("Assignment execution lease lost: " + task.id());
+        }
+        ExecutionState state = rows.getFirst();
+        if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED
+                || !state.currentConfirmed()) {
+            finalizeSupersededExecution(assignmentId, null);
+            tasks.succeedOwned(task.id(), owner);
+            return ExecutionStartDisposition.DO_NOT_EXECUTE;
+        }
+        if ("RUNNING".equals(state.status())
+                && state.requestId() == null
+                && payloadHash.equals(state.payloadHash())) {
+            return ExecutionStartDisposition.READY_TO_SUBMIT;
+        }
+        int updated = jdbc.update(
+                """
+                UPDATE app.business_followup_assignments
+                SET status='RUNNING', payload_hash=?, started_at=coalesce(started_at, CURRENT_TIMESTAMP),
+                    completed_at=NULL, result_code=NULL, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='PENDING' AND request_id IS NULL
+                """,
+                payloadHash,
+                assignmentId);
+        if (updated != 1) {
+            throw new IllegalStateException("Assignment read intent is no longer writable: " + assignmentId);
+        }
+        return ExecutionStartDisposition.READY_TO_SUBMIT;
+    }
+
+    private List<ExecutionState> lockExecutionState(long assignmentId) {
+        return jdbc.query(
+                """
+                SELECT x.status, x.request_id, x.payload_hash, x.draft_version,
+                       a.application_status, a.decision,
+                       bf.current_confirmed_draft_version,
+                       d.status AS draft_status
+                FROM app.business_followup_assignments x
+                JOIN app.business_followup_approvals a ON a.id=x.approval_id
+                JOIN app.business_followups bf ON bf.id=x.followup_id
+                JOIN app.business_followup_draft_versions d
+                  ON d.followup_id=x.followup_id AND d.version=x.draft_version
+                WHERE x.id=?
+                FOR UPDATE OF x, a, bf, d
+                """,
+                (rs, row) -> new ExecutionState(
+                        rs.getString("status"),
+                        rs.getString("request_id"),
+                        rs.getString("payload_hash"),
+                        "APPLIED".equals(rs.getString("application_status"))
+                                && "CONFIRM".equals(rs.getString("decision"))
+                                && rs.getObject("current_confirmed_draft_version", Integer.class) != null
+                                && rs.getInt("current_confirmed_draft_version")
+                                        == rs.getInt("draft_version")
+                                && "CONFIRMED".equals(rs.getString("draft_status"))),
+                assignmentId);
     }
 
     /** Finalizes a previously persisted external request without changing its durable identity. */
@@ -218,7 +329,8 @@ public class BusinessFollowUpAssignmentApplication {
             String resultCode) {
         if (!"SUCCEEDED".equals(status)
                 && !"RECONCILIATION_REQUIRED".equals(status)
-                && !"WAITING_HUMAN".equals(status)) {
+                && !"WAITING_HUMAN".equals(status)
+                && !"FAILED".equals(status)) {
             throw new IllegalArgumentException("Unsupported Assignment outcome: " + status);
         }
         long assignmentId = executionAssignmentId(task);
@@ -242,7 +354,7 @@ public class BusinessFollowUpAssignmentApplication {
                     result_code=?, started_at=coalesce(started_at, CURRENT_TIMESTAMP),
                     completed_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,
                     updated_at=CURRENT_TIMESTAMP
-                WHERE id=? AND status='RUNNING' AND request_id IS NOT NULL
+                WHERE id=? AND status='RUNNING'
                 """,
                 status,
                 blankToNull(externalEntityType),
@@ -310,7 +422,7 @@ public class BusinessFollowUpAssignmentApplication {
     }
 
     private void finalizeExecutionFailure(long assignmentId, String requestId, String taskCode) {
-        boolean outcomeUnknown = requestId != null;
+        boolean outcomeUnknown = requestId != null && !knownPreSubmissionFailure(taskCode);
         jdbc.update(
                 """
                 UPDATE app.business_followup_assignments
@@ -320,6 +432,20 @@ public class BusinessFollowUpAssignmentApplication {
                 """,
                 outcomeUnknown ? "RECONCILIATION_REQUIRED" : "FAILED",
                 outcomeUnknown ? "KEHUZX_WRITE_OUTCOME_UNKNOWN" : taskCode,
+                assignmentId);
+    }
+
+    private void finalizeSupersededExecution(long assignmentId, String requestId) {
+        boolean outcomeUnknown = requestId != null;
+        jdbc.update(
+                """
+                UPDATE app.business_followup_assignments
+                SET status=?, started_at=coalesce(started_at, CURRENT_TIMESTAMP),
+                    completed_at=CURRENT_TIMESTAMP, result_code=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status IN ('PENDING', 'RUNNING')
+                """,
+                outcomeUnknown ? "RECONCILIATION_REQUIRED" : "FAILED",
+                outcomeUnknown ? "KEHUZX_WRITE_OUTCOME_UNKNOWN" : "ASSIGNMENT_SUPERSEDED",
                 assignmentId);
     }
 
@@ -398,13 +524,13 @@ public class BusinessFollowUpAssignmentApplication {
                 code);
     }
 
-    private List<String> customerRefs(String raw) {
+    private List<String> refs(String raw, String entityType) {
         try {
             JsonNode refs = mapper.readTree(raw);
             List<String> values = new ArrayList<>();
             if (refs.isArray()) {
                 refs.forEach(ref -> {
-                    if ("customer".equals(ref.path("entity_type").asText())
+                    if (entityType.equals(ref.path("entity_type").asText())
                             && ref.path("id").isTextual()
                             && !ref.path("id").asText().isBlank()) {
                         values.add(ref.path("id").asText());
@@ -451,6 +577,12 @@ public class BusinessFollowUpAssignmentApplication {
                 || "RECONCILIATION_REQUIRED".equals(status);
     }
 
+    private static boolean knownPreSubmissionFailure(String code) {
+        return code != null
+                && code.startsWith("KEHUZX_")
+                && !code.contains("OUTCOME_UNKNOWN");
+    }
+
     private record ProjectionFacts(
             long approvalId,
             long followupId,
@@ -470,7 +602,12 @@ public class BusinessFollowUpAssignmentApplication {
         }
     }
 
-    private record ExecutionState(String status, String requestId) {}
+    private record ExecutionState(
+            String status, String requestId, String payloadHash, boolean currentConfirmed) {
+        ExecutionState(String status, String requestId) {
+            this(status, requestId, null, true);
+        }
+    }
 
     private record ProjectionFailureFacts(
             long approvalId,

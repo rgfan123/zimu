@@ -1,24 +1,27 @@
 package cn.zimu.fulfillment.followup;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
-/** Deployment-only configuration for the isolated, read-token Kehuzx MCP boundary. */
+/** Deployment-only credentials and network policy for the deterministic Kehuzx writer. */
 @Component
-@ConfigurationProperties(prefix = "app.kehuzx.mcp")
-public class KehuzxMcpProperties {
+@ConfigurationProperties(prefix = "app.kehuzx.mcp-write")
+public class KehuzxMcpWriteProperties {
 
     private boolean enabled;
     private URI endpoint;
-    private String readToken;
+    private String writeToken;
+    private String approvalSigningKey;
     private String allowedHost = "kehuzx-mcp";
     private int allowedPort = 9100;
     private Duration connectTimeout = Duration.ofSeconds(3);
     private Duration readTimeout = Duration.ofSeconds(10);
-    private String contractVersion = "kehuzx-mcp-v1";
-    private String upstreamCommit;
+    private int maxResponseBytes = 1_048_576;
+    private int approvalTtlSeconds = 120;
 
     public boolean isReady() {
         return enabled
@@ -31,16 +34,21 @@ public class KehuzxMcpProperties {
                 && effectivePort(endpoint) == allowedPort
                 && "/mcp".equals(endpoint.getPath())
                 && endpoint.getQuery() == null
-                && readToken != null
-                && !readToken.isBlank();
+                && strong(writeToken)
+                && strong(approvalSigningKey)
+                && !MessageDigest.isEqual(
+                        writeToken.getBytes(StandardCharsets.UTF_8),
+                        approvalSigningKey.getBytes(StandardCharsets.UTF_8));
     }
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public URI getEndpoint() { return endpoint; }
     public void setEndpoint(URI endpoint) { this.endpoint = endpoint; }
-    public String getReadToken() { return readToken; }
-    public void setReadToken(String readToken) { this.readToken = readToken; }
+    public String getWriteToken() { return writeToken; }
+    public void setWriteToken(String writeToken) { this.writeToken = writeToken; }
+    public String getApprovalSigningKey() { return approvalSigningKey; }
+    public void setApprovalSigningKey(String approvalSigningKey) { this.approvalSigningKey = approvalSigningKey; }
     public String getAllowedHost() { return allowedHost; }
     public void setAllowedHost(String value) { allowedHost = normalize(value, "kehuzx-mcp"); }
     public int getAllowedPort() { return allowedPort; }
@@ -49,10 +57,14 @@ public class KehuzxMcpProperties {
     public void setConnectTimeout(Duration value) { connectTimeout = positive(value, Duration.ofSeconds(3)); }
     public Duration getReadTimeout() { return readTimeout; }
     public void setReadTimeout(Duration value) { readTimeout = positive(value, Duration.ofSeconds(10)); }
-    public String getContractVersion() { return contractVersion; }
-    public void setContractVersion(String value) { contractVersion = normalize(value, "kehuzx-mcp-v1"); }
-    public String getUpstreamCommit() { return upstreamCommit; }
-    public void setUpstreamCommit(String value) { upstreamCommit = normalize(value, null); }
+    public int getMaxResponseBytes() { return maxResponseBytes; }
+    public void setMaxResponseBytes(int value) {
+        maxResponseBytes = value > 0 && value <= 4_194_304 ? value : 1_048_576;
+    }
+    public int getApprovalTtlSeconds() { return approvalTtlSeconds; }
+    public void setApprovalTtlSeconds(int value) {
+        approvalTtlSeconds = value > 0 && value <= 300 ? value : 120;
+    }
 
     private static Duration positive(Duration value, Duration fallback) {
         return value == null || value.isZero() || value.isNegative() ? fallback : value;
@@ -67,5 +79,11 @@ public class KehuzxMcpProperties {
             return uri.getPort();
         }
         return "https".equals(uri.getScheme()) ? 443 : 80;
+    }
+
+    private static boolean strong(String value) {
+        return value != null
+                && !value.isBlank()
+                && value.getBytes(StandardCharsets.UTF_8).length >= 32;
     }
 }
