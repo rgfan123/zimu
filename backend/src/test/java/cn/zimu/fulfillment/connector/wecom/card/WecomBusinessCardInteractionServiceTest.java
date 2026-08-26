@@ -17,19 +17,19 @@ import org.springframework.jdbc.core.RowMapper;
  * <p>这条路径的输出是**建真单**，所以每一条"不执行"的分支都比"执行"的分支更值得测：
  * 认不出人、点了旧卡、按钮不认识——任何一条漏掉，代价都是替人建了一张不该建的京东单。
  */
-class PreShipConfirmInteractionServiceTest {
+class WecomBusinessCardInteractionServiceTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private RecordingTaskStore tasks;
     private StubJdbc jdbc;
-    private PreShipConfirmInteractionService service;
+    private WecomBusinessCardInteractionService service;
 
     @BeforeEach
     void setUp() {
         tasks = new RecordingTaskStore();
         jdbc = new StubJdbc(1L);
-        service = new PreShipConfirmInteractionService(jdbc, tasks);
+        service = new WecomBusinessCardInteractionService(jdbc, tasks);
     }
 
     private static ObjectNode frame(String taskId, String buttonKey, String actor) {
@@ -54,7 +54,7 @@ class PreShipConfirmInteractionServiceTest {
         assertThat(outcome.businessCode()).isEqualTo("PRESHIP_CONFIRM_ACCEPTED");
         assertThat(tasks.enqueued).hasSize(1);
         assertThat(tasks.enqueued.getFirst().taskType())
-                .isEqualTo(PreShipConfirmInteractionService.TASK_TYPE);
+                .isEqualTo(WecomBusinessCardInteractionService.TASK_TYPE);
         assertThat(tasks.enqueued.getFirst().payloadRef()).startsWith("preship:4:1:jry");
     }
 
@@ -99,11 +99,15 @@ class PreShipConfirmInteractionServiceTest {
     }
 
     @Test
-    void 别的域的卡片不归本服务管() {
-        var outcome = service.handle(frame("alert_4_v1", "acknowledge", "jry"));
-
-        assertThat(outcome.businessCode()).isEqualTo("WECOM_CARD_TASK_ID_INVALID");
-        assertThat(tasks.enqueued).isEmpty();
+    void 订单草稿卡不归本服务管_留给原处理器() {
+        // order-draft 不在 DOMAINS 里：必须让它落回订单草稿卡的处理器，
+        // 而不是被本服务当成「无法识别」吞掉
+        assertThat(WecomBusinessCardInteractionService.handles("order-draft_7_v1")).isFalse();
+        assertThat(WecomBusinessCardInteractionService.handles("preship_4_v1")).isTrue();
+        assertThat(WecomBusinessCardInteractionService.handles("review_10_v0")).isTrue();
+        assertThat(WecomBusinessCardInteractionService.handles("alert_1_v0")).isTrue();
+        // 冒号是 aibot 非法字符：旧格式必须解析不出来
+        assertThat(WecomBusinessCardInteractionService.handles("preship:4:v1")).isFalse();
     }
 
     @Test
@@ -117,7 +121,7 @@ class PreShipConfirmInteractionServiceTest {
 
     @Test
     void 订单不存在时不建单() {
-        service = new PreShipConfirmInteractionService(new StubJdbc(null), tasks);
+        service = new WecomBusinessCardInteractionService(new StubJdbc(null), tasks);
 
         var outcome = service.handle(
                 frame("preship_9_v0", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));

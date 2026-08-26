@@ -1,8 +1,6 @@
 package cn.zimu.fulfillment.connector.wecom;
 
-import cn.zimu.fulfillment.connector.wecom.card.PreShipConfirmCard;
-import cn.zimu.fulfillment.connector.wecom.card.PreShipConfirmInteractionService;
-import cn.zimu.fulfillment.connector.wecom.card.WecomTaskId;
+import cn.zimu.fulfillment.connector.wecom.card.WecomBusinessCardInteractionService;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
 import cn.zimu.fulfillment.order.card.CardConfirmationResult;
@@ -21,6 +19,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -53,7 +52,8 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
     private final WecomOrderDraftCardInteractionService cardInteractions;
-    private final PreShipConfirmInteractionService preShipInteractions;
+    private final WecomBusinessCardInteractionService businessCardInteractions;
+    private final String businessCardBaseUrl;
     private final ObjectProvider<WecomOutboundGateway> outboundGatewayProvider;
 
     private volatile WecomConnectionManager connectionManager;
@@ -65,14 +65,20 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
             WecomOrderDraftCardInteractionService cardInteractions,
-            PreShipConfirmInteractionService preShipInteractions,
+            WecomBusinessCardInteractionService businessCardInteractions,
+            @Value("${app.wecom-business-card.base-url:}") String businessCardBaseUrl,
             ObjectProvider<WecomOutboundGateway> outboundGatewayProvider) {
         this.submissionService = submissionService;
         this.connectionManagerProvider = connectionManagerProvider;
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.cardInteractions = cardInteractions;
-        this.preShipInteractions = preShipInteractions;
+        this.businessCardInteractions = businessCardInteractions;
+        // card_action 必填（42045）；没配深链基地址时用协议合法的占位，
+        // 否则整张回执发不出去，表现又变成「点了没反应」。
+        this.businessCardBaseUrl = businessCardBaseUrl == null || businessCardBaseUrl.isBlank()
+                ? "https://work.weixin.qq.com"
+                : businessCardBaseUrl.trim();
         this.outboundGatewayProvider = outboundGatewayProvider;
     }
 
@@ -149,29 +155,27 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         }
     }
 
-    /** task_id 的域属于业务卡注册表时走业务卡路径；解析不出来的一律留给订单草稿卡按原逻辑报错。 */
+    /** task_id 的域属于业务卡时走业务卡路径；解析不出来的一律留给订单草稿卡按原逻辑报错。 */
     private boolean isBusinessCardTask(JsonNode frame) {
         JsonNode event = frame.path("body").path("event");
         String raw = event.path("taskid").asText("");
         if (raw.isBlank()) {
             raw = event.path("task_id").asText("");
         }
-        return WecomTaskId.parse(raw)
-                .map(taskId -> PreShipConfirmCard.DOMAIN.equals(taskId.domain()))
-                .orElse(false);
+        return WecomBusinessCardInteractionService.handles(raw);
     }
 
     /**
-     * 业务卡回调：5 秒窗口内只回一句话，重活交给 Worker。
+     * 业务卡回调：5 秒窗口内把卡片换成一张「点完之后发生了什么」的回执卡。
      *
-     * <p>这里**不做卡片 update**：确认的结果（建单成功与否）在 5 秒后才知道，
+     * <p>这里**不等业务落定**：确认发货的结果（建单成功与否）在 5 秒后才知道，
      * 而窗口一过同一张卡再也改不动。与其把卡片改成「处理中」然后永远停在那里，
-     * 不如当场回一句确定的话，结果由后续的发货结果卡承担。
+     * 不如当场换成一张确定的回执，最终结果由后续的发货结果卡承担。
      */
     private void handleBusinessCardEvent(JsonNode frame, long startedNanos) {
-        PreShipConfirmInteractionService.Outcome outcome;
+        WecomBusinessCardInteractionService.Outcome outcome;
         try {
-            outcome = preShipInteractions.handle(frame);
+            outcome = businessCardInteractions.handle(frame);
         } catch (RuntimeException ex) {
             log.error("企微业务卡事件处理失败", ex);
             return;
@@ -183,26 +187,51 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         if (reqId.isBlank()) {
             return;
         }
-        long elapsed = System.nanoTime() - startedNanos;
-        if (elapsed >= UPDATE_CARD_BUDGET_NANOS) {
+        if (System.nanoTime() - startedNanos >= UPDATE_CARD_BUDGET_NANOS) {
             log.warn("企微业务卡回执超出 5 秒窗口，放弃即时回执 code={}", outcome.businessCode());
             return;
         }
         try {
             connectionManager().respondUpdateUntil(
-                    reqId, textResponse(outcome.cardText()), startedNanos + UPDATE_CARD_BUDGET_NANOS);
+                    reqId, updateResponse(outcome), startedNanos + UPDATE_CARD_BUDGET_NANOS);
         } catch (RuntimeException ex) {
-            // 回执发不出去不影响已受理的建单任务；结果卡仍会送达
+            // 回执发不出去不影响已受理的动作；结果卡仍会送达
             log.warn("企微业务卡回执发送失败 code={}", outcome.businessCode(), ex);
         }
     }
 
-    /** 业务卡回执用纯文本：卡片 update 需要整张卡的 JSON，而此刻我们只有一句话要说。 */
-    private JsonNode textResponse(String text) {
+    /**
+     * 回执体。{@code aibot_respond_update_msg} 的 {@code response_type} **只接受
+     * {@code update_template_card}**（官方 101463 参数表），回纯文本会被拒。
+     *
+     * <p>{@code card_action} 是必填：缺了平台回 {@code errcode 42045
+     * 「Template_Card.card_action 缺失或不合法」}，而表现只是「点了没反应」。
+     * 未配置深链基地址时给一个协议上合法的占位 URL——宁可跳到一个说明页，
+     * 也不要整张回执发不出去。
+     */
+    private JsonNode updateResponse(WecomBusinessCardInteractionService.Outcome outcome) {
         ObjectNode body = objectMapper.createObjectNode();
-        body.put("response_type", "text");
-        body.putObject("text").put("content", text);
+        body.put("response_type", "update_template_card");
+        ObjectNode card = body.putObject("template_card");
+        card.put("card_type", "text_notice");
+        card.putObject("main_title")
+                .put("title", truncate(outcome.title(), 26))
+                .put("desc", truncate(outcome.message(), 30));
+        card.put("sub_title_text", truncate(outcome.message(), 112));
+        card.putObject("card_action").put("type", 1).put("url", businessCardBaseUrl);
         return body;
+    }
+
+    private static String truncate(String value, int maxChars) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String trimmed = value.strip();
+        int codePoints = trimmed.codePointCount(0, trimmed.length());
+        if (codePoints <= maxChars) {
+            return trimmed;
+        }
+        return trimmed.substring(0, trimmed.offsetByCodePoints(0, maxChars - 1)) + "…";
     }
 
     /**

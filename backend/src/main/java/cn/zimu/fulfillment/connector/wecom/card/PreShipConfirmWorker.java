@@ -64,7 +64,7 @@ public class PreShipConfirmWorker {
         }
         Optional<AsyncTaskStore.AsyncTask> task;
         try {
-            task = tasks.claim(PreShipConfirmInteractionService.TASK_TYPE, owner, lease);
+            task = tasks.claim(WecomBusinessCardInteractionService.TASK_TYPE, owner, lease);
         } catch (RuntimeException ex) {
             return;
         }

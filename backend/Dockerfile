@@ -18,6 +18,7 @@ RUN apk add --no-cache python3 py3-requests \
     && addgroup -S app \
     && adduser -S -G app app \
     && mkdir -p /var/lib/zimu-fulfillment/files \
+    && mkdir -p /var/lib/zimu-fulfillment/media \
     && mkdir -p /app/platform-pull-work \
     && chown -R app:app /var/lib/zimu-fulfillment /app/platform-pull-work
 WORKDIR /app

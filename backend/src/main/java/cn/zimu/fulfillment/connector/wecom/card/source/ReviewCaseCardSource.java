@@ -9,7 +9,6 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -26,20 +25,6 @@ public class ReviewCaseCardSource implements WecomBusinessCardSource {
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter CREATED_AT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
-    /**
-     * 原因码 → 人话。卡片上出现 {@code CUSTOMER_NOT_MATCHED} 这种枚举名，收卡的人
-     * 还得再去查一次它是什么意思；未登记的码退回原值而不是显示空白。
-     */
-    private static final Map<String, String> REASON_LABELS = Map.ofEntries(
-            Map.entry("CUSTOMER_NOT_MATCHED", "客户在主数据里零命中"),
-            Map.entry("CUSTOMER_AMBIGUOUS", "客户在主数据里多命中"),
-            Map.entry("SKU_NOT_MATCHED", "商品在主数据里零命中"),
-            Map.entry("SKU_AMBIGUOUS", "商品在主数据里多命中"),
-            Map.entry("STOCK_INSUFFICIENT", "库存不足"),
-            Map.entry("ADDRESS_INCOMPLETE", "收货信息不完整"),
-            Map.entry("PRICE_MISSING", "缺少价格"),
-            Map.entry("TRACKING_MISMATCH", "运单与发货单对不上"),
-            Map.entry("RECONCILIATION_REQUIRED", "内外事实不一致，需人工对账"));
 
     private final JdbcTemplate jdbc;
     private final WecomBusinessCardRouteProperties routes;
@@ -68,6 +53,7 @@ public class ReviewCaseCardSource implements WecomBusinessCardSource {
                 """
                 SELECT rc.id, rc.case_no, rc.case_type, rc.reason_code, rc.responsible_team,
                        rc.resolution_version, rc.created_at,
+                       rc.detail->>'message' AS detail_message,
                        COALESCE(o.order_no, s.shipment_no, ib.batch_no) AS related_no
                 FROM app.review_cases rc
                 LEFT JOIN app.orders o ON o.id = rc.order_id
@@ -79,9 +65,11 @@ public class ReviewCaseCardSource implements WecomBusinessCardSource {
                         rs.getLong("id"),
                         rs.getLong("resolution_version"),
                         rs.getString("case_no"),
-                        rs.getString("case_type"),
-                        reasonLabel(rs.getString("reason_code")),
-                        rs.getString("responsible_team"),
+                        ReviewCaseLabels.caseType(rs.getString("case_type")),
+                        // detail.message 是建事项时人写的整句（「运单文件下载或解密失败，
+                        // 请重新单聊发送原文件」），比任何枚举翻译都准；没有才退回原因码
+                        headline(rs.getString("detail_message"), rs.getString("reason_code")),
+                        ReviewCaseLabels.team(rs.getString("responsible_team")),
                         rs.getString("related_no"),
                         createdAtLabel(rs.getObject("created_at", OffsetDateTime.class)),
                         links.of("/workbench/review-inbox?case_no=" + rs.getString("case_no"))),
@@ -91,8 +79,10 @@ public class ReviewCaseCardSource implements WecomBusinessCardSource {
         return rows.isEmpty() ? Optional.empty() : Optional.of(ReviewCaseCard.render(rows.getFirst()));
     }
 
-    private static String reasonLabel(String reasonCode) {
-        return REASON_LABELS.getOrDefault(reasonCode, reasonCode);
+    private static String headline(String detailMessage, String reasonCode) {
+        return detailMessage != null && !detailMessage.isBlank()
+                ? detailMessage
+                : ReviewCaseLabels.reason(reasonCode);
     }
 
     private static String createdAtLabel(OffsetDateTime createdAt) {
