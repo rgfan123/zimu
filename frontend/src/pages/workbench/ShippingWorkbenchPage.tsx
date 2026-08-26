@@ -13,6 +13,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { platformOrdersApi } from '@/api/endpoints';
 import { useAsync } from '@/hooks/useAsync';
 import { errorMessage } from '@/api/client';
+import { formatDateTime } from '@/format/dateTime';
 import { extractBlockerCases, mergeBlockers, groupBlockers, PREVIEW_BLOCKED_REASON, type BlockerCase } from './blockerGrouping';
 import { JdBlockerFixDrawer } from './JdBlockerFixDrawer';
 import { presentAwaitingTracking } from './awaitingTracking';
@@ -346,7 +347,7 @@ function AwaitingTrackingSection() {
                       <div className="zs-l2">
                         出库号 {row.erpDeliveryNo ?? '——'}
                         {' · '}已查询 {row.attempts} 次
-                        {row.lastQueryAt ? ` · 上次 ${new Date(row.lastQueryAt).toLocaleString('zh-CN')}` : ' · 尚未查询'}
+                        {row.lastQueryAt ? ` · 上次 ${formatDateTime(row.lastQueryAt)}` : ' · 尚未查询'}
                       </div>
                     </div>
                   </div>
