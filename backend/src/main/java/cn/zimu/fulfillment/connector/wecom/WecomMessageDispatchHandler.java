@@ -1,5 +1,8 @@
 package cn.zimu.fulfillment.connector.wecom;
 
+import cn.zimu.fulfillment.connector.wecom.card.PreShipConfirmCard;
+import cn.zimu.fulfillment.connector.wecom.card.PreShipConfirmInteractionService;
+import cn.zimu.fulfillment.connector.wecom.card.WecomTaskId;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
 import cn.zimu.fulfillment.order.card.CardConfirmationResult;
@@ -50,6 +53,7 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
     private final WecomOrderDraftCardInteractionService cardInteractions;
+    private final PreShipConfirmInteractionService preShipInteractions;
     private final ObjectProvider<WecomOutboundGateway> outboundGatewayProvider;
 
     private volatile WecomConnectionManager connectionManager;
@@ -61,12 +65,14 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
             WecomOrderDraftCardInteractionService cardInteractions,
+            PreShipConfirmInteractionService preShipInteractions,
             ObjectProvider<WecomOutboundGateway> outboundGatewayProvider) {
         this.submissionService = submissionService;
         this.connectionManagerProvider = connectionManagerProvider;
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.cardInteractions = cardInteractions;
+        this.preShipInteractions = preShipInteractions;
         this.outboundGatewayProvider = outboundGatewayProvider;
     }
 
@@ -143,11 +149,74 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         }
     }
 
+    /** task_id 的域属于业务卡注册表时走业务卡路径；解析不出来的一律留给订单草稿卡按原逻辑报错。 */
+    private boolean isBusinessCardTask(JsonNode frame) {
+        JsonNode event = frame.path("body").path("event");
+        String raw = event.path("taskid").asText("");
+        if (raw.isBlank()) {
+            raw = event.path("task_id").asText("");
+        }
+        return WecomTaskId.parse(raw)
+                .map(taskId -> PreShipConfirmCard.DOMAIN.equals(taskId.domain()))
+                .orElse(false);
+    }
+
+    /**
+     * 业务卡回调：5 秒窗口内只回一句话，重活交给 Worker。
+     *
+     * <p>这里**不做卡片 update**：确认的结果（建单成功与否）在 5 秒后才知道，
+     * 而窗口一过同一张卡再也改不动。与其把卡片改成「处理中」然后永远停在那里，
+     * 不如当场回一句确定的话，结果由后续的发货结果卡承担。
+     */
+    private void handleBusinessCardEvent(JsonNode frame, long startedNanos) {
+        PreShipConfirmInteractionService.Outcome outcome;
+        try {
+            outcome = preShipInteractions.handle(frame);
+        } catch (RuntimeException ex) {
+            log.error("企微业务卡事件处理失败", ex);
+            return;
+        }
+        String reqId = frame.path("headers").path("req_id").asText("");
+        log.info(
+                "企微业务卡点击 accepted={} code={} req_id={}",
+                outcome.accepted(), outcome.businessCode(), reqId);
+        if (reqId.isBlank()) {
+            return;
+        }
+        long elapsed = System.nanoTime() - startedNanos;
+        if (elapsed >= UPDATE_CARD_BUDGET_NANOS) {
+            log.warn("企微业务卡回执超出 5 秒窗口，放弃即时回执 code={}", outcome.businessCode());
+            return;
+        }
+        try {
+            connectionManager().respondUpdateUntil(
+                    reqId, textResponse(outcome.cardText()), startedNanos + UPDATE_CARD_BUDGET_NANOS);
+        } catch (RuntimeException ex) {
+            // 回执发不出去不影响已受理的建单任务；结果卡仍会送达
+            log.warn("企微业务卡回执发送失败 code={}", outcome.businessCode(), ex);
+        }
+    }
+
+    /** 业务卡回执用纯文本：卡片 update 需要整张卡的 JSON，而此刻我们只有一句话要说。 */
+    private JsonNode textResponse(String text) {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("response_type", "text");
+        body.putObject("text").put("content", text);
+        return body;
+    }
+
     /**
      * 业务处理先提交；updateCard 与文字兜底随后执行，任何通道失败都不会回滚已确认订单。
      * 4.5 秒本地预算为官方 5 秒窗口预留 500ms 发送余量。
      */
     void handleTemplateCardEvent(JsonNode frame, long startedNanos) {
+        // 业务卡与订单草稿卡是两个实体族，靠 task_id 的域分流。
+        // 不分流的表现是业务卡按钮一律回 WECOM_CARD_TASK_ID_INVALID——
+        // 点了没反应，而日志里只有一句"无法识别的卡片"。
+        if (isBusinessCardTask(frame)) {
+            handleBusinessCardEvent(frame, startedNanos);
+            return;
+        }
         CardInteractionOutcome outcome;
         try {
             outcome = cardInteractions.handle(frame);

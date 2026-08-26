@@ -294,8 +294,15 @@ public class ShipmentJdOutboundPreparer {
     /**
      * 交由京东解析四级地址。
      *
-     * <p>优先送人工已确认的详细地址（人已核对过、噪声更少）；未确认时送原始快照全文。
-     * 两者都没有则仍然阻断——地址是发货的必要事实，没有就是没有，不发空单。
+     * <p><b>送原始快照全文，不送我方拆过的详细地址。</b>2026-08-26 生产实证推翻了
+     * 「已确认的更干净」这个假设：飞象 D2026825436038809722 的源地址本身就是三段拼接
+     * （{@code 北京朝阳区太阳宫地区} + {@code 北京市-北京市-朝阳区太阳宫} + 门牌），
+     * 我方拆完剩下 {@code 太阳宫地区太阳宫丰和园19号院…}——重复片段没去掉，
+     * 反而把「北京市朝阳区」这些能帮助京东定位的锚点删掉了。
+     * 拿半成品去让京东解析，比给它原文更难解对。
+     *
+     * <p>所以 addressAnalysis=2 的语义是彻底换权威源：原文进、京东拆，我方不预处理。
+     * 全文缺失才阻断——地址是发货的必要事实，没有就是没有，不发空单。
      *
      * <p>省/市/区/镇一律不送：京东会自行解析，我方再送一份可能与其解析结果冲突。
      */
@@ -304,12 +311,8 @@ public class ShipmentJdOutboundPreparer {
             Context state,
             List<Validation> validations,
             List<Blocker> blockers) {
-        String detail = hasText(state.jdReceiverDetailAddress())
-                ? state.jdReceiverDetailAddress()
-                : state.receiverAddress();
-        String source = hasText(state.jdReceiverDetailAddress())
-                ? "shipments.jd_receiver_detail_address (operator confirmed)"
-                : "shipments.receiver_address_snapshot";
+        String detail = state.receiverAddress();
+        String source = "shipments.receiver_address_snapshot";
         if (!hasText(detail)) {
             block(
                     blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_RECEIVER_ADDRESS_MISSING",

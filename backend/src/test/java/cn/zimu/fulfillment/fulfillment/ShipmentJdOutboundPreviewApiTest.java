@@ -331,10 +331,19 @@ class ShipmentJdOutboundPreviewApiTest {
 
         Map<String, Object> receiver = castMap(castMap(analyzed.getBody().get("request")).get("receiverInfo"));
         assertThat(receiver).containsEntry("addressAnalysis", 2);
-        assertThat(receiver).containsKey("detailAddress");
         assertThat(receiver)
                 .as("四级交给京东解析后，我方不再下发，避免与京东解析结果冲突")
                 .doesNotContainKeys("province", "city", "county", "town");
+
+        // 即便人工已确认过详细地址，送出去的仍是**原始快照全文**。
+        // 生产实证（飞象 D2026825436038809722）：我方拆完的 detail 丢了「北京市朝阳区」
+        // 这类定位锚点、却留着「太阳宫地区太阳宫」的重复片段——半成品比原文更难被京东解对。
+        String rawSnapshot = jdbc.queryForObject(
+                "SELECT receiver_address_snapshot FROM app.shipments WHERE id=?", String.class, shipmentId);
+        String confirmedDetail = jdbc.queryForObject(
+                "SELECT jd_receiver_detail_address FROM app.shipments WHERE id=?", String.class, shipmentId);
+        assertThat(confirmedDetail).as("前置：这一单确实人工确认过").isNotBlank();
+        assertThat(receiver).containsEntry("detailAddress", rawSnapshot);
         assertThat(analyzed.getBody()).containsEntry("submittable", true);
 
         jdbc.update("UPDATE app.fulfillment_providers SET config=config-'addressAnalysis' WHERE provider_code='JD'");
