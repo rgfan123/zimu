@@ -48,7 +48,10 @@ class WecomTaskIdTest {
         for (String raw : new String[] {
             null, "", "   ", "review", "review_abc_v1", "review_1_x1", "review_1_v",
             "REVIEW_1_v1".repeat(40), "review_1_v1_extra", "9review_1_v1",
-            "review_99999999999999999999_v1", "review:1:v1"
+            "review_99999999999999999999_v1",
+            // 冒号是 aibot 非法字符（errcode 42014）：旧格式必须解析不出来，
+            // 否则改回冒号时测试会静默放行，而线上表现是「按钮卡一张都发不出去」
+            "review:1234:v0"
         }) {
             assertThat(WecomTaskId.parse(raw)).as("raw=%s", raw).isEmpty();
         }

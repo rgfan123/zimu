@@ -163,18 +163,15 @@ public class BusinessFollowUpDraftCardSource implements WecomBusinessCardSource 
                     valueOrMissing(receiverAddress),
                     valueOrMissing(itemSummary),
                     valueOrMissing(settlement),
-                    decisionUrl(followupId, version, "redo", authorizationRef(capability)),
-                    decisionUrl(followupId, version, "supplement", authorizationRef(capability)),
-                    decisionUrl(followupId, version, "pause", authorizationRef(capability)));
+                    detailUrl(followupId, version, authorizationRef(capability)));
         } catch (Exception ex) {
             throw new IllegalStateException("Business Follow-up READY 草稿缺少可投影内容", ex);
         }
     }
 
-    private String decisionUrl(long followupId, long version, String decision, String capability) {
+    private String detailUrl(long followupId, long version, String capability) {
         return links.of("/workbench/business-followups?followup_id=" + followupId
-                + "&expected_draft_version=" + version
-                + "&decision=" + decision)
+                + "&expected_draft_version=" + version)
                 + "#capability=" + capability;
     }
 

@@ -584,6 +584,10 @@ public class TrackingFileService {
         ParsedSourceFile original = sourceFileParser.parse(fileStore.read(source.fileRef()));
         Map<String, ReturnRow> byCoordinate = returns.stream().collect(java.util.stream.Collectors.toMap(
                 row -> row.sheetIndex() + ":" + row.rowIndex(), row -> row));
+        // 每行真正被回填改动的列。工作簿回写只碰这些列——把整行重写一遍会把
+        // 原表里的公式（合计=D2*H2、SUM 合计行）覆盖成解析时读到的公式**原文文字**，
+        // 生产实证 2026-08-26：还回去的表里合计列全变成了红色的 "D2*H2" 字样。
+        Map<String, java.util.Set<String>> changedByCoordinate = new java.util.HashMap<>();
         List<ParsedSourceRow> rendered = original.rows().stream().map(row -> {
             ReturnRow fill = byCoordinate.get(row.sheetIndex() + ":" + row.rowIndex());
             if (fill == null) {
@@ -619,17 +623,30 @@ public class TrackingFileService {
                     cells.put("物流单号", fill.trackingNo());
                 }
                 case "WANGQI", "DAZHE" -> {
-                    cells.put("订单商品状态", "已发货");
-                    cells.put("快递单号", fill.trackingNo());
-                    cells.put("快递公司", fill.sourceCarrier());
+                    if (cells.containsKey("物流单号") && cells.containsKey("物流公司")) {
+                        // 大者 v2（11 列往返表）：物流公司/物流单号 两列本来就是留给我们填的。
+                        // 写 v1 的列名（快递单号/快递公司/订单商品状态）会因表头不存在而被
+                        // 追加成新列——生产实证 2026-08-26：运单号进了追加列，原两列还是空的。
+                        cells.put("物流公司", fill.sourceCarrier());
+                        cells.put("物流单号", fill.trackingNo());
+                    } else {
+                        cells.put("订单商品状态", "已发货");
+                        cells.put("快递单号", fill.trackingNo());
+                        cells.put("快递公司", fill.sourceCarrier());
+                    }
                 }
                 default -> throw new IllegalStateException("unsupported source return channel");
             }
+            java.util.Set<String> changed = cells.entrySet().stream()
+                    .filter(cell -> !java.util.Objects.equals(cell.getValue(), row.rawCells().get(cell.getKey())))
+                    .map(Map.Entry::getKey)
+                    .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+            changedByCoordinate.put(row.sheetIndex() + ":" + row.rowIndex(), changed);
             return copyWithCells(row, cells);
         }).toList();
         byte[] file = "FEIXIANG".equals(source.channel())
                 ? trueCsv(source, rendered)
-                : sourceWorkbook(source, rendered);
+                : sourceWorkbook(source, rendered, changedByCoordinate);
         String suffix = "FEIXIANG".equals(source.channel()) ? ".csv" : ".xlsx";
         ContentAddressedFileStore.StoredFile stored = fileStore.put("source-return-exports", file, suffix);
         Integer version = jdbc.queryForObject(
@@ -805,38 +822,39 @@ public class TrackingFileService {
         }
     }
 
-    private byte[] sourceWorkbook(SourceBatch source, List<ParsedSourceRow> rows) {
+    private byte[] sourceWorkbook(
+            SourceBatch source, List<ParsedSourceRow> rows, Map<String, java.util.Set<String>> changedByCoordinate) {
         try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(fileStore.read(source.fileRef())));
                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            // 只写回填真正改动的列；原表其余单元格（含公式、汇总行、格式）一律不碰。
             // 渠道回填需要新增的列（如中汇「物流单号」）不在原表头中：
             // 按首个出现顺序在表头末尾追加列，同一来源行的数据写入对应新列。
             Map<Integer, Map<String, Integer>> appendedBySheet = new java.util.HashMap<>();
             for (ParsedSourceRow parsed : rows) {
+                java.util.Set<String> changed = changedByCoordinate.get(parsed.sheetIndex() + ":" + parsed.rowIndex());
+                if (changed == null || changed.isEmpty()) {
+                    continue;
+                }
                 var sheet = workbook.getSheetAt(parsed.sheetIndex());
                 var header = sheet.getRow(0);
                 var data = sheet.getRow(parsed.rowIndex() - 1);
-                java.util.Set<String> known = new java.util.HashSet<>();
+                Map<String, Integer> columnsByName = new LinkedHashMap<>();
                 for (int column = 0; column < header.getLastCellNum(); column++) {
-                    known.add(sourceFileParser.normalizeHeader(formatter.formatCellValue(header.getCell(column))));
+                    columnsByName.putIfAbsent(
+                            sourceFileParser.normalizeHeader(formatter.formatCellValue(header.getCell(column))), column);
                 }
                 Map<String, Integer> appended = appendedBySheet.computeIfAbsent(
                         parsed.sheetIndex(), ignored -> new LinkedHashMap<>());
-                for (Map.Entry<String, String> cell : parsed.rawCells().entrySet()) {
-                    if (!known.contains(cell.getKey())) {
-                        int column = appended.computeIfAbsent(
-                                cell.getKey(), ignored -> Integer.valueOf(header.getLastCellNum()));
+                for (String name : changed) {
+                    Integer column = columnsByName.get(name);
+                    if (column == null) {
+                        column = appended.computeIfAbsent(
+                                name, ignored -> Integer.valueOf(header.getLastCellNum()));
                         if (header.getCell(column) == null) header.createCell(column);
-                        header.getCell(column).setCellValue(cell.getKey());
-                        if (data.getCell(column) == null) data.createCell(column);
-                        data.getCell(column).setCellValue(cell.getValue());
+                        header.getCell(column).setCellValue(name);
                     }
-                }
-                for (int column = 0; column < header.getLastCellNum(); column++) {
-                    String name = sourceFileParser.normalizeHeader(formatter.formatCellValue(header.getCell(column)));
-                    if (parsed.rawCells().containsKey(name)) {
-                        if (data.getCell(column) == null) data.createCell(column);
-                        data.getCell(column).setCellValue(parsed.rawCells().get(name));
-                    }
+                    if (data.getCell(column) == null) data.createCell(column);
+                    data.getCell(column).setCellValue(parsed.rawCells().get(name));
                 }
             }
             workbook.write(output);

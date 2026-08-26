@@ -11,26 +11,23 @@ import org.junit.jupiter.api.Test;
 class BusinessFollowUpCardRenderingTest {
 
     @Test
-    void readyDraftOffersOneVersionBoundCallbackAndThreeInputDeepLinks() {
+    void readyDraftOffersOneVersionBoundCallbackAndOneAuthenticatedDetailLink() {
         ObjectNode card = BusinessFollowUpDraftCard.render(draftView(true));
 
         assertThat(card.path("task_id").asText()).isEqualTo("followup-draft_41_v3");
         assertThat(callbackKeys(card))
                 .containsExactly(BusinessFollowUpDraftCard.CONFIRM_BUTTON_KEY);
-        assertThat(card.path("button_list")).hasSize(4);
-        assertThat(jumpUrls(card))
-                .containsExactly(
-                        decisionUrl("redo"),
-                        decisionUrl("supplement"),
-                        decisionUrl("pause"));
+        assertThat(card.path("button_list")).hasSize(1);
+        assertThat(card.path("card_action").path("url").asText()).isEqualTo(detailUrl());
     }
 
     @Test
-    void incompleteDraftCannotBeConfirmedAndStillOffersThreeSafeDecisions() {
+    void incompleteDraftCannotBeConfirmedAndStillLinksToTheAuthenticatedWorkbench() {
         ObjectNode card = BusinessFollowUpDraftCard.render(draftView(false));
 
         assertThat(callbackKeys(card)).isEmpty();
-        assertThat(card.path("button_list")).hasSize(3);
+        assertThat(card.path("button_list")).isEmpty();
+        assertThat(card.path("card_action").path("url").asText()).isEqualTo(detailUrl());
     }
 
     @Test
@@ -72,21 +69,11 @@ class BusinessFollowUpCardRenderingTest {
     private static List<String> callbackKeys(ObjectNode card) {
         List<String> keys = new ArrayList<>();
         for (JsonNode button : card.path("button_list")) {
-            if (button.path("type").asInt() == 2) {
+            if (button.path("key").isTextual()) {
                 keys.add(button.path("key").asText());
             }
         }
         return keys;
-    }
-
-    private static List<String> jumpUrls(ObjectNode card) {
-        List<String> urls = new ArrayList<>();
-        for (JsonNode button : card.path("button_list")) {
-            if (button.path("type").asInt() == 1) {
-                urls.add(button.path("url").asText());
-            }
-        }
-        return urls;
     }
 
     private static BusinessFollowUpDraftCard.View draftView(boolean confirmable) {
@@ -105,14 +92,12 @@ class BusinessFollowUpCardRenderingTest {
                 "上海市浦东新区某路 1 号",
                 "原切牛排 500g ×2盒",
                 "月结",
-                decisionUrl("redo"),
-                decisionUrl("supplement"),
-                decisionUrl("pause"));
+                detailUrl());
     }
 
-    private static String decisionUrl(String decision) {
+    private static String detailUrl() {
         return "https://zimu.test/workbench/business-followups?followup_id=41"
-                + "&expected_draft_version=3&decision=" + decision
+                + "&expected_draft_version=3"
                 + "#capability=0123456789abcdef0123456789abcdef";
     }
 }

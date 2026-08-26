@@ -90,7 +90,9 @@ class WecomBusinessCardPipelineIntegrationTest {
     }
 
     @Test
-    void allFourCardDomainsAreRegistered() {
+    void allCardDomainsAreRegistered() {
+        // 名册是棘轮：新增一个域必须在这里显式登记。忘了登记的表现是
+        // 「这类卡从来不发」——没有任何报错，只能靠人发现。
         assertThat(registry.domains())
                 .containsExactlyInAnyOrder(
                         ReviewCaseCard.DOMAIN,
@@ -98,7 +100,9 @@ class WecomBusinessCardPipelineIntegrationTest {
                         BatchConfirmedCard.DOMAIN,
                         JdOutboundFailureCard.DOMAIN,
                         BusinessFollowUpDraftCard.DOMAIN,
-                        BusinessFollowUpResultCard.DOMAIN);
+                        BusinessFollowUpResultCard.DOMAIN,
+                        PreShipConfirmCard.DOMAIN,
+                        ShipmentResultCard.DOMAIN);
     }
 
     @Test
@@ -402,8 +406,8 @@ class WecomBusinessCardPipelineIntegrationTest {
         assertThat(card.path("task_id").asText()).isEqualTo("alert_" + alertId + "_v0");
         assertThat(card.path("main_title").path("desc").asText()).isEqualTo("ALERT-CARD-1");
         assertThat(card.path("sub_title_text").asText()).isEqualTo("京东出库连续失败");
-        // 深链已配 base-url，按钮应带上
-        assertThat(card.path("button_list").toString()).contains("https://zimu.test");
+        // 深链已配 base-url。aibot Button 无 url 字段，深链由 card_action 承载
+        assertThat(card.path("card_action").path("url").asText()).contains("https://zimu.test");
     }
 
     // ------------------------------------------------------------------

@@ -31,7 +31,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V63）升级，Flyway validate（默认开启）必须成功且只追加
+ * migration set（V1..V64）升级，Flyway validate（默认开启）必须成功且只追加
  * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）、
  * V50（中汇稳定上传意图，Issue #116）、V51（企微业务通知 outbox，Issue #90）与
  * V52（企微订单草稿卡片，Issues #87/#88）、V53（礼包组件删除保护）与 V54（Shipment 来源同步状态机）与 V55（通用业务卡投递，#87/#88）与 V56（履约单据 Agent）；
@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV63() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV64() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -108,21 +108,21 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V63）升级——Flyway validate 默认开启，
+        // 阶段二：完整当前 migration set（V1..V64）升级——Flyway validate 默认开启，
         // V40–V47 校验通过后只追加 V48/V49/V50/V51/V52/V53/V54/V55/V56，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 63 条历史")
-                .hasSize(63);
+                .as("完整升级后应恰有 64 条历史")
+                .hasSize(64);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48–V63 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
+        // V48–V64 按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 63))
+        assertThat(historyAfter.subList(47, 64))
                 .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）与 V54（#113，合并 PR #128 时与礼包 V53 撞号后顺延）、V55（通用业务卡投递）与 V56（履约单据 Agent）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
@@ -155,24 +155,27 @@ class ProductionMigrationHistoryCompatTest {
                         new HistoryRow("57", "V57__source_return_wecom_delivery.sql",
                                 "source return wecom delivery",
                                 crc32Of("V57__source_return_wecom_delivery.sql")),
-                        new HistoryRow("58", "V58__business_followups.sql",
+                        new HistoryRow("58", "V58__review_case_claim.sql",
+                                "review case claim",
+                                crc32Of("V58__review_case_claim.sql")),
+                        new HistoryRow("59", "V59__business_followups.sql",
                                 "business followups",
-                                crc32Of("V58__business_followups.sql")),
-                        new HistoryRow("59", "V59__kehuzx_followup_drafts.sql",
+                                crc32Of("V59__business_followups.sql")),
+                        new HistoryRow("60", "V60__kehuzx_followup_drafts.sql",
                                 "kehuzx followup drafts",
-                                crc32Of("V59__kehuzx_followup_drafts.sql")),
-                        new HistoryRow("60", "V60__business_followup_approvals.sql",
+                                crc32Of("V60__kehuzx_followup_drafts.sql")),
+                        new HistoryRow("61", "V61__business_followup_approvals.sql",
                                 "business followup approvals",
-                                crc32Of("V60__business_followup_approvals.sql")),
-                        new HistoryRow("61", "V61__business_followup_assignments.sql",
+                                crc32Of("V61__business_followup_approvals.sql")),
+                        new HistoryRow("62", "V62__business_followup_assignments.sql",
                                 "business followup assignments",
-                                crc32Of("V61__business_followup_assignments.sql")),
-                        new HistoryRow("62", "V62__kehuzx_customer_assignment_trace.sql",
+                                crc32Of("V62__business_followup_assignments.sql")),
+                        new HistoryRow("63", "V63__kehuzx_customer_assignment_trace.sql",
                                 "kehuzx customer assignment trace",
-                                crc32Of("V62__kehuzx_customer_assignment_trace.sql")),
-                        new HistoryRow("63", "V63__kehuzx_customer_create_assignment.sql",
+                                crc32Of("V63__kehuzx_customer_assignment_trace.sql")),
+                        new HistoryRow("64", "V64__kehuzx_customer_create_assignment.sql",
                                 "kehuzx customer create assignment",
-                                crc32Of("V63__kehuzx_customer_create_assignment.sql")));
+                                crc32Of("V64__kehuzx_customer_create_assignment.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // V48–V60 分别用内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片与
@@ -440,7 +443,7 @@ class ProductionMigrationHistoryCompatTest {
                         'kehuzx_read_evidence', 'kehuzx_read_failures',
                         'business_followup_draft_versions')
                     """)))
-                    .as("V59 必须同时持久化远端读取证据与版本化草稿")
+                    .as("V60 必须同时持久化远端读取证据与版本化草稿")
                     .isEqualTo("3");
             assertThat(single(statement.executeQuery(
                     """
@@ -454,7 +457,7 @@ class ProductionMigrationHistoryCompatTest {
                       ]'::jsonb
                       AND jsonb_array_length(tool_whitelist)=5
                     """)))
-                    .as("V59 客户跟进 Agent 只能看到五个命名空间化 Kehuzx 只读工具")
+                    .as("V60 客户跟进 Agent 只能看到五个命名空间化 Kehuzx 只读工具")
                     .isEqualTo("1");
             assertThat(single(statement.executeQuery(
                     """
@@ -465,14 +468,14 @@ class ProductionMigrationHistoryCompatTest {
                         'current_confirmed_draft_version'
                       )
                     """)))
-                    .as("V60 必须把指定 +1 与已确认草稿版本作为可约束事实")
+                    .as("V61 必须把指定 +1 与已确认草稿版本作为可约束事实")
                     .isEqualTo("2");
             assertThat(single(statement.executeQuery(
                     """
                     SELECT count(*) FROM information_schema.tables
                     WHERE table_schema='app' AND table_name='business_followup_approvals'
                     """)))
-                    .as("V60 必须持久化绑定草稿版本的人工决定")
+                    .as("V61 必须持久化绑定草稿版本的人工决定")
                     .isEqualTo("1");
             assertThat(single(statement.executeQuery(
                     """
@@ -482,7 +485,7 @@ class ProductionMigrationHistoryCompatTest {
                         'application_status', 'application_failure_code', 'applied_at'
                       )
                     """)))
-                    .as("V60 必须单独持久化 Approval 的应用结果")
+                    .as("V61 必须单独持久化 Approval 的应用结果")
                     .isEqualTo("3");
             assertThat(single(statement.executeQuery(
                     """
@@ -493,7 +496,7 @@ class ProductionMigrationHistoryCompatTest {
                         'business_followup_approval_id'
                       )
                     """)))
-                    .as("V60 企微事件必须串联跟进、草稿版本与 Approval")
+                    .as("V61 企微事件必须串联跟进、草稿版本与 Approval")
                     .isEqualTo("3");
             assertThat(single(statement.executeQuery(
                     """
@@ -507,7 +510,7 @@ class ProductionMigrationHistoryCompatTest {
                         'external_entity_id', 'result_code'
                       )
                     """)))
-                    .as("V61 必须持久化可追溯且可独立执行的 Assignment 契约")
+                    .as("V62 必须持久化可追溯且可独立执行的 Assignment 契约")
                     .isEqualTo("17");
             assertThat(single(statement.executeQuery(
                     """
@@ -515,14 +518,14 @@ class ProductionMigrationHistoryCompatTest {
                     WHERE table_schema='app' AND table_name='business_followup_assignments'
                       AND column_name='payload_hash'
                     """)))
-                    .as("V62 必须持久化确定性 Kehuzx payload hash")
+                    .as("V63 必须持久化确定性 Kehuzx payload hash")
                     .isEqualTo("1");
         }
     }
 
     @Test
-    void v60MigratesProtocolTaskIdsAndFencesApprovalFacts() throws Exception {
-        String database = "v60_business_followup_approvals";
+    void v61MigratesProtocolTaskIdsAndFencesApprovalFacts() throws Exception {
+        String database = "v61_business_followup_approvals";
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -530,7 +533,7 @@ class ProductionMigrationHistoryCompatTest {
         }
         String databaseUrl = "jdbc:postgresql://" + postgres.getHost() + ":"
                 + postgres.getFirstMappedPort() + "/" + database;
-        flyway(databaseUrl, MigrationVersion.fromVersion("59")).migrate();
+        flyway(databaseUrl, MigrationVersion.fromVersion("60")).migrate();
 
         try (Connection connection = DriverManager.getConnection(
                 databaseUrl, postgres.getUsername(), postgres.getPassword());

@@ -705,6 +705,8 @@ CREATE TABLE app.review_cases (
     detail              JSONB NOT NULL DEFAULT '{}'::JSONB CHECK (jsonb_typeof(detail) = 'object'),
     resolution          JSONB,
     resolution_version  BIGINT NOT NULL DEFAULT 0 CHECK (resolution_version >= 0),
+    claimed_by          TEXT,
+    claimed_at          TIMESTAMPTZ,
     resolved_by         VARCHAR(128),
     resolved_at         TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -713,6 +715,8 @@ CREATE TABLE app.review_cases (
     CHECK (btrim(case_type) <> ''),
     CHECK (btrim(responsible_team) <> ''),
     CHECK (btrim(reason_code) <> ''),
+    CHECK ((claimed_by IS NULL) = (claimed_at IS NULL)),
+    CHECK (claimed_by IS NULL OR btrim(claimed_by) <> ''),
     CHECK (num_nonnulls(order_id, order_line_id, fulfillment_id, shipment_id, import_batch_id, raw_import_row_id) > 0),
     CHECK (
         (status = 'OPEN' AND resolved_by IS NULL AND resolved_at IS NULL)
@@ -2293,6 +2297,8 @@ CREATE INDEX idx_review_cases_fulfillment ON app.review_cases(fulfillment_id);
 CREATE INDEX idx_review_cases_shipment ON app.review_cases(shipment_id);
 CREATE INDEX idx_review_cases_import_batch ON app.review_cases(import_batch_id);
 CREATE INDEX idx_review_cases_raw_row ON app.review_cases(raw_import_row_id);
+CREATE INDEX review_cases_unclaimed_open_idx ON app.review_cases(created_at)
+    WHERE status = 'OPEN' AND claimed_by IS NULL;
 
 CREATE UNIQUE INDEX uq_operational_alert_active_subject ON app.operational_alerts(
     alert_type,
@@ -6702,7 +6708,7 @@ COMMENT ON COLUMN app.source_return_exports.wecom_media_id_sha256 IS
     '企微临时素材 media_id 的哈希；media_id 本身是 3 天期凭据，按既有纪律不落库明文';
 -- END V57__source_return_wecom_delivery.sql
 
--- BEGIN V58__business_followups.sql
+-- BEGIN V59__business_followups.sql
 -- Business Follow-up intake and explicit +1 organization dispatch (Issue #146).
 -- Raw material remains in the existing channel message/media evidence chain; this table
 -- stores only the stable submission reference and the employee's authorized draft.
@@ -6742,9 +6748,9 @@ CREATE TABLE app.business_followups (
 
 CREATE INDEX idx_business_followups_stage
     ON app.business_followups(stage, processing_status, updated_at DESC);
--- END V58__business_followups.sql
+-- END V59__business_followups.sql
 
--- BEGIN V59__kehuzx_followup_drafts.sql
+-- BEGIN V60__kehuzx_followup_drafts.sql
 -- Issue #130: fail-closed Kehuzx read evidence and versioned customer follow-up drafts.
 
 CREATE TABLE app.kehuzx_read_evidence (
@@ -6864,9 +6870,9 @@ VALUES (
     }$$::jsonb,
     '["kehuzx_search_customers","kehuzx_get_customer_detail","kehuzx_search_demands","kehuzx_search_orders","kehuzx_get_order_detail"]'::jsonb
 );
--- END V59__kehuzx_followup_drafts.sql
+-- END V60__kehuzx_followup_drafts.sql
 
--- BEGIN V60__business_followup_approvals.sql
+-- BEGIN V61__business_followup_approvals.sql
 -- Issue #147: version-fenced Business Follow-up approval facts and WeCom callback linkage.
 
 -- Preserve task IDs that may already have reached WeCom; only clearly unsent/retry-safe legacy
@@ -7089,9 +7095,9 @@ $$;
 CREATE INDEX idx_wecom_events_business_followup
     ON app.wecom_events(business_followup_id, business_followup_draft_version, received_at DESC)
     WHERE business_followup_id IS NOT NULL;
--- END V60__business_followup_approvals.sql
+-- END V61__business_followup_approvals.sql
 
--- BEGIN V61__business_followup_assignments.sql
+-- BEGIN V62__business_followup_assignments.sql
 -- Issue #148: confirmed Business Follow-up drafts project durable, independently executed Assignments.
 
 ALTER TABLE app.business_followup_approvals
@@ -7208,4 +7214,4 @@ WHERE a.decision='CONFIRM' AND a.application_status='APPLIED'
   AND a.draft_version=bf.current_confirmed_draft_version
   AND d.status='CONFIRMED'
 ON CONFLICT (idempotency_key) DO NOTHING;
--- END V61__business_followup_assignments.sql
+-- END V62__business_followup_assignments.sql

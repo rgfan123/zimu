@@ -143,23 +143,31 @@ class WecomCardBuilderTest {
     }
 
     @Test
-    void callbackAndJumpButtonsCarryDistinctProtocolTypes() {
+    void callbackButtonCarriesOnlyAibotLegalFields() {
+        // aibot 模板卡的 Button 结构只有 text / style / key（官方 101032 参数表）。
+        // 此前多塞了 type=2，属于企业应用卡片的字段；平台不报错，于是
+        // 「发送成功」长期掩盖了「按钮可能没渲染」——生产 template_card_event 至今零命中。
         ObjectNode card = WecomCardBuilder.buttonInteraction(TASK_ID)
                 .title("标题")
                 .callbackButton("知道了", "ack", ButtonStyle.PRIMARY)
-                .jumpButton("去处理", "https://example.test/x", ButtonStyle.SECONDARY)
+                .cardAction("https://example.test/x")
                 .build();
-        assertThat(card.path("button_list").get(0).path("type").asInt()).isEqualTo(2);
-        assertThat(card.path("button_list").get(0).path("key").asText()).isEqualTo("ack");
-        assertThat(card.path("button_list").get(1).path("type").asInt()).isEqualTo(1);
-        assertThat(card.path("button_list").get(1).path("url").asText())
-                .isEqualTo("https://example.test/x");
+        var button = card.path("button_list").get(0);
+        assertThat(button.path("key").asText()).isEqualTo("ack");
+        assertThat(button.has("type")).as("aibot Button 无 type 字段").isFalse();
+        assertThat(button.has("url")).as("aibot Button 无 url 字段").isFalse();
+        assertThat(button.fieldNames()).toIterable().containsExactlyInAnyOrder("text", "style", "key");
+        // 跳转能力由 card_action 承载（整卡点击），这是 aibot 协议里合法的去处
+        assertThat(card.path("card_action").path("url").asText()).isEqualTo("https://example.test/x");
     }
 
     @Test
-    void jumpButtonWithoutUrlIsRejected() {
-        WecomCardBuilder builder = WecomCardBuilder.buttonInteraction(TASK_ID).title("标题");
-        assertThatThrownBy(() -> builder.jumpButton("去处理", null, ButtonStyle.SECONDARY))
-                .isInstanceOf(IllegalArgumentException.class);
+    void jumpButtonIsRejectedBecauseAibotButtonsHaveNoUrlField() {
+        WecomCardBuilder builder = WecomCardBuilder.buttonInteraction(TASK_ID)
+                .title("标题")
+                .jumpButton("去处理", "https://example.test/x", ButtonStyle.SECONDARY);
+        assertThatThrownBy(builder::build)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("cardAction");
     }
 }

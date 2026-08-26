@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.connector.wecom;
 
+import cn.zimu.fulfillment.connector.wecom.card.WecomBusinessCardInteractionService;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
 import cn.zimu.fulfillment.followup.BusinessFollowUpCardInteractionOutcome;
@@ -23,6 +24,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -46,6 +48,16 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
 
     static final String CONNECTION_ID = "wecom-long-connection";
     static final String RECEIPT_TEXT = "已接收";
+
+    /**
+     * 文件回执。发文件的人接下来要等十几秒才知道结果（下载 → 解密 → 认模板 → 解析），
+     * 这期间只回「已接收」两个字，读起来像石沉大海。说清楚「在做什么、会怎么回」，
+     * 沉默期才不会被当成没收到。
+     *
+     * <p>企微的文件帧里**没有文件名**（只有 url/aeskey/md5sum，见 aibot_msg_callback 载荷），
+     * 所以回执里回不出「收到了 xxx.xlsx」——不要为此去猜。
+     */
+    static final String FILE_RECEIPT_TEXT = "已收到文件，正在识别模板并解析，结果稍后回你";
     static final long UPDATE_CARD_BUDGET_NANOS = 4_500_000_000L;
     private static final ZoneId DISPLAY_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter DISPLAY_TIME = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss");
@@ -56,6 +68,8 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
     private final ObjectMapper objectMapper;
     private final WecomOrderDraftCardInteractionService cardInteractions;
     private final BusinessFollowUpCardInteractionService followUpCardInteractions;
+    private final WecomBusinessCardInteractionService businessCardInteractions;
+    private final String businessCardBaseUrl;
     private final ObjectProvider<WecomOutboundGateway> outboundGatewayProvider;
     private final CardDeepLinks deepLinks;
 
@@ -69,6 +83,8 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
             ObjectMapper objectMapper,
             WecomOrderDraftCardInteractionService cardInteractions,
             BusinessFollowUpCardInteractionService followUpCardInteractions,
+            WecomBusinessCardInteractionService businessCardInteractions,
+            @Value("${app.wecom-business-card.base-url:}") String businessCardBaseUrl,
             ObjectProvider<WecomOutboundGateway> outboundGatewayProvider,
             CardDeepLinks deepLinks) {
         this.submissionService = submissionService;
@@ -77,6 +93,12 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         this.objectMapper = objectMapper;
         this.cardInteractions = cardInteractions;
         this.followUpCardInteractions = followUpCardInteractions;
+        this.businessCardInteractions = businessCardInteractions;
+        // card_action 必填（42045）；没配深链基地址时用协议合法的占位，
+        // 否则整张回执发不出去，表现又变成「点了没反应」。
+        this.businessCardBaseUrl = businessCardBaseUrl == null || businessCardBaseUrl.isBlank()
+                ? "https://work.weixin.qq.com"
+                : businessCardBaseUrl.trim();
         this.outboundGatewayProvider = outboundGatewayProvider;
         this.deepLinks = deepLinks;
     }
@@ -136,7 +158,7 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
                 frame);
         try {
             long submissionId = submissionService.submit(command);
-            deliverReceipt(reqId);
+            deliverReceipt(reqId, msgType);
         } catch (RuntimeException ex) {
             // 不回执：企微会按回调重试（重复回调由幂等键收敛）；证据若已落库则保留。
             log.error("企微消息处理失败，等待通道重试 msgid={}", messageId, ex);
@@ -154,6 +176,85 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         }
     }
 
+    /** task_id 的域属于业务卡时走业务卡路径；解析不出来的一律留给订单草稿卡按原逻辑报错。 */
+    private boolean isBusinessCardTask(JsonNode frame) {
+        return WecomBusinessCardInteractionService.handles(
+                WecomBusinessCardInteractionService.taskId(frame));
+    }
+
+    /**
+     * 业务卡回调：5 秒窗口内把卡片换成一张「点完之后发生了什么」的回执卡。
+     *
+     * <p>这里**不等业务落定**：确认发货的结果（建单成功与否）在 5 秒后才知道，
+     * 而窗口一过同一张卡再也改不动。与其把卡片改成「处理中」然后永远停在那里，
+     * 不如当场换成一张确定的回执，最终结果由后续的发货结果卡承担。
+     */
+    private void handleBusinessCardEvent(JsonNode frame, long startedNanos) {
+        WecomBusinessCardInteractionService.Outcome outcome;
+        try {
+            outcome = businessCardInteractions.handle(frame);
+        } catch (RuntimeException ex) {
+            log.error("企微业务卡事件处理失败", ex);
+            return;
+        }
+        String reqId = frame.path("headers").path("req_id").asText("");
+        log.info(
+                "企微业务卡点击 accepted={} code={} req_id={}",
+                outcome.accepted(), outcome.businessCode(), reqId);
+        if (reqId.isBlank()) {
+            return;
+        }
+        if (System.nanoTime() - startedNanos >= UPDATE_CARD_BUDGET_NANOS) {
+            log.warn("企微业务卡回执超出 5 秒窗口，放弃即时回执 code={}", outcome.businessCode());
+            return;
+        }
+        try {
+            connectionManager().respondUpdateUntil(
+                    reqId,
+                    updateResponse(outcome, WecomBusinessCardInteractionService.taskId(frame)),
+                    startedNanos + UPDATE_CARD_BUDGET_NANOS);
+        } catch (RuntimeException ex) {
+            // 回执发不出去不影响已受理的动作；结果卡仍会送达
+            log.warn("企微业务卡回执发送失败 code={}", outcome.businessCode(), ex);
+        }
+    }
+
+    /**
+     * 回执体。{@code aibot_respond_update_msg} 的 {@code response_type} **只接受
+     * {@code update_template_card}**（官方 101463 参数表），回纯文本会被拒。
+     *
+     * <p>{@code card_action} 是必填：缺了平台回 {@code errcode 42045
+     * 「Template_Card.card_action 缺失或不合法」}，而表现只是「点了没反应」。
+     * 未配置深链基地址时给一个协议上合法的占位 URL——宁可跳到一个说明页，
+     * 也不要整张回执发不出去。
+     */
+    private JsonNode updateResponse(
+            WecomBusinessCardInteractionService.Outcome outcome, String originalTaskId) {
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("response_type", "update_template_card");
+        ObjectNode card = body.putObject("template_card");
+        card.put("card_type", "text_notice");
+        card.put("task_id", originalTaskId);
+        card.putObject("main_title")
+                .put("title", truncate(outcome.title(), 26))
+                .put("desc", truncate(outcome.message(), 30));
+        card.put("sub_title_text", truncate(outcome.message(), 112));
+        card.putObject("card_action").put("type", 1).put("url", businessCardBaseUrl);
+        return body;
+    }
+
+    private static String truncate(String value, int maxChars) {
+        if (value == null || value.isBlank()) {
+            return "-";
+        }
+        String trimmed = value.strip();
+        int codePoints = trimmed.codePointCount(0, trimmed.length());
+        if (codePoints <= maxChars) {
+            return trimmed;
+        }
+        return trimmed.substring(0, trimmed.offsetByCodePoints(0, maxChars - 1)) + "…";
+    }
+
     /**
      * 业务处理先提交；updateCard 与文字兜底随后执行，任何通道失败都不会回滚已确认订单。
      * 4.5 秒本地预算为官方 5 秒窗口预留 500ms 发送余量。
@@ -161,6 +262,13 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
     void handleTemplateCardEvent(JsonNode frame, long startedNanos) {
         if (isFollowUpCard(frame)) {
             handleFollowUpCardEvent(frame, startedNanos);
+            return;
+        }
+        // 业务卡与订单草稿卡是两个实体族，靠 task_id 的域分流。
+        // 不分流的表现是业务卡按钮一律回 WECOM_CARD_TASK_ID_INVALID——
+        // 点了没反应，而日志里只有一句"无法识别的卡片"。
+        if (isBusinessCardTask(frame)) {
+            handleBusinessCardEvent(frame, startedNanos);
             return;
         }
         CardInteractionOutcome outcome;
@@ -481,14 +589,14 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         return botId;
     }
 
-    /** 回执「已接收」：透传回调 req_id；失败重试 1 次，仍失败只告警不重推（04 决策）。 */
-    private void deliverReceipt(String reqId) {
+    /** 回执：透传回调 req_id；失败重试 1 次，仍失败只告警不重推（04 决策）。 */
+    private void deliverReceipt(String reqId, String msgType) {
         if (reqId.isBlank()) {
             return;
         }
         ObjectNode body = objectMapper.createObjectNode();
         body.put("msgtype", "text");
-        body.putObject("text").put("content", RECEIPT_TEXT);
+        body.putObject("text").put("content", receiptText(msgType));
         boolean sent = connectionManager().respond(reqId, body);
         if (!sent) {
             try {
@@ -502,6 +610,10 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         if (!sent) {
             log.warn("企微回执发送失败（已重试 1 次），不再重推 req_id={}", reqId);
         }
+    }
+
+    static String receiptText(String msgType) {
+        return "file".equals(msgType) ? FILE_RECEIPT_TEXT : RECEIPT_TEXT;
     }
 
     /** 懒解析连接管理器：handler 与 manager 互相依赖，用 provider 打破构造期循环。 */

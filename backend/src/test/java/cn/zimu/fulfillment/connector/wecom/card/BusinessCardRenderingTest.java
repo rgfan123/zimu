@@ -97,10 +97,9 @@ class BusinessCardRenderingTest {
         assertThat(callbackKeys(card)).isEmpty();
         assertThat(JdOutboundFailureCard.retryable(JdOutboundFailureCard.RECONCILIATION_REQUIRED))
                 .isFalse();
-        // 唯一有意义的下一步仍然给到
-        assertThat(card.path("button_list")).hasSize(1);
-        assertThat(card.path("button_list").get(0).path("url").asText())
-                .isEqualTo("https://zimu.test/recon");
+        // 唯一有意义的下一步仍然给到——aibot 没有跳转按钮，由整卡点击承载
+        assertThat(card.path("button_list")).isEmpty();
+        assertThat(card.path("card_action").path("url").asText()).isEqualTo("https://zimu.test/recon");
     }
 
     // ---------- 横切：所有卡都不得携带 PII 与凭据 ----------
@@ -169,7 +168,8 @@ class BusinessCardRenderingTest {
     private static List<String> callbackKeys(ObjectNode card) {
         List<String> keys = new ArrayList<>();
         for (JsonNode button : card.path("button_list")) {
-            if (button.path("type").asInt() == 2) {
+            // aibot Button 没有 type 字段；带 key 的即回调按钮（跳转由 card_action 承载）
+            if (button.hasNonNull("key")) {
                 keys.add(button.path("key").asText());
             }
         }

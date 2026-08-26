@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
+import cn.zimu.fulfillment.connector.wecom.card.WecomBusinessCardInteractionService;
 import cn.zimu.fulfillment.followup.BusinessFollowUpCardInteractionOutcome;
 import cn.zimu.fulfillment.followup.BusinessFollowUpCardInteractionService;
 import cn.zimu.fulfillment.order.card.CardConfirmationResult;
@@ -72,6 +73,7 @@ class WecomMessageDispatchHandlerTest {
     @MockitoBean private WecomConnectionManager connectionManager;
     @MockitoBean private WecomOrderDraftCardInteractionService cardInteractions;
     @MockitoBean private BusinessFollowUpCardInteractionService followUpCardInteractions;
+    @MockitoBean private WecomBusinessCardInteractionService businessCardInteractions;
     @MockitoBean private WecomOutboundGateway outboundGateway;
 
     @BeforeEach
@@ -334,6 +336,28 @@ class WecomMessageDispatchHandlerTest {
     }
 
     @Test
+    void businessCardUpdatePreservesTheExactAuthorizedTaskId() {
+        String taskId = "preship_42_v1_0123456789abcdef0123456789abcdef";
+        JsonNode frame = businessCardEvent("EVT-PRESHIP", "REQ-PRESHIP", "operator-1", taskId);
+        when(businessCardInteractions.handle(frame)).thenReturn(
+                new WecomBusinessCardInteractionService.Outcome(
+                        true,
+                        "PRESHIP_CONFIRM_ACCEPTED",
+                        "已确认，正在建单",
+                        "建成后会再发结果卡"));
+
+        handler.onFrame("aibot_event_callback", frame);
+
+        ArgumentCaptor<JsonNode> update = ArgumentCaptor.forClass(JsonNode.class);
+        verify(connectionManager).respondUpdateUntil(
+                eq("REQ-PRESHIP"), update.capture(), anyLong());
+        assertThat(update.getValue().path("template_card").path("task_id").asText())
+                .isEqualTo(taskId);
+        verify(cardInteractions, never()).handle(frame);
+        verify(followUpCardInteractions, never()).handle(frame);
+    }
+
+    @Test
     void failedFastUpdateKeepsBusinessResultAndSendsFallbackText() {
         JsonNode frame = cardEvent("EVT-3B", "REQ-11B", "user-card");
         when(cardInteractions.handle(frame))
@@ -499,6 +523,18 @@ class WecomMessageDispatchHandlerTest {
                         + "\"msgtype\":\"event\",\"event\":{\"eventtype\":\"template_card_event\","
                         + "\"template_card_event\":{\"event_key\":\"confirm_followup\","
                         + "\"task_id\":\"followup-draft_42_v1\"}}}}"
+        );
+    }
+
+    private JsonNode businessCardEvent(
+            String messageId, String requestId, String sender, String taskId) {
+        return json(
+                "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\"" + requestId
+                        + "\"},\"body\":{\"msgid\":\"" + messageId + "\",\"aibotid\":\"bot-1\","
+                        + "\"chattype\":\"single\",\"from\":{\"userid\":\"" + sender + "\"},"
+                        + "\"msgtype\":\"event\",\"event\":{\"eventtype\":\"template_card_event\","
+                        + "\"template_card_event\":{\"event_key\":\"preship_confirm\","
+                        + "\"task_id\":\"" + taskId + "\"}}}}"
         );
     }
 

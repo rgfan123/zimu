@@ -37,4 +37,3 @@ CREATE TABLE app.business_followups (
 
 CREATE INDEX idx_business_followups_stage
     ON app.business_followups(stage, processing_status, updated_at DESC);
-

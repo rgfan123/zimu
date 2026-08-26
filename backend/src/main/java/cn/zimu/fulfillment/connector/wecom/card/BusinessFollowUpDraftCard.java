@@ -8,9 +8,6 @@ public final class BusinessFollowUpDraftCard {
 
     public static final String DOMAIN = "followup-draft";
     public static final String CONFIRM_BUTTON_KEY = "confirm_followup";
-    public static final String REDO_BUTTON_KEY = "redo_followup";
-    public static final String SUPPLEMENT_BUTTON_KEY = "supplement_followup";
-    public static final String PAUSE_BUTTON_KEY = "pause_followup";
 
     private BusinessFollowUpDraftCard() {}
 
@@ -33,9 +30,7 @@ public final class BusinessFollowUpDraftCard {
             String receiverAddress,
             String itemSummary,
             String settlement,
-            String redoUrl,
-            String supplementUrl,
-            String pauseUrl) {}
+            String detailUrl) {}
 
     public static ObjectNode render(View view) {
         return renderSafe(view);
@@ -58,9 +53,7 @@ public final class BusinessFollowUpDraftCard {
                 maskAddress(view.receiverAddress()),
                 view.itemSummary(),
                 view.settlement(),
-                view.redoUrl(),
-                view.supplementUrl(),
-                view.pauseUrl()));
+                view.detailUrl()));
     }
 
     private static ObjectNode renderSafe(View view) {
@@ -78,14 +71,11 @@ public final class BusinessFollowUpDraftCard {
         if (view.confirmable()) {
             builder.callbackButton("确认", CONFIRM_BUTTON_KEY, ButtonStyle.PRIMARY);
         }
-        return builder.jumpButton("让 Agent 重做", view.redoUrl(), ButtonStyle.DANGER)
-                .jumpButton("需要补充", view.supplementUrl(), ButtonStyle.SECONDARY)
-                .jumpButton("暂不推进", view.pauseUrl(), ButtonStyle.SECONDARY)
-                .build();
+        return builder.cardAction(view.detailUrl()).build();
     }
 
     private static String summaryBlock(View view) {
-        String prefix = view.confirmable() ? "可确认" : "不可确认";
+        String prefix = view.confirmable() ? "可确认" : "不可确认，需要补充";
         return prefix + "｜摘要 " + safe(view.summary())
                 + "｜待确认 " + safe(view.questions())
                 + "｜风险 " + safe(view.risks())
