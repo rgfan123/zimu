@@ -6,8 +6,8 @@
 
 import { useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Alert, Button, Card, Col, Empty, Row, Typography } from 'antd';
-import { AlertOutlined, CarOutlined, InboxOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons';
+import { Card, Col, Empty, Row, Typography } from 'antd';
+import { AlertOutlined, CarOutlined, InboxOutlined, WarningOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { EChartsOption } from 'echarts';
 import dayjs from 'dayjs';
@@ -19,6 +19,7 @@ import { ATTENTION_COLORS } from '@/pages/shared/semanticStatus';
 import { attentionCardUrl, reviewsQueueUrl } from '@/pages/shared/reviewQueueUrl';
 import { saasChartPalette, saasVisualTokens } from '@/theme/saasTheme';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import Chart from '@/components/Chart';
 import DataTable from '@/components/DataTable';
 import KpiCard from '@/components/KpiCard';
@@ -171,22 +172,22 @@ export default function DashboardPage() {
     );
   }, [summary]);
 
-  return (
-    <PageShell title="工作台">
-      {error ? (
-        <Alert
-          type="error"
-          showIcon
+  /** 页面级错误态：整体请求失败时内容区整块切换为 PageState（保留页头），重试语义与替换前一致（reload）。 */
+  if (error) {
+    return (
+      <PageShell title="调度台">
+        <PageState
+          state="error"
           message="工作台数据加载失败"
           description={errorMessage(error)}
-          action={
-            <Button size="small" icon={<ReloadOutlined />} onClick={reload}>
-              重试
-            </Button>
-          }
+          onRetry={reload}
         />
-      ) : null}
+      </PageShell>
+    );
+  }
 
+  return (
+    <PageShell title="调度台">
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} xl={6}>
           <KpiCard

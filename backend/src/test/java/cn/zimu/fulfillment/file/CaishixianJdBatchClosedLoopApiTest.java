@@ -456,6 +456,14 @@ class CaishixianJdBatchClosedLoopApiTest {
     }
 
     private ResponseEntity<Map> confirm(String batchId, String key) {
+        // 导入会为新收货人创建客户档案（profile 可能为 NULL），确认前补齐京东客户编码（02 门禁）
+        jdbc.update(
+                """
+                UPDATE app.customers
+                SET profile = jsonb_set(COALESCE(profile, '{}'::jsonb), '{jd_customer_code}',
+                                        '"CUST-CSX-001"'::jsonb, true)
+                WHERE data_scope='BUSINESS'
+                """);
         HttpHeaders headers = operatorHeaders();
         headers.set("Idempotency-Key", key);
         return http.exchange(

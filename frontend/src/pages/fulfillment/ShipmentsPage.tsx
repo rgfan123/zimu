@@ -11,12 +11,14 @@ import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
+import LongCode from '@/components/LongCode';
 import PageShell from '@/components/PageShell';
 import { errorMessage } from '@/api/client';
 import { jdWarehouseApi, providersApi, shipmentsApi } from '@/api/endpoints';
 import type { JdClientStatus, JdReceiverAddressCandidate, Shipment, ShipmentJdOutboundPreview, ShipmentStatus } from '@/api/types';
 import { CHANNEL_LABELS, SHIPMENT_STATUS_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { shipmentTimeLabel } from '@/presentation/shipment';
 import {
   jdReceiverAddressBatchIdempotencyKey,
@@ -340,8 +342,10 @@ export default function ShipmentsPage() {
   };
 
   const columns: ColumnsType<Shipment> = [
-    { title: '发货单号', dataIndex: 'shipment_no', width: 160, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
-    { title: '订单号', dataIndex: 'order_id', width: 180, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
+    { title: '发货单号', dataIndex: 'shipment_no', width: 160, render: (v: string) => <LongCode value={v} width={140} /> },
+    { title: '订单号', dataIndex: 'order_no', width: 180, render: (v?: string, r?: Shipment) => (
+      v ? <LongCode value={v} to={`/orders/${r?.order_id}`} width={160} /> : <span style={{ fontVariantNumeric: 'tabular-nums' }}>{r?.order_id}</span>
+    ) },
     { title: '出库单号', dataIndex: 'outbound_order_no', width: 140, render: (v?: string) => v ?? '—' },
     { title: '批次', dataIndex: 'shipment_sequence', width: 70, align: 'right' },
     {
@@ -390,6 +394,18 @@ export default function ShipmentsPage() {
 
   const err = list.error || providers.error;
 
+  /** 页面级错误态：列表或履约方目录加载失败时整块切换为 PageState，重试语义与替换前一致（reload）。 */
+  if (err) {
+    return (
+      <PageState
+        state="error"
+        message="Shipment 加载失败"
+        description={errorMessage(err)}
+        onRetry={list.reload}
+      />
+    );
+  }
+
   return (
     <PageShell
       title="发货记录"
@@ -417,9 +433,6 @@ export default function ShipmentsPage() {
           columns={columns}
           dataSource={list.data?.items ?? []}
           loading={list.loading}
-          error={err}
-          onRetry={list.reload}
-          errorTitle="Shipment 加载失败"
           size="middle"
           pagination={{
             current: page + 1,
@@ -450,7 +463,9 @@ export default function ShipmentsPage() {
               size="small"
               column={2}
               items={[
-                { key: 'o', label: '订单号', children: detail.data.order_id },
+                { key: 'o', label: '订单号', children: detail.data.order_no
+                  ? <LongCode value={detail.data.order_no} to={`/orders/${detail.data.order_id}`} width={200} />
+                  : detail.data.order_id },
                 { key: 'p', label: '履约方', children: providerName(detail.data.provider_id) },
                 { key: 'ob', label: '出库单号', children: detail.data.outbound_order_no ?? '—' },
                 { key: 's', label: '状态', children: <Tag color={STATUS_COLORS[detail.data.shipment_status]}>{SHIPMENT_STATUS_LABELS[detail.data.shipment_status]}</Tag> },

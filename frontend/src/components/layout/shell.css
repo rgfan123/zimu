@@ -193,18 +193,18 @@
 .zs-nav .grp {
   font-size: 10.5px;
   color: var(--zs-text-3);
-  padding: 12px 10px 5px;
+  padding: 8px 10px 3px;
   letter-spacing: 0.07em;
 }
 .zs-nav a {
   display: flex;
   align-items: center;
   gap: 9px;
-  height: 32px;
+  height: 28px;
   padding: 0 10px;
   border-radius: 6px;
   color: var(--zs-text-2);
-  font-size: 13.5px;
+  font-size: 13px;
   text-decoration: none;
   transition: background 0.12s, color 0.12s;
 }

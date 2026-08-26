@@ -48,13 +48,14 @@ test('外壳无顶栏，品牌下方是未选择态的岗位选择器，我的�
   assert.match(body, /今日发货工作台/);
   assert.match(body, /对账工作台/);
   assert.doesNotMatch(body, /模拟下单/, 'Demo 页面不再出现在日常菜单（URL 保留）');
-  // 嵌套分组（京东工具）必须排在其父分组（系统管理）自身条目之后，不得被拍平到前面。
+  // UIUX-10 #144：京东工具收敛为单入口——系统管理只渲染「京东工具」叶子，六个查询页不再占菜单。
   assert.ok(
     body.indexOf('操作审计') !== -1 &&
-      body.indexOf('连接与出库查询') !== -1 &&
-      body.indexOf('操作审计') < body.indexOf('连接与出库查询'),
-    '系统管理的直属条目必须渲染在京东工具分组之前',
+      body.indexOf('京东工具') !== -1 &&
+      body.indexOf('操作审计') < body.indexOf('京东工具'),
+    '系统管理的直属条目必须渲染在京东工具入口之前',
   );
+  assert.doesNotMatch(body, /连接与出库查询/, '六个京东查询页不再直接出现在菜单');
 });
 
 test('选择岗位后跳到该岗位工作台、写入 localStorage，URL 不携带岗位', async () => {
@@ -75,12 +76,11 @@ test('选择岗位后跳到该岗位工作台、写入 localStorage，URL 不携
   for (const section of ['主数据', '系统管理', '京东工具', 'Agent 中心', '经营分析']) {
     assert.match(reordered, new RegExp(section), `切换岗位后「${section}」板块必须仍然可见`);
   }
-  // 履约运营的分组优先序把库存中心排到主数据之前；未列入优先表的分组保持默认相对顺序，
-  // 京东工具必须仍紧随系统管理（稳定排序 + 嵌套邻接，防止未来编辑悄悄拆散）。
+  // 履约运营的分组优先序把库存中心排到主数据之前；未列入优先表的分组保持默认相对顺序。
   assert.ok(reordered.indexOf('库存中心') < reordered.indexOf('主数据'), '履约运营岗位下库存中心应排在主数据之前');
   assert.ok(
-    reordered.indexOf('操作审计') < reordered.indexOf('连接与出库查询'),
-    '切岗重排后京东工具仍须排在系统管理自身条目之后',
+    reordered.indexOf('操作审计') < reordered.indexOf('京东工具'),
+    '切岗重排后京东工具入口仍须排在系统管理自身条目之后',
   );
 });
 

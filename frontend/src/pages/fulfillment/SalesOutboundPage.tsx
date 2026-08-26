@@ -1,5 +1,5 @@
 /**
- * 履约中心 · 销售出库（GET /api/v1/fulfillment-exports + 详情 + 文件下载）。
+ * 文件作业（旧名「销售出库」；UIUX-08 #142 同页同名统一为菜单名）。
  * 履约导出 = 发货前交给履约方（京东/第三方）的发货指令文件；下载后进入回传闭环，
  * 使用状态见 ExportUsageStatus。文件一旦生成即形成履约承诺（CONTEXT.md 履约导出）。
  */
@@ -12,11 +12,13 @@ import { Link, useSearchParams } from 'react-router-dom';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
 import PageShell from '@/components/PageShell';
+import { formatDateTime } from '@/format/dateTime';
 import { ApiError, errorMessage } from '@/api/client';
 import { fileOperationsApi, fulfillmentExportsApi, providersApi } from '@/api/endpoints';
 import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportWecomState, ImportBatch, TrackingImportBatch } from '@/api/types';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
 import {
   FILE_JOB_BATCH_PARAM,
@@ -748,12 +750,12 @@ export default function SalesOutboundPage() {
     { title: '履约方', dataIndex: 'provider_id', width: 150, render: (v?: string) => providerName(v) },
     { title: '导出类型', dataIndex: 'export_kind', width: 110 },
     { title: '模板版本', dataIndex: 'template_version', width: 110, render: (v?: string) => v ?? '—' },
-    { title: '生成时间', dataIndex: 'generated_at', width: 170, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
+    { title: '生成时间', dataIndex: 'generated_at', width: 170, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatDateTime(v)}</span> },
     {
       title: '回传截止',
       dataIndex: 'tracking_due_at',
       width: 170,
-      render: (v?: string) => (v ? <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> : '—'),
+      render: (v?: string) => (v ? <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatDateTime(v)}</span> : '—'),
     },
     {
       title: '使用状态',
@@ -857,9 +859,21 @@ export default function SalesOutboundPage() {
 
   const err = list.error || providers.error;
 
+  /** 页面级错误态：列表或履约方目录加载失败时整块切换为 PageState，重试语义与替换前一致（reload）。 */
+  if (err) {
+    return (
+      <PageState
+        state="error"
+        message="文件作业加载失败"
+        description={errorMessage(err)}
+        onRetry={list.reload}
+      />
+    );
+  }
+
   return (
     <PageShell
-      title="销售出库"
+      title="文件作业"
       description="履约导出 = 发货前交给履约方（京东/第三方）的发货指令文件；下载后进入回传闭环，文件一旦生成即形成履约承诺。"
       actions={
         <Space size={12}>
@@ -886,9 +900,6 @@ export default function SalesOutboundPage() {
           columns={columns}
           dataSource={list.data?.items ?? []}
           loading={list.loading}
-          error={err}
-          onRetry={list.reload}
-          errorTitle="销售出库加载失败"
           size="middle"
           scroll={{ x: 1300 }}
           pagination={{

@@ -18,8 +18,9 @@ import type { ConnectorConfig, SourceChannel } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
 import DataTable from '@/components/DataTable';
 import PageShell from '@/components/PageShell';
-import { AdminCategoryTag, AdminEmpty, AdminFailureAlert, AdminLoading, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
-import { adminPageState } from '@/pages/shared/adminVisual';
+import { AdminCategoryTag, AdminEmpty, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
+import { adminFailurePresentation, adminPageState } from '@/pages/shared/adminVisual';
+import { PageState } from '@/pages/shared/PageState';
 import '@/pages/shared/adminSurface.css';
 
 const MODE_LABELS = { MOCK: '仿真模式', REAL: '生产模式' } as const;
@@ -137,13 +138,18 @@ export default function ConnectorsPage() {
   const viewState = adminPageState(loading, error, rows.length > 0);
 
   if (viewState === 'loading') {
-    return <div className="admin-page"><AdminLoading description="正在加载渠道连接器…" /></div>;
+    return (
+      <div className="admin-page">
+        <PageState state="loading" description="正在加载渠道连接器…" />
+      </div>
+    );
   }
 
   if (viewState === 'error') {
+    const presentation = adminFailurePresentation(error, '渠道连接器加载失败');
     return (
       <div className="admin-page">
-        <AdminFailureAlert error={error} title="渠道连接器加载失败" onRetry={reload} />
+        <PageState state="error" message={presentation.title} description={presentation.description} onRetry={reload} />
       </div>
     );
   }

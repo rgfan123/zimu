@@ -70,7 +70,7 @@ async function mountPage(
 ) {
   globalThis.fetch = fetchImpl;
   await harness.mount(['/fulfillment/sales-outbound']);
-  await harness.waitFor(() => assert.match(harness.bodyText(), /销售出库/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /文件作业/));
   await harness.waitFor(() => assert.match(harness.bodyText(), /导出批次号/));
 }
 

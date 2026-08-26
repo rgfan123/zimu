@@ -3,6 +3,7 @@
  */
 export { default as FulfillmentTasksPage } from './FulfillmentTasksPage';
 export { default as JdWarehousePage } from './JdWarehousePage';
+export { default as JdToolsPage } from './JdToolsPage';
 export { default as SalesOutboundPage } from './SalesOutboundPage';
 export { default as ShipmentsPage } from './ShipmentsPage';
 export { default as JdBasicInfoQueryPage } from './JdBasicInfoQueryPage';

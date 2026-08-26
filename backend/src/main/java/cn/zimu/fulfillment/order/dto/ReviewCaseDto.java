@@ -23,5 +23,9 @@ public record ReviewCaseDto(
         String resolvedBy,
         Instant resolvedAt,
         long version,
-        Instant createdAt) {
+        Instant createdAt,
+        /** 关联对象业务编号（ORDER/ORDER_LINE → 订单号，SHIPMENT → 发货单号）；无业务编号为 null。 */
+        String subjectNo,
+        /** 关联订单业务单号（队列「关联订单」列用）；无订单主体为 null。 */
+        String orderNo) {
 }

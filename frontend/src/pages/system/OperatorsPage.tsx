@@ -28,11 +28,10 @@ import DataTable from '@/components/DataTable';
 import PageShell from '@/components/PageShell';
 import {
   AdminEmpty,
-  AdminFailureAlert,
-  AdminLoading,
   AdminStatusTag,
 } from '@/pages/shared/AdminVisualComponents';
-import { adminPageState } from '@/pages/shared/adminVisual';
+import { adminFailurePresentation, adminPageState } from '@/pages/shared/adminVisual';
+import { PageState } from '@/pages/shared/PageState';
 import '@/pages/shared/adminSurface.css';
 
 /** 企微 userid 前端校验：与后端契约一致（1..64，首字符数字/字母，可含 _ - @ .）。 */
@@ -186,13 +185,18 @@ export default function OperatorsPage() {
   const viewState = adminPageState(loading, error, rows.length > 0);
 
   if (viewState === 'loading') {
-    return <div className="admin-page"><AdminLoading description="正在加载运营人员…" /></div>;
+    return (
+      <div className="admin-page">
+        <PageState state="loading" description="正在加载运营人员…" />
+      </div>
+    );
   }
 
   if (viewState === 'error') {
+    const presentation = adminFailurePresentation(error, '运营人员加载失败');
     return (
       <div className="admin-page">
-        <AdminFailureAlert error={error} title="运营人员加载失败" onRetry={reload} />
+        <PageState state="error" message={presentation.title} description={presentation.description} onRetry={reload} />
       </div>
     );
   }

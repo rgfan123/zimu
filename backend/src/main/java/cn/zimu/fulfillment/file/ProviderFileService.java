@@ -816,7 +816,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         cells.put("*ISV来源编号", requiredJdConfig(config, "sourceNo"));
         cells.put("*事业部编号", requiredJdConfig(config, "ownerNo"));
         cells.put("*店铺编号", requiredJdConfig(config, "shopNo"));
-        cells.put("青龙业主号", requiredJdConfig(config, "customerCode"));
+        cells.put("青龙业主号", requiredJdCustomerCode(config, source.orderId()));
         cells.put("*仓库编号", requiredJdConfig(config, "warehouseNo"));
         cells.put("*承运商编号", requiredJdConfig(config, "carrierNo"));
         cells.put("*授权码pin", requiredJdConfig(config, "pin"));
@@ -842,7 +842,27 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         return cells;
     }
 
-    /** 数值列的宽容解析：可解析即数值，否则原样字符串（不猜默认值）。 */
+    /**
+     * 青龙业主号（customerCode）：与建单路径 {@code ShipmentJdOutboundPreparer}
+     * 同一套取值语义——履约方配置优先，客户档案 jd_customer_code 为历史回退源；
+     * 两者都缺时 fail-closed 阻断导出，避免发出可能错误的单据。
+     */
+    private String requiredJdCustomerCode(Map<String, Object> config, long orderId) {
+        Object configCode = config.get("customerCode");
+        if (configCode != null && !configCode.toString().isBlank()) {
+            return configCode.toString();
+        }
+        String archiveCode = jdbc.queryForObject(
+                "SELECT c.profile->>'jd_customer_code' FROM app.orders o"
+                        + " JOIN app.customers c ON c.id=o.customer_id WHERE o.id=?",
+                String.class, orderId);
+        if (archiveCode != null && !archiveCode.isBlank()) {
+            return archiveCode;
+        }
+        throw BusinessException.unprocessable(
+                "JD_EXPORT_PROVIDER_CONFIG_MISSING",
+                "履约方配置缺少京东标识 customerCode（或客户档案 jd_customer_code 回退值），请在「系统管理 → 履约方」补齐后再导出");
+    }
     private static Object parseIntOrText(String text) {
         try {
             return Integer.valueOf(text.trim());

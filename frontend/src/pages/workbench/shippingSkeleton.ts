@@ -1,10 +1,9 @@
 /**
  * 发货台骨架的纯投影（Issue #108）：复核预览分组与告警行，无 React、fail-closed。
- * 分组按 reason_code（spec D21），标签只从 queuePresentation.REASON_LABELS 取；
- * 京东门禁类 0 项时保留可见（原型约束：0 不等于不存在）。
+ * 分组按 reason_code（spec D21），标签取全站统一 reasonLabel（UIUX-03 单表口径）。
  */
 
-import { REASON_LABELS } from './queuePresentation';
+import { reasonLabel } from '@/constants/labels';
 import { attentionCardUrl, reviewsQueueUrl } from '../shared/reviewQueueUrl';
 
 export interface ReviewGroupView {
@@ -43,7 +42,7 @@ export function groupReviewPreview(items: unknown[], team: string | null): Revie
   const groups: ReviewGroupView[] = [...counter.entries()]
     .map(([reasonCode, count]) => ({
       reasonCode,
-      label: REASON_LABELS[reasonCode] ?? reasonCode,
+      label: reasonLabel(reasonCode),
       count,
       url: appendTeam(attentionCardUrl(reasonCode), team),
     }))

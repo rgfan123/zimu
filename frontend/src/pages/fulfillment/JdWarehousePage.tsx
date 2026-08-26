@@ -11,6 +11,7 @@ import { ApiError, apiRequest, errorMessage } from '@/api/client';
 import { jdWarehouseApi } from '@/api/endpoints';
 import type { ApiErrorBody, JdQueryResult } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
+import { PageState } from '@/pages/shared/PageState';
 import { jdConnectionSemantic } from '@/pages/shared/semanticStatus';
 import dayjs from 'dayjs';
 import { jdQueryPresentation } from '@/presentation/publicReady';
@@ -263,12 +264,11 @@ export default function JdWarehousePage() {
       <Card size="small">
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
           {sdkStatus.error ? (
-            <Alert
-              type="error"
-              showIcon
+            <PageState
+              state="error"
               message="京东仓配连接状态加载失败"
               description={errorMessage(sdkStatus.error)}
-              action={<Button size="small" onClick={sdkStatus.reload}>重试</Button>}
+              onRetry={sdkStatus.reload}
             />
           ) : null}
           {sdkStatus.data?.client_mode === 'REAL' && !sdkStatus.data.live_ready ? (

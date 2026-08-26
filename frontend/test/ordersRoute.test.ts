@@ -111,7 +111,53 @@ test('订单追踪 route defaults to the SHIPPED status', async () => {
   assert.match(harness.bodyText(), /订单追踪/);
 });
 
-test('order list failure surfaces the DataTable error state with a working retry', async () => {
+test('订单中心页内 Segmented 切换预设并同步 URL（旧直达路径互通）', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = ordersFetch(requests, []);
+
+  await harness.mount(['/orders']);
+  await harness.waitFor(() => assert.ok(requests.some((url) => url.startsWith('/api/v1/orders?'))));
+
+  const segmented = document.querySelector('[aria-label="订单视图预设"]');
+  assert.ok(segmented, '合并页必须渲染页内 Segmented 视图切换器');
+  const pendingItem = [...segmented.querySelectorAll<HTMLElement>('.ant-segmented-item')]
+    .find((item) => item.textContent?.includes('待处理'));
+  assert.ok(pendingItem, 'Segmented 必须包含「待处理」预设');
+  await harness.dispatchEvent(pendingItem, new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+  await harness.waitFor(() => assert.equal(harness.location(), '/orders/pending'));
+  await harness.waitFor(() => assert.ok(
+    requests.some((url) => url.includes('processing_stage=NEED_REVIEW')),
+    '切到「待处理」后订单请求必须带上 NEED_REVIEW 阶段筛选',
+  ));
+});
+
+test('list failure switches the whole page to the PageState error with retry', async () => {
+  let calls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === '/api/v1/fulfillment-providers') return jsonResponse([]);
+    calls += 1;
+    if (calls === 1) return jsonResponse({ message: 'raw list failure' }, 500);
+    return jsonResponse(ordersPage([orderSummary('101', 'ORD-101')]));
+  };
+
+  await harness.mount(['/orders']);
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /订单列表加载失败/));
+  assert.ok(
+    [...document.querySelectorAll<HTMLButtonElement>('button')]
+      .some((button) => button.textContent?.includes('重试')),
+    'PageState 错误态必须暴露重试按钮',
+  );
+
+  const retry = [...document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('重试'));
+  await harness.dispatchEvent(retry, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /ORD-101/));
+});
+
+test('order list failure switches the whole page to the PageState error with a working retry', async () => {
   let calls = 0;
   const requests: string[] = [];
   globalThis.fetch = async (input) => {
@@ -134,6 +180,62 @@ test('order list failure surfaces the DataTable error state with a working retry
   await harness.dispatchEvent(retry, new MouseEvent('click', { bubbles: true }));
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /ORD-101/));
+});
+
+test('筛选下拉改动即生效，无需再点搜索按钮（UIUX-07）', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = ordersFetch(requests, []);
+
+  await harness.mount(['/orders']);
+  await harness.waitFor(() => assert.ok(requests.some((url) => url.startsWith('/api/v1/orders?'))));
+  const before = requests.length;
+
+  const channelSelector = [...document.querySelectorAll<HTMLElement>('.ant-select-selector')]
+    .find((el) => el.querySelector('.ant-select-selection-placeholder')?.textContent === '来源渠道');
+  assert.ok(channelSelector, '来源渠道下拉必须存在');
+  await harness.dispatchEvent(channelSelector, new MouseEvent('mousedown', { bubbles: true }));
+  await harness.waitFor(() => assert.ok(document.querySelector('.ant-select-item-option')));
+  const option = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')]
+    .find((el) => el.textContent?.includes('彩食鲜'));
+  assert.ok(option, '来源渠道下拉必须包含彩食鲜选项');
+  await harness.dispatchEvent(option, new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.ok(
+    requests.length > before && requests.some((url) => url.includes('source_channel=CAISHIXIAN')),
+    '只改来源渠道下拉也必须立即触发按新条件刷新',
+  ));
+});
+
+test('重置恢复当前预设的默认筛选并清空关键词与日期', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = ordersFetch(requests, []);
+
+  await harness.mount(['/orders/exceptions']);
+  await harness.waitFor(() => assert.ok(
+    requests.some((url) => url.includes('order_status=FULFILLMENT_EXCEPTION')),
+  ));
+
+  const statusSelector = [...document.querySelectorAll<HTMLElement>('.ant-select-selector')]
+    .find((el) => el.querySelector('.ant-select-selection-item')?.textContent === '履约异常');
+  assert.ok(statusSelector, '订单状态下拉必须存在（异常预设下显示「履约异常」）');
+  await harness.dispatchEvent(statusSelector, new MouseEvent('mousedown', { bubbles: true }));
+  await harness.waitFor(() => assert.ok(document.querySelector('.ant-select-item-option')));
+  const shippedOption = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')]
+    .find((el) => el.textContent?.includes('已发货'));
+  await harness.dispatchEvent(shippedOption, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.ok(
+    requests.some((url) => url.includes('order_status=SHIPPED')),
+  ));
+
+  const reset = [...document.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.replace(/\s/g, '').includes('重置'));
+  assert.ok(reset, '重置按钮必须存在');
+  await harness.dispatchEvent(reset, new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.ok(
+    requests.some((url) => url.includes('order_status=FULFILLMENT_EXCEPTION')),
+    '重置必须回到当前预设的默认筛选',
+  ));
 });
 
 test('empty order list falls back to the DataTable default empty state', async () => {

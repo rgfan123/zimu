@@ -5,6 +5,7 @@
  */
 
 import type { FulfillmentProvider, OrderStatus, ProcessingHealth, ProcessingStage, ShipmentStatus, SourceChannel } from '@/api/types';
+import type { ChannelMessageType } from '@/api/types';
 import {
   ORDER_STATUS_SEMANTIC,
   PROCESSING_STAGE_SEMANTIC,
@@ -78,39 +79,35 @@ export const SHIPMENT_STATUS_LABELS: Record<ShipmentStatus, string> = {
 
 export const SHIPMENT_STATUS_COLORS: Record<ShipmentStatus, string> = SHIPMENT_STATUS_SEMANTIC;
 
+// 复核原因/告警类型标签：单表见 reasonLabels.ts（UIUX-03 #137，对账测试保证缺译即失败）。
+export { REASON_LABELS, reasonLabel } from './reasonLabels.ts';
+
+/** 企业微信消息类型 → 中文（全站统一，禁止中英混排）。 */
+export const MESSAGE_TYPE_LABELS: Record<ChannelMessageType, string> = {
+  text: '文字',
+  mixed: '图文',
+  image: '图片',
+  voice: '语音',
+  file: '文件',
+  video: '视频',
+};
+
+/** 结账方式（SettlementMethod）→ 中文；未知值回退原码。 */
+export const SETTLEMENT_METHOD_LABELS: Record<string, string> = {
+  UNSPECIFIED: '未指定',
+  MONTHLY: '月结',
+  IMMEDIATE: '现结',
+  CREDIT_TERM: '账期',
+  PREPAID: '预付款',
+  COD: '货到付款',
+  OTHER: '其他',
+};
+
 /** 履约方类型 → 中文（JD_WAREHOUSE=京东 / THIRD_PARTY=第三方），全站统一口径。 */
 export const PROVIDER_TYPE_LABELS: Record<FulfillmentProvider['provider_type'], string> = {
   JD_WAREHOUSE: '京东',
   THIRD_PARTY: '第三方',
 };
-
-/** 工作台 attention.reason_code 常见值 → 中文；未知码使用稳定业务提示。 */
-export const REASON_LABELS: Record<string, string> = {
-  NEED_REVIEW: '待复核',
-  CUSTOMER_UNMATCHED: '客户未匹配',
-  SKU_UNMAPPED: 'SKU 未映射',
-  OUT_OF_STOCK: '缺货',
-  PROCUREMENT_PENDING: '采购待处理',
-  PROCUREMENT_FAILED: '采购失败',
-  FULFILLMENT_EXCEPTION: '履约异常',
-  JD_SUBMIT_FAILED: '京东提交失败',
-  SYNC_FAILED: '回传失败',
-  TRACKING_OVERDUE: '运单超时未回',
-  RETURN_OVERDUE: '回填超时',
-  JD_SHIPMENT_OUTBOUND_PREVIEW_BLOCKED: '京东建单预检未通过',
-  JD_SKU_MAPPING_BLOCKED: '京东商品映射未通过',
-  JD_STOCK_BLOCKED: '京东库存判定未通过',
-  JD_TRACKING_CONFLICT: '京东运单冲突',
-  MULTI_SHIPMENT_FOLLOWUP: '多批次发货待跟进',
-};
-
-/**
- * 未登记的原因码回退为「未分类原因」而非状态类措辞——
- * 曾用「待人工复核」，与复核状态混淆：已 RESOLVED 的事项也会显示成待处理。
- */
-export function reasonLabel(code: string): string {
-  return REASON_LABELS[code] ?? '未分类原因';
-}
 
 // ---------- 订单事件（PRD §18） ----------
 

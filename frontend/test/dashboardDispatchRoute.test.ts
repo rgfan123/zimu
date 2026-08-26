@@ -178,7 +178,7 @@ test('无待办时明确显示「当前无待人工介入」，不是通用空�
   await harness.waitFor(() => assert.match(harness.bodyText(), /当前无待人工介入/));
 });
 
-test('工作台 page header renders and KPI stays readable when the issues detail fails', async () => {
+test('调度台 page header renders and KPI stays readable when the issues detail fails', async () => {
   globalThis.fetch = async (input) => {
     const url = String(input);
     if (/^\/api\/v1\/dashboard\/summary\?business_date=\d{4}-\d{2}-\d{2}$/.test(url)) {
@@ -199,8 +199,8 @@ test('工作台 page header renders and KPI stays readable when the issues detai
   // KPI 卡不受明细失败影响
   assert.match(harness.bodyText(), /今日订单数/);
   assert.doesNotMatch(harness.bodyText(), /raw issue stack/);
-  // 侧边栏菜单 + PageShell 页头各渲染一次「工作台」
-  assert.ok((harness.bodyText().match(/工作台/g) ?? []).length >= 2, 'page header must render the nav title');
+  // 侧边栏菜单 + PageShell 页头各渲染一次「调度台」
+  assert.ok((harness.bodyText().match(/调度台/g) ?? []).length >= 2, 'page header must render the nav title');
 });
 
 test('OUT_OF_STOCK + severity=YELLOW 仍走 YELLOW，不走旧原因表；明细原因列不派生严重/关注标记', async () => {

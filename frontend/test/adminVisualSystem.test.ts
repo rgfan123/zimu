@@ -96,17 +96,18 @@ test('admin loading, error and ready states are mutually exclusive', () => {
 });
 
 test('admin data pages gate stale content and System Config retries both resources', () => {
-  const files = [
-    '../src/pages/shared/MasterDataCrud.tsx',
-    '../src/pages/procurement/ProcurementTicketsPage.tsx',
-    '../src/pages/system/ConnectorsPage.tsx',
-    '../src/pages/system/SystemConfigPage.tsx',
+  // 页面级三态已统一走 PageState（错误态强制带重试）；MasterDataCrud 仍用既有 AdminLoading。
+  const files: Array<{ path: string; loading: RegExp }> = [
+    { path: '../src/pages/shared/MasterDataCrud.tsx', loading: /AdminLoading/ },
+    { path: '../src/pages/procurement/ProcurementTicketsPage.tsx', loading: /<PageState\b/ },
+    { path: '../src/pages/system/ConnectorsPage.tsx', loading: /<PageState\b/ },
+    { path: '../src/pages/system/SystemConfigPage.tsx', loading: /<PageState\b/ },
   ];
 
-  for (const relativePath of files) {
-    const source = readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8');
-    assert.match(source, /adminPageState\(/, `${relativePath} must explicitly gate loading, error and ready content`);
-    assert.match(source, /AdminLoading/, `${relativePath} must expose a dedicated loading state`);
+  for (const { path, loading } of files) {
+    const source = readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8');
+    assert.match(source, /adminPageState\(/, `${path} must explicitly gate loading, error and ready content`);
+    assert.match(source, loading, `${path} must expose a dedicated loading state`);
   }
 
   const systemConfig = readFileSync(

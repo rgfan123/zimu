@@ -29,8 +29,10 @@ import type {
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
 import PageShell from '@/components/PageShell';
-import { AdminEmpty, AdminFailureAlert, AdminLoading } from '@/pages/shared/AdminVisualComponents';
+import { AdminEmpty } from '@/pages/shared/AdminVisualComponents';
 import { adminPageState } from '@/pages/shared/adminVisual';
+import { PageState } from '@/pages/shared/PageState';
+import { errorMessage } from '@/api/client';
 import '@/pages/shared/adminSurface.css';
 
 /** 剔除理由标签的可读文案与颜色（01 票三规则并集）。 */
@@ -161,10 +163,15 @@ export default function ProcurementPriceComparePage() {
         </Space>
       </FilterBar>
 
-      {state === 'loading' ? <AdminLoading description="正在运行采购比价…" /> : null}
+      {state === 'loading' ? <PageState state="loading" description="正在运行采购比价…" /> : null}
 
       {error ? (
-        <AdminFailureAlert error={error} title="比价运行失败" onRetry={compare} />
+        <PageState
+          state="error"
+          message="比价运行失败"
+          description={errorMessage(error)}
+          onRetry={compare}
+        />
       ) : null}
 
       {result?.error ? (

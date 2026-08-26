@@ -10,6 +10,7 @@ import { Link } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from 'antd';
 import dayjs from 'dayjs';
+import { formatDateTime } from '@/format/dateTime';
 import { errorMessage } from '@/api/client';
 import { procurementApi, procurementPriceAgentApi } from '@/api/endpoints';
 import type { ProcurementStatus, ProcurementTicket } from '@/api/types';
@@ -243,7 +244,7 @@ export default function ProcurementWorkbenchPage() {
                         <td>
                           <span className={`zs-tag ${STATUS_TAG_CLASS[ticket.status] ?? ''}`.trim()}>{ticket.status}</span>
                         </td>
-                        <td>{dayjs(ticket.created_at).format('MM-DD HH:mm')}</td>
+                        <td>{formatDateTime(ticket.created_at)}</td>
                         <td>
                           <Link to="/procurement/tickets">处理</Link>
                         </td>

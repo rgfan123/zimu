@@ -18,11 +18,8 @@ import {
   SettingOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons';
-import OrderTrackingPage from '@/pages/orders/OrderTrackingPage';
 import OrderDetailPage from '@/pages/orders/OrderDetailPage';
-import ExceptionOrdersPage from '@/pages/orders/ExceptionOrdersPage';
 import OrdersPage from '@/pages/orders/OrdersPage';
-import PendingOrdersPage from '@/pages/orders/PendingOrdersPage';
 import InventoryOverviewPage from '@/pages/inventory/InventoryOverviewPage';
 import InventoryDetailsPage from '@/pages/inventory/InventoryDetailsPage';
 import { AuditLogsPage } from '@/pages/system';
@@ -32,12 +29,7 @@ import DashboardPage from '@/pages/dashboard/DashboardPage';
 import { BundlesPage, CategoriesPage, ProductsPage, SkuMappingsPage, SkusPage } from '@/pages/product';
 import {
   FulfillmentTasksPage,
-  JdBasicInfoQueryPage,
-  JdOrderQueryPage,
-  JdReturnQueryPage,
-  JdSerialQueryPage,
-  JdStockQueryPage,
-  JdWarehousePage,
+  JdToolsPage,
   OutboundReconPage,
   SalesOutboundPage,
   ShipmentsPage,
@@ -81,9 +73,10 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/fulfillment/shipments': <ShipmentsPage />,
   '/fulfillment/outbound-recon': <OutboundReconPage />,
   '/orders': <OrdersPage />,
-  '/orders/pending': <PendingOrdersPage />,
-  '/orders/exceptions': <ExceptionOrdersPage />,
-  '/orders/tracking': <OrderTrackingPage />,
+  // 预设视图已并入「全部订单」页内切换；旧 URL 直达同一合并组件，由 OrdersPage 按 pathname 解析预设。
+  '/orders/pending': <OrdersPage />,
+  '/orders/exceptions': <OrdersPage />,
+  '/orders/tracking': <OrdersPage />,
   '/orders/:orderId': <OrderDetailPage />,
   '/agents': <AgentsListPage />,
   '/agents/runs': <AgentRunsPage />,
@@ -108,12 +101,14 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/system/config': <SystemConfigPage />,
   '/system/fulfillment-providers': <FulfillmentProvidersPage />,
   '/system/operators': <OperatorsPage />,
-  '/fulfillment/jd-warehouse': <JdWarehousePage />,
-  '/fulfillment/jd-basicinfo': <JdBasicInfoQueryPage />,
-  '/fulfillment/jd-stock': <JdStockQueryPage />,
-  '/fulfillment/jd-serial': <JdSerialQueryPage />,
-  '/fulfillment/jd-order': <JdOrderQueryPage />,
-  '/fulfillment/jd-return': <JdReturnQueryPage />,
+  '/system/jd-tools': <JdToolsPage />,
+  // 六个京东查询工具并入「京东工具」页内 Tab；旧 URL 直达同一页并定位到对应 Tab。
+  '/fulfillment/jd-warehouse': <JdToolsPage />,
+  '/fulfillment/jd-basicinfo': <JdToolsPage />,
+  '/fulfillment/jd-stock': <JdToolsPage />,
+  '/fulfillment/jd-serial': <JdToolsPage />,
+  '/fulfillment/jd-order': <JdToolsPage />,
+  '/fulfillment/jd-return': <JdToolsPage />,
   '/demo/order': <DemoOrderPage />,
 };
 
