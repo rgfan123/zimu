@@ -2,8 +2,7 @@ package cn.zimu.fulfillment.connector.wecom.card;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
-import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundCommand;
-import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundService;
+import cn.zimu.fulfillment.order.SourceBatchConfirmer;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import java.time.Duration;
 import java.util.List;
@@ -36,7 +35,7 @@ public class PreShipConfirmWorker {
 
     private final AsyncTaskStore tasks;
     private final JdbcTemplate jdbc;
-    private final ShipmentJdOutboundService outbound;
+    private final SourceBatchConfirmer sourceBatches;
     private final WecomBusinessCardEnqueuer cards;
     private final boolean enabled;
     private final Duration lease;
@@ -45,13 +44,13 @@ public class PreShipConfirmWorker {
     public PreShipConfirmWorker(
             AsyncTaskStore tasks,
             JdbcTemplate jdbc,
-            ShipmentJdOutboundService outbound,
+            SourceBatchConfirmer sourceBatches,
             WecomBusinessCardEnqueuer cards,
             @Value("${app.wecom-business-card.enabled:${app.wecom.enabled:false}}") boolean enabled,
             @Value("${app.wecom-business-card.lease-seconds:60}") long leaseSeconds) {
         this.tasks = tasks;
         this.jdbc = jdbc;
-        this.outbound = outbound;
+        this.sourceBatches = sourceBatches;
         this.cards = cards;
         this.enabled = enabled;
         this.lease = Duration.ofSeconds(Math.max(60, leaseSeconds));
@@ -81,50 +80,50 @@ public class PreShipConfirmWorker {
             return;
         }
 
-        List<Long> shipmentIds = jdbc.query(
-                """
-                SELECT s.id FROM app.shipments s
-                 WHERE s.order_id = ?
-                   AND s.shipment_status NOT IN ('SHIPPED', 'CANCELLED')
-                 ORDER BY s.id
-                """,
+        // 走「整批确认」而不是直接 submit 单个 shipment：
+        // SKU_MAPPED 的订单**还没有 shipment**——shipment 是确认过程中才建的。
+        // 直接去找现成 shipment 的写法在 SKU_MAPPED 订单上必然扑空，
+        // 而那正是确认卡最常见的触发时点。
+        List<Long> batchIds = jdbc.query(
+                "SELECT source_import_batch_id FROM app.orders WHERE id = ? AND source_import_batch_id IS NOT NULL",
                 (rs, rowNum) -> rs.getLong(1),
                 payload.orderId());
-        if (shipmentIds.isEmpty()) {
-            log.warn("发货前确认无可建单的发货批次 order_id={}", payload.orderId());
-            tasks.failTerminal(task.id(), owner, "PRESHIP_NO_OPEN_SHIPMENT");
+        if (batchIds.isEmpty()) {
+            log.warn("发货前确认找不到来源批次 order_id={}", payload.orderId());
+            tasks.failTerminal(task.id(), owner, "PRESHIP_NO_SOURCE_BATCH");
             return;
         }
+        long batchId = batchIds.getFirst();
 
         String operator = "wecom:" + payload.actor();
         CommandContext context = new CommandContext(
                 "preship-" + task.id(), null, operator, operator);
+        // 幂等键绑住批次：同一张卡被重复点击、或企微重推同一事件，
+        // 都只会确认一次、建一张京东出库单
+        String idempotencyKey = "preship-batch-" + batchId + "-order-" + payload.orderId()
+                + "-v" + payload.version();
 
-        for (long shipmentId : shipmentIds) {
-            try {
-                outbound.submit(
-                        shipmentId,
-                        new ShipmentJdOutboundCommand(),
-                        // 幂等键绑住 (发货批次, 订单版本)：同一张卡被重复点击、
-                        // 或企微重推同一事件，都只会建出一张京东出库单
-                        "preship-" + shipmentId + "-v" + payload.version(),
-                        context);
-                log.info("企微确认建单成功 shipment_id={} operator={}", shipmentId, operator);
-            } catch (BusinessException ex) {
-                // 建单失败已由 ShipmentJdOutboundService 落审计并触发 jd-outbound 失败卡，
-                // 这里只负责收口任务，不重复告警
-                log.warn(
-                        "企微确认建单被拒 shipment_id={} code={} msg={}",
-                        shipmentId, ex.getBusinessCode(), ex.getMessage());
-                tasks.failTerminal(task.id(), owner, "PRESHIP_SUBMIT_" + ex.getBusinessCode());
-                return;
-            } catch (RuntimeException ex) {
-                // 结局未知（可能已在京东侧建单）：交给租约超时后重试，
-                // 幂等键保证重试不会建出第二张单
-                log.error("企微确认建单异常 shipment_id={}", shipmentId, ex);
-                tasks.fail(task.id(), owner, "PRESHIP_SUBMIT_EXCEPTION", Duration.ofSeconds(30));
-                return;
+        try {
+            var confirmed = sourceBatches.confirmSourceBatch(batchId, idempotencyKey, context);
+            // 与 SourceImportController 同一条纪律：只有首次执行才触发外部建单，
+            // 幂等重放返回首次结果，不再发起新的京东调用
+            if (!confirmed.replayed()) {
+                sourceBatches.submitJdOutboundsForSourceBatch(batchId, context);
             }
+            log.info("企微确认整批完成 batch_id={} order_id={} operator={}",
+                    batchId, payload.orderId(), operator);
+        } catch (BusinessException ex) {
+            // 失败已由确认/建单链路自己落审计与告警，这里只收口任务，不重复告警
+            log.warn("企微确认被拒 batch_id={} code={} msg={}",
+                    batchId, ex.getBusinessCode(), ex.getMessage());
+            tasks.failTerminal(task.id(), owner, "PRESHIP_CONFIRM_" + ex.getBusinessCode());
+            return;
+        } catch (RuntimeException ex) {
+            // 结局未知（可能已在京东侧建单）：交给租约超时后重试，
+            // 幂等键保证重试不会建出第二张单
+            log.error("企微确认异常 batch_id={}", batchId, ex);
+            tasks.fail(task.id(), owner, "PRESHIP_CONFIRM_EXCEPTION", Duration.ofSeconds(30));
+            return;
         }
         tasks.succeed(task.id(), owner);
         enqueueResultCard(payload.orderId());
