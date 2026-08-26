@@ -78,11 +78,12 @@ public class PreShipConfirmCardSource implements WecomBusinessCardSource {
                 JOIN LATERAL (
                     SELECT count(*)                                              AS line_count,
                            COALESCE(sum(x.qty), 0)                               AS total_quantity,
-                           string_agg(x.channel_name, '、')                      AS channel_goods,
+                           string_agg(DISTINCT x.channel_name, '、')             AS channel_goods,
                            string_agg(x.jd_name || ' ×'
                                || trim(to_char(x.qty, 'FM999999990')), '、')     AS jd_goods,
                            min(x.jd_code)                                        AS jd_goods_code
                     FROM (
+                        -- 单品行：SKU 直接挂在订单行上
                         SELECT l.product_name_snapshot AS channel_name,
                                p.product_name          AS jd_name,
                                l.requested_quantity    AS qty,
@@ -95,7 +96,22 @@ public class PreShipConfirmCardSource implements WecomBusinessCardSource {
                         JOIN app.skus s     ON s.id = l.sku_id
                         JOIN app.products p ON p.id = s.product_id
                         WHERE l.order_id = o.id
-                        ORDER BY l.line_no
+                        UNION ALL
+                        -- 礼包行（CUSTOM_BUNDLE）：行上的 sku_id 是 NULL，
+                        -- 实发的 SKU 全在 order_line_components 里。
+                        -- 只 JOIN skus 会把整张礼包订单滤成零行，渲染判空、落 SUPERSEDED——
+                        -- 表现是「大者的确认卡一张都没发出来」，而日志只说事实已变。
+                        SELECT l.product_name_snapshot AS channel_name,
+                               c.product_name_snapshot AS jd_name,
+                               c.total_quantity        AS qty,
+                               (SELECT ps.provider_sku_code
+                                  FROM app.provider_skus ps
+                                 WHERE ps.sku_id = c.sku_id AND ps.active
+                                 ORDER BY ps.id
+                                 LIMIT 1)              AS jd_code
+                        FROM app.order_lines l
+                        JOIN app.order_line_components c ON c.order_line_id = l.id
+                        WHERE l.order_id = o.id AND l.sku_id IS NULL
                     ) x
                 ) g ON TRUE
                 WHERE o.id = ?
