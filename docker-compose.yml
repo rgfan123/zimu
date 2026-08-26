@@ -133,6 +133,19 @@ services:
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_BASE_URL: ${AGENT_BASE_URL:-}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
+      # Kehuzx read and deterministic write identities are independent.
+      KEHUZX_MCP_ENABLED: ${KEHUZX_MCP_ENABLED:-false}
+      KEHUZX_MCP_ENDPOINT: ${KEHUZX_MCP_ENDPOINT:-http://kehuzx-mcp:9100/mcp}
+      KEHUZX_MCP_FOLLOWUP_READ_TOKEN: ${KEHUZX_MCP_FOLLOWUP_READ_TOKEN:-}
+      KEHUZX_MCP_ALLOWED_HOST: kehuzx-mcp
+      KEHUZX_MCP_ALLOWED_PORT: "9100"
+      KEHUZX_MCP_WRITE_ENABLED: ${KEHUZX_MCP_WRITE_ENABLED:-false}
+      KEHUZX_MCP_WRITE_ENDPOINT: ${KEHUZX_MCP_WRITE_ENDPOINT:-http://kehuzx-mcp:9100/mcp}
+      KEHUZX_MCP_WRITE_TOKEN: ${KEHUZX_MCP_WRITE_TOKEN:-}
+      KEHUZX_MCP_APPROVAL_SIGNING_KEY: ${KEHUZX_MCP_APPROVAL_SIGNING_KEY:-}
+      KEHUZX_MCP_WRITE_ALLOWED_HOST: kehuzx-mcp
+      KEHUZX_MCP_WRITE_ALLOWED_PORT: "9100"
+      FOLLOWUP_ASSIGNMENT_WORKER_ENABLED: ${FOLLOWUP_ASSIGNMENT_WORKER_ENABLED:-false}
       # 平台拉取只做同渠道并发单飞，不设置次数或最小间隔。
       APP_PLATFORM_PULL_PUSH_STALE_TIMEOUT: ${APP_PLATFORM_PULL_PUSH_STALE_TIMEOUT:-PT15M}
       # 来源平台自动回传（默认关；未配 operator 即使 enabled=true 也不启动）
@@ -165,6 +178,9 @@ services:
       retries: 60
       start_period: 20s
     restart: unless-stopped
+    networks:
+      default: {}
+      kehuzx-integration: {}
 
   frontend:
     build:
@@ -282,6 +298,9 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+    networks:
+      default: {}
+      kehuzx-integration: {}
 
 volumes:
   postgres-data:
@@ -289,3 +308,8 @@ volumes:
   fulfillment-files:
   # wecom-message-intake 12：媒体受控存储持久化卷（backend APP_MEDIA_DIR）。
   app-media-data:
+
+networks:
+  kehuzx-integration:
+    external: true
+    name: ${ZIMU_KEHUZX_NETWORK:-zimu-kehuzx-private}
