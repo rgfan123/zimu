@@ -1457,6 +1457,32 @@ export interface BusinessFollowUp extends BusinessFollowUpSummary {
   latest_draft?: BusinessFollowUpDraft | null;
   draft_versions: BusinessFollowUpDraft[];
   approvals: BusinessFollowUpApproval[];
+  assignments: BusinessFollowUpAssignment[];
+}
+
+export interface BusinessFollowUpAssignment {
+  id: string;
+  followup_id: string;
+  draft_version: number;
+  approval_id: string;
+  agent_run_id: string;
+  task_type: 'KEHUZX_CUSTOMER_LINK';
+  logical_target: string;
+  assignee_type: 'INTERNAL_OPERATOR' | 'TEAM' | 'DETERMINISTIC_MCP' | 'SPECIALIST_AGENT';
+  assignee_ref: string;
+  status: 'PENDING' | 'RUNNING' | 'WAITING_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'RECONCILIATION_REQUIRED';
+  due_at: string;
+  priority: 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
+  idempotency_key: string;
+  execution_task_key: string;
+  request_id?: string | null;
+  external_entity_type?: string | null;
+  external_entity_id?: string | null;
+  result_code?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  updated_at: string;
 }
 
 export interface BusinessFollowUpDraftFact {

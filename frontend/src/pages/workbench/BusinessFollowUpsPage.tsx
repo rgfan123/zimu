@@ -503,8 +503,52 @@ function FollowUpDetail({ detail }: { detail: BusinessFollowUp }) {
           )}
         />
       </Card>
+      <Card size="small" title="后续 Assignment">
+        <List
+          size="small"
+          dataSource={detail.assignments ?? []}
+          locale={{ emptyText: '尚无已投影的后续任务' }}
+          renderItem={(assignment) => (
+            <List.Item>
+              <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                <Space wrap>
+                  <Typography.Text strong>{assignment.task_type}</Typography.Text>
+                  <Tag color={assignmentStatusColor(assignment.status)}>{assignment.status}</Tag>
+                  <Tag>{assignment.priority}</Tag>
+                </Space>
+                <Typography.Text>{assignment.logical_target}</Typography.Text>
+                <Typography.Text type="secondary">
+                  Approval {assignment.approval_id} · 草稿 v{assignment.draft_version}
+                  {' · '}Agent run {assignment.agent_run_id}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  {assignment.assignee_type} · {assignment.assignee_ref} · 优先级 {assignment.priority}
+                  {' · '}截止 {assignment.due_at ?? '未设定'}
+                </Typography.Text>
+                <Typography.Text type={assignment.status === 'FAILED'
+                  || assignment.status === 'RECONCILIATION_REQUIRED' ? 'danger' : 'secondary'}>
+                  请求 {assignment.request_id ?? '—'}
+                  {' · '}外部结果 {assignment.external_entity_type && assignment.external_entity_id
+                    ? `${assignment.external_entity_type}:${assignment.external_entity_id}` : '—'}
+                  {' · '}{assignment.result_code ?? '尚无结果码'}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  执行任务 {assignment.execution_task_key ?? '—'} · Assignment {assignment.id}
+                </Typography.Text>
+              </Space>
+            </List.Item>
+          )}
+        />
+      </Card>
     </Space>
   );
+}
+
+function assignmentStatusColor(status: NonNullable<BusinessFollowUp['assignments']>[number]['status']) {
+  if (status === 'SUCCEEDED') return 'green';
+  if (status === 'FAILED' || status === 'RECONCILIATION_REQUIRED') return 'red';
+  if (status === 'WAITING_HUMAN') return 'orange';
+  return 'blue';
 }
 
 function DraftEvidence({ draft }: { draft: NonNullable<BusinessFollowUp['latest_draft']> }) {

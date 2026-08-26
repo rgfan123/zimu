@@ -31,7 +31,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V60）升级，Flyway validate（默认开启）必须成功且只追加
+ * migration set（V1..V61）升级，Flyway validate（默认开启）必须成功且只追加
  * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）、
  * V50（中汇稳定上传意图，Issue #116）、V51（企微业务通知 outbox，Issue #90）与
  * V52（企微订单草稿卡片，Issues #87/#88）、V53（礼包组件删除保护）与 V54（Shipment 来源同步状态机）与 V55（通用业务卡投递，#87/#88）与 V56（履约单据 Agent）；
@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV60() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV61() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -108,21 +108,21 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V60）升级——Flyway validate 默认开启，
+        // 阶段二：完整当前 migration set（V1..V61）升级——Flyway validate 默认开启，
         // V40–V47 校验通过后只追加 V48/V49/V50/V51/V52/V53/V54/V55/V56，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 60 条历史")
-                .hasSize(60);
+                .as("完整升级后应恰有 61 条历史")
+                .hasSize(61);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48–V60 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
+        // V48–V61 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 60))
+        assertThat(historyAfter.subList(47, 61))
                 .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）与 V54（#113，合并 PR #128 时与礼包 V53 撞号后顺延）、V55（通用业务卡投递）与 V56（履约单据 Agent）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
@@ -163,7 +163,10 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V59__kehuzx_followup_drafts.sql")),
                         new HistoryRow("60", "V60__business_followup_approvals.sql",
                                 "business followup approvals",
-                                crc32Of("V60__business_followup_approvals.sql")));
+                                crc32Of("V60__business_followup_approvals.sql")),
+                        new HistoryRow("61", "V61__business_followup_assignments.sql",
+                                "business followup assignments",
+                                crc32Of("V61__business_followup_assignments.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // V48–V60 分别用内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片与
@@ -486,6 +489,20 @@ class ProductionMigrationHistoryCompatTest {
                     """)))
                     .as("V60 企微事件必须串联跟进、草稿版本与 Approval")
                     .isEqualTo("3");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='business_followup_assignments'
+                      AND column_name IN (
+                        'followup_id', 'draft_version', 'approval_id', 'agent_run_id',
+                        'task_type', 'logical_target', 'assignee_type', 'assignee_ref',
+                        'status', 'due_at', 'priority', 'idempotency_key',
+                        'execution_task_key', 'request_id', 'external_entity_type',
+                        'external_entity_id', 'result_code'
+                      )
+                    """)))
+                    .as("V61 必须持久化可追溯且可独立执行的 Assignment 契约")
+                    .isEqualTo("17");
         }
     }
 

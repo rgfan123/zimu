@@ -93,6 +93,13 @@ public class BusinessFollowUpApprovalApplication {
         cards.enqueue(WecomTaskId.ofVersion(
                 "followup-result", work.approvalId(), work.draftVersion()));
         recordOutcome(work.approvalId(), "APPLIED");
+        if (work.decision() == BusinessFollowUpApprovalDecision.CONFIRM) {
+            tasks.enqueue(
+                    BusinessFollowUpAssignmentApplication.PROJECTION_TASK_TYPE,
+                    "followup-assignment-projection:" + work.approvalId(),
+                    "followup-assignment-projection:" + work.approvalId(),
+                    3);
+        }
         tasks.succeedOwned(task.id(), owner);
     }
 

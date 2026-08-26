@@ -41,6 +41,7 @@ public record BusinessFollowUpDto(
         @JsonProperty("draft_versions")
         List<BusinessFollowUpDraftDto> draftVersions,
         List<BusinessFollowUpApprovalDto> approvals,
+        List<BusinessFollowUpAssignmentDto> assignments,
         @JsonProperty("created_at")
         OffsetDateTime createdAt,
         @JsonProperty("updated_at")

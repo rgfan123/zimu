@@ -378,6 +378,7 @@ public class BusinessFollowUpService {
                 base.latestDraft(),
                 draftVersions(id),
                 approvals(id),
+                assignments(id),
                 base.createdAt(),
                 base.updatedAt());
     }
@@ -573,6 +574,7 @@ public class BusinessFollowUpService {
                 mapDraft(rs),
                 List.of(),
                 List.of(),
+                List.of(),
                 rs.getObject("created_at", java.time.OffsetDateTime.class),
                 rs.getObject("updated_at", java.time.OffsetDateTime.class));
     }
@@ -645,6 +647,44 @@ public class BusinessFollowUpService {
                         rs.getString("application_failure_code"),
                         rs.getObject("applied_at", java.time.OffsetDateTime.class),
                         rs.getObject("decided_at", java.time.OffsetDateTime.class)),
+                followupId);
+    }
+
+    private List<BusinessFollowUpAssignmentDto> assignments(long followupId) {
+        return jdbc.query(
+                """
+                SELECT id, followup_id, draft_version, approval_id, agent_run_id,
+                       task_type, logical_target, assignee_type, assignee_ref, status,
+                       due_at, priority, idempotency_key, execution_task_key, request_id,
+                       external_entity_type, external_entity_id, result_code,
+                       created_at, started_at, completed_at, updated_at
+                FROM app.business_followup_assignments
+                WHERE followup_id=?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (rs, row) -> new BusinessFollowUpAssignmentDto(
+                        rs.getString("id"),
+                        rs.getString("followup_id"),
+                        rs.getInt("draft_version"),
+                        rs.getString("approval_id"),
+                        rs.getString("agent_run_id"),
+                        rs.getString("task_type"),
+                        rs.getString("logical_target"),
+                        rs.getString("assignee_type"),
+                        rs.getString("assignee_ref"),
+                        rs.getString("status"),
+                        rs.getObject("due_at", java.time.OffsetDateTime.class),
+                        rs.getString("priority"),
+                        rs.getString("idempotency_key"),
+                        rs.getString("execution_task_key"),
+                        rs.getString("request_id"),
+                        rs.getString("external_entity_type"),
+                        rs.getString("external_entity_id"),
+                        rs.getString("result_code"),
+                        rs.getObject("created_at", java.time.OffsetDateTime.class),
+                        rs.getObject("started_at", java.time.OffsetDateTime.class),
+                        rs.getObject("completed_at", java.time.OffsetDateTime.class),
+                        rs.getObject("updated_at", java.time.OffsetDateTime.class)),
                 followupId);
     }
 

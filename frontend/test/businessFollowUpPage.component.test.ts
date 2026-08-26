@@ -359,3 +359,62 @@ test('card deep link requires feedback and submits a version-fenced REST decisio
     capability: '0123456789abcdef0123456789abcdef',
   });
 });
+
+test('detail shows each confirmed follow-up Assignment with its approval, agent run and execution outcome', async () => {
+  const detail = {
+    ...summary(),
+    stage: 'CONFIRMED',
+    processing_status: 'SUCCEEDED',
+    employee_draft: '已确认后续执行',
+    latest_draft: null,
+    draft_versions: [],
+    approvals: [],
+    assignments: [{
+      id: '71',
+      followup_id: '9007199254740993',
+      draft_version: 3,
+      approval_id: '61',
+      agent_run_id: 'run_confirmed_v3',
+      task_type: 'KEHUZX_CUSTOMER_LINK',
+      logical_target: 'kehuzx-customer:KH-260826-001',
+      assignee_type: 'DETERMINISTIC_MCP',
+      assignee_ref: 'kehuzx:customer-write',
+      status: 'FAILED',
+      due_at: '2026-08-28T10:00:00Z',
+      priority: 'NORMAL',
+      idempotency_key: 'followup:9007199254740993:v3:customer:KH-260826-001',
+      execution_task_key: 'followup-assignment:71',
+      request_id: 'req_assignment_71',
+      external_entity_type: 'sample_request',
+      external_entity_id: 'sample-19',
+      result_code: 'UPSTREAM_REJECTED',
+      created_at: '2026-08-26T04:00:01Z',
+      started_at: '2026-08-26T04:01:00Z',
+      completed_at: '2026-08-26T04:02:00Z',
+      updated_at: '2026-08-26T04:02:00Z',
+    }],
+  };
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/business-followups?')) {
+      return jsonResponse({ items: [detail], page: 0, size: 20, total_elements: 1, total_pages: 1 });
+    }
+    if (url === '/api/v1/agents') return jsonResponse({ items: [] });
+    if (url === '/api/v1/business-followups/9007199254740993') return jsonResponse(detail);
+    throw new Error(`unexpected request ${url}`);
+  };
+
+  await mountRoute('/workbench/business-followups');
+  await waitFor(() => assert.match(bodyText(), /BF-0000000001/));
+  const detailButton = [...document.querySelectorAll('button')]
+    .find((button) => button.textContent?.trim() === '详情');
+  assert.ok(detailButton);
+  await act(async () => { detailButton.click(); });
+
+  await waitFor(() => assert.match(bodyText(), /后续 Assignment/));
+  const text = bodyText();
+  assert.match(text, /KEHUZX_CUSTOMER_LINK.*FAILED/);
+  assert.match(text, /Approval 61.*草稿 v3.*Agent run run_confirmed_v3/);
+  assert.match(text, /DETERMINISTIC_MCP.*kehuzx:customer-write.*优先级 NORMAL/);
+  assert.match(text, /请求 req_assignment_71.*外部结果 sample_request:sample-19.*UPSTREAM_REJECTED/);
+});

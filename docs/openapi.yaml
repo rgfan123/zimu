@@ -4347,6 +4347,9 @@ components:
             approvals:
               type: array
               items: { $ref: '#/components/schemas/BusinessFollowUpApprovalDto' }
+            assignments:
+              type: array
+              items: { $ref: '#/components/schemas/BusinessFollowUpAssignmentDto' }
     BusinessFollowUpDraftDto:
       type: object
       required:
@@ -4427,6 +4430,39 @@ components:
         application_failure_code: { type: string, nullable: true }
         applied_at: { type: string, format: date-time, nullable: true }
         decided_at: { type: string, format: date-time }
+    BusinessFollowUpAssignmentDto:
+      type: object
+      required:
+        [id, followup_id, draft_version, approval_id, agent_run_id, task_type,
+         logical_target, assignee_type, assignee_ref, status, priority,
+         due_at, idempotency_key, execution_task_key, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        followup_id: { $ref: '#/components/schemas/Identifier' }
+        draft_version: { type: integer, format: int32, minimum: 1 }
+        approval_id: { $ref: '#/components/schemas/Identifier' }
+        agent_run_id: { type: string, minLength: 1 }
+        task_type: { type: string, enum: [KEHUZX_CUSTOMER_LINK] }
+        logical_target: { type: string, minLength: 1 }
+        assignee_type:
+          type: string
+          enum: [INTERNAL_OPERATOR, TEAM, DETERMINISTIC_MCP, SPECIALIST_AGENT]
+        assignee_ref: { type: string, minLength: 1 }
+        status:
+          type: string
+          enum: [PENDING, RUNNING, WAITING_HUMAN, SUCCEEDED, FAILED, RECONCILIATION_REQUIRED]
+        due_at: { type: string, format: date-time }
+        priority: { type: string, enum: [LOW, NORMAL, HIGH, URGENT] }
+        idempotency_key: { type: string, minLength: 1 }
+        execution_task_key: { type: string, minLength: 1 }
+        request_id: { type: string, nullable: true }
+        external_entity_type: { type: string, nullable: true }
+        external_entity_id: { type: string, nullable: true }
+        result_code: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        updated_at: { type: string, format: date-time }
     PageResponseBusinessFollowUpSummaryDto:
       type: object
       required: [items, page, size, total_elements, total_pages]

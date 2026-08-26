@@ -38,11 +38,16 @@ app:
     enabled: ${FOLLOWUP_APPROVAL_WORKER_ENABLED:false}
     poll-ms: ${FOLLOWUP_APPROVAL_WORKER_POLL_MS:500}
     lease-seconds: ${FOLLOWUP_APPROVAL_WORKER_LEASE_SECONDS:30}
+  followup-assignment-worker:
+    enabled: ${FOLLOWUP_ASSIGNMENT_WORKER_ENABLED:false}
+    poll-ms: ${FOLLOWUP_ASSIGNMENT_WORKER_POLL_MS:500}
+    lease-seconds: ${FOLLOWUP_ASSIGNMENT_WORKER_LEASE_SECONDS:30}
+    backoff-seconds: ${FOLLOWUP_ASSIGNMENT_WORKER_BACKOFF_SECONDS:5}
   scheduling:
     # 生产默认启用；测试可整体关闭，避免缓存的 Spring context 继续轮询已销毁的 Testcontainer。
     enabled: ${SCHEDULED_TASKS_ENABLED:true}
-    # 当前 12 条 @Scheduled 触发流各有独立 lane；代码将配置值限制在 12..32。
-    pool-size: ${SCHEDULED_TASK_POOL_SIZE:12}
+    # 当前 13 条 @Scheduled 触发流各有独立 lane；代码将配置值限制在 13..32。
+    pool-size: ${SCHEDULED_TASK_POOL_SIZE:13}
   gateway:
     basic-auth:
       # 全部 /api 请求都会在后端复验 Nginx 提供的 Basic Auth；缺失时默认拒绝。

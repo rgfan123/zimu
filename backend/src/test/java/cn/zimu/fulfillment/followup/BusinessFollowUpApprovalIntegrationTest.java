@@ -104,6 +104,16 @@ class BusinessFollowUpApprovalIntegrationTest {
                 "SELECT applied_at IS NOT NULL FROM app.business_followup_approvals WHERE followup_id=?",
                 Boolean.class,
                 fixture.followupId())).isTrue();
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.async_tasks t
+                JOIN app.business_followup_approvals a
+                  ON t.payload_ref='followup-assignment-projection:' || a.id
+                WHERE t.task_type=? AND a.followup_id=?
+                """,
+                Integer.class,
+                BusinessFollowUpAssignmentApplication.PROJECTION_TASK_TYPE,
+                fixture.followupId())).isEqualTo(1);
 
         BusinessFollowUpApprovalDto approval = followUps.detail(fixture.followupId())
                 .approvals().getFirst();
