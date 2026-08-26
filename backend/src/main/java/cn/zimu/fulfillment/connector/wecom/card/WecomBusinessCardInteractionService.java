@@ -67,6 +67,32 @@ public class WecomBusinessCardInteractionService {
     }
 
     /**
+     * 从点击事件帧里取 task_id。
+     *
+     * <p><b>真实帧把它嵌在 {@code body.event.template_card_event} 里</b>，不是平铺在
+     * {@code body.event} 上（2026-08-26 生产实证，wecom_events#10 原始载荷）。
+     * 只读平铺键会一律取到空串，表现是业务卡按钮全部落回订单草稿卡的处理器、
+     * 报 {@code WECOM_CARD_TASK_ID_INVALID}——也就是「点了没反应」。
+     * 平铺键作为兜底保留：老回调示例里确实是平铺的，两种都认才不会因协议版本翻车。
+     */
+    public static String taskId(JsonNode frame) {
+        JsonNode event = frame.path("body").path("event");
+        JsonNode card = event.path("template_card_event");
+        return firstNonBlank(
+                card.path("task_id").asText(""),
+                firstNonBlank(event.path("task_id").asText(""), event.path("taskid").asText("")));
+    }
+
+    /** 按钮 key，取法与 {@link #taskId} 同源：嵌套优先、平铺兜底。 */
+    public static String buttonKey(JsonNode frame) {
+        JsonNode event = frame.path("body").path("event");
+        JsonNode card = event.path("template_card_event");
+        return firstNonBlank(
+                card.path("event_key").asText(""),
+                firstNonBlank(event.path("event_key").asText(""), event.path("eventkey").asText("")));
+    }
+
+    /**
      * 处理一次业务卡点击。
      *
      * <p>本方法**永不抛异常**：回调线程炸掉的表现是点击石沉大海，比给出一句"处理失败"糟得多。
@@ -74,12 +100,9 @@ public class WecomBusinessCardInteractionService {
     @Transactional
     public Outcome handle(JsonNode frame) {
         JsonNode body = frame.path("body");
-        JsonNode event = body.path("event");
         String msgId = body.path("msgid").asText("");
-        String taskIdRaw = firstNonBlank(
-                event.path("taskid").asText(""), event.path("task_id").asText(""));
-        String buttonKey = firstNonBlank(
-                event.path("eventkey").asText(""), event.path("event_key").asText(""));
+        String taskIdRaw = taskId(frame);
+        String buttonKey = buttonKey(frame);
         String actor = body.path("from").path("userid").asText("");
 
         Optional<WecomTaskId> parsed = WecomTaskId.parse(taskIdRaw);

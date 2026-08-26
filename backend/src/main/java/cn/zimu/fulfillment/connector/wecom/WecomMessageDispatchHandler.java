@@ -43,6 +43,16 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
 
     static final String CONNECTION_ID = "wecom-long-connection";
     static final String RECEIPT_TEXT = "已接收";
+
+    /**
+     * 文件回执。发文件的人接下来要等十几秒才知道结果（下载 → 解密 → 认模板 → 解析），
+     * 这期间只回「已接收」两个字，读起来像石沉大海。说清楚「在做什么、会怎么回」，
+     * 沉默期才不会被当成没收到。
+     *
+     * <p>企微的文件帧里**没有文件名**（只有 url/aeskey/md5sum，见 aibot_msg_callback 载荷），
+     * 所以回执里回不出「收到了 xxx.xlsx」——不要为此去猜。
+     */
+    static final String FILE_RECEIPT_TEXT = "已收到文件，正在识别模板并解析，结果稍后回你";
     static final long UPDATE_CARD_BUDGET_NANOS = 4_500_000_000L;
     private static final ZoneId DISPLAY_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter DISPLAY_TIME = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss");
@@ -137,7 +147,7 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
                 frame);
         try {
             long submissionId = submissionService.submit(command);
-            deliverReceipt(reqId);
+            deliverReceipt(reqId, msgType);
         } catch (RuntimeException ex) {
             // 不回执：企微会按回调重试（重复回调由幂等键收敛）；证据若已落库则保留。
             log.error("企微消息处理失败，等待通道重试 msgid={}", messageId, ex);
@@ -157,12 +167,8 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
 
     /** task_id 的域属于业务卡时走业务卡路径；解析不出来的一律留给订单草稿卡按原逻辑报错。 */
     private boolean isBusinessCardTask(JsonNode frame) {
-        JsonNode event = frame.path("body").path("event");
-        String raw = event.path("taskid").asText("");
-        if (raw.isBlank()) {
-            raw = event.path("task_id").asText("");
-        }
-        return WecomBusinessCardInteractionService.handles(raw);
+        return WecomBusinessCardInteractionService.handles(
+                WecomBusinessCardInteractionService.taskId(frame));
     }
 
     /**
@@ -460,14 +466,14 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         return botId;
     }
 
-    /** 回执「已接收」：透传回调 req_id；失败重试 1 次，仍失败只告警不重推（04 决策）。 */
-    private void deliverReceipt(String reqId) {
+    /** 回执：透传回调 req_id；失败重试 1 次，仍失败只告警不重推（04 决策）。 */
+    private void deliverReceipt(String reqId, String msgType) {
         if (reqId.isBlank()) {
             return;
         }
         ObjectNode body = objectMapper.createObjectNode();
         body.put("msgtype", "text");
-        body.putObject("text").put("content", RECEIPT_TEXT);
+        body.putObject("text").put("content", receiptText(msgType));
         boolean sent = connectionManager().respond(reqId, body);
         if (!sent) {
             try {
@@ -481,6 +487,10 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         if (!sent) {
             log.warn("企微回执发送失败（已重试 1 次），不再重推 req_id={}", reqId);
         }
+    }
+
+    static String receiptText(String msgType) {
+        return "file".equals(msgType) ? FILE_RECEIPT_TEXT : RECEIPT_TEXT;
     }
 
     /** 懒解析连接管理器：handler 与 manager 互相依赖，用 provider 打破构造期循环。 */

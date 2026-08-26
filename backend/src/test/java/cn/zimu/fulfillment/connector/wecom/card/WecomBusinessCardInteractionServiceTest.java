@@ -32,6 +32,11 @@ class WecomBusinessCardInteractionServiceTest {
         service = new WecomBusinessCardInteractionService(jdbc, tasks);
     }
 
+    /**
+     * 真实点击帧的形状（2026-08-26 生产实证，wecom_events#10 原始载荷）：
+     * task_id 与 event_key **嵌在 body.event.template_card_event 里**，不是平铺在 body.event 上。
+     * 此前测试按平铺构造，于是「测试全绿、线上点了没反应」——测试自己在测错的协议。
+     */
     private static ObjectNode frame(String taskId, String buttonKey, String actor) {
         ObjectNode frame = JSON.createObjectNode();
         ObjectNode body = frame.putObject("body");
@@ -40,9 +45,48 @@ class WecomBusinessCardInteractionServiceTest {
         body.putObject("from").put("userid", actor);
         ObjectNode event = body.putObject("event");
         event.put("eventtype", "template_card_event");
-        event.put("taskid", taskId);
-        event.put("eventkey", buttonKey);
+        ObjectNode card = event.putObject("template_card_event");
+        card.put("task_id", taskId);
+        card.put("event_key", buttonKey);
         return frame;
+    }
+
+    /** 老回调示例里是平铺的；两种都要认，否则换个协议版本就全哑。 */
+    private static ObjectNode flatFrame(String taskId, String buttonKey, String actor) {
+        ObjectNode frame = JSON.createObjectNode();
+        ObjectNode body = frame.putObject("body");
+        body.put("msgid", "MSG-FLAT");
+        body.putObject("from").put("userid", actor);
+        ObjectNode event = body.putObject("event");
+        event.put("eventtype", "template_card_event");
+        event.put("task_id", taskId);
+        event.put("event_key", buttonKey);
+        return frame;
+    }
+
+    @Test
+    void 嵌套与平铺两种帧形状都要认出来() {
+        assertThat(WecomBusinessCardInteractionService.taskId(
+                        frame("review_11_v0", "claim_review_case", "jry")))
+                .isEqualTo("review_11_v0");
+        assertThat(WecomBusinessCardInteractionService.buttonKey(
+                        frame("review_11_v0", "claim_review_case", "jry")))
+                .isEqualTo("claim_review_case");
+        assertThat(WecomBusinessCardInteractionService.taskId(
+                        flatFrame("preship_4_v1", "preship_confirm", "jry")))
+                .isEqualTo("preship_4_v1");
+        assertThat(WecomBusinessCardInteractionService.buttonKey(
+                        flatFrame("preship_4_v1", "preship_confirm", "jry")))
+                .isEqualTo("preship_confirm");
+    }
+
+    @Test
+    void 生产真实帧必须被判给业务卡处理器() {
+        // 这一条守的是 2026-08-26 那次「点了没反应」：帧认不出来就会掉回订单草稿卡
+        assertThat(WecomBusinessCardInteractionService.handles(
+                        WecomBusinessCardInteractionService.taskId(
+                                frame("review_11_v0", "claim_review_case", "jry"))))
+                .isTrue();
     }
 
     @Test
