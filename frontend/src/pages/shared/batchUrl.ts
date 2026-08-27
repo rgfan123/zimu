@@ -7,6 +7,7 @@
  */
 
 export const FILE_JOB_BATCH_PARAM = 'import_batch';
+export const FILE_JOB_INTAKE_PARAM = 'intake_job';
 
 export { REVIEWS_BATCH_PARAM, reviewsUrlForBatch } from './reviewQueueUrl.ts';
 

@@ -4,7 +4,16 @@
  * 降饱和）；来源渠道等普通分类走 pages/shared/semanticStatus 的品牌色阶点缀，不使用具名彩虹色。
  */
 
-import type { BusinessFollowUpBusinessKind, FulfillmentProvider, OrderStatus, ProcessingHealth, ProcessingStage, ShipmentStatus, SourceChannel } from '@/api/types';
+import type {
+  BusinessFollowUpBusinessKind,
+  FulfillmentProvider,
+  OrderStatus,
+  ProcessingHealth,
+  ProcessingStage,
+  ShipmentStatus,
+  SourceChannel,
+  SourceOrderIntakeStatus,
+} from '@/api/types';
 import type { ChannelMessageType } from '@/api/types';
 import {
   ORDER_STATUS_SEMANTIC,
@@ -21,6 +30,20 @@ export const CHANNEL_LABELS: Record<SourceChannel, string> = {
   DAZHE: '大者',
   WANQI: '万齐',
   WECOM: '企业微信',
+};
+
+export const SOURCE_ORDER_INTAKE_STATUS_LABELS: Record<SourceOrderIntakeStatus, string> = {
+  RECEIVED: '已接收',
+  PROCESSING: '处理中',
+  NEEDS_EXTRACTION: '待 Agent 提取',
+  NEEDS_REVIEW: '待人工复核',
+  READY: '待放行',
+  IMPORTING: '正在成单',
+  OUTBOUND_SUBMITTING: '正在提交京东',
+  SUCCEEDED: '导入成功',
+  FAILED: '处理失败',
+  RECONCILIATION_REQUIRED: '待对账',
+  COMPLETED: '已完成',
 };
 
 /** 来源渠道分类点缀色见 pages/shared/semanticStatus 的 CHANNEL_ACCENT（品牌/数据色阶）。 */

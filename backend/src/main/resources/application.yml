@@ -9,8 +9,9 @@ spring:
     enabled: true
   servlet:
     multipart:
-      max-file-size: 12MB
-      max-request-size: 12MB
+      # 业务上限是 20MiB；传输层留 1MiB multipart 边界开销，由领域层返回稳定错误码。
+      max-file-size: 21MB
+      max-request-size: 22MB
   jpa:
     hibernate:
       ddl-auto: validate
@@ -205,6 +206,11 @@ app:
     poll-ms: ${AGENT_WORKER_POLL_MS:500}
     lease-seconds: ${AGENT_WORKER_LEASE_SECONDS:30}
     backoff-seconds: ${AGENT_WORKER_BACKOFF_SECONDS:5}
+  source-order-intake-worker:
+    enabled: ${SOURCE_ORDER_INTAKE_WORKER_ENABLED:true}
+    poll-ms: ${SOURCE_ORDER_INTAKE_WORKER_POLL_MS:1000}
+    lease-seconds: ${SOURCE_ORDER_INTAKE_WORKER_LEASE_SECONDS:120}
+    backoff-seconds: ${SOURCE_ORDER_INTAKE_WORKER_BACKOFF_SECONDS:10}
   message-interpreter:
     provider: ${MESSAGE_INTERPRETER_PROVIDER:}
     model: ${MESSAGE_INTERPRETER_MODEL:}
@@ -227,6 +233,11 @@ app:
     base-url: ${AGENT_BASE_URL:}
     api-key: ${AGENT_API_KEY:}
     request-timeout-ms: ${AGENT_REQUEST_TIMEOUT_MS:30000}
+    # 单次运行收敛预算：不再用固定工具轮数表达所有 Agent；异步任务可在请求中显式覆盖。
+    max-model-calls: ${AGENT_MAX_MODEL_CALLS:24}
+    max-tool-calls: ${AGENT_MAX_TOOL_CALLS:64}
+    execution-timeout-ms: ${AGENT_EXECUTION_TIMEOUT_MS:300000}
+    max-repeated-tool-calls: ${AGENT_MAX_REPEATED_TOOL_CALLS:2}
     # 服务端 allowlist：仅登记的三元组可对外暴露真实 provider/model/prompt-version，未命中一律投影为 none。
     public-metadata-aliases:
       - provider: ${AGENT_PUBLIC_PROVIDER_ALIAS:}
