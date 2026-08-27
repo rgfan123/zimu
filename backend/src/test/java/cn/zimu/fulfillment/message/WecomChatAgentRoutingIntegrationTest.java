@@ -96,7 +96,7 @@ class WecomChatAgentRoutingIntegrationTest {
                 Map.of("reason", "ambiguous"),
                 "test-provider",
                 "test-model",
-                "test-v1",
+                "test-prompt-v1",
                 null));
     }
 
@@ -127,7 +127,7 @@ class WecomChatAgentRoutingIntegrationTest {
         assertThat(intake).isEqualTo(
                 "WECOM_INTAKE|OPEN|ORDER_OPS|WECOM_NEED_REVIEW|"
                         + "{\"model\": \"test-model\", \"intent\": \"NEED_REVIEW\", "
-                        + "\"provider\": \"test-provider\", \"prompt_version\": \"test-v1\"}");
+                        + "\"provider\": \"test-provider\", \"prompt_version\": \"test-prompt-v1\"}");
         verify(agents, never()).invokeReadOnlyModules(any(), any(), any(), any());
     }
 
@@ -235,7 +235,7 @@ class WecomChatAgentRoutingIntegrationTest {
                 Map.of("customer", "测试客户"),
                 "test-provider",
                 "test-model",
-                "test-v1",
+                "test-prompt-v1",
                 null));
 
         long submissionId = submissions.submit(command(chatId, "下单 M5霜降肥牛卷 10箱", "text"));
