@@ -1,19 +1,56 @@
 import { useEffect, useState } from 'react';
-import { App, Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, List, Modal, Select, Space, Tag, Typography } from 'antd';
-import { FileSearchOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
+import { App, Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, List, Modal, Select, Space, Tag, Typography } from 'antd';
+import { DeleteOutlined, FileSearchOutlined, PlusOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import type { Rule } from 'antd/es/form';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { agentsApi, businessFollowUpsApi, operatorsApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
 import type {
   BusinessFollowUp,
+  BusinessFollowUpBusinessKind,
+  BusinessFollowUpCommercialTerms,
   BusinessFollowUpCreateInput,
   BusinessFollowUpDecisionInput,
+  BusinessFollowUpFormalExecutionPlan,
+  BusinessFollowUpSampleExecutionPlan,
   BusinessFollowUpSummary,
 } from '@/api/types';
 import DataTable from '@/components/DataTable';
 import PageShell from '@/components/PageShell';
+import { BUSINESS_FOLLOWUP_KIND_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
+import {
+  buildBusinessFollowUpCreateInput,
+  executionPlanSizeError,
+  formalItemCountError,
+  isValidExecutionDecimal,
+  isValidExecutionInteger,
+  isValidIsoDate,
+  MAX_DECIMAL_QUANTITY,
+  MAX_FORMAL_ITEMS,
+  MAX_INTEGER_QUANTITY,
+  type BusinessFollowUpCreateFormValues,
+} from './businessFollowUpExecutionPlan';
+
+const BUSINESS_KIND_OPTIONS = (Object.entries(BUSINESS_FOLLOWUP_KIND_LABELS) as Array<
+  [BusinessFollowUpBusinessKind, string]
+>).map(([value, label]) => ({ value, label }));
+
+const COMMERCIAL_TERM_FIELDS: ReadonlyArray<{
+  key: keyof BusinessFollowUpCommercialTerms;
+  label: string;
+}> = [
+  { key: 'payment_terms', label: '付款条款' },
+  { key: 'reconciliation_date', label: '对账日期说明' },
+  { key: 'payment_date', label: '付款日期说明' },
+  { key: 'credit_days', label: '账期天数说明' },
+  { key: 'invoice_requirement', label: '开票要求' },
+  { key: 'moq', label: '最小起订量说明' },
+  { key: 'quoted_price', label: '报价说明' },
+  { key: 'target_price', label: '目标价说明' },
+  { key: 'remark', label: '商务条款备注' },
+];
 
 const STAGE_LABELS: Record<BusinessFollowUpSummary['stage'], string> = {
   PENDING_ORGANIZATION: '待发起整理',
@@ -46,6 +83,62 @@ const DECISION_LABELS: Record<BusinessFollowUpDecisionInput['decision'], string>
   PAUSE: '暂不推进',
 };
 
+const requiredTextRules = (label: string, max: number): Rule[] => [
+  { required: true, whitespace: true, message: `请输入${label}` },
+  { max, message: `${label}不能超过 ${max} 个字符` },
+];
+
+const optionalTextRules = (label: string, max: number): Rule[] => [
+  { max, message: `${label}不能超过 ${max} 个字符` },
+  {
+    validator: (_, value: unknown) => {
+      if (value === undefined || value === null || value === '') return Promise.resolve();
+      return typeof value === 'string' && value.trim().length > 0
+        ? Promise.resolve()
+        : Promise.reject(new Error(`${label}不能只填写空格`));
+    },
+  },
+];
+
+const isoDateRules = (label: string, required: boolean): Rule[] => [
+  ...(required ? [{ required: true, message: `请选择${label}` } satisfies Rule] : []),
+  {
+    validator: (_, value: unknown) => {
+      if (!required && (value === undefined || value === null || value === '')) return Promise.resolve();
+      if (!isValidIsoDate(value)) {
+        return Promise.reject(new Error(`${label}必须是有效的 ISO 日期（YYYY-MM-DD）`));
+      }
+      return Promise.resolve();
+    },
+  },
+];
+
+const positiveDecimalRules = (label: string): Rule[] => [
+  { required: true, message: `请输入${label}` },
+  {
+    validator: (_, value: unknown) => {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        return Promise.reject(new Error(`${label}必须是正数`));
+      }
+      if (value > MAX_DECIMAL_QUANTITY) {
+        return Promise.reject(new Error(`${label}不能超过 ${MAX_DECIMAL_QUANTITY}`));
+      }
+      return isValidExecutionDecimal(value)
+        ? Promise.resolve()
+        : Promise.reject(new Error(`${label}最多保留 3 位小数`));
+    },
+  },
+];
+
+const positiveIntegerRules = (label: string): Rule[] => [
+  { required: true, message: `请输入${label}` },
+  {
+    validator: (_, value: unknown) => isValidExecutionInteger(value)
+      ? Promise.resolve()
+      : Promise.reject(new Error(`${label}必须是 1..${MAX_INTEGER_QUANTITY} 的整数`)),
+  },
+];
+
 export default function BusinessFollowUpsPage() {
   const { message } = App.useApp();
   const navigate = useNavigate();
@@ -66,6 +159,9 @@ export default function BusinessFollowUpsPage() {
   const [organizeTarget, setOrganizeTarget] = useState<BusinessFollowUpSummary | null>(null);
   const [saving, setSaving] = useState(false);
   const [writeError, setWriteError] = useState<Error | null>(null);
+  const [businessKind, setBusinessKind] = useState<BusinessFollowUpBusinessKind>('CUSTOMER');
+  const [planSizeError, setPlanSizeError] = useState<string | null>(null);
+  const [createForm] = Form.useForm<BusinessFollowUpCreateFormValues>();
   const [organizeForm] = Form.useForm<{ agent: string; reviewer: string }>();
   const [decisionForm] = Form.useForm<{ reason: string }>();
   const list = useAsync(() => businessFollowUpsApi.list({ page, size }), [page, size]);
@@ -106,13 +202,25 @@ export default function BusinessFollowUpsPage() {
     if (linkedFollowupId) setSelectedId(linkedFollowupId);
   }, [linkedFollowupId]);
 
-  const closeCreate = () => setSearchParams({});
+  const closeCreate = () => {
+    setSearchParams({});
+    setBusinessKind('CUSTOMER');
+    setPlanSizeError(null);
+    setWriteError(null);
+    createForm.resetFields();
+  };
 
-  const create = async (values: BusinessFollowUpCreateInput) => {
+  const create = async (values: BusinessFollowUpCreateFormValues) => {
+    const sizeError = executionPlanSizeError(values);
+    if (sizeError) {
+      setPlanSizeError(sizeError);
+      return;
+    }
+    const input: BusinessFollowUpCreateInput = buildBusinessFollowUpCreateInput(values);
     setSaving(true);
     setWriteError(null);
     try {
-      await businessFollowUpsApi.create(values);
+      await businessFollowUpsApi.create(input);
       closeCreate();
       list.reload();
       message.success('客户跟进材料已建档');
@@ -121,6 +229,19 @@ export default function BusinessFollowUpsPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const changeBusinessKind = (kind: BusinessFollowUpBusinessKind) => {
+    setBusinessKind(kind);
+    setPlanSizeError(null);
+    createForm.setFieldValue(
+      'execution_plan',
+      kind === 'FORMAL' ? { items: [{}] } : undefined,
+    );
+  };
+
+  const checkPlanSize = (_: unknown, values: BusinessFollowUpCreateFormValues) => {
+    setPlanSizeError(executionPlanSizeError(values));
   };
 
   const openOrganize = (row: BusinessFollowUpSummary) => {
@@ -285,10 +406,15 @@ export default function BusinessFollowUpsPage() {
         destroyOnHidden
       >
         {writeError ? <Alert type="error" showIcon message={errorMessage(writeError)} style={{ marginBottom: 16 }} /> : null}
-        <Form<BusinessFollowUpCreateInput>
+        <Form<BusinessFollowUpCreateFormValues>
+          form={createForm}
           key={sourceSubmissionId}
           layout="vertical"
-          initialValues={{ message_submission_id: sourceSubmissionId ?? '' }}
+          initialValues={{
+            message_submission_id: sourceSubmissionId ?? '',
+            business_kind: 'CUSTOMER',
+          }}
+          onValuesChange={checkPlanSize}
           onFinish={create}
         >
           <Form.Item name="message_submission_id" label="已选消息证据" rules={[{ required: true }]}>
@@ -307,7 +433,25 @@ export default function BusinessFollowUpsPage() {
               placeholder="例如：客户 KH-260826-001 希望确认样品和后续订单"
             />
           </Form.Item>
-          <Button type="primary" htmlType="submit" loading={saving}>先建档，不运行模型</Button>
+          <Form.Item
+            name="business_kind"
+            label="业务类型"
+            extra="由业务员明确选择；普通跟进不会生成可执行计划。"
+            rules={[{ required: true, message: '请选择业务类型' }]}
+          >
+            <Select
+              options={BUSINESS_KIND_OPTIONS}
+              onChange={changeBusinessKind}
+            />
+          </Form.Item>
+          {businessKind === 'SAMPLE' ? <SampleExecutionPlanFields /> : null}
+          {businessKind === 'FORMAL' ? <FormalExecutionPlanFields /> : null}
+          {planSizeError ? (
+            <Alert type="error" showIcon message={planSizeError} style={{ marginBottom: 16 }} />
+          ) : null}
+          <Button type="primary" htmlType="submit" loading={saving} disabled={Boolean(planSizeError)}>
+            先建档，不运行模型
+          </Button>
         </Form>
       </Modal>
 
@@ -436,6 +580,243 @@ export default function BusinessFollowUpsPage() {
   );
 }
 
+function SampleExecutionPlanFields() {
+  return (
+    <Card size="small" title="样品执行计划" style={{ marginBottom: 16 }}>
+      <Form.Item
+        name={['execution_plan', 'sample_name']}
+        label="样品名称"
+        rules={requiredTextRules('样品名称', 200)}
+      >
+        <Input maxLength={200} showCount />
+      </Form.Item>
+      <Form.Item
+        name={['execution_plan', 'product_name']}
+        label="商品名称"
+        rules={requiredTextRules('商品名称', 200)}
+      >
+        <Input maxLength={200} showCount />
+      </Form.Item>
+      <Space align="start" wrap style={{ width: '100%' }}>
+        <Form.Item
+          name={['execution_plan', 'quantity_per_unit']}
+          label="每单位数量"
+          rules={positiveDecimalRules('每单位数量')}
+        >
+          <InputNumber min={0.001} max={MAX_DECIMAL_QUANTITY} step={0.001} style={{ width: 180 }} />
+        </Form.Item>
+        <Form.Item
+          name={['execution_plan', 'quantity_unit']}
+          label="数量单位"
+          rules={requiredTextRules('数量单位', 30)}
+        >
+          <Input maxLength={30} placeholder="例如 kg、箱" style={{ width: 150 }} />
+        </Form.Item>
+        <Form.Item
+          name={['execution_plan', 'unit_count']}
+          label="单位份数"
+          rules={positiveIntegerRules('单位份数')}
+        >
+          <InputNumber min={1} max={MAX_INTEGER_QUANTITY} precision={0} style={{ width: 150 }} />
+        </Form.Item>
+      </Space>
+      <Space align="start" wrap style={{ width: '100%' }}>
+        <Form.Item
+          name={['execution_plan', 'requested_date']}
+          label="需求日期"
+          rules={isoDateRules('需求日期', true)}
+        >
+          <Input type="date" style={{ width: 180 }} />
+        </Form.Item>
+        <Form.Item
+          name={['execution_plan', 'expected_delivery_date']}
+          label="期望送达日期"
+          rules={isoDateRules('期望送达日期', false)}
+        >
+          <Input type="date" style={{ width: 180 }} />
+        </Form.Item>
+        <Form.Item
+          name={['execution_plan', 'testing_date']}
+          label="测试日期"
+          rules={isoDateRules('测试日期', false)}
+        >
+          <Input type="date" style={{ width: 180 }} />
+        </Form.Item>
+      </Space>
+      <Form.Item
+        name={['execution_plan', 'specification']}
+        label="规格说明"
+        rules={optionalTextRules('规格说明', 4000)}
+      >
+        <Input.TextArea rows={2} maxLength={4000} showCount />
+      </Form.Item>
+      <Form.Item
+        name={['execution_plan', 'requirements']}
+        label="样品要求"
+        rules={optionalTextRules('样品要求', 4000)}
+      >
+        <Input.TextArea rows={2} maxLength={4000} showCount />
+      </Form.Item>
+      <Form.Item
+        name={['execution_plan', 'remark']}
+        label="样品备注"
+        rules={optionalTextRules('样品备注', 4000)}
+      >
+        <Input.TextArea rows={2} maxLength={4000} showCount />
+      </Form.Item>
+      <Form.Item
+        name={['execution_plan', 'business_note']}
+        label="业务说明"
+        rules={optionalTextRules('业务说明', 4000)}
+      >
+        <Input.TextArea rows={2} maxLength={4000} showCount />
+      </Form.Item>
+      <CommercialTermsFields />
+    </Card>
+  );
+}
+
+function FormalExecutionPlanFields() {
+  return (
+    <Card size="small" title="正式订单执行计划" style={{ marginBottom: 16 }}>
+      <Form.Item
+        name={['execution_plan', 'name']}
+        label="订单名称"
+        rules={requiredTextRules('订单名称', 200)}
+      >
+        <Input maxLength={200} showCount />
+      </Form.Item>
+      <Form.Item
+        name={['execution_plan', 'delivery_date']}
+        label="交付日期"
+        rules={isoDateRules('交付日期', true)}
+      >
+        <Input type="date" style={{ width: 180 }} />
+      </Form.Item>
+      <Form.Item
+        name={['execution_plan', 'delivery_address']}
+        label="交付地址"
+        rules={requiredTextRules('交付地址', 500)}
+      >
+        <Input.TextArea rows={3} maxLength={500} showCount />
+      </Form.Item>
+      <Space align="start" wrap style={{ width: '100%' }}>
+        <Form.Item
+          name={['execution_plan', 'settlement_period']}
+          label="结算周期"
+          rules={optionalTextRules('结算周期', 100)}
+        >
+          <Input maxLength={100} style={{ width: 220 }} />
+        </Form.Item>
+        <Form.Item
+          name={['execution_plan', 'settlement_method']}
+          label="结算方式"
+          rules={optionalTextRules('结算方式', 100)}
+        >
+          <Input maxLength={100} style={{ width: 220 }} />
+        </Form.Item>
+      </Space>
+      <Form.Item
+        name={['execution_plan', 'business_note']}
+        label="业务说明"
+        rules={optionalTextRules('业务说明', 4000)}
+      >
+        <Input.TextArea rows={2} maxLength={4000} showCount />
+      </Form.Item>
+      <Form.List
+        name={['execution_plan', 'items']}
+        rules={[{
+          validator: async (_, items: unknown) => {
+            const error = formalItemCountError(items);
+            if (error) throw new Error(error);
+          },
+        }]}
+      >
+        {(fields, { add, remove }, { errors }) => (
+          <Space direction="vertical" size={12} style={{ width: '100%', marginBottom: 16 }}>
+            <Typography.Text strong>商品明细（至少 1 行，最多 {MAX_FORMAL_ITEMS} 行）</Typography.Text>
+            {fields.map((field, index) => (
+              <Card
+                key={field.key}
+                size="small"
+                title={`商品明细 ${index + 1}`}
+                extra={(
+                  <Button
+                    type="text"
+                    danger
+                    icon={<DeleteOutlined />}
+                    aria-label={`删除商品明细 ${index + 1}`}
+                    disabled={fields.length <= 1}
+                    onClick={() => remove(field.name)}
+                  />
+                )}
+              >
+                <Form.Item
+                  name={[field.name, 'product_name']}
+                  label="商品名称"
+                  rules={requiredTextRules('商品名称', 200)}
+                >
+                  <Input maxLength={200} showCount />
+                </Form.Item>
+                <Space align="start" wrap style={{ width: '100%' }}>
+                  <Form.Item
+                    name={[field.name, 'quantity_per_unit']}
+                    label="每单位数量"
+                    rules={positiveDecimalRules('每单位数量')}
+                  >
+                    <InputNumber min={0.001} max={MAX_DECIMAL_QUANTITY} step={0.001} style={{ width: 170 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name={[field.name, 'quantity_unit']}
+                    label="数量单位"
+                    rules={requiredTextRules('数量单位', 30)}
+                  >
+                    <Input maxLength={30} style={{ width: 140 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name={[field.name, 'unit_count']}
+                    label="单位份数"
+                    rules={positiveIntegerRules('单位份数')}
+                  >
+                    <InputNumber min={1} max={MAX_INTEGER_QUANTITY} precision={0} style={{ width: 140 }} />
+                  </Form.Item>
+                </Space>
+              </Card>
+            ))}
+            <Button
+              type="dashed"
+              icon={<PlusOutlined />}
+              disabled={fields.length >= MAX_FORMAL_ITEMS}
+              onClick={() => add({})}
+            >
+              添加商品明细
+            </Button>
+            <Form.ErrorList errors={errors} />
+          </Space>
+        )}
+      </Form.List>
+      <CommercialTermsFields />
+    </Card>
+  );
+}
+
+function CommercialTermsFields() {
+  return (
+    <Card size="small" type="inner" title="商务条款（选填）">
+      {COMMERCIAL_TERM_FIELDS.map(({ key, label }) => (
+        <Form.Item
+          key={key}
+          name={['execution_plan', 'commercial_terms', key]}
+          label={label}
+          rules={optionalTextRules(label, 4000)}
+        >
+          <Input.TextArea rows={2} maxLength={4000} showCount />
+        </Form.Item>
+      ))}
+    </Card>
+  );
+}
+
 function FollowUpDetail({ detail }: { detail: BusinessFollowUp }) {
   return (
     <Space direction="vertical" size={20} style={{ width: '100%' }}>
@@ -445,6 +826,11 @@ function FollowUpDetail({ detail }: { detail: BusinessFollowUp }) {
         items={[
           { key: 'stage', label: '业务阶段', children: STAGE_LABELS[detail.stage] },
           { key: 'processing', label: 'Agent 处理', children: PROCESSING_LABELS[detail.processing_status] },
+          {
+            key: 'businessKind',
+            label: '业务类型',
+            children: BUSINESS_FOLLOWUP_KIND_LABELS[detail.business_kind] ?? detail.business_kind ?? '普通跟进',
+          },
           { key: 'source', label: '来源提交', children: detail.message_submission_id },
           { key: 'revision', label: '证据版本', children: detail.source_revision },
           { key: 'reviewer', label: '指定 +1', children: detail.designated_reviewer ?? '—' },
@@ -460,6 +846,7 @@ function FollowUpDetail({ detail }: { detail: BusinessFollowUp }) {
           {detail.employee_draft}
         </Typography.Paragraph>
       </div>
+      <ExecutionPlanDetail detail={detail} />
       {detail.latest_draft ? <DraftEvidence draft={detail.latest_draft} /> : (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未生成整理草稿" />
       )}
@@ -543,6 +930,119 @@ function FollowUpDetail({ detail }: { detail: BusinessFollowUp }) {
         />
       </Card>
     </Space>
+  );
+}
+
+function ExecutionPlanDetail({ detail }: { detail: BusinessFollowUp }) {
+  if (detail.business_kind === 'CUSTOMER' || !detail.business_kind) {
+    return (
+      <Card size="small" title="结构化执行计划">
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="普通跟进不生成结构化执行计划" />
+      </Card>
+    );
+  }
+  const plan = detail.execution_plan;
+  if (!plan) {
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        message={`${BUSINESS_FOLLOWUP_KIND_LABELS[detail.business_kind]}缺少结构化执行计划`}
+      />
+    );
+  }
+  return 'order_type' in plan
+    ? <FormalExecutionPlanDetail plan={plan} />
+    : <SampleExecutionPlanDetail plan={plan} />;
+}
+
+function SampleExecutionPlanDetail({ plan }: { plan: BusinessFollowUpSampleExecutionPlan }) {
+  const optionalItems = [
+    { key: 'expectedDelivery', label: '期望送达日期', value: plan.expected_delivery_date },
+    { key: 'testing', label: '测试日期', value: plan.testing_date },
+    { key: 'specification', label: '规格说明', value: plan.specification },
+    { key: 'requirements', label: '样品要求', value: plan.requirements },
+    { key: 'remark', label: '样品备注', value: plan.remark },
+    { key: 'businessNote', label: '业务说明', value: plan.business_note },
+  ].filter((item) => item.value);
+  return (
+    <Card size="small" title="样品执行计划（只读）">
+      <Descriptions
+        size="small"
+        column={1}
+        items={[
+          { key: 'sampleName', label: '样品名称', children: plan.sample_name },
+          { key: 'productName', label: '商品名称', children: plan.product_name },
+          {
+            key: 'quantity',
+            label: '数量',
+            children: `${plan.quantity_per_unit} ${plan.quantity_unit} × ${plan.unit_count} 份`,
+          },
+          { key: 'requestedDate', label: '需求日期', children: plan.requested_date },
+          ...optionalItems.map((item) => ({
+            key: item.key,
+            label: item.label,
+            children: item.value,
+          })),
+        ]}
+      />
+      <CommercialTermsDetail terms={plan.commercial_terms} />
+    </Card>
+  );
+}
+
+function FormalExecutionPlanDetail({ plan }: { plan: BusinessFollowUpFormalExecutionPlan }) {
+  return (
+    <Card size="small" title="正式订单执行计划（只读）">
+      <Descriptions
+        size="small"
+        column={1}
+        items={[
+          { key: 'name', label: '订单名称', children: plan.name },
+          { key: 'deliveryDate', label: '交付日期', children: plan.delivery_date },
+          { key: 'deliveryAddress', label: '交付地址', children: plan.delivery_address },
+          ...(plan.settlement_period
+            ? [{ key: 'settlementPeriod', label: '结算周期', children: plan.settlement_period }]
+            : []),
+          ...(plan.settlement_method
+            ? [{ key: 'settlementMethod', label: '结算方式', children: plan.settlement_method }]
+            : []),
+          ...(plan.business_note
+            ? [{ key: 'businessNote', label: '业务说明', children: plan.business_note }]
+            : []),
+        ]}
+      />
+      <List
+        header={<Typography.Text strong>商品明细（{plan.items.length} 行）</Typography.Text>}
+        size="small"
+        dataSource={plan.items}
+        renderItem={(item, index) => (
+          <List.Item>
+            <Space direction="vertical" size={2}>
+              <Typography.Text strong>商品明细 {index + 1} · {item.product_name}</Typography.Text>
+              <Typography.Text type="secondary">
+                {item.quantity_per_unit} {item.quantity_unit} × {item.unit_count} 份
+              </Typography.Text>
+            </Space>
+          </List.Item>
+        )}
+      />
+      <CommercialTermsDetail terms={plan.commercial_terms} />
+    </Card>
+  );
+}
+
+function CommercialTermsDetail({ terms }: { terms?: BusinessFollowUpCommercialTerms }) {
+  if (!terms) return null;
+  const items = COMMERCIAL_TERM_FIELDS
+    .map(({ key, label }) => ({ key, label, value: terms[key] }))
+    .filter((item) => item.value)
+    .map((item) => ({ key: item.key, label: item.label, children: item.value }));
+  if (!items.length) return null;
+  return (
+    <Card size="small" type="inner" title="商务条款" style={{ marginTop: 12 }}>
+      <Descriptions size="small" column={1} items={items} />
+    </Card>
   );
 }
 

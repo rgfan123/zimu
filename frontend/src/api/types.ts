@@ -1432,12 +1432,66 @@ export type BusinessFollowUpProcessingStatus =
   | 'SUCCEEDED'
   | 'FAILED';
 
+export type BusinessFollowUpBusinessKind = 'CUSTOMER' | 'SAMPLE' | 'FORMAL';
+
+export interface BusinessFollowUpCommercialTerms {
+  payment_terms?: string;
+  reconciliation_date?: string;
+  payment_date?: string;
+  credit_days?: string;
+  invoice_requirement?: string;
+  moq?: string;
+  quoted_price?: string;
+  target_price?: string;
+  remark?: string;
+}
+
+export interface BusinessFollowUpSampleExecutionPlan {
+  sample_name: string;
+  product_name: string;
+  quantity_per_unit: number;
+  quantity_unit: string;
+  unit_count: number;
+  requested_date: string;
+  expected_delivery_date?: string;
+  testing_date?: string;
+  specification?: string;
+  requirements?: string;
+  remark?: string;
+  business_note?: string;
+  commercial_terms?: BusinessFollowUpCommercialTerms;
+}
+
+export interface BusinessFollowUpFormalExecutionItem {
+  product_name: string;
+  quantity_per_unit: number;
+  quantity_unit: string;
+  unit_count: number;
+}
+
+export interface BusinessFollowUpFormalExecutionPlan {
+  order_type: 'formal';
+  name: string;
+  delivery_date: string;
+  delivery_address: string;
+  settlement_period?: string;
+  settlement_method?: string;
+  business_note?: string;
+  commercial_terms?: BusinessFollowUpCommercialTerms;
+  items: BusinessFollowUpFormalExecutionItem[];
+}
+
+export type BusinessFollowUpExecutionPlan =
+  | BusinessFollowUpSampleExecutionPlan
+  | BusinessFollowUpFormalExecutionPlan;
+
 export interface BusinessFollowUpSummary {
   id: string;
   followup_no: string;
   message_submission_id: string;
   source_message_id: string;
   source_revision: number;
+  business_kind: BusinessFollowUpBusinessKind;
   stage: BusinessFollowUpStage;
   processing_status: BusinessFollowUpProcessingStatus;
   created_by: string;
@@ -1454,6 +1508,7 @@ export interface BusinessFollowUpSummary {
 
 export interface BusinessFollowUp extends BusinessFollowUpSummary {
   employee_draft: string;
+  execution_plan: BusinessFollowUpExecutionPlan | null;
   latest_draft?: BusinessFollowUpDraft | null;
   draft_versions: BusinessFollowUpDraft[];
   approvals: BusinessFollowUpApproval[];
@@ -1564,10 +1619,25 @@ export interface BusinessFollowUpPage extends PageMeta {
   items: BusinessFollowUpSummary[];
 }
 
-export interface BusinessFollowUpCreateInput {
+interface BusinessFollowUpCreateBase {
   message_submission_id: string;
   employee_draft: string;
 }
+
+export type BusinessFollowUpCreateInput = BusinessFollowUpCreateBase & (
+  | {
+      business_kind?: 'CUSTOMER' | null;
+      execution_plan?: null;
+    }
+  | {
+      business_kind: 'SAMPLE';
+      execution_plan: BusinessFollowUpSampleExecutionPlan;
+    }
+  | {
+      business_kind: 'FORMAL';
+      execution_plan: BusinessFollowUpFormalExecutionPlan;
+    }
+);
 
 export interface BusinessFollowUpOrganizeInput {
   agent_slug: string;

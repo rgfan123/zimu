@@ -53,14 +53,18 @@ function allJavaSources(): Map<string, string> {
   return new Map(files.map((f) => [f, readFileSync(fileURLToPath(new URL('../../' + f, import.meta.url)), 'utf8')]));
 }
 
-/** 解析 Java 枚举文件的常量列表（行首缩进 + 全大写 + 可选逗号）。 */
+/** 解析 Java 枚举文件的常量列表（行首缩进 + 全大写 + 逗号或末项分号）。 */
 function javaEnumConstants(source: string): string[] {
   const constants: string[] = [];
-  for (const match of source.matchAll(/^\s+([A-Z][A-Z0-9_]+),?$/gm)) {
+  for (const match of source.matchAll(/^\s+([A-Z][A-Z0-9_]+)[,;]?$/gm)) {
     constants.push(match[1]);
   }
   return constants;
 }
+
+test('Java 枚举解析包含分号结尾的最后一项', () => {
+  assert.deepEqual(javaEnumConstants('public enum Example {\n  FIRST,\n  LAST;\n}'), ['FIRST', 'LAST']);
+});
 
 /** 复核事项 reason_code 全集（见文件头提取规则）。 */
 function backendReviewReasons(): string[] {
@@ -147,6 +151,7 @@ test('Java 枚举常量全部有前端中文标签', () => {
     ['SourceChannel', 'cn/zimu/fulfillment/common/domain/SourceChannel.java', 'CHANNEL_LABELS'],
     ['SettlementMethod', 'cn/zimu/fulfillment/order/domain/SettlementMethod.java', 'SETTLEMENT_METHOD_LABELS'],
     ['ProviderType', 'cn/zimu/fulfillment/sku/ProviderType.java', 'PROVIDER_TYPE_LABELS'],
+    ['BusinessFollowUpBusinessKind', 'cn/zimu/fulfillment/followup/BusinessFollowUpBusinessKind.java', 'BUSINESS_FOLLOWUP_KIND_LABELS'],
     ['ReviewCaseStatus', 'cn/zimu/fulfillment/order/domain/ReviewCaseStatus.java', 'REVIEW_STATUS_LABELS'],
   ];
   for (const [enumName, javaPath, recordName] of families) {
