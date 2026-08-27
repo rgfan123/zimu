@@ -317,7 +317,25 @@ class SourceFileParser {
                 value(cells, "订单备注"), false);
     }
 
+    /**
+     * 飞象来源行。已发货的行同样拦下——{@code 物流状态/物流公司/物流单号} 就在飞象指纹里，
+     * 此前一直没人读（与中汇同型缺陷，2026-08-27 一并堵上）。
+     */
     private ParsedSourceRow feixiang(String sheet, int sheetIndex, int row, Map<String, String> cells) {
+        ParsedSourceRow parsed = feixiangRow(sheet, sheetIndex, row, cells);
+        if (!parsed.valid()) {
+            return parsed;
+        }
+        if ("已发货".equals(value(cells, "物流状态"))) {
+            return withError(parsed, "SOURCE_ORDER_ALREADY_FULFILLED", "飞象来源行已标记发货，不重复建单");
+        }
+        if (!value(cells, "物流单号").isBlank() || !value(cells, "物流公司").isBlank()) {
+            return withError(parsed, "SOURCE_ORDER_ALREADY_FULFILLED", "飞象来源行已有物流事实，不重复建单");
+        }
+        return parsed;
+    }
+
+    private ParsedSourceRow feixiangRow(String sheet, int sheetIndex, int row, Map<String, String> cells) {
         return row(
                 sheet, sheetIndex, row, cells,
                 value(cells, "订单号"), value(cells, "订单商品ID"),
@@ -330,7 +348,33 @@ class SourceFileParser {
                 value(cells, "备注"), true);
     }
 
+    /**
+     * 中汇来源行。
+     *
+     * <p><b>已发货的行必须拦下。</b>2026-08-27 生产实证：用户转发的表里混着两行
+     * 「发货状态=已发货 / 物流单号=SF1220303588771、JDVA46735986612」的历史单，
+     * 解析器把它们当成待发新单建了出来，还推了「确认发货」卡——点下去就会给
+     * 已用顺丰/京东发出的货再建一张真实京东出库单，重复发货。
+     *
+     * <p>万齐适配器早有同型拦截（SOURCE_ORDER_ALREADY_FULFILLED），中汇漏了。
+     * 判据取来源自己给的事实：发货状态/订单状态说已发货，或物流公司/物流单号已有值。
+     * 不猜、不跳过——落成带错误码的行，让它出现在复核队列里，人能看见为什么没进来。
+     */
     private ParsedSourceRow zhonghui(String sheet, int sheetIndex, int row, Map<String, String> cells) {
+        ParsedSourceRow parsed = zhonghuiRow(sheet, sheetIndex, row, cells);
+        if (!parsed.valid()) {
+            return parsed;
+        }
+        if ("已发货".equals(value(cells, "发货状态")) || "已发货".equals(value(cells, "订单状态"))) {
+            return withError(parsed, "SOURCE_ORDER_ALREADY_FULFILLED", "中汇来源行已标记发货，不重复建单");
+        }
+        if (!value(cells, "物流单号").isBlank() || !value(cells, "物流公司").isBlank()) {
+            return withError(parsed, "SOURCE_ORDER_ALREADY_FULFILLED", "中汇来源行已有物流事实，不重复建单");
+        }
+        return parsed;
+    }
+
+    private ParsedSourceRow zhonghuiRow(String sheet, int sheetIndex, int row, Map<String, String> cells) {
         return row(
                 sheet, sheetIndex, row, cells,
                 value(cells, "订单号"), value(cells, "商品编号"),
