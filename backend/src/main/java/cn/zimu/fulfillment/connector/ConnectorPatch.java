@@ -9,4 +9,6 @@ public record ConnectorPatch(
         @Pattern(regexp = "EXCEL|API") String transportMode,
         Boolean enabled,
         String endpoint,
-        String credentialSecretRef) {}
+        String credentialSecretRef,
+        String username,
+        String password) {}

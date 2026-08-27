@@ -119,6 +119,18 @@ public class ConnectorService {
             }
             config.put("credential_secret_ref", patch.credentialSecretRef());
         }
+        if (patch.username() != null) {
+            if (patch.username().isBlank()) {
+                throw BusinessException.badRequest("USERNAME_INVALID", "用户名不能为空");
+            }
+            config.put("username", patch.username());
+        }
+        if (patch.password() != null) {
+            if (patch.password().isBlank()) {
+                throw BusinessException.badRequest("PASSWORD_INVALID", "密码不能为空");
+            }
+            config.put("password", patch.password());
+        }
         String mode = Optional.ofNullable(patch.clientMode()).orElse(current.clientMode());
         String transport = Optional.ofNullable(patch.transportMode()).orElse(current.transportMode());
         boolean enabled = Optional.ofNullable(patch.enabled()).orElse(current.enabled());
@@ -139,8 +151,24 @@ public class ConnectorService {
             throw BusinessException.conflict("VERSION_CONFLICT", "Connector 配置版本已变化，请刷新后重试");
         }
         ConnectorConfigView result = get(channel);
-        auditLogService.record(audit(context, channel, "updateConfig", patch, result, "UPDATED"));
+        auditLogService.record(audit(context, channel, "updateConfig", auditSafe(patch), result, "UPDATED"));
         return result;
+    }
+
+    /** 审计负载脱敏：密码明文不得进入审计记录，投影为存在性标记，与京东 pin 先例一致。 */
+    private static Object auditSafe(ConnectorPatch patch) {
+        if (patch.password() == null) {
+            return patch;
+        }
+        return new ConnectorPatch(
+                patch.expectedVersion(),
+                patch.clientMode(),
+                patch.transportMode(),
+                patch.enabled(),
+                patch.endpoint(),
+                patch.credentialSecretRef(),
+                patch.username(),
+                "***");
     }
 
     private ConnectionTestResult check(SourceChannel channel, CommandContext context) {
@@ -183,8 +211,12 @@ public class ConnectorService {
             String channel, String mode, String transport, boolean enabled, String configJson, long version) {
         Map<String, Object> config = readConfig(configJson);
         String endpoint = config.get("endpoint") instanceof String value ? value : null;
+        // username 非敏感，直接回显；password 与 credential_secret_ref 一样只投影存在性标记，永不回显明文。
+        String username = config.get("username") instanceof String value ? value : null;
         boolean credentialConfigured = config.get("credential_secret_ref") instanceof String value && !value.isBlank();
-        return new ConnectorConfigView(channel, mode, transport, enabled, endpoint, credentialConfigured, version);
+        boolean passwordConfigured = config.get("password") instanceof String value && !value.isBlank();
+        return new ConnectorConfigView(
+                channel, mode, transport, enabled, endpoint, username, credentialConfigured, passwordConfigured, version);
     }
 
     private Map<String, Object> readConfig(String json) {

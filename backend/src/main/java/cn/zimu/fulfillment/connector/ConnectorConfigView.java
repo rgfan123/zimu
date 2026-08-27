@@ -6,5 +6,7 @@ public record ConnectorConfigView(
         String transportMode,
         boolean enabled,
         String endpoint,
+        String username,
         boolean credentialConfigured,
+        boolean passwordConfigured,
         long version) {}

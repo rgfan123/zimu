@@ -642,7 +642,11 @@ export interface ConnectorConfig {
   transport_mode: 'EXCEL' | 'API';
   enabled: boolean;
   endpoint?: string | null;
+  /** 渠道账号用户名：非敏感标识符，按既有投影原样回显；未配置为 null/undefined。 */
+  username?: string | null;
   credential_configured?: boolean;
+  /** 渠道账号密码是否已配置：与 credential_configured 同源做法，只投影存在性标记，永不回显明文。 */
+  password_configured?: boolean;
   version: number;
 }
 

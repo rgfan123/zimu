@@ -815,8 +815,21 @@ export const outboundReconApi = {
 export const connectorsApi = {
   /** GET /api/v1/connectors —— 四渠道 Connector 配置。 */
   list: () => apiRequest<ConnectorConfig[]>('/api/v1/connectors'),
-  /** PATCH /api/v1/connectors/{source_channel} —— 非密文配置更新。 */
-  update: (channel: string, body: Record<string, unknown> & { expected_version: number }) =>
+  /**
+   * PATCH /api/v1/connectors/{source_channel} —— 连接配置更新。
+   * username 非敏感，直接回显；password 比照履约方京东 pin 先例：留空不提交 = 保持现值，
+   * 保存后永不回显明文，只投影 password_configured 存在性标记。
+   */
+  update: (channel: string, body: {
+    expected_version: number;
+    client_mode?: string;
+    transport_mode?: string;
+    enabled?: boolean;
+    endpoint?: string;
+    credential_secret_ref?: string;
+    username?: string;
+    password?: string;
+  }) =>
     apiRequest<ConnectorConfig>(`/api/v1/connectors/${channel}`, { method: 'PATCH', body, headers: writeHeaders() }),
   /** POST /api/v1/connectors/{source_channel}/test-connection —— 连通性测试。 */
   test: (channel: string) =>

@@ -7553,7 +7553,9 @@ components:
         transport_mode: { type: string, enum: [EXCEL, API] }
         enabled: { type: boolean }
         endpoint: { type: string, format: uri, nullable: true }
+        username: { type: string, nullable: true, description: Non-secret account identifier; echoed as-is. }
         credential_configured: { type: boolean }
+        password_configured: { type: boolean, description: Same projection as credential_configured; the password value itself is never returned. }
         version: { type: integer, minimum: 0 }
     ConnectorPatch:
       type: object
@@ -7565,6 +7567,8 @@ components:
         enabled: { type: boolean }
         endpoint: { type: string, format: uri }
         credential_secret_ref: { type: string, description: Secret manager reference; never return its value. }
+        username: { type: string, description: Non-secret account identifier; omit to leave the stored value unchanged. }
+        password: { type: string, description: Plaintext account password, stored server-side only; omit (do not send an empty string) to keep the existing value, never returned by any read endpoint. }
       minProperties: 2
     ConnectionTestResult:
       type: object

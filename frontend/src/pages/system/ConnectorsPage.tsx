@@ -4,11 +4,13 @@
  *
  * 两条互不替代的轴（契约 §4.6）：client_mode=MOCK|REAL 控制是否调用真实外部 Client；
  * transport_mode=EXCEL|API 控制文件接入或在线接口接入。当前三平台为 EXCEL + MOCK，
- * 隔离 Demo 也只用 Mock Adapter。凭据只存密文，不提供读取（credential_configured 只作标志）。
+ * 隔离 Demo 也只用 Mock Adapter。credential_secret_ref 为外部密钥引用，本页不提供读取。
+ * 账号用户名/密码比照履约方京东 pin 先例：明文只落库内 config，username 非敏感直接回显，
+ * password 读回只投影 password_configured 存在性标记，永不回显明文；留空提交 = 保持现值。
  */
 
 import { useMemo, useState } from 'react';
-import { App as AntApp, Alert, Button, Descriptions, Form, Input, Modal, Select, Space, Switch, Typography } from 'antd';
+import { App as AntApp, Alert, Button, Descriptions, Divider, Form, Input, Modal, Select, Space, Switch, Typography } from 'antd';
 import { ApiOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { errorMessage } from '@/api/client';
@@ -42,6 +44,11 @@ export default function ConnectorsPage() {
       transport_mode: record.transport_mode,
       enabled: record.enabled,
       endpoint: record.endpoint ?? undefined,
+      username: record.username ?? undefined,
+      // password 永不回显明文，编辑框恒为空；显式清空（而非省略该键）是为了盖掉上一次
+      // 编辑其他渠道时可能已键入但取消未提交、仍滞留在共享 form 实例里的旧值——否则会在
+      // 本次提交时被当作"新密码"误发，静默覆盖这个渠道原本没打算改的凭据。
+      password: undefined,
     });
     setEditing(record);
   };
@@ -56,6 +63,9 @@ export default function ConnectorsPage() {
         transport_mode: typeof values.transport_mode === 'string' ? values.transport_mode : undefined,
         enabled: typeof values.enabled === 'boolean' ? values.enabled : undefined,
         endpoint: typeof values.endpoint === 'string' && values.endpoint ? values.endpoint : undefined,
+        username: typeof values.username === 'string' && values.username ? values.username : undefined,
+        // 留空不提交：后端把「键缺失」等同「保持现值」，与京东 pin 先例一致
+        password: typeof values.password === 'string' && values.password ? values.password : undefined,
       });
       messageApi.success('已保存');
       setEditing(null);
@@ -206,6 +216,19 @@ export default function ConnectorsPage() {
           <Form.Item name="endpoint" label="服务地址（在线接入）" extra="此处只维护服务地址；访问凭据单独加密保存，页面不提供读取">
             <Input placeholder="https://…" />
           </Form.Item>
+          <Divider orientation="left" style={{ margin: '8px 0 16px' }}>账号凭据</Divider>
+          <Form.Item name="username" label="账号用户名" extra="渠道平台登录账号，非敏感信息，直接回显">
+            <Input placeholder="请输入用户名" allowClear />
+          </Form.Item>
+          <Form.Item
+            name="password"
+            label="账号密码"
+            extra="留空表示保持现有值；保存后只显示是否已配置，永不回显明文"
+          >
+            <Input.Password
+              placeholder={editing?.password_configured ? '已配置（不显示明文）' : '未配置'}
+            />
+          </Form.Item>
           <Form.Item
             name="enabled"
             label="启用"
@@ -227,6 +250,7 @@ export default function ConnectorsPage() {
             items={[
               { key: 'cm', label: '客户端模式', children: <AdminCategoryTag category={editing.client_mode}>{MODE_LABELS[editing.client_mode]}</AdminCategoryTag> },
               { key: 'cc', label: '凭据', children: <AdminStatusTag status={editing.credential_configured ? 'CONFIGURED' : 'UNCONFIGURED'} /> },
+              { key: 'pc', label: '密码', children: <AdminStatusTag status={editing.password_configured ? 'CONFIGURED' : 'UNCONFIGURED'} /> },
             ]}
           />
         ) : null}
