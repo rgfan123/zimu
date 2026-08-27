@@ -67,6 +67,26 @@ class DazheV2TemplateTest {
     }
 
     @Test
+    void 十二列全角括号变体也认成大者_生产实证模板() throws Exception {
+        // 2026-08-27 用户实发：12 列、采购单价（元）为全角括号、无三个日期列
+        byte[] bytes = workbook(List.of(
+                "渠道订单号", "主商品编码", "供应商商品名称", "商品名称", "订单商品状态",
+                "采购单价（元）", "商品数量", "收货人", "收货人手机", "收货人详细地址",
+                "快递单号", "快递公司"), List.of(List.of(
+                "spr01-LPC26342186000001", "P26020400005", "北京大者国风科技有限公司",
+                "子牧精品羊肉礼包4900g（BJ）", "待发货", "291", "1",
+                "测试丙", "13000000003", "河北省石家庄市新华区示例街 3 号", "", "")));
+
+        ParsedSourceFile parsed = new SourceFileParser().parse(bytes);
+
+        assertThat(parsed.sourceChannel()).isEqualTo(SourceChannel.DAZHE);
+        ParsedSourceRow row = parsed.rows().getFirst();
+        assertThat(row.valid()).isTrue();
+        assertThat(row.sourceOrderRef()).isEqualTo("spr01-LPC26342186000001");
+        assertThat(row.sourceSkuRef()).isEqualTo("P26020400005");
+    }
+
+    @Test
     void 十五列的大者v1不受影响() throws Exception {
         byte[] bytes = workbook(DAZHE_V1_HEADERS, List.of());
 

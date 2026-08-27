@@ -26,6 +26,8 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -77,8 +79,8 @@ public class TrackingFileService {
      * 但只返回草稿输入，绝不创建 import batch、Shipment/Tracking 或来源回填文件。
      */
     ParsedTrackingFile parseForDraft(byte[] bytes) {
-        ExportHeader export = identifyThirdPartyExport(bytes);
-        List<TrackingRow> rows = collapseBundleComponentRows(parseAndValidateThirdParty(export, bytes));
+        ExportHeader export = identifyExport(bytes);
+        List<TrackingRow> rows = collapseBundleComponentRows(parseAndValidate(export, bytes));
         validateShipmentGroups(rows);
         List<ParsedTrackingRow> parsed = rows.stream()
                 .map(row -> new ParsedTrackingRow(
@@ -124,7 +126,7 @@ public class TrackingFileService {
             return get(replay);
         }
 
-        List<TrackingRow> rows = parseAndValidateThirdParty(export, bytes);
+        List<TrackingRow> rows = parseAndValidate(export, bytes);
         ContentAddressedFileStore.StoredFile retained = fileStore.put("tracking-imports", bytes, ".xlsx");
         String batchNo = "TRK-" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
         long batchId = jdbc.queryForObject(
@@ -329,6 +331,195 @@ public class TrackingFileService {
                 batchId, row.shipmentId(), row.fulfillmentId(), row.orderLineId(), row.orderId(), row.result(),
                 row.shippedQuantity(), row.carrier() == null ? null : internalCarrierCode(row.carrier()),
                 row.carrier(), row.trackingNo(), row.shippedAt(), row.failureReason(), row.cells()), context);
+    }
+
+    /**
+     * 回传文件的格式分派：先认人读八列（v2，2026-08-27 起的下发格式），认不出退回
+     * 精确 24 列（v1 兼容输入）。两套格式都以同一份 {@code fulfillment_export_items}
+     * 为对照事实，产出同一种 {@link TrackingRow}。
+     */
+    private List<TrackingRow> parseAndValidate(ExportHeader export, byte[] bytes) {
+        return isHumanFormat(bytes)
+                ? parseAndValidateHuman(export, bytes)
+                : parseAndValidateThirdParty(export, bytes);
+    }
+
+    private ExportHeader identifyExport(byte[] bytes) {
+        return isHumanFormat(bytes) ? identifyHumanExport(bytes) : identifyThirdPartyExport(bytes);
+    }
+
+    /** 表头是否是人读八列。只读第一行，不动数据区。 */
+    private boolean isHumanFormat(byte[] bytes) {
+        if (bytes == null || bytes.length < 2 || bytes[0] != 'P' || bytes[1] != 'K') {
+            return false;
+        }
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            var header = workbook.getSheetAt(0).getRow(0);
+            if (header == null
+                    || header.getLastCellNum() != ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.size()) {
+                return false;
+            }
+            for (int index = 0; index < ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.size(); index++) {
+                if (!ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.get(index)
+                        .equals(formatter.formatCellValue(header.getCell(index)).strip())) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
+    /**
+     * 人读格式的导出定位：没有「导出批次号」列，改用**出库单号**——它是系统签发的
+     * 稳定业务号，每行都有。全部出库单号必须落在同一个 THIRD_PARTY 导出里，
+     * 跨导出混填直接拒绝（人把两份清单拼一张表回传，系统不猜哪行归谁）。
+     */
+    private ExportHeader identifyHumanExport(byte[] bytes) {
+        Set<String> outboundNos = new LinkedHashSet<>();
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            if (workbook.getNumberOfSheets() != 1) {
+                throw BusinessException.unprocessable(
+                        "TRACKING_SHEET_SET_INVALID", "回传文件必须且只能保留一个发货清单工作表");
+            }
+            var sheet = workbook.getSheetAt(0);
+            for (int index = 1; index <= sheet.getLastRowNum(); index++) {
+                var row = sheet.getRow(index);
+                if (row == null) continue;
+                String outboundNo = formatter.formatCellValue(row.getCell(0)).strip();
+                if (!outboundNo.isEmpty()) outboundNos.add(outboundNo);
+            }
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw BusinessException.unprocessable("TRACKING_READ_FAILED", "无法读取履约返回文件");
+        }
+        if (outboundNos.isEmpty()) {
+            throw BusinessException.unprocessable("TRACKING_ROW_MISSING", "回传文件没有任何出库单号");
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(outboundNos.size(), "?"));
+        List<ExportHeader> exports = jdbc.query(
+                "SELECT DISTINCT fe.id, fe.fulfillment_provider_id, fe.export_batch_no, fe.export_kind"
+                        + " FROM app.fulfillment_export_items fei"
+                        + " JOIN app.fulfillment_exports fe ON fe.id = fei.fulfillment_export_id"
+                        + " WHERE fe.export_kind = 'THIRD_PARTY' AND fei.outbound_order_no IN (" + placeholders + ")",
+                (rs, rowNum) -> new ExportHeader(
+                        rs.getLong("id"), rs.getLong("fulfillment_provider_id"),
+                        rs.getString("export_batch_no"), rs.getString("export_kind")),
+                outboundNos.toArray());
+        if (exports.isEmpty()) {
+            throw BusinessException.unprocessable(
+                    "TRACKING_EXPORT_NOT_FOUND", "出库单号不属于任何第三方发货清单");
+        }
+        if (exports.size() > 1) {
+            throw BusinessException.unprocessable(
+                    "TRACKING_EXPORT_AMBIGUOUS", "回传文件混合了多个发货清单批次，请按批次分开回传");
+        }
+        return exports.getFirst();
+    }
+
+    /**
+     * 人读八列的解析与校验。对照事实仍是导出明细：行数必须一致；
+     * 身份列（出库单号/收件人/电话/地址/品名/数量）逐行与导出时的指令一致；
+     * 运单号与快递公司必填——这份清单发出去就是为了这两格回来。
+     *
+     * <p>行匹配按（出库单号+品名+数量）配对而不是按行序：人会排序、会插行，
+     * 24 列那套「严格行序」在人读格式上必然误伤。同键多行按出现顺序依次配对。
+     */
+    private List<TrackingRow> parseAndValidateHuman(ExportHeader export, byte[] bytes) {
+        List<ExpectedExportLine> expected = expected(export.id());
+        Map<String, java.util.Deque<ExpectedExportLine>> byKey = new LinkedHashMap<>();
+        for (ExpectedExportLine line : expected) {
+            byKey.computeIfAbsent(humanKey(
+                            text(line.outputCells().get("出库单号")),
+                            text(line.outputCells().get("品名"))),
+                    ignored -> new java.util.ArrayDeque<>()).add(line);
+        }
+        List<TrackingRow> result = new ArrayList<>();
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            var sheet = workbook.getSheetAt(0);
+            int dataRows = 0;
+            for (int index = 1; index <= sheet.getLastRowNum(); index++) {
+                var row = sheet.getRow(index);
+                if (row == null) continue;
+                Map<String, String> cells = new LinkedHashMap<>();
+                for (int column = 0; column < ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.size(); column++) {
+                    cells.put(ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.get(column),
+                            formatter.formatCellValue(row.getCell(column)).strip());
+                }
+                if (cells.values().stream().allMatch(String::isEmpty)) continue;
+                if (row.getLastCellNum() > ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.size()) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_ROW_COLUMN_INVALID", "回传文件数据行不得超出发货清单八列");
+                }
+                dataRows++;
+                String key = humanKey(cells.get("出库单号"), cells.get("品名"));
+                java.util.Deque<ExpectedExportLine> candidates = byKey.get(key);
+                if (candidates == null || candidates.isEmpty()) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_ROW_UNMATCHED",
+                            "第 " + (index + 1) + " 行与发货清单对不上（出库单号/品名被改动）");
+                }
+                ExpectedExportLine line = candidates.pollFirst();
+                requireHumanIdentity(index + 1, cells, "收件人姓名", text(line.outputCells().get("收件人")));
+                requireHumanIdentity(index + 1, cells, "电话", text(line.outputCells().get("电话")));
+                requireHumanIdentity(index + 1, cells, "收货地址", text(line.outputCells().get("地址")));
+                String trackingNo = cells.get("运单号");
+                String carrier = cells.get("快递公司");
+                if (trackingNo.isEmpty() || carrier.isEmpty()) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_REQUIRED",
+                            "第 " + (index + 1) + " 行发货结果必须填快递公司与运单号");
+                }
+                // 数量列在人读格式里承载「实发」：与指令相等 = 全部发出；改小 = 部分发货
+                //（履约方少发时的自然写法就是把数量改成实发数）；改大或非法直接拒绝。
+                BigDecimal shipped;
+                try {
+                    shipped = new BigDecimal(cells.get("数量"));
+                } catch (NumberFormatException exception) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_QUANTITY_INVALID", "第 " + (index + 1) + " 行数量不是有效数字");
+                }
+                if (shipped.signum() <= 0 || shipped.compareTo(line.instructedQuantity()) > 0) {
+                    throw BusinessException.unprocessable(
+                            "TRACKING_QUANTITY_INVALID",
+                            "第 " + (index + 1) + " 行实发数量必须在 0 与请求数量之间");
+                }
+                String rowResult = shipped.compareTo(line.instructedQuantity()) == 0 ? "SHIPPED" : "PARTIAL";
+                // 兼容下游既有键位：收件人 / 礼包分组标识 取导出指令原值
+                cells.put("收件人", text(line.outputCells().get("收件人")));
+                cells.put("礼包分组标识", text(line.outputCells().get("礼包分组标识")));
+                result.add(new TrackingRow(
+                        index + 1, cells, rowResult, line,
+                        shipped, carrier, trackingNo, null, null));
+            }
+            if (dataRows != expected.size()) {
+                throw BusinessException.unprocessable(
+                        "TRACKING_ROW_SET_MISMATCH", "回传行数与发货清单明细不一致");
+            }
+            return result;
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw BusinessException.unprocessable("TRACKING_READ_FAILED", "无法读取履约返回文件");
+        }
+    }
+
+    private String humanKey(String outboundNo, String productName) {
+        return outboundNo + "\u001f" + productName;
+    }
+
+    private static String text(Object value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private void requireHumanIdentity(int rowNo, Map<String, String> cells, String header, String expected) {
+        if (!Objects.equals(cells.get(header), expected == null ? "" : expected.strip())) {
+            throw BusinessException.unprocessable(
+                    "TRACKING_IMMUTABLE_FIELD_CHANGED",
+                    "第 " + rowNo + " 行改动了发货清单的身份列: " + header);
+        }
     }
 
     private List<TrackingRow> parseAndValidateThirdParty(ExportHeader export, byte[] bytes) {

@@ -550,48 +550,56 @@ class WecomTrackingFileIntegrationTest {
     }
 
     private byte[] fillTracking(byte[] instruction, String trackingNumber) throws Exception {
-        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(instruction));
-                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            var row = workbook.getSheetAt(0).getRow(1);
-            row.getCell(18).setCellValue("SHIPPED");
-            row.getCell(19).setCellValue("3.000");
-            row.getCell(20).setCellValue("京东物流");
-            row.getCell(21).setCellValue(trackingNumber);
-            row.getCell(22).setCellValue("");
-            workbook.write(output);
-            return output.toByteArray();
-        }
+        return fillRows(instruction, null, trackingNumber, 1);
     }
 
+    /** 人读格式的「部分发货」= 把数量改成实发数。 */
     private byte[] fillPartialTracking(byte[] instruction, String quantity, String trackingNumber) throws Exception {
-        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(instruction));
-                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            var row = workbook.getSheetAt(0).getRow(1);
-            row.getCell(18).setCellValue("PARTIAL");
-            row.getCell(19).setCellValue(quantity);
-            row.getCell(20).setCellValue("京东物流");
-            row.getCell(21).setCellValue(trackingNumber);
-            row.getCell(22).setCellValue("");
-            workbook.write(output);
-            return output.toByteArray();
-        }
+        return fillRows(instruction, quantity, trackingNumber, 1);
     }
 
     private byte[] fillAllTracking(byte[] instruction, String trackingNumber) throws Exception {
+        return fillRows(instruction, null, trackingNumber, Integer.MAX_VALUE);
+    }
+
+    private byte[] fillRows(byte[] instruction, String quantity, String trackingNumber, int rowLimit) throws Exception {
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(instruction));
                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             var sheet = workbook.getSheetAt(0);
-            for (int index = 1; index <= sheet.getLastRowNum(); index++) {
+            var header = sheet.getRow(0);
+            Map<String, Integer> columns = new java.util.LinkedHashMap<>();
+            var fmt = new org.apache.poi.ss.usermodel.DataFormatter();
+            for (int index = 0; index < header.getLastCellNum(); index++) {
+                columns.put(fmt.formatCellValue(header.getCell(index)).strip(), index);
+            }
+            boolean human = columns.containsKey("运单号");
+            int filled = 0;
+            for (int index = 1; index <= sheet.getLastRowNum() && filled < rowLimit; index++) {
                 var row = sheet.getRow(index);
-                row.getCell(18).setCellValue("SHIPPED");
-                row.getCell(19).setCellValue("3.000");
-                row.getCell(20).setCellValue("京东物流");
-                row.getCell(21).setCellValue(trackingNumber);
-                row.getCell(22).setCellValue("");
+                if (row == null) continue;
+                filled++;
+                if (human) {
+                    if (quantity != null) put(row, columns.get("数量"), quantity);
+                    put(row, columns.get("快递公司"), "京东物流");
+                    put(row, columns.get("运单号"), trackingNumber);
+                } else {
+                    put(row, columns.get("结果"), quantity == null ? "SHIPPED" : "PARTIAL");
+                    put(row, columns.get("实际发货数量"), quantity == null ? "3.000" : quantity);
+                    put(row, columns.get("快递公司"), "京东物流");
+                    put(row, columns.get("物流单号"), trackingNumber);
+                    put(row, columns.get("发货时间"), "");
+                }
             }
             workbook.write(output);
             return output.toByteArray();
         }
+    }
+
+    private static void put(org.apache.poi.ss.usermodel.Row row, Integer index, String value) {
+        if (index == null) return;
+        var cell = row.getCell(index);
+        if (cell == null) cell = row.createCell(index);
+        cell.setCellValue(value == null ? "" : value);
     }
 
     private ResponseEntity<Map> uploadRaw(String filename, byte[] bytes, String idempotencyKey) {

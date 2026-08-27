@@ -52,6 +52,20 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
             "来源渠道", "来源订单号", "订单行号", "礼包分组标识", "收件人", "电话", "地址", "履约方SKU编码",
             "品名", "规格", "单位", "请求发货数量", "结果", "实际发货数量", "快递公司", "物流单号", "发货时间", "异常原因");
 
+    /**
+     * 第三方发货清单的**人读格式**（2026-08-27 用户裁决）。
+     *
+     * <p>以归档实物 {@code 8.21雷山黑猪发货清单.xlsx}（commit 053d4ef）为准：
+     * 出库单号/收件人姓名/电话/收货地址/品名/数量/运单号 七列，sheet 名「发货清单」。
+     * 在此基础上补一列「快递公司」——回传落运单必须有承运商，历史实物靠人在别处口头补，
+     * 系统化后这一格必须回到表内。
+     *
+     * <p>24 列模板降级为兼容输入：它是给系统对齐用的，拿给履约方填货，
+     * 对方要在 24 列里找 4 个能填的格子——生产实测被用户当场退回。
+     */
+    public static final List<String> HUMAN_THIRD_PARTY_HEADERS = List.of(
+            "出库单号", "收件人姓名", "电话", "收货地址", "品名", "数量", "运单号", "快递公司");
+
     static final List<String> JD_HEADERS = List.of(
             "*isv出库单号", "*ISV来源编号", "*事业部编号", "*店铺编号", "青龙业主号", "*仓库编号", "*承运商编号",
             "*授权码pin", "销售平台订单号", "*销售平台来源", "销售平台下单时间", "订单类型", "*订单标记位", "*收货人姓名",
@@ -504,16 +518,17 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
             ShipmentPlan shipment = shipments.get(source.orderId() + ":" + source.providerId());
             planned.add(new PlannedExportRow(lineNo++, source, shipment));
         }
-        byte[] workbook = thirdPartyWorkbook(batchNo, planned);
+        byte[] workbook = humanThirdPartyWorkbook(planned);
         ContentAddressedFileStore.StoredFile stored = fileStore.put("fulfillment-exports", workbook, ".xlsx");
+        String displayFilename = humanExportFilename(planned);
         ExportRow first = sourceRows.getFirst();
         long exportId = jdbc.queryForObject(
                 """
                 INSERT INTO app.fulfillment_exports
                     (export_batch_no, fulfillment_provider_id, export_kind, template_version,
-                     file_ref, file_sha256, tracking_due_at, generated_by)
-                VALUES (?, ?, 'THIRD_PARTY', 'v1-24-columns', ?, ?,
-                        NULL, ?)
+                     file_ref, file_sha256, tracking_due_at, generated_by, display_filename)
+                VALUES (?, ?, 'THIRD_PARTY', 'v2-human-8-columns', ?, ?,
+                        NULL, ?, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -521,7 +536,8 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 providerId,
                 stored.fileRef(),
                 stored.sha256(),
-                operator);
+                operator,
+                displayFilename);
         // #84：同一业务事务内登记企微出站状态 + 入队 initial delivery（JD 路径不调用 = 不入队）
         wecomExportService.scheduleInitial(exportId, providerId, first.trackingSlaMinutes());
         for (PlannedExportRow row : planned) {
@@ -1092,6 +1108,68 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                         resultSet.getString("provider_name"), resultSet.getString("provider_type"),
                         resultSet.getInt("tracking_sla_minutes"), resultSet.getString("provider_sku_code")),
                 batchId, batchId, batchId);
+    }
+
+    /** 人读发货清单：八列一 sheet，格子里只有履约方需要看和需要填的东西。 */
+    private byte[] humanThirdPartyWorkbook(List<PlannedExportRow> rows) {
+        try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("发货清单");
+            var header = sheet.createRow(0);
+            for (int index = 0; index < HUMAN_THIRD_PARTY_HEADERS.size(); index++) {
+                header.createCell(index).setCellValue(HUMAN_THIRD_PARTY_HEADERS.get(index));
+            }
+            int rowIndex = 1;
+            for (PlannedExportRow row : rows) {
+                Map<String, Object> cells = outputCells("", row);
+                var xlsxRow = sheet.createRow(rowIndex++);
+                xlsxRow.createCell(0).setCellValue(text(cells.get("出库单号")));
+                xlsxRow.createCell(1).setCellValue(text(cells.get("收件人")));
+                xlsxRow.createCell(2).setCellValue(text(cells.get("电话")));
+                xlsxRow.createCell(3).setCellValue(text(cells.get("地址")));
+                xlsxRow.createCell(4).setCellValue(text(cells.get("品名")));
+                xlsxRow.createCell(5).setCellValue(text(cells.get("请求发货数量")));
+                // 运单号 / 快递公司 留空：这两格就是发这份清单出去的目的
+            }
+            int[] widths = {18, 14, 16, 42, 38, 8, 20, 14};
+            for (int index = 0; index < widths.length; index++) {
+                sheet.setColumnWidth(index, widths[index] * 256);
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        } catch (IOException exception) {
+            throw new IllegalStateException("无法生成第三方发货清单", exception);
+        }
+    }
+
+    private static String text(Object value) {
+        return value == null ? "" : value.toString();
+    }
+
+    /**
+     * 人读文件名：{@code 子牧{品类}{M.d}发货清单.xlsx}，与历史实物
+     * {@code 8.21雷山黑猪发货清单.xlsx} 同构。品类取批次内商品的唯一品类名；
+     * 跨品类时不硬凑，退化为 {@code 子牧{M.d}发货清单.xlsx}。
+     */
+    private String humanExportFilename(List<PlannedExportRow> rows) {
+        List<Long> orderLineIds = rows.stream()
+                .map(row -> row.source().orderLineId()).distinct().toList();
+        String category = "";
+        if (!orderLineIds.isEmpty()) {
+            String placeholders = String.join(",", java.util.Collections.nCopies(orderLineIds.size(), "?"));
+            List<String> names = jdbc.queryForList(
+                    "SELECT DISTINCT c.category_name FROM app.order_lines ol"
+                            + " JOIN app.skus s ON s.id = ol.sku_id"
+                            + " JOIN app.products p ON p.id = s.product_id"
+                            + " JOIN app.categories c ON c.id = p.category_id"
+                            + " WHERE ol.id IN (" + placeholders + ")",
+                    String.class,
+                    orderLineIds.toArray());
+            if (names.size() == 1 && names.getFirst() != null && !names.getFirst().isBlank()) {
+                category = names.getFirst().strip();
+            }
+        }
+        java.time.LocalDate today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        return "子牧" + category + today.getMonthValue() + "." + today.getDayOfMonth() + "发货清单.xlsx";
     }
 
     private byte[] thirdPartyWorkbook(String batchNo, List<PlannedExportRow> rows) {

@@ -217,7 +217,7 @@ public class FulfillmentExportWecomDeliveryRunner {
 
         WecomUploadResult upload;
         try {
-            upload = wecomGateway.upload(file, facts.batchNo() + ".xlsx", WecomMediaType.FILE);
+            upload = wecomGateway.upload(file, facts.wecomFilename(), WecomMediaType.FILE);
         } catch (WecomUploadValidationException ex) {
             // 前置校验失败（如文件超限/缺失/不可读）：确定性失败，直接终态 FAILED + 告警，绝不重试。
             // 文件/路径类校验码映射为固定安全文案（defense in depth：即便源码回归重嵌 path 也不落库）。

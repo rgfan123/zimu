@@ -491,11 +491,14 @@ class ExcelClosedLoopApiTest {
             for (int index = 0; index < sheet.getRow(0).getLastCellNum(); index++) {
                 columns.put(formatter.formatCellValue(sheet.getRow(0).getCell(index)), index);
             }
-            assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(columns.get("来源渠道"))))
-                    .isEqualTo("飞象");
+            // v2 人读八列没有「来源渠道」列——渠道在后台与文件名里；表头必须与人读契约一致
+            assertThat(columns.keySet())
+                    .containsExactlyElementsOf(ProviderFileService.HUMAN_THIRD_PARTY_HEADERS);
+            assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(columns.get("收件人姓名"))))
+                    .isNotBlank();
         }
 
-        byte[] returned = fillThirdPartyTracking(instruction);
+        byte[] returned = fillThirdPartyTracking(instruction, "SHIPPED", null, "JDVAFX-CLOSED-LOOP-001", null);
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         body.add("file", new ByteArrayResource(returned) {
             @Override public String getFilename() { return "tracking.xlsx"; }
@@ -514,7 +517,8 @@ class ExcelClosedLoopApiTest {
         assertThat(tracking.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat((Map<?, ?>) tracking.getBody().get("business_results"))
                 .satisfies(results -> assertThat(results.get("shipped")).isEqualTo(1));
-        assertThat(get("/api/v1/shipments/" + shipmentId).get("shipped_at")).isNotNull();
+        // v2 人读八列没有「发货时间」列：shipped_at 保持未知（V6 显式允许），系统不伪造时间
+        assertThat(get("/api/v1/shipments/" + shipmentId).get("shipped_at")).isNull();
         List<?> returnExports = http.getForObject(
                 "/api/v1/import-batches/" + imported.get("id") + "/source-return-exports", List.class);
         assertThat(returnExports).hasSize(1);
@@ -1151,7 +1155,8 @@ class ExcelClosedLoopApiTest {
                 byte[].class).getBody();
 
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-        body.add("file", new ByteArrayResource(fillThirdPartyTracking(instruction)) {
+        body.add("file", new ByteArrayResource(
+                fillThirdPartyTracking(instruction, "SHIPPED", null, "JDVAFX-V2-CLOSED-001", null)) {
             @Override public String getFilename() { return "tracking-v2.xlsx"; }
         });
         body.add("import_mode", "NEW");
@@ -1579,19 +1584,55 @@ class ExcelClosedLoopApiTest {
                 instruction, result, quantity, trackingNumber, "2026-08-12 12:00:00");
     }
 
+    /**
+     * 双格式填写助手：按表头名定位列，同一套测试驱动 v2 人读八列与 v1 兼容 24 列。
+     * v2 没有结果/发货时间列——「部分发货」用把数量改成实发数表达（与生产纪律一致）。
+     */
     private byte[] fillThirdPartyTracking(
             byte[] instruction, String result, String quantity, String trackingNumber, String shippedAt) throws Exception {
         try (XSSFWorkbook workbook = new XSSFWorkbook(new java.io.ByteArrayInputStream(instruction));
                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            var row = workbook.getSheetAt(0).getRow(1);
-            row.getCell(18).setCellValue(result);
-            row.getCell(19).setCellValue(quantity);
-            row.getCell(20).setCellValue("京东物流");
-            row.getCell(21).setCellValue(
-                    trackingNumber == null ? "JDVA" + row.getCell(7).getStringCellValue() : trackingNumber);
-            row.getCell(22).setCellValue(shippedAt);
+            var sheet = workbook.getSheetAt(0);
+            Map<String, Integer> columns = headerColumns(sheet);
+            var row = sheet.getRow(1);
+            boolean human = columns.containsKey("运单号");
+            String waybill = trackingNumber == null
+                    ? "JDVA" + cellText(row, columns.getOrDefault("出库单号", 1))
+                    : trackingNumber;
+            if (human) {
+                if (quantity != null) writeCell(row, columns.get("数量"), quantity);
+                writeCell(row, columns.get("快递公司"), "京东物流");
+                writeCell(row, columns.get("运单号"), waybill);
+            } else {
+                writeCell(row, columns.get("结果"), result);
+                writeCell(row, columns.get("实际发货数量"), quantity == null ? "3.000" : quantity);
+                writeCell(row, columns.get("快递公司"), "京东物流");
+                writeCell(row, columns.get("物流单号"), waybill);
+                writeCell(row, columns.get("发货时间"), shippedAt);
+            }
             workbook.write(output);
             return output.toByteArray();
         }
+    }
+
+    private static Map<String, Integer> headerColumns(org.apache.poi.ss.usermodel.Sheet sheet) {
+        Map<String, Integer> columns = new java.util.LinkedHashMap<>();
+        var header = sheet.getRow(0);
+        for (int index = 0; index < header.getLastCellNum(); index++) {
+            columns.put(new org.apache.poi.ss.usermodel.DataFormatter()
+                    .formatCellValue(header.getCell(index)).strip(), index);
+        }
+        return columns;
+    }
+
+    private static String cellText(org.apache.poi.ss.usermodel.Row row, int index) {
+        return new org.apache.poi.ss.usermodel.DataFormatter().formatCellValue(row.getCell(index)).strip();
+    }
+
+    private static void writeCell(org.apache.poi.ss.usermodel.Row row, Integer index, String value) {
+        if (index == null) return;
+        var cell = row.getCell(index);
+        if (cell == null) cell = row.createCell(index);
+        cell.setCellValue(value == null ? "" : value);
     }
 }

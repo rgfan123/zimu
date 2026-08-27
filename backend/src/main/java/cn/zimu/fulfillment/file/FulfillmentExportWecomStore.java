@@ -804,7 +804,7 @@ public class FulfillmentExportWecomStore {
         List<ExportFacts> rows = jdbc.query(
                 """
                 SELECT fe.export_batch_no, fe.file_ref, fe.fulfillment_provider_id,
-                       fp.provider_code, fp.provider_name
+                       fp.provider_code, fp.provider_name, fe.display_filename
                 FROM app.fulfillment_exports fe
                 JOIN app.fulfillment_providers fp ON fp.id=fe.fulfillment_provider_id
                 WHERE fe.id=?
@@ -814,7 +814,8 @@ public class FulfillmentExportWecomStore {
                         rs.getString("file_ref"),
                         rs.getLong("fulfillment_provider_id"),
                         rs.getString("provider_code"),
-                        rs.getString("provider_name")),
+                        rs.getString("provider_name"),
+                        rs.getString("display_filename")),
                 exportId);
         if (rows.isEmpty()) {
             throw new IllegalStateException("履约导出不存在: " + exportId);
@@ -913,7 +914,16 @@ public class FulfillmentExportWecomStore {
 
     /** 发送侧事实投影。 */
     public record ExportFacts(
-            String batchNo, String fileRef, long providerId, String providerCode, String providerName) {}
+            String batchNo, String fileRef, long providerId, String providerCode, String providerName,
+            String displayFilename) {
+
+        /** 企微里出现的文件名：优先人读名（子牧{品类}{M.d}发货清单.xlsx），历史导出退回批次号。 */
+        public String wecomFilename() {
+            return displayFilename == null || displayFilename.isBlank()
+                    ? batchNo + ".xlsx"
+                    : displayFilename;
+        }
+    }
 
     /** {@link #prepareReminder} 的线性化结果。 */
     public enum ReminderPrepare {
