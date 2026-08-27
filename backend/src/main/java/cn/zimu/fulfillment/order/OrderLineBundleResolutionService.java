@@ -50,7 +50,7 @@ public class OrderLineBundleResolutionService {
             Map<String, Object> line = requireResolvableLine(orderLineId);
             long orderId = ((Number) line.get("order_id")).longValue();
             String sourceChannel = (String) line.get("source_channel");
-            String sourceRef = (String) line.get("sku_code_snapshot");
+            String sourceRef = (String) line.get("source_bundle_ref");
 
             requireConsistentMapping(sourceChannel, sourceRef, bundleId);
             List<Map<String, Object>> bom = requireActiveBundleBom(bundleId);
@@ -146,8 +146,15 @@ public class OrderLineBundleResolutionService {
         List<Map<String, Object>> rows = jdbc.query(
                 """
                 SELECT ol.id, ol.order_id, ol.line_type, ol.processing_stage, ol.exception_code,
-                       ol.bundle_id, ol.sku_code_snapshot, ol.requested_quantity,
+                       ol.bundle_id, ol.requested_quantity,
                        o.source_channel, o.order_status,
+                       -- 来源礼包键三级回退：编码快照 → 原始行主商品编码 → 商品名
+                       --（11 列往返表没有编码列，名称就是键；导入器也不总落 sku_code_snapshot）
+                       COALESCE(
+                           NULLIF(ol.sku_code_snapshot, ''),
+                           (SELECT rir.raw_cells->>'主商品编码' FROM app.raw_import_rows rir
+                             WHERE rir.order_line_id = ol.id LIMIT 1),
+                           ol.product_name_snapshot)                       AS source_bundle_ref,
                        (SELECT count(*) FROM app.order_line_components c WHERE c.order_line_id = ol.id) AS components
                 FROM app.order_lines ol JOIN app.orders o ON o.id = ol.order_id
                 WHERE ol.id = ?
@@ -159,7 +166,7 @@ public class OrderLineBundleResolutionService {
                     row.put("processing_stage", rs.getString("processing_stage"));
                     row.put("exception_code", rs.getString("exception_code"));
                     row.put("bundle_id", rs.getObject("bundle_id"));
-                    row.put("sku_code_snapshot", rs.getString("sku_code_snapshot"));
+                    row.put("source_bundle_ref", rs.getString("source_bundle_ref"));
                     row.put("requested_quantity", rs.getBigDecimal("requested_quantity"));
                     row.put("source_channel", rs.getString("source_channel"));
                     row.put("components", rs.getInt("components"));
