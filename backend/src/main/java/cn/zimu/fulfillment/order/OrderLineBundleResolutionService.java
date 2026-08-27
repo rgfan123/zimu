@@ -163,6 +163,21 @@ public class OrderLineBundleResolutionService {
                     """,
                     orderLineId);
 
+            // 顺手关掉本行自己的映射工单：批次确认闸与发货批次路由都把 OPEN 工单当拦路石，
+            // 就地解析完还留着 OPEN 等于修好了门却锁着锁
+            jdbc.update(
+                    """
+                    UPDATE app.review_cases
+                       SET status='RESOLVED',
+                           resolution=jsonb_build_object(
+                               'resolution_type', 'BUNDLE_RESOLVED',
+                               'bundle_id', ?::text),
+                           resolved_by=?, resolved_at=now(), updated_at=now()
+                     WHERE order_line_id = ? AND status = 'OPEN'
+                       AND reason_code IN ('SKU_MAPPING_REQUIRED', 'SKU_MAPPING_CONFLICT')
+                    """,
+                    bundleId, context.operator(), orderLineId);
+
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("order_line_id", String.valueOf(orderLineId));
             result.put("order_id", String.valueOf(orderId));

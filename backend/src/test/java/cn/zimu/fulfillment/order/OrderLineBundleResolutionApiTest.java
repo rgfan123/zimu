@@ -72,6 +72,15 @@ class OrderLineBundleResolutionApiTest {
                 orderId, suffix);
         // 生产实证：导入器不落 sku_code_snapshot，来源键走「原始行主商品编码→商品名」回退；
         // 夹具刻意保持 NULL，防止用编码快照掩盖回退链的缺陷
+        jdbc.update(
+                """
+                INSERT INTO app.review_cases
+                    (case_no, case_type, status, responsible_team, reason_code, order_id, order_line_id)
+                SELECT 'RC-BUNDLE-FIX-' || ?, 'SKU_MAPPING', 'OPEN', 'SKU_OPS', 'SKU_MAPPING_REQUIRED',
+                       ol.order_id, ol.id
+                FROM app.order_lines ol WHERE ol.order_id = ?
+                """,
+                suffix, orderId);
         return orderId;
     }
 
@@ -164,6 +173,11 @@ class OrderLineBundleResolutionApiTest {
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.fulfillments WHERE order_line_id=?", Integer.class, lineId))
                 .isEqualTo(1);
+        // 修好的映射工单必须一并关闭：OPEN 工单会被批次确认闸与发货批次路由双双拦下
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM app.review_cases WHERE order_line_id=? AND reason_code='SKU_MAPPING_REQUIRED'",
+                String.class, lineId))
+                .isEqualTo("RESOLVED");
         // 组件总量守恒：每组件 total = 礼包份数 × 每份数量
         List<Map<String, Object>> components = jdbc.queryForList(
                 "SELECT quantity_per_bundle, total_quantity FROM app.order_line_components WHERE order_line_id=?",
