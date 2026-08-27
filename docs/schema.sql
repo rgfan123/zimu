@@ -7023,6 +7023,10 @@ ALTER TABLE app.wecom_business_cards
     ADD CONSTRAINT wecom_business_cards_task_id_check CHECK (
         task_id ~ '^[a-z][a-z-]{0,31}:[0-9]{1,19}:[vg][0-9]{1,19}$'
         OR task_id ~ '^[a-z][a-z-]{0,31}_[0-9]{1,19}_[vg][0-9]{1,19}_[0-9a-f]{32}$'
+        -- 2026-08-27 合流补充：企微线的规范 task_id（WecomTaskId.value()，无 hex 后缀）
+        -- 已在生产运行（preship_19_v1 / preship-batch_26_v2 / export_…_g3 等），
+        -- 版本断言由 id 内的 v/g 段承担，必须放行；缺这条曾把 V67 顶翻、全栈起不来。
+        OR task_id ~ '^[a-z][a-z-]{0,31}_[0-9]{1,19}_[vg][0-9]{1,19}$'
     ),
     ADD CONSTRAINT uq_wecom_business_cards_entity_version
         UNIQUE (card_domain, entity_id, entity_version);
