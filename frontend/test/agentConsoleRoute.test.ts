@@ -285,7 +285,7 @@ test('P1 /agents：错误态渲染「Agent 列表加载失败」+ 重试可恢�
 
 // ---------- P1：state 三值渲染 + 新建按钮禁用 ----------
 
-test('P1 /agents：state 三值直映为三种文案；新建 Agent 禁用并注明即将开放', async () => {
+test('P1 /agents：state 三值直映为三种文案；新建 Agent 通往对话式创建页', async () => {
   globalThis.fetch = () =>
     Promise.resolve(
       jsonResponse(
@@ -305,8 +305,13 @@ test('P1 /agents：state 三值直映为三种文案；新建 Agent 禁用并注
 
   const createButton = [...document.querySelectorAll<HTMLElement>('button')].find((b) => b.textContent?.includes('新建 Agent'));
   assert.ok(createButton, '主操作「新建 Agent」必须存在');
-  assert.equal(createButton.hasAttribute('disabled'), true, 'P6 后置：新建按钮必须禁用，不跳 404');
-  assert.match(bodyText(), /即将开放/);
+  // P6（/agents/new 对话式创建 + meta-agent 后端）已落地：按钮必须可点并通往创建页
+  assert.equal(createButton.hasAttribute('disabled'), false, '创建页已上线，按钮不得再禁用');
+  assert.equal(
+    createButton.closest('a')?.getAttribute('href'),
+    '/agents/new',
+    '新建按钮必须通往对话式创建页',
+  );
 });
 
 // ---------- P3：LIVE 默认 / PREVIEW 显式切换与视觉隔离 ----------

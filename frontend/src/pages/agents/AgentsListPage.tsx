@@ -204,12 +204,9 @@ export default function AgentsListPage() {
       title="Agent 列表"
       description="平台上的 Agent 与运行状态一览：谁在跑、跑得怎么样、哪些草稿待确认。"
       actions={
-        <Space size={8}>
-          <Button type="primary" disabled>
-            新建 Agent
-          </Button>
-          <Typography.Text type="secondary">对话式创建即将开放</Typography.Text>
-        </Space>
+        <Link to="/agents/new">
+          <Button type="primary">新建 Agent</Button>
+        </Link>
       }
     >
       {attention.hasAnything ? (
