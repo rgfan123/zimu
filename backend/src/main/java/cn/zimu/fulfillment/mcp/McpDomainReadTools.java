@@ -18,6 +18,8 @@ import cn.zimu.fulfillment.fulfillment.FulfillmentReadService;
 import cn.zimu.fulfillment.inventory.InventoryDetailsService;
 import cn.zimu.fulfillment.inventory.InventoryOverviewService;
 import cn.zimu.fulfillment.masterdata.MasterDataService;
+import cn.zimu.fulfillment.masterdata.ProductArchiveSheet;
+import cn.zimu.fulfillment.masterdata.ProductArchiveSheetService;
 import cn.zimu.fulfillment.sku.ProviderSkuDetail;
 import cn.zimu.fulfillment.sku.SkuDetail;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -52,6 +54,7 @@ public class McpDomainReadTools {
     private final InventoryOverviewService inventoryOverview;
     private final InventoryDetailsService inventoryDetails;
     private final MasterDataService masterData;
+    private final ProductArchiveSheetService productArchive;
     private final SourceShipmentSyncService sourceSync;
     private final ImportBatchProgressService batchProgress;
     private final ObjectMapper objectMapper;
@@ -61,6 +64,7 @@ public class McpDomainReadTools {
             InventoryOverviewService inventoryOverview,
             InventoryDetailsService inventoryDetails,
             MasterDataService masterData,
+            ProductArchiveSheetService productArchive,
             SourceShipmentSyncService sourceSync,
             ImportBatchProgressService batchProgress,
             ObjectMapper objectMapper) {
@@ -68,6 +72,7 @@ public class McpDomainReadTools {
         this.inventoryOverview = inventoryOverview;
         this.inventoryDetails = inventoryDetails;
         this.masterData = masterData;
+        this.productArchive = productArchive;
         this.sourceSync = sourceSync;
         this.batchProgress = batchProgress;
         this.objectMapper = objectMapper;
@@ -83,17 +88,20 @@ public class McpDomainReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
-                        this::listProcurementTickets),
+                        this::listProcurementTickets,
+                        "procurement"),
                 new McpToolRegistry.SimpleTool(
                         "get_procurement_ticket",
                         "查询单个采购工单详情：明细缺口、全部不可变回执与关联订单行。",
                         schema(Map.of("ticket_id", stringProperty("采购工单 ID")), List.of("ticket_id")),
-                        this::getProcurementTicket),
+                        this::getProcurementTicket,
+                        "procurement"),
                 new McpToolRegistry.SimpleTool(
                         "list_procurement_receipts",
                         "查询采购工单的全部不可变回执摘要（含回执明细可用量）。",
                         schema(Map.of("ticket_id", stringProperty("采购工单 ID")), List.of("ticket_id")),
-                        this::listProcurementReceipts),
+                        this::listProcurementReceipts,
+                        "procurement"),
                 new McpToolRegistry.SimpleTool(
                         "search_skus",
                         "按商品名/规格/SKU 编号模糊检索 SKU 主数据（含进货价与零售价、履约方归属），可分页。",
@@ -104,12 +112,14 @@ public class McpDomainReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
-                        this::searchSkus),
+                        this::searchSkus,
+                        "masterdata"),
                 new McpToolRegistry.SimpleTool(
                         "get_sku",
                         "查询单个 SKU 详情：商品归属、规格、进货价/零售价（decimal-string）与履约方归属。",
                         schema(Map.of("sku_id", stringProperty("SKU ID")), List.of("sku_id")),
-                        this::getSku),
+                        this::getSku,
+                        "masterdata"),
                 new McpToolRegistry.SimpleTool(
                         "list_provider_skus",
                         "分页查询履约方外部商品编码映射（供比价对照），只投影已知外部编码键。",
@@ -119,7 +129,20 @@ public class McpDomainReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of("provider_id")),
-                        this::listProviderSkus),
+                        this::listProviderSkus,
+                        "masterdata"),
+                new McpToolRegistry.SimpleTool(
+                        "search_product_archive",
+                        "按商品名模糊检索成本表全列档案（fields 数组序即原表列序 A..AU；AI=成本/份、AJ=不含运费售价）；"
+                                + "未挂接商品的档案行也能搜到。",
+                        schema(
+                                Map.of(
+                                        "query", stringProperty("商品名模糊查询词"),
+                                        "page", integerProperty("页码，从 0 开始"),
+                                        "size", integerProperty("每页条数，1-200")),
+                                List.of()),
+                        this::searchProductArchive,
+                        "masterdata"),
                 new McpToolRegistry.SimpleTool(
                         "get_inventory_overview",
                         "分页查询已落库的最新库存观测（含覆盖摘要）；无观测不补零。",
@@ -131,7 +154,8 @@ public class McpDomainReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
-                        this::getInventoryOverview),
+                        this::getInventoryOverview,
+                        "inventory"),
                 new McpToolRegistry.SimpleTool(
                         "get_inventory_detail",
                         "查询单个 SKU 在指定履约方的库存详情：观测事实、新鲜度与可用能力摘要。",
@@ -141,7 +165,8 @@ public class McpDomainReadTools {
                                         "sku_id", stringProperty("SKU ID"),
                                         "warehouse_code", stringProperty("目标观测仓编码（不含空白）")),
                                 List.of("provider_id", "sku_id")),
-                        this::getInventoryDetail),
+                        this::getInventoryDetail,
+                        "inventory"),
                 new McpToolRegistry.SimpleTool(
                         "list_products",
                         "分页查询商品主数据（非 PII）。",
@@ -150,7 +175,8 @@ public class McpDomainReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
-                        this::listProducts),
+                        this::listProducts,
+                        "masterdata"),
                 new McpToolRegistry.SimpleTool(
                         "list_categories",
                         "分页查询商品品类主数据（非 PII）。",
@@ -159,12 +185,14 @@ public class McpDomainReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
-                        this::listCategories),
+                        this::listCategories,
+                        "masterdata"),
                 new McpToolRegistry.SimpleTool(
                         "list_fulfillment_providers",
                         "查询全部履约方主数据（非 PII）。",
                         schema(Map.of(), List.of()),
-                        this::listFulfillmentProviders),
+                        this::listFulfillmentProviders,
+                        "masterdata"),
                 new McpToolRegistry.SimpleTool(
                         "check_shipment_source_sync",
                         "只读检查指定 Shipment 的来源回传状态、匹配布尔值与数量差异；"
@@ -172,7 +200,8 @@ public class McpDomainReadTools {
                         schema(
                                 Map.of("shipment_id", stringProperty("Shipment ID")),
                                 List.of("shipment_id")),
-                        this::checkShipmentSourceSync),
+                        this::checkShipmentSourceSync,
+                        "orders"),
                 new McpToolRegistry.SimpleTool(
                         "get_import_batch_progress",
                         "查询一个导入批次在「收表 → 发货 → 回填 → 回传」四段链路上的进度与阻塞事实。"
@@ -181,7 +210,8 @@ public class McpDomainReadTools {
                         schema(
                                 Map.of("import_batch_id", stringProperty("导入批次 ID")),
                                 List.of("import_batch_id")),
-                        this::getImportBatchProgress));
+                        this::getImportBatchProgress,
+                        "orders"));
     }
 
     /**
@@ -289,6 +319,19 @@ public class McpDomainReadTools {
         PageResponse<ProviderSkuDetail> result =
                 masterData.providerSkus(providerId, page(args, 0), pageSize(args, 20));
         return pageNode(result, McpDomainReadTools::providerSkuNode);
+    }
+
+    /**
+     * 商品档案·成本表全列检索（V63）：按商品名模糊搜全部档案行，含未挂接商品的行——
+     * 现有 {@link ProductArchiveSheetService#byProduct} 只能读到已挂接的行，覆盖不了
+     * 「还没挂接、但要先看看成本」这种场景。fields 保持原表列序（数组序 == 列序），
+     * 这里逐字段投影而不是整体 valueToTree，避免记录新增字段时默认外泄未经审阅的内容。
+     */
+    private JsonNode searchProductArchive(McpRequestContext context, Map<String, Object> args) {
+        String query = optionalQuery(args, "query");
+        PageResponse<ProductArchiveSheet> result =
+                productArchive.search(query, page(args, 0), pageSize(args, 20));
+        return pageNode(result, McpDomainReadTools::archiveSheetNode);
     }
 
     // ------------------------------------------------------------------
@@ -525,6 +568,35 @@ public class McpDomainReadTools {
         item.put("provider_type", detail.providerType());
         item.put("created_at", detail.createdAt() == null ? null : detail.createdAt().toString());
         item.put("updated_at", detail.updatedAt() == null ? null : detail.updatedAt().toString());
+        return item;
+    }
+
+    /**
+     * 档案行投影：逐字段显式构造（不整体 {@code valueToTree}），但 {@code fields}/{@code extra_cells}
+     * 数组按源列表顺序原样搬运——顺序才是这张表的意义所在，绝不能在这一层重排或按键分组。
+     */
+    private static ObjectNode archiveSheetNode(ProductArchiveSheet sheet) {
+        ObjectNode item = node();
+        item.put("id", sheet.id());
+        item.put("source_file_name", sheet.sourceFileName());
+        item.put("source_file_sha256", sheet.sourceFileSha256());
+        item.put("sheet_name", sheet.sheetName());
+        item.put("row_no", sheet.rowNo());
+        item.put("product_name", sheet.productName());
+        ArrayNode fields = item.putArray("fields");
+        for (ProductArchiveSheet.Field field : sheet.fields()) {
+            ObjectNode fieldNode = fields.addObject();
+            fieldNode.put("column", field.column());
+            fieldNode.put("name", field.name());
+            fieldNode.put("value", field.value());
+        }
+        ArrayNode extraCells = item.putArray("extra_cells");
+        for (ProductArchiveSheet.ExtraCell cell : sheet.extraCells()) {
+            ObjectNode cellNode = extraCells.addObject();
+            cellNode.put("column", cell.column());
+            cellNode.put("value", cell.value());
+        }
+        item.put("created_at", sheet.createdAt() == null ? null : sheet.createdAt().toString());
         return item;
     }
 

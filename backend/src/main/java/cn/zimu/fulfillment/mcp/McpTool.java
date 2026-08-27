@@ -38,4 +38,18 @@ public interface McpTool {
     default boolean externallyDiscoverable() {
         return true;
     }
+
+    /**
+     * 工具所属模块（分模块暴露，用户诉求：「有些 mcp 我不想提供给公共 agent」）。默认
+     * {@code "default"}——只有旧式构造（未显式传 module）的工具落在这里；四个内建 provider
+     * 与写工具的每个真实工具都显式声明模块（见各 provider 构造函数）。
+     *
+     * <p>{@link McpToolRegistry} 按 {@code app.mcp.modules}（env {@code MCP_MODULES}）配置的
+     * 模块名过滤：空值 = 全部模块（向后兼容）；非空则只注册列出的模块，未列出模块的工具在
+     * 注册表构造期就被排除——{@code tools/list} 和 {@code tools/call} 因此天然一致，不存在
+     * 「列表里藏起来但还能调用」的假隔离。
+     */
+    default String module() {
+        return "default";
+    }
 }

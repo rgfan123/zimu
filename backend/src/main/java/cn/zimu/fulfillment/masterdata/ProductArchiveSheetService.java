@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.masterdata;
 
+import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,6 +28,13 @@ public class ProductArchiveSheetService {
     private static final TypeReference<List<ProductArchiveSheet.ExtraCell>> EXTRA_CELLS =
             new TypeReference<>() {};
 
+    private static final String SELECT_COLUMNS =
+            """
+            SELECT id, source_file_name, source_file_sha256, sheet_name, row_no,
+                   product_name, fields, extra_cells, created_at
+            FROM app.product_archive_sheets
+            """;
+
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
 
@@ -42,15 +50,57 @@ public class ProductArchiveSheetService {
     @Transactional(readOnly = true)
     public List<ProductArchiveSheet> byProduct(long productId) {
         return jdbc.query(
-                """
-                SELECT id, source_file_name, source_file_sha256, sheet_name, row_no,
-                       product_name, fields, extra_cells, created_at
-                FROM app.product_archive_sheets
+                SELECT_COLUMNS + """
                 WHERE matched_product_id = ?
                 ORDER BY source_file_sha256, row_no
                 """,
                 this::map,
                 productId);
+    }
+
+    /**
+     * 按商品名模糊检索全部成本表档案行（含未挂接商品的行），分页，稳定序
+     * {@code source_file_sha256, row_no}（同 {@link #byProduct}）。
+     *
+     * <p>与 {@link #byProduct} 的区别：{@code byProduct} 只能读到已经人工挂接
+     * （{@code matched_product_id} 已填）的行；本方法不按挂接过滤——「先搜成本表、
+     * 再决定挂不挂」是这个检索存在的理由，挂接状态不该挡在搜索前面。
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<ProductArchiveSheet> search(String query, int page, int size) {
+        String pattern = blankToNull(query) == null ? null : "%" + query.trim() + "%";
+        long total = pattern == null
+                ? jdbc.queryForObject("SELECT count(*) FROM app.product_archive_sheets", Long.class)
+                : jdbc.queryForObject(
+                        "SELECT count(*) FROM app.product_archive_sheets WHERE product_name ILIKE ?",
+                        Long.class,
+                        pattern);
+        List<ProductArchiveSheet> items = pattern == null
+                ? jdbc.query(
+                        SELECT_COLUMNS + """
+                        ORDER BY source_file_sha256, row_no
+                        LIMIT ? OFFSET ?
+                        """,
+                        this::map,
+                        size,
+                        (long) page * size)
+                : jdbc.query(
+                        SELECT_COLUMNS + """
+                        WHERE product_name ILIKE ?
+                        ORDER BY source_file_sha256, row_no
+                        LIMIT ? OFFSET ?
+                        """,
+                        this::map,
+                        pattern,
+                        size,
+                        (long) page * size);
+        // 与 Spring Data PageImpl 的口径一致：size<=0 记 1 页，否则按元素数/页大小取上界。
+        int totalPages = size <= 0 ? 1 : (int) Math.ceil((double) total / (double) size);
+        return new PageResponse<>(items, page, size, total, totalPages);
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private ProductArchiveSheet map(ResultSet rs, int row) throws SQLException {

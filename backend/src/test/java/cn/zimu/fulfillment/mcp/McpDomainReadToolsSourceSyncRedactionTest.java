@@ -95,6 +95,7 @@ class McpDomainReadToolsSourceSyncRedactionTest {
                 mock(InventoryOverviewService.class),
                 mock(InventoryDetailsService.class),
                 mock(MasterDataService.class),
+                mock(cn.zimu.fulfillment.masterdata.ProductArchiveSheetService.class),
                 sourceSync,
                 mock(cn.zimu.fulfillment.batch.ImportBatchProgressService.class),
                 new ObjectMapper());

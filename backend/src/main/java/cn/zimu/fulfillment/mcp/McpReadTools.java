@@ -87,27 +87,32 @@ public class McpReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
-                        this::listChannelMessages),
+                        this::listChannelMessages,
+                        "messages"),
                 new McpToolRegistry.SimpleTool(
                         "get_channel_message",
                         "查询单条渠道消息详情（含原始内容与引用内容）。",
                         schema(Map.of("message_id", stringProperty("渠道消息记录 ID")), List.of("message_id")),
-                        this::getChannelMessage),
+                        this::getChannelMessage,
+                        "messages"),
                 new McpToolRegistry.SimpleTool(
                         "get_message_submission",
                         "查询消息提交详情，含当前意图、最新错误、解释历史与最近任务状态。",
                         schema(Map.of("submission_id", stringProperty("消息提交 ID")), List.of("submission_id")),
-                        this::getMessageSubmission),
+                        this::getMessageSubmission,
+                        "messages"),
                 new McpToolRegistry.SimpleTool(
                         "list_interpretations",
                         "查询消息提交的解释历史（版本倒序），含供应商/模型/提示词版本等公开元数据。",
                         schema(Map.of("submission_id", stringProperty("消息提交 ID")), List.of("submission_id")),
-                        this::listInterpretations),
+                        this::listInterpretations,
+                        "messages"),
                 new McpToolRegistry.SimpleTool(
                         "list_message_media",
                         "查询消息提交关联的媒体证据元数据（下载状态、类型、大小、哈希）；不含下载地址与解密信息。",
                         schema(Map.of("submission_id", stringProperty("消息提交 ID")), List.of("submission_id")),
-                        this::listMessageMedia),
+                        this::listMessageMedia,
+                        "messages"),
                 new McpToolRegistry.SimpleTool(
                         "list_order_drafts",
                         "分页查询订单草稿，可按状态与提交过滤。",
@@ -118,12 +123,14 @@ public class McpReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
-                        this::listOrderDrafts),
+                        this::listOrderDrafts,
+                        "orders"),
                 new McpToolRegistry.SimpleTool(
                         "get_order_draft",
                         "查询订单草稿详情（模型原值、候选、缺失项、开放复核事项引用）。",
                         schema(Map.of("draft_id", stringProperty("订单草稿 ID")), List.of("draft_id")),
-                        this::getOrderDraft),
+                        this::getOrderDraft,
+                        "orders"),
                 new McpToolRegistry.SimpleTool(
                         "list_tracking_drafts",
                         "分页查询运单草稿，可按状态与提交过滤。",
@@ -134,22 +141,26 @@ public class McpReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
-                        this::listTrackingDrafts),
+                        this::listTrackingDrafts,
+                        "orders"),
                 new McpToolRegistry.SimpleTool(
                         "get_tracking_draft",
                         "查询运单草稿详情（候选、校验问题、开放复核事项引用）。",
                         schema(Map.of("draft_id", stringProperty("运单草稿 ID")), List.of("draft_id")),
-                        this::getTrackingDraft),
+                        this::getTrackingDraft,
+                        "orders"),
                 new McpToolRegistry.SimpleTool(
                         "get_order_draft_candidates",
                         "查询订单草稿的客户与 SKU 候选、缺失字段与收货资料；候选不是确认事实。",
                         schema(Map.of("draft_id", stringProperty("订单草稿 ID")), List.of("draft_id")),
-                        this::getOrderDraftCandidates),
+                        this::getOrderDraftCandidates,
+                        "orders"),
                 new McpToolRegistry.SimpleTool(
                         "get_tracking_draft_candidates",
                         "查询运单草稿的物流公司与发货任务候选、数量判断与校验问题；候选不是确认事实。",
                         schema(Map.of("draft_id", stringProperty("运单草稿 ID")), List.of("draft_id")),
-                        this::getTrackingDraftCandidates),
+                        this::getTrackingDraftCandidates,
+                        "orders"),
                 new McpToolRegistry.SimpleTool(
                         "list_review_cases",
                         "分页查询企微消息链路复核事项，可按状态/原因/负责团队过滤。",
@@ -161,12 +172,14 @@ public class McpReadTools {
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
-                        this::listReviewCases),
+                        this::listReviewCases,
+                        "orders"),
                 new McpToolRegistry.SimpleTool(
                         "get_review_case",
                         "查询单个复核事项详情（结构化检查项与允许动作摘要）。",
                         schema(Map.of("case_id", stringProperty("复核事项 ID")), List.of("case_id")),
-                        this::getReviewCase));
+                        this::getReviewCase,
+                        "orders"));
     }
 
     private final List<McpTool> tools;

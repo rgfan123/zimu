@@ -79,6 +79,7 @@ class McpDomainReadToolsTest {
         assertThat(names)
                 .contains("list_procurement_tickets", "get_procurement_ticket", "list_procurement_receipts")
                 .contains("search_skus", "get_sku", "list_provider_skus")
+                .contains("search_product_archive")
                 .contains("get_inventory_overview", "get_inventory_detail")
                 .contains("list_products", "list_categories", "list_fulfillment_providers")
                 .contains("check_shipment_source_sync");
@@ -86,7 +87,7 @@ class McpDomainReadToolsTest {
         // 描述与输入 Schema 不得携带配置/凭据
         for (String name : List.of(
                 "list_procurement_tickets", "get_procurement_ticket", "list_procurement_receipts",
-                "search_skus", "get_sku", "list_provider_skus",
+                "search_skus", "get_sku", "list_provider_skus", "search_product_archive",
                 "get_inventory_overview", "get_inventory_detail",
                 "list_products", "list_categories", "list_fulfillment_providers",
                 "check_shipment_source_sync")) {
@@ -372,6 +373,85 @@ class McpDomainReadToolsTest {
         JsonNode absent = callResult(AGENT, "get_inventory_overview",
                 Map.of("provider_id", String.valueOf(providerId), "sku_id", "9223372036854775806"));
         assertThat(absent.get("items")).isEmpty();
+    }
+
+    // ------------------------------------------------------------------
+    // 商品档案·成本表全列检索（V63）
+    // ------------------------------------------------------------------
+
+    private static final String ARCHIVE_SHA = "a1".repeat(32);
+
+    @Test
+    void productArchiveReadToolSearchesUnmatchedRowsAndKeepsFieldOrder() throws Exception {
+        long categoryId = createCategory();
+        long productId = createProduct(categoryId, "MCP-PROD-ARCHIVE", "档案商品羔羊肉卷");
+
+        insertArchiveRow(ARCHIVE_SHA, 2, "新西兰羔羊肉卷", productId);
+        insertArchiveRow(ARCHIVE_SHA, 3, "新西兰羔羊排骨", null); // 未挂接，matched_product_id 为空
+        insertArchiveRow(ARCHIVE_SHA, 4, "本地散养鸡", null); // 不匹配查询词
+
+        JsonNode matched = callResult(AGENT, "search_product_archive", Map.of("query", "羔羊"));
+        assertThat(matched.get("total_elements").asLong()).isEqualTo(2);
+        assertThat(matched.get("items")).hasSize(2);
+        // 稳定序：source_file_sha256, row_no —— row_no=2 排在 row_no=3 之前
+        assertThat(matched.get("items").get(0).get("row_no").asInt()).isEqualTo(2);
+        assertThat(matched.get("items").get(0).get("product_name").asText()).isEqualTo("新西兰羔羊肉卷");
+        // 未挂接商品的档案行也能搜到（不按 matched_product_id 过滤）
+        assertThat(matched.get("items").get(1).get("row_no").asInt()).isEqualTo(3);
+        assertThat(matched.get("items").get(1).get("product_name").asText()).isEqualTo("新西兰羔羊排骨");
+
+        // fields 数组序即原表列序 A..AU：不得被 jsonb 对象键重排洗掉
+        JsonNode fields = matched.get("items").get(0).get("fields");
+        assertThat(fields.get(0).get("column").asText()).isEqualTo("A");
+        assertThat(fields.get(1).get("column").asText()).isEqualTo("AI");
+        assertThat(fields.get(1).get("name").asText()).isEqualTo("线下供货成本/份");
+        assertThat(fields.get(1).get("value").asText()).isEqualTo("9.99");
+        assertThat(fields.get(2).get("column").asText()).isEqualTo("AJ");
+        assertThat(fields.get(2).get("name").asText()).isEqualTo("售价");
+        assertThat(fields.get(2).get("value").asText()).isEqualTo("19.99");
+
+        JsonNode all = callResult(AGENT, "search_product_archive", Map.of());
+        assertThat(all.get("total_elements").asLong()).isEqualTo(3);
+
+        JsonNode noMatch = callResult(AGENT, "search_product_archive", Map.of("query", "不存在的商品名"));
+        assertThat(noMatch.get("items")).isEmpty();
+        assertThat(noMatch.get("total_elements").asLong()).isZero();
+
+        JsonNode paged = callResult(AGENT, "search_product_archive",
+                Map.of("query", "羔羊", "page", 1, "size", 1));
+        assertThat(paged.get("items")).hasSize(1);
+        assertThat(paged.get("items").get(0).get("row_no").asInt()).isEqualTo(3);
+        assertThat(paged.get("total_pages").asInt()).isEqualTo(2);
+        assertThat(productId).isPositive();
+    }
+
+    @Test
+    void productArchiveReadToolValidatesParameters() throws Exception {
+        List<Case> cases = List.of(
+                new Case("search_product_archive", Map.of("page", -1), "INVALID_PARAMETERS"),
+                new Case("search_product_archive", Map.of("size", 0), "INVALID_PARAMETERS"),
+                new Case("search_product_archive", Map.of("size", 201), "INVALID_PARAMETERS"),
+                new Case("search_product_archive", Map.of("query", "x".repeat(101)), "INVALID_PARAMETERS"));
+        for (Case testCase : cases) {
+            assertToolError(testCase.tool(), testCase.args(), testCase.code(), testCase.tool());
+        }
+    }
+
+    /** 档案行直灌：档案由成本表一次性灌库，应用侧没有写接口，测试按生产同款语句插入。 */
+    private void insertArchiveRow(String sha256, int rowNo, String productName, Long matchedProductId) {
+        String fields = """
+                [{"column":"A","name":"产品名称","value":"%s"},
+                 {"column":"AI","name":"线下供货成本/份","value":"9.99"},
+                 {"column":"AJ","name":"售价","value":"19.99"}]
+                """.formatted(productName);
+        jdbc.update(
+                """
+                INSERT INTO app.product_archive_sheets (
+                    source_file_name, source_file_sha256, sheet_name, row_no,
+                    product_name, fields, matched_product_id)
+                VALUES ('archive-fixture.xlsx', ?, '成品', ?, ?, ?::jsonb, ?)
+                """,
+                sha256, rowNo, productName, fields, matchedProductId);
     }
 
     // ------------------------------------------------------------------

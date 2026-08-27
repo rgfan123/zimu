@@ -203,6 +203,7 @@ class McpProtocolAcceptanceTest {
                 "list_products",
                 "list_categories",
                 "list_fulfillment_providers",
+                "search_product_archive",
                 "check_shipment_source_sync",
                 "get_import_batch_progress");
 

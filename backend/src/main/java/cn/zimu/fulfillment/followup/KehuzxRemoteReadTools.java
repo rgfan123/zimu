@@ -143,7 +143,8 @@ public class KehuzxRemoteReadTools {
                 "kehuzx_" + remoteName,
                 description + " 返回内容带 KEHUZX 来源、契约版本、上游提交与查询时间。",
                 inputSchema,
-                (context, arguments) -> invoke(context, remoteName, arguments)) {
+                (context, arguments) -> invoke(context, remoteName, arguments),
+                "followup") {
             @Override
             public boolean externallyDiscoverable() {
                 return false;

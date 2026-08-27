@@ -33,7 +33,8 @@ public class McpControlReadTools {
                 "list_agent_tools",
                 "列出平台注册的全部 Agent 工具（名称/描述/参数 JSON Schema/读写属性 readOnly），供规划 Agent 工具白名单。",
                 McpToolRegistry.schema(Map.of(), List.of()),
-                this::listAgentTools));
+                this::listAgentTools,
+                "control"));
     }
 
     private JsonNode listAgentTools(McpRequestContext context, Map<String, Object> arguments) {
