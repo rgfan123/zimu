@@ -67,7 +67,7 @@ public final class McpToolTestSupport {
                         return entry.getValue().execute(request, memoryId);
                     });
                 }
-                return new AgentToolBinding(runId, wrapped);
+                return new AgentToolBinding(runId, wrapped, bound.rejectionExecutor());
             }
         };
     }

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.service.tool.ToolExecutor;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,6 +35,12 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class AgentToolBindingFactory {
+
+    /** 一次受限绑定的有效工具与被策略拒绝工具，供运行审计如实记录。 */
+    public record RestrictedBinding(
+            AgentToolBinding binding,
+            List<String> exposedToolNames,
+            List<String> deniedToolNames) {}
 
     private final McpToolRegistry registry;
     private final McpAgentIdentity identity;
@@ -77,7 +84,9 @@ public class AgentToolBindingFactory {
      */
     public AgentToolBinding bind(String runId, List<String> toolNames, boolean allowWrite) {
         Map<ToolSpecification, ToolExecutor> tools = new LinkedHashMap<>();
-        AgentToolInvoker invoker = null;
+        Set<String> whitelist = toolNames == null ? Set.of() : Set.copyOf(toolNames);
+        AgentToolInvoker invoker = new AgentToolInvoker(
+                runId, registry, identity, mapper, observability, whitelist);
         if (toolNames != null) {
             for (String name : toolNames) {
                 McpTool tool = registry.find(name).orElseThrow(() -> new IllegalArgumentException(
@@ -88,14 +97,52 @@ public class AgentToolBindingFactory {
                             "Agent 白名单含写工具但未声明 allow_write=true: " + name
                                     + "；写工具必须显式放行（AgentDefinition.allow_write）");
                 }
-                if (invoker == null) {
-                    invoker = new AgentToolInvoker(
-                            runId, registry, identity, mapper, observability, Set.copyOf(toolNames));
-                }
                 tools.put(toSpecification(tool), invoker);
             }
         }
-        return new AgentToolBinding(runId, tools);
+        return new AgentToolBinding(runId, tools, invoker);
+    }
+
+    /**
+     * 会话 Agent 的最小权限绑定：只暴露指定模块内且 {@code readOnly=true} 的工具。
+     *
+     * <p>与普通定义绑定不同，定义中属于其他模块、写工具或被全局 MCP_MODULES 隐藏的名称
+     * 都按策略拒绝而不是配置漂移抛错。运行时绑定白名单只含有效工具；即使底层运行时尝试
+     * 旁路调用已注册写工具，{@link AgentToolInvoker} 仍会返回 TOOL_NOT_AUTHORIZED 并留观测。
+     */
+    public RestrictedBinding bindReadOnlyModules(
+            String runId, List<String> toolNames, Set<String> allowedModules) {
+        Set<String> modules = allowedModules == null ? Set.of() : Set.copyOf(allowedModules);
+        Set<String> requested = toolNames == null
+                ? Set.of()
+                : new LinkedHashSet<>(toolNames);
+        List<String> exposed = new java.util.ArrayList<>();
+        List<String> denied = new java.util.ArrayList<>();
+        for (String name : requested) {
+            McpTool tool = registry.find(name).orElse(null);
+            if (tool != null && tool.readOnly() && modules.contains(tool.module())) {
+                exposed.add(name);
+            } else {
+                denied.add(name);
+            }
+        }
+        Map<ToolSpecification, ToolExecutor> tools = new LinkedHashMap<>();
+        AgentToolInvoker rejectionAwareInvoker = new AgentToolInvoker(
+                runId,
+                registry,
+                identity,
+                mapper,
+                observability,
+                Set.copyOf(exposed),
+                Set.copyOf(denied));
+        for (String name : exposed) {
+            McpTool tool = registry.find(name).orElseThrow();
+            tools.put(toSpecification(tool), rejectionAwareInvoker);
+        }
+        return new RestrictedBinding(
+                new AgentToolBinding(runId, tools, rejectionAwareInvoker),
+                List.copyOf(exposed),
+                List.copyOf(denied));
     }
 
     private static ToolSpecification toSpecification(McpTool tool) {

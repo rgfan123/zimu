@@ -45,6 +45,7 @@ public class AgentToolInvoker implements ToolExecutor {
     private final ObjectMapper mapper;
     private final AgentObservability observability;
     private final Set<String> whitelist;
+    private final Set<String> policyDeniedNames;
     private final AtomicInteger sequence = new AtomicInteger();
 
     public AgentToolInvoker(
@@ -63,12 +64,24 @@ public class AgentToolInvoker implements ToolExecutor {
             ObjectMapper mapper,
             AgentObservability observability,
             Set<String> whitelist) {
+        this(runId, registry, identity, mapper, observability, whitelist, Set.of());
+    }
+
+    public AgentToolInvoker(
+            String runId,
+            McpToolRegistry registry,
+            McpAgentIdentity identity,
+            ObjectMapper mapper,
+            AgentObservability observability,
+            Set<String> whitelist,
+            Set<String> policyDeniedNames) {
         this.runId = runId;
         this.registry = registry;
         this.identity = identity;
         this.mapper = mapper;
         this.observability = observability == null ? AgentObservability.disabled() : observability;
         this.whitelist = whitelist == null ? Set.of() : Set.copyOf(whitelist);
+        this.policyDeniedNames = policyDeniedNames == null ? Set.of() : Set.copyOf(policyDeniedNames);
     }
 
     /** 当前绑定所属 Agent run 的 run_id（工具调用上下文关联键）。 */
@@ -86,7 +99,12 @@ public class AgentToolInvoker implements ToolExecutor {
         String outcome;
         boolean success;
         McpTool tool = registry.find(toolName).orElse(null);
-        if (tool == null) {
+        if (tool == null && policyDeniedNames.contains(toolName)) {
+            // 全局 MCP_MODULES 可能已把该工具移出注册表；会话策略仍知道它来自定义白名单且
+            // 被模块/读写上限拒绝，因此保持权限错误语义并留观测，而不是伪装成未知工具。
+            outcome = McpToolErrorEnvelope.notAuthorized();
+            success = false;
+        } else if (tool == null) {
             // 未注册名：注册表漂移/模型幻觉工具（工具根本不存在），非权限问题——稳定内部错误兜底；
             // 工具名随观测行（agent_tool_calls.tool_name）留痕，信封不透出细节
             outcome = internalError();

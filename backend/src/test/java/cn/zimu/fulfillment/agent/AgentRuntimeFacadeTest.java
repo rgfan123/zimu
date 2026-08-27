@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -94,6 +95,16 @@ class AgentRuntimeFacadeTest {
         ObjectNode schema = McpToolRegistry.schema(properties, required);
         return new McpToolRegistry.SimpleTool(
                 name, description, schema, (context, args) -> new ObjectMapper().createObjectNode().put("ok", true));
+    }
+
+    private static McpTool moduleTool(String name, String module, boolean readOnly) {
+        return new McpToolRegistry.SimpleTool(
+                name,
+                name,
+                McpToolRegistry.schema(Map.of(), List.of()),
+                (context, args) -> new ObjectMapper().createObjectNode().put("ok", true),
+                readOnly,
+                module);
     }
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -327,6 +338,53 @@ class AgentRuntimeFacadeTest {
                 .allSatisfy(executor -> assertThat(executor).isInstanceOf(AgentToolInvoker.class));
         assertThat(((AgentToolInvoker) binding.tools().values().iterator().next()).runId())
                 .isEqualTo(lastAuditRunId());
+    }
+
+    @Test
+    void readOnlyModuleInvocationAuditsAndExposesOnlyEffectiveSessionTools() {
+        when(runtime.run(any())).thenReturn(success());
+        AgentDefinition definition = AgentDefinition.ofActiveV1(
+                SLUG,
+                "采购比价",
+                "d",
+                "你是只读比价助手。",
+                PROMPT_VERSION,
+                "app.agent",
+                true,
+                List.of("search_products", "get_inventory_overview", "list_orders", "reinterpret_submission"));
+        McpToolRegistry registry = McpToolTestSupport.registry(
+                moduleTool("search_products", "masterdata", true),
+                moduleTool("get_inventory_overview", "inventory", true),
+                moduleTool("list_orders", "orders", true),
+                moduleTool("reinterpret_submission", "write", false));
+        AgentRuntimeFacade restrictedFacade = new AgentRuntimeFacade(
+                AgentSeedFixtures.holderOf(definition),
+                runtime,
+                audits,
+                metadata,
+                new AgentToolBindingFactory(
+                        registry, new McpAgentIdentity("session-agent"), new ObjectMapper()));
+
+        restrictedFacade.invokeReadOnlyModules(
+                SLUG,
+                "查商品和库存",
+                AgentRunContext.of("chat-178"),
+                Set.of("masterdata", "inventory"));
+
+        ArgumentCaptor<AgentTaskRequest> runtimeRequest =
+                ArgumentCaptor.forClass(AgentTaskRequest.class);
+        verify(runtime).run(runtimeRequest.capture());
+        assertThat(runtimeRequest.getValue().tools().specifications())
+                .extracting(spec -> spec.name())
+                .containsExactlyInAnyOrder("search_products", "get_inventory_overview");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> auditRequest =
+                (Map<String, Object>) auditField(lastAuditCommand(), "requestPayload");
+        assertThat(auditRequest.get("tool_names"))
+                .isEqualTo(List.of("search_products", "get_inventory_overview"));
+        assertThat(auditRequest.get("denied_tool_names"))
+                .isEqualTo(List.of("list_orders", "reinterpret_submission"));
     }
 
     @Test

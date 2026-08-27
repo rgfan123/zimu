@@ -265,11 +265,15 @@ public class LangChain4jRuntimeAdapter implements AgentRuntime {
     }
 
     /** 执行一次工具调用：按白名单名称解析绑定内执行器；未绑定稳定拒绝回传模型。 */
-    private String executeTool(AgentToolBinding binding, ToolExecutionRequest executionRequest) {
+    static String executeTool(AgentToolBinding binding, ToolExecutionRequest executionRequest) {
         ToolExecutor executor = binding == null ? null : binding.executorFor(executionRequest.name());
         if (executor == null) {
-            // 白名单外/未绑定工具：与 MCP 面一致的稳定错误信封回传模型（不透出原始异常）
-            return McpToolErrorEnvelope.internalError();
+            // 模型请求未暴露工具时仍交给绑定期的拒绝执行器：已注册但白名单外（包括写工具）
+            // 返回 TOOL_NOT_AUTHORIZED 并落 agent_tool_calls；完全未知名才收口为内部错误。
+            executor = binding == null ? null : binding.rejectionExecutor();
+            if (executor == null) {
+                return McpToolErrorEnvelope.internalError();
+            }
         }
         return executor.execute(executionRequest, null);
     }

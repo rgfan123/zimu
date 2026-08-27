@@ -5,6 +5,7 @@ import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService;
 import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -22,25 +23,30 @@ public class MessageSubmissionService {
 
     public static final String INTERPRET_TASK_TYPE = "INTERPRET_MESSAGE";
     public static final String WECOM_TRACKING_FILE_TASK_TYPE = "WECOM_TRACKING_FILE";
+    public static final String WECOM_CHAT_AGENT_TASK_TYPE = "WECOM_CHAT_AGENT";
     static final String WECOM_TRACKING_FILE_KEY_KIND = "wecom-tracking-file";
+    static final String WECOM_CHAT_AGENT_KEY_KIND = "wecom-chat-agent";
 
     private final ChannelMessageIntakeService intakeService;
     private final MessageSubmissionRepository submissions;
     private final AsyncTaskStore taskStore;
     private final JdbcTemplate jdbc;
     private final AuditLogService audits;
+    private final WecomChatReplyPolicyService replyPolicies;
 
     public MessageSubmissionService(
             ChannelMessageIntakeService intakeService,
             MessageSubmissionRepository submissions,
             AsyncTaskStore taskStore,
             JdbcTemplate jdbc,
-            AuditLogService audits) {
+            AuditLogService audits,
+            WecomChatReplyPolicyService replyPolicies) {
         this.intakeService = intakeService;
         this.submissions = submissions;
         this.taskStore = taskStore;
         this.jdbc = jdbc;
         this.audits = audits;
+        this.replyPolicies = replyPolicies;
     }
 
     @Transactional
@@ -70,7 +76,7 @@ public class MessageSubmissionService {
         } else {
             submissionId = created.getFirst();
         }
-        String taskType = taskType(command.messageType());
+        String taskType = initialTaskType(command, submissionId);
         taskStore.enqueue(
                 taskType,
                 "submission:" + submissionId,
@@ -171,7 +177,40 @@ public class MessageSubmissionService {
         return "file".equals(messageType) ? WECOM_TRACKING_FILE_TASK_TYPE : INTERPRET_TASK_TYPE;
     }
 
+    /**
+     * 首次提交按会话绑定选择前置 Agent；重复回调沿用已经持久化的首次任务类型，
+     * 避免绑定在两次平台重投之间变化时为同一消息并排创建两条入口流水线。
+     */
+    private String initialTaskType(ChannelMessageCommand command, long submissionId) {
+        List<String> existing = jdbc.query(
+                """
+                SELECT task_type FROM app.async_tasks
+                WHERE payload_ref = ?
+                  AND task_type IN (?, ?, ?)
+                ORDER BY id
+                LIMIT 1
+                """,
+                (rs, rowNum) -> rs.getString(1),
+                "submission:" + submissionId,
+                INTERPRET_TASK_TYPE,
+                WECOM_TRACKING_FILE_TASK_TYPE,
+                WECOM_CHAT_AGENT_TASK_TYPE);
+        if (!existing.isEmpty()) {
+            return existing.getFirst();
+        }
+        if ("file".equals(command.messageType())) {
+            return WECOM_TRACKING_FILE_TASK_TYPE;
+        }
+        return replyPolicies.assignedAgent(command.chatId(), command.chatType()).isPresent()
+                ? WECOM_CHAT_AGENT_TASK_TYPE
+                : INTERPRET_TASK_TYPE;
+    }
+
     private static String taskKeyPrefix(String taskType) {
-        return WECOM_TRACKING_FILE_TASK_TYPE.equals(taskType) ? WECOM_TRACKING_FILE_KEY_KIND : "interpret";
+        return switch (taskType) {
+            case WECOM_TRACKING_FILE_TASK_TYPE -> WECOM_TRACKING_FILE_KEY_KIND;
+            case WECOM_CHAT_AGENT_TASK_TYPE -> WECOM_CHAT_AGENT_KEY_KIND;
+            default -> "interpret";
+        };
     }
 }
