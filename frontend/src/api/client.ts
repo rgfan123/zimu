@@ -32,6 +32,58 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 网络级失败（fetch 抛 TypeError，请求根本没到网关）。携带实际发出请求的 origin
+ * 与路径，供展示层拼出可自证的提示——用户反复遇到「网络连接失败」但每次根因不同
+ * （残留 dev server、离开局域网后标签页还指着内网 IP、nginx keepalive 竞态），
+ * 不带上下文的通用文案逼着每次都要人肉排查。
+ */
+export class NetworkError extends Error {
+  readonly requestOrigin: string;
+  readonly requestPath: string;
+  // 显式声明字段：tsconfig 的 lib 是 ES2020，类型库里没有 Error.cause（ES2022 才有），
+  // 运行时 Node/浏览器早已支持，这里自行声明字段以绕开类型检查，不依赖 lib 版本。
+  readonly cause?: unknown;
+
+  constructor(requestOrigin: string, requestPath: string, cause?: unknown) {
+    super('网络连接失败');
+    this.name = 'NetworkError';
+    this.requestOrigin = requestOrigin;
+    this.requestPath = requestPath;
+    this.cause = cause;
+  }
+}
+
+const PRIVATE_HOSTNAME_PATTERNS: readonly RegExp[] = [
+  /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
+  /^192\.168\.\d{1,3}\.\d{1,3}$/,
+  /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/,
+  /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
+];
+
+/**
+ * 纯函数：hostname 是否是私网/本机地址（10.x / 192.168.x / 172.16-31.x / localhost /
+ * 127.x / ::1）。离开这段网络后这些地址都无法访问，值得在网络失败提示里单独说明。
+ */
+export function isPrivateNetworkHost(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  if (host === 'localhost' || host === '::1') return true;
+  return PRIVATE_HOSTNAME_PATTERNS.some((pattern) => pattern.test(host));
+}
+
+function buildNetworkFailureMessage(requestOrigin: string, requestPath: string): string {
+  let hostname = requestOrigin;
+  try {
+    hostname = new URL(requestOrigin).hostname;
+  } catch {
+    // requestOrigin 不是合法 URL（理论上不会发生）时按原样处理，只是不做私网判断。
+  }
+  const base = `无法连接 ${requestOrigin}${requestPath} —— 若你不在公司/家庭内网，请改用外网地址访问`;
+  return isPrivateNetworkHost(hostname)
+    ? `${base}。当前使用的是内网地址，离开该网络将无法访问。`
+    : base;
+}
+
 const FILE_ERROR_CODES = [
   'FILE_',
   'TEMPLATE_',
@@ -84,7 +136,10 @@ export function errorMessage(err: unknown): string {
     return '操作未完成，请核对当前内容后重试；如持续失败请联系管理员';
   }
   if (err instanceof Error && err.name === 'AbortError') return '操作已取消';
-  return '网络连接失败，请检查网络后重试';
+  if (err instanceof NetworkError) return buildNetworkFailureMessage(err.requestOrigin, err.requestPath);
+  // 未识别的异常兜底：仍然报告当前页面所在的 origin，让用户能自行判断——
+  // 是不是还在指着内网地址、或者已经离开了能访问它的网络。
+  return buildNetworkFailureMessage(window.location.origin, window.location.pathname);
 }
 
 function buildUrl(path: string, params?: Record<string, QueryValue>): string {
@@ -115,17 +170,27 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   // FormData 由浏览器生成 multipart 边界，不得设置 JSON Content-Type。
   if (body !== undefined && !(body instanceof FormData)) requestHeaders['Content-Type'] = 'application/json';
 
+  const requestPath = buildUrl(path, params);
   const doFetch = () =>
-    fetch(buildUrl(path, params), {
+    fetch(requestPath, {
       method,
       headers: requestHeaders,
       body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
       signal,
     });
 
-  // 网络级失败（fetch 抛 TypeError，请求根本没到网关）对幂等 GET 自动重试两次：
-  // 生产网关经 Docker Desktop 端口转发，工作台一屏并发二十余请求时偶发个别连接被掐，
-  // 服务端日志全 200 而浏览器报「网络连接失败」——重试一次即愈，用户不该替 NAT 抖动买单。
+  // fetch 网络级失败统一抛 TypeError（请求根本没到网关）。包成 NetworkError 并钉上
+  // 实际发出请求的 origin/路径，供 errorMessage 拼出可自证的提示；主动 abort 不算
+  // 失败，原样放行给上层的 AbortError 分支处理。
+  const wrapNetworkFailure = (error: unknown): unknown => {
+    if (signal?.aborted) return error;
+    if (error instanceof TypeError) return new NetworkError(window.location.origin, requestPath, error);
+    return error;
+  };
+
+  // 对幂等 GET 自动重试两次：生产网关经 Docker Desktop 端口转发，工作台一屏并发
+  // 二十余请求时偶发个别连接被掐，服务端日志全 200 而浏览器报「网络连接失败」——
+  // 重试一次即愈，用户不该替 NAT 抖动买单。
   let res: Response;
   if (method === 'GET') {
     let lastError: unknown;
@@ -139,10 +204,14 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
           lastError = error;
         }
       }
-      throw lastError;
+      throw wrapNetworkFailure(lastError);
     })();
   } else {
-    res = await doFetch();
+    try {
+      res = await doFetch();
+    } catch (error) {
+      throw wrapNetworkFailure(error);
+    }
   }
 
   if (!res.ok) {

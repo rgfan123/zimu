@@ -233,7 +233,11 @@ test('DataTable 错误态渲染错误提示与重试按钮，点击触发 onRetr
 
   const text = bodyText();
   assert.match(text, /Shipment 加载失败/);
-  assert.match(text, /网络连接失败，请检查网络后重试/);
+  // 通用兜底文案（issue 115）：未识别的异常也报告当前页面所在的 origin，
+  // 让用户能自证——是不是还在指着内网地址、或者已经离开了能访问它的网络。
+  // jsdom 挂载 URL 是 http://localhost/fulfillment/shipments，属于私网/本机地址。
+  assert.match(text, /无法连接 http:\/\/localhost\/fulfillment\/shipments/);
+  assert.match(text, /当前使用的是内网地址，离开该网络将无法访问/);
   assert.match(text, /重试/);
 
   await act(async () => {
