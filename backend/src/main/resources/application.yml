@@ -9,8 +9,9 @@ spring:
     enabled: true
   servlet:
     multipart:
-      max-file-size: 12MB
-      max-request-size: 12MB
+      # 业务上限是 20MiB；传输层留 1MiB multipart 边界开销，由领域层返回稳定错误码。
+      max-file-size: 21MB
+      max-request-size: 22MB
   jpa:
     hibernate:
       ddl-auto: validate

@@ -9,6 +9,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -97,6 +99,7 @@ class SourceOrderIntakeApiTest {
         assertThat(downloaded.getHeaders().getContentDisposition().getType()).isEqualTo("attachment");
         assertThat(downloaded.getHeaders().getContentDisposition().getFilename()).isEqualTo("失败订单.xlsx");
         assertThat(downloaded.getHeaders().getFirst("X-Content-Type-Options")).isEqualTo("nosniff");
+        assertThat(downloaded.getHeaders().getCacheControl()).isEqualTo("no-store, private");
     }
 
     @Test
@@ -114,6 +117,47 @@ class SourceOrderIntakeApiTest {
         assertThat(disguisedWorkbook.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(disguisedWorkbook.getBody().get("business_code"))
                 .isEqualTo("SOURCE_FILE_FORMAT_UNSUPPORTED");
+
+        ResponseEntity<Map> arbitraryZip = submit(
+                "fake.xlsx", arbitraryZip(), MediaType.APPLICATION_OCTET_STREAM, "DAZHE", "intake-zip-0001");
+        assertThat(arbitraryZip.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(arbitraryZip.getBody().get("business_code"))
+                .isEqualTo("SOURCE_FILE_FORMAT_UNSUPPORTED");
+
+        ResponseEntity<Map> binaryCsv = submit(
+                "binary.csv", new byte[] {(byte) 0x81}, MediaType.TEXT_PLAIN, "DAZHE", "intake-csv-0001");
+        assertThat(binaryCsv.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(binaryCsv.getBody().get("business_code"))
+                .isEqualTo("SOURCE_FILE_FORMAT_UNSUPPORTED");
+    }
+
+    @Test
+    void damagedButIdentifiableWorkbookIsRetainedBeforeBusinessParsing() throws Exception {
+        byte[] damagedWorkbook = damagedXlsxContainer();
+
+        ResponseEntity<Map> submitted = submit(
+                "damaged.xlsx", damagedWorkbook, "DAZHE", "intake-damaged-0001");
+
+        assertThat(submitted.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        long jobId = Long.parseLong(submitted.getBody().get("id").toString());
+        String fileRef = jdbc.queryForObject(
+                "SELECT file_ref FROM app.source_order_intake_jobs WHERE id=?", String.class, jobId);
+        assertThat(Files.readAllBytes(Path.of(fileRef))).isEqualTo(damagedWorkbook);
+
+        new SourceOrderIntakeWorker(tasks, processor, intake, true, 30, 0).poll();
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM app.source_order_intake_jobs WHERE id=?", String.class, jobId))
+                .isEqualTo("FAILED");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Operator", "intake-api-test");
+        ResponseEntity<byte[]> downloaded = http.exchange(
+                "/api/v1/source-order-intake-jobs/" + jobId + "/file",
+                org.springframework.http.HttpMethod.GET,
+                new HttpEntity<>(headers),
+                byte[].class);
+        assertThat(downloaded.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(downloaded.getBody()).isEqualTo(damagedWorkbook);
     }
 
     @Test
@@ -145,6 +189,36 @@ class SourceOrderIntakeApiTest {
         assertThat(result.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(result.getBody().get("status")).isEqualTo("NEEDS_EXTRACTION");
         assertThat(result.getBody().get("error_code")).isEqualTo("TEMPLATE_FINGERPRINT_NOT_FOUND");
+    }
+
+    @Test
+    void sameIdempotencyKeyRejectsDifferentFileContent() throws Exception {
+        byte[] firstWorkbook = workbook(
+                List.of("新订单编号", "客户姓名", "联系电话", "商品描述", "数量"),
+                List.of("IDEMPOTENT-001", "张三", "13800000000", "羊肉礼盒", "1"));
+        byte[] differentWorkbook = workbook(
+                List.of("新订单编号", "客户姓名", "联系电话", "商品描述", "数量"),
+                List.of("IDEMPOTENT-002", "李四", "13900000000", "牛肉礼盒", "2"));
+
+        ResponseEntity<Map> first = submit(
+                "first.xlsx", firstWorkbook, "DAZHE", "intake-same-key-0001");
+        ResponseEntity<Map> conflict = submit(
+                "different.xlsx", differentWorkbook, "DAZHE", "intake-same-key-0001");
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        assertThat(conflict.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(conflict.getBody().get("business_code")).isEqualTo("IDEMPOTENCY_CONFLICT");
+    }
+
+    @Test
+    void domainFileSizeLimitReturnsAStableBusinessError() {
+        byte[] oversized = new byte[(int) SourceOrderIntakeFileStore.MAX_BYTES + 1];
+
+        ResponseEntity<Map> response = submit(
+                "oversized.csv", oversized, MediaType.TEXT_PLAIN, "DAZHE", "intake-size-0001");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(response.getBody().get("business_code")).isEqualTo("SOURCE_FILE_TOO_LARGE");
     }
 
     @Test
@@ -243,6 +317,31 @@ class SourceOrderIntakeApiTest {
                 row.createCell(index).setCellValue(values.get(index));
             }
             workbook.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] arbitraryZip() throws Exception {
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ZipOutputStream zip = new ZipOutputStream(output)) {
+            zip.putNextEntry(new ZipEntry("not-a-workbook.txt"));
+            zip.write("fixture".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.finish();
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] damagedXlsxContainer() throws Exception {
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ZipOutputStream zip = new ZipOutputStream(output)) {
+            zip.putNextEntry(new ZipEntry("[Content_Types].xml"));
+            zip.write("not valid content types xml".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("xl/workbook.xml"));
+            zip.write("not valid workbook xml".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.finish();
             return output.toByteArray();
         }
     }

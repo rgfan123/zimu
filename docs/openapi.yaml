@@ -1083,7 +1083,11 @@ paths:
                 import_mode: { $ref: '#/components/schemas/ImportMode' }
                 parent_import_batch_id: { $ref: '#/components/schemas/Identifier' }
       responses:
-        '202': { description: 原件已安全保存，任务已接收 }
+        '202':
+          description: 原件已安全保存，任务已接收
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceOrderIntakeJob' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/source-order-intake-jobs/{job_id}:
     get:
@@ -1095,7 +1099,11 @@ paths:
           required: true
           schema: { $ref: '#/components/schemas/Identifier' }
       responses:
-        '200': { description: 来源订单附件任务状态 }
+        '200':
+          description: 来源订单附件任务状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceOrderIntakeJob' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/source-order-intake-jobs/{job_id}/file:
     get:
@@ -4285,6 +4293,32 @@ components:
       type: string
       enum: [NEW, REVISION]
       default: NEW
+    SourceOrderIntakeStatus:
+      type: string
+      enum: [RECEIVED, PROCESSING, NEEDS_EXTRACTION, NEEDS_REVIEW, READY, IMPORTING, OUTBOUND_SUBMITTING, SUCCEEDED, FAILED, RECONCILIATION_REQUIRED, COMPLETED]
+    SourceOrderIntakeJob:
+      type: object
+      additionalProperties: false
+      required: [id, job_no, source_channel, import_mode, original_file_name, file_format, content_sha256, status, lock_version, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        job_no: { type: string, maxLength: 64 }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        import_mode: { $ref: '#/components/schemas/ImportMode' }
+        parent_import_batch_id:
+          allOf: [{ $ref: '#/components/schemas/Identifier' }]
+          nullable: true
+        original_file_name: { type: string, maxLength: 255 }
+        file_format: { type: string, enum: [XLSX, XLS, CSV] }
+        content_sha256: { $ref: '#/components/schemas/Sha256' }
+        status: { $ref: '#/components/schemas/SourceOrderIntakeStatus' }
+        error_code: { type: string, maxLength: 64, nullable: true }
+        import_batch_id:
+          allOf: [{ $ref: '#/components/schemas/Identifier' }]
+          nullable: true
+        lock_version: { type: integer, format: int64, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     ImportBatchStatus:
       type: string
       enum: [RECEIVED, PROCESSING, COMPLETED, COMPLETED_WITH_REVIEW, FAILED]

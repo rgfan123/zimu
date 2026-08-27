@@ -1,7 +1,12 @@
 package cn.zimu.fulfillment.file;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -9,6 +14,9 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.Locale;
+import org.apache.commons.compress.archivers.zip.ZipFile;
+import org.apache.commons.compress.utils.SeekableInMemoryByteChannel;
+import org.apache.poi.poifs.filesystem.POIFSFileSystem;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -41,7 +49,7 @@ class SourceOrderIntakeFileStore {
             throw BusinessException.unprocessable(
                     "SOURCE_FILE_CONTENT_TYPE_MISMATCH", "文件 MIME、扩展名与实际 Excel/CSV 格式不一致");
         }
-        String sha256 = sha256(bytes);
+        String sha256 = contentSha256(bytes);
         Path target = root.resolve(sha256 + "." + format.extension).normalize();
         if (!target.startsWith(root)) {
             throw new IllegalStateException("来源订单文件存储路径越界");
@@ -86,21 +94,58 @@ class SourceOrderIntakeFileStore {
     private Format detect(byte[] bytes, String filename) {
         String extension = extension(filename);
         if (startsWith(bytes, new byte[] {'P', 'K'})) {
-            if ("xlsx".equals(extension)) {
+            if ("xlsx".equals(extension) && isXlsxContainer(bytes)) {
                 return Format.XLSX;
             }
             throw formatMismatch();
         }
         if (startsWith(bytes, OLE2)) {
-            if ("xls".equals(extension)) {
+            if ("xls".equals(extension) && isXlsContainer(bytes)) {
                 return Format.XLS;
             }
             throw formatMismatch();
         }
-        if ("csv".equals(extension) && !containsNul(bytes)) {
+        if ("csv".equals(extension) && !containsNul(bytes) && isStrictlyDecodableText(bytes)) {
             return Format.CSV;
         }
         throw formatMismatch();
+    }
+
+    /** 只确认 OOXML 工作簿容器身份；单元格与业务内容必须在原件留存后异步解析。 */
+    private static boolean isXlsxContainer(byte[] bytes) {
+        try (var channel = new SeekableInMemoryByteChannel(bytes);
+                ZipFile zip = ZipFile.builder().setSeekableByteChannel(channel).get()) {
+            return zip.getEntry("[Content_Types].xml") != null
+                    && zip.getEntry("xl/workbook.xml") != null;
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
+    /** 只确认 OLE2 内是 Excel Workbook/Book 流，防止 Word 复合文档改名伪装。 */
+    private static boolean isXlsContainer(byte[] bytes) {
+        try (POIFSFileSystem filesystem = new POIFSFileSystem(new ByteArrayInputStream(bytes))) {
+            return filesystem.getRoot().hasEntry("Workbook") || filesystem.getRoot().hasEntry("Book");
+        } catch (Exception exception) {
+            return false;
+        }
+    }
+
+    private static boolean isStrictlyDecodableText(byte[] bytes) {
+        return decodes(bytes, java.nio.charset.StandardCharsets.UTF_8)
+                || decodes(bytes, Charset.forName("GB18030"));
+    }
+
+    private static boolean decodes(byte[] bytes, Charset charset) {
+        try {
+            charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes));
+            return true;
+        } catch (CharacterCodingException exception) {
+            return false;
+        }
     }
 
     private static BusinessException formatMismatch() {
@@ -121,9 +166,8 @@ class SourceOrderIntakeFileStore {
     }
 
     private static boolean containsNul(byte[] bytes) {
-        int limit = Math.min(bytes.length, 8 * 1024);
-        for (int index = 0; index < limit; index++) {
-            if (bytes[index] == 0) {
+        for (byte value : bytes) {
+            if (value == 0) {
                 return true;
             }
         }
@@ -144,7 +188,7 @@ class SourceOrderIntakeFileStore {
         return dot < 0 ? "" : filename.substring(dot + 1).toLowerCase(Locale.ROOT);
     }
 
-    private static String sha256(byte[] bytes) {
+    static String contentSha256(byte[] bytes) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
         } catch (Exception exception) {

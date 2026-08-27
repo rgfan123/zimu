@@ -22,6 +22,7 @@ import { PageState } from '@/pages/shared/PageState';
 import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
 import {
   FILE_JOB_BATCH_PARAM,
+  FILE_JOB_INTAKE_PARAM,
   invalidBatchIdMessage,
   parseBatchIdParam,
   reviewsUrlForBatch,
@@ -60,11 +61,22 @@ function num(v: string | number | undefined | null): string {
   return Number.isFinite(n) ? n.toLocaleString('zh-CN') : String(v);
 }
 
+function isRetryableIntakeRead(error: unknown): boolean {
+  return !(error instanceof ApiError) || error.status === 429 || error.status >= 500;
+}
+
+function intakeRetryDelay(attempt: number): number {
+  return Math.min(1000 * (2 ** attempt), 10_000);
+}
+
 function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const batchParam = parseBatchIdParam(searchParams.get(FILE_JOB_BATCH_PARAM));
   const urlBatchId = batchParam.kind === 'valid' ? batchParam.id : null;
   const urlBatchInvalid = batchParam.kind === 'invalid' ? batchParam.raw : null;
+  const intakeParam = parseBatchIdParam(searchParams.get(FILE_JOB_INTAKE_PARAM));
+  const urlIntakeId = intakeParam.kind === 'valid' ? intakeParam.id : null;
+  const urlIntakeInvalid = intakeParam.kind === 'invalid' ? intakeParam.raw : null;
   const [urlBatchError, setUrlBatchError] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [sourceChannel, setSourceChannel] = useState<SourceChannel>();
@@ -81,39 +93,89 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const [confirmRowsLoading, setConfirmRowsLoading] = useState(false);
   const [confirmRowsError, setConfirmRowsError] = useState<unknown>(null);
 
+  const adoptSucceededJob = async (job: SourceOrderIntakeJob, isActive = () => true) => {
+    if (job.status !== 'SUCCEEDED' || !job.import_batch_id) return false;
+    const imported = await fileOperationsApi.getSourceBatch(job.import_batch_id);
+    if (!isActive()) return true;
+    setResult(imported);
+    setSearchParams({ [FILE_JOB_BATCH_PARAM]: imported.id });
+    message.success('来源订单附件已完成导入');
+    onCompleted();
+    await loadConfirmRows(imported);
+    return true;
+  };
+
+  /** 附件任务标识进 URL，页面刷新后恢复异步任务或其已完成批次。 */
   useEffect(() => {
-    if (!intakeJob || !['RECEIVED', 'PROCESSING'].includes(intakeJob.status)) return;
+    if (urlIntakeInvalid !== null) {
+      setUrlBatchError(invalidBatchIdMessage(urlIntakeInvalid, '自动恢复该附件任务'));
+      return;
+    }
+    if (urlIntakeId === null || urlBatchId !== null || intakeJob?.id === urlIntakeId) return;
     let active = true;
     let timer: number | undefined;
-    const poll = async () => {
+    let attempts = 0;
+    const restore = async () => {
       try {
-        const job = await fileOperationsApi.getSourceJob(intakeJob.id);
+        const job = await fileOperationsApi.getSourceJob(urlIntakeId);
         if (!active) return;
+        setUrlBatchError(null);
         setIntakeJob(job);
-        if (job.status === 'SUCCEEDED' && job.import_batch_id) {
-          const imported = await fileOperationsApi.getSourceBatch(job.import_batch_id);
-          if (!active) return;
-          setResult(imported);
-          setSearchParams({ [FILE_JOB_BATCH_PARAM]: imported.id });
-          message.success('来源订单附件已完成导入');
-          onCompleted();
-          await loadConfirmRows(imported);
-          return;
-        }
-        if (['RECEIVED', 'PROCESSING'].includes(job.status)) {
-          timer = window.setTimeout(poll, 1000);
-        }
       } catch (error) {
-        if (active) message.error(errorMessage(error));
+        if (!active) return;
+        setUrlBatchError(errorMessage(error));
+        if (isRetryableIntakeRead(error)) {
+          timer = window.setTimeout(restore, intakeRetryDelay(attempts++));
+        }
       }
     };
-    timer = window.setTimeout(poll, 1000);
+    void restore();
     return () => {
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intakeJob?.id]);
+  }, [urlIntakeId, urlIntakeInvalid, urlBatchId, intakeJob?.id]);
+
+  useEffect(() => {
+    if (!intakeJob || !['RECEIVED', 'PROCESSING', 'SUCCEEDED'].includes(intakeJob.status)) return;
+    let active = true;
+    let timer: number | undefined;
+    let attempts = 0;
+    const recover = async () => {
+      try {
+        if (intakeJob.status === 'SUCCEEDED') {
+          if (!intakeJob.import_batch_id) {
+            setUrlBatchError('附件任务已完成，但未返回导入批次，请联系管理员核对。');
+            return;
+          }
+          await adoptSucceededJob(intakeJob, () => active);
+          if (active) setUrlBatchError(null);
+          return;
+        }
+        const job = await fileOperationsApi.getSourceJob(intakeJob.id);
+        if (!active) return;
+        attempts = 0;
+        setUrlBatchError(null);
+        setIntakeJob(job);
+        if (['RECEIVED', 'PROCESSING'].includes(job.status)) {
+          timer = window.setTimeout(recover, 1000);
+        }
+      } catch (error) {
+        if (!active) return;
+        setUrlBatchError(errorMessage(error));
+        if (isRetryableIntakeRead(error)) {
+          timer = window.setTimeout(recover, intakeRetryDelay(attempts++));
+        }
+      }
+    };
+    timer = window.setTimeout(recover, intakeJob.status === 'SUCCEEDED' ? 0 : 1000);
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intakeJob?.id, intakeJob?.status]);
 
   /** 批次标识进 URL（Issue #95）：刷新或浏览器回退后按 ?import_batch= 恢复当前批次，不再依赖页面本地 state。 */
   useEffect(() => {
@@ -125,7 +187,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
       return;
     }
     if (urlBatchId === null) {
-      setUrlBatchError(null);
+      if (urlIntakeId === null && urlIntakeInvalid === null) setUrlBatchError(null);
       return;
     }
     if (result?.id === urlBatchId) {
@@ -152,7 +214,7 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlBatchId, urlBatchInvalid, result?.id]);
+  }, [urlBatchId, urlBatchInvalid, urlIntakeId, urlIntakeInvalid, result?.id]);
 
   const loadConfirmRows = async (batch: ImportBatch) => {
     const statuses = [
@@ -201,7 +263,10 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
       );
       setIntakeJob(job);
       setFile(null);
-      message.success(`附件已接收，任务号 ${job.job_no}`);
+      setSearchParams({ [FILE_JOB_INTAKE_PARAM]: job.id });
+      if (job.status !== 'SUCCEEDED') {
+        message.success(`附件已接收，任务号 ${job.job_no}`);
+      }
     } catch (error) {
       message.error(errorMessage(error));
     } finally {

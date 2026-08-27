@@ -28,7 +28,7 @@ class SourceOrderIntakeController {
     }
 
     @PostMapping(path = "/api/v1/source-order-intake-jobs", consumes = "multipart/form-data")
-    ResponseEntity<Map<String, Object>> submit(
+    ResponseEntity<?> submit(
             @RequestParam("file") MultipartFile file,
             @RequestParam("source_channel") String sourceChannel,
             @RequestParam(value = "import_mode", defaultValue = "NEW") String importMode,
@@ -42,7 +42,7 @@ class SourceOrderIntakeController {
             throw BusinessException.badRequest("SOURCE_CHANNEL_INVALID", "source_channel 不是已登记来源渠道");
         }
         Long parent = parentBatchId == null ? null : WriteCommands.parseIdentifier(parentBatchId);
-        Map<String, Object> job = service.submit(
+        return WriteCommands.respond(service.submit(
                 file.getBytes(),
                 file.getOriginalFilename(),
                 file.getContentType(),
@@ -50,8 +50,7 @@ class SourceOrderIntakeController {
                 importMode,
                 parent,
                 WriteCommands.requireIdempotencyKey(idempotencyKey),
-                WriteCommands.writeContext(operator));
-        return ResponseEntity.accepted().body(job);
+                WriteCommands.writeContext(operator)));
     }
 
     @GetMapping("/api/v1/source-order-intake-jobs/{job_id}")
@@ -74,6 +73,7 @@ class SourceOrderIntakeController {
                                 .build()
                                 .toString())
                 .header("X-Content-Type-Options", "nosniff")
+                .header(HttpHeaders.CACHE_CONTROL, "no-store, private")
                 .body(file.bytes());
     }
 }

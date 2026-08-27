@@ -5,6 +5,8 @@ import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
+import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import java.sql.ResultSet;
@@ -25,25 +27,29 @@ public class SourceOrderIntakeService {
 
     public static final String TASK_TYPE = "SOURCE_ORDER_FILE_INTAKE";
     private static final String PAYLOAD_PREFIX = "source-order-intake:";
+    private static final String IDEMPOTENCY_SCOPE = "source_order_intake.submit";
 
     private final JdbcTemplate jdbc;
     private final AsyncTaskStore tasks;
     private final SourceOrderIntakeFileStore files;
     private final AuditLogService audit;
+    private final IdempotencyService idempotency;
 
     SourceOrderIntakeService(
             JdbcTemplate jdbc,
             AsyncTaskStore tasks,
             SourceOrderIntakeFileStore files,
-            AuditLogService audit) {
+            AuditLogService audit,
+            IdempotencyService idempotency) {
         this.jdbc = jdbc;
         this.tasks = tasks;
         this.files = files;
         this.audit = audit;
+        this.idempotency = idempotency;
     }
 
     @Transactional
-    public Map<String, Object> submit(
+    public IdempotentResult<Map<String, Object>> submit(
             byte[] bytes,
             String originalFilename,
             String contentType,
@@ -53,6 +59,36 @@ public class SourceOrderIntakeService {
             String idempotencyKey,
             CommandContext context) {
         String mode = validateMode(importMode, parentBatchId, sourceChannel);
+        IntakeRequest request = new IntakeRequest(
+                sourceChannel.name(),
+                SourceOrderIntakeFileStore.contentSha256(bytes),
+                mode,
+                parentBatchId);
+        return idempotency.execute(
+                IDEMPOTENCY_SCOPE,
+                idempotencyKey,
+                request,
+                202,
+                () -> createJob(
+                        bytes,
+                        originalFilename,
+                        contentType,
+                        sourceChannel,
+                        mode,
+                        parentBatchId,
+                        idempotencyKey,
+                        context));
+    }
+
+    private Map<String, Object> createJob(
+            byte[] bytes,
+            String originalFilename,
+            String contentType,
+            SourceChannel sourceChannel,
+            String mode,
+            Long parentBatchId,
+            String idempotencyKey,
+            CommandContext context) {
         SourceOrderIntakeFileStore.StoredFile stored = files.store(bytes, originalFilename, contentType);
         Long existing = existing(sourceChannel, stored.sha256(), mode, parentBatchId);
         if (existing != null) {
@@ -315,6 +351,12 @@ public class SourceOrderIntakeService {
             String submittedBy) {}
 
     private record FileReference(String filename, String contentType, String fileRef) {}
+
+    private record IntakeRequest(
+            String sourceChannel,
+            String contentSha256,
+            String importMode,
+            Long parentImportBatchId) {}
 
     public record FileDownload(String filename, String contentType, byte[] bytes) {}
 }
