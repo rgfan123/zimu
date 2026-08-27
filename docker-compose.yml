@@ -281,6 +281,11 @@ services:
       # (the nginx entrypoint logs a warning and the gateway becomes open to any
       # client that can reach it).
       GATEWAY_BASIC_AUTH_ENABLED: "${GATEWAY_BASIC_AUTH_ENABLED:-true}"
+      # Kehuzx (customer-follow-up) routing defaults off: most deployments
+      # don't run kehuzx-api/kehuzx-web on kehuzx-integration, and rendering
+      # those upstreams unconditionally makes nginx's resolver retry the
+      # missing hostnames forever. Set true only where those containers exist.
+      KEHUZX_ENABLED: "${KEHUZX_ENABLED:-false}"
     ports:
       # Edge Basic Auth is on by default (single shared admin credential), and the
       # gateway stays loopback-bound. Remote deployments require real user auth and HTTPS first.

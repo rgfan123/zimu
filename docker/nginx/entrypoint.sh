@@ -92,4 +92,87 @@ else
 fi
 chmod 600 /etc/nginx/edge-auth.inc
 
+# Kehuzx (customer-follow-up) routing toggle: not every deployment runs the
+# kehuzx-api/kehuzx-web containers (they live on the separately-managed
+# kehuzx-integration network). Defining `upstream ... resolve` for a hostname
+# nothing answers to makes nginx retry the resolver forever -- every
+# `valid=10s` cycle in default.conf's resolver directive, i.e. an error pair
+# roughly every ~10-15s, flooding error_log with "could not be resolved"
+# indefinitely. KEHUZX_ENABLED (default off) gates whether the upstream/rate-
+# limit zone (kehuzx-upstream.inc) and the /kehuzx* locations (kehuzx.inc) are
+# rendered at all: off produces empty includes (zero upstream references,
+# zero resolver churn); on reproduces the routing exactly.
+kehuzx_enabled="${KEHUZX_ENABLED:-false}"
+case "$kehuzx_enabled" in
+  true|TRUE|True) kehuzx_enabled=true ;;
+  false|FALSE|False) kehuzx_enabled=false ;;
+  *)
+    echo "KEHUZX_ENABLED must be 'true' or 'false' (got '$kehuzx_enabled')" >&2
+    exit 1
+    ;;
+esac
+if [ "$kehuzx_enabled" = "true" ]; then
+  cat > /etc/nginx/kehuzx-upstream.inc <<'EOF'
+limit_req_zone $binary_remote_addr zone=kehuzx_login:10m rate=5r/m;
+
+upstream kehuzx_api_upstream {
+    zone kehuzx_api_upstream 64k;
+    server kehuzx-api:8000 resolve;
+}
+
+upstream kehuzx_web_upstream {
+    zone kehuzx_web_upstream 64k;
+    server kehuzx-web:8080 resolve;
+}
+EOF
+  cat > /etc/nginx/kehuzx.inc <<'EOF'
+    location = /kehuzx {
+        return 302 /kehuzx/;
+    }
+
+    # The UI inherits edge Basic Auth. API calls use Kehuzx Bearer JWT, which
+    # cannot share the Authorization header with Basic Auth; only the login
+    # endpoint is anonymous and it is independently rate limited.
+    location = /kehuzx/api/auth/login {
+        auth_basic off;
+        limit_req zone=kehuzx_login burst=5 nodelay;
+        proxy_pass http://kehuzx_api_upstream/api/auth/login;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /kehuzx/api/health {
+        proxy_pass http://kehuzx_api_upstream/api/health;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /kehuzx/api/ {
+        auth_basic off;
+        proxy_pass http://kehuzx_api_upstream/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 90s;
+    }
+
+    location /kehuzx/ {
+        proxy_pass http://kehuzx_web_upstream/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+EOF
+  echo "[zimu-nginx] kehuzx routing: ENABLED"
+else
+  : > /etc/nginx/kehuzx-upstream.inc
+  : > /etc/nginx/kehuzx.inc
+  echo "[zimu-nginx] kehuzx routing: DISABLED (KEHUZX_ENABLED=${KEHUZX_ENABLED:-<unset, default false>}) -- set KEHUZX_ENABLED=true once kehuzx-api/kehuzx-web are reachable on this deployment's kehuzx-integration network."
+fi
+chmod 644 /etc/nginx/kehuzx-upstream.inc /etc/nginx/kehuzx.inc
+
 exec /docker-entrypoint.sh nginx -g 'daemon off;'
