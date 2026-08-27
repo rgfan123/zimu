@@ -634,7 +634,8 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
             ShipmentPlan shipment = shipments.get(source.orderId() + ":" + source.providerId());
             planned.add(new PlannedExportRow(lineNo++, source, shipment));
         }
-        JdWorkbook generated = jdWorkbook(planned);
+        List<Map<String, Object>> plannedCells = planned.stream().map(this::jdOutputCells).toList();
+        JdWorkbook generated = jdWorkbook(planned, plannedCells);
         ContentAddressedFileStore.StoredFile stored = fileStore.put("fulfillment-exports", generated.bytes(), ".xlsx");
         ExportRow first = sourceRows.getFirst();
         long exportId = jdbc.queryForObject(
@@ -653,8 +654,9 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 stored.sha256(),
                 first.trackingSlaMinutes(),
                 operator);
-        for (PlannedExportRow row : planned) {
-            Map<String, Object> cells = jdOutputCells(row);
+        for (int index = 0; index < planned.size(); index++) {
+            PlannedExportRow row = planned.get(index);
+            Map<String, Object> cells = plannedCells.get(index);
             jdbc.update(
                     """
                     INSERT INTO app.fulfillment_export_items
@@ -681,7 +683,8 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         return exportId;
     }
 
-    private JdWorkbook jdWorkbook(List<PlannedExportRow> rows) {
+    private JdWorkbook jdWorkbook(
+            List<PlannedExportRow> rows, List<Map<String, Object>> plannedCells) {
         try {
             if (!BUILT_IN_JD_TEMPLATE.exists()) {
                 throw BusinessException.unprocessable(
@@ -703,9 +706,10 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                     }
                 }
                 clearValues(styleRow);
-                for (PlannedExportRow planned : rows) {
+                for (int index = 0; index < rows.size(); index++) {
+                    PlannedExportRow planned = rows.get(index);
                     Row target = planned.lineNo() == 1 ? styleRow : copyStyledRow(sheet, styleRow, planned.lineNo());
-                    writeJdRow(target, planned);
+                    writeJdRow(target, plannedCells.get(index));
                 }
                 workbook.setForceFormulaRecalculation(true);
                 workbook.write(output);
@@ -756,9 +760,8 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         return row;
     }
 
-    private void writeJdRow(Row row, PlannedExportRow planned) {
+    private void writeJdRow(Row row, Map<String, Object> values) {
         Map<String, Integer> columns = jdColumns();
-        Map<String, Object> values = jdOutputCells(planned);
         for (Map.Entry<String, Object> entry : values.entrySet()) {
             int index = columns.get(entry.getKey());
             if (entry.getValue() instanceof Number number) {
@@ -816,7 +819,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         cells.put("*ISV来源编号", requiredJdConfig(config, "sourceNo"));
         cells.put("*事业部编号", requiredJdConfig(config, "ownerNo"));
         cells.put("*店铺编号", requiredJdConfig(config, "shopNo"));
-        cells.put("青龙业主号", requiredJdConfig(config, "customerCode"));
+        cells.put("青龙业主号", requiredJdCustomerCode(config, source.orderId()));
         cells.put("*仓库编号", requiredJdConfig(config, "warehouseNo"));
         cells.put("*承运商编号", requiredJdConfig(config, "carrierNo"));
         cells.put("*授权码pin", requiredJdConfig(config, "pin"));
@@ -840,6 +843,28 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         cells.put("*商品的出库数量", source.requestedQuantity().intValueExact());
         cells.put("仓配产品", "LL-HD-M");
         return cells;
+    }
+
+    /**
+     * 青龙业主号（customerCode）：与建单路径 {@code ShipmentJdOutboundPreparer}
+     * 同一套取值语义——履约方配置优先，客户档案 jd_customer_code 为历史回退源；
+     * 两者都缺时 fail-closed 阻断导出，避免发出可能错误的单据。
+     */
+    private String requiredJdCustomerCode(Map<String, Object> config, long orderId) {
+        Object configCode = config.get("customerCode");
+        if (configCode != null && !configCode.toString().isBlank()) {
+            return configCode.toString();
+        }
+        String archiveCode = jdbc.queryForObject(
+                "SELECT c.profile->>'jd_customer_code' FROM app.orders o"
+                        + " LEFT JOIN app.customers c ON c.id=o.customer_id WHERE o.id=?",
+                String.class, orderId);
+        if (archiveCode != null && !archiveCode.isBlank()) {
+            return archiveCode;
+        }
+        throw BusinessException.unprocessable(
+                "JD_EXPORT_PROVIDER_CONFIG_MISSING",
+                "履约方配置缺少京东标识 customerCode（或客户档案 jd_customer_code 回退值），请在「系统管理 → 履约方」补齐后再导出");
     }
 
     /** 数值列的宽容解析：可解析即数值，否则原样字符串（不猜默认值）。 */
