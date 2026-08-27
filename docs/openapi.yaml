@@ -1062,6 +1062,58 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ImportBatch' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/source-order-intake-jobs:
+    post:
+      tags: [Imports]
+      operationId: submitSourceOrderIntakeJob
+      summary: 持久化来源订单原件并创建异步解析任务
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, source_channel]
+              properties:
+                file: { type: string, format: binary }
+                source_channel: { $ref: '#/components/schemas/SourceChannel' }
+                import_mode: { $ref: '#/components/schemas/ImportMode' }
+                parent_import_batch_id: { $ref: '#/components/schemas/Identifier' }
+      responses:
+        '202': { description: 原件已安全保存，任务已接收 }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/source-order-intake-jobs/{job_id}:
+    get:
+      tags: [Imports]
+      operationId: getSourceOrderIntakeJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Identifier' }
+      responses:
+        '200': { description: 来源订单附件任务状态 }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/source-order-intake-jobs/{job_id}/file:
+    get:
+      tags: [Imports]
+      operationId: downloadSourceOrderIntakeOriginal
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Identifier' }
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: 经授权与审计的原始附件下载
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/provider-sku-mapping-references/preview:
     post:
       tags: [Imports, MasterData]
