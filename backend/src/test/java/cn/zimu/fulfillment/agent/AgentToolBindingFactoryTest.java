@@ -2,16 +2,21 @@ package cn.zimu.fulfillment.agent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
 import cn.zimu.fulfillment.mcp.McpTool;
 import cn.zimu.fulfillment.mcp.McpToolRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 /**
  * 03 — Agent ↔ MCP 工具绑定（agent-decision-layer 03）：注册表工具与 Agent 可见工具
@@ -166,6 +171,62 @@ class AgentToolBindingFactoryTest {
         assertThat(allowed.specifications())
                 .extracting(ToolSpecification::name)
                 .containsExactly("reinterpret_submission");
+    }
+
+    @Test
+    void sessionRouteExposesOnlyReadOnlyMasterdataInventoryToolsAndRecordsWriteDenial() throws Exception {
+        McpToolRegistry sessionRegistry = McpToolTestSupport.registry(
+                moduleTool("search_products", "masterdata", true),
+                moduleTool("get_inventory_overview", "inventory", true),
+                moduleTool("list_orders", "orders", true));
+        AgentObservability observability = mock(AgentObservability.class);
+        AgentToolBindingFactory sessionFactory = new AgentToolBindingFactory(
+                sessionRegistry,
+                new McpAgentIdentity("wecom-session-agent"),
+                new ObjectMapper(),
+                observability);
+
+        AgentToolBindingFactory.RestrictedBinding restricted = sessionFactory.bindReadOnlyModules(
+                RUN_ID,
+                List.of(
+                        "search_products",
+                        "get_inventory_overview",
+                        "list_orders",
+                        "reinterpret_submission"),
+                Set.of("masterdata", "inventory"));
+
+        assertThat(restricted.exposedToolNames())
+                .containsExactly("search_products", "get_inventory_overview");
+        assertThat(restricted.deniedToolNames())
+                .containsExactly("list_orders", "reinterpret_submission");
+        assertThat(restricted.binding().specifications())
+                .extracting(ToolSpecification::name)
+                .containsExactlyInAnyOrder("search_products", "get_inventory_overview");
+
+        String denial = LangChain4jRuntimeAdapter.executeTool(
+                restricted.binding(),
+                ToolExecutionRequest.builder()
+                        .name("reinterpret_submission")
+                        .arguments("{}")
+                        .build());
+
+        assertThat(new ObjectMapper().readTree(denial).path("code").asText())
+                .isEqualTo("TOOL_NOT_AUTHORIZED");
+        ArgumentCaptor<AgentObservability.ToolCall> call =
+                ArgumentCaptor.forClass(AgentObservability.ToolCall.class);
+        verify(observability).toolCallFinished(call.capture());
+        assertThat(call.getValue().toolName()).isEqualTo("reinterpret_submission");
+        assertThat(call.getValue().success()).isFalse();
+    }
+
+    private static McpTool moduleTool(String name, String module, boolean readOnly) {
+        return new McpToolRegistry.SimpleTool(
+                name,
+                name,
+                McpToolRegistry.schema(Map.of(), List.of()),
+                (context, args) -> McpToolTestSupport.ok(name),
+                readOnly,
+                module);
     }
 
     private static ToolSpecification specOf(AgentToolBinding binding, String name) {
