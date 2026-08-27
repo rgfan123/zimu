@@ -109,12 +109,35 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   // FormData 由浏览器生成 multipart 边界，不得设置 JSON Content-Type。
   if (body !== undefined && !(body instanceof FormData)) requestHeaders['Content-Type'] = 'application/json';
 
-  const res = await fetch(buildUrl(path, params), {
-    method,
-    headers: requestHeaders,
-    body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
-    signal,
-  });
+  const doFetch = () =>
+    fetch(buildUrl(path, params), {
+      method,
+      headers: requestHeaders,
+      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
+      signal,
+    });
+
+  // 网络级失败（fetch 抛 TypeError，请求根本没到网关）对幂等 GET 自动重试两次：
+  // 生产网关经 Docker Desktop 端口转发，工作台一屏并发二十余请求时偶发个别连接被掐，
+  // 服务端日志全 200 而浏览器报「网络连接失败」——重试一次即愈，用户不该替 NAT 抖动买单。
+  let res: Response;
+  if (method === 'GET') {
+    let lastError: unknown;
+    res = await (async () => {
+      for (const delay of [0, 300, 800]) {
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+        try {
+          return await doFetch();
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          lastError = error;
+        }
+      }
+      throw lastError;
+    })();
+  } else {
+    res = await doFetch();
+  }
 
   if (!res.ok) {
     let errorBody: ApiErrorBody = { message: '', http_status: res.status };

@@ -267,7 +267,7 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
                       </div>
                       {group.count > 0 ? (
                         <div className="zs-a">
-                          <Link to={group.url}>去处理</Link>
+                          <Link to={group.url} className="zs-lnk">去处理</Link>
                         </div>
                       ) : null}
                     </div>
