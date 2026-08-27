@@ -1,10 +1,13 @@
 package cn.zimu.fulfillment.order.card;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.connector.wecom.card.WecomTaskId;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.security.SecureRandom;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -15,6 +18,8 @@ import org.springframework.transaction.annotation.Transactional;
 /** PostgreSQL implementation of the order-draft card outbox and SENDING recovery fence. */
 @Repository
 public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
+
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final JdbcTemplate jdbc;
 
@@ -47,7 +52,11 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
             throw BusinessException.unprocessable(
                     "ORDER_DRAFT_CARD_ROUTE_MISSING", "订单草稿缺少唯一的原企微会话，不能发送确认卡片");
         }
-        String taskId = "order-draft:" + draftId;
+        byte[] authorization = new byte[16];
+        RANDOM.nextBytes(authorization);
+        String taskId = WecomTaskId.ofVersion("order-draft", draftId, draftRevision)
+                .authorize(HexFormat.of().formatHex(authorization))
+                .value();
         jdbc.update(
                 """
                 INSERT INTO app.wecom_order_draft_cards (
@@ -116,6 +125,24 @@ public class JdbcOrderDraftCardStore implements OrderDraftCardStore {
                 JdbcOrderDraftCardStore::map,
                 taskId);
         return rows.stream().findFirst();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<OrderDraftCard> findByTaskId(String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            return Optional.empty();
+        }
+        return jdbc.query(
+                        """
+                        SELECT id, order_draft_id, draft_revision, task_id, route_type, chat_id,
+                               status, attempt_count
+                        FROM app.wecom_order_draft_cards WHERE task_id=?
+                        """,
+                        JdbcOrderDraftCardStore::map,
+                        taskId)
+                .stream()
+                .findFirst();
     }
 
     @Override

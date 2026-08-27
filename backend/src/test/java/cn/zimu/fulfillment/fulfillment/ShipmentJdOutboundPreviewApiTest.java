@@ -299,6 +299,84 @@ class ShipmentJdOutboundPreviewApiTest {
     }
 
     @Test
+    void addressAnalysisOffByDefaultKeepsTheOperatorConfirmedFourLevelPath() {
+        // 缺省不配 = 老路径一字不变。这条是防回归：新功能不得悄悄改变既有行为。
+        Fact fact = createOrder("ADDR-DEFAULT", List.of(item("1.000")), "待人工确认");
+        long shipmentId = createShipment(fact, "待人工确认");
+
+        ResponseEntity<Map> before = preview(shipmentId, "req-addr-default-unconfirmed");
+        assertThat(castList(before.getBody().get("blockers")))
+                .as("未确认地址时仍按原样阻断")
+                .anySatisfy(blocker -> assertThat(blocker)
+                        .containsEntry("code", "JD_SHIPMENT_OUTBOUND_RECEIVER_ADDRESS_NOT_CONFIRMED"));
+
+        confirmAddress(shipmentId, "addr-default");
+        ResponseEntity<Map> after = preview(shipmentId, "req-addr-default-confirmed");
+        Map<String, Object> receiver = castMap(castMap(after.getBody().get("request")).get("receiverInfo"));
+        assertThat(receiver).containsKeys("province", "city", "county", "detailAddress");
+        assertThat(receiver).doesNotContainKey("addressAnalysis");
+    }
+
+    @Test
+    void addressAnalysisTwoDelegatesFourLevelParsingToJdAndStopsSendingLevels() {
+        Fact fact = createOrder("ADDR-JD-PARSE", List.of(item("1.000")), "待人工确认");
+        long shipmentId = createShipment(fact, "待人工确认");
+        confirmAddress(shipmentId, "addr-jd-parse");
+
+        jdbc.update(
+                "UPDATE app.fulfillment_providers "
+                        + "SET config=jsonb_set(config, '{addressAnalysis}', '\"2\"'::jsonb, true) "
+                        + "WHERE provider_code='JD'");
+        ResponseEntity<Map> analyzed = preview(shipmentId, "req-addr-analysis-on");
+
+        Map<String, Object> receiver = castMap(castMap(analyzed.getBody().get("request")).get("receiverInfo"));
+        assertThat(receiver).containsEntry("addressAnalysis", 2);
+        assertThat(receiver)
+                .as("四级交给京东解析后，我方不再下发，避免与京东解析结果冲突")
+                .doesNotContainKeys("province", "city", "county", "town");
+
+        // 即便人工已确认过详细地址，送出去的仍是**原始快照全文**。
+        // 生产实证（飞象 D2026825436038809722）：我方拆完的 detail 丢了「北京市朝阳区」
+        // 这类定位锚点、却留着「太阳宫地区太阳宫」的重复片段——半成品比原文更难被京东解对。
+        String rawSnapshot = jdbc.queryForObject(
+                "SELECT receiver_address_snapshot FROM app.shipments WHERE id=?", String.class, shipmentId);
+        String confirmedDetail = jdbc.queryForObject(
+                "SELECT jd_receiver_detail_address FROM app.shipments WHERE id=?", String.class, shipmentId);
+        assertThat(confirmedDetail).as("前置：这一单确实人工确认过").isNotBlank();
+        assertThat(receiver).containsEntry("detailAddress", rawSnapshot);
+        assertThat(analyzed.getBody()).containsEntry("submittable", true);
+
+        jdbc.update("UPDATE app.fulfillment_providers SET config=config-'addressAnalysis' WHERE provider_code='JD'");
+    }
+
+    @Test
+    void addressAnalysisTwoFallsBackToTheRawSnapshotWhenOperatorHasNotConfirmed() {
+        // 未人工确认时不再阻断，而是把原始快照全文交给京东解析——这正是启用该模式的目的：
+        // 把"能不能拆四级"这件事从我方词典手里交出去。
+        // （收货人快照由 DB 触发器保护为不可变，因此空地址场景无法在此构造，
+        //   改由 putJdAnalyzedAddress 的 hasText 分支在单元层面保证，不在此重复。）
+        Fact fact = createOrder("ADDR-RAW", List.of(item("1.000")), "待人工确认");
+        long shipmentId = createShipment(fact, "待人工确认");
+        jdbc.update(
+                "UPDATE app.fulfillment_providers "
+                        + "SET config=jsonb_set(config, '{addressAnalysis}', '\"2\"'::jsonb, true) "
+                        + "WHERE provider_code='JD'");
+
+        ResponseEntity<Map> analyzed = preview(shipmentId, "req-addr-analysis-raw");
+        Map<String, Object> receiver = castMap(castMap(analyzed.getBody().get("request")).get("receiverInfo"));
+        assertThat(receiver).containsEntry("addressAnalysis", 2);
+        assertThat(receiver.get("detailAddress"))
+                .as("未确认时送原始快照全文，交京东解析")
+                .isNotNull();
+        assertThat(castList(analyzed.getBody().get("blockers")))
+                .as("启用京东解析后，未确认地址不再是阻断项")
+                .noneSatisfy(blocker -> assertThat(blocker)
+                        .containsEntry("code", "JD_SHIPMENT_OUTBOUND_RECEIVER_ADDRESS_NOT_CONFIRMED"));
+
+        jdbc.update("UPDATE app.fulfillment_providers SET config=config-'addressAnalysis' WHERE provider_code='JD'");
+    }
+
+    @Test
     void townRequirementMustBeAnExplicitProviderPolicyAndSupportsBothBranches() {
         Fact fact = createOrder("TOWN-POLICY", List.of(item("1.000")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");

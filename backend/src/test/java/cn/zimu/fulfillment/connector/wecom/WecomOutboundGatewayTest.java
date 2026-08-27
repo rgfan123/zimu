@@ -95,8 +95,8 @@ class WecomOutboundGatewayTest {
     }
 
     @Test
-    void textMessageSucceedsOnlyAfterMatchingAck() throws Exception {
-        WecomSendResult result = gateway.send(WecomOutboundMessage.text("user-001", "订单已创建"));
+    void markdownMessageSucceedsOnlyAfterMatchingAck() throws Exception {
+        WecomSendResult result = gateway.send(WecomOutboundMessage.markdown("user-001", "订单已创建"));
 
         assertThat(result.status()).isEqualTo(WecomSendStatus.SUCCESS);
         assertThat(result.acknowledgedAt()).isNotNull();
@@ -105,8 +105,8 @@ class WecomOutboundGatewayTest {
         JsonNode frame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
         assertThat(frame.path("headers").path("req_id").asText()).isEqualTo(result.requestId());
         assertThat(frame.path("body").path("chatid").asText()).isEqualTo("user-001");
-        assertThat(frame.path("body").path("msgtype").asText()).isEqualTo("text");
-        assertThat(frame.path("body").path("text").path("content").asText()).isEqualTo("订单已创建");
+        assertThat(frame.path("body").path("msgtype").asText()).isEqualTo("markdown");
+        assertThat(frame.path("body").path("markdown").path("content").asText()).isEqualTo("订单已创建");
 
         assertThat(storedAudits).hasSize(1);
         AuditLog audit = storedAudits.getFirst();
@@ -116,7 +116,7 @@ class WecomOutboundGatewayTest {
         assertThat(audit.getOperation()).isEqualTo("wecom.message.send");
         assertThat(audit.getRequestPayload())
                 .containsEntry("chat_id", "user-001")
-                .containsEntry("message_type", "text")
+                .containsEntry("message_type", "markdown")
                 .containsEntry("content_bytes", 15);
         assertThat((String) audit.getRequestPayload().get("content_sha256")).hasSize(64);
         assertThat(MAPPER.writeValueAsString(audit.getRequestPayload())).doesNotContain("订单已创建");
@@ -130,7 +130,7 @@ class WecomOutboundGatewayTest {
 
         try (var sender = Executors.newSingleThreadExecutor()) {
             Future<WecomSendResult> pending =
-                    sender.submit(() -> gateway.send(WecomOutboundMessage.text("group-001", "请处理复核")));
+                    sender.submit(() -> gateway.send(WecomOutboundMessage.markdown("group-001", "请处理复核")));
             assertThat(server.awaitFrame("aibot_send_msg", 2_000)).isNotNull();
 
             server.abortConnection();
@@ -180,7 +180,7 @@ class WecomOutboundGatewayTest {
     void disconnectedGatewayFailsFastWithoutSubmittingMessage() {
         client.shutdown();
 
-        WecomSendResult result = gateway.send(WecomOutboundMessage.text("user-004", "不会发送"));
+        WecomSendResult result = gateway.send(WecomOutboundMessage.markdown("user-004", "不会发送"));
 
         assertThat(result.status()).isEqualTo(WecomSendStatus.FAILED);
         assertThat(result.errorMessage()).isEqualTo("CONNECTION_NOT_READY");
@@ -195,9 +195,9 @@ class WecomOutboundGatewayTest {
 
         try (var senders = Executors.newFixedThreadPool(2)) {
             Future<WecomSendResult> first =
-                    senders.submit(() -> gateway.send(WecomOutboundMessage.text("user-a", "消息 A")));
+                    senders.submit(() -> gateway.send(WecomOutboundMessage.markdown("user-a", "消息 A")));
             Future<WecomSendResult> second =
-                    senders.submit(() -> gateway.send(WecomOutboundMessage.text("user-b", "消息 B")));
+                    senders.submit(() -> gateway.send(WecomOutboundMessage.markdown("user-b", "消息 B")));
 
             org.awaitility.Awaitility.await()
                     .atMost(Duration.ofSeconds(2))
@@ -269,20 +269,17 @@ class WecomOutboundGatewayTest {
     }
 
     @Test
-    void textAndMarkdownFramesKeepContentShapeAfterFileSupport() throws Exception {
-        WecomSendResult textResult = gateway.send(WecomOutboundMessage.text("user-200", "普通文本"));
-        assertThat(textResult.status()).isEqualTo(WecomSendStatus.SUCCESS);
-        JsonNode textFrame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
-        assertThat(textFrame.path("body").path("msgtype").asText()).isEqualTo("text");
-        assertThat(textFrame.path("body").path("text").path("content").asText()).isEqualTo("普通文本");
-        assertThat(textFrame.path("body").path("file").isMissingNode()).isTrue();
+    void activeTextIsRejectedAndMarkdownKeepsItsProtocolShape() throws Exception {
+        assertThatThrownBy(() -> WecomOutboundMessage.text("user-200", "普通文本"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not supported");
 
         WecomSendResult markdownResult = gateway.send(WecomOutboundMessage.markdown("user-201", "**加粗**"));
         assertThat(markdownResult.status()).isEqualTo(WecomSendStatus.SUCCESS);
         org.awaitility.Awaitility.await()
                 .atMost(Duration.ofSeconds(2))
-                .untilAsserted(() -> assertThat(sendMessageFrames()).hasSize(2));
-        JsonNode markdownFrame = sendMessageFrames().get(1);
+                .untilAsserted(() -> assertThat(sendMessageFrames()).hasSize(1));
+        JsonNode markdownFrame = sendMessageFrames().getFirst();
         assertThat(markdownFrame.path("body").path("msgtype").asText()).isEqualTo("markdown");
         assertThat(markdownFrame.path("body").path("markdown").path("content").asText()).isEqualTo("**加粗**");
         assertThat(markdownFrame.path("body").path("file").isMissingNode()).isTrue();
@@ -295,7 +292,7 @@ class WecomOutboundGatewayTest {
         card.putObject("main_title").put("title", "订单草稿待确认").put("desc", "草稿 OD-41");
         card.putArray("button_list")
                 .addObject().put("text", "确认订单").put("key", "confirm_order").put("style", 1);
-        card.put("task_id", "order-draft:41");
+        card.put("task_id", "order-draft_41_v0");
 
         WecomSendResult result = gateway.send(WecomOutboundMessage.templateCard("group-card", card));
 
@@ -306,7 +303,7 @@ class WecomOutboundGatewayTest {
         assertThat(frame.path("body").path("template_card").path("card_type").asText())
                 .isEqualTo("button_interaction");
         assertThat(frame.path("body").path("template_card").path("task_id").asText())
-                .isEqualTo("order-draft:41");
+                .isEqualTo("order-draft_41_v0");
         assertThat(frame.path("body").path("template_card").path("button_list").get(0).path("key").asText())
                 .isEqualTo("confirm_order");
         AuditLog audit = storedAudits.getLast();
@@ -314,7 +311,7 @@ class WecomOutboundGatewayTest {
                 .containsEntry("message_type", "template_card")
                 .containsKey("template_card_sha256");
         assertThat(MAPPER.writeValueAsString(audit.getRequestPayload()))
-                .doesNotContain("OD-41", "order-draft:41", "确认订单");
+                .doesNotContain("OD-41", "order-draft_41_v0", "确认订单");
     }
 
     // ---- 素材上传（Issue #82）----

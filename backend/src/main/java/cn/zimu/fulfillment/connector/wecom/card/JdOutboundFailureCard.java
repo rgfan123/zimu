@@ -58,8 +58,7 @@ public final class JdOutboundFailureCard {
             builder.callbackButton("重试建单", RETRY_BUTTON_KEY, ButtonStyle.PRIMARY);
         }
         if (view.reconUrl() != null && !view.reconUrl().isBlank()) {
-            builder.jumpButton("去对账", view.reconUrl(), ButtonStyle.SECONDARY)
-                    .cardAction(view.reconUrl());
+            builder.cardAction(view.reconUrl());
         }
         return builder.build();
     }

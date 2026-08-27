@@ -16,6 +16,9 @@ public interface OrderDraftCardStore {
     /** Only an acknowledged outbound card can authorize a later interaction callback. */
     Optional<OrderDraftCard> findSentByTaskId(String taskId);
 
+    /** Resolves persisted callback linkage without granting permission to execute the action. */
+    Optional<OrderDraftCard> findByTaskId(String taskId);
+
     CardSendPermit beginSend(long cardId);
 
     void recordSent(long cardId, String requestId, Instant acknowledgedAt);

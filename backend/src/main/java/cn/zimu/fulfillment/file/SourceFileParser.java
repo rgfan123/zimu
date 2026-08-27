@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
@@ -56,12 +57,93 @@ class SourceFileParser {
             "物流信息", "crm 单号", "订单总金额", "skuid", "sku名称", "不含运毛利额", "不含运毛利率",
             "含运毛利额", "含运毛利率", "订单类型", "实物售后");
     private static final Set<String> WANQI_PENDING_STATUSES = Set.of("超时未发货", "待发货");
+    /**
+     * 大者 v2：11 列「订单往返表」——渠道发订单给我们，我们发完货把后两列填回去还它。
+     *
+     * <p>与 v1（15 列，{@code 渠道订单号/主商品编码/…/快递单号/快递公司}）是两份不同的导出，
+     * 需要共存。两者必填集互斥（v1 有 主商品编码/快递单号，v2 有 主订单号/物流单号），
+     * 不会同时命中。
+     *
+     * <p><b>刻意不把「价格」「合计」列进必填</b>：金额列是各家导出里最容易增删的，
+     * 拿它当身份特征，改版一次就全认不出来了。身份靠订单号、收件人、物流回填列。
+     *
+     * <p><b>这份表没有商品编码</b>，只有商品名称——所以映射只能按名称做，见 {@code dazheV2}。
+     */
+    private static final Set<String> DAZHE_V2_FINGERPRINT = Set.of(
+            "编号", "主订单号", "商品名称", "数量",
+            "收件人", "收件人电话", "收件人地址", "物流公司", "物流单号");
+
     private static final Charset GB18030 = Charset.forName("GB18030");
     private static final byte[] OLE2_MAGIC = {
         (byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0,
         (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1
     };
     private final DataFormatter formatter = new DataFormatter(java.util.Locale.ROOT);
+
+    /**
+     * 只读表头做模板识别：认得出就返回来源渠道，认不出返回 empty。
+     *
+     * <p><b>为什么需要它</b>：企微单聊收到的文件此前一律被当成 24 列运单回传表
+     * （{@code WecomTrackingFileProcessor} 的硬编码路径），渠道发来的订单表因此一律报
+     * 「不符合精确 24 列模板」。要分岔就得先能问一句「这是不是来源订单表」，
+     * 而指纹全是本类的 private static。
+     *
+     * <p><b>认不出返回 empty 而不是抛异常</b>：认不出是正常情况——用户发的可能本来就是
+     * 运单回传表。用异常表达正常分支，会逼调用方 try/catch，而 catch 块最容易把真错误一起吞掉。
+     *
+     * <p>无副作用，可重复调用；不解析行，因此比 {@link #parse} 便宜得多。
+     */
+    public Optional<SourceChannel> detectChannel(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return Optional.empty();
+        }
+        try {
+            return isWorkbook(bytes) ? detectWorkbookChannel(bytes) : detectCsvChannel(bytes);
+        } catch (Exception exception) {
+            // 连文件都打不开，那就不是任何已知来源模板；判定失败等同于认不出
+            return Optional.empty();
+        }
+    }
+
+    private Optional<SourceChannel> detectWorkbookChannel(byte[] bytes) throws IOException {
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Set<SourceChannel> hits = new java.util.LinkedHashSet<>();
+            for (int sheetIndex = 0; sheetIndex < workbook.getNumberOfSheets(); sheetIndex++) {
+                Sheet sheet = workbook.getSheetAt(sheetIndex);
+                List<String> headers = headers(sheet.getRow(0));
+                for (SourceChannel channel : SourceChannel.values()) {
+                    if (channel == SourceChannel.WECOM || !eligibleSheet(channel, sheetIndex, sheet.getSheetName())) {
+                        continue;
+                    }
+                    if (matches(channel, headers)) {
+                        hits.add(channel);
+                    }
+                }
+            }
+            // 命中多个渠道时不猜：交给 parse() 去抛 TEMPLATE_FINGERPRINT_AMBIGUOUS，
+            // 那里的报错信息才说得清是哪几个撞了
+            return hits.size() == 1 ? Optional.of(hits.iterator().next()) : Optional.empty();
+        }
+    }
+
+    private Optional<SourceChannel> detectCsvChannel(byte[] bytes) throws IOException {
+        DecodedCsv decoded = decodeCsv(bytes);
+        String text = decoded.text();
+        if (text.startsWith("\uFEFF")) {
+            text = text.substring(1);
+        }
+        try (CSVParser parser = CSVFormat.RFC4180.builder()
+                .setHeader()
+                .setSkipHeaderRecord(true)
+                .get()
+                .parse(new StringReader(text))) {
+            List<String> headers = parser.getHeaderNames().stream().map(this::normalizeHeader).toList();
+            boolean v1 = matches(headers, FINGERPRINTS.get(SourceChannel.FEIXIANG));
+            boolean v2 = matches(headers, FEIXIANG_V2_FINGERPRINT);
+            // 与 parseCsv 同构：恰好命中一套才算认出
+            return v1 ^ v2 ? Optional.of(SourceChannel.FEIXIANG) : Optional.empty();
+        }
+    }
 
     ParsedSourceFile parse(byte[] bytes) {
         if (bytes == null || bytes.length == 0) {
@@ -122,13 +204,17 @@ class SourceFileParser {
                         && isWangqiPurchaseTotal(cells)) {
                     continue;
                 }
+                if (candidate.channel() == SourceChannel.DAZHE && isDazheV2(cells) && isDazheV2Summary(cells)) {
+                    continue;
+                }
                 rows.add(map(candidate.channel(), candidate.sheet().getSheetName(), candidate.sheetIndex(), index + 1, cells));
             }
             List<ParsedSourceRow> validatedRows = candidate.channel() == SourceChannel.WANQI
                     ? validateWanqi52Identities(rows)
                     : rows;
             return parsed(
-                    candidate.channel(), candidate.headers(), false, templateVersion(candidate.channel()), validatedRows);
+                    candidate.channel(), candidate.headers(), false,
+                    templateVersion(candidate.channel(), candidate.headers()), validatedRows);
         }
     }
 
@@ -183,7 +269,9 @@ class SourceFileParser {
             SourceChannel channel, String sheetName, int sheetIndex, int rowIndex, Map<String, String> cells) {
         return switch (channel) {
             case CAISHIXIAN -> caishixian(sheetName, sheetIndex, rowIndex, cells);
-            case DAZHE -> wangqi(sheetName, sheetIndex, rowIndex, cells);
+            case DAZHE -> isDazheV2(cells)
+                    ? dazheV2(sheetName, sheetIndex, rowIndex, cells)
+                    : wangqi(sheetName, sheetIndex, rowIndex, cells);
             case JUFUBAO -> jufubao(sheetName, sheetIndex, rowIndex, cells);
             case FEIXIANG -> feixiang(sheetName, sheetIndex, rowIndex, cells);
             case ZHONGHUI -> zhonghui(sheetName, sheetIndex, rowIndex, cells);
@@ -273,6 +361,34 @@ class SourceFileParser {
                 value(cells, "包装规格"), value(cells, "单位"),
                 value(cells, "件数"), parseTime(value(cells, "下单时间")), "OTHER",
                 value(cells, "用户留言"), true);
+    }
+
+    /**
+     * 大者 v2（11 列）行映射。
+     *
+     * <p><b>商品标识用商品名称</b>：这份导出里根本没有商品编码列（三个 sheet 全查过），
+     * 名称是唯一稳定的标识。代价是运营要为每个礼包在 {@code source_channel_bundles}
+     * 按名称配一条映射——{@code source_bundle_name} 本来就在那张表里，配得上。
+     * 硬要伪造一个编码只会让映射错得更隐蔽。
+     *
+     * <p><b>物流公司 / 物流单号 两列是空的，这是正常的</b>：它们是留给我们发完货填回去的，
+     * 不参与解析，也不该因为空而报错。
+     *
+     * <p>{@code 编号} 是表内行号（1、2、3…），只在本文件内唯一，跨文件会重复，
+     * 因此当行标识而不是订单标识——订单标识用 {@code 主订单号}。
+     */
+    private ParsedSourceRow dazheV2(String sheet, int sheetIndex, int row, Map<String, String> cells) {
+        String productName = value(cells, "商品名称");
+        return row(
+                sheet, sheetIndex, row, cells,
+                value(cells, "主订单号"), value(cells, "编号"),
+                "", "",
+                value(cells, "收件人"), value(cells, "收件人电话"), value(cells, "收件人地址"),
+                "", "", "",
+                productName, productName,
+                "", "件",
+                value(cells, "数量"), null, "OTHER",
+                "", true);
     }
 
     private ParsedSourceRow wangqi(String sheet, int sheetIndex, int row, Map<String, String> cells) {
@@ -436,24 +552,47 @@ class SourceFileParser {
             throw fingerprintError(matches.size());
         }
         SheetCandidate candidate = matches.getFirst();
-        assertNoDuplicateKeyHeaders(candidate.headers(), keyHeaders(candidate.channel()));
+        assertNoDuplicateKeyHeaders(candidate.headers(), keyHeaders(candidate.channel(), candidate.headers()));
         return candidate;
     }
 
     private boolean matches(SourceChannel channel, List<String> headers) {
-        return channel == SourceChannel.WANQI
-                ? WANQI_52_HEADERS.equals(headers)
-                : matches(headers, FINGERPRINTS.get(channel));
+        if (channel == SourceChannel.WANQI) {
+            return WANQI_52_HEADERS.equals(headers);
+        }
+        if (channel == SourceChannel.DAZHE) {
+            // 两份导出都属于大者；命中任一即认，具体用哪套解析由 isDazheV2 判定
+            return matches(headers, FINGERPRINTS.get(channel)) || isDazheV2(headers);
+        }
+        return matches(headers, FINGERPRINTS.get(channel));
     }
 
-    private Set<String> keyHeaders(SourceChannel channel) {
-        return channel == SourceChannel.WANQI
-                ? new HashSet<>(WANQI_52_HEADERS)
-                : FINGERPRINTS.get(channel);
+    /** 表头是否是大者 v2（11 列订单往返表）。判定只看必填集，不看列序也不看列数。 */
+    private boolean isDazheV2(List<String> headers) {
+        return matches(headers, DAZHE_V2_FINGERPRINT);
     }
 
-    private String templateVersion(SourceChannel channel) {
-        return channel == SourceChannel.WANQI ? "v1-52-columns" : "v1";
+    /** 行级判定：{@code cells} 的键就是表头，用同一套必填集，避免两处判定漂移。 */
+    private boolean isDazheV2(Map<String, String> cells) {
+        return cells.keySet().containsAll(DAZHE_V2_FINGERPRINT);
+    }
+
+    private Set<String> keyHeaders(SourceChannel channel, List<String> headers) {
+        if (channel == SourceChannel.WANQI) {
+            return new HashSet<>(WANQI_52_HEADERS);
+        }
+        // 拿错版本的必填集去查重复表头，会把「v2 文件里没有的列」报成重复，错得莫名其妙
+        if (channel == SourceChannel.DAZHE && isDazheV2(headers)) {
+            return DAZHE_V2_FINGERPRINT;
+        }
+        return FINGERPRINTS.get(channel);
+    }
+
+    private String templateVersion(SourceChannel channel, List<String> headers) {
+        if (channel == SourceChannel.WANQI) {
+            return "v1-52-columns";
+        }
+        return channel == SourceChannel.DAZHE && isDazheV2(headers) ? "v2-11-columns" : "v1";
     }
 
     private boolean matches(List<String> headers, Set<String> required) {
@@ -487,6 +626,20 @@ class SourceFileParser {
     private boolean isJufubaoSummary(Map<String, String> cells) {
         return cells.values().stream().map(String::strip)
                 .anyMatch(value -> "供应商汇总".equals(value) || "汇总".equals(value));
+    }
+
+    /**
+     * 大者 v2 的合计行：表尾只有「合计」列带 SUM 公式、身份列全空。
+     *
+     * <p>生产实证（批次 28 第 8 行）：{@code {"合计": "SUM(I2:I7)", 其余全空}} 被解析成一行、
+     * 落 NEED_REVIEW，而批次确认要求全行 ACCEPTED——一行合计把六张真订单全部拖住。
+     * 判定条件用「身份列全空」而不是「值里含 SUM」：公式文本随导出工具变（有的给公式、
+     * 有的给算好的数字），身份列空才是合计行不变的本质。
+     */
+    private boolean isDazheV2Summary(Map<String, String> cells) {
+        return value(cells, "主订单号").isBlank()
+                && value(cells, "收件人").isBlank()
+                && value(cells, "商品名称").isBlank();
     }
 
     private boolean isWangqiPurchaseTotal(Map<String, String> cells) {

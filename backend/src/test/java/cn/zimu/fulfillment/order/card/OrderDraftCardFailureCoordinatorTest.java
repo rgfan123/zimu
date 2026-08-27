@@ -176,7 +176,7 @@ class OrderDraftCardFailureCoordinatorTest {
 
     private static OrderDraftCard card(String status) {
         return new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", status, 1);
+                7L, 41L, 0L, "order-draft_41_v0", "GROUP", "group-41", status, 1);
     }
 
     private static AsyncTaskStore.AsyncTask task(String status, int attempts) {

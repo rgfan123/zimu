@@ -171,6 +171,73 @@ class OpenApiContractConsistencyTest {
                 .isFalse();
     }
 
+    @Test
+    void businessFollowUpContractUsesSnakeCaseStringIdsAndRequiredWriteHeaders() {
+        Map<String, Object> handwritten = parse(readHandwrittenContract());
+        Map<String, Object> schemas = map(map(handwritten.get("components")).get("schemas"));
+        Map<String, Object> createProperties = map(map(schemas.get("CreateRequest")).get("properties"));
+        assertThat(createProperties.keySet())
+                .containsExactlyInAnyOrder(
+                        "message_submission_id", "employee_draft", "business_kind", "execution_plan");
+        assertThat(createProperties).doesNotContainKeys(
+                "messageSubmissionId", "employeeDraft", "businessKind", "executionPlan");
+        assertThat(String.valueOf(map(createProperties.get("message_submission_id")).get("$ref")))
+                .endsWith("/Identifier");
+        assertThat(map(createProperties.get("business_kind")))
+                .containsEntry("nullable", true)
+                .containsEntry("default", "CUSTOMER");
+
+        Map<String, Object> summaryProperties =
+                map(map(schemas.get("BusinessFollowUpSummaryDto")).get("properties"));
+        assertThat(summaryProperties).containsKeys(
+                "id", "followup_no", "message_submission_id", "source_message_id", "business_kind");
+        assertThat(summaryProperties).doesNotContainKey("employee_draft");
+
+        Map<String, Object> contractPaths = paths(handwritten);
+        for (String path : List.of(
+                "/api/v1/business-followups",
+                "/api/v1/business-followups/{followup_id}/organize")) {
+            Map<String, Object> post = map(map(contractPaths.get(path)).get("post"));
+            assertThat(list(post.get("parameters")))
+                    .anySatisfy(parameter -> assertThat(String.valueOf(map(parameter).get("$ref")))
+                            .endsWith("/IdempotencyKey"));
+        }
+
+        Map<String, Object> generated = parse(fetchGeneratedSpec());
+        Map<String, Object> generatedSchemas =
+                map(map(generated.get("components")).get("schemas"));
+        Map<String, Object> generatedCreate =
+                map(map(generatedSchemas.get("CreateRequest")).get("properties"));
+        assertThat(generatedCreate.keySet())
+                .containsExactlyInAnyOrder(
+                        "message_submission_id", "employee_draft", "business_kind", "execution_plan");
+        assertThat(map(generatedCreate.get("message_submission_id")))
+                .containsEntry("type", "string");
+        assertThat(map(generatedCreate.get("business_kind")))
+                .containsEntry("default", "CUSTOMER");
+        assertThat(list(map(generatedCreate.get("business_kind")).get("type")))
+                .containsExactlyInAnyOrder("string", "null");
+        assertThat(list(map(generatedCreate.get("business_kind")).get("enum")))
+                .containsExactly("CUSTOMER", "SAMPLE", "FORMAL");
+        assertThat(String.valueOf(map(generatedCreate.get("execution_plan")).get("$ref")))
+                .endsWith("/JsonNode");
+        Map<String, Object> generatedOrganize =
+                map(map(generatedSchemas.get("OrganizeRequest")).get("properties"));
+        assertThat(generatedOrganize.keySet())
+                .containsExactlyInAnyOrder("agent_slug", "agent_version", "reviewer_operator_id");
+        assertThat(String.valueOf(map(generatedOrganize.get("agent_version")).get("minimum")))
+                .isEqualTo("1");
+        assertThat(map(generatedOrganize.get("reviewer_operator_id")))
+                .containsEntry("type", "string");
+        assertThat(list(map(generatedSchemas.get("OrganizeRequest")).get("required")))
+                .contains("agent_slug", "agent_version", "reviewer_operator_id");
+        Map<String, Object> generatedPage =
+                map(map(generatedSchemas.get("PageResponseBusinessFollowUpSummaryDto"))
+                        .get("properties"));
+        assertThat(generatedPage).containsKeys("total_elements", "total_pages");
+        assertThat(generatedPage).doesNotContainKeys("totalElements", "totalPages");
+    }
+
     /** 门禁本体：生成契约与手写评审契约的结构化比对，漂移即失败并打印差异。 */
     @Test
     void generatedContractMatchesHandwrittenReviewContract() {

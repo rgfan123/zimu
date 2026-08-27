@@ -58,6 +58,10 @@
 
 - `X-Request-Id`：可选；未传时由服务端生成并在响应回显。
 - `X-Operator`：公共浏览器客户端不得自行提供，受信 Nginx 用服务端主体覆盖该请求头。后端对全部 `/api/` 与浏览器 `/demo/` 请求复验同一 Basic Auth 凭据，并要求已验证主体与 `X-Operator` 一致；仅伪造该请求头不能授权。全部 `/internal/` 请求使用独立 Bearer 服务身份；订单助手调用 `/demo/v1/extracted-orders` 时也只使用这套内部服务身份。
+- 真实逐人归因的 +1 决定必须启用网关逐人模式：Nginx 从 bcrypt htpasswd/SSO 得到
+  `$remote_user`，覆盖 `X-Operator` / `X-Authenticated-Operator`，并携带独立
+  `X-Gateway-Assertion`；后端恒定时复验 assertion token。用户名必须与 active
+  `InternalOperator.wecom_userid` 一致。共享 `APP_ADMIN_USER` 只是兼容管理入口，不能通过 +1 身份校验。
 - `Idempotency-Key`：创建、文件导入、回执、重试、取消和复核命令必填。相同 key + 相同请求返回首次结果；相同 key + 不同请求返回 `409 IDEMPOTENCY_CONFLICT`。
 - 服务端把每个写用例映射为稳定的 `snake_case` 幂等 scope；scope 不是客户端参数，也不是需要随每个新端点修改 DDL 的封闭枚举。
 - `expected_version`：修改已存在业务事实的命令必填；版本不符返回 `409 VERSION_CONFLICT`。
@@ -423,7 +427,7 @@ MCP Adapter 与 REST/UI 共用应用层 Interface，预留：
 
 Agent 可以提建议，但上述终局动作必须由管理后台人员确认。任何 Agent 写入都需幂等键、operator/agent 身份和 AuditLog。
 
-企微订单草稿卡片属于另一条人工入口，不是 Agent 自动确认：新草稿通过持久化卡片 outbox 异步发送到原会话，`task_id=order-draft:{draft_id}`。`template_card_event` 回调只接受该稳定 task id 与 `confirm_order`/`supplement_order` 键；actor 只能取回调 `from.userid`，缺失时 fail closed，不能从卡片内容或请求参数冒充。确认按钮重新读取当前草稿并调用既有 `OrderDraftService.confirm`，所有缺失字段、唯一 Customer/SKU 候选、草稿版本与开放复核事项仍按原门禁校验。
+企微订单草稿卡片属于另一条人工入口，不是 Agent 自动确认：新草稿通过持久化卡片 outbox 异步发送到原会话，`task_id=order-draft_{draft_id}_v{draft_revision}_{128-bit授权引用}`。`template_card_event` 回调只接受该协议安全、持久化且不可猜的 task id 与 `confirm_order`/`supplement_order` 键；实体和版本只从 SENT 投递记录取得，不信任回调字符串自述。actor 只能取回调 `from.userid`，缺失时 fail closed，不能从卡片内容或请求参数冒充。确认按钮重新读取当前草稿并调用既有 `OrderDraftService.confirm`，所有缺失字段、唯一 Customer/SKU 候选、草稿版本与开放复核事项仍按原门禁校验。
 
 卡片事件业务结果先独立提交，再以原回调 `req_id` 调用 `update_template_card`。普通回调走有界保序业务队列；`template_card_event` 立即提交到独立的 4 并发快通道，并只允许最多 4 个仍受原始到达 deadline 约束的等待位。任一回调池溢出都只拒绝超出的事件，不重建共享连接或破坏已经受理的 update/无关外发 ACK。4.5 秒绝对 deadline 从 WebSocket listener 收到完整帧的单调时刻起覆盖线程切换、socket 提交与 ACK，过期发送帧不得事后发送。未确认、超时或异常时改发只含草稿号、操作人和处理时间的文字结果。卡片更新与文字兜底的失败都不得回滚已确认订单；`wecom_events.processing_status/processing_claim_token/processing_attempt`、`update_status/update_latency_ms/update_error_code` 与 `fallback_status/fallback_error_code` 分别保存业务尝试、卡片快路径和补偿结局。同一 `(event_type,msgid)` 的首次 bot/chat/actor/event/task/草稿/raw facts 不可变，变形重投不处理另一草稿；超过安全恢复窗且原业务幂等租约已失效时才轮换 claim token，业务完成及 update/fallback 结果均以 token CAS，旧 worker 无权覆盖。
 

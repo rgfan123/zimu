@@ -28,6 +28,7 @@ test('my-workbench section leads the navigation with the role workbenches (Issue
     [
       { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: false },
       { path: '/workbench/reviews', label: '复核收件箱', hideInMenu: false },
+      { path: '/workbench/business-followups', label: '客户跟进', hideInMenu: false },
       // Issue #64 运营提醒：上下文二级入口，随复核收件箱移入我的工作台。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       // Issue #110：采购工作台露出，我的工作台可见入口达到 spec D6 的 4 个；UIUX-10 #144 更名为「采购」。

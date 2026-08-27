@@ -18,7 +18,8 @@ public final class WriteCommands {
         }
         RequestContext ctx = RequestContext.current();
         return new CommandContext(
-                ctx.getRequestId(), ctx.getTraceId(), operator, ctx.getAuthenticatedOperator());
+                ctx.getRequestId(), ctx.getTraceId(), operator, ctx.getAuthenticatedOperator(),
+                ctx.getAuthenticationKind());
     }
 
     public static String requireIdempotencyKey(String idempotencyKey) {

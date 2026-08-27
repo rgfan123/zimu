@@ -14,6 +14,9 @@ public interface InternalOperatorRepository extends JpaRepository<InternalOperat
     /** 企微 userid 全局唯一（含停用人员：同一 userid 永远只映射一个人）。 */
     boolean existsByWecomUserid(String wecomUserid);
 
+    /** Card authorization: exact active operator bound to one WeCom userid. */
+    Optional<InternalOperator> findByWecomUseridAndActiveTrue(String wecomUserid);
+
     /** 解析 seam：按责任团队取 active 人员，登记顺序（id 升序）稳定返回。 */
     List<InternalOperator> findByResponsibleTeamAndActiveTrueOrderByIdAsc(String responsibleTeam);
 

@@ -54,7 +54,7 @@ public class WecomBusinessCardRunner {
             return;
         }
         WecomBusinessCard card = cards.load(cardId);
-        WecomBusinessCardStore.CardSendPermit permit = cards.beginSend(cardId);
+        WecomBusinessCardStore.CardSendPermit permit = cards.beginSend(cardId, task.attempts());
         if (permit.action() == WecomBusinessCardStore.CardSendAction.SKIP_HANDLED) {
             tasks.succeed(task.id(), task.leaseOwner());
             return;
@@ -74,7 +74,9 @@ public class WecomBusinessCardRunner {
 
         Optional<ObjectNode> rendered;
         try {
-            rendered = source.get().render(card.entityId(), card.entityVersion());
+            WecomBusinessCardSource.Route route = new WecomBusinessCardSource.Route(
+                    WecomBusinessCardSource.RouteType.valueOf(card.routeType()), card.chatId());
+            rendered = source.get().render(card.entityId(), card.entityVersion(), route);
         } catch (RuntimeException ex) {
             log.warn("业务卡渲染失败 task_id={}", card.taskId(), ex);
             cards.recordRetryable(cardId, "WECOM_CARD_RENDER_FAILED");
@@ -87,6 +89,9 @@ public class WecomBusinessCardRunner {
             tasks.succeed(task.id(), task.leaseOwner());
             return;
         }
+        // The source renders from logical entity/version facts; the persisted outbox row owns the
+        // opaque authorization capability. Never send a predictable logical task_id.
+        rendered.get().put("task_id", card.taskId());
 
         WecomSendResult result;
         try {

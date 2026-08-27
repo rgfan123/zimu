@@ -36,6 +36,13 @@ if (!window.matchMedia) {
   });
 }
 
+// rc-table / rc-drawer 会传 pseudoElt；jsdom 对该参数只打印未实现错误。
+const nativeGetComputedStyle = window.getComputedStyle.bind(window);
+Object.defineProperty(window, 'getComputedStyle', {
+  configurable: true,
+  value: (element: Element) => nativeGetComputedStyle(element),
+});
+
 afterEach(() => {
   cleanup();
 });

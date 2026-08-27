@@ -93,7 +93,7 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
                 WHERE event_type='template_card_event' AND msgid='EVT-CARD-FENCE-1'
                 """);
         assertThat(stored)
-                .containsEntry("task_id", "order-draft:" + firstDraftId)
+                .containsEntry("task_id", "order-draft_" + firstDraftId + "_v0")
                 .containsEntry("order_draft_id", firstDraftId)
                 .containsEntry("claim_token", first.claimToken())
                 .containsEntry("processing_attempt", 1);
@@ -101,7 +101,7 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
         assertThatThrownBy(() -> jdbc.update(
                         "UPDATE app.wecom_events SET task_id=? "
                                 + "WHERE event_type='template_card_event' AND msgid='EVT-CARD-FENCE-1'",
-                        "order-draft:" + secondDraftId))
+                        "order-draft_" + secondDraftId + "_v0"))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
@@ -184,6 +184,8 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
     @Test
     void onlyAcknowledgedOutboundCardCanBeResolvedByTaskId() {
         OrderDraftCard created = cards.create(firstDraftId, 0L);
+        assertThat(created.taskId())
+                .matches("order-draft_" + firstDraftId + "_v0_[0-9a-f]{32}");
 
         assertThat(cards.findSentByTaskId(created.taskId())).isEmpty();
         assertThat(cards.beginSend(created.id()).action()).isEqualTo(CardSendAction.SEND);
@@ -197,7 +199,7 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
                         OrderDraftCard::chatId,
                         OrderDraftCard::status)
                 .containsExactly(firstDraftId, "GROUP", "chat-card-fence", "SENT");
-        assertThat(cards.findSentByTaskId("order-draft:999999")).isEmpty();
+        assertThat(cards.findSentByTaskId("order-draft_999999_v0")).isEmpty();
     }
 
     @Test
@@ -301,7 +303,7 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
                 "operator-card-fence",
                 1787486400L,
                 "confirm_order",
-                "order-draft:" + draftId,
+                "order-draft_" + draftId + "_v0",
                 draftId,
                 "{}",
                 "chat-card-fence");
