@@ -618,7 +618,7 @@ export default function SkuMappingsPage() {
     <div className="sku-mappings-page">
       <PageShell
         title="SKU 映射矩阵"
-        description="以内部 SKU 为主键，横向查看飞象、彩食鲜、聚福宝的平台商品映射。"
+        description="以内部 SKU 为主键，横向查看各来源渠道的平台商品映射。"
         actions={(
           <Tag
             bordered={false}
@@ -696,7 +696,7 @@ export default function SkuMappingsPage() {
         </section>
 
         <Typography.Text className="sku-mappings-page__footnote" type="secondary">
-          数量乘数用于把平台商品数量换算为内部 SKU 数量。飞象、彩食鲜、聚福宝均只展示有证据的显式映射，未映射时不会自动猜测。
+          数量乘数用于把平台商品数量换算为内部 SKU 数量。各渠道均只展示有证据的显式映射，未映射时不会自动猜测。大者没有平台商品编号，来源编号按商品名称填写。
         </Typography.Text>
       </PageShell>
     </div>

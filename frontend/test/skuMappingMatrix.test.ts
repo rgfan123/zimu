@@ -82,11 +82,13 @@ const mappings: MasterDataRecord[] = [
   },
 ];
 
-test('内部 SKU 为唯一行，固定列按飞象、彩食鲜、聚福宝排列', () => {
+test('内部 SKU 为唯一行，固定列覆盖全部可事前配置的来源渠道', () => {
   const matrix = buildSourceSkuMappingMatrix(skus, mappings);
 
-  assert.deepEqual(SOURCE_MAPPING_CHANNELS, ['FEIXIANG', 'CAISHIXIAN', 'JUFUBAO']);
-  assert.deepEqual(matrix.channels, ['FEIXIANG', 'CAISHIXIAN', 'JUFUBAO']);
+  // 2026-08-27 中汇 60043846 事故后补齐：中汇/大者/万齐此前没有任何事前配置入口，
+  // 映射只能等出事后在复核抽屉里补。WECOM（录入渠道）与 WANGQI（误建渠道）刻意不列。
+  assert.deepEqual(SOURCE_MAPPING_CHANNELS, ['FEIXIANG', 'CAISHIXIAN', 'JUFUBAO', 'ZHONGHUI', 'DAZHE', 'WANQI']);
+  assert.deepEqual(matrix.channels, ['FEIXIANG', 'CAISHIXIAN', 'JUFUBAO', 'ZHONGHUI', 'DAZHE', 'WANQI']);
   assert.deepEqual(matrix.rows.map((row) => row.sku.code), ['SKU-000101', 'SKU-000102']);
   assert.deepEqual(matrix.rows[0]?.mappingsByChannel.FEIXIANG, []);
   assert.deepEqual(matrix.rows[0]?.mappingsByChannel.CAISHIXIAN.map((mapping) => mapping.id), ['501']);

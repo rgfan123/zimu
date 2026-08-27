@@ -196,20 +196,20 @@ test('real SKU mapping route renders the page heading, matrix rows and auxiliary
 
   // 页头（标题 + 说明 + 主数据标识）随页面数据一起呈现。
   assert.match(bodyText(), /SKU 映射矩阵/);
-  assert.match(bodyText(), /以内部 SKU 为主键，横向查看飞象、彩食鲜、聚福宝的平台商品映射。/);
+  assert.match(bodyText(), /以内部 SKU 为主键，横向查看各来源渠道的平台商品映射。/);
   assert.match(bodyText(), /主数据/);
   // 矩阵行 = 内部 SKU；映射单元格展示来源商品与包装换算。
   assert.match(bodyText(), /SKU-BEEF-01/);
   assert.match(bodyText(), /飞象牛腱/);
   assert.match(bodyText(), /FX-001/);
   assert.match(bodyText(), /数量乘数 2\.000/);
-  assert.match(bodyText(), /2 个内部 SKU · 显示 3 个平台/);
+  assert.match(bodyText(), /2 个内部 SKU · 显示 6 个平台/);
   // 两个辅助核对面板与页脚口径说明。
   assert.match(bodyText(), /使用文件辅助核对/);
   assert.match(bodyText(), /京东件数换算/);
   assert.match(
     bodyText(),
-    /数量乘数用于把平台商品数量换算为内部 SKU 数量。飞象、彩食鲜、聚福宝均只展示有证据的显式映射，未映射时不会自动猜测。/,
+    /数量乘数用于把平台商品数量换算为内部 SKU 数量。各渠道均只展示有证据的显式映射，未映射时不会自动猜测。/,
   );
   // 只请求矩阵与件数候选数据；预览面板在用户上传前不发请求。
   assert.deepEqual(requestedUrls, [
@@ -230,7 +230,7 @@ test('SKU mapping route renders the empty matrix state without claiming implicit
 
   await mountRoute();
   await waitFor(() => assert.match(bodyText(), /暂无内部 SKU/));
-  assert.match(bodyText(), /0 个内部 SKU · 显示 3 个平台/);
+  assert.match(bodyText(), /0 个内部 SKU · 显示 6 个平台/);
   // 空矩阵仍展示页头与口径说明，未映射不猜测。
   assert.match(bodyText(), /SKU 映射矩阵/);
   assert.doesNotMatch(bodyText(), /未映射 · 添加/);
