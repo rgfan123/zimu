@@ -34,12 +34,15 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /** 只通过容器魔数和精确表头指纹识别来源，不使用文件名或数据内容猜测。 */
 @Service
 class SourceFileParser {
 
+    private static final Logger log = LoggerFactory.getLogger(SourceFileParser.class);
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter SOURCE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final Map<SourceChannel, Set<String>> FINGERPRINTS = fingerprints();
@@ -710,6 +713,12 @@ class SourceFileParser {
         return normalized.replace("\uFEFF", "").strip();
     }
 
+    /**
+     * 来源下单/结算时间的唯一解析入口：字符串按 yyyy-MM-dd HH:mm:ss 解析、Asia/Shanghai
+     * 解释后转 Instant。解析失败（格式不符/空白）落 null，不阻断建单——调用方（settlement
+     * 与 source_ordered_at 均取自本方法）各自决定 null 时的兜底策略；这里只诚实记录一次
+     * debug 日志，供事后排查具体是哪个渠道的哪个原始字符串没能解析。
+     */
     private Instant parseTime(String value) {
         if (blank(value)) {
             return null;
@@ -717,6 +726,7 @@ class SourceFileParser {
         try {
             return LocalDateTime.parse(value.strip(), SOURCE_TIME).atZone(SHANGHAI).toInstant();
         } catch (DateTimeParseException exception) {
+            log.debug("来源时间解析失败，落 null 不阻断建单：raw=\"{}\"", value, exception);
             return null;
         }
     }

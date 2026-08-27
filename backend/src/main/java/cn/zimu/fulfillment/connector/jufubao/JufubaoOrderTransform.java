@@ -15,6 +15,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -40,6 +42,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public final class JufubaoOrderTransform {
+
+    private static final Logger log = LoggerFactory.getLogger(JufubaoOrderTransform.class);
 
     static final String RECEIVER_REVIEW_CODE = "JUFUBAO_RECEIVER_REQUIRED";
 
@@ -102,7 +106,12 @@ public final class JufubaoOrderTransform {
         List<OrderItemInput> items = itemsOf(source, subOrderId);
         // 聚福宝 created_time 就是平台侧真实下单时刻（本转换器唯一的时间来源）；当前也被结算时间
         // 借用（见下方 Settlement），source_ordered_at 单独持有同一事实，两列今后可分别演进。
-        // createdEpoch<=0 时来源缺失，如实为 null（不借用 Instant.ofEpochSecond(0) 顶替）。
+        // createdEpoch<=0 时来源缺失，如实为 null（不借用 Instant.ofEpochSecond(0) 顶替）；
+        // 下面的 createdEpoch<=0 分支还会把整单转 reviewRequired，这里只诚实记录一次 debug
+        // 日志，供事后排查具体是哪个来源单号缺了 created_time。
+        if (createdEpoch <= 0) {
+            log.debug("聚福宝订单缺少有效 created_time，source_ordered_at 落 null：sourceRef={}", sourceRef);
+        }
         Instant sourceOrderedAt = createdEpoch > 0 ? Instant.ofEpochSecond(createdEpoch) : null;
         CanonicalOrderInput canonical = new CanonicalOrderInput(
                 SourceChannel.JUFUBAO,
