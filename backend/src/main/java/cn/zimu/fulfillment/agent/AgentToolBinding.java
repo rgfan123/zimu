@@ -13,7 +13,14 @@ import java.util.Map;
  * Agent 侧不手工维护工具定义；{@code runId} 与门面审计的 run_id 一致，LangChain4j 工具调用
  * 经执行器以该 run_id 生成 {@code McpRequestContext}（requestId=traceId=run_id）。
  */
-public record AgentToolBinding(String runId, Map<ToolSpecification, ToolExecutor> tools) {
+public record AgentToolBinding(
+        String runId,
+        Map<ToolSpecification, ToolExecutor> tools,
+        ToolExecutor rejectionExecutor) {
+
+    public AgentToolBinding(String runId, Map<ToolSpecification, ToolExecutor> tools) {
+        this(runId, tools, null);
+    }
 
     public AgentToolBinding {
         runId = runId == null ? "" : runId;

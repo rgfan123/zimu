@@ -3,8 +3,10 @@ package cn.zimu.fulfillment.agent;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -87,6 +89,24 @@ public class AgentRuntimeFacade {
         return invokeResolved(definition, userInput, ctx, runId);
     }
 
+    /**
+     * 在调用侧追加只读模块上限运行 Agent；定义自身白名单仍是第一层，模块策略再收紧一次。
+     * 写工具与非允许模块工具不会暴露，且调用期继续由 {@link AgentToolInvoker} 复核。
+     */
+    public AgentRunResult invokeReadOnlyModules(
+            String agentSlug,
+            String userInput,
+            AgentRunContext context,
+            Set<String> allowedModules) {
+        if (allowedModules == null || allowedModules.isEmpty()) {
+            throw new IllegalArgumentException("allowedModules 不能为空");
+        }
+        AgentRunContext ctx = context == null ? AgentRunContext.empty() : context;
+        String runId = newRunId();
+        AgentDefinition definition = holder.current().bySlug(agentSlug);
+        return invokeResolved(definition, userInput, ctx, runId, Set.copyOf(allowedModules));
+    }
+
     /** Run exactly the version selected when the durable business task was queued. */
     public AgentRunResult invokePinned(
             String agentSlug,
@@ -131,15 +151,25 @@ public class AgentRuntimeFacade {
             String userInput,
             AgentRunContext ctx,
             String runId) {
+        return invokeResolved(definition, userInput, ctx, runId, null);
+    }
+
+    private AgentRunResult invokeResolved(
+            AgentDefinition definition,
+            String userInput,
+            AgentRunContext ctx,
+            String runId,
+            Set<String> allowedReadOnlyModules) {
+        ToolAudit initialTools = initialToolAudit(definition, allowedReadOnlyModules);
         if (definition == null) {
             runStarted(ctx, runId, null, userInput);
             return finalizeRun(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND.name(), 0,
-                    AgentRunResult.failClosed(AgentFailureCode.AGENT_NOT_FOUND), null);
+                    AgentRunResult.failClosed(AgentFailureCode.AGENT_NOT_FOUND), null, initialTools);
         }
         if (!definition.enabled()) {
             runStarted(ctx, runId, definition, userInput);
             return finalizeRun(ctx, runId, definition, AgentFailureCode.AGENT_DISABLED.name(), 0,
-                    AgentRunResult.failClosed(AgentFailureCode.AGENT_DISABLED), null);
+                    AgentRunResult.failClosed(AgentFailureCode.AGENT_DISABLED), null, initialTools);
         }
         runStarted(ctx, runId, definition, userInput);
         long startedNanos = System.nanoTime();
@@ -148,16 +178,30 @@ public class AgentRuntimeFacade {
             AgentRunResult guarded = guardReject(definition, userInput);
             if (guarded != null) {
                 long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
-                return finalizeRun(ctx, runId, definition, guarded.error(), latencyMs, guarded, null);
+                return finalizeRun(
+                        ctx, runId, definition, guarded.error(), latencyMs, guarded, null, initialTools);
             }
-            AgentToolBinding binding = toolBindingFactory.bind(
-                    runId, definition.toolNames(), definition.allowWrite());
+            AgentToolBinding binding;
+            ToolAudit toolAudit;
+            if (allowedReadOnlyModules == null) {
+                binding = toolBindingFactory.bind(
+                        runId, definition.toolNames(), definition.allowWrite());
+                toolAudit = new ToolAudit(definition.toolNames(), List.of());
+            } else {
+                AgentToolBindingFactory.RestrictedBinding restricted =
+                        toolBindingFactory.bindReadOnlyModules(
+                                runId, definition.toolNames(), allowedReadOnlyModules);
+                binding = restricted.binding();
+                toolAudit = new ToolAudit(
+                        restricted.exposedToolNames(), restricted.deniedToolNames());
+            }
             AgentRunResult result = runtime.run(
                     new AgentTaskRequest(definition.systemPrompt(), userInput, binding, definition));
             long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
             // 04 决策：outcome 维度——失败（REJECTED/FAILED）才以失败码作状态，NEEDS_INPUT 不再是失败
             String status = result.error() == null ? result.outcome().name() : result.error();
-            return finalizeRun(ctx, runId, definition, status, latencyMs, result, projectedModel(result));
+            return finalizeRun(
+                    ctx, runId, definition, status, latencyMs, result, projectedModel(result), toolAudit);
         } catch (RuntimeException ex) {
             // 绑定漂移等配置错误与运行时意外异常：留 FAILED 观测行收口后原样上抛（不吞配置错误）
             long latencyMs = (System.nanoTime() - startedNanos) / 1_000_000;
@@ -178,7 +222,27 @@ public class AgentRuntimeFacade {
             long latencyMs,
             AgentRunResult result,
             String projectedModel) {
-        recordAudit(ctx, runId, definition, status, latencyMs, result);
+        return finalizeRun(
+                ctx,
+                runId,
+                definition,
+                status,
+                latencyMs,
+                result,
+                projectedModel,
+                initialToolAudit(definition, null));
+    }
+
+    private AgentRunResult finalizeRun(
+            AgentRunContext ctx,
+            String runId,
+            AgentDefinition definition,
+            String status,
+            long latencyMs,
+            AgentRunResult result,
+            String projectedModel,
+            ToolAudit toolAudit) {
+        recordAudit(ctx, runId, definition, status, latencyMs, result, toolAudit);
         runFinished(runId, result.error(), latencyMs, projectedModel);
         // 控制面收口富化：回填 run_id 与实测耗时（供领域包装回填业务 run-result 观测字段）
         return result.withRunMetadata(runId, latencyMs);
@@ -268,13 +332,24 @@ public class AgentRuntimeFacade {
             AgentDefinition definition,
             String status,
             long latencyMs,
-            AgentRunResult result) {
+            AgentRunResult result,
+            ToolAudit toolAudit) {
         String slug = definition == null ? "unknown" : definition.agentSlug();
         String promptVersion = definition == null ? "none" : definition.promptVersion();
         AgentModelMetadataRegistry.PublicMetadata meta = result == null
                 ? AgentModelMetadataRegistry.none()
                 : metadata.publicProjection(result.provider(), result.model(), result.promptVersion());
         try {
+            Map<String, Object> request = new LinkedHashMap<>();
+            request.put("agent_slug", slug);
+            request.put("run_id", runId);
+            request.put("thread_id", ctx.threadId());
+            request.put("prompt_version", promptVersion);
+            request.put("model_ref", definition == null ? "none" : definition.modelRef());
+            request.put("tool_names", toolAudit.exposedToolNames());
+            if (!toolAudit.deniedToolNames().isEmpty()) {
+                request.put("denied_tool_names", toolAudit.deniedToolNames());
+            }
             audits.record(new AuditLogService.AuditCommand()
                     .dataScope(DataScope.BUSINESS)
                     .requestId(runId)
@@ -283,13 +358,7 @@ public class AgentRuntimeFacade {
                     .actorType(AuditActorType.AGENT)
                     .service("agent")
                     .operation("agent." + slug + ".run")
-                    .requestPayload(Map.of(
-                            "agent_slug", slug,
-                            "run_id", runId,
-                            "thread_id", ctx.threadId(),
-                            "prompt_version", promptVersion,
-                            "model_ref", definition == null ? "none" : definition.modelRef(),
-                            "tool_names", definition == null ? List.of() : definition.toolNames()))
+                    .requestPayload(request)
                     .responsePayload(Map.of(
                             "status", status,
                             "provider", meta.provider(),
@@ -299,6 +368,22 @@ public class AgentRuntimeFacade {
                     .latencyMs((int) latencyMs));
         } catch (RuntimeException ignored) {
             // 审计失败不掩盖 Agent 运行结果与拒绝结果（与既有 MCP 写路径审计语义一致）
+        }
+    }
+
+    private static ToolAudit initialToolAudit(
+            AgentDefinition definition, Set<String> allowedReadOnlyModules) {
+        List<String> configured = definition == null ? List.of() : definition.toolNames();
+        return allowedReadOnlyModules == null
+                ? new ToolAudit(configured, List.of())
+                : new ToolAudit(List.of(), configured);
+    }
+
+    private record ToolAudit(List<String> exposedToolNames, List<String> deniedToolNames) {
+
+        private ToolAudit {
+            exposedToolNames = exposedToolNames == null ? List.of() : List.copyOf(exposedToolNames);
+            deniedToolNames = deniedToolNames == null ? List.of() : List.copyOf(deniedToolNames);
         }
     }
 

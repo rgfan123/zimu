@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.connector.wecom;
 
 import java.util.List;
+import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +36,38 @@ public class WecomChatReplyPolicyService {
                 (rs, rowNum) -> rs.getString(1),
                 chatId);
         return modes.isEmpty() || MODE_FULL.equals(modes.getFirst());
+    }
+
+    /** 会话当前绑定的 Agent；无策略、空绑定或非法空白均视为未绑定。 */
+    public Optional<String> assignedAgent(String chatId) {
+        return assignedAgent(chatId, null);
+    }
+
+    /**
+     * 会话当前绑定的 Agent。企微单聊入站证据使用 {@code single:userid} 防空值，
+     * 会话目录/主动发送使用真实 userid；这里在边界统一为目录键。
+     */
+    public Optional<String> assignedAgent(String chatId, String chatType) {
+        if (chatId == null || chatId.isBlank()) {
+            return Optional.empty();
+        }
+        String policyChatId = outboundChatId(chatId, chatType);
+        List<String> slugs = jdbc.query(
+                "SELECT agent_slug FROM app.wecom_chat_reply_policies WHERE chat_id = ?",
+                (rs, rowNum) -> rs.getString(1),
+                policyChatId);
+        if (slugs.isEmpty() || slugs.getFirst() == null || slugs.getFirst().isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(slugs.getFirst().strip());
+    }
+
+    /** 企微主动发送目标：单聊去掉证据层 {@code single:} 前缀，群聊保持原 chatid。 */
+    public String outboundChatId(String chatId, String chatType) {
+        if ("single".equals(chatType) && chatId != null && chatId.startsWith("single:")) {
+            return chatId.substring("single:".length());
+        }
+        return chatId;
     }
 
     /**

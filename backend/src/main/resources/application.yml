@@ -102,6 +102,14 @@ app:
     poll-ms: ${MESSAGE_WORKER_POLL_MS:500}
     lease-seconds: ${MESSAGE_WORKER_LEASE_SECONDS:30}
     backoff-seconds: ${MESSAGE_WORKER_BACKOFF_SECONDS:5}
+  wecom-chat-agent-worker:
+    # #178：会话绑定的只读 Agent 前置路由；默认跟随消息 Worker 总开关。
+    enabled: ${WECOM_CHAT_AGENT_WORKER_ENABLED:${MESSAGE_WORKER_ENABLED:true}}
+    poll-ms: ${WECOM_CHAT_AGENT_WORKER_POLL_MS:500}
+    # 覆盖默认 300 秒 Agent 执行预算，并在企微外呼前再次续租。
+    lease-seconds: ${WECOM_CHAT_AGENT_WORKER_LEASE_SECONDS:330}
+    backoff-seconds: ${WECOM_CHAT_AGENT_WORKER_BACKOFF_SECONDS:5}
+    claim-error-suppress-seconds: ${WECOM_CHAT_AGENT_WORKER_CLAIM_ERROR_SUPPRESS_SECONDS:60}
   kehuzx:
     mcp:
       # #130: dedicated read-token boundary. Missing configuration leaves Zimu healthy and the
