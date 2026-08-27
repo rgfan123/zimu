@@ -436,6 +436,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 input.receiver(),
                 input.items(),
                 input.settlement(),
+                input.sourceOrderedAt(),
                 input.remark(),
                 input.evidenceRefs());
     }
@@ -786,6 +787,10 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         Instant settlementAt = rows.stream().map(ParsedSourceRow::orderedAt).filter(Objects::nonNull)
                 .min(Comparator.naturalOrder()).orElseGet(
                         () -> parsed.sourceChannel() == SourceChannel.WANQI ? null : Instant.now());
+        // 来源订单创建时间：渠道平台的真实下单时刻，与上面 settlementAt（历史口径，缺失时借用
+        // 导入时刻/current time 兜底）分开——这里没有兜底，来源没给就如实为 null。
+        Instant sourceOrderedAt = rows.stream().map(ParsedSourceRow::orderedAt).filter(Objects::nonNull)
+                .min(Comparator.naturalOrder()).orElse(null);
         CanonicalOrderInput order = new CanonicalOrderInput(
                 parsed.sourceChannel(),
                 first.sourceOrderRef() == null ? groupKey : first.sourceOrderRef(),
@@ -798,6 +803,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 "UNSPECIFIED".equals(first.settlementMethod())
                         ? Settlement.unspecifiedSourceFact()
                         : new Settlement(SettlementMethod.valueOf(first.settlementMethod()), settlementAt),
+                sourceOrderedAt,
                 first.remark(),
                 rows.stream().map(row -> "import://" + batchNo + "/" + row.sheetIndex() + "/" + row.rowIndex()).toList());
         return new CanonicalizedGroup(order, List.copyOf(partitionCounts));

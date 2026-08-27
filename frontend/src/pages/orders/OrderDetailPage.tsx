@@ -267,6 +267,11 @@ export default function OrderDetailPage() {
                     .join(' '),
                 },
                 { key: 'settlement', label: '结账方式', children: detail.settlement.method ? SETTLEMENT_METHOD_LABELS[detail.settlement.method] ?? detail.settlement.method : '—' },
+                {
+                  key: 'source_ordered_at',
+                  label: '来源下单时间',
+                  children: detail.source_ordered_at ? formatDateTimeSeconds(detail.source_ordered_at) : '—',
+                },
                 { key: 'progress', label: '行进度', children: `${detail.completed_count}/${detail.total_count}` },
                 { key: 'created_at', label: '创建时间', children: formatDateTimeSeconds(detail.created_at) },
                 { key: 'updated_at', label: '更新时间', children: detail.updated_at ? formatDateTimeSeconds(detail.updated_at) : '—' },

@@ -39,3 +39,14 @@ export function formatDateTimeSeconds(value?: string | null, fallback = '—'): 
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? fallback : formatInShanghai(value, true);
 }
+
+/** 月日+分钟展示（无年份，供列表密集列使用，如来源下单时间）：`MM-DD HH:mm`。 */
+export function formatMonthDayTime(value?: string | null, fallback = '—'): string {
+  if (!value) return fallback;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return fallback;
+  const parts = Object.fromEntries(
+    SHANGHAI_DATE_TIME.formatToParts(parsed).map((part) => [part.type, part.value]),
+  );
+  return `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}

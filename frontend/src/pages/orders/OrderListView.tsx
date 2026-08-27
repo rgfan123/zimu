@@ -17,7 +17,7 @@ import { CHANNEL_LABELS, ORDER_STATUS_LABELS, PROCESSING_HEALTH_LABELS, PROCESSI
 import { usePagedOrders } from '@/hooks/usePagedOrders';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
-import { formatDateTime } from '@/format/dateTime';
+import { formatDateTime, formatMonthDayTime } from '@/format/dateTime';
 import StatusTag from '@/components/StatusTag';
 import LongCode from '@/components/LongCode';
 import DataTable from '@/components/DataTable';
@@ -143,6 +143,12 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
             </Typography.Text>
           </Space>
         ),
+      },
+      {
+        title: '来源下单时间',
+        dataIndex: 'source_ordered_at',
+        width: 110,
+        render: (v?: string | null) => formatMonthDayTime(v),
       },
       {
         title: '创建时间',
@@ -366,7 +372,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
           dataSource={data?.items ?? []}
           loading={loading}
           size="middle"
-          scroll={{ x: 1240 }}
+          scroll={{ x: 1350 }}
           onRow={(record) => ({
             onClick: () => navigate(`/orders/${record.id}`),
             style: { cursor: 'pointer' },

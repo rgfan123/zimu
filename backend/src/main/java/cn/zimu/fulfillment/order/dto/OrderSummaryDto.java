@@ -19,5 +19,7 @@ public record OrderSummaryDto(
         String attentionReason,
         Instant createdAt,
         Instant updatedAt,
-        long version) {
+        long version,
+        /** 渠道平台上的真实下单时刻（与 settlement_time 分开）；来源缺失时为 null。 */
+        Instant sourceOrderedAt) {
 }

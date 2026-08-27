@@ -640,6 +640,8 @@ public class OrderDraftService {
                         receiver.address()),
                 items,
                 new Settlement(settlement.method(), settlement.settlementTime()),
+                // WECOM 是人工创建渠道，没有「渠道平台下单时刻」这个概念，如实为 null。
+                null,
                 command.remark(),
                 List.of(
                         "message_submission:" + draft.getSubmissionId(),

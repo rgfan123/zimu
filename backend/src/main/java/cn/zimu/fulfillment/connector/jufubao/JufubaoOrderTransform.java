@@ -100,6 +100,10 @@ public final class JufubaoOrderTransform {
                 receiver == null ? null : receiver.name(),
                 receiver == null ? null : receiver.phone());
         List<OrderItemInput> items = itemsOf(source, subOrderId);
+        // 聚福宝 created_time 就是平台侧真实下单时刻（本转换器唯一的时间来源）；当前也被结算时间
+        // 借用（见下方 Settlement），source_ordered_at 单独持有同一事实，两列今后可分别演进。
+        // createdEpoch<=0 时来源缺失，如实为 null（不借用 Instant.ofEpochSecond(0) 顶替）。
+        Instant sourceOrderedAt = createdEpoch > 0 ? Instant.ofEpochSecond(createdEpoch) : null;
         CanonicalOrderInput canonical = new CanonicalOrderInput(
                 SourceChannel.JUFUBAO,
                 sourceRef,
@@ -111,6 +115,7 @@ public final class JufubaoOrderTransform {
                 receiver,
                 items,
                 new Settlement(SettlementMethod.OTHER, Instant.ofEpochSecond(createdEpoch)),
+                sourceOrderedAt,
                 null,
                 null);
 

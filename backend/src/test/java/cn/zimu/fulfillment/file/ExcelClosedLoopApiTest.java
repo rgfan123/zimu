@@ -259,6 +259,68 @@ class ExcelClosedLoopApiTest {
         }
     }
 
+    /**
+     * 端到端：中汇来源行带「下单时间」列 → 订单落库的 source_ordered_at 必须是该列解析值
+     * （Asia/Shanghai 语境），而不是空、也不是导入时刻。
+     */
+    @Test
+    void zhonghuiOrderPersistsSourceOrderedAtParsedFromChannelOrderTimeColumn() throws Exception {
+        List<String> headers = List.of(
+                "订单号", "商品编号", "商品名称", "件数", "收件人", "收件电话", "收件地址",
+                "包装规格", "单位", "下单时间");
+        List<String> values = List.of(
+                "S-SOURCE-ORDERED-AT-001", "60043899", "子牧来源下单时间测试商品", "1",
+                "来源时间测试收件人", "13000000009", "北京朝阳区示例路9号901",
+                "500g*2", "份", "2026-08-20 09:30:00");
+
+        upload("中汇来源下单时间.xlsx", singleRowWorkbook(headers, values), "source-ordered-at-zhonghui-001");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> order = (Map<String, Object>) ((List<?>) get(
+                        "/api/v1/orders?query=S-SOURCE-ORDERED-AT-001&page=0&size=20")
+                .get("items")).getFirst();
+        assertThat((String) order.get("source_ordered_at"))
+                .as("中汇来源行有「下单时间」列，必须落到 source_ordered_at 而不是留空")
+                .isNotNull();
+        assertThat(java.time.Instant.parse((String) order.get("source_ordered_at")))
+                .isEqualTo(java.time.LocalDateTime.parse("2026-08-20T09:30:00")
+                        .atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant());
+
+        Map<String, Object> detail = get("/api/v1/orders/" + order.get("id").toString());
+        assertThat(detail.get("source_ordered_at")).isEqualTo(order.get("source_ordered_at"));
+    }
+
+    /**
+     * 端到端：彩食鲜当前导出模板没有下单时间列 —— source_ordered_at 必须如实留空，
+     * 不得借用 settlement_time（此渠道历史上会兜底成导入时刻）顶替，两者不能再被混同。
+     */
+    @Test
+    void caishixianOrderLeavesSourceOrderedAtNullWhenChannelHasNoOrderTimeColumn() throws Exception {
+        List<String> headers = List.of(
+                "主订单编号", "子订单编号", "供应商编码", "站点编码", "收货人", "联系电话",
+                "省", "市", "区", "详细地址", "商品编号", "商品名称", "规格", "单位", "下单数量", "订单备注");
+        List<String> values = List.of(
+                "CSX-NO-ORDERED-AT-001", "CSX-NO-ORDERED-AT-001-01", "20099999", "W0M9999",
+                "彩食鲜无下单时间测试收件人", "13000000008", "北京", "北京市", "朝阳区",
+                "示例路8号801", "2099999", "子牧彩食鲜无下单时间测试商品", "500g", "份", "1", "");
+
+        upload("彩食鲜无下单时间.xlsx", singleRowWorkbook(headers, values), "source-ordered-at-caishixian-001");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> order = (Map<String, Object>) ((List<?>) get(
+                        "/api/v1/orders?query=CSX-NO-ORDERED-AT-001&page=0&size=20")
+                .get("items")).getFirst();
+        assertThat(order.get("source_ordered_at"))
+                .as("彩食鲜当前导出模板没有下单时间列，必须如实留空，不得借用结算时间/导入时刻顶替")
+                .isNull();
+
+        Map<String, Object> detail = get("/api/v1/orders/" + order.get("id").toString());
+        assertThat(detail.get("source_ordered_at")).isNull();
+        assertThat(((Map<?, ?>) detail.get("settlement")).get("settlement_time"))
+                .as("彩食鲜历史口径仍走结算时间兜底（导入时刻），与 source_ordered_at 的诚实缺失形成对照")
+                .isNotNull();
+    }
+
     @Test
     void feixiangCsvRetainsRowsCreatesCanonicalOrderAndReplaysByContentHash() {
         byte[] file = feixiangCsv(true);
@@ -570,6 +632,7 @@ class ExcelClosedLoopApiTest {
                         "2",
                         null)),
                 new Settlement(SettlementMethod.MONTHLY, java.time.Instant.now()),
+                null,
                 "jufubao-source-sync-e2e",
                 List.of());
         Map<String, Object> imported = sourceImportService.importStructured(
@@ -1286,6 +1349,23 @@ class ExcelClosedLoopApiTest {
             var row = workbook.createSheet(sheetName).createRow(0);
             for (int index = 0; index < headers.size(); index++) {
                 row.createCell(index).setCellValue(headers.get(index));
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    /** 表头行 + 单条数据行的最小工作簿，供只需要一行真实数据的端到端用例复用。 */
+    private byte[] singleRowWorkbook(List<String> headers, List<String> values) throws Exception {
+        try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("Sheet1");
+            var header = sheet.createRow(0);
+            for (int index = 0; index < headers.size(); index++) {
+                header.createCell(index).setCellValue(headers.get(index));
+            }
+            var row = sheet.createRow(1);
+            for (int index = 0; index < values.size(); index++) {
+                row.createCell(index).setCellValue(values.get(index));
             }
             workbook.write(output);
             return output.toByteArray();

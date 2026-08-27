@@ -77,6 +77,7 @@ public class OrderMapper {
                 order.getCreatedAt(),
                 order.getUpdatedAt(),
                 order.getLockVersion(),
+                order.getSourceOrderedAt(),
                 new Receiver(
                         order.getReceiverName(),
                         order.getReceiverPhone(),

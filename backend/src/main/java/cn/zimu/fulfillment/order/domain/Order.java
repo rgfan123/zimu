@@ -68,6 +68,10 @@ public class Order extends AuditableEntity {
     @Column(name = "settlement_time")
     private Instant settlementTime;
 
+    /** 渠道平台上的真实下单时刻，与 settlementTime（结算/导出口径）分开；来源缺失时为 null。 */
+    @Column(name = "source_ordered_at")
+    private Instant sourceOrderedAt;
+
     @Column(name = "receiver_name", nullable = false)
     private String receiverName;
 
@@ -186,6 +190,14 @@ public class Order extends AuditableEntity {
 
     public void setSettlementTime(Instant settlementTime) {
         this.settlementTime = settlementTime;
+    }
+
+    public Instant getSourceOrderedAt() {
+        return sourceOrderedAt;
+    }
+
+    public void setSourceOrderedAt(Instant sourceOrderedAt) {
+        this.sourceOrderedAt = sourceOrderedAt;
     }
 
     public String getReceiverName() {

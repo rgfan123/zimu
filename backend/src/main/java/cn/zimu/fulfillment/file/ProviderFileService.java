@@ -253,7 +253,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         return jdbc.query(
                 """
                 SELECT 0::bigint raw_row_id, o.id order_id, o.order_no, o.source_channel, o.source_ref,
-                       o.settlement_time ordered_at, o.remark,
+                       COALESCE(o.source_ordered_at, o.settlement_time) ordered_at, o.remark,
                        o.receiver_name, o.receiver_phone, o.receiver_address,
                        ol.id order_line_id, ol.line_no, ol.product_name_snapshot,
                        ol.specification_snapshot, ol.unit_snapshot,
@@ -976,7 +976,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 """
                 SELECT rir.id raw_row_id, o.id order_id, o.order_no,
                        source.effective_source_channel source_channel, o.source_ref,
-                       o.settlement_time ordered_at, o.remark,
+                       COALESCE(o.source_ordered_at, o.settlement_time) ordered_at, o.remark,
                        o.receiver_name, o.receiver_phone, o.receiver_address,
                        ol.id order_line_id, ol.line_no, ol.product_name_snapshot, ol.specification_snapshot,
                        ol.unit_snapshot, f.id fulfillment_id,
@@ -1031,7 +1031,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 )
                 SELECT rir.id raw_row_id, o.id order_id, o.order_no,
                        source.effective_source_channel source_channel, o.source_ref,
-                       o.settlement_time ordered_at, o.remark,
+                       COALESCE(o.source_ordered_at, o.settlement_time) ordered_at, o.remark,
                        o.receiver_name, o.receiver_phone, o.receiver_address,
                        ol.id order_line_id, ol.line_no,
                        CASE WHEN olc.id IS NULL THEN ol.product_name_snapshot ELSE olc.product_name_snapshot END

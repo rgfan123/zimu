@@ -213,6 +213,7 @@ class StructuredImportApiTest {
                         new OrderItemInput(lineRefB, LineType.SINGLE, null, "CSX-PRODUCT-001",
                                 "子牧羊小腿", "标准箱", "套", "1", null)),
                 new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                null,
                 "ticket02-test",
                 List.of());
     }
@@ -226,6 +227,7 @@ class StructuredImportApiTest {
                 null,
                 List.of(),
                 new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                null,
                 "review-only",
                 List.of());
     }
@@ -301,6 +303,7 @@ class StructuredImportApiTest {
                         "2",
                         null)),
                 new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                null,
                 "jufubao-customer-identity-test",
                 List.of());
 

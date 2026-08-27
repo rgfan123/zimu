@@ -6816,3 +6816,14 @@ COMMENT ON COLUMN app.product_archive_sheets.row_no IS
 COMMENT ON COLUMN app.product_archive_sheets.matched_product_id IS
     '挂接到的商品档案；只在确定无争议时填，其余留空待人工挂接';
 -- END V63__product_archive_sheets.sql
+
+-- BEGIN V64__orders_source_ordered_at.sql
+-- 来源订单创建时间：渠道平台上的真实下单时刻，与既有 settlement_time（结算/导出口径，
+-- 历史上被 ProviderFileService 的导出 SQL 直接当 ordered_at 用）分开。源数据没有下单
+-- 时间列的渠道（如彩食鲜/大者 v2/万齐 52 列模板）如实为 NULL，不借用结算时间或导入
+-- 时刻顶替；字符串时间按 Asia/Shanghai 解释。
+ALTER TABLE app.orders ADD COLUMN source_ordered_at TIMESTAMPTZ;
+
+COMMENT ON COLUMN app.orders.source_ordered_at IS
+    '渠道平台的下单时刻；源数据缺失下单时间时为 NULL，不借用 settlement_time 或导入时刻顶替；字符串时间按 Asia/Shanghai 解释';
+-- END V64__orders_source_ordered_at.sql

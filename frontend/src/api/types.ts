@@ -103,6 +103,8 @@ export interface OrderSummary {
   created_at: string;
   updated_at?: string;
   version: number;
+  /** 渠道平台上的真实下单时刻（与 settlement.settlement_time 分开）；来源缺失时为 null。 */
+  source_ordered_at?: string | null;
 }
 
 export interface OrderPage extends PageMeta {

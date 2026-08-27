@@ -270,6 +270,8 @@ public class OrderCreateService {
         order.setOrderStatus(fullyMapped ? OrderStatus.SKU_MAPPED : OrderStatus.NEED_REVIEW);
         order.setSettlementMethod(input.settlement().method());
         order.setSettlementTime(input.settlement().settlementTime());
+        // 注意：OrderRevisionInput 是人工修订输入，不携带来源下单时间；修订不改写已落库的
+        // source_ordered_at（改地址/改行不代表渠道平台的下单时刻变了），故这里不调用 setter。
         order.setReceiverName(input.receiver().name());
         order.setReceiverPhone(input.receiver().phone());
         order.setReceiverAddress(input.receiver().address());
@@ -294,7 +296,7 @@ public class OrderCreateService {
         List<ReviewCase> reviewCases = new ArrayList<>();
         CanonicalOrderInput canonical = new CanonicalOrderInput(
                 input.source(), input.sourceRef(), input.sourceVersion(), input.customer(), input.receiver(),
-                input.items(), input.settlement(), input.remark(), input.evidenceRefs());
+                input.items(), input.settlement(), order.getSourceOrderedAt(), input.remark(), input.evidenceRefs());
         if (!customerMatched) reviewCases.add(orderReviewCase(order, canonical));
         for (LineResult result : lineResults) {
             if (!result.mapped()) reviewCases.add(lineReviewCase(
@@ -394,6 +396,7 @@ public class OrderCreateService {
         order.setOrderStatus(fullyMapped ? OrderStatus.SKU_MAPPED : OrderStatus.NEED_REVIEW);
         order.setSettlementMethod(input.settlement().method());
         order.setSettlementTime(input.settlement().settlementTime());
+        order.setSourceOrderedAt(input.sourceOrderedAt());
         order.setReceiverName(input.receiver().name());
         order.setReceiverPhone(input.receiver().phone());
         order.setReceiverAddress(input.receiver().address());

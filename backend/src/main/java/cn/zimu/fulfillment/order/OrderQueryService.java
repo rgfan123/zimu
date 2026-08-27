@@ -54,6 +54,7 @@ public class OrderQueryService {
                    COALESCE(source.effective_source_channel, o.source_channel) source_channel,
                    o.source_ref, o.customer_id, c.customer_name,
                    o.receiver_name, o.order_status, o.lock_version, o.created_at, o.updated_at,
+                   o.source_ordered_at,
                    v.processing_stage, v.processing_health, v.completed_count, v.total_count, v.attention_reason
             FROM app.orders o
             LEFT JOIN app.v_import_batch_effective_source source
@@ -317,7 +318,8 @@ public class OrderQueryService {
             rs.getString("attention_reason"),
             toInstant(rs, "created_at"),
             toInstant(rs, "updated_at"),
-            rs.getLong("lock_version"));
+            rs.getLong("lock_version"),
+            toInstant(rs, "source_ordered_at"));
 
     private static Instant toInstant(ResultSet rs, String column) throws SQLException {
         OffsetDateTime value = rs.getObject(column, OffsetDateTime.class);
