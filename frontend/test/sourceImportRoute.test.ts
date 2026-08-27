@@ -326,7 +326,8 @@ test('confirming the batch passes a popconfirm and marks accepted rows as confir
   await chooseCaishixian();
   await act(async () => control('开始导入').click());
 
-  await waitFor(() => assert.match(bodyText(), /确认本批次（已接收 1 行）/));
+  // 全量套件并发时 Vite SSR 与轮询定时器会竞争 CPU；仅放宽等待上限，不改变终态断言。
+  await waitFor(() => assert.match(bodyText(), /确认本批次（已接收 1 行）/), 10_000);
   assert.match(bodyText(), /形成履约承诺/);
 
   await act(async () => control('确认本批次（已接收 1 行）').click());
