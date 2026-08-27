@@ -17,7 +17,9 @@ import { CHANNEL_LABELS, ORDER_STATUS_LABELS, PROCESSING_HEALTH_LABELS, PROCESSI
 import { usePagedOrders } from '@/hooks/usePagedOrders';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
+import { formatDateTime } from '@/format/dateTime';
 import StatusTag from '@/components/StatusTag';
+import LongCode from '@/components/LongCode';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
 import PageShell from '@/components/PageShell';
@@ -96,11 +98,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
         title: '订单号',
         dataIndex: 'order_no',
         width: 200,
-        render: (value: string, record) => (
-          <Typography.Link strong onClick={() => navigate(`/orders/${record.id}`)}>
-            {value}
-          </Typography.Link>
-        ),
+        render: (value: string, record) => <LongCode value={value} to={`/orders/${record.id}`} width={170} />,
       },
       {
         title: '来源渠道',
@@ -150,7 +148,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
         title: '创建时间',
         dataIndex: 'created_at',
         width: 170,
-        render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm'),
+        render: (v: string) => formatDateTime(v),
       },
       {
         title: '操作',

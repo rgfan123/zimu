@@ -478,9 +478,9 @@ test('sales outbound page exposes the production entry without a second refresh'
   };
 
   await harness.mount(['/fulfillment/sales-outbound']);
-  await harness.waitFor(() => assert.match(harness.bodyText(), /销售出库/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /文件作业/));
 
-  assert.doesNotMatch(harness.bodyText(), /刷新三平台订单/, '销售出库不得再提供第二套刷新入口');
+  assert.doesNotMatch(harness.bodyText(), /刷新三平台订单/, '文件作业页不得再提供第二套刷新入口');
 
   const entry = [...document.querySelectorAll<HTMLAnchorElement>('a')]
     .find((a) => (a.getAttribute('href') === '/workbench/shipping') && (a.textContent ?? '').includes('今日发货工作台'));

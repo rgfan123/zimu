@@ -148,6 +148,10 @@ export interface ReviewCase {
   order_line_id?: string;
   subject_type: string;
   subject_id: string;
+  /** 关联对象业务编号（ORDER/ORDER_LINE → 订单号，SHIPMENT → 发货单号）；无业务编号为 null */
+  subject_no?: string | null;
+  /** 关联订单业务单号（队列「关联订单」列用） */
+  order_no?: string | null;
   detail: Record<string, unknown>;
   suggestions: Array<Record<string, unknown>>;
   allowed_actions: Array<
@@ -288,6 +292,10 @@ export interface Shipment {
   id: string;
   shipment_no: string;
   order_id: string;
+  /** 业务订单号（UIUX-05 #139：列表/抽屉不再用内部主键当业务标识） */
+  order_no?: string;
+  customer_name?: string;
+  receiver_name?: string;
   provider_id?: string;
   outbound_order_no?: string;
   shipment_sequence: number;
@@ -680,6 +688,10 @@ export interface Fulfillment {
   id: string;
   fulfillment_no: string;
   order_line_id: string;
+  /** 业务订单号 / 客户名 / 收货人名（UIUX-05 #139） */
+  order_no?: string;
+  customer_name?: string;
+  receiver_name?: string;
   provider_id: string;
   requested_quantity: string;
   cumulative_shipped_quantity: string;

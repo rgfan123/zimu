@@ -1,12 +1,13 @@
-import { useState } from 'react';
-import { Alert, Button, Input, Space, Tag, Typography } from 'antd';
+import { useState, useMemo } from 'react';
+import { Alert, Button, Input, Select, Space, Tag, Typography } from 'antd';
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { Link, useSearchParams } from 'react-router-dom';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
 import PageShell from '@/components/PageShell';
-import { inventoryApi } from '@/api/endpoints';
+import { errorMessage } from '@/api/client';
+import { inventoryApi, providersApi, skusApi } from '@/api/endpoints';
 import { useAsync } from '@/hooks/useAsync';
 import { AdminEmpty } from '@/pages/shared/AdminVisualComponents';
 import { adminFailurePresentation } from '@/pages/shared/adminVisual';
@@ -32,6 +33,11 @@ interface InventoryFilters {
 }
 
 const EMPTY_FILTERS: InventoryFilters = {};
+
+/** 下拉选项的通用检索：按名称或编码大小写不敏感匹配。 */
+function matchOption(input: string, option?: { label?: string }) {
+  return (option?.label ?? '').toLowerCase().includes(input.toLowerCase());
+}
 
 function boundedIntegerParam(
   params: URLSearchParams,
@@ -117,6 +123,17 @@ export default function InventoryOverviewPage() {
     () => inventoryOverview(page, size, filters),
     [page, size, filters.providerId, filters.skuId, filters.warehouseCode],
   );
+
+  // 筛选下拉选项（UIUX-09 #143）：履约方 / SKU 来自主数据接口，仓库取当前结果集内已观测编码。
+  const providers = useAsync(() => providersApi.list(), []);
+  const skus = useAsync(() => skusApi.list({ size: 500 }), []);
+  const warehouseOptions = useMemo(() => {
+    const codes = new Set<string>();
+    for (const item of overview.data?.items ?? []) {
+      if (item.warehouse_code) codes.add(item.warehouse_code);
+    }
+    return [...codes].sort();
+  }, [overview.data]);
 
   const response = overview.data;
   const warnings = response ? inventoryOverviewWarnings(response) : [];
@@ -258,30 +275,87 @@ export default function InventoryOverviewPage() {
         <FilterBar
           actions={<Button icon={<ReloadOutlined />} onClick={overview.reload}>刷新</Button>}
         >
-          <Input
-            aria-label="履约方 ID"
-            placeholder="履约方 ID"
-            value={draftFilters.providerId}
-            onChange={(event) => setDraftFilters((current) => ({ ...current, providerId: event.target.value || undefined }))}
-            style={{ width: 140 }}
+          {providers.error ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="履约方选项加载失败，已降级为编码输入"
+              description={errorMessage(providers.error)}
+              action={<Button size="small" onClick={providers.reload}>重试</Button>}
+            />
+          ) : null}
+          {providers.error ? (
+            <Input
+              aria-label="履约方 ID"
+              placeholder="履约方 ID"
+              value={draftFilters.providerId}
+              onChange={(event) => setDraftFilters((current) => ({ ...current, providerId: event.target.value || undefined }))}
+              style={{ width: 140 }}
+              allowClear
+            />
+          ) : (
+            <Select
+              showSearch
+              allowClear
+              aria-label="履约方"
+              placeholder="履约方（名称或编码）"
+              style={{ width: 200 }}
+              value={draftFilters.providerId}
+              onChange={(value) => setDraftFilters((current) => ({ ...current, providerId: value || undefined }))}
+              loading={providers.loading}
+              filterOption={matchOption}
+              options={(providers.data ?? []).map((provider) => ({
+                value: provider.id,
+                label: `${provider.provider_name}（${provider.provider_code}）`,
+              }))}
+            />
+          )}
+          {skus.error ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="SKU 选项加载失败，已降级为编码输入"
+              description={errorMessage(skus.error)}
+              action={<Button size="small" onClick={skus.reload}>重试</Button>}
+            />
+          ) : null}
+          {skus.error ? (
+            <Input
+              aria-label="SKU ID"
+              placeholder="SKU ID"
+              value={draftFilters.skuId}
+              onChange={(event) => setDraftFilters((current) => ({ ...current, skuId: event.target.value || undefined }))}
+              style={{ width: 140 }}
+              allowClear
+            />
+          ) : (
+            <Select
+              showSearch
+              allowClear
+              aria-label="SKU"
+              placeholder="SKU（商品名或编码）"
+              style={{ width: 220 }}
+              value={draftFilters.skuId}
+              onChange={(value) => setDraftFilters((current) => ({ ...current, skuId: value || undefined }))}
+              loading={skus.loading}
+              filterOption={matchOption}
+              options={(skus.data?.items ?? []).map((sku) => ({
+                value: sku.id,
+                label: `${sku.name}（${sku.code}）`,
+              }))}
+            />
+          )}
+          <Select
+            showSearch
             allowClear
-          />
-          <Input
-            aria-label="SKU ID"
-            placeholder="SKU ID"
-            value={draftFilters.skuId}
-            onChange={(event) => setDraftFilters((current) => ({ ...current, skuId: event.target.value || undefined }))}
-            style={{ width: 140 }}
-            allowClear
-          />
-          <Input
             aria-label="仓库编码"
-            placeholder="仓库编码"
+            placeholder="仓库编码（当前结果集）"
+            style={{ width: 200 }}
             value={draftFilters.warehouseCode}
-            onChange={(event) => setDraftFilters((current) => ({ ...current, warehouseCode: event.target.value || undefined }))}
-            style={{ width: 180 }}
-            allowClear
-            onPressEnter={() => { setPage(0); setFilters(draftFilters); }}
+            onChange={(value) => setDraftFilters((current) => ({ ...current, warehouseCode: value || undefined }))}
+            filterOption={matchOption}
+            options={warehouseOptions.map((code) => ({ value: code, label: code }))}
+            notFoundContent={warehouseOptions.length ? undefined : '当前结果集内无已观测仓库，清空筛选后查看'}
           />
           <Button type="primary" icon={<SearchOutlined />} onClick={() => { setPage(0); setFilters(draftFilters); }}>
             查询

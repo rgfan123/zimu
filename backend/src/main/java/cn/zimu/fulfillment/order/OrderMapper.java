@@ -22,6 +22,7 @@ import cn.zimu.fulfillment.order.dto.Settlement;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /** 订单实体与 DTO / JSONB 快照之间的映射。 */
@@ -29,9 +30,11 @@ import org.springframework.stereotype.Component;
 public class OrderMapper {
 
     private final MessageModelMetadataRegistry metadataRegistry;
+    private final JdbcTemplate jdbc;
 
-    public OrderMapper(MessageModelMetadataRegistry metadataRegistry) {
+    public OrderMapper(MessageModelMetadataRegistry metadataRegistry, JdbcTemplate jdbc) {
         this.metadataRegistry = metadataRegistry;
+        this.jdbc = jdbc;
     }
 
     public OrderDetailDto toDetail(
@@ -168,7 +171,38 @@ public class OrderMapper {
                 reviewCase.getResolvedBy(),
                 reviewCase.getResolvedAt(),
                 reviewCase.getResolutionVersion(),
-                reviewCase.getCreatedAt());
+                reviewCase.getCreatedAt(),
+                subjectBusinessNumber(reviewCase),
+                subjectOrderNo(reviewCase));
+    }
+
+    /** 关联对象的业务编号（UIUX-05 #139）：ORDER_LINE/ORDER → 订单号，SHIPMENT → 发货单号；其余无业务编号返回 null。 */
+    private String subjectBusinessNumber(ReviewCase reviewCase) {
+        if (reviewCase.getShipmentId() != null) {
+            return jdbc.query(
+                    "SELECT shipment_no FROM app.shipments WHERE id=?",
+                    rs -> rs.next() ? rs.getString(1) : null,
+                    reviewCase.getShipmentId());
+        }
+        return subjectOrderNo(reviewCase);
+    }
+
+    /** 复核事项关联订单的业务单号（列表「关联订单」列用）；无订单主体返回 null。 */
+    private String subjectOrderNo(ReviewCase reviewCase) {
+        Long orderId = reviewCase.getOrderId();
+        if (orderId == null && reviewCase.getOrderLineId() != null) {
+            orderId = jdbc.query(
+                    "SELECT order_id FROM app.order_lines WHERE id=?",
+                    rs -> rs.next() ? rs.getLong(1) : null,
+                    reviewCase.getOrderLineId());
+        }
+        if (orderId == null) {
+            return null;
+        }
+        return jdbc.query(
+                "SELECT order_no FROM app.orders WHERE id=?",
+                rs -> rs.next() ? rs.getString(1) : null,
+                orderId);
     }
 
     public OrderEventDto toEvent(OrderEvent event) {

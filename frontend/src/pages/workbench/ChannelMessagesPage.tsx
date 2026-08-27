@@ -20,6 +20,7 @@ import { errorMessage } from '@/api/client';
 import { channelMessagesApi, messageSubmissionsApi } from '@/api/endpoints';
 import type { ChannelMessageSummary, MessageSubmissionDetail } from '@/api/types';
 import { MESSAGE_TYPE_LABELS } from '@/constants/labels';
+import { formatDateTime } from '@/format/dateTime';
 import { useAsync } from '@/hooks/useAsync';
 import {
   currentChannelMessageDetail,
@@ -63,7 +64,7 @@ export default function ChannelMessagesPage() {
   };
 
   const columns: ColumnsType<ChannelMessageSummary> = [
-    { title: '接收时间', dataIndex: 'received_at', width: 190 },
+    { title: '接收时间', dataIndex: 'received_at', width: 150, render: (value: string) => formatDateTime(value) },
     { title: '发送人', dataIndex: 'sender_user_id', width: 170 },
     { title: '业务群', dataIndex: 'chat_id', width: 190 },
     {

@@ -117,6 +117,50 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+/** 筛选下拉的选项数据（UIUX-09 #143）：履约方 / SKU 来自主数据接口。 */
+const OPTION_PROVIDERS = [
+  { id: '12', provider_code: 'JD', provider_name: '京东云仓', provider_type: 'JD_WAREHOUSE', tracking_sla_minutes: 60, active: true, version: 1, jd_config: {}, wecom_group_chat_id: null },
+];
+const OPTION_SKUS = [
+  { id: '34', code: 'SKU-34', name: '子牧商品', active: true, version: 1, attributes: { product_id: '1', provider_id: '12', specification: '500g/盒', unit: '盒' } },
+];
+
+/** 带选项接口路由的库存页 fetch：履约方/SKU 立即返回，总库存请求交给 handler。 */
+function inventoryFetch(handleOverview: (url: URL, rawUrl: string) => Response | Promise<Response>) {
+  return (input: RequestInfo | URL) => {
+    const rawUrl = String(input);
+    const url = new URL(rawUrl, 'http://localhost');
+    if (url.pathname === '/api/v1/fulfillment-providers') {
+      return Promise.resolve(jsonResponse(OPTION_PROVIDERS));
+    }
+    if (url.pathname === '/api/v1/skus') {
+      return Promise.resolve(jsonResponse({ items: OPTION_SKUS, page: 0, size: 500, total_elements: OPTION_SKUS.length, total_pages: 1 }));
+    }
+    return Promise.resolve(handleOverview(url, rawUrl));
+  };
+}
+
+/** 打开指定 placeholder 的筛选下拉并点击包含 labelText 的选项。 */
+async function pickSelectOption(placeholder: string, labelText: string) {
+  const selector = [...document.querySelectorAll<HTMLElement>('.ant-select-selector')]
+    .find((el) => el.querySelector('.ant-select-selection-placeholder')?.textContent === placeholder
+      || el.querySelector('.ant-select-selection-item')?.textContent?.includes(labelText));
+  assert.ok(selector, `下拉「${placeholder}」必须存在`);
+  await act(async () => {
+    simulate.mouseDown(selector);
+  });
+  await waitFor(() => assert.ok(
+    [...document.querySelectorAll('.ant-select-item-option')].some((el) => el.textContent?.includes(labelText)),
+    `选项「${labelText}」必须存在`,
+  ));
+  const option = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')]
+    .find((el) => el.textContent?.includes(labelText));
+  assert.ok(option);
+  await act(async () => {
+    simulate.click(option);
+  });
+}
+
 function bodyText(): string {
   return document.body.textContent?.replace(/\s+/g, ' ').trim() ?? '';
 }
@@ -192,14 +236,21 @@ test('real inventory route requests data, renders loading, then renders the empt
   let finishRequest: ((response: Response) => void) | undefined;
   const requestedUrls: string[] = [];
   globalThis.fetch = (input) => {
-    requestedUrls.push(String(input));
+    const url = String(input);
+    requestedUrls.push(url);
+    if (url === '/api/v1/fulfillment-providers') return Promise.resolve(jsonResponse(OPTION_PROVIDERS));
+    if (url.startsWith('/api/v1/skus?')) return Promise.resolve(jsonResponse({ items: OPTION_SKUS, page: 0, size: 500, total_elements: OPTION_SKUS.length, total_pages: 1 }));
     return new Promise<Response>((resolve) => { finishRequest = resolve; });
   };
 
   await mountRoute();
 
   assert.match(bodyText(), /正在加载库存观测/);
-  assert.deepEqual(requestedUrls, ['/api/v1/inventory/overview?page=0&size=20']);
+  assert.deepEqual(requestedUrls, [
+    '/api/v1/inventory/overview?page=0&size=20',
+    '/api/v1/fulfillment-providers',
+    '/api/v1/skus?size=500',
+  ]);
 
   assert.ok(finishRequest, 'route request must be pending');
   await act(async () => {
@@ -212,13 +263,13 @@ test('real inventory route requests data, renders loading, then renders the empt
 });
 
 test('refresh stays reachable and re-requests the overview route', async () => {
-  let calls = 0;
-  globalThis.fetch = async () => {
-    calls += 1;
+  let overviewCalls = 0;
+  globalThis.fetch = inventoryFetch(() => {
+    overviewCalls += 1;
     return jsonResponse(overview());
-  };
+  });
   await mountRoute();
-  await waitFor(() => assert.equal(calls, 1));
+  await waitFor(() => assert.equal(overviewCalls, 1));
 
   const refresh = [...document.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.includes('刷新'));
@@ -226,15 +277,15 @@ test('refresh stays reachable and re-requests the overview route', async () => {
   await act(async () => {
     simulate.click(refresh);
   });
-  await waitFor(() => assert.equal(calls, 2));
+  await waitFor(() => assert.equal(overviewCalls, 2));
 });
 
 test('real inventory route distinguishes permission failures from safe system failures', async () => {
-  globalThis.fetch = async () => jsonResponse({
+  globalThis.fetch = inventoryFetch(() => jsonResponse({
     business_code: 'FORBIDDEN',
     message: 'raw policy and credential detail',
     http_status: 403,
-  }, 403);
+  }, 403));
   await mountRoute();
 
   await waitFor(() => assert.match(bodyText(), /暂无查看权限/));
@@ -243,11 +294,11 @@ test('real inventory route distinguishes permission failures from safe system fa
   await act(async () => mountedRoot?.unmount());
   mountedRoot = null;
   document.body.innerHTML = '<div id="root"></div>';
-  globalThis.fetch = async () => jsonResponse({
+  globalThis.fetch = inventoryFetch(() => jsonResponse({
     business_code: 'INTERNAL_ERROR',
     message: 'private stack trace',
     http_status: 500,
-  }, 500);
+  }, 500));
   await mountRoute();
 
   await waitFor(() => assert.match(bodyText(), /总库存加载失败/));
@@ -257,23 +308,43 @@ test('real inventory route distinguishes permission failures from safe system fa
 
 test('filter and pagination interactions issue the exact route requests and retain filters', async () => {
   const requestedUrls: string[] = [];
-  globalThis.fetch = async (input) => {
-    requestedUrls.push(String(input));
-    const url = new URL(String(input), 'http://localhost');
+  globalThis.fetch = inventoryFetch((url, rawUrl) => {
+    requestedUrls.push(rawUrl);
     const page = Number(url.searchParams.get('page') ?? '0');
-    return jsonResponse(overview({ page, total_elements: 45, total_pages: 3 }));
-  };
-  await mountRoute();
-
-  const providerInput = document.querySelector<HTMLInputElement>('input[aria-label="履约方 ID"]');
-  const skuInput = document.querySelector<HTMLInputElement>('input[aria-label="SKU ID"]');
-  const warehouseInput = document.querySelector<HTMLInputElement>('input[aria-label="仓库编码"]');
-  assert.ok(providerInput && skuInput && warehouseInput);
-  await act(async () => {
-    simulate.change(providerInput, { target: { value: '12' } });
-    simulate.change(skuInput, { target: { value: '34' } });
-    simulate.change(warehouseInput, { target: { value: 'WH-A' } });
+    return jsonResponse(overview({
+      items: page === 0 ? [{
+        provider_id: '12',
+        provider_code: 'JD',
+        provider_name: '京东云仓',
+        provider_type: 'JD_WAREHOUSE',
+        sku_id: '34',
+        sku_code: 'SKU-34',
+        product_name: '子牧商品',
+        specification: '500g/盒',
+        unit: '盒',
+        quantity_unit: 'JD_PIECE',
+        warehouse_code: 'WH-A',
+        observation_status: 'OBSERVED',
+        total_quantity: '2.000',
+        available_quantity: '1.000',
+        unavailable_quantity: '1.000',
+        observed_at: '2026-08-14T01:02:03Z',
+        observation_age_seconds: 60,
+        freshness_status: 'CURRENT',
+        source_type: 'JD_ISC_QUERY_STOCK',
+      }] : [],
+      page,
+      total_elements: 45,
+      total_pages: 3,
+    }));
   });
+  await mountRoute();
+  await waitFor(() => assert.ok(requestedUrls.length > 0));
+
+  // 履约方 / SKU / 仓库三个筛选均为可搜索下拉（无需记忆内部 ID）
+  await pickSelectOption('履约方（名称或编码）', '京东云仓（JD）');
+  await pickSelectOption('SKU（商品名或编码）', '子牧商品（SKU-34）');
+  await pickSelectOption('仓库编码（当前结果集）', 'WH-A');
 
   const search = [...document.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.includes('查询'));
@@ -298,10 +369,32 @@ test('filter and pagination interactions issue the exact route requests and reta
 });
 
 test('a target-warehouse filter keeps an unobserved SKU visible without presenting zero stock', async () => {
-  globalThis.fetch = async (input) => {
-    const url = new URL(String(input), 'http://localhost');
+  globalThis.fetch = inventoryFetch((url) => {
     if (url.searchParams.get('warehouse_code') !== 'WH-B') {
-      return jsonResponse(overview());
+      // 初始结果集带一条 WH-B 观测行，供仓库下拉提供「WH-B」选项
+      return jsonResponse(overview({
+        items: [{
+          provider_id: '12',
+          provider_code: 'JD',
+          provider_name: '京东云仓',
+          provider_type: 'JD_WAREHOUSE',
+          sku_id: '35',
+          sku_code: 'SKU-ZERO',
+          product_name: '零库存商品',
+          specification: '规格',
+          unit: '件',
+          quantity_unit: 'JD_PIECE',
+          warehouse_code: 'WH-B',
+          observation_status: 'OBSERVED',
+          total_quantity: '0.000',
+          available_quantity: '0.000',
+          unavailable_quantity: '0.000',
+          observed_at: '2026-08-14T01:02:03Z',
+          observation_age_seconds: 60,
+          freshness_status: 'CURRENT',
+          source_type: 'JD_ISC_QUERY_STOCK',
+        }],
+      }));
     }
     return jsonResponse(overview({
       items: [
@@ -352,16 +445,15 @@ test('a target-warehouse filter keeps an unobserved SKU visible without presenti
       total_pages: 1,
       coverage: coverage({ provider_count: 1, sku_count: 1, partial: true }),
     }));
-  };
+  });
   await mountRoute();
-
-  const warehouseInput = document.querySelector<HTMLInputElement>('input[aria-label="仓库编码"]');
+  await waitFor(() => assert.ok(
+    [...document.querySelectorAll('.ant-select-item-option')].length >= 0,
+  ));
+  await pickSelectOption('仓库编码（当前结果集）', 'WH-B');
   const search = [...document.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.includes('查询'));
-  assert.ok(warehouseInput && search);
-  await act(async () => {
-    simulate.change(warehouseInput, { target: { value: 'WH-B' } });
-  });
+  assert.ok(search);
   await act(async () => {
     simulate.click(search);
   });
@@ -403,7 +495,7 @@ test('coverage-wide stale facts stay visible when every item on the current page
     freshness_status: 'CURRENT' as const,
     source_type: 'JD_ISC_QUERY_STOCK' as const,
   }));
-  globalThis.fetch = async () => jsonResponse(overview({
+  globalThis.fetch = inventoryFetch(() => jsonResponse(overview({
     items: currentItems,
     total_elements: 22,
     total_pages: 2,
@@ -417,7 +509,7 @@ test('coverage-wide stale facts stay visible when every item on the current page
       stale_count: 2,
       oldest_observed_at: '2026-08-12T01:02:03Z',
     }),
-  }));
+  })));
   await mountRoute();
 
   await waitFor(() => assert.match(bodyText(), /时效正常/));
@@ -426,7 +518,7 @@ test('coverage-wide stale facts stay visible when every item on the current page
 });
 
 test('an inventory row drills into details with its business context and a reversible overview location', async () => {
-  globalThis.fetch = async () => jsonResponse(overview({
+  globalThis.fetch = inventoryFetch(() => jsonResponse(overview({
     items: [{
       provider_id: '12',
       provider_code: 'JD',
@@ -450,7 +542,7 @@ test('an inventory row drills into details with its business context and a rever
     }],
     total_elements: 1,
     total_pages: 1,
-  }));
+  })));
   await mountRoute();
 
   await waitFor(() => assert.match(bodyText(), /查看明细/));

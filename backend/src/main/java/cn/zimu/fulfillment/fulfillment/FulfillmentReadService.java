@@ -24,11 +24,13 @@ public class FulfillmentReadService {
             FROM app.fulfillments f
             JOIN app.order_lines ol ON ol.id = f.order_line_id
             JOIN app.orders o ON o.id = ol.order_id
+            LEFT JOIN app.customers c ON c.id = o.customer_id
             WHERE o.data_scope = 'BUSINESS'
             """;
     private static final String SHIPMENT_FROM = """
             FROM app.shipments s
             JOIN app.orders o ON o.id = s.order_id
+            LEFT JOIN app.customers c ON c.id = o.customer_id
             WHERE o.data_scope = 'BUSINESS'
             """;
     private static final String TICKET_FROM = """
@@ -57,7 +59,8 @@ public class FulfillmentReadService {
         long total = count(FULFILLMENT_FROM + filters, args);
         List<Object> pageArgs = pageArgs(args, page, size);
         List<Map<String, Object>> items = jdbc.query(
-                "SELECT f.* " + FULFILLMENT_FROM + filters + " ORDER BY f.created_at DESC, f.id DESC LIMIT ? OFFSET ?",
+                "SELECT f.*, o.order_no, o.receiver_name, c.customer_name " + FULFILLMENT_FROM + filters
+                        + " ORDER BY f.created_at DESC, f.id DESC LIMIT ? OFFSET ?",
                 (rs, row) -> fulfillment(rs), pageArgs.toArray());
         return page(items, page, size, total);
     }
@@ -65,7 +68,7 @@ public class FulfillmentReadService {
     @Transactional(readOnly = true)
     public Map<String, Object> fulfillment(long id) {
         Map<String, Object> value = jdbc.query(
-                "SELECT f.* " + FULFILLMENT_FROM + " AND f.id = ?",
+                "SELECT f.*, o.order_no, o.receiver_name, c.customer_name " + FULFILLMENT_FROM + " AND f.id = ?",
                 rs -> rs.next() ? fulfillment(rs) : null,
                 id);
         if (value == null) throw BusinessException.notFound("履约任务不存在");
@@ -83,7 +86,8 @@ public class FulfillmentReadService {
         long total = count(SHIPMENT_FROM + filters, args);
         List<Object> pageArgs = pageArgs(args, page, size);
         List<Map<String, Object>> items = jdbc.query(
-                "SELECT s.* " + SHIPMENT_FROM + filters + " ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?",
+                "SELECT s.*, o.order_no, o.receiver_name, c.customer_name " + SHIPMENT_FROM + filters
+                        + " ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?",
                 (rs, row) -> shipment(rs), pageArgs.toArray());
         items.forEach(this::hydrateShipment);
         return page(items, page, size, total);
@@ -92,7 +96,7 @@ public class FulfillmentReadService {
     @Transactional(readOnly = true)
     public Map<String, Object> shipment(long id) {
         Map<String, Object> value = jdbc.query(
-                "SELECT s.* " + SHIPMENT_FROM + " AND s.id = ?",
+                "SELECT s.*, o.order_no, o.receiver_name, c.customer_name " + SHIPMENT_FROM + " AND s.id = ?",
                 rs -> rs.next() ? shipment(rs) : null,
                 id);
         if (value == null) throw BusinessException.notFound("发货单不存在");
@@ -108,7 +112,8 @@ public class FulfillmentReadService {
                 orderId));
         if (!exists) throw BusinessException.notFound("订单不存在");
         List<Map<String, Object>> result = jdbc.query(
-                "SELECT s.* " + SHIPMENT_FROM + " AND s.order_id=? ORDER BY s.shipment_sequence, s.id",
+                "SELECT s.*, o.order_no, o.receiver_name, c.customer_name " + SHIPMENT_FROM
+                        + " AND s.order_id=? ORDER BY s.shipment_sequence, s.id",
                 (rs, row) -> shipment(rs), orderId);
         result.forEach(this::hydrateShipment);
         return result.stream().map(this::orderShipmentView).toList();
@@ -188,9 +193,11 @@ public class FulfillmentReadService {
     private List<Map<String, Object>> shipmentsForFulfillment(long fulfillmentId) {
         List<Map<String, Object>> result = jdbc.query(
                 """
-                SELECT DISTINCT s.* FROM app.shipments s
+                SELECT DISTINCT s.*, o.order_no, o.receiver_name, c.customer_name
+                FROM app.shipments s
                 JOIN app.shipment_items si ON si.shipment_id=s.id
                 JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
+                LEFT JOIN app.customers c ON c.id=o.customer_id
                 WHERE si.fulfillment_id=? ORDER BY s.shipment_sequence, s.id
                 """,
                 (rs, row) -> shipment(rs), fulfillmentId);
@@ -308,6 +315,9 @@ public class FulfillmentReadService {
                 "id", id(rs.getLong("id")),
                 "fulfillment_no", rs.getString("fulfillment_no"),
                 "order_line_id", id(rs.getLong("order_line_id")),
+                "order_no", rs.getString("order_no"),
+                "customer_name", rs.getString("customer_name"),
+                "receiver_name", rs.getString("receiver_name"),
                 "provider_id", id(rs.getLong("fulfillment_provider_id")),
                 "requested_quantity", decimal(rs, "requested_quantity"),
                 "cumulative_shipped_quantity", decimal(rs, "cumulative_shipped_quantity"),
@@ -324,6 +334,9 @@ public class FulfillmentReadService {
                 "id", id(rs.getLong("id")),
                 "shipment_no", rs.getString("shipment_no"),
                 "order_id", id(rs.getLong("order_id")),
+                "order_no", rs.getString("order_no"),
+                "customer_name", rs.getString("customer_name"),
+                "receiver_name", rs.getString("receiver_name"),
                 "provider_id", id(rs.getLong("fulfillment_provider_id")),
                 "outbound_order_no", rs.getString("outbound_order_no"),
                 "shipment_sequence", rs.getInt("shipment_sequence"),
