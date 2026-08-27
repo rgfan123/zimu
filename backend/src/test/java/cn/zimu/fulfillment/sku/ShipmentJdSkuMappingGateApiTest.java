@@ -229,6 +229,9 @@ class ShipmentJdSkuMappingGateApiTest {
                         SELECT jsonb_array_length(detail->'affected_shipment_items') affected_count,
                                detail #>> '{affected_shipment_items,0,shipment_item_id}' shipment_item_id,
                                detail #>> '{affected_shipment_items,0,order_line_id}' order_line_id,
+                               detail #>> '{affected_shipment_items,0,product_name}' product_name,
+                               detail #>> '{affected_shipment_items,0,goods_no}' goods_no,
+                               detail #>> '{affected_shipment_items,0,issues,0,missing_field}' missing_field,
                                detail #>> '{maintenance_action,action}' maintenance_action
                         FROM app.review_cases WHERE id=?
                         """,
@@ -236,6 +239,11 @@ class ShipmentJdSkuMappingGateApiTest {
                 .containsEntry("affected_count", 1)
                 .containsEntry("shipment_item_id", String.valueOf(fact.shipmentItemId()))
                 .containsEntry("order_line_id", String.valueOf(fact.orderLineId()))
+                // 阻断明细全量透传：运营要能直接看到是哪个商品、京东编码是什么、缺哪个字段，
+                // 不再只有 sku_code（2026-08-27）。
+                .containsEntry("product_name", "子牧羊小腿")
+                .containsEntry("goods_no", "JD-SKU-000001")
+                .containsEntry("missing_field", "provider_skus.external_codes.jd_pieces_per_unit")
                 .containsEntry("maintenance_action", "OPEN_SKU_MAPPING");
         ResponseEntity<Map> visibleCase = http.getForEntity("/api/v1/review-cases/" + caseId, Map.class);
         assertThat(visibleCase.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -332,7 +340,11 @@ class ShipmentJdSkuMappingGateApiTest {
                 blocked.getBody().get("affected_shipment_items")).getFirst();
         assertThat(affectedItem)
                 .containsEntry("shipment_item_id", String.valueOf(fact.shipmentItemId()))
-                .containsEntry("order_line_id", String.valueOf(fact.orderLineId()));
+                .containsEntry("order_line_id", String.valueOf(fact.orderLineId()))
+                .containsEntry("product_name", "子牧羊小腿");
+        assertThat(castList(affectedItem.get("issues")).getFirst())
+                .containsEntry("code", "MAPPING_MISSING")
+                .containsEntry("missing_field", "provider_sku_mapping");
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.review_cases WHERE shipment_id=? AND status='OPEN'",
                 Long.class,
@@ -667,6 +679,41 @@ class ShipmentJdSkuMappingGateApiTest {
                 "SELECT count(*) FROM app.audit_logs WHERE operation='orderSoCreate'",
                 Long.class))
                 .isZero();
+    }
+
+    /**
+     * 根因回归：review_cases#41/#42 手动复算实测——来源缺单位列时 order_lines.unit_snapshot
+     * 只是占位符「来源数量单位」，真实单位在 skus.unit。此前门禁直接读裸 unit_snapshot，
+     * 把占位符当成「非件单位」，误报 UNIT_CONVERSION_MISSING 并要求本不需要的显式京东件数
+     * 换算。COALESCE(sk.unit, ol.unit_snapshot) 修复后，SKU 主数据单位是「件」时应直接放行。
+     */
+    @Test
+    void treatsSkuUnitAsAuthoritativeWhenOrderLineUnitSnapshotIsJustASourcePlaceholder() {
+        Fact fact = shipment("UNIT-PLACEHOLDER", "1.000");
+        long skuId = jdbc.queryForObject(
+                "SELECT sku_id FROM app.order_lines WHERE id=?", Long.class, fact.orderLineId());
+        try {
+            jdbc.update("UPDATE app.skus SET unit='件' WHERE id=?", skuId);
+            jdbc.update(
+                    "UPDATE app.order_lines SET unit_snapshot='来源数量单位' WHERE id=?",
+                    fact.orderLineId());
+            jdbc.update(
+                    "UPDATE app.provider_skus SET external_codes=external_codes-'jd_pieces_per_unit' WHERE id=?",
+                    fact.mappingId());
+
+            ResponseEntity<Map> checked = check(
+                    fact.shipmentId(), "jd-sku-gate-unit-placeholder-001", "req-jd-sku-gate-unit-placeholder-001");
+
+            assertThat(checked.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(checked.getBody())
+                    .containsEntry("gate_status", "PASSED")
+                    .containsEntry("blocking_issue_count", 0);
+            assertThat(firstSkuCheck(checked))
+                    .containsEntry("unit_conversion_source", "skus.unit=件 (deterministic factor 1)");
+        } finally {
+            // 还原共享种子 SKU 的主数据单位，避免污染同文件其它依赖「盒」单位的用例。
+            jdbc.update("UPDATE app.skus SET unit='盒' WHERE id=?", skuId);
+        }
     }
 
     private ResponseEntity<Map> check(long shipmentId, String key, String requestId) {

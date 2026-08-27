@@ -204,6 +204,14 @@ class ShipmentJdStockCheckApiTest {
                 .containsEntry("observation_status", "NOT_OBSERVED");
         assertThat(blockerCodes(response.getBody()))
                 .containsExactly("JD_STOCK_TARGET_WAREHOUSE_NOT_OBSERVED");
+        // 阻断明细全量透传（2026-08-27）：此前该 blocker 只有通用文案，现在跟
+        // JD_STOCK_INSUFFICIENT 一样带商品身份与订单行定位。
+        long missingWhOrderLineId = jdbc.queryForObject(
+                "SELECT order_line_id FROM app.fulfillments WHERE id=?", Long.class, fact.fulfillmentId());
+        assertThat(castMap(castList(response.getBody().get("blockers")).getFirst()))
+                .containsEntry("goods_no", "JD-SKU-000001")
+                .containsEntry("sku_id", String.valueOf(fact.skuId()))
+                .containsEntry("order_line_ids", List.of(String.valueOf(missingWhOrderLineId)));
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.provider_stock_snapshots WHERE fulfillment_provider_id=? AND sku_id=? "
                         + "AND source_ref='jd-stock-missing-wh-001'",
@@ -359,6 +367,16 @@ class ShipmentJdStockCheckApiTest {
         assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(blocked.getBody()).containsEntry("stock_status", "BLOCKED");
         assertThat(blockerCodes(blocked.getBody())).containsExactly("JD_SKU_MAPPING_GATE_BLOCKED");
+        // 阻断明细全量透传（2026-08-27）：JD_SKU_MAPPING_GATE_BLOCKED 此前只有一句通用文案，
+        // 运营看不到是哪个商品——现在原样透传映射门禁算好的商品身份与订单行定位。
+        long orderLineId = jdbc.queryForObject(
+                "SELECT order_line_id FROM app.fulfillments WHERE id=?", Long.class, fact.fulfillmentId());
+        Map<String, Object> mappingBlocker = castMap(castList(blocked.getBody().get("blockers")).getFirst());
+        assertThat(mappingBlocker)
+                .containsEntry("code", "JD_SKU_MAPPING_GATE_BLOCKED")
+                .containsEntry("product_name", "子牧羊小腿")
+                .containsEntry("goods_no", "JD-SKU-000001")
+                .containsEntry("order_line_ids", List.of(String.valueOf(orderLineId)));
         verify(jdWarehouse, times(1)).queryStock(any());
     }
 
@@ -425,6 +443,16 @@ class ShipmentJdStockCheckApiTest {
         assertThat((List<?>) response.getBody().get("blockers"))
                 .extracting(String::valueOf)
                 .anySatisfy(value -> assertThat(value).contains("JD_STOCK_INSUFFICIENT"));
+        // 阻断明细全量透传（2026-08-27）：库存不足除文案里已带的商品名/编码外，
+        // 还要带结构化的 sku_id/order_line_ids，供前端「换货」定位具体订单行。
+        long zeroOrderLineId = jdbc.queryForObject(
+                "SELECT order_line_id FROM app.fulfillments WHERE id=?", Long.class, fact.fulfillmentId());
+        Map<String, Object> insufficientBlocker = castMap(castList(response.getBody().get("blockers")).getFirst());
+        assertThat(insufficientBlocker)
+                .containsEntry("code", "JD_STOCK_INSUFFICIENT")
+                .containsEntry("goods_no", "JD-SKU-000001")
+                .containsEntry("sku_id", String.valueOf(fact.skuId()))
+                .containsEntry("order_line_ids", List.of(String.valueOf(zeroOrderLineId)));
 
         ArgumentCaptor<Map<String, Object>> request = ArgumentCaptor.forClass(Map.class);
         verify(jdWarehouse).queryStock(request.capture());
