@@ -171,6 +171,16 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 continue;
             }
             CanonicalizedGroup canonical = canonical(parsed, batchNo, entry.getKey(), group);
+            // A12：重复订单（同渠道+来源单号已存在）整组跳过，不整批回滚。理由同 importStructured
+            // 的既有约定（见该方法 Javadoc）：createImported 命中 DUPLICATE_ORDER 会把本次
+            // @Transactional upload() 标记 rollback-only，此前/此后其他分组（含真正的新订单）
+            // 也会被一并回滚——这正是彩食鲜/飞象等在线拉取反复拉到「待发货」列表中同时含新旧
+            // 订单时，全部判定为 OK+0 新数据的根因。预检测必须发生在 createImported 之前。
+            if (orderExists(parsed.sourceChannel(), canonical.order().sourceRef())) {
+                group.forEach(row -> markRejected(
+                        batchId, row, "ORDER_ALREADY_EXISTS", "相同来源渠道与来源单号的订单已存在，本行已跳过（非失败）"));
+                continue;
+            }
             OrderDetailDto order = orderCreateService.createImported(
                             canonical.order(),
                             batchId,
@@ -1133,6 +1143,25 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         jdbc.update(
                 """
                 UPDATE app.raw_import_rows SET status='NEED_REVIEW', error_code=?, error_detail=?::jsonb,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE import_batch_id=? AND sheet_index=? AND row_index=?
+                """,
+                code,
+                json(Map.of("message", message)),
+                batchId,
+                row.sheetIndex(),
+                row.rowIndex());
+    }
+
+    /**
+     * A12：与 {@link #markReview} 同形，但落 REJECTED 而非 NEED_REVIEW——重复订单是已经
+     * 做出的确定性判断（无需人工复核决定），语义与既有 REJECTED 行状态词汇一致
+     * （见 {@link #rows}/{@link #counts} 已识别的 RECEIVED/ACCEPTED/NEED_REVIEW/REJECTED 四态）。
+     */
+    private void markRejected(long batchId, ParsedSourceRow row, String code, String message) {
+        jdbc.update(
+                """
+                UPDATE app.raw_import_rows SET status='REJECTED', error_code=?, error_detail=?::jsonb,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE import_batch_id=? AND sheet_index=? AND row_index=?
                 """,
