@@ -113,9 +113,7 @@ public class ShipmentJdStockCheckService {
                 || integer(gate.get("blocking_issue_count")) != 0) {
             return Probe.blocked(
                     "SKU_MAPPING_BLOCKED",
-                    List.of(blocker(
-                            "JD_SKU_MAPPING_GATE_BLOCKED",
-                            "京东 SKU 映射门禁未通过，请先维护映射并重新核对")),
+                    mappingGateBlockers(gate),
                     null,
                     List.of(),
                     requiredText(gate.get("local_gate_fingerprint"), "local_gate_fingerprint"));
@@ -135,6 +133,64 @@ public class ShipmentJdStockCheckService {
             result = new JdResult(false, "CLIENT_EXCEPTION", "京东库存查询调用失败", null, null);
         }
         return evaluate(result, plan, demands, localGateFingerprint);
+    }
+
+    /**
+     * 映射门禁阻断时，把 ShipmentJdSkuMappingGateService 已经算好的逐项 issue（含
+     * goods_no/product_name/sku_code/missing_field）原样透传成 stock-check 的 blocker，
+     * 而不是像此前那样把这些信息全部丢掉、只留一条没有任何商品身份的通用文案——
+     * review_cases#42 手动复算实测：运营看到的 blocker 只有「京东 SKU 映射门禁未通过」，
+     * 连是哪个商品、缺哪个字段都不知道，案子挂着却没法自救（2026-08-27）。
+     */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> mappingGateBlockers(Map<String, Object> gate) {
+        List<Map<String, Object>> blockers = new ArrayList<>();
+        Object rawItems = gate.get("affected_shipment_items");
+        if (rawItems instanceof List<?> items) {
+            for (Object itemObj : items) {
+                if (!(itemObj instanceof Map<?, ?> itemMap)) continue;
+                Map<String, Object> item = (Map<String, Object>) itemMap;
+                Object rawIssues = item.get("issues");
+                if (!(rawIssues instanceof List<?> issues)) continue;
+                for (Object issueObj : issues) {
+                    if (issueObj instanceof Map<?, ?> issueMap) {
+                        blockers.add(mappingGateBlocker(item, (Map<String, Object>) issueMap));
+                    }
+                }
+            }
+        }
+        if (blockers.isEmpty()) {
+            // 防御性兜底：门禁判了 BLOCKED 却拿不到逐项明细时绝不能返回空 blockers——
+            // persist() 用 blockers.isEmpty() 判定是否 PASSED，空列表会被误判为通过。
+            blockers.add(blocker(
+                    "JD_SKU_MAPPING_GATE_BLOCKED",
+                    "京东 SKU 映射门禁未通过，请先维护映射并重新核对"));
+        }
+        return blockers;
+    }
+
+    /** code 固定为 JD_SKU_MAPPING_GATE_BLOCKED（前端/既有消费方按 code 分组的口径不变）；
+     * message 换成该 issue 的具体文案，其余字段是「拿得到就带」的商品身份与换货所需定位信息。 */
+    private Map<String, Object> mappingGateBlocker(Map<String, Object> item, Map<String, Object> issue) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("code", "JD_SKU_MAPPING_GATE_BLOCKED");
+        String message = text(issue.get("message"));
+        value.put("message", message == null
+                ? "京东 SKU 映射门禁未通过，请先维护映射并重新核对"
+                : message);
+        putIfPresent(value, "product_name", item.get("product_name"));
+        putIfPresent(value, "goods_no", item.get("goods_no"));
+        putIfPresent(value, "sku_code", item.get("sku_code"));
+        putIfPresent(value, "sku_id", item.get("sku_id"));
+        Object orderLineId = item.get("order_line_id");
+        if (orderLineId != null) value.put("order_line_ids", List.of(String.valueOf(orderLineId)));
+        putIfPresent(value, "missing_field", issue.get("missing_field"));
+        putIfPresent(value, "mapping_issue_code", issue.get("code"));
+        return value;
+    }
+
+    private static void putIfPresent(Map<String, Object> target, String key, Object value) {
+        if (value != null && !String.valueOf(value).isBlank()) target.put(key, value);
     }
 
     private Map<String, Object> persist(
@@ -183,7 +239,8 @@ public class ShipmentJdStockCheckService {
         }
 
         boolean passed = probe.blockers().isEmpty();
-        Map<Long, SkuLabel> skuLabels = loadSkuLabels(probe.observations());
+        Map<Long, SkuLabel> skuLabels = loadSkuLabels(
+                probe.observations().stream().map(StockObservation::skuId).distinct().toList());
         Long reviewCaseId = reconcileCase(current, probe, skuLabels, passed, context.operator());
         Map<String, Object> response = response(current, probe, skuLabels, passed, reviewCaseId);
         Map<String, Object> eventPayload = new LinkedHashMap<>();
@@ -249,9 +306,17 @@ public class ShipmentJdStockCheckService {
 
         String warehouse = text(plan.request().get("warehouseNo"));
         List<Map<String, Object>> blockers = new ArrayList<>();
-        Map<Long, String> productNames = productNamesBySkuId(demands);
+        List<Long> demandSkuIds = demands.stream().map(Demand::skuId).distinct().toList();
+        Map<Long, SkuLabel> skuLabels = loadSkuLabels(demandSkuIds);
+        // 库存类阻断此前只在 JD_STOCK_INSUFFICIENT 一处带商品身份，另外三种（目标仓缺行/
+        // 响应歧义/响应无效）跟 JD_SKU_MAPPING_GATE_BLOCKED 一样只有通用文案。「阻断明细
+        // 全量透传」要求所有生成点一律带 item 级上下文，这里统一取一次订单行归属，
+        // 四处 blocker 共用（换货动作按 order_line_id 定位，同一 SKU 可能被多条行引用）。
+        Map<Long, List<Long>> orderLineIds = orderLineIdsBySku(plan.shipmentId(), demandSkuIds);
         List<StockObservation> observations = new ArrayList<>();
         for (Demand demand : demands) {
+            SkuLabel label = skuLabels.get(demand.skuId());
+            List<Long> lineIds = orderLineIds.getOrDefault(demand.skuId(), List.of());
             List<Map<String, Object>> matches = rows.stream()
                     .filter(row -> demand.goodsNo().equals(text(row.get("goodsNo"))))
                     .filter(row -> warehouse.equals(text(row.get("warehouseNo"))))
@@ -259,26 +324,29 @@ public class ShipmentJdStockCheckService {
             if (matches.isEmpty()) {
                 observations.add(StockObservation.notObserved(
                         demand.skuId(), demand.goodsNo(), warehouse, demand.requiredPieces()));
-                blockers.add(blocker(
+                blockers.add(stockBlocker(
                         "JD_STOCK_TARGET_WAREHOUSE_NOT_OBSERVED",
-                        "京东响应缺少目标仓商品行，不能把缺行解释为 0 库存"));
+                        "京东响应缺少目标仓商品行，不能把缺行解释为 0 库存",
+                        demand, label, lineIds));
                 continue;
             }
             if (matches.size() != 1) {
                 observations.add(StockObservation.notObserved(
                         demand.skuId(), demand.goodsNo(), warehouse, demand.requiredPieces()));
-                blockers.add(blocker(
+                blockers.add(stockBlocker(
                         "JD_STOCK_RESPONSE_AMBIGUOUS",
-                        "京东响应包含重复的目标仓商品行，默认阻断"));
+                        "京东响应包含重复的目标仓商品行，默认阻断",
+                        demand, label, lineIds));
                 continue;
             }
             StockObservation observation = parseObservation(matches.getFirst(), demand, warehouse);
             if (observation == null) {
                 observations.add(StockObservation.notObserved(
                         demand.skuId(), demand.goodsNo(), warehouse, demand.requiredPieces()));
-                blockers.add(blocker(
+                blockers.add(stockBlocker(
                         "JD_STOCK_RESPONSE_INVALID",
-                        "京东目标仓库存行缺字段、含负数或数量关系无效，默认阻断"));
+                        "京东目标仓库存行缺字段、含负数或数量关系无效，默认阻断",
+                        demand, label, lineIds));
                 continue;
             }
             observations.add(observation);
@@ -286,15 +354,14 @@ public class ShipmentJdStockCheckService {
                 // 不足的是哪个商品必须写进文案：运营看到「需要 2 件可用 0 件」却不知道
                 // 缺的是什么，补货无从下手（2026-08-26 用户实测反馈）。循环里本来就攥着
                 // demand.goodsNo()，此前只是没写进去。
-                String label = productNames.getOrDefault(demand.skuId(), "");
+                String productName = label == null || label.productName() == null ? "" : label.productName();
                 blockers.add(stockBlocker(
                         "JD_STOCK_INSUFFICIENT",
-                        (label.isEmpty() ? "" : "「" + label + "」")
+                        (productName.isEmpty() ? "" : "「" + productName + "」")
                                 + "（京东商品编码 " + demand.goodsNo() + "）目标仓可用库存不足："
                                 + "需要 " + demand.requiredPieces()
                                 + " 件，可用 " + decimal(observation.usable()) + " 件",
-                        demand.goodsNo(),
-                        label));
+                        demand, label, lineIds));
             }
         }
         return new Probe(
@@ -484,14 +551,10 @@ public class ShipmentJdStockCheckService {
         return value;
     }
 
-    private Map<Long, SkuLabel> loadSkuLabels(List<StockObservation> observations) {
-        if (observations.isEmpty()) {
+    private Map<Long, SkuLabel> loadSkuLabels(List<Long> skuIds) {
+        if (skuIds.isEmpty()) {
             return Map.of();
         }
-        List<Long> skuIds = observations.stream()
-                .map(StockObservation::skuId)
-                .distinct()
-                .toList();
         String placeholders = String.join(", ", java.util.Collections.nCopies(skuIds.size(), "?"));
         List<Map<String, Object>> rows = jdbc.queryForList(
                 """
@@ -561,40 +624,66 @@ public class ShipmentJdStockCheckService {
         return Map.of("code", code, "message", message);
     }
 
-    /** 库存类阻断：额外携带商品身份（goods_no / product_name），前端阻断明细表逐列展示。 */
+    /**
+     * 库存类阻断（目标仓缺行/响应歧义/响应无效/库存不足，四个生成点共用）：一律携带商品身份
+     * （goods_no/sku_code/product_name/sku_id）与「换货」定位所需的 order_line_ids——
+     * 此前只有 JD_STOCK_INSUFFICIENT 一条带 goods_no/product_name，另外三条只有通用文案，
+     * 运营连是哪个商品都不知道（阻断明细全量透传，2026-08-27）。
+     */
     private static Map<String, Object> stockBlocker(
-            String code, String message, String goodsNo, String productName) {
+            String code, String message, Demand demand, SkuLabel label, List<Long> orderLineIds) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("code", code);
         value.put("message", message);
-        value.put("goods_no", goodsNo);
-        if (!productName.isEmpty()) {
-            value.put("product_name", productName);
+        value.put("goods_no", demand.goodsNo());
+        value.put("sku_id", String.valueOf(demand.skuId()));
+        if (label != null) {
+            if (label.skuCode() != null && !label.skuCode().isBlank()) value.put("sku_code", label.skuCode());
+            if (label.productName() != null && !label.productName().isBlank()) {
+                value.put("product_name", label.productName());
+            }
+        }
+        if (!orderLineIds.isEmpty()) {
+            value.put("order_line_ids", orderLineIds.stream().map(String::valueOf).toList());
         }
         return value;
     }
 
-    /** skuId → 商品名。查不到的不报错——商品名是给人看的增强信息，缺了退回编码。 */
-    private Map<Long, String> productNamesBySkuId(List<Demand> demands) {
-        List<Long> skuIds = demands.stream().map(Demand::skuId).distinct().toList();
-        if (skuIds.isEmpty()) {
-            return Map.of();
-        }
+    /**
+     * demand.skuId → 该 shipment 内引用此 SKU 的 order_line_id 列表（SINGLE 行本身，或礼包
+     * 组件所在行）。库存判定按 SKU 聚合需求（aggregateDemands），但「换货」是按订单行操作的，
+     * 同一 SKU 也可能被多条订单行引用，所以这里把候选行清单一并带出，供前端定位。
+     */
+    private Map<Long, List<Long>> orderLineIdsBySku(long shipmentId, List<Long> skuIds) {
+        if (skuIds.isEmpty()) return Map.of();
         String placeholders = String.join(",", java.util.Collections.nCopies(skuIds.size(), "?"));
-        Map<Long, String> names = new LinkedHashMap<>();
-        try {
-            jdbc.query(
-                    "SELECT s.id, p.product_name FROM app.skus s"
-                            + " JOIN app.products p ON p.id = s.product_id"
-                            + " WHERE s.id IN (" + placeholders + ")",
-                    rs -> {
-                        names.put(rs.getLong(1), rs.getString(2));
-                    },
-                    skuIds.toArray());
-        } catch (RuntimeException ignored) {
-            // 名称查询失败不阻断库存判定本身
+        List<Object> params = new ArrayList<>();
+        params.add(shipmentId);
+        params.addAll(skuIds);
+        params.add(shipmentId);
+        params.addAll(skuIds);
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                """
+                SELECT ol.sku_id sku_id, ol.id order_line_id
+                FROM app.shipment_items si
+                JOIN app.fulfillments f ON f.id=si.fulfillment_id
+                JOIN app.order_lines ol ON ol.id=f.order_line_id
+                WHERE si.shipment_id=? AND ol.sku_id IN (%1$s)
+                UNION
+                SELECT c.sku_id sku_id, c.order_line_id order_line_id
+                FROM app.shipment_items si
+                JOIN app.fulfillments f ON f.id=si.fulfillment_id
+                JOIN app.order_line_components c ON c.order_line_id=f.order_line_id
+                WHERE si.shipment_id=? AND c.sku_id IN (%1$s)
+                """.formatted(placeholders),
+                params.toArray());
+        Map<Long, List<Long>> result = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            long skuId = ((Number) row.get("sku_id")).longValue();
+            long orderLineId = ((Number) row.get("order_line_id")).longValue();
+            result.computeIfAbsent(skuId, ignored -> new ArrayList<>()).add(orderLineId);
         }
-        return names;
+        return result;
     }
 
     private static int integer(Object value) {

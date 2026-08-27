@@ -138,7 +138,7 @@ public class ShipmentJdSkuMappingGateService {
                 blockingIssues += issues.size();
                 warnings += checkWarnings.size();
                 if (!issues.isEmpty()) {
-                    blockingItems.add(affectedItem(item.item(), sku.subject(), issues));
+                    blockingItems.add(affectedItem(item.item(), sku.subject(), sku.mapping(), issues));
                 }
             }
             Map<String, Object> itemResult = new LinkedHashMap<>();
@@ -318,14 +318,22 @@ public class ShipmentJdSkuMappingGateService {
     }
 
     private List<ItemSeed> loadItemSeeds(long shipmentId, boolean lock) {
+        // COALESCE(sk.unit, ol.unit_snapshot)：与 ShipmentJdOutboundPreparer.lockContext() 的
+        // 货品单位口径同源（同一文件的注释原文：「来源表格缺单位列时 ol.unit_snapshot 是占位符，
+        // 不可直接外发」）。此前本查询直接读裸 unit_snapshot，2026-08-27 review_cases#41/#42
+        // 实测复算命中：order_line 5 的 unit_snapshot 是占位符「来源数量单位」，SKU 48 的真实
+        // 单位其实是「件」，门禁却因为看到「来源数量单位」≠「件」而误判为非件单位、
+        // 要求本不需要的显式京东件数换算，把一条映射完好的行错判成 UNIT_CONVERSION_MISSING。
         String sql = """
                 SELECT si.id shipment_item_id, si.fulfillment_id, si.instructed_quantity, si.updated_at,
                        ol.id order_line_id, ol.line_no, ol.line_type, ol.sku_id,
-                       ol.sku_code_snapshot, ol.product_name_snapshot, ol.unit_snapshot,
+                       ol.sku_code_snapshot, ol.product_name_snapshot,
+                       COALESCE(sk.unit, ol.unit_snapshot) unit_snapshot,
                        ol.updated_at order_line_updated_at
                 FROM app.shipment_items si
                 JOIN app.fulfillments f ON f.id=si.fulfillment_id
                 JOIN app.order_lines ol ON ol.id=f.order_line_id
+                LEFT JOIN app.skus sk ON sk.id=ol.sku_id
                 WHERE si.shipment_id=?
                 ORDER BY si.id
                 """ + (lock ? " FOR UPDATE OF si, ol" : "");
@@ -374,10 +382,11 @@ public class ShipmentJdSkuMappingGateService {
     }
 
     private List<SkuSubject> loadComponentSubjects(ShipmentItemRow item, boolean lock) {
+        // 同 loadItemSeeds 的 COALESCE 修复：礼包组件单位一样可能只是来源占位符。
         String sql = """
                 SELECT c.id component_id, c.component_no, c.sku_id, sku.sku_code,
-                       c.product_name_snapshot, c.unit_snapshot, c.quantity_per_bundle,
-                       sku.active, sku.lock_version
+                       c.product_name_snapshot, COALESCE(sku.unit, c.unit_snapshot) unit_snapshot,
+                       c.quantity_per_bundle, sku.active, sku.lock_version
                 FROM app.order_line_components c
                 JOIN app.skus sku ON sku.id=c.sku_id
                 WHERE c.order_line_id=?
@@ -439,6 +448,7 @@ public class ShipmentJdSkuMappingGateService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("sku_id", subject.skuId() == null ? null : String.valueOf(subject.skuId()));
         result.put("sku_code", subject.skuCode());
+        result.put("product_name", subject.productName());
         result.put("unit", subject.unit());
         result.put("source_quantity", subject.quantity() == null
                 ? null
@@ -453,13 +463,15 @@ public class ShipmentJdSkuMappingGateService {
         }
         if (!subject.skuActive()) issues.add(issue("INTERNAL_SKU_INACTIVE", "内部 SKU 已停用"));
         if (mapping == null) {
-            issues.add(issue("MAPPING_MISSING", "内部 SKU 未配置京东履约方商品映射"));
+            issues.add(issue("MAPPING_MISSING", "内部 SKU 未配置京东履约方商品映射", "provider_sku_mapping"));
             return finishCheck(result, issues, warnings);
         }
         result.put("mapping_id", String.valueOf(mapping.id()));
         result.put("goods_no", mapping.goodsNo());
         if (!mapping.active()) issues.add(issue("MAPPING_INACTIVE", "京东履约方商品映射已停用"));
-        if (!hasText(mapping.goodsNo())) issues.add(issue("GOODS_NO_MISSING", "京东 goodsNo 为空"));
+        if (!hasText(mapping.goodsNo())) {
+            issues.add(issue("GOODS_NO_MISSING", "京东 goodsNo 为空", "provider_skus.provider_sku_code"));
+        }
 
         BigDecimal factor = null;
         String conversionSource = null;
@@ -468,19 +480,27 @@ public class ShipmentJdSkuMappingGateService {
                 factor = BigDecimal.ONE;
                 conversionSource = "skus.unit=件 (deterministic factor 1)";
             } else {
-                issues.add(issue("UNIT_CONVERSION_MISSING", "非‘件’单位必须配置显式京东件数换算"));
+                issues.add(issue(
+                        "UNIT_CONVERSION_MISSING", "非‘件’单位必须配置显式京东件数换算",
+                        "provider_skus.external_codes.jd_pieces_per_unit"));
             }
         } else {
             factor = JdStockUnitConverter.explicitFactorOrNull(mapping.externalCodes());
             conversionSource = "provider_skus.external_codes.jd_pieces_per_unit";
-            if (factor == null) issues.add(issue("UNIT_CONVERSION_INVALID", "京东件数换算必须是正数"));
+            if (factor == null) {
+                issues.add(issue(
+                        "UNIT_CONVERSION_INVALID", "京东件数换算必须是正数",
+                        "provider_skus.external_codes.jd_pieces_per_unit"));
+            }
         }
         if (conversionSource != null) result.put("unit_conversion_source", conversionSource);
         if (factor != null) {
             result.put("pieces_per_unit", factor.stripTrailingZeros().toPlainString());
             BigDecimal exact = JdStockUnitConverter.exactPiecesOrNull(subject.quantity(), factor);
             if (exact == null) {
-                issues.add(issue("NON_INTEGRAL_QUANTITY", "数量与换算系数无法得到精确正整数件数，系统不取整"));
+                issues.add(issue(
+                        "NON_INTEGRAL_QUANTITY", "数量与换算系数无法得到精确正整数件数，系统不取整",
+                        "provider_skus.external_codes.jd_pieces_per_unit"));
             } else {
                 result.put("exact_plan_quantity", exact.toPlainString());
             }
@@ -573,7 +593,7 @@ public class ShipmentJdSkuMappingGateService {
     }
 
     private Map<String, Object> affectedItem(
-            ShipmentItemRow item, SkuSubject subject, List<Map<String, Object>> issues) {
+            ShipmentItemRow item, SkuSubject subject, MappingRow mapping, List<Map<String, Object>> issues) {
         Map<String, Object> affected = new LinkedHashMap<>();
         affected.put("shipment_item_id", String.valueOf(item.shipmentItemId()));
         affected.put("fulfillment_id", String.valueOf(item.fulfillmentId()));
@@ -582,6 +602,10 @@ public class ShipmentJdSkuMappingGateService {
         if (subject.componentNo() != null) affected.put("component_no", subject.componentNo());
         affected.put("sku_id", subject.skuId() == null ? null : String.valueOf(subject.skuId()));
         affected.put("sku_code", subject.skuCode());
+        // product_name/goods_no：阻断明细全量透传（2026-08-27）。此前只带 sku_code，运营在
+        // JD_STOCK_BLOCKED 抽屉里看不到商品名/京东编码，只能凭 sku_code 去主数据页反查。
+        affected.put("product_name", subject.productName());
+        affected.put("goods_no", mapping == null ? null : mapping.goodsNo());
         affected.put("issues", issues);
         return affected;
     }
@@ -618,6 +642,20 @@ public class ShipmentJdSkuMappingGateService {
 
     private Map<String, Object> issue(String code, String message) {
         return Map.of("code", code, "message", message);
+    }
+
+    /**
+     * 带「缺什么字段」标注的问题项：仅用于确有具体本地字段可指的配置类问题（映射缺失/
+     * goodsNo 缺失/京东件数换算缺失或非法）。远端事实类问题（京东商品未查到/已停用等）
+     * 不是「本地字段缺了」，不套用本重载——2026-08-27 阻断明细透传需求：运营看到
+     * blocker 不能只有一句通用文案，要能直接定位该去改哪个字段（案例：review_cases#41/#42）。
+     */
+    private Map<String, Object> issue(String code, String message, String missingField) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("code", code);
+        value.put("message", message);
+        value.put("missing_field", missingField);
+        return value;
     }
 
     private boolean nameMatches(SkuSubject subject, MappingRow mapping, String remoteName) {
