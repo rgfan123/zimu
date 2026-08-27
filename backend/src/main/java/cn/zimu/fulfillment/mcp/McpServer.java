@@ -22,6 +22,11 @@ import java.util.Map;
  * 必须把应用日志重定向到文件（见 {@link McpServerRunner}）。业务失败返回
  * {@code isError=true} 的工具结果（携带稳定业务码），不向客户端暴露配置或凭据。
  * 非 Spring bean：由 {@link McpServerRunner} 与测试用显式流构造。
+ *
+ * <p>协议分发核心是 {@link #handleRequest(String)}（一帧文本进、一帧响应或
+ * {@code null} 出），stdio（{@link #run()}）与 HTTP/SSE 传输面
+ * （{@code cn.zimu.fulfillment.mcp.http}，见 {@code McpHttpJsonRpcHandler}）
+ * 共用同一份分发逻辑，不重复实现 JSON-RPC 路由，行为不因传输面分叉。
  */
 public class McpServer {
 
@@ -49,6 +54,20 @@ public class McpServer {
         this.mapper = mapper;
     }
 
+    /**
+     * 无流构造：仅供 HTTP/SSE 传输面（{@code cn.zimu.fulfillment.mcp.http}）直接调用
+     * {@link #handleRequest(String)}，不支持也不应调用 {@link #run()}——HTTP 传输自行处理
+     * 请求体读取与响应写回（含 202/401/SSE 帧封装），不经 stdio 逐行帧协议。协议分发逻辑与
+     * stdio 完全共用，行为（含 08 决策的只读收紧）不会因传输面而分叉。
+     */
+    public McpServer(McpToolRegistry registry, McpAgentIdentity identity, ObjectMapper mapper) {
+        this.in = null;
+        this.out = null;
+        this.registry = registry;
+        this.identity = identity;
+        this.mapper = mapper;
+    }
+
     /** 阻塞处理 stdin 直到 EOF。 */
     public void run() {
         String line;
@@ -69,32 +88,46 @@ public class McpServer {
     }
 
     private void handleLine(String line) {
+        JsonNode response = handleRequest(line);
+        if (response != null) {
+            writeLine(response);
+        }
+    }
+
+    /**
+     * 处理一帧原始 JSON-RPC 报文，返回响应帧；通知类消息（无 {@code id}）返回 {@code null}，
+     * 调用方不应回写任何响应体（stdio 静默跳过，HTTP 传输按各自协议回 202/无内容）。
+     * stdio（{@link #handleLine}）与 HTTP 传输共用同一分发逻辑，行为不因传输面分叉。
+     */
+    public JsonNode handleRequest(String rawJson) {
         JsonNode message;
         try {
-            message = mapper.readTree(line);
+            message = mapper.readTree(rawJson);
         } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
-            writeError(PARSE_ERROR, "Parse error", null);
-            return;
+            return errorResponse(PARSE_ERROR, "Parse error", null);
         }
+        return handleMessage(message);
+    }
+
+    private JsonNode handleMessage(JsonNode message) {
         if (message == null || !message.isObject() || !message.has("method") || !message.get("method").isTextual()) {
-            writeError(INVALID_REQUEST, "Invalid Request", id(message));
-            return;
+            return errorResponse(INVALID_REQUEST, "Invalid Request", id(message));
         }
         String method = message.get("method").asText();
         JsonNode id = id(message);
         JsonNode params = message.get("params");
         if (id == null || id.isNull()) {
             handleNotification(method);
-            return;
+            return null;
         }
-        switch (method) {
-            case "initialize" -> writeResult(initializeResult(), id);
-            case "ping" -> writeResult(mapper.createObjectNode(), id);
-            case "tools/list" -> writeResult(toolsList(), id);
-            case "tools/call" -> handleToolCall(params, id);
-            case "shutdown" -> writeResult(mapper.createObjectNode(), id);
-            default -> writeError(METHOD_NOT_FOUND, "Method not found: " + method, id);
-        }
+        return switch (method) {
+            case "initialize" -> successResponse(initializeResult(), id);
+            case "ping" -> successResponse(mapper.createObjectNode(), id);
+            case "tools/list" -> successResponse(toolsList(), id);
+            case "tools/call" -> toolCallResponse(params, id);
+            case "shutdown" -> successResponse(mapper.createObjectNode(), id);
+            default -> errorResponse(METHOD_NOT_FOUND, "Method not found: " + method, id);
+        };
     }
 
     private void handleNotification(String method) {
@@ -108,24 +141,21 @@ public class McpServer {
         }
     }
 
-    private void handleToolCall(JsonNode params, JsonNode id) {
+    private JsonNode toolCallResponse(JsonNode params, JsonNode id) {
         if (params == null || !params.isObject() || !params.has("name") || !params.get("name").isTextual()) {
-            writeError(INVALID_PARAMS, "Invalid params: tools/call requires name", id);
-            return;
+            return errorResponse(INVALID_PARAMS, "Invalid params: tools/call requires name", id);
         }
         String name = params.get("name").asText();
         McpTool tool = registry.find(name).orElse(null);
         if (tool == null) {
-            writeError(INVALID_PARAMS, "Unknown tool: " + name, id);
-            return;
+            return errorResponse(INVALID_PARAMS, "Unknown tool: " + name, id);
         }
         // 08 决策：stdio 面一期收紧为只读——外部客户端共用全局 identity、无 per-agent 权限，
         // 写工具与只读接口不共存（tools/list 也不暴露），调用写工具按无效请求拒绝。
         // 拒绝先于身份/幂等处理：只读接口上写工具不存在，认证语义（MCP_AUTH_REQUIRED）
-        // 只对暴露出的只读工具生效。
+        // 只对暴露出的只读工具生效。HTTP 传输复用同一分发逻辑，写工具同样一律拒绝。
         if (!tool.readOnly() || !tool.externallyDiscoverable()) {
-            writeError(INVALID_PARAMS, "Tool is read-only restricted: " + name, id);
-            return;
+            return errorResponse(INVALID_PARAMS, "Tool is read-only restricted: " + name, id);
         }
         JsonNode arguments = params.get("arguments");
         Map<String, Object> args = arguments == null || arguments.isNull()
@@ -151,7 +181,7 @@ public class McpServer {
             error.put("message", "内部错误，请联系运维");
             content(result, error.toString());
         }
-        writeResult(result, id);
+        return successResponse(result, id);
     }
 
     private void content(ObjectNode result, String text) {
@@ -192,22 +222,22 @@ public class McpServer {
         return message == null ? null : message.get("id");
     }
 
-    private void writeResult(JsonNode result, JsonNode id) {
+    private JsonNode successResponse(JsonNode result, JsonNode id) {
         ObjectNode response = mapper.createObjectNode();
         response.put("jsonrpc", "2.0");
         response.set("id", id);
         response.set("result", result);
-        writeLine(response);
+        return response;
     }
 
-    private void writeError(int code, String message, JsonNode id) {
+    private JsonNode errorResponse(int code, String message, JsonNode id) {
         ObjectNode response = mapper.createObjectNode();
         response.put("jsonrpc", "2.0");
         response.set("id", id);
         ObjectNode error = response.putObject("error");
         error.put("code", code);
         error.put("message", message);
-        writeLine(response);
+        return response;
     }
 
     private void writeLine(JsonNode message) {

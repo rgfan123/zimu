@@ -254,6 +254,13 @@ app:
     # 分模块暴露（env MCP_MODULES，逗号分隔）：空 = 全部模块（向后兼容）；非空只注册列出的模块，
     # 未列出模块的工具在 tools/list 与 tools/call 上都查不到；未知模块名启动期 fail-fast。
     modules: ${MCP_MODULES:}
+    http:
+      # 对外 HTTP/SSE 传输开关（env MCP_HTTP_ENABLED），默认关闭——不开等于不新增公网攻击面。
+      # 与 stdio 面共用同一 McpServer 协议分发逻辑（含只读收紧），只是换了一层收发方式。
+      enabled: ${MCP_HTTP_ENABLED:false}
+      # Bearer token（env MCP_HTTP_TOKEN）。未配置时端点直接不注册（404），不是放行；
+      # 校验失败返回 401。token 绝不进日志/审计负载（比对逻辑见 McpHttpTokenAuthenticator）。
+      token: ${MCP_HTTP_TOKEN:}
   message-retention:
     # NON_BUSINESS 消息默认保留 30 天；非正数表示禁用清理。清理任务可重复运行并记录审计摘要。
     non-business-days: ${MESSAGE_RETENTION_NON_BUSINESS_DAYS:30}

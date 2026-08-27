@@ -40,6 +40,9 @@ class ProductionRequestAuthenticationPolicyTest {
         // /wecom/callbacks/ 豁免带尾斜杠：裸 /wecom/callbacks 不命中，同样按业务操作人要求。
         assertThat(requirementFor("/wecom/callbacks"))
                 .isEqualTo(RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR);
+        // /mcp 豁免不带尾斜杠，靠路径段边界匹配：近似前缀 /mcpevil 不能搭便车。
+        assertThat(requirementFor("/mcpevil"))
+                .isEqualTo(RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR);
     }
 
     @Test
@@ -59,6 +62,10 @@ class ProductionRequestAuthenticationPolicyTest {
         // 企业微信回调：靠 msg_signature 自证身份。
         assertThat(requirementFor("/wecom/callbacks/abc123"))
                 .isEqualTo(RequestAuthenticationPolicy.Requirement.NONE);
+        // MCP 外部 HTTP/SSE 传输面：靠 Bearer token 自证身份，网关产生不了 X-Operator。
+        assertThat(requirementFor("/mcp")).isEqualTo(RequestAuthenticationPolicy.Requirement.NONE);
+        assertThat(requirementFor("/mcp/sse")).isEqualTo(RequestAuthenticationPolicy.Requirement.NONE);
+        assertThat(requirementFor("/mcp/messages")).isEqualTo(RequestAuthenticationPolicy.Requirement.NONE);
         // Demo 浏览器入口必须经业务操作人认证；仅订单助手写入口额外接受内部服务身份。
         assertThat(requirementFor("/demo/v1"))
                 .isEqualTo(RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR);

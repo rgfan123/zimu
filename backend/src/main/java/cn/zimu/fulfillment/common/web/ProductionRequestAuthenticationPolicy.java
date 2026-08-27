@@ -42,7 +42,13 @@ public final class ProductionRequestAuthenticationPolicy implements RequestAuthe
             // actuator 只暴露 health,info（见 application.yml management.endpoints.web.exposure.include），无业务数据。
             new RouteRule("/actuator/", Requirement.NONE),
             // 企业微信回调：无法携带管理凭据，靠 msg_signature 自证身份（URL 验证与加密回调）。
-            new RouteRule("/wecom/callbacks/", Requirement.NONE));
+            new RouteRule("/wecom/callbacks/", Requirement.NONE),
+            // MCP 外部 HTTP/SSE 传输面：外部 MCP 客户端只带 Bearer token，网关无法产生
+            // X-Operator，只能放行到应用层由 McpHttpTokenAuthenticator 自行校验（校验失败
+            // 一律 401；token 未配置时端点直接不注册，见 McpHttpTransportCondition）。
+            // 不带尾斜杠仍按路径段边界匹配（matches()），覆盖 /mcp、/mcp/sse、/mcp/messages，
+            // 不会误命中 /mcpevil 之类的近似前缀。
+            new RouteRule("/mcp", Requirement.NONE));
 
     @Override
     public Requirement requirementFor(HttpServletRequest request) {
