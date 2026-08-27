@@ -37,18 +37,26 @@ public class WecomChatReplyPolicyService {
         return modes.isEmpty() || MODE_FULL.equals(modes.getFirst());
     }
 
-    /** 登记/更新策略；mode 只接受 FULL / RECEIPTS_ONLY（库 CHECK 兜底）。 */
-    public void upsert(String chatId, String mode, String note, String operator) {
+    /**
+     * 会话档案的部分更新：null=不动该字段，空串=清除该字段（备注名/Agent/备注）。
+     * reply_mode 只接受 FULL / RECEIPTS_ONLY（库 CHECK 兜底），null 保持现值。
+     */
+    public void upsertProfile(
+            String chatId, String mode, String displayName, String agentSlug, String note, String operator) {
         jdbc.update(
                 """
-                INSERT INTO app.wecom_chat_reply_policies (chat_id, reply_mode, note, updated_by, updated_at)
-                VALUES (?, ?, ?, ?, now())
+                INSERT INTO app.wecom_chat_reply_policies AS p
+                    (chat_id, reply_mode, display_name, agent_slug, note, updated_by, updated_at)
+                VALUES (?, COALESCE(?::text, 'FULL'), NULLIF(?::text, ''), NULLIF(?::text, ''), NULLIF(?::text, ''), ?, now())
                 ON CONFLICT (chat_id) DO UPDATE
-                    SET reply_mode = EXCLUDED.reply_mode,
-                        note = EXCLUDED.note,
-                        updated_by = EXCLUDED.updated_by,
-                        updated_at = now()
+                    SET reply_mode   = COALESCE(?::text, p.reply_mode),
+                        display_name = CASE WHEN ?::text IS NULL THEN p.display_name ELSE NULLIF(?::text, '') END,
+                        agent_slug   = CASE WHEN ?::text IS NULL THEN p.agent_slug ELSE NULLIF(?::text, '') END,
+                        note         = CASE WHEN ?::text IS NULL THEN p.note ELSE NULLIF(?::text, '') END,
+                        updated_by   = ?,
+                        updated_at   = now()
                 """,
-                chatId, mode, note, operator);
+                chatId, mode, displayName, agentSlug, note, operator,
+                mode, displayName, displayName, agentSlug, agentSlug, note, note, operator);
     }
 }

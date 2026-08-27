@@ -66,7 +66,7 @@ export const appNavigation = [
     children: [
       { path: '/agents', label: 'Agent 列表' },
       { path: '/agents/runs', label: '运行记录' },
-      { path: '/agents/reply-policies', label: '会话回复策略' },
+      { path: '/agents/reply-policies', label: '会话管理' },
       // UIUX-10 #144：消耗看板 / 履约单据助手降为隐藏直达（列表页内可进入）；创建入口在列表页按钮。
       { path: '/agents/cost', label: '消耗看板', hideInMenu: true },
       { path: '/agents/fulfillment-file', label: '履约单据助手', hideInMenu: true },

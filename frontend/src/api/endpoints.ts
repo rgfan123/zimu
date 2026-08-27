@@ -460,11 +460,22 @@ export const providersApi = {
 /** GET /api/v1/wecom/chats —— 机器人可达会话目录（配置企微推送目标时的候选）。 */
 export const wecomChatsApi = {
   list: () => apiRequest<{ chats: KnownWecomChat[] }>('/api/v1/wecom/chats'),
-  /** 会话回复策略：客户群配 RECEIPTS_ONLY 静默收单；个人助手保持 FULL。 */
-  setReplyPolicy: (chatId: string, replyMode: 'FULL' | 'RECEIPTS_ONLY', note?: string) =>
-    apiRequest<KnownWecomChat>(`/api/v1/wecom/chats/${encodeURIComponent(chatId)}/reply-policy`, {
+  /**
+   * 会话档案部分更新（全契约 snake_case）：字段省略 = 不动，空串 = 清除。
+   * 客户群配 reply_mode=RECEIPTS_ONLY 仅业务消息；个人助手保持 FULL。
+   */
+  setProfile: (
+    chatId: string,
+    profile: {
+      reply_mode?: 'FULL' | 'RECEIPTS_ONLY';
+      display_name?: string;
+      agent_slug?: string;
+      note?: string;
+    },
+  ) =>
+    apiRequest<KnownWecomChat>(`/api/v1/wecom/chats/${encodeURIComponent(chatId)}/profile`, {
       method: 'PUT',
-      body: { replyMode, note },
+      body: profile,
     }),
 };
 

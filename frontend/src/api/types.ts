@@ -596,11 +596,15 @@ export interface FulfillmentProvider {
 export interface KnownWecomChat {
   chat_id: string;
   chat_type: 'group' | 'single';
-  /** 单聊 = 运营人员姓名；群聊企微不下发群名，恒为 null。 */
+  /** 人起的会话备注名（企微协议不下发群名，帧里只有 chatid）；未起为 null。 */
+  display_name: string | null;
+  /** 单聊 = 运营人员姓名（自动兜底名）；群聊恒为 null。 */
   label: string | null;
   event_count: number;
   last_seen_at: string | null;
-  /** 会话回复策略：FULL=自由回复（缺省），RECEIPTS_ONLY=静默（只发白名单回执/业务文件）。 */
+  /** 服务该会话的 Agent（agent_definitions.agent_slug）；未绑定为 null。 */
+  agent_slug: string | null;
+  /** 回复权限：FULL=自由回复（缺省），RECEIPTS_ONLY=仅业务消息（回执/回填/清单照发）。 */
   reply_mode: 'FULL' | 'RECEIPTS_ONLY';
 }
 
