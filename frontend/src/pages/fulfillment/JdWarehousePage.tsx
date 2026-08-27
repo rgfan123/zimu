@@ -7,7 +7,7 @@ import type { ColumnsType } from 'antd/es/table';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
 import PageShell from '@/components/PageShell';
-import { ApiError, apiRequest, errorMessage } from '@/api/client';
+import { ApiError, apiRequest, errorMessage, newRequestId } from '@/api/client';
 import { jdWarehouseApi } from '@/api/endpoints';
 import type { ApiErrorBody, JdQueryResult } from '@/api/types';
 import { useAsync } from '@/hooks/useAsync';
@@ -79,7 +79,7 @@ async function downloadOrderNosExport(filter: OrderListFilter): Promise<void> {
   if (filter.endDate) params.set('end_date', filter.endDate);
   if (filter.status) params.set('status', filter.status);
   const res = await fetch(`/api/v1/jd-order/outbound-order-nos/export?${params.toString()}`, {
-    headers: { Accept: 'application/octet-stream', 'X-Request-Id': crypto.randomUUID() },
+    headers: { Accept: 'application/octet-stream', 'X-Request-Id': newRequestId() },
   });
   if (!res.ok) {
     let body: ApiErrorBody = { message: '', http_status: res.status };

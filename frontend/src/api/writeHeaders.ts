@@ -1,3 +1,4 @@
+import { newRequestId } from './client.ts';
 export interface TrustedWriteHeaderOptions {
   idempotencyKey?: string;
   extra?: Record<string, string>;
@@ -5,7 +6,7 @@ export interface TrustedWriteHeaderOptions {
 
 function explicitIdempotencyKey(value: string | undefined): string {
   if (value === undefined) {
-    return crypto.randomUUID();
+    return newRequestId();
   }
   if (!/^[\x21-\x7e]{8,255}$/.test(value)) {
     throw new Error('explicit idempotency key must be 8 to 255 visible characters');

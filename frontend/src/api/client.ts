@@ -142,6 +142,27 @@ export function errorMessage(err: unknown): string {
   return buildNetworkFailureMessage(window.location.origin, window.location.pathname);
 }
 
+/**
+ * 请求追踪号。**不能直接用 `crypto.randomUUID()`**：它带 `[SecureContext]`，只在 HTTPS
+ * 与 localhost 存在；明文 HTTP 访问（局域网 IP、公网 IP:端口）下它是 undefined，调用会在
+ * fetch 发出之前抛 TypeError，表现为「所有后端请求都网络失败」而服务端一条日志都没有
+ * （2026-08-27 生产实证：Chrome 取到全部静态资源后零 API 请求）。
+ * 回退到 getRandomValues（非安全上下文可用），再退化到 Math.random——追踪号只需唯一，
+ * 不承担密码学强度。
+ */
+export function newRequestId(): string {
+  const api = globalThis.crypto;
+  if (api && typeof api.randomUUID === 'function') return api.randomUUID();
+  if (api && typeof api.getRandomValues === 'function') {
+    const bytes = api.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return `req-${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
 function buildUrl(path: string, params?: Record<string, QueryValue>): string {
   const url = new URL(path, window.location.origin);
   if (params) {
@@ -164,7 +185,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   const requestHeaders: Record<string, string> = {
     Accept: 'application/json',
-    'X-Request-Id': crypto.randomUUID(),
+    'X-Request-Id': newRequestId(),
     ...headers,
   };
   // FormData 由浏览器生成 multipart 边界，不得设置 JSON Content-Type。

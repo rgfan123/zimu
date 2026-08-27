@@ -6,7 +6,7 @@
  *   /internal/v1 受信任内部接入 —— 前端不调用。
  */
 
-import { apiRequest, type QueryValue } from './client';
+import { apiRequest, type QueryValue, newRequestId } from './client';
 import { ApiError } from './client';
 import type {
   AgentDetail,
@@ -220,7 +220,7 @@ export const demoApi = {
     apiRequest<DemoRun>('/demo/v1/scenarios', {
       method: 'POST',
       body: { scenario_code: scenarioCode },
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': newRequestId() },
     }),
 
   /** GET /demo/v1/runs/{run_id} —— 查询演示运行与关联 Demo 订单摘要。 */
@@ -622,7 +622,7 @@ export const fulfillmentExportsApi = {
   /** 下载履约导出文件（application/octet-stream）。client.ts 为 JSON 客户端，故此处直接 fetch。 */
   async downloadFile(id: string, exportBatchNo: string): Promise<void> {
     const res = await fetch(`/api/v1/fulfillment-exports/${id}/file`, {
-      headers: { Accept: 'application/octet-stream', 'X-Request-Id': crypto.randomUUID() },
+      headers: { Accept: 'application/octet-stream', 'X-Request-Id': newRequestId() },
     });
     if (!res.ok) {
       throw new ApiError(res.status, { message: '文件下载未完成，请稍后重试', http_status: res.status });
@@ -652,7 +652,7 @@ export const fulfillmentExportsApi = {
 async function multipartRequest<T>(path: string, form: FormData): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
-    headers: { Accept: 'application/json', 'X-Request-Id': crypto.randomUUID(), ...writeHeaders() },
+    headers: { Accept: 'application/json', 'X-Request-Id': newRequestId(), ...writeHeaders() },
     body: form,
   });
   if (!res.ok) {
@@ -669,7 +669,7 @@ async function multipartRequest<T>(path: string, form: FormData): Promise<T> {
 
 async function downloadFile(path: string, fallbackName: string): Promise<void> {
   const res = await fetch(path, {
-    headers: { Accept: 'application/octet-stream', 'X-Request-Id': crypto.randomUUID() },
+    headers: { Accept: 'application/octet-stream', 'X-Request-Id': newRequestId() },
   });
   if (!res.ok) {
     throw new ApiError(res.status, { message: '文件下载未完成，请稍后重试', http_status: res.status });

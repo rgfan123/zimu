@@ -14,7 +14,7 @@ import {
 } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { errorMessage } from '@/api/client';
+import { errorMessage, newRequestId } from '@/api/client';
 import type { ReviewCase } from '@/api/types';
 import {
   buildTrackingDraftConfirmCommand,
@@ -137,7 +137,7 @@ export default function TrackingDraftReviewPanel({
           );
           return {
             draft_id: row.id,
-            idempotency_key: crypto.randomUUID(),
+            idempotency_key: newRequestId(),
             expected_draft_revision: command.expected_draft_revision,
             expected_case_version: command.expected_case_version,
             task_id: command.task_id,
