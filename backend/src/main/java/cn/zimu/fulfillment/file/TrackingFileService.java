@@ -806,10 +806,14 @@ public class TrackingFileService {
                     cells.put("物流单号", fill.trackingNo());
                 }
                 case "ZHONGHUI" -> {
-                    // 中汇回填模板：原表最后新增一列「物流单号」，回填京东物流单号；
-                    // 平台模板未提供承运商列，不新增「物流公司」列。
+                    // 中汇回填：发货状态/物流单号必写；原表带「物流公司」列时一并回填——
+                    // 文案取渠道词表 carrier_mappings（中汇 = 京东快递，2026-08-27 用户裁决），
+                    // 不硬编码。原表没有该列时不新增（平台模板说了算）。
                     if (cells.containsKey("发货状态")) {
                         cells.put("发货状态", "已发货");
+                    }
+                    if (cells.containsKey("物流公司")) {
+                        cells.put("物流公司", fill.sourceCarrier());
                     }
                     cells.put("物流单号", fill.trackingNo());
                 }

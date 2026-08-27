@@ -689,12 +689,30 @@ class FulfillmentExportWecomResendStopApiTest {
         try (org.apache.poi.xssf.usermodel.XSSFWorkbook workbook =
                         new org.apache.poi.xssf.usermodel.XSSFWorkbook(new java.io.ByteArrayInputStream(instruction));
                 java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
-            var row = workbook.getSheetAt(0).getRow(1);
-            row.getCell(18).setCellValue("SHIPPED");
-            row.getCell(19).setCellValue("3.000");
-            row.getCell(20).setCellValue("京东物流");
-            row.getCell(21).setCellValue("JDVA-RS-COMPLETE-001");
-            row.getCell(22).setCellValue("2026-08-12 12:00:00");
+            var sheet = workbook.getSheetAt(0);
+            var header = sheet.getRow(0);
+            var fmt = new org.apache.poi.ss.usermodel.DataFormatter();
+            java.util.Map<String, Integer> columns = new java.util.LinkedHashMap<>();
+            for (int index = 0; index < header.getLastCellNum(); index++) {
+                columns.put(fmt.formatCellValue(header.getCell(index)).strip(), index);
+            }
+            var row = sheet.getRow(1);
+            java.util.function.BiConsumer<Integer, String> put = (col, value) -> {
+                if (col == null) return;
+                var cell = row.getCell(col);
+                if (cell == null) cell = row.createCell(col);
+                cell.setCellValue(value == null ? "" : value);
+            };
+            if (columns.containsKey("运单号")) {
+                put.accept(columns.get("快递公司"), "京东物流");
+                put.accept(columns.get("运单号"), "JDVA-RS-COMPLETE-001");
+            } else {
+                put.accept(columns.get("结果"), "SHIPPED");
+                put.accept(columns.get("实际发货数量"), "3.000");
+                put.accept(columns.get("快递公司"), "京东物流");
+                put.accept(columns.get("物流单号"), "JDVA-RS-COMPLETE-001");
+                put.accept(columns.get("发货时间"), "2026-08-12 12:00:00");
+            }
             workbook.write(output);
             return output.toByteArray();
         }

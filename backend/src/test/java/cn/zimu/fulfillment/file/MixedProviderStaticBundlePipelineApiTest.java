@@ -160,13 +160,19 @@ class MixedProviderStaticBundlePipelineApiTest {
             var sheet = exported.getSheetAt(0);
             DataFormatter formatter = new DataFormatter();
             assertThat(sheet.getLastRowNum()).isEqualTo(2);
-            assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(6))).isEqualTo("万齐");
-            assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(9))).isNotBlank();
-            assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(13))).isEqualTo(THIRD_PARTY_SKU_CODE);
-            assertThat(formatter.formatCellValue(sheet.getRow(2).getCell(9)))
-                    .isEqualTo(formatter.formatCellValue(sheet.getRow(1).getCell(9)));
-            assertThat(formatter.formatCellValue(sheet.getRow(2).getCell(13)))
-                    .isEqualTo(SECOND_THIRD_PARTY_SKU_CODE);
+            // v2 人读八列：渠道/礼包分组/履约方SKU 不再是文件列（对齐事实在导出明细表）；
+            // 礼包同组体现在两行共用同一出库单号。
+            java.util.Map<String, Integer> columns = new java.util.LinkedHashMap<>();
+            for (int index = 0; index < sheet.getRow(0).getLastCellNum(); index++) {
+                columns.put(formatter.formatCellValue(sheet.getRow(0).getCell(index)).strip(), index);
+            }
+            assertThat(columns.keySet())
+                    .containsExactlyElementsOf(ProviderFileService.HUMAN_THIRD_PARTY_HEADERS);
+            String firstOutbound = formatter.formatCellValue(sheet.getRow(1).getCell(columns.get("出库单号")));
+            assertThat(firstOutbound).isNotBlank();
+            assertThat(formatter.formatCellValue(sheet.getRow(2).getCell(columns.get("出库单号"))))
+                    .isEqualTo(firstOutbound);
+            assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(columns.get("品名")))).isNotBlank();
         }
 
         String shipmentId = jdShipmentIds.getFirst().toString();

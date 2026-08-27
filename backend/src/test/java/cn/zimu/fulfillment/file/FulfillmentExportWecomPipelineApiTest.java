@@ -285,7 +285,11 @@ class FulfillmentExportWecomPipelineApiTest {
 
         // 上传证据：流式路径读取的是导出文件本身，文件名 = 批次号 + .xlsx
         assertThat(wecom.uploadedFilenames).hasSize(1);
-        assertThat(wecom.uploadedFilenames.getFirst()).isEqualTo(exportBatchNo(exportId) + ".xlsx");
+        // v2：企微里出现的是人读文件名「子牧{品类}{M.d}发货清单.xlsx」，不再是内部批次号
+        java.time.LocalDate today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        assertThat(wecom.uploadedFilenames.getFirst())
+                .endsWith(today.getMonthValue() + "." + today.getDayOfMonth() + "发货清单.xlsx")
+                .startsWith("子牧");
         // 发送的是 FILE 消息，群 = 快照群
         assertThat(wecom.sentMessages).hasSize(1);
         WecomOutboundMessage message = wecom.sentMessages.getFirst();
@@ -1036,12 +1040,31 @@ class FulfillmentExportWecomPipelineApiTest {
             throws Exception {
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(instruction));
                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            var row = workbook.getSheetAt(0).getRow(1);
-            row.getCell(18).setCellValue(result);
-            row.getCell(19).setCellValue(quantity);
-            row.getCell(20).setCellValue("京东物流");
-            row.getCell(21).setCellValue(trackingNumber);
-            row.getCell(22).setCellValue("2026-08-12 12:00:00");
+            var sheet = workbook.getSheetAt(0);
+            var header = sheet.getRow(0);
+            var fmt = new org.apache.poi.ss.usermodel.DataFormatter();
+            java.util.Map<String, Integer> columns = new java.util.LinkedHashMap<>();
+            for (int index = 0; index < header.getLastCellNum(); index++) {
+                columns.put(fmt.formatCellValue(header.getCell(index)).strip(), index);
+            }
+            var row = sheet.getRow(1);
+            java.util.function.BiConsumer<Integer, String> put = (col, value) -> {
+                if (col == null) return;
+                var cell = row.getCell(col);
+                if (cell == null) cell = row.createCell(col);
+                cell.setCellValue(value == null ? "" : value);
+            };
+            // 双格式：v2 人读八列（运单号/快递公司）优先；v1 兼容 24 列按旧列名
+            if (columns.containsKey("运单号")) {
+                put.accept(columns.get("快递公司"), "京东物流");
+                put.accept(columns.get("运单号"), trackingNumber);
+            } else {
+                put.accept(columns.get("结果"), result);
+                put.accept(columns.get("实际发货数量"), quantity);
+                put.accept(columns.get("快递公司"), "京东物流");
+                put.accept(columns.get("物流单号"), trackingNumber);
+                put.accept(columns.get("发货时间"), "2026-08-12 12:00:00");
+            }
             workbook.write(output);
             return output.toByteArray();
         }
