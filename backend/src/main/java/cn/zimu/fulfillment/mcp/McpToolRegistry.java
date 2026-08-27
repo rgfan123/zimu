@@ -35,7 +35,7 @@ public class McpToolRegistry {
             McpWriteTools writeTools,
             McpDomainReadTools domainReadTools,
             McpControlReadTools controlReadTools) {
-        this(readTools, writeTools, domainReadTools, controlReadTools, null, "");
+        this(readTools, writeTools, domainReadTools, controlReadTools, null, null, "");
     }
 
     @Autowired
@@ -44,6 +44,7 @@ public class McpToolRegistry {
             McpWriteTools writeTools,
             McpDomainReadTools domainReadTools,
             McpControlReadTools controlReadTools,
+            McpOrdersReadTools ordersReadTools,
             KehuzxRemoteReadTools kehuzxReadTools,
             @Value("${app.mcp.modules:}") String modulesProperty) {
         List<McpTool> tools = new java.util.ArrayList<>();
@@ -51,6 +52,9 @@ public class McpToolRegistry {
         tools.addAll(writeTools.tools());
         tools.addAll(domainReadTools.tools());
         tools.addAll(controlReadTools.tools());
+        if (ordersReadTools != null) {
+            tools.addAll(ordersReadTools.tools());
+        }
         if (kehuzxReadTools != null) {
             tools.addAll(kehuzxReadTools.tools());
         }
@@ -185,7 +189,7 @@ public class McpToolRegistry {
             this(name, description, schema, handler, true, module);
         }
 
-        /** 全参构造：读写属性 + 所属模块都显式声明，四个内建 provider 与写工具一律走这个重载。 */
+        /** 全参构造：读写属性 + 所属模块都显式声明，五个内建 provider 与写工具一律走这个重载。 */
         public SimpleTool(
                 String name,
                 String description,

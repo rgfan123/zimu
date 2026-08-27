@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
  * MCP 分模块暴露（用户诉求：「有些 mcp 我不想提供给公共 agent」）的注册表行为验收。
  *
  * <p>不经 Spring/Testcontainers：{@link McpToolRegistry} 的模块过滤是纯构造期逻辑，
- * 用 Mockito 桩出四个 provider 的 {@code tools()} 即可覆盖——空配置 = 全部模块、
+ * 用 Mockito 桩出 provider 的 {@code tools()} 即可覆盖——空配置 = 全部模块、
  * 显式模块只留列出的工具、被过滤的工具在 {@code find}/{@code tools/call} 上一致地
  * 「查不到」（不是列表里藏起来但还能调用的假隔离）、未知模块名启动期 fail-fast。
  */
@@ -85,6 +85,21 @@ class McpToolRegistryModuleFilterTest {
     }
 
     @Test
+    void ordersReadModuleCanBeEnabledOrFilteredLikeAnyOtherModule() {
+        McpToolRegistry registry = registry("orders-read",
+                tool("search_orders", "orders-read"),
+                tool("get_order", "orders-read"),
+                tool("read_a", "masterdata"));
+
+        assertThat(registry.all()).extracting(McpTool::name)
+                .containsExactlyInAnyOrder("search_orders", "get_order");
+        assertThat(registry.find("search_orders")).isPresent();
+        assertThat(registry.find("get_order")).isPresent();
+        // masterdata 未列出，orders-read 工具不会被顺带放行别的模块
+        assertThat(registry.find("read_a")).isEmpty();
+    }
+
+    @Test
     void unknownModuleNameFailsFastAtConstruction() {
         assertThatThrownBy(() -> registry("mastrdata", tool("read_a", "masterdata")))
                 .isInstanceOf(IllegalStateException.class)
@@ -115,7 +130,7 @@ class McpToolRegistryModuleFilterTest {
         when(domains.tools()).thenReturn(List.of());
         McpControlReadTools control = mock(McpControlReadTools.class);
         when(control.tools()).thenReturn(List.of());
-        return new McpToolRegistry(reads, writes, domains, control, null, modulesProperty);
+        return new McpToolRegistry(reads, writes, domains, control, null, null, modulesProperty);
     }
 
     private static McpTool tool(String name, String module) {

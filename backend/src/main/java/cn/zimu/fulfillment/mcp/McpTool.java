@@ -41,7 +41,7 @@ public interface McpTool {
 
     /**
      * 工具所属模块（分模块暴露，用户诉求：「有些 mcp 我不想提供给公共 agent」）。默认
-     * {@code "default"}——只有旧式构造（未显式传 module）的工具落在这里；四个内建 provider
+     * {@code "default"}——只有旧式构造（未显式传 module）的工具落在这里；五个内建 provider
      * 与写工具的每个真实工具都显式声明模块（见各 provider 构造函数）。
      *
      * <p>{@link McpToolRegistry} 按 {@code app.mcp.modules}（env {@code MCP_MODULES}）配置的

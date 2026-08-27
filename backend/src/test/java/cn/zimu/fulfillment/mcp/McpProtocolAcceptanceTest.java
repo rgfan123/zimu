@@ -205,7 +205,10 @@ class McpProtocolAcceptanceTest {
                 "list_fulfillment_providers",
                 "search_product_archive",
                 "check_shipment_source_sync",
-                "get_import_batch_progress");
+                "get_import_batch_progress",
+                // 查询：真实订单（app.orders，非企微草稿）
+                "search_orders",
+                "get_order");
 
         assertThat(registry.find("check_shipment_source_sync")).get()
                 .extracting(McpTool::readOnly)
