@@ -143,7 +143,7 @@ class KehuzxRemoteReadToolsTest {
                 context, Map.of("customer_id", "attacker-customer", "keyword", "牛肉"));
 
         assertThat(observedArguments.get(0))
-                .containsExactly(Map.entry("keyword", CUSTOMER_CODE), Map.entry("limit", 10));
+                .containsExactlyInAnyOrderEntriesOf(Map.of("keyword", CUSTOMER_CODE, "limit", 10));
         assertThat(observedArguments.get(1))
                 .containsEntry("customer_id", "customer-1")
                 .containsEntry("keyword", "牛肉");
