@@ -202,6 +202,18 @@ export interface OrderEvent {
   created_at: string;
 }
 
+/** POST /api/v1/order-lines/{id}/substitute-sku 响应——京东库存/映射阻断补救的换货结果。 */
+export interface OrderLineSkuSubstitutionResult {
+  order_line_id: string;
+  order_id: string;
+  old_sku_id: string;
+  new_sku_id: string;
+  new_sku_code: string;
+  fulfillment_id: string;
+  affected_shipment_ids: string[];
+  order_version: string;
+}
+
 export interface OrderVersion {
   version_no: number;
   source_version?: string;
@@ -1151,7 +1163,18 @@ export interface ShipmentJdStockCheckResult {
   observation_status: 'OBSERVED' | 'OBSERVED_ZERO' | 'NOT_OBSERVED';
   observed_at: string;
   not_reserved: true;
-  blockers: Array<{ code: string; message: string }>;
+  // 阻断明细全量透传（2026-08-27）：除 code/message 外按拿得到就带原则附商品身份与
+  // 换货定位信息，见 stockBlockerCases.ts 的 StockBlockerItem。
+  blockers: Array<{
+    code: string;
+    message: string;
+    goods_no?: string;
+    product_name?: string;
+    sku_code?: string;
+    sku_id?: string;
+    order_line_ids?: string[];
+    missing_field?: string;
+  }>;
   items: ShipmentJdStockObservation[];
   review_case?: { id: string; reason_code: 'JD_STOCK_BLOCKED'; status: 'OPEN' };
 }

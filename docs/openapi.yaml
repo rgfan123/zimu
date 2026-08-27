@@ -42,206 +42,6 @@ security:
   - basicAuth: []
 paths:
   "/api/v1/agent-runs/token-usage":
-    "Blocker":
-      type: object
-      properties:
-        stage:
-          type: string
-        code:
-          type: string
-        count:
-          type: integer
-          format: int32
-        sampleNo:
-          type: string
-    "FulfillmentFileAssessment":
-      type: object
-      properties:
-        batch_no:
-          type: string
-        current_stage:
-          type: string
-        summary:
-          type: string
-        stage_notes:
-          type: array
-          items:
-            $ref: "#/components/schemas/StageNote"
-        suggested_actions:
-          type: array
-          items:
-            $ref: "#/components/schemas/SuggestedAction"
-        requires_human:
-          type: boolean
-        missing_fields:
-          type: array
-          items:
-            type: string
-    "FulfillmentFileRunResult":
-      type: object
-      properties:
-        progress:
-          $ref: "#/components/schemas/ImportBatchProgress"
-        assessment:
-          $ref: "#/components/schemas/FulfillmentFileAssessment"
-        provider:
-          type: string
-        model:
-          type: string
-        promptVersion:
-          type: string
-        error:
-          type: string
-    "ImportBatchProgress":
-      type: object
-      properties:
-        batchId:
-          type: integer
-          format: int64
-        batchNo:
-          type: string
-        batchType:
-          type: string
-        sourceChannel:
-          type: string
-        status:
-          type: string
-        revisionNo:
-          type: integer
-          format: int32
-        receivedAt:
-          type: string
-          format: date-time
-        processedAt:
-          type: string
-          format: date-time
-        intake:
-          $ref: "#/components/schemas/Stage"
-        outbound:
-          $ref: "#/components/schemas/Stage"
-        tracking:
-          $ref: "#/components/schemas/Stage"
-        sourceReturn:
-          $ref: "#/components/schemas/Stage"
-        blockers:
-          type: array
-          items:
-            $ref: "#/components/schemas/Blocker"
-    "MetaAgentMessage":
-      type: object
-      properties:
-        message:
-          type: string
-        threadId:
-          type: string
-    JsonNode: {}
-    "MetaAgentOutcome":
-      type: object
-      properties:
-        outcome:
-          type: string
-        runId:
-          type: string
-        agentSlug:
-          type: string
-        draftVersion:
-          type: integer
-          format: int32
-        draftEnabled:
-          type: boolean
-        questions:
-          type: array
-          items:
-            type: string
-        rejectionReason:
-          type: string
-        error:
-          type: string
-        raw:
-          $ref: "#/components/schemas/JsonNode"
-    "Stage":
-      type: object
-      properties:
-        name:
-          type: string
-        total:
-          type: integer
-          format: int32
-        done:
-          type: integer
-          format: int32
-        blocked:
-          type: integer
-          format: int32
-        supported:
-          type: boolean
-    "StageNote":
-      type: object
-      properties:
-        stage:
-          type: string
-        note:
-          type: string
-    "SuggestedAction":
-      type: object
-      properties:
-        action:
-          type: string
-        reason:
-          type: string
-        target_no:
-          type: string
-    "TokenUsageSummaryItem":
-      type: object
-      properties:
-        groupKey:
-          type: string
-        runs:
-          type: integer
-          format: int64
-        failedRuns:
-          type: integer
-          format: int64
-        runsWithoutTokenUsage:
-          type: integer
-          format: int64
-        overThresholdRuns:
-          type: integer
-          format: int64
-        promptTokens:
-          type: integer
-          format: int64
-        completionTokens:
-          type: integer
-          format: int64
-        totalTokens:
-          type: integer
-          format: int64
-        maxRunTotalTokens:
-          type: integer
-          format: int64
-        modelCalls:
-          type: integer
-          format: int64
-        totalLatencyMs:
-          type: integer
-          format: int64
-        maxRunLatencyMs:
-          type: integer
-          format: int64
-    "TokenUsageSummaryResponse":
-      type: object
-      properties:
-        groupBy:
-          type: string
-        runMode:
-          type: string
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/TokenUsageSummaryItem"
-        totals:
-          $ref: "#/components/schemas/TokenUsageSummaryItem"
     get:
       tags:
       - agent-run-read-controller
@@ -537,6 +337,49 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WecomBot' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/wecom/chats:
+    get:
+      tags: [WeCom]
+      operationId: listWecomChats
+      description: >-
+        机器人可达会话目录：配置「往哪个会话推送」时的候选清单。chatid 是天书、手抄必错，
+        目录合成两路——群聊来自机器人实际收到过消息的群（把机器人拉进新群、随便发一条
+        消息刷新即出现；没进过的群本来也发不进去），单聊来自已绑定企微 userid 的运营
+        人员（单聊 chatid 即 userid）。只回标识符与活跃元数据，不回任何消息内容。
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: 可达会话清单：群聊按最近活跃倒序、单聊按运营人员登记序，各上限 50
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Directory' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/wecom/chats/{chat_id}/profile:
+    parameters:
+      - $ref: '#/components/parameters/ChatId'
+    put:
+      tags: [WeCom]
+      operationId: upsertWecomChatProfile
+      description: >-
+        会话档案部分更新：备注名 / 服务 Agent / 回复权限一页收口。字段 null 不动、
+        空串清除；reply_mode 只接受 FULL / RECEIPTS_ONLY（客户群配 RECEIPTS_ONLY
+        静默收单，个人助手保持 FULL 自由应答），agent_slug 非空须已登记于
+        agent_definitions。
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatProfileWrite' }
+      responses:
+        '200':
+          description: 更新后的会话档案投影（仅回填档案字段；chat_type/label/活跃元数据为 null/0）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KnownChat' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/message-media/{message_media_id}/content:
     parameters:
@@ -3587,7 +3430,7 @@ paths:
           content:
             "*/*":
               schema:
-                "$ref": "#/components/schemas/PageResponseMasterDataRecord"
+                "$ref": "#/components/schemas/MasterDataPage"
     post:
       tags:
       - bundle-master-data-controller
@@ -3615,6 +3458,115 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MasterDataRecord' }
+  "/api/v1/order-lines/{order_line_id}/substitute-sku":
+    post:
+      tags: [Orders]
+      operationId: substituteOrderLineSku
+      description: >-
+        订单行换货：京东库存/映射阻断的补救动作——把已映射单品行替换为另一个同履约方
+        （京东仓）、启用且有履约方编码的 SKU，随后由调用方触发重新核对。来源快照
+        （渠道品名等血缘）不动，替换记 ORDER_LINE_SKU_SUBSTITUTED 事件并推进订单版本。
+      parameters:
+      - name: order_line_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Identifier'
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: X-Operator
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_sku_id, expected_order_version]
+              properties:
+                new_sku_id: { $ref: '#/components/schemas/Identifier' }
+                expected_order_version: { type: integer, format: int64 }
+        required: true
+      responses:
+        '200':
+          description: 换货完成（或幂等重放）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order_line_id, order_id, old_sku_id, new_sku_id, new_sku_code, order_version]
+                properties:
+                  order_line_id: { $ref: '#/components/schemas/Identifier' }
+                  order_id: { $ref: '#/components/schemas/Identifier' }
+                  old_sku_id: { $ref: '#/components/schemas/Identifier' }
+                  new_sku_id: { $ref: '#/components/schemas/Identifier' }
+                  new_sku_code: { type: string }
+                  fulfillment_id: { $ref: '#/components/schemas/Identifier' }
+                  affected_shipment_ids:
+                    type: array
+                    items: { $ref: '#/components/schemas/Identifier' }
+                  order_version: { type: string }
+        '409':
+          description: 版本冲突或订单状态不允许换货
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  "/api/v1/order-lines/{order_line_id}/resolve-bundle":
+    post:
+      tags: [Orders]
+      operationId: resolveOrderLineBundle
+      description: >-
+        礼包行就地解析：映射补配之后把待复核礼包行按档案 BOM 展开。目标礼包显式传入并与
+        映射比对——不让服务端替人挑礼包；映射缺失/冲突分别以 SOURCE_BUNDLE_MAPPING_MISSING /
+        SOURCE_BUNDLE_MAPPING_CONFLICT 拒绝。幂等重放返回 200。
+      parameters:
+      - name: order_line_id
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Identifier'
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: X-Operator
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/ResolveBundleCommand"
+        required: true
+      responses:
+        '200':
+          description: 展开完成（或幂等重放）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order_line_id, order_id, bundle_id, component_count, order_fully_mapped]
+                properties:
+                  order_line_id: { $ref: '#/components/schemas/Identifier' }
+                  order_id: { $ref: '#/components/schemas/Identifier' }
+                  bundle_id: { $ref: '#/components/schemas/Identifier' }
+                  component_count: { type: integer, format: int32 }
+                  order_fully_mapped: { type: boolean }
+        '409':
+          description: 该行或该来源礼包已绑定其它礼包档案（SOURCE_BUNDLE_MAPPING_CONFLICT），先处理主数据冲突
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   "/api/v1/product-bundles":
     get:
       tags:
@@ -3650,7 +3602,7 @@ paths:
           content:
             "*/*":
               schema:
-                "$ref": "#/components/schemas/PageResponseMasterDataRecord"
+                "$ref": "#/components/schemas/MasterDataPage"
     post:
       tags:
       - bundle-master-data-controller
@@ -3693,7 +3645,13 @@ paths:
         content:
           application/json:
             schema:
-              "$ref": "#/components/schemas/JsonNode"
+              type: object
+              description: >-
+                运维启停命令：只接受 enabled 字段（显式目标值；已处于目标值时幂等 200）。
+                operator 一律取自认证身份，请求体携带 operator 即 400。
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
       responses:
         '200':
           description: OK
@@ -3716,7 +3674,13 @@ paths:
         content:
           application/json:
             schema:
-              "$ref": "#/components/schemas/JsonNode"
+              type: object
+              description: >-
+                回滚命令：只接受 target_version 字段；目标版本须曾 active，服务端复制为
+                新草稿（版本链无回边）。operator 一律取自认证身份，请求体携带即 400。
+              required: [target_version]
+              properties:
+                target_version: { type: integer, format: int32, minimum: 1 }
       responses:
         '200':
           description: OK
@@ -3745,7 +3709,9 @@ paths:
         content:
           application/json:
             schema:
-              "$ref": "#/components/schemas/JsonNode"
+              type: object
+              description: 命令体必须为空对象（不接受任何字段，operator 取自认证身份）；请求体亦可整体省略。
+              maxProperties: 0
       responses:
         '200':
           description: OK
@@ -3774,7 +3740,9 @@ paths:
         content:
           application/json:
             schema:
-              "$ref": "#/components/schemas/JsonNode"
+              type: object
+              description: 命令体必须为空对象（不接受任何字段，operator 取自认证身份）；请求体亦可整体省略。已 active 同版本时幂等 200。
+              maxProperties: 0
       responses:
         '200':
           description: OK
@@ -3791,7 +3759,11 @@ paths:
         content:
           application/json:
             schema:
-              "$ref": "#/components/schemas/JsonNode"
+              type: object
+              description: >-
+                草稿定义全量快照 + 建议评测用例（与 create_agent_draft 工具载荷同构，
+                服务端逐字段校验）。operator 一律取自认证身份，请求体携带即 400。
+              additionalProperties: true
       responses:
         '200':
           description: OK
@@ -4253,6 +4225,12 @@ components:
       in: path
       required: true
       description: 企微机器人 bot_id（企微后台颁发的业务标识，非自增 ID）。
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    ChatId:
+      name: chat_id
+      in: path
+      required: true
+      description: 企微会话 chatid（群聊为企微下发的不透明串，单聊即运营人员 userid）。
       schema: { type: string, minLength: 1, maxLength: 128 }
     AuditId: { name: audit_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
     ChannelMessageId: { name: channel_message_id, in: path, required: true, schema: { $ref: '#/components/schemas/Identifier' } }
@@ -4779,6 +4757,74 @@ components:
           nullable: true
           description: 缺省：新建默认 true，更新保持现值。
         note: { type: string, nullable: true, maxLength: 500 }
+    Directory:
+      type: object
+      required: [chats]
+      properties:
+        chats:
+          type: array
+          items: { $ref: '#/components/schemas/KnownChat' }
+    KnownChat:
+      type: object
+      required: [chat_id, event_count, reply_mode]
+      properties:
+        chat_id: { type: string, minLength: 1, maxLength: 128 }
+        chat_type:
+          type: string
+          nullable: true
+          enum: [group, single]
+          description: group=机器人收到过消息的群；single=运营人员单聊。PUT 响应不回填，为 null。
+        display_name:
+          type: string
+          nullable: true
+          maxLength: 128
+          description: 人起的会话备注名（企微协议不下发群名，帧里只有 chatid）；未起为 null。
+        label:
+          type: string
+          nullable: true
+          description: 单聊=运营人员姓名（自动兜底名）；群聊恒为 null。
+        event_count:
+          type: integer
+          minimum: 0
+          description: 机器人在该会话收到过的消息数；单聊与 PUT 响应恒为 0。
+        last_seen_at: { type: string, format: date-time, nullable: true }
+        agent_slug:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: 服务该会话的 Agent（agent_definitions.agent_slug）；未绑定为 null。
+        reply_mode:
+          type: string
+          enum: [FULL, RECEIPTS_ONLY]
+          description: >-
+            回复权限：FULL=自由回复（无档案行时的缺省）；RECEIPTS_ONLY=仅业务消息
+            （回执/回填/清单照发，不闲聊不追问）。
+    ChatProfileWrite:
+      type: object
+      properties:
+        reply_mode:
+          type: string
+          nullable: true
+          enum: [FULL, RECEIPTS_ONLY]
+          description: null 不动；只接受 FULL / RECEIPTS_ONLY，其余 400 INVALID_REPLY_MODE。
+        display_name:
+          type: string
+          nullable: true
+          maxLength: 128
+          description: 会话备注名。null 不动，空串清除；超长 400 INVALID_DISPLAY_NAME。
+        agent_slug:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9-]{0,63}$'
+          description: >-
+            服务该会话的 Agent。null 不动，空串清除；非空经 trim 后须已登记于
+            agent_definitions，否则 400 UNKNOWN_AGENT。
+        note:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: 档案备注。null 不动，空串清除。
     MessagePipelineSummary:
       type: object
       additionalProperties: false
@@ -5447,6 +5493,7 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         version: { type: integer, format: int64, minimum: 0 }
+        source_ordered_at: { type: string, format: date-time, nullable: true }
     OrderDetail:
       allOf:
         - $ref: '#/components/schemas/OrderSummary'
@@ -6981,6 +7028,28 @@ components:
           description: 每份礼包所需的正整数 SKU 件数。
         emg_code_snapshot: { type: string, maxLength: 64, nullable: true }
         source_text_snapshot: { type: string, maxLength: 255, nullable: true }
+    ResolveBundleCommand:
+      type: object
+      description: 礼包行就地解析命令。目标礼包显式传入并与映射比对——不让服务端替人挑礼包。
+      required: [bundle_id]
+      properties:
+        bundle_id: { $ref: '#/components/schemas/Identifier' }
+    SourceBundleMappingWrite:
+      type: object
+      description: 渠道礼包显式映射创建输入；一期一个来源单位恒等于一份礼包。
+      required: [source_channel, source_bundle_ref, bundle_id]
+      properties:
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        source_bundle_ref: { type: string, minLength: 1, maxLength: 128, description: 来源礼包编号 }
+        source_bundle_name: { type: string, maxLength: 255, nullable: true }
+        source_barcode: { type: string, maxLength: 128, nullable: true }
+        quantity_multiplier:
+          type: string
+          pattern: '^1$'
+          nullable: true
+          description: 礼包来源包装乘数；一期必须为 1。
+        bundle_id: { $ref: '#/components/schemas/Identifier' }
+        active: { type: boolean, nullable: true }
     BundleWrite:
       type: object
       additionalProperties: false
@@ -8141,3 +8210,362 @@ components:
         model: { type: string }
         prompt_version: { type: string }
         error: { type: string, description: 稳定错误码；null 表示运行成功 }
+    ImportBatchStage:
+      type: object
+      description: >-
+        一段链路的确定性进度。supported=false 表示该段未接入，此时 total/done/blocked
+        无意义——界面须写「暂无汇总」而不是 0（0 会被读成「没有待办」）。
+      required: [name, total, done, blocked, supported]
+      properties:
+        name: { type: string, description: 段名 }
+        total: { type: integer, format: int32, description: 该段应处理的总数 }
+        done: { type: integer, format: int32, description: 已完成数 }
+        blocked: { type: integer, format: int32, description: 卡住的数量（失败/需人工） }
+        supported: { type: boolean, description: 该段是否已接入 }
+    ImportBatchBlocker:
+      type: object
+      description: 一条阻塞事实。
+      required: [stage, code, count]
+      properties:
+        stage: { type: string, description: 卡在哪一段 }
+        code: { type: string, description: 稳定码（review reason_code / JD 失败码 / 回传失败码） }
+        count: { type: integer, format: int32, description: 条数 }
+        sample_no: { type: string, nullable: true, description: 一个可去后台搜的业务号；无则 null }
+    ImportBatchProgress:
+      type: object
+      description: >-
+        一个导入批次在「收表→发货→回填→回传」四段链路上的确定性进度。四段判定全部由
+        SQL 算出，Agent 读它、解释它、给建议，但不参与判定——数字由谁算，决定了出错时
+        该找谁。未接入的段位如实标注而不是补零。
+      required: [batch_id, batch_no, batch_type, source_channel, status, revision_no, intake, outbound, tracking, source_return, blockers]
+      properties:
+        batch_id: { type: integer, format: int64 }
+        batch_no: { type: string }
+        batch_type: { type: string }
+        source_channel: { type: string }
+        status: { type: string }
+        revision_no: { type: integer, format: int32 }
+        received_at: { type: string, format: date-time }
+        processed_at: { type: string, format: date-time, nullable: true }
+        intake: { $ref: '#/components/schemas/ImportBatchStage' }
+        outbound: { $ref: '#/components/schemas/ImportBatchStage' }
+        tracking: { $ref: '#/components/schemas/ImportBatchStage' }
+        source_return: { $ref: '#/components/schemas/ImportBatchStage' }
+        blockers:
+          type: array
+          items: { $ref: '#/components/schemas/ImportBatchBlocker' }
+    FulfillmentFileStageNote:
+      type: object
+      required: [stage, note]
+      properties:
+        stage: { type: string }
+        note: { type: string }
+    FulfillmentFileSuggestedAction:
+      type: object
+      description: 一条建议。action 是建议做什么（不得是「我已经…」——Agent 不执行）。
+      required: [action, reason]
+      properties:
+        action: { type: string }
+        reason: { type: string, description: 依据哪条事实 }
+        target_no: { type: string, nullable: true, description: 可去后台搜的业务号；没有则 null }
+    FulfillmentFileAssessment:
+      type: object
+      description: >-
+        履约单据 Agent 的输出（与 V56 定义的 output_schema 同构）。全部是解读与建议，
+        没有一个字段是业务事实的真源——四段数字的真源是 ImportBatchProgress 的 SQL 投影。
+      properties:
+        batch_no: { type: string }
+        current_stage: { type: string }
+        summary: { type: string }
+        stage_notes:
+          type: array
+          items: { $ref: '#/components/schemas/FulfillmentFileStageNote' }
+        suggested_actions:
+          type: array
+          items: { $ref: '#/components/schemas/FulfillmentFileSuggestedAction' }
+        requires_human: { type: boolean }
+        missing_fields:
+          type: array
+          items: { type: string }
+    FulfillmentFileRunResult:
+      type: object
+      description: >-
+        履约单据 Agent 一次运行的结果。progress（确定性事实，即使模型调用失败也存在）与
+        assessment（模型解读，失败时 null）并列返回是刻意的：界面必须能分开呈现，
+        否则读者无从判断哪些数字可以拿去做决定。
+      required: [progress]
+      properties:
+        progress: { $ref: '#/components/schemas/ImportBatchProgress' }
+        assessment:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/FulfillmentFileAssessment'
+        provider: { type: string, description: 实际使用的模型供应商；未命中 allowlist 时为 none }
+        model: { type: string }
+        prompt_version: { type: string }
+        error: { type: string, nullable: true, description: 稳定失败码；成功时为 null }
+    MetaAgentMessage:
+      type: object
+      description: 一次 meta-agent 对话输入。
+      required: [message]
+      properties:
+        message: { type: string, minLength: 1 }
+        thread_id: { type: string, nullable: true, description: 多轮对话线程标识 }
+    MetaAgentOutcome:
+      type: object
+      description: >-
+        一次 meta-agent 对话的结局。三种非成功结局各有独立呈现，不折叠成「成功/失败」两态：
+        NEEDS_INPUT 是正常的一步——系统只是在等一个它不该猜的答案，显示成失败会让人以为
+        Agent 坏了。
+      required: [outcome]
+      properties:
+        outcome: { type: string, enum: [SUCCESS, NEEDS_INPUT, REJECTED, FAILED] }
+        run_id: { type: string, nullable: true, description: 关联 agent_runs 与审计，双向可追溯 }
+        agent_slug: { type: string, nullable: true, description: 草稿 slug（SUCCESS 时非空） }
+        draft_version: { type: integer, format: int32, nullable: true, description: 草稿版本（SUCCESS 时非空） }
+        draft_enabled: { type: boolean, nullable: true, description: 草稿上的 enabled 值；始终只是草稿字段，不代表已启用 }
+        questions:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: 澄清问题（NEEDS_INPUT 时非空）
+        rejection_reason: { type: string, nullable: true, description: 拒绝理由，必须可操作——告诉用户下一步该做什么 }
+        error: { type: string, nullable: true, description: 稳定失败码（FAILED 时非空） }
+        raw: { type: object, additionalProperties: true, nullable: true, description: 模型原始输出，供界面右侧实时预览草稿 }
+    TokenUsageSummaryItem:
+      type: object
+      description: >-
+        一个分组的消耗汇总。token 与耗时并列——两者都是「跑飞」的信号，只看 token 会漏掉
+        卡在工具上空转的运行。runs_without_token_usage > 0 时求和数字是下界而非全量，
+        界面必须显式说明。
+      required: [group_key, runs, failed_runs, runs_without_token_usage, over_threshold_runs, prompt_tokens, completion_tokens, total_tokens, model_calls, total_latency_ms]
+      properties:
+        group_key: { type: string, description: 分组键（agent_slug/业务日/业务实体类型）；合计行为空串 }
+        runs: { type: integer, format: int64 }
+        failed_runs: { type: integer, format: int64 }
+        runs_without_token_usage: { type: integer, format: int64, description: 诚实字段：没有任何计量的运行数（求和只覆盖有计量的部分） }
+        over_threshold_runs: { type: integer, format: int64, description: 单次超阈值的运行数（阈值默认关闭时恒为 0） }
+        prompt_tokens: { type: integer, format: int64 }
+        completion_tokens: { type: integer, format: int64 }
+        total_tokens: { type: integer, format: int64 }
+        max_run_total_tokens: { type: integer, format: int64, nullable: true, description: 单次运行的 token 峰值；无计量时为 null }
+        model_calls: { type: integer, format: int64, description: 模型调用轮数累计（含工具轮），用于算「每轮均耗」 }
+        total_latency_ms: { type: integer, format: int64 }
+        max_run_latency_ms: { type: integer, format: int64, nullable: true, description: 单次运行的耗时峰值；无收口运行时为 null }
+    TokenUsageSummaryResponse:
+      type: object
+      description: >-
+        消耗汇总响应。run_mode 默认 LIVE——PREVIEW 是草稿试跑，混进成本视图会让
+        「线上花了多少」这个问题失去意义。
+      required: [group_by, run_mode, items, totals]
+      properties:
+        group_by: { type: string, description: 生效的分组维度（回显，供前端确认 URL 参数已生效） }
+        run_mode: { type: string }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/TokenUsageSummaryItem' }
+          description: 各分组明细，按 total_tokens 降序（最贵的在最上面）
+        totals: { $ref: '#/components/schemas/TokenUsageSummaryItem' }
+    ToolItem:
+      type: object
+      description: >-
+        Agent 工具白名单投影：白名单名称 + 读写属性。白名单引用未注册工具属配置漂移：
+        registered=false 且 read_only=null，前端按「未知工具」处理而非误标。
+      required: [name, registered]
+      properties:
+        name: { type: string }
+        read_only: { type: boolean, nullable: true, description: 读写元数据（默认禁写，写工具显式 read_only=false）；未注册时为 null }
+        registered: { type: boolean }
+    AgentListItem:
+      type: object
+      description: >-
+        Agent 列表行：一行一个 slug，一次拿全列表页所需聚合（当前生效版本、待确认草稿数、
+        近 7 日 LIVE 运行统计），防前端 N+1。enabled/allow_write/tools/model_ref/
+        prompt_version 取自代表行（active 版本优先，否则最新版本）。
+      required: [slug, name, state, enabled, draft_count, seven_day_run_count, seven_day_failure_count, allow_write, tools]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        state:
+          type: string
+          enum: [RUNNING, DISABLED, NO_ACTIVE_VERSION]
+          description: status×enabled 组合的列表显示语义：active+enabled=RUNNING；active+disabled=DISABLED；无 active 版本=NO_ACTIVE_VERSION
+        enabled: { type: boolean }
+        current_version: { type: integer, format: int32, nullable: true, description: 当前生效版本号；无 active 版本时为 null }
+        draft_count: { type: integer, format: int64, description: 待确认草稿数 }
+        seven_day_run_count: { type: integer, format: int64, description: 近 7 日 run_mode=LIVE 运行数（PREVIEW 草稿试跑不污染） }
+        seven_day_failure_count: { type: integer, format: int64 }
+        allow_write: { type: boolean }
+        model_ref: { type: string, nullable: true }
+        prompt_version: { type: string, nullable: true }
+        tools:
+          type: array
+          items: { $ref: '#/components/schemas/ToolItem' }
+    AgentListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AgentListItem' }
+    AgentDetail:
+      type: object
+      description: >-
+        Agent 详情：代表行（active 版本优先，否则最新版本）的定义全量快照投影——系统提示词、
+        提示词版本、模型引用、工具白名单、输出 schema、守卫豁免、确认事实。密钥/凭据不属于
+        定义事实，绝不出现在本投影中（模型三元组不在此响应中暴露）。
+      required: [slug, name, enabled, version, status, allow_write, guard_exemptions, input_format, tools]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        system_prompt: { type: string }
+        prompt_version: { type: string, nullable: true }
+        model_ref: { type: string, nullable: true }
+        enabled: { type: boolean }
+        version: { type: integer, format: int32 }
+        status: { type: string, enum: [DRAFT, ACTIVE, RETIRED] }
+        activated_by: { type: string, nullable: true, description: 确认人；draft 行为 null }
+        activated_at: { type: string, format: date-time, nullable: true }
+        allow_write: { type: boolean }
+        guard_exemptions:
+          type: array
+          items: { type: string }
+          description: 守卫豁免；空数组 = 默认守卫全部生效
+        output_schema: { type: object, additionalProperties: true, nullable: true, description: 输出 JSON Schema 原文 }
+        input_format: { type: string, enum: [STRUCTURED_JSON, NATURAL_LANGUAGE] }
+        tools:
+          type: array
+          items: { $ref: '#/components/schemas/ToolItem' }
+    AgentVersionItem:
+      type: object
+      description: >-
+        版本链节点：version / status（draft→active→retired，无回边）与确认事实
+        （activated_by/activated_at 与 status=active 同事务落库；draft 行为 null）。
+      required: [version, status]
+      properties:
+        version: { type: integer, format: int32 }
+        status: { type: string, enum: [DRAFT, ACTIVE, RETIRED] }
+        activated_by: { type: string, nullable: true }
+        activated_at: { type: string, format: date-time, nullable: true }
+    AgentEvalCaseItem:
+      type: object
+      description: 评测用例投影：绑定 (agent_slug, agent_version) 冻结集。
+      required: [id, agent_slug, agent_version, metric_kind, status]
+      properties:
+        id: { type: integer, format: int64, description: 用例 id（即 DB 主键） }
+        agent_slug: { type: string }
+        agent_version: { type: integer, format: int32 }
+        metric_kind: { type: string, enum: [INVARIANT, QUALITY], description: 前端按确定性门禁 vs 质量评测分组 }
+        input: { type: object, additionalProperties: true, description: JSONB 原文 }
+        expected: { type: object, additionalProperties: true, description: JSONB 原文 }
+        status: { type: string, enum: [PENDING, CONFIRMED] }
+        created_by: { type: string, nullable: true }
+        confirmed_by: { type: string, nullable: true }
+        confirmed_at: { type: string, format: date-time, nullable: true }
+    ModelMetadataItem:
+      type: object
+      description: >-
+        运行记录携带的模型元数据的服务端 allowlist 投影（红线：密钥/凭据绝不进 DTO）。
+        三种可区分形态避免「未命中 allowlist」与「未配置」折叠成同一个空值：EXPOSED
+        暴露真实值；NOT_PUBLIC 存储三元组存在但未命中 allowlist，折叠为 none；
+        NOT_CONFIGURED 存储三元组本身就是 none（未携带任何模型元数据）。
+      required: [provider, model, prompt_version, visibility]
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        prompt_version: { type: string }
+        visibility: { type: string, enum: [EXPOSED, NOT_PUBLIC, NOT_CONFIGURED] }
+    RunToolCallItem:
+      type: object
+      description: >-
+        工具调用序列节点：序号、工具名、耗时、状态与参数/结果摘要。摘要为落库时经脱敏与
+        截断后的投影，敏感原文不落库故不可能出现在本投影中。
+      required: [sequence_no, tool_name, status]
+      properties:
+        sequence_no: { type: integer, format: int32 }
+        tool_name: { type: string }
+        args_summary: { type: string, nullable: true }
+        result_summary: { type: string, nullable: true }
+        latency_ms: { type: integer, format: int64, nullable: true }
+        status: { type: string, enum: [SUCCESS, FAILED] }
+    RunEvalResultItem:
+      type: object
+      description: >-
+        运行关联的评测结果摘要（QUALITY PREVIEW 评测行）：整体状态与用例通过数。
+        details 逐条得分不在此投影——避免暴露用例细节之外的模型输出摘要。
+      required: [status, case_count, passed_count]
+      properties:
+        status: { type: string, enum: [RUNNING, SUCCEEDED, FAILED] }
+        case_count: { type: integer, format: int32 }
+        passed_count: { type: integer, format: int32 }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+    RunListItem:
+      type: object
+      description: >-
+        运行记录列表行。status 为 DB 生命周期状态（RUNNING/SUCCESS/FAILED）；outcome 为
+        结果维度（运行中为 null），由 (status, error_type) 派生：FAILED+PII_GUARDED=REJECTED
+        （守卫拒绝转人工），其余 FAILED=FAILED。
+      required: [run_id, agent_slug, agent_version, status, run_mode]
+      properties:
+        run_id: { type: string }
+        agent_slug: { type: string }
+        agent_version: { type: string }
+        status: { type: string, enum: [RUNNING, SUCCESS, FAILED] }
+        outcome: { type: string, enum: [SUCCESS, NEEDS_INPUT, REJECTED, FAILED], nullable: true }
+        run_mode: { type: string, enum: [LIVE, PREVIEW] }
+        error_type: { type: string, nullable: true }
+        latency_ms: { type: integer, format: int64, nullable: true }
+        token_usage: { type: object, additionalProperties: true, nullable: true, description: token 用量对象（数字，无敏感内容） }
+        business_entity_type: { type: string, nullable: true }
+        business_entity_id: { type: string, nullable: true }
+        intent: { type: string, nullable: true }
+        model_metadata: { $ref: '#/components/schemas/ModelMetadataItem' }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+    RunListResponse:
+      type: object
+      description: >-
+        运行记录列表响应：items 按 started_at 降序（新→旧），total 为过滤后的总数（分页用）。
+        默认只返回 LIVE——PREVIEW 草稿试跑不污染对线上行为的判断。
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RunListItem' }
+        total: { type: integer, format: int64 }
+    RunDetail:
+      type: object
+      description: >-
+        运行记录详情（202 任务轮询复用面）：列表行字段之外补充 thread_id、输入 SHA-256 摘要
+        （input_digest——输入原文不留存，只有摘要可比对，界面如实说明而非显示空白）、
+        工具调用序列与关联评测结果摘要。
+      required: [run_id, agent_slug, agent_version, status, run_mode, tool_calls]
+      properties:
+        run_id: { type: string }
+        thread_id: { type: string, nullable: true }
+        agent_slug: { type: string }
+        agent_version: { type: string }
+        status: { type: string, enum: [RUNNING, SUCCESS, FAILED] }
+        outcome: { type: string, enum: [SUCCESS, NEEDS_INPUT, REJECTED, FAILED], nullable: true }
+        run_mode: { type: string, enum: [LIVE, PREVIEW] }
+        error_type: { type: string, nullable: true }
+        latency_ms: { type: integer, format: int64, nullable: true }
+        token_usage: { type: object, additionalProperties: true, nullable: true }
+        business_entity_type: { type: string, nullable: true }
+        business_entity_id: { type: string, nullable: true }
+        intent: { type: string, nullable: true }
+        model_metadata: { $ref: '#/components/schemas/ModelMetadataItem' }
+        input_digest: { type: string, nullable: true, description: 输入 SHA-256 摘要；输入原文不留存 }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+        tool_calls:
+          type: array
+          items: { $ref: '#/components/schemas/RunToolCallItem' }
+          description: 按序号升序
+        eval_result:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/RunEvalResultItem'
+          description: 仅 QUALITY PREVIEW 评测行存在

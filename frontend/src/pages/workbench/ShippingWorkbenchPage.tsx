@@ -15,6 +15,7 @@ import { useAsync } from '@/hooks/useAsync';
 import { errorMessage } from '@/api/client';
 import { formatDateTime } from '@/format/dateTime';
 import { extractBlockerCases, mergeBlockers, groupBlockers, PREVIEW_BLOCKED_REASON, type BlockerCase } from './blockerGrouping';
+import { extractStockBlockerCases, mergeStockBlockers, STOCK_BLOCKED_REASON, type StockBlockerCase } from './stockBlockerCases';
 import { JdBlockerFixDrawer } from './JdBlockerFixDrawer';
 import { presentAwaitingTracking } from './awaitingTracking';
 import { readStoredWorkbenchRole } from '@/workbenchRole';
@@ -205,7 +206,14 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
     () => extractBlockerCases(preview.data?.items ?? []),
     [preview.data],
   );
+  // 京东库存/映射阻断（JD_STOCK_BLOCKED）：同源同法，detail.blockers 早已带着逐条商品
+  // 身份，此前只有「去处理」链接，现在跟 PREVIEW_BLOCKED_REASON 一样接就地处置抽屉。
+  const stockBlockerCases = useMemo(
+    () => extractStockBlockerCases(preview.data?.items ?? []),
+    [preview.data],
+  );
   const [fixing, setFixing] = useState<BlockerCase | null>(null);
+  const [fixingStock, setFixingStock] = useState<StockBlockerCase | null>(null);
 
   return (
     <section className="zs-sec" id="zs-review">
@@ -256,6 +264,25 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
                         </div>
                       </div>
                     ))
+                  ) : group.reasonCode === STOCK_BLOCKED_REASON && stockBlockerCases.length > 0 ? (
+                    stockBlockerCases.map((stockCase) => (
+                      <div className="zs-rqi" key={stockCase.caseId}>
+                        <div className="zs-w">
+                          <div className="zs-l1">
+                            {stockCase.caseNo ?? `事项 ${stockCase.caseId}`}
+                            <span className="zs-c">{stockCase.blockers.length} 项</span>
+                          </div>
+                          <div className="zs-l2">
+                            {stockCase.blockers.map((b) => b.productName ?? b.goodsNo ?? b.code).join(' · ')}
+                          </div>
+                        </div>
+                        <div className="zs-a">
+                          <button type="button" className="zs-lnk" onClick={() => setFixingStock(stockCase)}>
+                            就地处置
+                          </button>
+                        </div>
+                      </div>
+                    ))
                   ) : (
                     <div className="zs-rqi">
                       <div className="zs-w">
@@ -279,10 +306,11 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
         </div>
       </div>
       <JdBlockerFixDrawer
-        open={fixing !== null}
-        shipmentId={fixing?.shipmentId ?? null}
+        open={fixing !== null || fixingStock !== null}
+        shipmentId={fixing?.shipmentId ?? fixingStock?.shipmentId ?? null}
         blockers={fixing ? mergeBlockers([fixing]) : []}
-        onClose={() => setFixing(null)}
+        stockBlockers={fixingStock ? mergeStockBlockers([fixingStock]) : undefined}
+        onClose={() => { setFixing(null); setFixingStock(null); }}
         onResolved={() => preview.reload?.()}
       />
     </section>

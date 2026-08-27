@@ -63,6 +63,7 @@ import type {
   OrderAssistantConfig,
   OrderAssistantSession,
   OrderEvent,
+  OrderLineSkuSubstitutionResult,
   OrderPage,
   OrderVersion,
   Operator,
@@ -352,6 +353,14 @@ export const skusApi = {
     active?: boolean;
   }) =>
     apiRequest<SkuRecord>(`/api/v1/skus/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
+};
+
+/** POST /api/v1/order-lines/{id}/substitute-sku —— 京东库存/映射阻断补救：换货。 */
+export const orderLinesApi = {
+  substituteSku: (orderLineId: string, body: { new_sku_id: string; expected_order_version: number }) =>
+    apiRequest<OrderLineSkuSubstitutionResult>(`/api/v1/order-lines/${orderLineId}/substitute-sku`, {
+      method: 'POST', body, headers: writeHeaders(),
+    }),
 };
 
 /** GET/POST /api/v1/product-bundles —— 静态礼包及其当前 BOM。 */

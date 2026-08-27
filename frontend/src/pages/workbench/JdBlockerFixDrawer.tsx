@@ -13,6 +13,8 @@ import {
 } from '../fulfillment/shipmentJdOutbound';
 import { errorMessage } from '@/api/client';
 import { groupBlockers, type BlockerItem, type BlockerGroupView } from './blockerGrouping';
+import { StockBlockerPanel } from './StockBlockerPanel';
+import type { StockBlockerItem } from './stockBlockerCases';
 
 /**
  * 京东建单阻塞项的**就地处置**抽屉（发货台一页闭环 2/n）。
@@ -57,14 +59,21 @@ export interface JdBlockerFixDrawerProps {
   /** 复核事项带出的发货单 id；缺失时抽屉只读展示，不提供补齐入口。 */
   shipmentId: string | null;
   blockers: BlockerItem[];
+  /**
+   * JD_STOCK_BLOCKED（库存/映射类）阻断——形状与 `blockers` 完全不同（item 级商品身份，
+   * 没有 path/source/correction_target），非空时整个抽屉切到 StockBlockerPanel，
+   * 不跑下面履约方配置表单那一套加载/保存逻辑。两者互斥，由调用方决定传哪一个。
+   */
+  stockBlockers?: StockBlockerItem[];
   onClose: () => void;
   /** 阻塞清零时回调，供发货台刷新计数。 */
   onResolved?: () => void;
 }
 
 export function JdBlockerFixDrawer({
-  open, shipmentId, blockers, onClose, onResolved,
+  open, shipmentId, blockers, stockBlockers, onClose, onResolved,
 }: JdBlockerFixDrawerProps) {
+  const isStockMode = Boolean(stockBlockers && stockBlockers.length > 0);
   const [form] = Form.useForm();
   const [provider, setProvider] = useState<FulfillmentProvider | null>(null);
   const [shipment, setShipment] = useState<Shipment | null>(null);
@@ -102,8 +111,10 @@ export function JdBlockerFixDrawer({
   const cleared = current.length === 0;
 
   // 打开时解析发货单 → 履约方；阻塞项自身不带履约方身份，只能这样拿。
+  // 库存/映射阻断走 StockBlockerPanel 自己的加载逻辑，这一整套履约方配置/预检/
+  // 建单门禁的读取对它无意义，直接跳过。
   useEffect(() => {
-    if (!open || !shipmentId) return;
+    if (!open || !shipmentId || isStockMode) return;
     let cancelled = false;
     setLoadError(null);
     (async () => {
@@ -130,7 +141,7 @@ export function JdBlockerFixDrawer({
       }
     })();
     return () => { cancelled = true; };
-  }, [open, shipmentId]);
+  }, [open, shipmentId, isStockMode]);
 
   const rerunPreview = useCallback(async () => {
     if (!shipmentId) return;
@@ -237,12 +248,16 @@ export function JdBlockerFixDrawer({
 
   return (
     <Drawer
-      title="就地处置京东建单阻塞"
+      title={isStockMode ? '就地处置京东库存/映射阻断' : '就地处置京东建单阻塞'}
       width={560}
       open={open}
       onClose={onClose}
       destroyOnClose
     >
+      {isStockMode ? (
+        <StockBlockerPanel shipmentId={shipmentId} blockers={stockBlockers ?? []} onResolved={onResolved} />
+      ) : (
+        <>
       {loadError ? (
         <Alert type="error" showIcon message="无法定位履约方配置" description={errorMessage(loadError)} />
       ) : null}
@@ -404,6 +419,8 @@ export function JdBlockerFixDrawer({
               本批阻塞不在履约方配置或收货地址层，需到对应位置处理后重跑预检。
             </p>
           ) : null}
+        </>
+      )}
         </>
       )}
     </Drawer>
