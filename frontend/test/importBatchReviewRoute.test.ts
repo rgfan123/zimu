@@ -54,6 +54,37 @@ function sourceBatch(
   };
 }
 
+function intakeJob(status: 'RECEIVED' | 'SUCCEEDED' = 'RECEIVED') {
+  return {
+    id: '17',
+    job_no: 'SOI-17',
+    source_channel: 'CAISHIXIAN',
+    import_mode: 'NEW',
+    parent_import_batch_id: null,
+    original_file_name: 'caishixian.xlsx',
+    file_format: 'XLSX',
+    content_sha256: 'a'.repeat(64),
+    status,
+    error_code: null,
+    import_batch_id: status === 'SUCCEEDED' ? '7' : null,
+    lock_version: status === 'SUCCEEDED' ? 1 : 0,
+    created_at: '2026-08-27T00:00:00Z',
+    updated_at: '2026-08-27T00:00:01Z',
+  };
+}
+
+async function chooseSourceChannel(label = '彩食鲜') {
+  const selector = [...document.querySelectorAll<HTMLElement>('.ant-select-selector')]
+    .find((element) => element.querySelector('.ant-select-selection-placeholder')?.textContent === '选择来源渠道');
+  assert.ok(selector, 'missing source channel selector');
+  await harness.dispatchEvent(selector, new MouseEvent('mousedown', { bubbles: true }));
+  await harness.waitFor(() => assert.ok(document.querySelector('.ant-select-item-option')));
+  const option = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')]
+    .find((element) => element.textContent?.includes(label));
+  assert.ok(option, `missing source channel option ${label}`);
+  await harness.dispatchEvent(option, new MouseEvent('click', { bubbles: true }));
+}
+
 function reviewRow(id: string, status: 'ACCEPTED' | 'NEED_REVIEW') {
   return {
     id,
@@ -158,8 +189,11 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
     if (url.startsWith('/api/v1/fulfillment-exports')) {
       return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
     }
-    if (url === '/api/v1/import-batches/source-orders' && init?.method === 'POST') {
-      return jsonResponse(sourceBatch('7'), 201);
+    if (url === '/api/v1/source-order-intake-jobs' && init?.method === 'POST') {
+      return jsonResponse(intakeJob(), 202);
+    }
+    if (url === '/api/v1/source-order-intake-jobs/17') {
+      return jsonResponse(intakeJob('SUCCEEDED'));
     }
     if (url === '/api/v1/import-batches/7') {
       return jsonResponse(sourceBatch('7'));
@@ -177,7 +211,7 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
   // 全量套件 16 路并行时本文件常最后启动，vite SSR 冷启动可能挤占默认 3s——放宽到 10s（仅时限，断言不变）。
   await harness.waitFor(() => assert.match(harness.bodyText(), /来源订单导入/), 10_000);
 
-  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.csv"]');
+  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.xls,.csv"]');
   assert.ok(fileInput, 'missing source import file input');
   const file = new File(['fixture'], 'caishixian.xlsx', {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -185,6 +219,7 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
   Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
   await harness.dispatchEvent(fileInput, new Event('change', { bubbles: true }));
   await harness.waitFor(() => assert.match(harness.bodyText(), /caishixian\.xlsx/), 10_000);
+  await chooseSourceChannel();
   await control('开始导入').click();
 
   await harness.waitFor(() => assert.match(harness.location(), /import_batch=7/), 10_000);
@@ -287,8 +322,11 @@ test('operator completes upload → review → back → confirm without touching
     if (url.startsWith('/api/v1/fulfillment-exports')) {
       return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
     }
-    if (url === '/api/v1/import-batches/source-orders' && method === 'POST') {
-      return jsonResponse(sourceBatch('7'), 201);
+    if (url === '/api/v1/source-order-intake-jobs' && method === 'POST') {
+      return jsonResponse(intakeJob(), 202);
+    }
+    if (url === '/api/v1/source-order-intake-jobs/17') {
+      return jsonResponse(intakeJob('SUCCEEDED'));
     }
     if (url === '/api/v1/import-batches/7') {
       return jsonResponse(reviewed ? sourceBatch('7', { needReview: 0 }) : sourceBatch('7'));
@@ -316,7 +354,7 @@ test('operator completes upload → review → back → confirm without touching
   // 上传：选择文件并开始导入
   await harness.mount(['/fulfillment/sales-outbound']);
   await harness.waitFor(() => assert.match(harness.bodyText(), /来源订单导入/));
-  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.csv"]');
+  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.xls,.csv"]');
   assert.ok(fileInput, 'missing source import file input');
   const file = new File(['fixture'], 'caishixian.xlsx', {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -324,6 +362,7 @@ test('operator completes upload → review → back → confirm without touching
   Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
   await harness.dispatchEvent(fileInput, new Event('change', { bubbles: true }));
   await harness.waitFor(() => assert.match(harness.bodyText(), /caishixian\.xlsx/));
+  await chooseSourceChannel();
   await control('开始导入').click();
 
   await harness.waitFor(() => assert.match(harness.location(), /import_batch=7/));

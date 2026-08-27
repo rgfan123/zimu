@@ -95,6 +95,28 @@ function control(text: string) {
   return element;
 }
 
+function intakeJob(status: 'RECEIVED' | 'SUCCEEDED' = 'RECEIVED') {
+  return {
+    id: '17', job_no: 'SOI-17', source_channel: 'CAISHIXIAN', import_mode: 'NEW',
+    original_file_name: 'caishixian.xlsx', file_format: 'XLSX', content_sha256: 'a'.repeat(64),
+    status, error_code: null, import_batch_id: status === 'SUCCEEDED' ? '7' : null,
+    lock_version: status === 'SUCCEEDED' ? 1 : 0,
+    created_at: '2026-08-27T00:00:00Z', updated_at: '2026-08-27T00:00:01Z',
+  };
+}
+
+async function chooseCaishixian() {
+  const selector = [...document.querySelectorAll<HTMLElement>('.ant-select-selector')]
+    .find((element) => element.querySelector('.ant-select-selection-placeholder')?.textContent === '选择来源渠道');
+  assert.ok(selector, 'missing source channel selector');
+  await act(async () => selector.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
+  await waitFor(() => assert.ok(document.querySelector('.ant-select-item-option')));
+  const option = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')]
+    .find((element) => element.textContent?.includes('彩食鲜'));
+  assert.ok(option, 'missing caishixian source option');
+  await act(async () => option.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+}
+
 before(async () => {
   installDom();
   ({ createRoot } = await import('react-dom/client'));
@@ -142,7 +164,13 @@ test('successful source import shows accepted row details before whole-batch con
     if (url.startsWith('/api/v1/fulfillment-exports')) {
       return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
     }
-    if (url === '/api/v1/import-batches/source-orders' && init?.method === 'POST') {
+    if (url === '/api/v1/source-order-intake-jobs' && init?.method === 'POST') {
+      return jsonResponse(intakeJob(), 202);
+    }
+    if (url === '/api/v1/source-order-intake-jobs/17') {
+      return jsonResponse(intakeJob('SUCCEEDED'));
+    }
+    if (url === '/api/v1/import-batches/7') {
       return jsonResponse({
         id: '7', batch_no: 'IMP-CSX-DETAIL-7', batch_type: 'SOURCE_ORDER', import_mode: 'NEW',
         revision_no: 1, source_channel: 'CAISHIXIAN', template_family: 'CSX_ORDER', template_version: '1',
@@ -150,7 +178,7 @@ test('successful source import shows accepted row details before whole-batch con
         status: 'COMPLETED', confirmed_at: null,
         row_counts: { total: 1, accepted: 1, need_review: 0, rejected: 0 },
         generated_fulfillment_export_ids: [], received_at: '2026-08-14T06:00:00Z',
-      }, 201);
+      });
     }
     if (url === '/api/v1/import-batches/7/rows?page=0&size=200&status=ACCEPTED') {
       return jsonResponse({
@@ -197,7 +225,7 @@ test('successful source import shows accepted row details before whole-batch con
   });
   await waitFor(() => assert.match(bodyText(), /来源订单导入/));
 
-  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.csv"]');
+  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.xls,.csv"]');
   assert.ok(fileInput, 'missing source import file input');
   const file = new File(['fixture'], 'caishixian.xlsx', {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -205,6 +233,7 @@ test('successful source import shows accepted row details before whole-batch con
   Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
   await act(async () => fileInput.dispatchEvent(new Event('change', { bubbles: true })));
   await waitFor(() => assert.match(bodyText(), /caishixian\.xlsx/));
+  await chooseCaishixian();
   await act(async () => control('开始导入').click());
 
   await waitFor(() => assert.match(bodyText(), /IMP-CSX-DETAIL-7/));
@@ -234,7 +263,13 @@ test('confirming the batch passes a popconfirm and marks accepted rows as confir
     if (url.startsWith('/api/v1/fulfillment-exports')) {
       return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
     }
-    if (url === '/api/v1/import-batches/source-orders' && init?.method === 'POST') {
+    if (url === '/api/v1/source-order-intake-jobs' && init?.method === 'POST') {
+      return jsonResponse(intakeJob(), 202);
+    }
+    if (url === '/api/v1/source-order-intake-jobs/17') {
+      return jsonResponse(intakeJob('SUCCEEDED'));
+    }
+    if (url === '/api/v1/import-batches/7') {
       return jsonResponse({
         id: '7', batch_no: 'IMP-CSX-DETAIL-7', batch_type: 'SOURCE_ORDER', import_mode: 'NEW',
         revision_no: 1, source_channel: 'CAISHIXIAN', template_family: 'CSX_ORDER', template_version: '1',
@@ -242,7 +277,7 @@ test('confirming the batch passes a popconfirm and marks accepted rows as confir
         status: 'COMPLETED', confirmed_at: null,
         row_counts: { total: 1, accepted: 1, need_review: 0, rejected: 0 },
         generated_fulfillment_export_ids: [], received_at: '2026-08-14T06:00:00Z',
-      }, 201);
+      });
     }
     if (url === '/api/v1/import-batches/7/rows?page=0&size=200&status=ACCEPTED') {
       return jsonResponse({
@@ -280,7 +315,7 @@ test('confirming the batch passes a popconfirm and marks accepted rows as confir
   });
   await waitFor(() => assert.match(bodyText(), /来源订单导入/));
 
-  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.csv"]');
+  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.xls,.csv"]');
   assert.ok(fileInput, 'missing source import file input');
   const file = new File(['fixture'], 'caishixian.xlsx', {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -288,6 +323,7 @@ test('confirming the batch passes a popconfirm and marks accepted rows as confir
   Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
   await act(async () => fileInput.dispatchEvent(new Event('change', { bubbles: true })));
   await waitFor(() => assert.match(bodyText(), /caishixian\.xlsx/));
+  await chooseCaishixian();
   await act(async () => control('开始导入').click());
 
   await waitFor(() => assert.match(bodyText(), /确认本批次（已接收 1 行）/));

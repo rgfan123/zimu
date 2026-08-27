@@ -15,7 +15,7 @@ import PageShell from '@/components/PageShell';
 import { formatDateTime } from '@/format/dateTime';
 import { ApiError, errorMessage } from '@/api/client';
 import { fileOperationsApi, fulfillmentExportsApi, providersApi } from '@/api/endpoints';
-import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportWecomState, ImportBatch, TrackingImportBatch } from '@/api/types';
+import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportWecomState, ImportBatch, SourceChannel, SourceOrderIntakeJob, TrackingImportBatch } from '@/api/types';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
@@ -67,6 +67,8 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const urlBatchInvalid = batchParam.kind === 'invalid' ? batchParam.raw : null;
   const [urlBatchError, setUrlBatchError] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [sourceChannel, setSourceChannel] = useState<SourceChannel>();
+  const [intakeJob, setIntakeJob] = useState<SourceOrderIntakeJob | null>(null);
   const [mode, setMode] = useState<'NEW' | 'REVISION'>('NEW');
   const [parentBatchId, setParentBatchId] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -78,6 +80,33 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   const [confirmTotal, setConfirmTotal] = useState(0);
   const [confirmRowsLoading, setConfirmRowsLoading] = useState(false);
   const [confirmRowsError, setConfirmRowsError] = useState<unknown>(null);
+
+  useEffect(() => {
+    if (!intakeJob || !['RECEIVED', 'PROCESSING'].includes(intakeJob.status)) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      fileOperationsApi.getSourceJob(intakeJob.id)
+        .then(async (job) => {
+          if (!active) return;
+          setIntakeJob(job);
+          if (job.status === 'SUCCEEDED' && job.import_batch_id) {
+            const imported = await fileOperationsApi.getSourceBatch(job.import_batch_id);
+            if (!active) return;
+            setResult(imported);
+            setSearchParams({ [FILE_JOB_BATCH_PARAM]: imported.id });
+            message.success('来源订单附件已完成导入');
+            onCompleted();
+            await loadConfirmRows(imported);
+          }
+        })
+        .catch((error) => active && message.error(errorMessage(error)));
+    }, 1000);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intakeJob?.id, intakeJob?.status]);
 
   /** 批次标识进 URL（Issue #95）：刷新或浏览器回退后按 ?import_batch= 恢复当前批次，不再依赖页面本地 state。 */
   useEffect(() => {
@@ -147,19 +176,25 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
       message.warning('请先选择来源订单文件');
       return;
     }
+    if (!sourceChannel) {
+      message.warning('请选择可信来源渠道');
+      return;
+    }
     if (mode === 'REVISION' && !parentBatchId.trim()) {
       message.warning('修订导入需要填写原批次 ID');
       return;
     }
     setUploading(true);
     try {
-      const imported = await fileOperationsApi.uploadSource(file, mode, parentBatchId.trim() || undefined);
-      setResult(imported);
-      setSearchParams({ [FILE_JOB_BATCH_PARAM]: imported.id });
+      const job = await fileOperationsApi.uploadSourceJob(
+        file,
+        sourceChannel,
+        mode,
+        parentBatchId.trim() || undefined,
+      );
+      setIntakeJob(job);
       setFile(null);
-      message.success('来源订单文件已处理');
-      onCompleted();
-      await loadConfirmRows(imported);
+      message.success(`附件已接收，任务号 ${job.job_no}`);
     } catch (error) {
       message.error(errorMessage(error));
     } finally {
@@ -224,11 +259,11 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     >
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Typography.Text type="secondary">
-          上传彩食鲜、聚福宝或飞象的待发货订单文件。商品编号资料不属于订单模板，请前往主数据 → SKU 映射维护。
+          上传来源订单 Excel/CSV。来源渠道必须来自可信业务上下文，系统不会根据文件内容猜测平台。
         </Typography.Text>
         <Space wrap>
           <Upload
-            accept=".xlsx,.csv"
+            accept=".xlsx,.xls,.csv"
             maxCount={1}
             showUploadList={false}
             beforeUpload={(selected) => {
@@ -245,6 +280,14 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
             <Button icon={<FileExcelOutlined />}>选择订单文件</Button>
           </Upload>
           <Typography.Text>{file?.name ?? '尚未选择文件'}</Typography.Text>
+          <Select<SourceChannel>
+            value={sourceChannel}
+            placeholder="选择来源渠道"
+            style={{ width: 140 }}
+            options={(['CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI', 'DAZHE', 'WANQI'] as SourceChannel[])
+              .map((value) => ({ value, label: CHANNEL_LABELS[value] }))}
+            onChange={setSourceChannel}
+          />
           <Select
             value={mode}
             style={{ width: 120 }}
@@ -263,6 +306,20 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
             开始导入
           </Button>
         </Space>
+        {intakeJob ? (
+          <Alert
+            type={intakeJob.status === 'FAILED'
+              ? 'error'
+              : intakeJob.status === 'NEEDS_EXTRACTION'
+                ? 'warning'
+                : 'info'}
+            showIcon
+            message={`附件任务 ${intakeJob.job_no} · ${intakeJob.status}`}
+            description={intakeJob.status === 'NEEDS_EXTRACTION'
+              ? '原件已安全保存，结构未命中已知模板，等待 Agent 候选提取能力处理。'
+              : intakeJob.error_code ?? '后台正在解析并创建来源导入批次。'}
+          />
+        ) : null}
         {urlBatchId !== null && !result && !urlBatchError ? (
           <Typography.Text type="secondary">正在恢复批次 {urlBatchId} 的导入结果…</Typography.Text>
         ) : null}

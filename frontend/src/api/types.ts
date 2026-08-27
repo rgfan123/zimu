@@ -836,6 +836,36 @@ export interface ImportBatch {
   processed_at?: string;
 }
 
+export type SourceOrderIntakeStatus =
+  | 'RECEIVED'
+  | 'PROCESSING'
+  | 'NEEDS_EXTRACTION'
+  | 'NEEDS_REVIEW'
+  | 'READY'
+  | 'IMPORTING'
+  | 'OUTBOUND_SUBMITTING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'RECONCILIATION_REQUIRED'
+  | 'COMPLETED';
+
+export interface SourceOrderIntakeJob {
+  id: string;
+  job_no: string;
+  source_channel: SourceChannel;
+  import_mode: 'NEW' | 'REVISION';
+  parent_import_batch_id?: string | null;
+  original_file_name: string;
+  file_format: 'XLSX' | 'XLS' | 'CSV';
+  content_sha256: string;
+  status: SourceOrderIntakeStatus;
+  error_code?: string | null;
+  import_batch_id?: string | null;
+  lock_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TrackingImportBatch extends ImportBatch {
   business_results?: { shipped?: number; partial?: number; failed?: number };
   rows?: TrackingBatchRow[];

@@ -299,7 +299,7 @@ class Wanqi52SourceOrderImportApiTest {
                         "商品六", "规格:1件;"))));
 
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
-        assertThat(uploaded.getBody()).containsEntry("business_code", "TEMPLATE_FINGERPRINT_AMBIGUOUS");
+        assertThat(uploaded.getBody()).containsEntry("business_code", "TEMPLATE_FINGERPRINT_NOT_FOUND");
     }
 
     @Test

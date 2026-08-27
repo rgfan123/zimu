@@ -478,7 +478,7 @@ class SourceFileParser {
 
     private BusinessException fingerprintError(int matches) {
         return BusinessException.unprocessable(
-                "TEMPLATE_FINGERPRINT_AMBIGUOUS",
+                matches == 0 ? "TEMPLATE_FINGERPRINT_NOT_FOUND" : "TEMPLATE_FINGERPRINT_AMBIGUOUS",
                 matches == 0 ? "文件表头未命中已知渠道指纹" : "文件表头命中多个渠道指纹");
     }
 

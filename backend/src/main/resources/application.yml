@@ -150,6 +150,11 @@ app:
     poll-ms: ${AGENT_WORKER_POLL_MS:500}
     lease-seconds: ${AGENT_WORKER_LEASE_SECONDS:30}
     backoff-seconds: ${AGENT_WORKER_BACKOFF_SECONDS:5}
+  source-order-intake-worker:
+    enabled: ${SOURCE_ORDER_INTAKE_WORKER_ENABLED:true}
+    poll-ms: ${SOURCE_ORDER_INTAKE_WORKER_POLL_MS:1000}
+    lease-seconds: ${SOURCE_ORDER_INTAKE_WORKER_LEASE_SECONDS:120}
+    backoff-seconds: ${SOURCE_ORDER_INTAKE_WORKER_BACKOFF_SECONDS:10}
   message-interpreter:
     provider: ${MESSAGE_INTERPRETER_PROVIDER:}
     model: ${MESSAGE_INTERPRETER_MODEL:}
