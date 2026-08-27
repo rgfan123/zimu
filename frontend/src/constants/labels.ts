@@ -4,7 +4,7 @@
  * 降饱和）；来源渠道等普通分类走 pages/shared/semanticStatus 的品牌色阶点缀，不使用具名彩虹色。
  */
 
-import type { FulfillmentProvider, OrderStatus, ProcessingHealth, ProcessingStage, ShipmentStatus, SourceChannel } from '@/api/types';
+import type { BusinessFollowUpBusinessKind, FulfillmentProvider, OrderStatus, ProcessingHealth, ProcessingStage, ShipmentStatus, SourceChannel } from '@/api/types';
 import type { ChannelMessageType } from '@/api/types';
 import {
   ORDER_STATUS_SEMANTIC,
@@ -90,6 +90,13 @@ export const MESSAGE_TYPE_LABELS: Record<ChannelMessageType, string> = {
   voice: '语音',
   file: '文件',
   video: '视频',
+};
+
+/** 客户跟进业务类型 → 中文；创建表单与详情共用。 */
+export const BUSINESS_FOLLOWUP_KIND_LABELS: Record<BusinessFollowUpBusinessKind, string> = {
+  CUSTOMER: '普通跟进',
+  SAMPLE: '样品请求',
+  FORMAL: '正式订单',
 };
 
 /** 结账方式（SettlementMethod）→ 中文；未知值回退原码。 */

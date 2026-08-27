@@ -54,8 +54,7 @@ public final class BatchConfirmedCard {
                 .field("京东", view.jdShipmentCount() + " 单")
                 .field("导出", view.thirdPartyExportCount() + " 单");
         if (view.detailUrl() != null && !view.detailUrl().isBlank()) {
-            builder.jumpButton("查看批次", view.detailUrl(), ButtonStyle.SECONDARY)
-                    .cardAction(view.detailUrl());
+            builder.cardAction(view.detailUrl());
         }
         return builder.build();
     }

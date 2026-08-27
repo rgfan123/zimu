@@ -69,7 +69,7 @@ class FulfillmentProviderJdConfigApiTest {
         // 真实建单裁决（2026-08-18 京东 2157）：青龙业主号按事业部维护，customerCode 回配置面；
         // 未配置时 present=false，建单时回退客户档案 jd_customer_code
         assertThat(configured).containsEntry("customerCode", Map.of("present", false));
-        assertThat(configured).hasSize(11);
+        assertThat(configured).hasSize(12);
         assertThat(first.getBody()).containsEntry("version", (int) initialVersion + 1);
 
         // 同一幂等键重放返回完全相同的结果

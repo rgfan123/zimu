@@ -46,7 +46,7 @@ class OrderDraftCardRunnerTest {
     void sendsPrivacyMinimizedButtonCardAndCompletesOnlyAfterAck() {
         AsyncTaskStore.AsyncTask task = task(1, 1);
         OrderDraftCard card = new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0);
+                7L, 41L, 0L, "order-draft_41_v0", "GROUP", "group-41", "PENDING", 0);
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(card);
@@ -68,7 +68,7 @@ class OrderDraftCardRunnerTest {
         assertThat(outbound.getValue().templateCard().path("card_type").asText())
                 .isEqualTo("button_interaction");
         assertThat(outbound.getValue().templateCard().path("task_id").asText())
-                .isEqualTo("order-draft:41");
+                .isEqualTo("order-draft_41_v0");
         assertThat(outbound.getValue().templateCard().path("button_list").get(0).path("key").asText())
                 .isEqualTo("confirm_order");
         assertThat(outbound.getValue().templateCard().toString())
@@ -84,7 +84,7 @@ class OrderDraftCardRunnerTest {
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "SENDING", 1));
+                7L, 41L, 0L, "order-draft_41_v0", "GROUP", "group-41", "SENDING", 1));
         when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SKIP_UNKNOWN, 1));
 
         runner.execute(task);
@@ -99,7 +99,7 @@ class OrderDraftCardRunnerTest {
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
+                7L, 41L, 0L, "order-draft_41_v0", "GROUP", "group-41", "PENDING", 0));
         when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
         when(drafts.detail(41L)).thenReturn(draft());
         when(gateway.send(any())).thenReturn(new WecomSendResult(
@@ -122,7 +122,7 @@ class OrderDraftCardRunnerTest {
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
+                7L, 41L, 0L, "order-draft_41_v0", "GROUP", "group-41", "PENDING", 0));
         when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
         when(drafts.detail(41L)).thenReturn(draft());
         when(gateway.send(any())).thenReturn(new WecomSendResult(
@@ -144,7 +144,7 @@ class OrderDraftCardRunnerTest {
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
+                7L, 41L, 0L, "order-draft_41_v0", "GROUP", "group-41", "PENDING", 0));
         when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
         when(drafts.detail(41L)).thenReturn(draft());
         when(gateway.send(any())).thenThrow(new IllegalStateException("connection lost"));
@@ -161,7 +161,7 @@ class OrderDraftCardRunnerTest {
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
+                7L, 41L, 0L, "order-draft_41_v0", "GROUP", "group-41", "PENDING", 0));
         when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
         when(drafts.detail(41L)).thenReturn(draft("CONFIRMED", 0L));
 
@@ -178,7 +178,7 @@ class OrderDraftCardRunnerTest {
         when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
                 .thenReturn(true);
         when(cards.load(7L)).thenReturn(new OrderDraftCard(
-                7L, 41L, 0L, "order-draft:41", "GROUP", "group-41", "PENDING", 0));
+                7L, 41L, 0L, "order-draft_41_v0", "GROUP", "group-41", "PENDING", 0));
         when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
         when(drafts.detail(41L)).thenReturn(draft("OPEN", 1L));
 

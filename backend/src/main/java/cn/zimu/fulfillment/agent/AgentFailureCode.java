@@ -18,6 +18,8 @@ public enum AgentFailureCode {
     AGENT_NOT_FOUND,
     /** Agent 已注册但未启用（enabled=false），运行时拒绝执行。 */
     AGENT_DISABLED,
+    /** 调用方固定的 Agent 定义版本已不再是当前生效版本。 */
+    AGENT_VERSION_MISMATCH,
     /** 运行期守卫拒绝（05 决策默认链 [PII 拒绝]）：输入涉 PII，outcome=REJECTED 转人工。 */
     PII_GUARDED;
 }

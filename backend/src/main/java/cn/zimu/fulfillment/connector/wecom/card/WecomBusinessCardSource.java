@@ -26,6 +26,14 @@ public interface WecomBusinessCardSource {
     Optional<ObjectNode> render(long entityId, long entityVersion);
 
     /**
+     * 按已持久化的路由渲染。旧 source 不依赖路由，因此默认保持原行为；
+     * 需要区分单聊全量投影与群聊脱敏投影的 source 只覆盖本方法。
+     */
+    default Optional<ObjectNode> render(long entityId, long entityVersion, Route route) {
+        return render(entityId, entityVersion);
+    }
+
+    /**
      * 待发卡的实体（本域自己定义「待发」）。
      *
      * <p>**为什么是扫描而不是在创建处调用**：复核事项在代码里有 37 处创建点

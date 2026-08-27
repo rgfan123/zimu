@@ -84,6 +84,53 @@ public class AgentRuntimeFacade {
         AgentRunContext ctx = context == null ? AgentRunContext.empty() : context;
         String runId = newRunId();
         AgentDefinition definition = holder.current().bySlug(agentSlug);
+        return invokeResolved(definition, userInput, ctx, runId);
+    }
+
+    /** Run exactly the version selected when the durable business task was queued. */
+    public AgentRunResult invokePinned(
+            String agentSlug,
+            int expectedVersion,
+            String userInput,
+            AgentRunContext context) {
+        return invokePinnedWithRunId(
+                agentSlug, expectedVersion, newRunId(), userInput, context);
+    }
+
+    /**
+     * Run a pinned definition under a caller-reserved run id so deterministic policy can be
+     * installed before any model tool is bound. The id must use the platform-generated format.
+     */
+    public AgentRunResult invokePinnedWithRunId(
+            String agentSlug,
+            int expectedVersion,
+            String runId,
+            String userInput,
+            AgentRunContext context) {
+        if (runId == null || !runId.matches("run_[0-9a-f]{32}")) {
+            throw new IllegalArgumentException("invalid reserved Agent run id");
+        }
+        AgentRunContext ctx = context == null ? AgentRunContext.empty() : context;
+        AgentDefinition definition = holder.current().bySlug(agentSlug);
+        if (definition != null && definition.version() != expectedVersion) {
+            runStarted(ctx, runId, definition, userInput);
+            return finalizeRun(
+                    ctx,
+                    runId,
+                    definition,
+                    AgentFailureCode.AGENT_VERSION_MISMATCH.name(),
+                    0,
+                    AgentRunResult.failClosed(AgentFailureCode.AGENT_VERSION_MISMATCH),
+                    null);
+        }
+        return invokeResolved(definition, userInput, ctx, runId);
+    }
+
+    private AgentRunResult invokeResolved(
+            AgentDefinition definition,
+            String userInput,
+            AgentRunContext ctx,
+            String runId) {
         if (definition == null) {
             runStarted(ctx, runId, null, userInput);
             return finalizeRun(ctx, runId, null, AgentFailureCode.AGENT_NOT_FOUND.name(), 0,
@@ -162,7 +209,7 @@ public class AgentRuntimeFacade {
                     runId,
                     ctx.threadId(),
                     definition == null ? "unknown" : definition.agentSlug(),
-                    null,
+                    definition == null ? null : String.valueOf(definition.version()),
                     definition == null ? "none" : definition.promptVersion(),
                     definition == null ? "none" : definition.modelRef(),
                     AgentPayloadRedactor.digest(userInput),

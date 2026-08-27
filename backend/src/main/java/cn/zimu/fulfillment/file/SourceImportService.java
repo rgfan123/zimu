@@ -53,7 +53,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** 来源文件编排：先留存原文件/原始行，再通过共用订单应用用例产生 CanonicalOrder。 */
 @Service
-public class SourceImportService {
+public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatchConfirmer {
 
     private static final Logger log = LoggerFactory.getLogger(SourceImportService.class);
 
@@ -923,6 +923,18 @@ public class SourceImportService {
     }
 
     @Transactional
+    @Override
+    public IdempotentResult<Map<String, Object>> confirmSourceBatch(
+            long sourceBatchId, String idempotencyKey, cn.zimu.fulfillment.common.web.CommandContext context) {
+        return confirm(sourceBatchId, idempotencyKey, context);
+    }
+
+    @Override
+    public void submitJdOutboundsForSourceBatch(
+            long sourceBatchId, cn.zimu.fulfillment.common.web.CommandContext context) {
+        submitJdOutboundsForBatch(sourceBatchId, context);
+    }
+
     IdempotentResult<Map<String, Object>> confirm(
             long batchId, String idempotencyKey, CommandContext context) {
         Map<String, Object> payload = Map.of("batch_id", batchId);

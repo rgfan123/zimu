@@ -258,7 +258,7 @@ class OrderDraftApiTest {
                 + "\"chattype\":\"group\",\"from\":{\"userid\":\"ticket-87-operator\"},"
                 + "\"msgtype\":\"event\",\"event\":{\"eventtype\":\"template_card_event\","
                 + "\"template_card_event\":{\"event_key\":\"confirm_order\","
-                + "\"task_id\":\"order-draft:" + draftId + "\"}}}}";
+                + "\"task_id\":\"" + outboundCard.taskId() + "\"}}}}";
         JsonNode eventFrame = objectMapper.readTree(cardEvent);
 
         wecomDispatchHandler.onFrame("aibot_event_callback", eventFrame);
@@ -288,7 +288,7 @@ class OrderDraftApiTest {
                 .containsEntry("update_error_code", "CONNECTION_NOT_READY")
                 .containsEntry("fallback_status", "FAILED")
                 .containsEntry("fallback_error_code", "CONNECTION_NOT_READY")
-                .containsEntry("task_id", "order-draft:" + draftId)
+                .containsEntry("task_id", outboundCard.taskId())
                 .containsEntry("order_draft_id", draftId);
         assertThat(persistedEvent.get("processing_claim_token")).isNotNull();
 

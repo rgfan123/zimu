@@ -67,8 +67,7 @@ public final class OperationalAlertCard {
                 .field("代码", view.businessCode())
                 .callbackButton("知道了", ACKNOWLEDGE_BUTTON_KEY, ButtonStyle.PRIMARY);
         if (view.detailUrl() != null && !view.detailUrl().isBlank()) {
-            builder.jumpButton("去处理", view.detailUrl(), ButtonStyle.SECONDARY)
-                    .cardAction(view.detailUrl());
+            builder.cardAction(view.detailUrl());
         }
         return builder.build();
     }

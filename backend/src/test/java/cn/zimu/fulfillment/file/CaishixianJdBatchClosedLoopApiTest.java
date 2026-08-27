@@ -462,8 +462,11 @@ class CaishixianJdBatchClosedLoopApiTest {
                 UPDATE app.customers
                 SET profile = jsonb_set(COALESCE(profile, '{}'::jsonb), '{jd_customer_code}',
                                         '"CUST-CSX-001"'::jsonb, true)
-                WHERE data_scope='BUSINESS'
-                """);
+                WHERE id IN (
+                    SELECT customer_id FROM app.orders WHERE source_import_batch_id=?
+                )
+                """,
+                Long.parseLong(batchId));
         HttpHeaders headers = operatorHeaders();
         headers.set("Idempotency-Key", key);
         return http.exchange(

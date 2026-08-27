@@ -32,6 +32,29 @@ test('API errors never expose backend field paths or raw 4xx messages', () => {
   assert.doesNotMatch(errorMessage(fileRead), /Zip bomb|sharedStrings|无法读取上传文件/);
 });
 
+test('business follow-up intent errors have actionable Chinese messages', () => {
+  const invalidPlan = new ApiError(400, {
+    business_code: 'FOLLOWUP_EXECUTION_PLAN_INVALID',
+    message: 'quantity_per_unit must be NUMERIC(14,3)',
+    http_status: 400,
+  });
+  const invalidKind = new ApiError(400, {
+    business_code: 'FOLLOWUP_BUSINESS_KIND_INVALID',
+    message: 'business_kind only accepts server enums',
+    http_status: 400,
+  });
+
+  assert.equal(
+    errorMessage(invalidPlan),
+    '执行计划不符合要求，请检查必填项、格式、数量和日期后重试',
+  );
+  assert.equal(
+    errorMessage(invalidKind),
+    '业务类型不受支持，请重新选择普通跟进、样品请求或正式订单',
+  );
+  assert.doesNotMatch(`${errorMessage(invalidPlan)}${errorMessage(invalidKind)}`, /NUMERIC|server enums/);
+});
+
 test('tracking-draft business rejections stay actionable without exposing backend text', () => {
   const ambiguous = new ApiError(422, {
     business_code: 'TASK_SHIPMENT_AMBIGUOUS',

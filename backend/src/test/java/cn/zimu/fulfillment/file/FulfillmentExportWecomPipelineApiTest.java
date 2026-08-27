@@ -889,8 +889,11 @@ class FulfillmentExportWecomPipelineApiTest {
                 UPDATE app.customers
                 SET profile = jsonb_set(COALESCE(profile, '{}'::jsonb), '{jd_customer_code}',
                                         '"CUST-FX-JD-001"'::jsonb, true)
-                WHERE data_scope='BUSINESS'
-                """);
+                WHERE id IN (
+                    SELECT customer_id FROM app.orders WHERE source_import_batch_id=?
+                )
+                """,
+                Long.parseLong(uploaded.getBody().get("id").toString()));
         var confirmResult = confirmBatch(
                 uploaded.getBody().get("id").toString(), "confirm-" + orderRef.toLowerCase());
         return confirmResult.getBody();

@@ -117,7 +117,7 @@ public class WecomBusinessNotificationRunner {
             return false;
         }
         try {
-            WecomSendResult result = gateway.send(WecomOutboundMessage.text(member.wecomUserid(), content));
+            WecomSendResult result = gateway.send(WecomOutboundMessage.markdown(member.wecomUserid(), content));
             if (result.status() == WecomSendStatus.SUCCESS) {
                 store.recordSent(batch.id(), recipientKey, result.requestId());
             } else if (result.retryable()) {

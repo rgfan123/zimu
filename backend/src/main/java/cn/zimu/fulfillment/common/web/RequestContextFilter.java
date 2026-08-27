@@ -29,6 +29,7 @@ public class RequestContextFilter extends OncePerRequestFilter {
 
     private final String businessOperator;
     private final byte[] expectedBusinessCredentials;
+    private final byte[] expectedGatewayAssertionToken;
     private final String internalServiceName;
     private final byte[] expectedInternalToken;
     private final RequestAuthenticationPolicy authenticationPolicy;
@@ -39,6 +40,7 @@ public class RequestContextFilter extends OncePerRequestFilter {
             ObjectMapper objectMapper,
             @Value("${app.gateway.basic-auth.username:}") String username,
             @Value("${app.gateway.basic-auth.password:}") String password,
+            @Value("${app.gateway.identity-assertion.token:}") String gatewayAssertionToken,
             @Value("${app.internal-auth.service-name:}") String internalServiceName,
             @Value("${app.internal-auth.bearer-token:}") String internalToken) {
         this.authenticationPolicy = authenticationPolicy;
@@ -47,6 +49,9 @@ public class RequestContextFilter extends OncePerRequestFilter {
         this.expectedBusinessCredentials = businessOperator == null
                 ? null
                 : (username + ":" + password).getBytes(StandardCharsets.UTF_8);
+        this.expectedGatewayAssertionToken = hasText(gatewayAssertionToken)
+                ? gatewayAssertionToken.getBytes(StandardCharsets.UTF_8)
+                : null;
         this.internalServiceName = hasText(internalServiceName) && hasText(internalToken)
                 ? internalServiceName
                 : null;
@@ -67,8 +72,14 @@ public class RequestContextFilter extends OncePerRequestFilter {
         }
         String operator = request.getHeader("X-Operator");
         RequestAuthenticationPolicy.Requirement requirement = authenticationPolicy.requirementFor(request);
-        String verifiedOperator = authenticate(request.getHeader("Authorization"), requirement);
-        RequestContext.set(new RequestContext(requestId, requestId, operator, verifiedOperator));
+        AuthenticatedIdentity identity = authenticate(request, requirement);
+        String verifiedOperator = identity == null ? null : identity.operator();
+        RequestContext.set(new RequestContext(
+                requestId,
+                requestId,
+                operator,
+                verifiedOperator,
+                identity == null ? AuthenticationKind.NONE : identity.kind()));
         response.setHeader("X-Request-Id", requestId);
         try {
             if (requirement == RequestAuthenticationPolicy.Requirement.BUSINESS_CREDENTIALS_ONLY) {
@@ -105,17 +116,43 @@ public class RequestContextFilter extends OncePerRequestFilter {
                 Map.of()));
     }
 
-    private String authenticate(
-            String authorization,
-            RequestAuthenticationPolicy.Requirement requirement) {
+    private AuthenticatedIdentity authenticate(
+            HttpServletRequest request, RequestAuthenticationPolicy.Requirement requirement) {
+        String authorization = request.getHeader("Authorization");
         if (requirement == RequestAuthenticationPolicy.Requirement.INTERNAL_SERVICE) {
-            return authenticateInternalService(authorization);
+            return identity(authenticateInternalService(authorization), AuthenticationKind.INTERNAL_SERVICE);
         }
         if (requirement == RequestAuthenticationPolicy.Requirement.BUSINESS_OPERATOR_OR_INTERNAL_SERVICE) {
-            String business = authenticateBusinessOperator(authorization);
-            return business != null ? business : authenticateInternalService(authorization);
+            String business = authenticateGatewayOperator(request);
+            if (business != null) {
+                return identity(business, AuthenticationKind.GATEWAY_ASSERTION);
+            }
+            business = authenticateBusinessOperator(authorization);
+            if (business != null) {
+                return identity(business, AuthenticationKind.SHARED_BASIC);
+            }
+            return identity(authenticateInternalService(authorization), AuthenticationKind.INTERNAL_SERVICE);
         }
-        return authenticateBusinessOperator(authorization);
+        String gateway = authenticateGatewayOperator(request);
+        return gateway != null
+                ? identity(gateway, AuthenticationKind.GATEWAY_ASSERTION)
+                : identity(authenticateBusinessOperator(authorization), AuthenticationKind.SHARED_BASIC);
+    }
+
+    private String authenticateGatewayOperator(HttpServletRequest request) {
+        if (expectedGatewayAssertionToken == null) {
+            return null;
+        }
+        String operator = request.getHeader("X-Authenticated-Operator");
+        String suppliedToken = request.getHeader("X-Gateway-Assertion");
+        if (!hasText(operator)
+                || operator.length() > 128
+                || !operator.matches("^[A-Za-z0-9._@-]+$")
+                || !hasText(suppliedToken)) {
+            return null;
+        }
+        byte[] supplied = suppliedToken.getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(expectedGatewayAssertionToken, supplied) ? operator : null;
     }
 
     private String authenticateBusinessOperator(String authorization) {
@@ -145,4 +182,10 @@ public class RequestContextFilter extends OncePerRequestFilter {
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
+
+    private static AuthenticatedIdentity identity(String operator, AuthenticationKind kind) {
+        return operator == null ? null : new AuthenticatedIdentity(operator, kind);
+    }
+
+    private record AuthenticatedIdentity(String operator, AuthenticationKind kind) {}
 }

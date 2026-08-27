@@ -29,16 +29,33 @@ server:
   port: ${SERVER_PORT:8080}
 
 app:
+  followup-worker:
+    enabled: ${FOLLOWUP_WORKER_ENABLED:false}
+    poll-ms: ${FOLLOWUP_WORKER_POLL_MS:500}
+    lease-seconds: ${FOLLOWUP_WORKER_LEASE_SECONDS:120}
+    backoff-seconds: ${FOLLOWUP_WORKER_BACKOFF_SECONDS:5}
+  followup-approval-worker:
+    enabled: ${FOLLOWUP_APPROVAL_WORKER_ENABLED:false}
+    poll-ms: ${FOLLOWUP_APPROVAL_WORKER_POLL_MS:500}
+    lease-seconds: ${FOLLOWUP_APPROVAL_WORKER_LEASE_SECONDS:30}
+  followup-assignment-worker:
+    enabled: ${FOLLOWUP_ASSIGNMENT_WORKER_ENABLED:false}
+    poll-ms: ${FOLLOWUP_ASSIGNMENT_WORKER_POLL_MS:500}
+    lease-seconds: ${FOLLOWUP_ASSIGNMENT_WORKER_LEASE_SECONDS:30}
+    backoff-seconds: ${FOLLOWUP_ASSIGNMENT_WORKER_BACKOFF_SECONDS:5}
   scheduling:
     # 生产默认启用；测试可整体关闭，避免缓存的 Spring context 继续轮询已销毁的 Testcontainer。
     enabled: ${SCHEDULED_TASKS_ENABLED:true}
-    # 当前 11 条 @Scheduled 触发流各有独立 lane；代码将配置值限制在 11..32。
-    pool-size: ${SCHEDULED_TASK_POOL_SIZE:11}
+    # 当前 13 条 @Scheduled 触发流各有独立 lane；代码将配置值限制在 13..32。
+    pool-size: ${SCHEDULED_TASK_POOL_SIZE:13}
   gateway:
     basic-auth:
       # 全部 /api 请求都会在后端复验 Nginx 提供的 Basic Auth；缺失时默认拒绝。
       username: ${APP_ADMIN_USER:}
       password: ${APP_ADMIN_PASSWORD:}
+    identity-assertion:
+      # 可选逐人身份模式：Nginx 验证多用户凭据后用独立高熵 token 向后端证明 $remote_user。
+      token: ${APP_GATEWAY_ASSERTION_TOKEN:}
   internal-auth:
     # 全部 /internal 请求使用独立服务身份；任一项缺失都会拒绝，而不是退回 X-Operator 自报身份。
     service-name: ${APP_INTERNAL_SERVICE_NAME:}
@@ -84,6 +101,31 @@ app:
     poll-ms: ${MESSAGE_WORKER_POLL_MS:500}
     lease-seconds: ${MESSAGE_WORKER_LEASE_SECONDS:30}
     backoff-seconds: ${MESSAGE_WORKER_BACKOFF_SECONDS:5}
+  kehuzx:
+    mcp:
+      # #130: dedicated read-token boundary. Missing configuration leaves Zimu healthy and the
+      # follow-up task fail-closed; this token must never carry Kehuzx write scope.
+      enabled: ${KEHUZX_MCP_ENABLED:false}
+      endpoint: ${KEHUZX_MCP_ENDPOINT:}
+      read-token: ${KEHUZX_MCP_FOLLOWUP_READ_TOKEN:}
+      allowed-host: ${KEHUZX_MCP_ALLOWED_HOST:kehuzx-mcp}
+      allowed-port: ${KEHUZX_MCP_ALLOWED_PORT:9100}
+      connect-timeout: ${KEHUZX_MCP_CONNECT_TIMEOUT:PT3S}
+      read-timeout: ${KEHUZX_MCP_READ_TIMEOUT:PT10S}
+      contract-version: ${KEHUZX_MCP_CONTRACT_VERSION:kehuzx-mcp-v1}
+      upstream-commit: ${KEHUZX_MCP_UPSTREAM_COMMIT:}
+    mcp-write:
+      # #131: separate deterministic Worker identity, never an Agent tool.
+      enabled: ${KEHUZX_MCP_WRITE_ENABLED:false}
+      endpoint: ${KEHUZX_MCP_WRITE_ENDPOINT:}
+      write-token: ${KEHUZX_MCP_WRITE_TOKEN:}
+      approval-signing-key: ${KEHUZX_MCP_APPROVAL_SIGNING_KEY:}
+      allowed-host: ${KEHUZX_MCP_WRITE_ALLOWED_HOST:kehuzx-mcp}
+      allowed-port: ${KEHUZX_MCP_WRITE_ALLOWED_PORT:9100}
+      connect-timeout: ${KEHUZX_MCP_WRITE_CONNECT_TIMEOUT:PT3S}
+      read-timeout: ${KEHUZX_MCP_WRITE_READ_TIMEOUT:PT10S}
+      max-response-bytes: ${KEHUZX_MCP_WRITE_MAX_RESPONSE_BYTES:1048576}
+      approval-ttl-seconds: ${KEHUZX_MCP_APPROVAL_TTL_SECONDS:120}
   wecom-tracking-file-worker:
     # Issue #86：单聊 file 专用确定性解析队列；默认跟随消息 Worker 总开关，且从不调用模型。
     enabled: ${WECOM_TRACKING_FILE_WORKER_ENABLED:${MESSAGE_WORKER_ENABLED:true}}
@@ -144,6 +186,19 @@ app:
       jd-outbound:
         type: ${WECOM_CARD_JD_OUTBOUND_ROUTE_TYPE:GROUP}
         chat-id: ${WECOM_CARD_JD_OUTBOUND_CHAT_ID:}
+      # 客户跟进卡默认单聊指定 +1；只有显式配置 GROUP 时才改投群聊脱敏卡。
+      followup-draft:
+        type: ${WECOM_CARD_FOLLOWUP_DRAFT_ROUTE_TYPE:SINGLE}
+        chat-id: ${WECOM_CARD_FOLLOWUP_DRAFT_CHAT_ID:}
+      followup-result:
+        type: ${WECOM_CARD_FOLLOWUP_RESULT_ROUTE_TYPE:SINGLE}
+        chat-id: ${WECOM_CARD_FOLLOWUP_RESULT_CHAT_ID:}
+      # 发货前确认卡：卡面带收货人手机号与详细地址，**只能单聊**。
+      # 缺省 SINGLE 不是省事，是让「配错成群」变成显式动作而不是默认结果；
+      # 即便配成 GROUP，PreShipConfirmCardSource#route 也会挡下来不发。
+      preship:
+        type: ${WECOM_CARD_PRESHIP_ROUTE_TYPE:SINGLE}
+        chat-id: ${WECOM_CARD_PRESHIP_CHAT_ID:}
   agent-worker:
     # 定义域写动作后台 Worker（11）：202 任务的执行面，租约式领取 AGENT_* 任务。
     enabled: ${AGENT_WORKER_ENABLED:true}

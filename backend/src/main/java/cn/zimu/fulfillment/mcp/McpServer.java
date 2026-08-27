@@ -123,7 +123,7 @@ public class McpServer {
         // 写工具与只读接口不共存（tools/list 也不暴露），调用写工具按无效请求拒绝。
         // 拒绝先于身份/幂等处理：只读接口上写工具不存在，认证语义（MCP_AUTH_REQUIRED）
         // 只对暴露出的只读工具生效。
-        if (!tool.readOnly()) {
+        if (!tool.readOnly() || !tool.externallyDiscoverable()) {
             writeError(INVALID_PARAMS, "Tool is read-only restricted: " + name, id);
             return;
         }
@@ -177,7 +177,7 @@ public class McpServer {
         ArrayNode tools = result.putArray("tools");
         // 08 决策：stdio 面只暴露只读工具（readOnly=true），写工具不外露
         for (McpTool tool : registry.all()) {
-            if (!tool.readOnly()) {
+            if (!tool.readOnly() || !tool.externallyDiscoverable()) {
                 continue;
             }
             ObjectNode item = tools.addObject();

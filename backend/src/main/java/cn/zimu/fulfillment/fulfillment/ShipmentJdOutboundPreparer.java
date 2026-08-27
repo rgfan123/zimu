@@ -69,6 +69,10 @@ public class ShipmentJdOutboundPreparer {
     static final String CONFIG_CARRIER_NO = "carrierNo";
     static final String CONFIG_TOWN_REQUIRED = "townRequired";
     static final String CONFIG_CUSTOMER_CODE = "customerCode";
+    static final String CONFIG_ADDRESS_ANALYSIS = "addressAnalysis";
+
+    /** 京东按收件人地址解析四级地址（addSoOrder.receiverInfo.addressAnalysis=2）。 */
+    private static final String ADDRESS_ANALYSIS_BY_RECEIVER = "2";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -261,6 +265,18 @@ public class ShipmentJdOutboundPreparer {
         receiver.put("mobile", state.receiverPhone());
         pass(validations, "receiverInfo.mobile", "shipments.receiver_phone_snapshot");
 
+        // 履约方显式配 addressAnalysis=2 时，把完整原始地址交给京东解析四级地址。
+        // 这不是放松管控而是换权威源：此前由本系统的词典猜（JdReceiverAddressNormalizer
+        // 只做单趟最长前缀匹配，重复省市区会原样留在 detail 里，生产 2/2 条候选都被人工改过），
+        // 现在由京东自己解析。京东 schema 里 province/city/county/town 本就是选填
+        // （docs/research/jdl-api-367/json/1596-addSoOrder.json，required=0），
+        // detailAddress 在 addressAnalysis=2 时为条件必填——正是要被解析的那段原文。
+        if (ADDRESS_ANALYSIS_BY_RECEIVER.equals(
+                configValue(state.config(), CONFIG_ADDRESS_ANALYSIS, null))) {
+            putJdAnalyzedAddress(receiver, state, validations, blockers);
+            return receiver;
+        }
+
         boolean confirmed = state.jdReceiverConfirmed();
         putConfirmedAddress(receiver, "province", state.jdReceiverProvince(), true, confirmed,
                 "jd_receiver_province", validations, blockers);
@@ -273,6 +289,47 @@ public class ShipmentJdOutboundPreparer {
         putConfirmedAddress(receiver, "detailAddress", state.jdReceiverDetailAddress(), true, confirmed,
                 "jd_receiver_detail_address", validations, blockers);
         return receiver;
+    }
+
+    /**
+     * 交由京东解析四级地址。
+     *
+     * <p><b>送原始快照全文，不送我方拆过的详细地址。</b>2026-08-26 生产实证推翻了
+     * 「已确认的更干净」这个假设：飞象 D2026825436038809722 的源地址本身就是三段拼接
+     * （{@code 北京朝阳区太阳宫地区} + {@code 北京市-北京市-朝阳区太阳宫} + 门牌），
+     * 我方拆完剩下 {@code 太阳宫地区太阳宫丰和园19号院…}——重复片段没去掉，
+     * 反而把「北京市朝阳区」这些能帮助京东定位的锚点删掉了。
+     * 拿半成品去让京东解析，比给它原文更难解对。
+     *
+     * <p>所以 addressAnalysis=2 的语义是彻底换权威源：原文进、京东拆，我方不预处理。
+     * 全文缺失才阻断——地址是发货的必要事实，没有就是没有，不发空单。
+     *
+     * <p>省/市/区/镇一律不送：京东会自行解析，我方再送一份可能与其解析结果冲突。
+     */
+    private void putJdAnalyzedAddress(
+            Map<String, Object> receiver,
+            Context state,
+            List<Validation> validations,
+            List<Blocker> blockers) {
+        String detail = state.receiverAddress();
+        String source = "shipments.receiver_address_snapshot";
+        if (!hasText(detail)) {
+            block(
+                    blockers, validations, 422, "JD_SHIPMENT_OUTBOUND_RECEIVER_ADDRESS_MISSING",
+                    "receiverInfo.detailAddress", source, "shipment receiver address",
+                    "收货地址为空，无法建单");
+            return;
+        }
+        receiver.put("addressAnalysis", 2);
+        receiver.put("detailAddress", detail);
+        pass(validations, "receiverInfo.addressAnalysis", "fulfillment_providers.config.addressAnalysis");
+        pass(validations, "receiverInfo.detailAddress", source);
+        for (String level : List.of("province", "city", "county", "town")) {
+            validations.add(new Validation(
+                    "receiverInfo." + level, "OMITTED",
+                    "fulfillment_providers.config.addressAnalysis",
+                    "京东按收件人地址解析四级地址，我方不再下发该层级"));
+        }
     }
 
     private void putConfirmedAddress(

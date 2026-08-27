@@ -23,6 +23,12 @@ import type {
 import type {
   AuditLog,
   AuditLogPage,
+  BusinessFollowUp,
+  BusinessFollowUpCreateInput,
+  BusinessFollowUpDecisionInput,
+  BusinessFollowUpOrganizeInput,
+  BusinessFollowUpPage,
+  BusinessFollowUpSummary,
   ChannelMessageDetail,
   ChannelMessagePage,
   MessageSubmissionDetail,
@@ -847,6 +853,33 @@ export const messageSubmissionsApi = {
     apiRequest<MessageSubmissionDetail>(`/api/v1/message-submissions/${id}/reinterpret`, {
       method: 'POST',
       body: {},
+      headers: writeHeaders(),
+    }),
+};
+
+export const businessFollowUpsApi = {
+  list: (query: Pick<PageQuery, 'page' | 'size'> & { stage?: string } = {}) =>
+    apiRequest<BusinessFollowUpPage>('/api/v1/business-followups', {
+      params: query as Record<string, QueryValue>,
+    }),
+  detail: (id: string) =>
+    apiRequest<BusinessFollowUp>(`/api/v1/business-followups/${id}`),
+  create: (body: BusinessFollowUpCreateInput) =>
+    apiRequest<BusinessFollowUpSummary>('/api/v1/business-followups', {
+      method: 'POST',
+      body,
+      headers: writeHeaders(),
+    }),
+  organize: (id: string, body: BusinessFollowUpOrganizeInput) =>
+    apiRequest<BusinessFollowUpSummary>(`/api/v1/business-followups/${id}/organize`, {
+      method: 'POST',
+      body,
+      headers: writeHeaders(),
+    }),
+  decide: (id: string, body: BusinessFollowUpDecisionInput) =>
+    apiRequest<BusinessFollowUp>(`/api/v1/business-followups/${id}/decisions`, {
+      method: 'POST',
+      body,
       headers: writeHeaders(),
     }),
 };
