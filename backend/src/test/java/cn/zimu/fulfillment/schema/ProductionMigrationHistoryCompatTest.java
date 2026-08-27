@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV64() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV65() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -114,15 +114,15 @@ class ProductionMigrationHistoryCompatTest {
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 64 条历史")
-                .hasSize(64);
+                .as("完整升级后应恰有 65 条历史")
+                .hasSize(65);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
         // V48–V64 按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 64))
+        assertThat(historyAfter.subList(47, 65))
                 .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）与 V54（#113，合并 PR #128 时与礼包 V53 撞号后顺延）、V55（通用业务卡投递）与 V56（履约单据 Agent）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
@@ -175,7 +175,10 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V63__kehuzx_customer_assignment_trace.sql")),
                         new HistoryRow("64", "V64__kehuzx_customer_create_assignment.sql",
                                 "kehuzx customer create assignment",
-                                crc32Of("V64__kehuzx_customer_create_assignment.sql")));
+                                crc32Of("V64__kehuzx_customer_create_assignment.sql")),
+                        new HistoryRow("65", "V65__business_followup_execution_intent.sql",
+                                "business followup execution intent",
+                                crc32Of("V65__business_followup_execution_intent.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // V48–V60 分别用内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片与

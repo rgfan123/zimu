@@ -1,7 +1,9 @@
 package cn.zimu.fulfillment.followup;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
@@ -134,6 +136,308 @@ class BusinessFollowUpApiTest {
         assertThat(second.getBody().get("id")).isEqualTo(first.getBody().get("id"));
         assertThat(sameTextDifferentSource.getBody().get("id"))
                 .isNotEqualTo(first.getBody().get("id"));
+    }
+
+    @Test
+    void legacyCreateDefaultsToCustomerAndBusinessKindIsVisibleWithoutLeakingPlanInList() {
+        ResponseEntity<Map> created = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-legacy-kind"),
+                        "employee_draft", "仅整理客户跟进档案"),
+                "followup-legacy-kind-create");
+        String id = String.valueOf(created.getBody().get("id"));
+
+        assertThat(created.getBody()).containsEntry("business_kind", "CUSTOMER");
+        ResponseEntity<Map> detail = http.exchange(
+                "/api/v1/business-followups/" + id,
+                HttpMethod.GET,
+                new HttpEntity<>(readHeaders()),
+                Map.class);
+        assertThat(detail.getBody())
+                .containsEntry("business_kind", "CUSTOMER")
+                .containsEntry("execution_plan", null);
+
+        ResponseEntity<Map> page = http.exchange(
+                "/api/v1/business-followups?page=0&size=200",
+                HttpMethod.GET,
+                new HttpEntity<>(readHeaders()),
+                Map.class);
+        Map<?, ?> row = ((java.util.List<Map<?, ?>>) page.getBody().get("items")).stream()
+                .filter(item -> id.equals(item.get("id")))
+                .findFirst()
+                .orElseThrow();
+        assertThat(row.get("business_kind")).isEqualTo("CUSTOMER");
+        assertThat(row.containsKey("execution_plan")).isFalse();
+
+        Map<String, Object> explicitNullKind = new java.util.LinkedHashMap<>();
+        explicitNullKind.put("message_submission_id", sourceSubmission("followup-null-kind"));
+        explicitNullKind.put("employee_draft", "旧客户端显式 null 与省略等价");
+        explicitNullKind.put("business_kind", null);
+        ResponseEntity<Map> nullKind = create(explicitNullKind, "followup-null-kind-create");
+        assertThat(nullKind.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(nullKind.getBody()).containsEntry("business_kind", "CUSTOMER");
+    }
+
+    @Test
+    void sampleCreateRequiresAndPersistsTheExplicitKehuzxWriteContract() {
+        long submissionId = sourceSubmission("followup-sample-plan");
+        Map<String, Object> plan = Map.of(
+                "sample_name", "牛肩切片样品",
+                "product_name", "牛肩切片",
+                "quantity_per_unit", 0.5,
+                "quantity_unit", "kg",
+                "unit_count", 4,
+                "requested_date", "2026-09-01",
+                "commercial_terms", Map.of("payment_terms", "到付"),
+                "business_note", "仅限本次确认样品");
+
+        ResponseEntity<Map> created = create(
+                Map.of(
+                        "message_submission_id", submissionId,
+                        "employee_draft", "这里的文字不得成为执行计划",
+                        "business_kind", "SAMPLE",
+                        "execution_plan", plan),
+                "followup-sample-plan-create");
+        String id = String.valueOf(created.getBody().get("id"));
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(created.getBody()).containsEntry("business_kind", "SAMPLE");
+        ResponseEntity<Map> detail = http.exchange(
+                "/api/v1/business-followups/" + id,
+                HttpMethod.GET,
+                new HttpEntity<>(readHeaders()),
+                Map.class);
+        assertThat(detail.getBody())
+                .containsEntry("business_kind", "SAMPLE")
+                .containsEntry("execution_plan", plan);
+        assertThat(jdbc.queryForMap(
+                        "SELECT business_kind, execution_plan::text AS execution_plan "
+                                + "FROM app.business_followups WHERE id=?",
+                        Long.parseLong(id)))
+                .containsEntry("business_kind", "SAMPLE");
+    }
+
+    @Test
+    void formalCreatePersistsAndReturnsTheExplicitOrderContract() {
+        Map<String, Object> plan = Map.of(
+                "order_type", "formal",
+                "name", "月度供货订单",
+                "delivery_date", "2026-09-10",
+                "delivery_address", "已授权交付地址",
+                "items", java.util.List.of(Map.of(
+                        "product_name", "牛肩切片",
+                        "quantity_per_unit", 10,
+                        "quantity_unit", "kg",
+                        "unit_count", 5)));
+        ResponseEntity<Map> created = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-formal-plan"),
+                        "employee_draft", "正式订单文字只作证据",
+                        "business_kind", "FORMAL",
+                        "execution_plan", plan),
+                "followup-formal-plan-create");
+        String id = String.valueOf(created.getBody().get("id"));
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(created.getBody()).containsEntry("business_kind", "FORMAL");
+        ResponseEntity<Map> detail = http.exchange(
+                "/api/v1/business-followups/" + id,
+                HttpMethod.GET,
+                new HttpEntity<>(readHeaders()),
+                Map.class);
+        assertThat(detail.getBody())
+                .containsEntry("business_kind", "FORMAL")
+                .containsEntry("execution_plan", plan);
+    }
+
+    @Test
+    void sampleAndFormalKindsFailClosedOnIncompleteOrDriftingPlans() {
+        ResponseEntity<Map> incompleteSample = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-sample-invalid"),
+                        "employee_draft", "缺少权威样品字段",
+                        "business_kind", "SAMPLE",
+                        "execution_plan", Map.of("sample_name", "不完整样品")),
+                "followup-sample-invalid-create");
+        assertThat(incompleteSample.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(incompleteSample.getBody())
+                .containsEntry("business_code", "FOLLOWUP_EXECUTION_PLAN_INVALID");
+
+        ResponseEntity<Map> driftingFormal = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-formal-invalid"),
+                        "employee_draft", "不得把草稿文字当作正式订单",
+                        "business_kind", "FORMAL",
+                        "execution_plan", Map.of(
+                                "order_type", "sample",
+                                "name", "月度供货订单",
+                                "delivery_date", "2026-09-10",
+                                "delivery_address", "已授权交付地址",
+                                "items", java.util.List.of(Map.of(
+                                        "product_name", "牛肩切片",
+                                        "quantity_per_unit", 10,
+                                        "quantity_unit", "kg",
+                                        "unit_count", 5)))),
+                "followup-formal-invalid-create");
+        assertThat(driftingFormal.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(driftingFormal.getBody())
+                .containsEntry("business_code", "FOLLOWUP_EXECUTION_PLAN_INVALID");
+
+        Map<String, Object> sampleWithInjectedTarget = new java.util.LinkedHashMap<>();
+        sampleWithInjectedTarget.put("sample_name", "样品 A");
+        sampleWithInjectedTarget.put("product_name", "产品 A");
+        sampleWithInjectedTarget.put("quantity_per_unit", 1);
+        sampleWithInjectedTarget.put("quantity_unit", "kg");
+        sampleWithInjectedTarget.put("unit_count", 1);
+        sampleWithInjectedTarget.put("requested_date", "2026-09-01");
+        sampleWithInjectedTarget.put("customer_id", "model-injected-customer");
+        ResponseEntity<Map> unknownSampleField = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-sample-unknown-field"),
+                        "employee_draft", "未授权目标字段必须被拒绝",
+                        "business_kind", "SAMPLE",
+                        "execution_plan", sampleWithInjectedTarget),
+                "followup-sample-unknown-field-create");
+        assertThat(unknownSampleField.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(unknownSampleField.getBody())
+                .containsEntry("business_code", "FOLLOWUP_EXECUTION_PLAN_INVALID");
+
+        Map<String, Object> sampleWithNull = new java.util.LinkedHashMap<>(sampleWithInjectedTarget);
+        sampleWithNull.remove("customer_id");
+        sampleWithNull.put("business_note", null);
+        ResponseEntity<Map> explicitNull = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-sample-explicit-null"),
+                        "employee_draft", "显式 null 不得产生等价性漂移",
+                        "business_kind", "SAMPLE",
+                        "execution_plan", sampleWithNull),
+                "followup-sample-explicit-null-create");
+        assertThat(explicitNull.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(explicitNull.getBody())
+                .containsEntry("business_code", "FOLLOWUP_EXECUTION_PLAN_INVALID");
+
+        Map<String, Object> formalItem = new java.util.LinkedHashMap<>();
+        formalItem.put("product_name", "牛肩切片");
+        formalItem.put("quantity_per_unit", 10);
+        formalItem.put("quantity_unit", "kg");
+        formalItem.put("unit_count", 5);
+        formalItem.put("status", "submitted");
+        ResponseEntity<Map> unknownFormalItemField = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-formal-item-unknown"),
+                        "employee_draft", "未授权行状态必须被拒绝",
+                        "business_kind", "FORMAL",
+                        "execution_plan", Map.of(
+                                "order_type", "formal",
+                                "name", "月度供货订单",
+                                "delivery_date", "2026-09-10",
+                                "delivery_address", "已授权交付地址",
+                                "items", java.util.List.of(formalItem))),
+                "followup-formal-item-unknown-create");
+        assertThat(unknownFormalItemField.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(unknownFormalItemField.getBody())
+                .containsEntry("business_code", "FOLLOWUP_EXECUTION_PLAN_INVALID");
+    }
+
+    @Test
+    void executionPlansRejectValuesOutsideKehuzxStorageBounds() throws Exception {
+        Map<String, Object> validSample = Map.of(
+                "sample_name", "样品 A",
+                "product_name", "产品 A",
+                "quantity_per_unit", 1,
+                "quantity_unit", "kg",
+                "unit_count", 1,
+                "requested_date", "2026-09-01");
+        Map<String, Object> longName = new java.util.LinkedHashMap<>(validSample);
+        longName.put("sample_name", "x".repeat(201));
+        Map<String, Object> excessiveScale = new java.util.LinkedHashMap<>(validSample);
+        excessiveScale.put("quantity_per_unit", 0.0004);
+
+        int index = 0;
+        for (Map<String, Object> invalid : java.util.List.of(longName, excessiveScale)) {
+            String suffix = "followup-sample-storage-bound-" + index++;
+            ResponseEntity<Map> response = create(
+                    Map.of(
+                            "message_submission_id", sourceSubmission(suffix),
+                            "employee_draft", "超出 Kehuzx 存储边界的计划",
+                            "business_kind", "SAMPLE",
+                            "execution_plan", invalid),
+                    suffix + "-create");
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(response.getBody())
+                    .containsEntry("business_code", "FOLLOWUP_EXECUTION_PLAN_INVALID");
+        }
+
+        ResponseEntity<Map> longAddress = create(
+                Map.of(
+                        "message_submission_id", sourceSubmission("followup-formal-address-bound"),
+                        "employee_draft", "超出 Kehuzx 地址边界的计划",
+                        "business_kind", "FORMAL",
+                        "execution_plan", Map.of(
+                                "order_type", "formal",
+                                "name", "月度供货订单",
+                                "delivery_date", "2026-09-10",
+                                "delivery_address", "x".repeat(501),
+                                "items", java.util.List.of(Map.of(
+                                        "product_name", "牛肩切片",
+                                        "quantity_per_unit", 10,
+                                        "quantity_unit", "kg",
+                                        "unit_count", 5)))),
+                "followup-formal-address-bound-create");
+        assertThat(longAddress.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(longAddress.getBody())
+                .containsEntry("business_code", "FOLLOWUP_EXECUTION_PLAN_INVALID");
+
+        var nonFinite = mapper.readTree("""
+                {"sample_name":"样品 A","product_name":"产品 A",
+                 "quantity_per_unit":1e309,"quantity_unit":"kg","unit_count":1,
+                 "requested_date":"2026-09-01"}
+                """);
+        assertThatThrownBy(() -> BusinessFollowUpExecutionPlan.validate(
+                        BusinessFollowUpBusinessKind.SAMPLE, nonFinite))
+                .isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void sameSourceCannotSilentlyReplaceAnExplicitExecutionPlan() {
+        long submissionId = sourceSubmission("followup-plan-conflict");
+        Map<String, Object> firstPlan = Map.of(
+                "sample_name", "样品 A",
+                "product_name", "产品 A",
+                "quantity_per_unit", 1,
+                "quantity_unit", "kg",
+                "unit_count", 1,
+                "requested_date", "2026-09-01");
+        Map<String, Object> changedPlan = new java.util.LinkedHashMap<>(firstPlan);
+        changedPlan.put("unit_count", 2);
+        Map<String, Object> equivalentPlan = new java.util.LinkedHashMap<>(firstPlan);
+        equivalentPlan.put("quantity_per_unit", 1.0);
+        Map<String, Object> first = Map.of(
+                "message_submission_id", submissionId,
+                "employee_draft", "第一次提交",
+                "business_kind", "SAMPLE",
+                "execution_plan", firstPlan);
+        Map<String, Object> changed = Map.of(
+                "message_submission_id", submissionId,
+                "employee_draft", "第二次提交",
+                "business_kind", "SAMPLE",
+                "execution_plan", changedPlan);
+
+        ResponseEntity<Map> created = create(first, "followup-plan-conflict-first");
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        ResponseEntity<Map> equivalent = create(
+                Map.of(
+                        "message_submission_id", submissionId,
+                        "employee_draft", "等价数字表示重放",
+                        "business_kind", "SAMPLE",
+                        "execution_plan", equivalentPlan),
+                "followup-plan-conflict-equivalent");
+        assertThat(equivalent.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(equivalent.getBody()).containsEntry("id", created.getBody().get("id"));
+        ResponseEntity<Map> conflict = create(changed, "followup-plan-conflict-second");
+        assertThat(conflict.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(conflict.getBody())
+                .containsEntry("business_code", "FOLLOWUP_EXECUTION_PLAN_CONFLICT");
     }
 
     @Test

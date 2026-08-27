@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.followup;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
@@ -48,7 +49,10 @@ public class BusinessFollowUpController {
             @Valid @RequestBody CreateRequest request) {
         CommandContext context = WriteCommands.writeContext(operator);
         BusinessFollowUpService.CreateCommand command = new BusinessFollowUpService.CreateCommand(
-                WriteCommands.parseIdentifier(request.messageSubmissionId()), request.employeeDraft());
+                WriteCommands.parseIdentifier(request.messageSubmissionId()),
+                request.employeeDraft(),
+                request.businessKind(),
+                request.executionPlan());
         IdempotentResult<BusinessFollowUpSummaryDto> result = idempotency.execute(
                 "business_followup.create",
                 WriteCommands.requireIdempotencyKey(key),
@@ -140,7 +144,17 @@ public class BusinessFollowUpController {
                     @Schema(requiredMode = Schema.RequiredMode.REQUIRED, minLength = 1, maxLength = 20000)
                     @NotBlank
                     @Size(max = 20_000)
-                    String employeeDraft) {}
+                    String employeeDraft,
+            @JsonProperty("business_kind")
+                    @Schema(
+                            requiredMode = Schema.RequiredMode.NOT_REQUIRED,
+                            nullable = true,
+                            allowableValues = {"CUSTOMER", "SAMPLE", "FORMAL"},
+                            defaultValue = "CUSTOMER")
+                    @Pattern(regexp = "^(CUSTOMER|SAMPLE|FORMAL)$")
+                    String businessKind,
+            @JsonProperty("execution_plan")
+                    JsonNode executionPlan) {}
 
     public record OrganizeRequest(
             @JsonProperty("agent_slug")

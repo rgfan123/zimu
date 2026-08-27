@@ -14,6 +14,7 @@ import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -183,6 +184,141 @@ class BusinessFollowUpOrganizationIntegrationTest {
         assertThat(String.valueOf(draft.get("refs"))).contains("kehuzx-customer-1");
         assertThat(String.valueOf(draft.get("content")))
                 .contains("risks", "questions", "recommended_actions", "由指定 +1 核对");
+    }
+
+    @Test
+    void serverPersistedSamplePlanIsFrozenVerbatimIntoTheDraft() throws Exception {
+        ObjectNode plan = mapper.createObjectNode();
+        plan.put("sample_name", "牛肩切片样品");
+        plan.put("product_name", "牛肩切片");
+        plan.put("quantity_per_unit", 0.5);
+        plan.put("quantity_unit", "kg");
+        plan.put("unit_count", 4);
+        plan.put("requested_date", "2026-09-01");
+        plan.put("business_note", "已授权的样品备注");
+        long followupId = queued(
+                "frozen-sample-plan",
+                "模型若说改成 999 箱也不能覆盖服务端计划",
+                "SAMPLE",
+                plan);
+        when(agents.invokePinnedWithRunId(eq("customer-followup-agent"), eq(1), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    String runId = "run_frozen_sample_plan";
+                    recordCustomerEvidence(runId, List.of(Map.of(
+                            "id", "customer-1", "customer_id", "customer-1",
+                            "code", "KH-260826-001", "name", "华北餐饮")));
+                    return AgentRunResult.success(
+                                    mapper.valueToTree(Map.of(
+                                            "summary", "模型建议改成 999 箱",
+                                            "facts", List.of(),
+                                            "requires_human", false,
+                                            "missing_fields", List.of(),
+                                            "execution_plan", Map.of("unit_count", 999))),
+                                    "stub", "stub", "customer-followup-v1")
+                            .withRunMetadata(runId, 2);
+                });
+
+        runWorkerOnce();
+
+        String frozen = jdbc.queryForObject(
+                "SELECT content -> 'execution_plan' FROM app.business_followup_draft_versions "
+                        + "WHERE followup_id=?",
+                String.class,
+                followupId);
+        assertThat(mapper.readTree(frozen)).isEqualTo(plan);
+        assertThat(jdbc.queryForObject(
+                        "SELECT content ->> 'business_kind' "
+                                + "FROM app.business_followup_draft_versions WHERE followup_id=?",
+                        String.class,
+                        followupId))
+                .isEqualTo("SAMPLE");
+    }
+
+    @Test
+    void serverPersistedFormalPlanIsFrozenVerbatimIntoTheDraft() throws Exception {
+        ObjectNode plan = mapper.createObjectNode();
+        plan.put("order_type", "formal");
+        plan.put("name", "月度供货订单");
+        plan.put("delivery_date", "2026-09-10");
+        plan.put("delivery_address", "已授权交付地址");
+        plan.putArray("items").addObject()
+                .put("product_name", "牛肩切片")
+                .put("quantity_per_unit", 10)
+                .put("quantity_unit", "kg")
+                .put("unit_count", 5);
+        long followupId = queued(
+                "frozen-formal-plan",
+                "模型不得改变正式订单行",
+                "FORMAL",
+                plan);
+        when(agents.invokePinnedWithRunId(eq("customer-followup-agent"), eq(1), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    String runId = "run_frozen_formal_plan";
+                    recordCustomerEvidence(runId, List.of(Map.of(
+                            "id", "customer-1", "customer_id", "customer-1",
+                            "code", "KH-260826-001", "name", "华北餐饮")));
+                    return AgentRunResult.success(
+                                    mapper.valueToTree(Map.of(
+                                            "summary", "模型仅整理摘要",
+                                            "facts", List.of(),
+                                            "requires_human", false,
+                                            "missing_fields", List.of())),
+                                    "stub", "stub", "customer-followup-v1")
+                            .withRunMetadata(runId, 2);
+                });
+
+        runWorkerOnce();
+
+        String frozen = jdbc.queryForObject(
+                "SELECT content -> 'execution_plan' FROM app.business_followup_draft_versions "
+                        + "WHERE followup_id=?",
+                String.class,
+                followupId);
+        assertThat(mapper.readTree(frozen)).isEqualTo(plan);
+        assertThat(jdbc.queryForObject(
+                        "SELECT content ->> 'business_kind' "
+                                + "FROM app.business_followup_draft_versions WHERE followup_id=?",
+                        String.class,
+                        followupId))
+                .isEqualTo("FORMAL");
+    }
+
+    @Test
+    void modelCannotInjectAnExecutionPlanIntoACustomerOnlyFollowup() {
+        long followupId = queued("customer-plan-injection");
+        when(agents.invokePinnedWithRunId(eq("customer-followup-agent"), eq(1), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    String runId = "run_customer_plan_injection";
+                    recordCustomerEvidence(runId, List.of(Map.of(
+                            "id", "customer-1", "customer_id", "customer-1",
+                            "code", "KH-260826-001", "name", "华北餐饮")));
+                    return AgentRunResult.success(
+                                    mapper.valueToTree(Map.of(
+                                            "summary", "客户跟进摘要",
+                                            "facts", List.of(),
+                                            "requires_human", false,
+                                            "missing_fields", List.of(),
+                                            "execution_plan", Map.of(
+                                                    "order_type", "formal",
+                                                    "name", "模型伪造订单"))),
+                                    "stub", "stub", "customer-followup-v1")
+                            .withRunMetadata(runId, 2);
+                });
+
+        runWorkerOnce();
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT jsonb_exists(content, 'execution_plan') "
+                                + "FROM app.business_followup_draft_versions WHERE followup_id=?",
+                        Boolean.class,
+                        followupId))
+                .isFalse();
+        assertThat(jdbc.queryForObject(
+                        "SELECT content ->> 'business_kind' "
+                                + "FROM app.business_followup_draft_versions WHERE followup_id=?",
+                        String.class,
+                        followupId))
+                .isEqualTo("CUSTOMER");
     }
 
     @Test
@@ -429,6 +565,11 @@ class BusinessFollowUpOrganizationIntegrationTest {
     }
 
     private long queued(String suffix, String employeeDraft) {
+        return queued(suffix, employeeDraft, "CUSTOMER", null);
+    }
+
+    private long queued(
+            String suffix, String employeeDraft, String businessKind, JsonNode executionPlan) {
         String messageId = suffix + "-" + UUID.randomUUID();
         long submissionId = submissions.submit(new ChannelMessageCommand(
                 "corp-followup", "connection-followup", "bot-followup", messageId,
@@ -439,7 +580,7 @@ class BusinessFollowUpOrganizationIntegrationTest {
                 "manager-zhang", "manager-zhang");
         long followupId = Long.parseLong(followUps.create(
                 new BusinessFollowUpService.CreateCommand(
-                        submissionId, employeeDraft),
+                        submissionId, employeeDraft, businessKind, executionPlan),
                 context).id());
         followUps.organize(
                 new BusinessFollowUpService.OrganizeCommand(

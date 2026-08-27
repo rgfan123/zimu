@@ -39,7 +39,7 @@ public class BusinessFollowUpService {
 
     private static final String SELECT_SUMMARY = """
             SELECT bf.id, bf.followup_no, bf.message_submission_id,
-                   ms.source_message_id, bf.source_revision,
+                   ms.source_message_id, bf.source_revision, bf.business_kind,
                    bf.stage, bf.processing_status, bf.created_by,
                    bf.designated_reviewer, bf.agent_slug, bf.agent_version,
                    bf.designated_reviewer_operator_id,
@@ -53,7 +53,8 @@ public class BusinessFollowUpService {
 
     private static final String SELECT_DETAIL = """
             SELECT bf.id, bf.followup_no, bf.message_submission_id,
-                   ms.source_message_id, bf.employee_draft, bf.source_revision,
+                   ms.source_message_id, bf.employee_draft, bf.business_kind,
+                   bf.execution_plan::text AS execution_plan, bf.source_revision,
                    bf.stage, bf.processing_status, bf.created_by,
                    bf.designated_reviewer, bf.agent_slug, bf.agent_version,
                    bf.designated_reviewer_operator_id,
@@ -105,21 +106,32 @@ public class BusinessFollowUpService {
     @Transactional
     public BusinessFollowUpSummaryDto create(CreateCommand command, CommandContext context) {
         requireSubmission(command.messageSubmissionId());
+        BusinessFollowUpBusinessKind businessKind =
+                BusinessFollowUpBusinessKind.parse(command.businessKind());
+        JsonNode executionPlan = BusinessFollowUpExecutionPlan.validate(
+                businessKind, command.executionPlan());
+        String executionPlanJson = executionPlan == null ? null : executionPlan.toString();
         List<Long> inserted = jdbc.query(
                 """
                 INSERT INTO app.business_followups
-                    (message_submission_id, employee_draft, created_by)
-                VALUES (?, ?, ?)
+                    (message_submission_id, employee_draft, business_kind, execution_plan, created_by)
+                VALUES (?, ?, ?, CAST(? AS jsonb), ?)
                 ON CONFLICT (message_submission_id) DO NOTHING
                 RETURNING id
                 """,
                 (resultSet, rowNumber) -> resultSet.getLong(1),
                 command.messageSubmissionId(),
                 requireDraft(command.employeeDraft()),
+                businessKind.name(),
+                executionPlanJson,
                 context.operator());
-        long id = inserted.isEmpty()
-                ? requireIdForSubmission(command.messageSubmissionId())
-                : inserted.getFirst();
+        long id;
+        if (inserted.isEmpty()) {
+            id = requireIdForSubmission(command.messageSubmissionId());
+            requireSameExecutionIntent(id, businessKind, executionPlan);
+        } else {
+            id = inserted.getFirst();
+        }
         BusinessFollowUpSummaryDto result = summary(id);
         if (!inserted.isEmpty()) {
             recordAudit(
@@ -128,6 +140,7 @@ public class BusinessFollowUpService {
                     Map.of(
                             "followup_id", id,
                             "message_submission_id", command.messageSubmissionId(),
+                            "business_kind", businessKind.name(),
                             "source_revision", result.sourceRevision()),
                     201,
                     "BUSINESS_FOLLOWUP_CREATED");
@@ -364,6 +377,8 @@ public class BusinessFollowUpService {
                 base.messageSubmissionId(),
                 base.sourceMessageId(),
                 base.employeeDraft(),
+                base.businessKind(),
+                base.executionPlan(),
                 base.sourceRevision(),
                 base.stage(),
                 base.processingStatus(),
@@ -424,6 +439,36 @@ public class BusinessFollowUpService {
             throw new IllegalStateException("business follow-up conflict row is not visible");
         }
         return id;
+    }
+
+    private JsonNode nullableJson(String value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return mapper.readTree(value);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            throw new IllegalStateException("invalid persisted execution plan", ex);
+        }
+    }
+
+    private void requireSameExecutionIntent(
+            long id, BusinessFollowUpBusinessKind businessKind, JsonNode executionPlan) {
+        Boolean same = jdbc.queryForObject(
+                """
+                SELECT business_kind = ?
+                   AND execution_plan IS NOT DISTINCT FROM CAST(? AS jsonb)
+                FROM app.business_followups WHERE id = ?
+                """,
+                Boolean.class,
+                businessKind.name(),
+                executionPlan == null ? null : executionPlan.toString(),
+                id);
+        if (!Boolean.TRUE.equals(same)) {
+            throw BusinessException.conflict(
+                    "FOLLOWUP_EXECUTION_PLAN_CONFLICT",
+                    "Existing source has a different business kind or execution plan");
+        }
     }
 
     private AgentDefinition requireCurrentAgent(String slug, int version) {
@@ -560,6 +605,8 @@ public class BusinessFollowUpService {
                 rs.getString("message_submission_id"),
                 rs.getString("source_message_id"),
                 rs.getString("employee_draft"),
+                rs.getString("business_kind"),
+                nullableJson(rs.getString("execution_plan")),
                 rs.getInt("source_revision"),
                 rs.getString("stage"),
                 rs.getString("processing_status"),
@@ -711,6 +758,7 @@ public class BusinessFollowUpService {
                 rs.getString("message_submission_id"),
                 rs.getString("source_message_id"),
                 rs.getInt("source_revision"),
+                rs.getString("business_kind"),
                 rs.getString("stage"),
                 rs.getString("processing_status"),
                 rs.getString("created_by"),
@@ -725,7 +773,15 @@ public class BusinessFollowUpService {
                 rs.getObject("updated_at", java.time.OffsetDateTime.class));
     }
 
-    public record CreateCommand(long messageSubmissionId, String employeeDraft) {}
+    public record CreateCommand(
+            long messageSubmissionId,
+            String employeeDraft,
+            String businessKind,
+            JsonNode executionPlan) {
+        public CreateCommand(long messageSubmissionId, String employeeDraft) {
+            this(messageSubmissionId, employeeDraft, null, null);
+        }
+    }
 
     public record OrganizeCommand(
             long followupId, String agentSlug, int agentVersion, long reviewerOperatorId) {}

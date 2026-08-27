@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.followup;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -15,6 +16,10 @@ public record BusinessFollowUpDto(
         String sourceMessageId,
         @JsonProperty("employee_draft")
         String employeeDraft,
+        @JsonProperty("business_kind")
+        String businessKind,
+        @JsonProperty("execution_plan")
+        JsonNode executionPlan,
         @JsonProperty("source_revision")
         int sourceRevision,
         String stage,

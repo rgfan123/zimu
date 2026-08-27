@@ -4290,6 +4290,16 @@ components:
       properties:
         message_submission_id: { $ref: '#/components/schemas/Identifier' }
         employee_draft: { type: string, minLength: 1, maxLength: 20000 }
+        business_kind:
+          type: string
+          enum: [CUSTOMER, SAMPLE, FORMAL]
+          default: CUSTOMER
+          nullable: true
+          description: Explicit human-owned intent; omitted or null legacy requests remain CUSTOMER.
+        execution_plan:
+          allOf: [{ $ref: '#/components/schemas/BusinessFollowUpExecutionPlan' }]
+          nullable: true
+          description: Required for SAMPLE/FORMAL and forbidden for CUSTOMER.
     OrganizeRequest:
       type: object
       required: [agent_slug, agent_version, reviewer_operator_id]
@@ -4309,13 +4319,14 @@ components:
       type: object
       required:
         [id, followup_no, message_submission_id, source_message_id,
-         source_revision, stage, processing_status, created_by, created_at, updated_at]
+         source_revision, business_kind, stage, processing_status, created_by, created_at, updated_at]
       properties:
         id: { $ref: '#/components/schemas/Identifier' }
         followup_no: { type: string }
         message_submission_id: { $ref: '#/components/schemas/Identifier' }
         source_message_id: { $ref: '#/components/schemas/Identifier' }
         source_revision: { type: integer, format: int32 }
+        business_kind: { type: string, enum: [CUSTOMER, SAMPLE, FORMAL] }
         stage: { type: string, enum: [PENDING_ORGANIZATION, ORGANIZING, DRAFT_READY, NEEDS_INPUT, PENDING_APPROVAL, CONFIRMED, PAUSED] }
         processing_status: { type: string, enum: [NOT_STARTED, PENDING, RUNNING, SUCCEEDED, FAILED] }
         created_by: { type: string }
@@ -4334,9 +4345,12 @@ components:
       allOf:
         - $ref: '#/components/schemas/BusinessFollowUpSummaryDto'
         - type: object
-          required: [employee_draft]
+          required: [employee_draft, execution_plan]
           properties:
             employee_draft: { type: string }
+            execution_plan:
+              allOf: [{ $ref: '#/components/schemas/BusinessFollowUpExecutionPlan' }]
+              nullable: true
             latest_draft:
               allOf:
                 - $ref: '#/components/schemas/BusinessFollowUpDraftDto'
@@ -4350,6 +4364,70 @@ components:
             assignments:
               type: array
               items: { $ref: '#/components/schemas/BusinessFollowUpAssignmentDto' }
+    BusinessFollowUpExecutionPlan:
+      oneOf:
+        - $ref: '#/components/schemas/BusinessFollowUpSamplePlan'
+        - $ref: '#/components/schemas/BusinessFollowUpFormalPlan'
+      description: Immutable authenticated plan; unknown fields are rejected.
+    BusinessFollowUpCommercialTerms:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        payment_terms: { type: string, minLength: 1, maxLength: 4000 }
+        reconciliation_date: { type: string, minLength: 1, maxLength: 4000 }
+        payment_date: { type: string, minLength: 1, maxLength: 4000 }
+        credit_days: { type: string, minLength: 1, maxLength: 4000 }
+        invoice_requirement: { type: string, minLength: 1, maxLength: 4000 }
+        moq: { type: string, minLength: 1, maxLength: 4000 }
+        quoted_price: { type: string, minLength: 1, maxLength: 4000 }
+        target_price: { type: string, minLength: 1, maxLength: 4000 }
+        remark: { type: string, minLength: 1, maxLength: 4000 }
+    BusinessFollowUpSamplePlan:
+      type: object
+      additionalProperties: false
+      required: [sample_name, product_name, quantity_per_unit, quantity_unit, unit_count, requested_date]
+      properties:
+        sample_name: { type: string, minLength: 1, maxLength: 200 }
+        product_name: { type: string, minLength: 1, maxLength: 200 }
+        quantity_per_unit: { type: number, minimum: 0, exclusiveMinimum: true, maximum: 99999999999.999, multipleOf: 0.001 }
+        quantity_unit: { type: string, minLength: 1, maxLength: 30 }
+        unit_count: { type: integer, minimum: 1 }
+        requested_date: { type: string, format: date }
+        expected_delivery_date: { type: string, format: date }
+        testing_date: { type: string, format: date }
+        specification: { type: string, minLength: 1, maxLength: 4000 }
+        requirements: { type: string, minLength: 1, maxLength: 4000 }
+        remark: { type: string, minLength: 1, maxLength: 4000 }
+        business_note: { type: string, minLength: 1, maxLength: 4000 }
+        commercial_terms: { $ref: '#/components/schemas/BusinessFollowUpCommercialTerms' }
+    BusinessFollowUpFormalItem:
+      type: object
+      additionalProperties: false
+      required: [product_name, quantity_per_unit, quantity_unit, unit_count]
+      properties:
+        product_name: { type: string, minLength: 1, maxLength: 200 }
+        quantity_per_unit: { type: number, minimum: 0, exclusiveMinimum: true, maximum: 99999999999.999, multipleOf: 0.001 }
+        quantity_unit: { type: string, minLength: 1, maxLength: 30 }
+        unit_count: { type: integer, minimum: 1 }
+    BusinessFollowUpFormalPlan:
+      type: object
+      additionalProperties: false
+      required: [order_type, name, delivery_date, delivery_address, items]
+      properties:
+        order_type: { type: string, enum: [formal] }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        delivery_date: { type: string, format: date }
+        delivery_address: { type: string, minLength: 1, maxLength: 500 }
+        settlement_period: { type: string, minLength: 1, maxLength: 100 }
+        settlement_method: { type: string, minLength: 1, maxLength: 100 }
+        business_note: { type: string, minLength: 1, maxLength: 4000 }
+        commercial_terms: { $ref: '#/components/schemas/BusinessFollowUpCommercialTerms' }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/BusinessFollowUpFormalItem' }
     BusinessFollowUpDraftDto:
       type: object
       required:

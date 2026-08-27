@@ -14,6 +14,8 @@ public record BusinessFollowUpSummaryDto(
         String sourceMessageId,
         @JsonProperty("source_revision")
         int sourceRevision,
+        @JsonProperty("business_kind")
+        String businessKind,
         String stage,
         @JsonProperty("processing_status")
         String processingStatus,

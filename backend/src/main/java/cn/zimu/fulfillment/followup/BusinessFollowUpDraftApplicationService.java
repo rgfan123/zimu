@@ -124,6 +124,13 @@ public class BusinessFollowUpDraftApplicationService {
         }
 
         ObjectNode content = validated.content();
+        content.put("business_kind", locked.businessKind());
+        // Agent output never owns execution intent. Remove any injected value first; only the
+        // authenticated, server-persisted plan may be frozen into the confirmed draft.
+        content.remove("execution_plan");
+        if (locked.executionPlan() != null) {
+            content.set("execution_plan", locked.executionPlan().deepCopy());
+        }
         ObjectNode customerAssignment = content.putObject("customer_assignment");
         if (selectedCustomerId != null) {
             customerAssignment.put("mode", "LINK");
@@ -238,13 +245,16 @@ public class BusinessFollowUpDraftApplicationService {
     private LockedFollowUp lock(long followupId) {
         return jdbc.query(
                         """
-                        SELECT message_submission_id, source_revision, current_draft_version
+                        SELECT message_submission_id, source_revision, current_draft_version,
+                               business_kind, execution_plan::text AS execution_plan
                         FROM app.business_followups WHERE id = ? FOR UPDATE
                         """,
                         (rs, row) -> new LockedFollowUp(
                                 rs.getLong("message_submission_id"),
                                 rs.getInt("source_revision"),
-                                rs.getObject("current_draft_version", Integer.class)),
+                                rs.getObject("current_draft_version", Integer.class),
+                                rs.getString("business_kind"),
+                                nullableJson(rs.getString("execution_plan"))),
                         followupId)
                 .stream()
                 .findFirst()
@@ -778,7 +788,23 @@ public class BusinessFollowUpDraftApplicationService {
         return value;
     }
 
-    private record LockedFollowUp(long submissionId, int sourceRevision, Integer currentDraftVersion) {}
+    private JsonNode nullableJson(String value) throws SQLException {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return mapper.readTree(value);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            throw new SQLException("invalid persisted Business Follow-up execution plan", ex);
+        }
+    }
+
+    private record LockedFollowUp(
+            long submissionId,
+            int sourceRevision,
+            Integer currentDraftVersion,
+            String businessKind,
+            JsonNode executionPlan) {}
 
     private record RemoteEvidence(
             long id,

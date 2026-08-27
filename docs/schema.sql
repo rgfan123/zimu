@@ -7215,3 +7215,17 @@ WHERE a.decision='CONFIRM' AND a.application_status='APPLIED'
   AND d.status='CONFIRMED'
 ON CONFLICT (idempotency_key) DO NOTHING;
 -- END V62__business_followup_assignments.sql
+
+-- BEGIN V65__business_followup_execution_intent.sql
+ALTER TABLE app.business_followups
+    ADD COLUMN business_kind VARCHAR(16) NOT NULL DEFAULT 'CUSTOMER',
+    ADD COLUMN execution_plan JSONB,
+    ADD CONSTRAINT business_followups_execution_intent_check CHECK (
+        (business_kind = 'CUSTOMER' AND execution_plan IS NULL)
+        OR (
+            business_kind IN ('SAMPLE', 'FORMAL')
+            AND execution_plan IS NOT NULL
+            AND jsonb_typeof(execution_plan) = 'object'
+        )
+    );
+-- END V65__business_followup_execution_intent.sql

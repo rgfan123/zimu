@@ -177,15 +177,20 @@ class OpenApiContractConsistencyTest {
         Map<String, Object> schemas = map(map(handwritten.get("components")).get("schemas"));
         Map<String, Object> createProperties = map(map(schemas.get("CreateRequest")).get("properties"));
         assertThat(createProperties.keySet())
-                .containsExactlyInAnyOrder("message_submission_id", "employee_draft");
-        assertThat(createProperties).doesNotContainKeys("messageSubmissionId", "employeeDraft");
+                .containsExactlyInAnyOrder(
+                        "message_submission_id", "employee_draft", "business_kind", "execution_plan");
+        assertThat(createProperties).doesNotContainKeys(
+                "messageSubmissionId", "employeeDraft", "businessKind", "executionPlan");
         assertThat(String.valueOf(map(createProperties.get("message_submission_id")).get("$ref")))
                 .endsWith("/Identifier");
+        assertThat(map(createProperties.get("business_kind")))
+                .containsEntry("nullable", true)
+                .containsEntry("default", "CUSTOMER");
 
         Map<String, Object> summaryProperties =
                 map(map(schemas.get("BusinessFollowUpSummaryDto")).get("properties"));
         assertThat(summaryProperties).containsKeys(
-                "id", "followup_no", "message_submission_id", "source_message_id");
+                "id", "followup_no", "message_submission_id", "source_message_id", "business_kind");
         assertThat(summaryProperties).doesNotContainKey("employee_draft");
 
         Map<String, Object> contractPaths = paths(handwritten);
@@ -204,9 +209,18 @@ class OpenApiContractConsistencyTest {
         Map<String, Object> generatedCreate =
                 map(map(generatedSchemas.get("CreateRequest")).get("properties"));
         assertThat(generatedCreate.keySet())
-                .containsExactlyInAnyOrder("message_submission_id", "employee_draft");
+                .containsExactlyInAnyOrder(
+                        "message_submission_id", "employee_draft", "business_kind", "execution_plan");
         assertThat(map(generatedCreate.get("message_submission_id")))
                 .containsEntry("type", "string");
+        assertThat(map(generatedCreate.get("business_kind")))
+                .containsEntry("default", "CUSTOMER");
+        assertThat(list(map(generatedCreate.get("business_kind")).get("type")))
+                .containsExactlyInAnyOrder("string", "null");
+        assertThat(list(map(generatedCreate.get("business_kind")).get("enum")))
+                .containsExactly("CUSTOMER", "SAMPLE", "FORMAL");
+        assertThat(String.valueOf(map(generatedCreate.get("execution_plan")).get("$ref")))
+                .endsWith("/JsonNode");
         Map<String, Object> generatedOrganize =
                 map(map(generatedSchemas.get("OrganizeRequest")).get("properties"));
         assertThat(generatedOrganize.keySet())
