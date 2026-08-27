@@ -66,10 +66,12 @@ class OrderLineBundleResolutionApiTest {
                      specification_snapshot, unit_snapshot, source_quantity_snapshot,
                      mapping_multiplier_snapshot, requested_quantity, processing_stage,
                      exception_code, exception_reason)
-                VALUES (?, 1, 'CUSTOM_BUNDLE', '子牧测试礼包', 'P-TEST-' || ?, '来源未提供', '件',
+                VALUES (?, 1, 'CUSTOM_BUNDLE', '子牧测试礼包-' || ?, NULL, '来源未提供', '件',
                         NULL, NULL, 1.000, 'NEED_REVIEW', 'SKU_MAPPING_REQUIRED', '礼包组件缺映射')
                 """,
                 orderId, suffix);
+        // 生产实证：导入器不落 sku_code_snapshot，来源键走「原始行主商品编码→商品名」回退；
+        // 夹具刻意保持 NULL，防止用编码快照掩盖回退链的缺陷
         return orderId;
     }
 
@@ -138,7 +140,7 @@ class OrderLineBundleResolutionApiTest {
                 """
                 INSERT INTO app.source_channel_bundles
                     (source_channel, source_bundle_ref, source_bundle_name, quantity_multiplier, bundle_id, active)
-                VALUES ('DAZHE', 'P-TEST-A1', '子牧测试礼包', 1.000, ?, true)
+                VALUES ('DAZHE', '子牧测试礼包-A1', '子牧测试礼包', 1.000, ?, true)
                 """, bundleId);
 
         ResponseEntity<Map> response = resolve(lineId, bundleId, "resolve-bundle-a1");
@@ -157,6 +159,11 @@ class OrderLineBundleResolutionApiTest {
         assertThat(jdbc.queryForObject(
                 "SELECT order_status FROM app.orders WHERE id=?", String.class, orderId))
                 .isEqualTo("SKU_MAPPED");
+        // 发货批次路由只认挂了履约单元的行：展开必须连带建 fulfillment，
+        // 否则批次确认卡 IMPORT_BATCH_EXPORT_INCOMPLETE（2026-08-27 生产实证）
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.fulfillments WHERE order_line_id=?", Integer.class, lineId))
+                .isEqualTo(1);
         // 组件总量守恒：每组件 total = 礼包份数 × 每份数量
         List<Map<String, Object>> components = jdbc.queryForList(
                 "SELECT quantity_per_bundle, total_quantity FROM app.order_line_components WHERE order_line_id=?",
@@ -195,7 +202,7 @@ class OrderLineBundleResolutionApiTest {
                 """
                 INSERT INTO app.source_channel_bundles
                     (source_channel, source_bundle_ref, source_bundle_name, quantity_multiplier, bundle_id, active)
-                VALUES ('DAZHE', 'P-TEST-C3', '子牧测试礼包', 1.000, ?, true)
+                VALUES ('DAZHE', '子牧测试礼包-C3', '子牧测试礼包', 1.000, ?, true)
                 """, otherBundle);
 
         ResponseEntity<Map> response = resolve(lineOf(orderId), bundleId, "resolve-bundle-c3");
@@ -205,7 +212,7 @@ class OrderLineBundleResolutionApiTest {
     }
 
     @Test
-    void 已展开过的行拒绝重复展开() {
+    void 已展开的行同礼包重放收敛_补齐缺失履约单元_异礼包冲突() {
         long bundleId = activeBundleWithBom();
         long orderId = seedBlockedBundleOrder("D4");
         long lineId = lineOf(orderId);
@@ -213,13 +220,37 @@ class OrderLineBundleResolutionApiTest {
                 """
                 INSERT INTO app.source_channel_bundles
                     (source_channel, source_bundle_ref, source_bundle_name, quantity_multiplier, bundle_id, active)
-                VALUES ('DAZHE', 'P-TEST-D4', '子牧测试礼包', 1.000, ?, true)
+                VALUES ('DAZHE', '子牧测试礼包-D4', '子牧测试礼包', 1.000, ?, true)
                 """, bundleId);
         assertThat(resolve(lineId, bundleId, "resolve-bundle-d4-1").getStatusCode()).isEqualTo(HttpStatus.OK);
+        int expanded = jdbc.queryForObject(
+                "SELECT count(*) FROM app.order_line_components WHERE order_line_id=?", Integer.class, lineId);
 
-        ResponseEntity<Map> second = resolve(lineId, bundleId, "resolve-bundle-d4-2");
+        // 生产实证形态：v1 展开后没建履约单元——删掉它模拟断档，重放必须补齐而不是拒绝
+        jdbc.update("DELETE FROM app.fulfillments WHERE order_line_id=?", lineId);
+        ResponseEntity<Map> replay = resolve(lineId, bundleId, "resolve-bundle-d4-2");
+        assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.fulfillments WHERE order_line_id=?", Integer.class, lineId))
+                .isEqualTo(1);
+        // 收敛不是重展开：组件不能翻倍
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.order_line_components WHERE order_line_id=?", Integer.class, lineId))
+                .isEqualTo(expanded);
 
-        assertThat(second.getStatusCode().value()).isEqualTo(422);
-        assertThat(second.getBody().get("business_code")).isEqualTo("BUNDLE_LINE_NOT_RESOLVABLE");
+        // 换一个礼包重放 = 主数据冲突，不是收敛
+        Long otherBundle = jdbc.queryForObject(
+                """
+                INSERT INTO app.product_bundles (bundle_code, bundle_name, status)
+                VALUES ('BUNDLE-API-TEST-D4B', 'API 测试礼包丁', 'DRAFT') RETURNING id
+                """, Long.class);
+        jdbc.update(
+                "INSERT INTO app.bundle_items (bundle_id, sort_no, sku_id, quantity_per_bundle) "
+                        + "SELECT ?, 1, id, 1.000 FROM app.skus WHERE active ORDER BY id LIMIT 1",
+                otherBundle);
+        jdbc.update("UPDATE app.product_bundles SET status='ACTIVE', updated_at=now() WHERE id=?", otherBundle);
+        ResponseEntity<Map> other = resolve(lineId, otherBundle, "resolve-bundle-d4-3");
+        assertThat(other.getStatusCode().value()).isEqualTo(409);
+        assertThat(other.getBody().get("business_code")).isEqualTo("SOURCE_BUNDLE_MAPPING_CONFLICT");
     }
 }
