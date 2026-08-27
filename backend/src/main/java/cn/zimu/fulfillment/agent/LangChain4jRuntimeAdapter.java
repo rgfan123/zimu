@@ -48,9 +48,6 @@ public class LangChain4jRuntimeAdapter implements AgentRuntime {
     /** 无定义（或定义无 prompt_version）时的基础提示词版本；业务 Agent 版本由定义携带。 */
     public static final String PROMPT_VERSION = "agent-foundation-v1";
 
-    /** 工具调用循环上限（防模型死循环烧 token；超过视为模型未收敛输出）。 */
-    private static final int MAX_TOOL_TURNS = 8;
-
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AgentModelProperties properties;
@@ -89,28 +86,66 @@ public class LangChain4jRuntimeAdapter implements AgentRuntime {
         String promptVersion = definition != null ? definition.promptVersion() : PROMPT_VERSION;
         JsonNode outputSchema = definition == null ? null : definition.outputSchema();
         AgentToolBinding binding = request.tools();
+        AgentExecutionBudget budget = request.executionBudget() == null
+                ? properties.executionBudget()
+                : request.executionBudget();
 
         List<ChatMessage> messages = new ArrayList<>(List.of(
                 SystemMessage.from(systemPrompt), UserMessage.from(request.userInput())));
         // 129：累加器活在循环之外。工具轮 continue 前先记账——工具轮携带完整上下文 +
         // 工具定义 + 累积的工具结果，往往是最贵的几轮，只记最后一轮是系统性少算。
         TokenTally tally = TokenTally.EMPTY;
+        long startedNanos = System.nanoTime();
+        int modelCalls = 0;
+        int toolCalls = 0;
+        String previousToolCall = null;
+        int repeatedToolCalls = 0;
         try {
-            for (int turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+            while (true) {
+                if (modelCalls >= budget.maxModelCalls() || budget.deadlineExceeded(startedNanos)) {
+                    return AgentRunResult.failure(
+                            provider,
+                            model,
+                            promptVersion,
+                            AgentFailureCode.AGENT_EXECUTION_BUDGET_EXHAUSTED);
+                }
                 ChatResponse response = chat(messages, binding, outputSchema);
+                modelCalls++;
                 tally = tally.plus(response.tokenUsage());
                 AiMessage aiMessage = response.aiMessage();
                 if (aiMessage.hasToolExecutionRequests()) {
+                    int requestedCalls = aiMessage.toolExecutionRequests().size();
+                    if (toolCalls + requestedCalls > budget.maxToolCalls()
+                            || budget.deadlineExceeded(startedNanos)) {
+                        return AgentRunResult.failure(
+                                provider,
+                                model,
+                                promptVersion,
+                                AgentFailureCode.AGENT_EXECUTION_BUDGET_EXHAUSTED);
+                    }
                     for (ToolExecutionRequest executionRequest : aiMessage.toolExecutionRequests()) {
+                        String fingerprint = executionRequest.name() + "\u0000" + executionRequest.arguments();
+                        if (fingerprint.equals(previousToolCall)) {
+                            repeatedToolCalls++;
+                        } else {
+                            previousToolCall = fingerprint;
+                            repeatedToolCalls = 1;
+                        }
+                        if (repeatedToolCalls > budget.maxRepeatedToolCalls()) {
+                            return AgentRunResult.failure(
+                                    provider,
+                                    model,
+                                    promptVersion,
+                                    AgentFailureCode.AGENT_NO_PROGRESS);
+                        }
                         String toolResult = executeTool(binding, executionRequest);
+                        toolCalls++;
                         messages.add(ToolExecutionResultMessage.from(executionRequest, toolResult));
                     }
                     continue;
                 }
                 return parseOutput(aiMessage.text(), outputSchema, promptVersion);
             }
-            // 工具循环超限：模型未收敛为最终输出，按输出无效收口（不重试）
-            return AgentRunResult.failure(provider, model, promptVersion, AgentFailureCode.AGENT_OUTPUT_INVALID);
         } catch (IllegalStateException ex) {
             // 配置漂移（output_schema 非法等）fail-fast 上抛——不允许伪装成模型调用失败被吞掉
             throw ex;

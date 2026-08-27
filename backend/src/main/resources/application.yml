@@ -172,6 +172,11 @@ app:
     base-url: ${AGENT_BASE_URL:}
     api-key: ${AGENT_API_KEY:}
     request-timeout-ms: ${AGENT_REQUEST_TIMEOUT_MS:30000}
+    # 单次运行收敛预算：不再用固定工具轮数表达所有 Agent；异步任务可在请求中显式覆盖。
+    max-model-calls: ${AGENT_MAX_MODEL_CALLS:24}
+    max-tool-calls: ${AGENT_MAX_TOOL_CALLS:64}
+    execution-timeout-ms: ${AGENT_EXECUTION_TIMEOUT_MS:300000}
+    max-repeated-tool-calls: ${AGENT_MAX_REPEATED_TOOL_CALLS:2}
     # 服务端 allowlist：仅登记的三元组可对外暴露真实 provider/model/prompt-version，未命中一律投影为 none。
     public-metadata-aliases:
       - provider: ${AGENT_PUBLIC_PROVIDER_ALIAS:}

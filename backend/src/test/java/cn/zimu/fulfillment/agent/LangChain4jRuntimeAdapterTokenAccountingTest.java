@@ -12,6 +12,7 @@ import dev.langchain4j.service.tool.ToolExecutor;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Map;
@@ -138,21 +139,83 @@ class LangChain4jRuntimeAdapterTokenAccountingTest {
     }
 
     @Test
-    void exhaustedToolLoopRecordsEveryTurn() {
-        for (int i = 0; i < 8; i++) {
-            responses.add(toolCallResponse(10, 1, 11));
+    void exhaustedModelCallBudgetRecordsEveryTurn() {
+        for (int step = 1; step <= 8; step++) {
+            responses.add(toolCallResponseWithStep(step, 10, 1, 11));
         }
         AgentObservability observability = mock(AgentObservability.class);
         AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties(), observability);
 
-        AgentRunResult result = runtime.run(
-                new AgentTaskRequest("sys", "统计一下", bindingWithEchoTool()));
+        AgentRunResult result = runtime.run(new AgentTaskRequest(
+                "sys",
+                "统计一下",
+                bindingWithEchoTool(),
+                null,
+                new AgentExecutionBudget(8, 16, Duration.ofSeconds(30), 2)));
 
-        assertThat(result.error()).isEqualTo("AGENT_OUTPUT_INVALID");
+        assertThat(result.error()).isEqualTo("AGENT_EXECUTION_BUDGET_EXHAUSTED");
         // 死循环烧掉的 token 正是最需要被看见的那一类
         AgentObservability.TokenUsage recorded = captureTokens(observability);
         assertThat(recorded.totalTokens()).isEqualTo(88);
         assertThat(recorded.modelCalls()).isEqualTo(8);
+    }
+
+    @Test
+    void validToolChainCanContinueBeyondEightTurnsWhenBudgetAllows() {
+        for (int step = 1; step <= 9; step++) {
+            responses.add(toolCallResponseWithStep(step, 10, 1, 11));
+        }
+        responses.add(finalResponse("{\"summary\":\"ok\"}", 20, 2, 22));
+        AgentObservability observability = mock(AgentObservability.class);
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties(), observability);
+
+        AgentRunResult result = runtime.run(new AgentTaskRequest(
+                "sys",
+                "完成九步查询",
+                bindingWithEchoTool(),
+                null,
+                new AgentExecutionBudget(12, 12, Duration.ofSeconds(30), 2)));
+
+        assertThat(result.error()).isNull();
+        assertThat(captureTokens(observability).modelCalls()).isEqualTo(10);
+    }
+
+    @Test
+    void modelCallBudgetExhaustionHasAStableFailureCode() {
+        responses.add(toolCallResponseWithStep(1, 10, 1, 11));
+        responses.add(toolCallResponseWithStep(2, 10, 1, 11));
+        responses.add(toolCallResponseWithStep(3, 10, 1, 11));
+        AgentObservability observability = mock(AgentObservability.class);
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties(), observability);
+
+        AgentRunResult result = runtime.run(new AgentTaskRequest(
+                "sys",
+                "预算内查询",
+                bindingWithEchoTool(),
+                null,
+                new AgentExecutionBudget(2, 10, Duration.ofSeconds(30), 2)));
+
+        assertThat(result.error()).isEqualTo("AGENT_EXECUTION_BUDGET_EXHAUSTED");
+        assertThat(captureTokens(observability).modelCalls()).isEqualTo(2);
+    }
+
+    @Test
+    void repeatedIdenticalToolCallIsRejectedAsNoProgress() {
+        responses.add(toolCallResponse(10, 1, 11));
+        responses.add(toolCallResponse(10, 1, 11));
+        responses.add(toolCallResponse(10, 1, 11));
+        AgentObservability observability = mock(AgentObservability.class);
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties(), observability);
+
+        AgentRunResult result = runtime.run(new AgentTaskRequest(
+                "sys",
+                "不要重复查询",
+                bindingWithEchoTool(),
+                null,
+                new AgentExecutionBudget(10, 10, Duration.ofSeconds(30), 2)));
+
+        assertThat(result.error()).isEqualTo("AGENT_NO_PROGRESS");
+        assertThat(captureTokens(observability).modelCalls()).isEqualTo(3);
     }
 
     // ------------------------------------------------------------------
@@ -188,6 +251,15 @@ class LangChain4jRuntimeAdapterTokenAccountingTest {
                 + "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,"
                 + "\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{"
                 + "\"name\":\"" + TOOL + "\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],"
+                + usage(prompt, completion, total) + "}";
+    }
+
+    private String toolCallResponseWithStep(int step, int prompt, int completion, int total) {
+        return "{\"id\":\"c\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"m\","
+                + "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,"
+                + "\"tool_calls\":[{\"id\":\"call_" + step + "\",\"type\":\"function\",\"function\":{"
+                + "\"name\":\"" + TOOL + "\",\"arguments\":\"{\\\"step\\\":" + step + "}\"}}]},"
+                + "\"finish_reason\":\"tool_calls\"}],"
                 + usage(prompt, completion, total) + "}";
     }
 

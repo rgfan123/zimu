@@ -14,6 +14,10 @@ public enum AgentFailureCode {
     AGENT_MODEL_NOT_CONFIGURED,
     AGENT_MODEL_CALL_FAILED,
     AGENT_OUTPUT_INVALID,
+    /** 模型/工具调用数或总执行时限耗尽，未产生最终输出。 */
+    AGENT_EXECUTION_BUDGET_EXHAUSTED,
+    /** 连续重复相同工具调用，运行未取得进展。 */
+    AGENT_NO_PROGRESS,
     /** 注册表中不存在该 agent_slug。 */
     AGENT_NOT_FOUND,
     /** Agent 已注册但未启用（enabled=false），运行时拒绝执行。 */
