@@ -275,7 +275,7 @@ test('product archive shows JD EMG and opens a new-product form without an exist
   assert.equal(labels.includes('商品'), false);
 });
 
-test('static bundle route lists static bundles and exposes the current component list', async () => {
+test('static bundle route lists static bundles and expands the component list inline on click', async () => {
   const requestedUrls: string[] = [];
   globalThis.fetch = async (input) => {
     const url = String(input);
@@ -312,17 +312,122 @@ test('static bundle route lists static bundles and exposes the current component
   assert.match(bodyText(), /2 个组件/);
   // 文案口径：静态礼包 / 组件清单，不得混同 CustomBundle 的模糊叫法。
   assert.doesNotMatch(bodyText(), /内配|固定礼包|礼包管理/);
+  // 展开前不应该已经把组件明细渲染出来。
+  assert.equal(document.querySelector('.ant-table-expanded-row'), null);
 
   const inspectButton = [...document.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.includes('组件清单'));
   assert.ok(inspectButton, 'bundle row must expose its component list');
   await act(async () => inspectButton.dispatchEvent(new MouseEvent('click', { bubbles: true })));
 
+  // 就地展开：明细出现在表格自身的展开行里，不跳二级抽屉/卡片。
   await waitFor(() => assert.match(bodyText(), /牛腩块/));
+  const expandedRow = document.querySelector<HTMLElement>('.ant-table-expanded-row');
+  assert.ok(expandedRow, 'component detail must render as an inline expanded table row');
+  assert.notEqual(expandedRow.style.display, 'none', 'expanded row must be visible after clicking the toggle');
+  assert.equal(document.querySelector('.ant-drawer-open'), null, 'must not open a secondary drawer for component details');
   assert.match(bodyText(), /SKU-BEEF/);
   assert.match(bodyText(), /× 2 袋/);
   assert.match(bodyText(), /羊蝎子/);
   assert.deepEqual(requestedUrls, ['/api/v1/product-bundles?page=0&size=20']);
+
+  // 再次点击收起：rc-table 保留展开行节点、以 display:none 隐藏（避免重挂载明细），
+  // 而不是移出 DOM；全程不应发起任何新请求（明细已随列表一并取回）。
+  await act(async () => inspectButton.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(() => assert.equal(
+    document.querySelector<HTMLElement>('.ant-table-expanded-row')?.style.display,
+    'none',
+  ));
+  assert.deepEqual(requestedUrls, ['/api/v1/product-bundles?page=0&size=20']);
+});
+
+test('static bundle list sorts rows by name for a stable order regardless of backend id order', async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === '/api/v1/product-bundles?page=0&size=20') {
+      // 后端按 id 升序返回；id 9 的礼包名称在字母序上应排在 id 2 之前，
+      // 用来断言前端确实按名称重排，而不是照抄后端的插入序。
+      return jsonResponse({
+        items: [
+          {
+            id: '9',
+            code: 'BUNDLE-9250909000005',
+            name: '子牧原切牛肉礼包3100g',
+            active: true,
+            version: 1,
+            attributes: { barcode: null, status: 'ACTIVE', items: [] },
+          },
+          {
+            id: '2',
+            code: '万齐-牛羊精选礼包-6000g',
+            name: '2026原切精品牛羊礼包5800g',
+            active: true,
+            version: 1,
+            attributes: { barcode: null, status: 'ACTIVE', items: [] },
+          },
+        ],
+        page: 0,
+        size: 20,
+        total_elements: 2,
+        total_pages: 1,
+      });
+    }
+    return jsonResponse({ message: `unexpected request ${url}` }, 500);
+  };
+
+  await mountRoute('/product/bundles');
+  await waitFor(() => assert.match(bodyText(), /子牧原切牛肉礼包3100g/));
+
+  const rowNames = [...document.querySelectorAll<HTMLTableRowElement>('.ant-table-tbody > tr.ant-table-row')]
+    .map((row) => row.querySelector('.product-identity__name')?.textContent ?? '');
+  assert.deepEqual(rowNames, ['2026原切精品牛羊礼包5800g', '子牧原切牛肉礼包3100g']);
+});
+
+test('static bundle status tags visually distinguish draft, active, and inactive', async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === '/api/v1/product-bundles?page=0&size=20') {
+      const record = (id: string, name: string, status: 'DRAFT' | 'ACTIVE' | 'INACTIVE') => ({
+        id,
+        code: `BUNDLE-${id}`,
+        name,
+        active: status === 'ACTIVE',
+        version: 1,
+        attributes: { barcode: null, status, items: [] },
+      });
+      return jsonResponse({
+        items: [
+          record('1', '草稿礼包', 'DRAFT'),
+          record('2', '在售礼包', 'ACTIVE'),
+          record('3', '下架礼包', 'INACTIVE'),
+        ],
+        page: 0,
+        size: 20,
+        total_elements: 3,
+        total_pages: 1,
+      });
+    }
+    return jsonResponse({ message: `unexpected request ${url}` }, 500);
+  };
+
+  await mountRoute('/product/bundles');
+  await waitFor(() => assert.match(bodyText(), /在售礼包/));
+
+  const tagColorOf = (label: string) => {
+    const tag = [...document.querySelectorAll<HTMLElement>('.ant-table-tbody .ant-tag')]
+      .find((candidate) => candidate.textContent?.trim() === label);
+    assert.ok(tag, `missing status tag for ${label}`);
+    return [...tag.classList].find((cls) => cls.startsWith('ant-tag-'));
+  };
+
+  const draftColor = tagColorOf('草稿');
+  const activeColor = tagColorOf('启用');
+  const inactiveColor = tagColorOf('下架');
+  assert.equal(activeColor, 'ant-tag-success');
+  assert.equal(draftColor, 'ant-tag-warning');
+  assert.equal(inactiveColor, 'ant-tag-default');
+  // 草稿与下架此前同为默认灰色、无法区分，现在必须各自使用不同的语义色。
+  assert.notEqual(draftColor, inactiveColor);
 });
 
 test('static bundle create keeps the component list and uses the trusted write boundary', async () => {

@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   App as AntApp,
   Button,
-  Drawer,
   Form,
   Input,
   InputNumber,
@@ -10,10 +9,18 @@ import {
   Modal,
   Select,
   Space,
+  Table,
   Tag,
   Typography,
 } from 'antd';
-import { DeleteOutlined, GiftOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  DownOutlined,
+  GiftOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  UpOutlined,
+} from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { productBundlesApi, skusApi } from '@/api/endpoints';
 import { errorMessage } from '@/api/client';
@@ -28,6 +35,7 @@ import type {
 import DataTable from '@/components/DataTable';
 import PageShell from '@/components/PageShell';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
+import type { SemanticTagColor } from '@/pages/shared/semanticStatus';
 
 const STATUS_LABELS: Record<ProductBundleStatus, string> = {
   DRAFT: '草稿',
@@ -39,6 +47,17 @@ const STATUS_OPTIONS = (Object.keys(STATUS_LABELS) as ProductBundleStatus[]).map
   value,
   label: STATUS_LABELS[value],
 }));
+
+/**
+ * 状态标签配色：与 agentPresentation.versionStatusPresentation 同一语义骨架
+ *（草稿→warning，启用→success，下架→default），避免草稿、下架同为灰色而无法区分。
+ * 只用 antd 语义预设（warning/success/default），不用具名高饱和色。
+ */
+const STATUS_TAG_COLOR: Record<ProductBundleStatus, SemanticTagColor> = {
+  DRAFT: 'warning',
+  ACTIVE: 'success',
+  INACTIVE: 'default',
+};
 
 /** 组件 SKU 选择的分页大小（每页 200，按 total_pages 跨页取全）。 */
 const SKU_PAGE_SIZE = 200;
@@ -65,7 +84,6 @@ export default function BundlesPage() {
   const [data, setData] = useState<ProductBundlePage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
-  const [selected, setSelected] = useState<ProductBundleRecord | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -133,6 +151,16 @@ export default function BundlesPage() {
     }
   };
 
+  /**
+   * 稳定排序：按礼包名称（人读主标识）排序，避免后端按 id 插入序返回时
+   * 观感上「随机」。生产编号历史上存在多套编码规则（BUNDLE- 前缀、BND-WQ-P
+   * 前缀、直接把描述文字当编码写入等），名称比编号更适合作排序键。
+   */
+  const sortedBundles = useMemo(
+    () => [...(data?.items ?? [])].sort((a, b) => a.name.localeCompare(b.name, 'zh')),
+    [data],
+  );
+
   const columns: ColumnsType<ProductBundleRecord> = [
     {
       title: '静态礼包',
@@ -152,7 +180,7 @@ export default function BundlesPage() {
       width: 100,
       render: (_, record) => {
         const status = record.attributes.status;
-        return <Tag color={status === 'ACTIVE' ? 'success' : undefined}>{STATUS_LABELS[status]}</Tag>;
+        return <Tag color={STATUS_TAG_COLOR[status]}>{STATUS_LABELS[status]}</Tag>;
       },
     },
     {
@@ -161,17 +189,8 @@ export default function BundlesPage() {
       width: 120,
       render: (_, record) => `${record.attributes.items.length} 个组件`,
     },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 120,
-      render: (_, record) => (
-        <Button type="link" onClick={() => setSelected(record)}>组件清单</Button>
-      ),
-    },
+    Table.EXPAND_COLUMN,
   ];
-
-  const selectedItems = selected?.attributes.items ?? [];
 
   return (
     <PageShell
@@ -192,12 +211,50 @@ export default function BundlesPage() {
       <DataTable<ProductBundleRecord>
         rowKey="id"
         columns={columns}
-        dataSource={data?.items ?? []}
+        dataSource={sortedBundles}
         loading={loading}
         error={error}
         onRetry={() => setReloadKey((value) => value + 1)}
         errorTitle="静态礼包列表加载失败"
         emptyText="暂无静态礼包"
+        expandable={{
+          columnTitle: '操作',
+          columnWidth: 140,
+          expandIcon: ({ expanded, onExpand, record }) => (
+            <Button
+              type="link"
+              onClick={(event) => onExpand(record, event)}
+              icon={expanded ? <UpOutlined /> : <DownOutlined />}
+            >
+              组件清单
+            </Button>
+          ),
+          expandedRowRender: (record) => (
+            <List
+              dataSource={record.attributes.items}
+              locale={{ emptyText: '暂无组件' }}
+              renderItem={(item, index) => (
+                <List.Item>
+                  <List.Item.Meta
+                    title={`${index + 1}. ${itemName(item)}`}
+                    description={(
+                      <Space direction="vertical" size={2}>
+                        <Typography.Text type="secondary">
+                          {item.sku_code || `SKU ${item.sku_id || '—'}`}
+                          {item.specification ? ` · ${item.specification}` : ''}
+                        </Typography.Text>
+                        <Typography.Text>× {item.quantity_per_bundle || '—'} {item.unit || ''}</Typography.Text>
+                        {item.emg_code_snapshot ? (
+                          <Typography.Text type="secondary">EMG：{item.emg_code_snapshot}</Typography.Text>
+                        ) : null}
+                      </Space>
+                    )}
+                  />
+                </List.Item>
+              )}
+            />
+          ),
+        }}
         pagination={{
           current: page + 1,
           pageSize: size,
@@ -211,37 +268,6 @@ export default function BundlesPage() {
           },
         }}
       />
-
-      <Drawer
-        title={selected ? `${selected.name} · 组件清单` : '组件清单'}
-        open={selected !== null}
-        width={560}
-        onClose={() => setSelected(null)}
-      >
-        <List
-          dataSource={selectedItems}
-          locale={{ emptyText: '暂无组件' }}
-          renderItem={(item, index) => (
-            <List.Item>
-              <List.Item.Meta
-                title={`${index + 1}. ${itemName(item)}`}
-                description={(
-                  <Space direction="vertical" size={2}>
-                    <Typography.Text type="secondary">
-                      {item.sku_code || `SKU ${item.sku_id || '—'}`}
-                      {item.specification ? ` · ${item.specification}` : ''}
-                    </Typography.Text>
-                    <Typography.Text>× {item.quantity_per_bundle || '—'} {item.unit || ''}</Typography.Text>
-                    {item.emg_code_snapshot ? (
-                      <Typography.Text type="secondary">EMG：{item.emg_code_snapshot}</Typography.Text>
-                    ) : null}
-                  </Space>
-                )}
-              />
-            </List.Item>
-          )}
-        />
-      </Drawer>
 
       <Modal
         title="新建静态礼包"
