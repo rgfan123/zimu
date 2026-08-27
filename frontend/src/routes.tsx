@@ -38,7 +38,7 @@ import ProcurementTicketsPage, { ProcurementPriceComparePage } from '@/pages/pro
 import { ReviewQueueCompatRoute, AlertsQueuePage, ShippingWorkbenchPage, ReconWorkbenchPage, ProcurementWorkbenchPage } from '@/pages/workbench';
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
 import ZhonghuiChannelPage from '@/pages/upload/ZhonghuiChannelPage';
-import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage } from '@/pages/system';
+import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage, WecomBotsPage } from '@/pages/system';
 import {
   AgentCostPage,
   AgentCreatePage,
@@ -103,6 +103,7 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/system/config': <SystemConfigPage />,
   '/system/fulfillment-providers': <FulfillmentProvidersPage />,
   '/system/operators': <OperatorsPage />,
+  '/system/wecom-bots': <WecomBotsPage />,
   '/system/jd-tools': <JdToolsPage />,
   // 六个京东查询工具并入「京东工具」页内 Tab；旧 URL 直达同一页并定位到对应 Tab。
   '/fulfillment/jd-warehouse': <JdToolsPage />,

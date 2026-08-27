@@ -6738,3 +6738,22 @@ COMMENT ON COLUMN app.wecom_chat_reply_policies.display_name IS
 COMMENT ON COLUMN app.wecom_chat_reply_policies.agent_slug IS
     '服务该会话的 Agent（agent_definitions.agent_slug）；分流路由的配置先行';
 -- END V61__wecom_chat_profiles.sql
+
+-- BEGIN V62__wecom_bots.sql
+-- 企微机器人管理台账（管理界面先行）：运行时长连接凭据仍取自 app.wecom.* 部署配置；
+-- secret 明文列，与京东 pin 同一存法，读侧/审计只投影是否已配置。
+CREATE TABLE app.wecom_bots (
+    bot_id      VARCHAR(128) PRIMARY KEY CHECK (btrim(bot_id) <> ''),
+    name        VARCHAR(128) NOT NULL CHECK (btrim(name) <> ''),
+    secret      VARCHAR(255),
+    enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+    note        VARCHAR(500),
+    updated_by  VARCHAR(128) NOT NULL CHECK (btrim(updated_by) <> ''),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+COMMENT ON TABLE app.wecom_bots IS
+    '企微机器人实例登记（管理界面先行，运行时多机器人接线未启用）：secret 明文列，读侧/审计只投影存在性';
+COMMENT ON COLUMN app.wecom_bots.secret IS
+    '机器人密钥明文；与京东 pin（fulfillment_providers.config）同一存法，读侧与审计永不回显明文';
+-- END V62__wecom_bots.sql

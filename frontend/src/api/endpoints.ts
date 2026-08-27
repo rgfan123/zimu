@@ -93,6 +93,7 @@ import type {
   SourceChannel,
   SourceReturnExport,
   TrackingImportBatch,
+  WecomBot,
   ZhonghuiPmsBatchUploadResult,
   ZhonghuiPmsCaptcha,
   ZhonghuiPmsLoginResult,
@@ -476,6 +477,31 @@ export const wecomChatsApi = {
     apiRequest<KnownWecomChat>(`/api/v1/wecom/chats/${encodeURIComponent(chatId)}/profile`, {
       method: 'PUT',
       body: profile,
+    }),
+};
+
+/**
+ * GET/PUT /api/v1/wecom/bots —— 企微机器人管理台账（管理界面先行，运行时多机器人接线
+ * 未启用）。secret 只回 secret_configured 存在性标记，绝不回显明文。
+ */
+export const wecomBotsApi = {
+  list: () => apiRequest<{ bots: WecomBot[] }>('/api/v1/wecom/bots'),
+  /**
+   * 登记或更新一个机器人；secret 留空（undefined/空串）保持现值，与京东 pin 的编辑
+   * 交互先例一致；不存在的 bot_id 直接新建。
+   */
+  upsert: (
+    botId: string,
+    body: {
+      name: string;
+      secret?: string;
+      enabled?: boolean;
+      note?: string;
+    },
+  ) =>
+    apiRequest<WecomBot>(`/api/v1/wecom/bots/${encodeURIComponent(botId)}`, {
+      method: 'PUT',
+      body,
     }),
 };
 

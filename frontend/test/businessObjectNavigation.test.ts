@@ -145,7 +145,7 @@ test('system menu exposes each connector and provider configuration capability o
 
   for (const path of [
     '/system/connectors', '/system/audit-logs', '/system/fulfillment-providers',
-    '/system/operators', '/system/jd-tools',
+    '/system/operators', '/system/wecom-bots', '/system/jd-tools',
   ]) {
     assert.equal(visible.filter((item) => item === path).length, 1, `${path} 必须在系统与接入组恰好出现一次`);
   }

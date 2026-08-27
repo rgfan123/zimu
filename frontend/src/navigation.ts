@@ -97,6 +97,8 @@ export const appNavigation = [
       { path: '/system/fulfillment-providers', label: '履约方配置' },
       // Issue #89：内部运营人员登记（姓名、企微 userid、所属责任团队）——系统管理配置主线入口
       { path: '/system/operators', label: '运营人员' },
+      // 企微机器人管理台账（管理界面先行，运行时多机器人接线未启用）。
+      { path: '/system/wecom-bots', label: '机器人管理' },
       // UIUX-10 #144：京东工具收敛为单入口（/system/jd-tools 页内 Tab），六个查询页保留隐藏直达。
       { path: '/system/jd-tools', label: '京东工具' },
       { path: '/fulfillment/jd-warehouse', label: '连接与出库查询', hideInMenu: true },

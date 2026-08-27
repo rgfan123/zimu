@@ -626,6 +626,21 @@ export interface OperatorPage extends PageMeta {
   items: Operator[];
 }
 
+/**
+ * 企微机器人管理台账（管理界面先行，运行时多机器人接线未启用）：会出现在企业微信通讯录
+ * 里的 aibot 实例。secret_configured 只标记是否已登记密钥，永不回显明文——与京东 pin
+ * 的状态投影同一先例。
+ */
+export interface WecomBot {
+  bot_id: string;
+  name: string;
+  secret_configured: boolean;
+  enabled: boolean;
+  note: string | null;
+  updated_by: string;
+  updated_at: string;
+}
+
 /** 责任团队解析结果（Issue #89）：active 人员、可推送 userid 与未绑定人员的显式诊断。 */
 export interface OperatorTeamResolution {
   responsible_team: string;
