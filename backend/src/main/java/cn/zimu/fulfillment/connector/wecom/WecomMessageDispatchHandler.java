@@ -199,7 +199,9 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         }
         try {
             connectionManager().respondUpdateUntil(
-                    reqId, updateResponse(outcome), startedNanos + UPDATE_CARD_BUDGET_NANOS);
+                    reqId,
+                    updateResponse(outcome, WecomBusinessCardInteractionService.taskId(frame)),
+                    startedNanos + UPDATE_CARD_BUDGET_NANOS);
         } catch (RuntimeException ex) {
             // 回执发不出去不影响已受理的动作；结果卡仍会送达
             log.warn("企微业务卡回执发送失败 code={}", outcome.businessCode(), ex);
@@ -210,22 +212,49 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
      * 回执体。{@code aibot_respond_update_msg} 的 {@code response_type} **只接受
      * {@code update_template_card}**（官方 101463 参数表），回纯文本会被拒。
      *
-     * <p>{@code card_action} 是必填：缺了平台回 {@code errcode 42045
-     * 「Template_Card.card_action 缺失或不合法」}，而表现只是「点了没反应」。
-     * 未配置深链基地址时给一个协议上合法的占位 URL——宁可跳到一个说明页，
-     * 也不要整张回执发不出去。
+     * <p><b>为什么是 button_interaction 而不是 text_notice</b>：用户要「点完按钮变灰」，
+     * 而 aibot 协议没有按钮级禁用（101032/101463 逐字核对，update_button 只存在于
+     * 自建应用回调），唯一的表达是整卡替换成一张「按钮长得像禁用态」的同型卡——
+     * style=4 是官方样式表里的灰底黑字中性钮。它协议上仍可点，点击落到
+     * {@code ack_} 前缀的幂等收口，再点只会刷新回执。
+     *
+     * <p>{@code card_action} 对 text_notice 必填（缺了报 42045、表现是「点了没反应」），
+     * 对 button_interaction 官方标注可选——仍然带上：占位跳转无害，可防协议口径回摆。
      */
-    private JsonNode updateResponse(WecomBusinessCardInteractionService.Outcome outcome) {
+    private JsonNode updateResponse(
+            WecomBusinessCardInteractionService.Outcome outcome, String originalTaskId) {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("response_type", "update_template_card");
         ObjectNode card = body.putObject("template_card");
-        card.put("card_type", "text_notice");
+        card.put("card_type", "button_interaction");
+        card.put("task_id", ackTaskId(originalTaskId));
         card.putObject("main_title")
                 .put("title", truncate(outcome.title(), 26))
-                .put("desc", truncate(outcome.message(), 30));
+                .put("desc", truncate(outcome.accepted() ? "操作已受理" : "未执行操作", 30));
         card.put("sub_title_text", truncate(outcome.message(), 112));
+        ObjectNode button = card.putArray("button_list").addObject();
+        button.put("text", truncate(outcome.accepted() ? "已确认 ✓" : "已处理", 10));
+        button.put("style", 4);
+        button.put("key", "ack_noop");
         card.putObject("card_action").put("type", 1).put("url", businessCardBaseUrl);
         return body;
+    }
+
+    /**
+     * 回执卡的新 task_id：同一 task_id 不能复用（42014），每次替换都要新造。
+     * {@code ack_} 前缀让点击回到业务卡处理器的幂等收口；字符集只用数字/字母/下划线
+     * （协议白名单），128 字节上限防御性收缩。
+     */
+    private static String ackTaskId(String originalTaskId) {
+        String core = originalTaskId == null || originalTaskId.isBlank() ? "unknown" : originalTaskId;
+        String candidate = WecomBusinessCardInteractionService.ACK_TASK_PREFIX
+                + core + "_" + Long.toString(System.currentTimeMillis(), 36);
+        if (candidate.length() <= 128) {
+            return candidate;
+        }
+        return WecomBusinessCardInteractionService.ACK_TASK_PREFIX
+                + Integer.toHexString(core.hashCode())
+                + "_" + Long.toString(System.currentTimeMillis(), 36);
     }
 
     private static String truncate(String value, int maxChars) {

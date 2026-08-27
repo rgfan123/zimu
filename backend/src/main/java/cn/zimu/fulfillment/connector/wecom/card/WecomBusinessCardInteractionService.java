@@ -61,8 +61,18 @@ public class WecomBusinessCardInteractionService {
      */
     public record Outcome(boolean accepted, String businessCode, String title, String message) {}
 
+    /**
+     * 回执卡 task_id 前缀。aibot 协议没有按钮级禁用（官方 101032/101463 逐字核对，
+     * update_button 只存在于自建应用回调），回执卡的「灰按钮」只是 style=4 的视觉灰、
+     * 协议上仍可点——所以点它必须由本服务幂等收口，不能落回草稿卡处理器报错。
+     */
+    public static final String ACK_TASK_PREFIX = "ack_";
+
     /** task_id 是否属于本服务；解析不出来或域不认识的一律留给订单草稿卡。 */
     public static boolean handles(String rawTaskId) {
+        if (rawTaskId != null && rawTaskId.startsWith(ACK_TASK_PREFIX)) {
+            return true;
+        }
         return WecomTaskId.parse(rawTaskId).map(id -> DOMAINS.contains(id.domain())).orElse(false);
     }
 
@@ -104,6 +114,13 @@ public class WecomBusinessCardInteractionService {
         String taskIdRaw = taskId(frame);
         String buttonKey = buttonKey(frame);
         String actor = body.path("from").path("userid").asText("");
+
+        if (taskIdRaw.startsWith(ACK_TASK_PREFIX)) {
+            // 点的是回执卡上的灰按钮：操作早已生效，这里只做幂等应答，不产生任何业务写
+            return new Outcome(
+                    true, "WECOM_CARD_ACK_NOOP", "操作早已生效",
+                    "这张是回执卡，无需再点；最新进展以后续结果卡为准");
+        }
 
         Optional<WecomTaskId> parsed = WecomTaskId.parse(taskIdRaw);
         if (parsed.isEmpty() || !DOMAINS.contains(parsed.get().domain())) {

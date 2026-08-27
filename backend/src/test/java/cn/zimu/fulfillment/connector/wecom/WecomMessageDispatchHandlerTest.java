@@ -291,6 +291,39 @@ class WecomMessageDispatchHandlerTest {
     }
 
     @Test
+    void 业务卡回执是灰按钮同型卡_而非文本卡() {
+        // aibot 没有按钮级禁用：回执必须整卡替换成 button_interaction + style4 灰钮
+        JsonNode frame = businessCardEvent("EVT-ACK1", "REQ-ACK1", "user-9", "preship_999_v1");
+
+        handler.onFrame("aibot_event_callback", frame);
+
+        ArgumentCaptor<JsonNode> update = ArgumentCaptor.forClass(JsonNode.class);
+        verify(connectionManager).respondUpdateUntil(eq("REQ-ACK1"), update.capture(), anyLong());
+        JsonNode card = update.getValue().path("template_card");
+        assertThat(update.getValue().path("response_type").asText()).isEqualTo("update_template_card");
+        assertThat(card.path("card_type").asText()).isEqualTo("button_interaction");
+        // 同一 task_id 不能复用（42014）：回执卡必须持新 id，且带 ack_ 前缀好让点击收口
+        assertThat(card.path("task_id").asText()).startsWith("ack_preship_999_v1_");
+        JsonNode button = card.path("button_list").path(0);
+        assertThat(button.path("style").asInt()).isEqualTo(4);
+        assertThat(button.path("key").asText()).isEqualTo("ack_noop");
+        assertThat(card.path("card_action").path("url").asText()).isNotEmpty();
+    }
+
+    @Test
+    void 回执卡上的灰按钮再点_幂等应答不产生业务写() {
+        JsonNode frame = businessCardEvent("EVT-ACK2", "REQ-ACK2", "user-9", "ack_preship_999_v1_x1");
+
+        handler.onFrame("aibot_event_callback", frame);
+
+        ArgumentCaptor<JsonNode> update = ArgumentCaptor.forClass(JsonNode.class);
+        verify(connectionManager).respondUpdateUntil(eq("REQ-ACK2"), update.capture(), anyLong());
+        assertThat(update.getValue().path("template_card").path("main_title").path("title").asText())
+                .isEqualTo("操作早已生效");
+        verify(outboundGateway, never()).send(any());
+    }
+
+    @Test
     void failedFastUpdateKeepsBusinessResultAndSendsFallbackText() {
         JsonNode frame = cardEvent("EVT-3B", "REQ-11B", "user-card");
         when(cardInteractions.handle(frame))
@@ -433,6 +466,20 @@ class WecomMessageDispatchHandlerTest {
                         + (chatId == null ? "" : "\"chatid\":\"" + chatId + "\",")
                         + "\"chattype\":\"" + chatType + "\",\"from\":{\"userid\":\"" + sender + "\"},"
                         + "\"msgtype\":\"text\",\"text\":{\"content\":\"" + content + "\"}}}");
+    }
+
+    /** 业务卡（preship/review/...）与回执卡（ack_ 前缀）的点击帧，task_id 可指定。 */
+    private JsonNode businessCardEvent(String messageId, String requestId, String sender, String taskId) {
+        return json(
+                "{\"cmd\":\"aibot_event_callback\",\"headers\":{\"req_id\":\"" + requestId
+                        + "\"},\"body\":{"
+                        + "\"msgid\":\"" + messageId + "\",\"aibotid\":\"bot-1\","
+                        + "\"chatid\":\"chat-card\",\"chattype\":\"single\","
+                        + "\"from\":{\"userid\":\"" + sender + "\"},\"msgtype\":\"event\","
+                        + "\"event\":{\"eventtype\":\"template_card_event\","
+                        + "\"template_card_event\":{\"event_key\":\"preship_confirm\","
+                        + "\"task_id\":\"" + taskId + "\"}}}}"
+        );
     }
 
     private JsonNode cardEvent(String messageId, String requestId, String sender) {
