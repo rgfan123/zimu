@@ -45,4 +45,3 @@ CREATE INDEX idx_source_order_intake_status
 CREATE TRIGGER trg_source_order_intake_jobs_updated_at
 BEFORE UPDATE ON app.source_order_intake_jobs
 FOR EACH ROW EXECUTE FUNCTION app.set_updated_at();
-
