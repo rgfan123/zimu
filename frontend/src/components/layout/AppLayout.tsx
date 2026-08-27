@@ -76,6 +76,23 @@ export default function AppLayout() {
   const reviewsBadge = useReviewsBadge(role);
 
   const groups = useMemo(() => railGroupsForRole(role), [role]);
+  // UIUX-11：低频组默认折叠（配置与主数据）。用户的手动开合记在 localStorage；
+  // 含当前路由的组永远展开——把人正在用的入口折起来比平铺更糟。
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem('zs-nav-collapsed');
+      if (stored) return new Set(JSON.parse(stored) as string[]);
+    } catch { /* 私密模式等场景读不到即用默认 */ }
+    return new Set(['/settings']);
+  });
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      try { localStorage.setItem('zs-nav-collapsed', JSON.stringify([...next])); } catch { /* 同上 */ }
+      return next;
+    });
+  };
   const roleLabel = workbenchRoleLabel(role);
 
   useEffect(() => {
@@ -113,10 +130,21 @@ export default function AppLayout() {
         </button>
 
         <nav className="zs-nav" aria-label="主导航">
-          {groups.map((group) => (
+          {groups.map((group) => {
+            const containsCurrent = group.items.some((item) => route?.path === item.path);
+            const collapsed = collapsedGroups.has(group.key) && !containsCurrent;
+            return (
             <div key={group.key}>
-              <div className="grp">{group.title}</div>
-              {group.items.map((item) => {
+              <button
+                type="button"
+                className="grp zs-grp-toggle"
+                aria-expanded={!collapsed}
+                onClick={() => toggleGroup(group.key)}
+              >
+                {group.title}
+                <span className="zs-grp-caret" aria-hidden="true">{collapsed ? '›' : '⌄'}</span>
+              </button>
+              {collapsed ? null : group.items.map((item) => {
                 if (item.external) {
                   return (
                     <a key={item.path} href={item.external} target="_blank" rel="noreferrer">
@@ -141,7 +169,8 @@ export default function AppLayout() {
                 );
               })}
             </div>
-          ))}
+            );
+          })}
           {role ? <div className="zs-navnote">岗位只影响排序与默认落地页，不构成权限；全部功能对所有人可见。</div> : null}
         </nav>
 

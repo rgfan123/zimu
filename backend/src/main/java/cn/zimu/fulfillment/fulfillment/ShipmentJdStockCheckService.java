@@ -249,6 +249,7 @@ public class ShipmentJdStockCheckService {
 
         String warehouse = text(plan.request().get("warehouseNo"));
         List<Map<String, Object>> blockers = new ArrayList<>();
+        Map<Long, String> productNames = productNamesBySkuId(demands);
         List<StockObservation> observations = new ArrayList<>();
         for (Demand demand : demands) {
             List<Map<String, Object>> matches = rows.stream()
@@ -282,10 +283,18 @@ public class ShipmentJdStockCheckService {
             }
             observations.add(observation);
             if (observation.usable().compareTo(BigDecimal.valueOf(demand.requiredPieces())) < 0) {
-                blockers.add(blocker(
+                // 不足的是哪个商品必须写进文案：运营看到「需要 2 件可用 0 件」却不知道
+                // 缺的是什么，补货无从下手（2026-08-26 用户实测反馈）。循环里本来就攥着
+                // demand.goodsNo()，此前只是没写进去。
+                String label = productNames.getOrDefault(demand.skuId(), "");
+                blockers.add(stockBlocker(
                         "JD_STOCK_INSUFFICIENT",
-                        "京东目标仓可用库存不足：需要 " + demand.requiredPieces()
-                                + " 件，可用 " + decimal(observation.usable()) + " 件"));
+                        (label.isEmpty() ? "" : "「" + label + "」")
+                                + "（京东商品编码 " + demand.goodsNo() + "）目标仓可用库存不足："
+                                + "需要 " + demand.requiredPieces()
+                                + " 件，可用 " + decimal(observation.usable()) + " 件",
+                        demand.goodsNo(),
+                        label));
             }
         }
         return new Probe(
@@ -550,6 +559,42 @@ public class ShipmentJdStockCheckService {
 
     private static Map<String, Object> blocker(String code, String message) {
         return Map.of("code", code, "message", message);
+    }
+
+    /** 库存类阻断：额外携带商品身份（goods_no / product_name），前端阻断明细表逐列展示。 */
+    private static Map<String, Object> stockBlocker(
+            String code, String message, String goodsNo, String productName) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("code", code);
+        value.put("message", message);
+        value.put("goods_no", goodsNo);
+        if (!productName.isEmpty()) {
+            value.put("product_name", productName);
+        }
+        return value;
+    }
+
+    /** skuId → 商品名。查不到的不报错——商品名是给人看的增强信息，缺了退回编码。 */
+    private Map<Long, String> productNamesBySkuId(List<Demand> demands) {
+        List<Long> skuIds = demands.stream().map(Demand::skuId).distinct().toList();
+        if (skuIds.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(skuIds.size(), "?"));
+        Map<Long, String> names = new LinkedHashMap<>();
+        try {
+            jdbc.query(
+                    "SELECT s.id, p.product_name FROM app.skus s"
+                            + " JOIN app.products p ON p.id = s.product_id"
+                            + " WHERE s.id IN (" + placeholders + ")",
+                    rs -> {
+                        names.put(rs.getLong(1), rs.getString(2));
+                    },
+                    skuIds.toArray());
+        } catch (RuntimeException ignored) {
+            // 名称查询失败不阻断库存判定本身
+        }
+        return names;
     }
 
     private static int integer(Object value) {

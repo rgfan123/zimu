@@ -391,6 +391,11 @@ const EVENT_FIELD_LABELS: Record<string, string> = {
 };
 
 const REVIEW_FIELD_LABELS: Record<string, string> = {
+  // message：创建复核事项时**系统写死的整句说明**（如「京东出库单已进入取消、拉回或
+  // 拒收等异常终态，需人工复核」）。它是后端固定文案，不是用户输入、不含收件人 PII。
+  // 此前不放行的结果是抽屉显示「没有可公开展示的补充字段」——数据库里明明有人话，
+  // 运营却只能看到一个事项类型码，根本无从下手（2026-08-26 用户实测反馈 #3）。
+  message: '系统说明',
   shipment_id: '发货批次编号',
   check_run_no: '映射核对批次',
   source_customer_ref: '来源客户编号',
@@ -509,6 +514,45 @@ export function reviewCaseSummary(reviewCase: {
 
 export function safeReviewDetailRows(detail: Record<string, unknown>): DisplayRow[] {
   return approvedRows(detail, REVIEW_FIELD_LABELS);
+}
+
+export interface ReviewBlockerRow {
+  code: string;
+  message: string | null;
+  correctionTarget: string | null;
+  /** 库存类阻断携带的商品身份：商品名（缺则空）+ 京东商品编码。 */
+  productLabel: string | null;
+}
+
+/**
+ * 京东预检类事项的结构化阻断明细（detail.blockers）。
+ *
+ * <p>逐条放行的字段都是系统生成的诊断数据：code 是稳定业务码、message 是后端固定
+ * 文案、correction_target 指向要改的配置/记录位置——没有一个来自用户输入或含 PII。
+ * 不透传它们，运营看到的只有「预检未通过」五个字，等于让人闭着眼修。
+ */
+function blockerProductLabel(item: Record<string, unknown>): string | null {
+  const name = scalarValue(item.product_name);
+  const goodsNo = scalarValue(item.goods_no);
+  if (name && goodsNo) return `${name}（${goodsNo}）`;
+  return name ?? goodsNo;
+}
+
+export function reviewBlockerRows(detail: Record<string, unknown>): ReviewBlockerRow[] {
+  const raw = Array.isArray(detail.blockers) ? detail.blockers : [];
+  return raw
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .flatMap((item) => {
+      const code = scalarValue(item.code);
+      return code === null
+        ? []
+        : [{
+            code,
+            message: scalarValue(item.message),
+            correctionTarget: scalarValue(item.correction_target),
+            productLabel: blockerProductLabel(item),
+          }];
+    });
 }
 
 export function skuMappingDetailRows(detail: Record<string, unknown>): DisplayRow[] {

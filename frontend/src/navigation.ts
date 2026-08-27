@@ -29,31 +29,33 @@ export const appNavigation = [
     ],
   },
   { path: '/dashboard', label: '调度台' },
-  {
-    path: '/operations',
-    label: '作业中心',
-    children: [
-      { path: '/workbench/channel-messages', label: '渠道消息' },
-      { path: '/fulfillment/tasks', label: '履约任务' },
-      // UIUX-10 #144：采购入口去重——唯一采购入口在我的工作台（/workbench/procurement），本页保留直达。
-      { path: '/procurement/tickets', label: '采购协同', hideInMenu: true },
-      // 低频专用查询（Issue #98 准入规则）：隐藏菜单、保留路由与上下文入口，见 docs/agents/navigation-admission.md。
-      { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
-      { path: '/fulfillment/sales-outbound', label: '文件作业' },
-      { path: '/fulfillment/shipments', label: '发货记录' },
-      { path: '/fulfillment/outbound-recon', label: '出库信息对账', hideInMenu: true },
-    ],
-  },
+  // UIUX-11（2026-08-26 用户实测反馈 #4）：侧栏按「一天的工作流」重组，不按功能类别平铺。
+  // 高频组在前（订单与发货、渠道与文件），低频配置合并成单组默认折叠（见 /settings 组）。
   {
     path: '/orders',
-    label: '订单中心',
+    label: '订单与发货',
     children: [
       { path: '/orders', label: '全部订单' },
+      { path: '/fulfillment/shipments', label: '发货记录' },
+      { path: '/fulfillment/tasks', label: '履约任务' },
       // 预设视图并入「全部订单」页内切换（Segmented），旧 URL 保留为隐藏直达路径，书签不失效。
       { path: '/orders/pending', label: '待处理', hideInMenu: true },
       { path: '/orders/exceptions', label: '异常订单', hideInMenu: true },
       { path: '/orders/tracking', label: '订单追踪', hideInMenu: true },
       { path: '/orders/:orderId', label: '订单详情', hideInMenu: true },
+      { path: '/fulfillment/outbound-recon', label: '出库信息对账', hideInMenu: true },
+    ],
+  },
+  {
+    path: '/operations',
+    label: '渠道与文件',
+    children: [
+      { path: '/workbench/channel-messages', label: '渠道消息' },
+      { path: '/fulfillment/sales-outbound', label: '文件作业' },
+      // UIUX-10 #144：采购入口去重——唯一采购入口在我的工作台（/workbench/procurement），本页保留直达。
+      { path: '/procurement/tickets', label: '采购协同', hideInMenu: true },
+      // 低频专用查询（Issue #98 准入规则）：隐藏菜单、保留路由与上下文入口，见 docs/agents/navigation-admission.md。
+      { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
     ],
   },
   {
@@ -72,29 +74,16 @@ export const appNavigation = [
     ],
   },
   {
-    path: '/inventory',
-    label: '库存中心',
+    path: '/settings',
+    label: '配置与主数据',
     children: [
-      { path: '/inventory/overview', label: '总库存' },
-      { path: '/inventory/details', label: '专业库存明细', hideInMenu: true },
-    ],
-  },
-  {
-    path: '/product',
-    label: '主数据',
-    children: [
-      { path: '/product/products', label: '商品基础信息', hideInMenu: true },
-      { path: '/product/categories', label: '品类基础信息', hideInMenu: true },
       { path: '/product/skus', label: '商品档案' },
       { path: '/product/sku-mappings', label: 'SKU 映射' },
       { path: '/product/bundles', label: '静态礼包' },
-    ],
-  },
-  { path: '/analytics', label: '经营分析' },
-  {
-    path: '/system',
-    label: '系统管理',
-    children: [
+      { path: '/inventory/overview', label: '总库存' },
+      { path: '/inventory/details', label: '专业库存明细', hideInMenu: true },
+      { path: '/product/products', label: '商品基础信息', hideInMenu: true },
+      { path: '/product/categories', label: '品类基础信息', hideInMenu: true },
       { path: '/system/connectors', label: '渠道接入' },
       { path: '/system/audit-logs', label: '操作审计' },
       { path: '/system/config', label: '系统配置', hideInMenu: true },
@@ -111,6 +100,7 @@ export const appNavigation = [
       { path: '/fulfillment/jd-return', label: '退货退供查询', hideInMenu: true },
     ],
   },
+  { path: '/analytics', label: '经营分析' },
   // Issue #104：Demo 页不再出现在日常菜单（URL 保留可直达，降级 ≠ 删除）。
   { path: '/demo/order', label: '模拟下单', hideInMenu: true },
   { path: '/bi', label: '管理驾驶舱', external: '/metabase' },

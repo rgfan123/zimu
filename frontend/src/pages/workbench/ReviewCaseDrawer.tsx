@@ -27,6 +27,7 @@ import { errorMessage } from '@/api/client';
 import {
   factGroupRows,
   isSkuMappingReasonCode,
+  reviewBlockerRows,
   reviewFactGroups,
   safeReviewDetailRows,
   skuMappingEvidenceCell,
@@ -473,6 +474,24 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
                 </Typography.Paragraph>
               </>
             )}
+            {reviewBlockerRows(selected.detail).length ? (
+              <div style={{ marginTop: 12 }}>
+                <Typography.Text strong>阻断明细</Typography.Text>
+                <Table
+                  size="small"
+                  rowKey="code"
+                  pagination={false}
+                  style={{ marginTop: 8 }}
+                  dataSource={reviewBlockerRows(selected.detail)}
+                  columns={[
+                    { title: '商品', dataIndex: 'productLabel', render: (value: string | null) => value ?? '—' },
+                    { title: '说明', dataIndex: 'message', render: (value: string | null) => value ?? '—' },
+                    { title: '阻断码', dataIndex: 'code', width: 220 },
+                    { title: '修正目标', dataIndex: 'correctionTarget', render: (value: string | null) => value ?? '—' },
+                  ]}
+                />
+              </div>
+            ) : null}
           </div>
           {selectedAction === 'JD_SKU_MAPPING' && selected.status === 'OPEN' ? (
             <>
@@ -524,6 +543,31 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
           ) : null}
           {selected.status === 'OPEN' ? (
             <>
+              {/* 推进型动作永远排在「标记已处理/关闭」之前：能让流水线继续走的按钮
+                  被埋在兜底动作下面，读起来就是「没有推进按钮」（2026-08-26 用户实测反馈 #2——
+                  重跑按钮其实一直在，只是折叠在视口外、还排在次动作后面）。 */}
+              {canRerunStock ? (
+                <>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="京东库存不足阻断建单"
+                    description="重跑库存核对：通过后阻断自动解除，建单继续；仍不足时请线下补货后再试。"
+                  />
+                  <Button type="primary" loading={submitting} onClick={rerunJdStockCheck}>重跑库存核对</Button>
+                </>
+              ) : null}
+              {canReinterpret ? (
+                <>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="消息链路事项需先在消息页处理"
+                    description="前往消息页对原提交重新识别或人工处理；处理完毕后可在此标记已解决。"
+                  />
+                  <Button type="primary" onClick={() => navigate('/workbench/channel-messages')}>前往消息页重新识别</Button>
+                </>
+              ) : null}
               {primaryAction ? (
                 <>
                   <Alert
@@ -569,7 +613,7 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
                   {submitError ? <Alert type="error" showIcon message="提交未完成" description={submitError} /> : null}
                   <Space>
                     <Button
-                      type="primary"
+                      type={canRerunStock || canReinterpret ? 'default' : 'primary'}
                       loading={submitting}
                       onClick={
                         primaryAction === 'JD_TRACKING_CONFLICT'
@@ -583,28 +627,6 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
                     </Button>
                     {selectedAction === 'SKU' ? <Button onClick={() => navigate('/product/sku-mappings')}>前往 SKU 映射</Button> : null}
                   </Space>
-                </>
-              ) : null}
-              {canRerunStock ? (
-                <>
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message="京东库存不足阻断建单"
-                    description="可先重跑库存核对：通过后阻断自动解除；仍不足时请线下补货后再试。"
-                  />
-                  <Button loading={submitting} onClick={rerunJdStockCheck}>重跑库存核对</Button>
-                </>
-              ) : null}
-              {canReinterpret ? (
-                <>
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message="消息链路事项需先在消息页处理"
-                    description="前往消息页对原提交重新识别或人工处理；处理完毕后可在此标记已解决。"
-                  />
-                  <Button onClick={() => navigate('/workbench/channel-messages')}>前往消息页重新识别</Button>
                 </>
               ) : null}
               {canDismiss ? (

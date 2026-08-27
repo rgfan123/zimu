@@ -48,13 +48,10 @@ test('外壳无顶栏，品牌下方是未选择态的岗位选择器，我的�
   assert.match(body, /今日发货工作台/);
   assert.match(body, /对账工作台/);
   assert.doesNotMatch(body, /模拟下单/, 'Demo 页面不再出现在日常菜单（URL 保留）');
-  // UIUX-10 #144：京东工具收敛为单入口——系统管理只渲染「京东工具」叶子，六个查询页不再占菜单。
-  assert.ok(
-    body.indexOf('操作审计') !== -1 &&
-      body.indexOf('京东工具') !== -1 &&
-      body.indexOf('操作审计') < body.indexOf('京东工具'),
-    '系统管理的直属条目必须渲染在京东工具入口之前',
-  );
+  // UIUX-11：低频配置合并为「配置与主数据」单组且默认折叠——组头可见，条目收起。
+  // 折叠是用户手势可开合的展示态，不是岗位隐藏（ADR 0004 D1 不受影响）。
+  assert.match(body, /配置与主数据/, '配置与主数据组头必须可见');
+  assert.doesNotMatch(body, /操作审计/, '默认折叠下配置组条目不渲染');
   assert.doesNotMatch(body, /连接与出库查询/, '六个京东查询页不再直接出现在菜单');
 });
 
@@ -71,16 +68,16 @@ test('选择岗位后跳到该岗位工作台、写入 localStorage，URL 不携
   assert.equal(window.localStorage.getItem('zimu.workbench-role'), 'FULFILLMENT_OPS');
   assert.doesNotMatch(harness.location(), /FULFILLMENT|role|岗位/, '分享 URL 不得携带岗位');
 
-  // ADR 0004：岗位只重排导航分组顺序，绝不隐藏——切岗后全部板块仍可见（D1：岗位 ≠ 权限）。
+  // ADR 0004：岗位只重排导航分组顺序，绝不隐藏——切岗后全部分组组头仍可见（D1：岗位 ≠ 权限）。
+  // UIUX-11 后组头集合：我的工作台 / 订单与发货 / 渠道与文件 / Agent 中心 / 配置与主数据 / 经营分析。
   const reordered = harness.bodyText();
-  for (const section of ['主数据', '系统管理', '京东工具', 'Agent 中心', '经营分析']) {
-    assert.match(reordered, new RegExp(section), `切换岗位后「${section}」板块必须仍然可见`);
+  for (const section of ['我的工作台', '订单与发货', '渠道与文件', 'Agent 中心', '配置与主数据', '经营分析']) {
+    assert.match(reordered, new RegExp(section), `切换岗位后「${section}」分组必须仍然可见`);
   }
-  // 履约运营的分组优先序把库存中心排到主数据之前；未列入优先表的分组保持默认相对顺序。
-  assert.ok(reordered.indexOf('库存中心') < reordered.indexOf('主数据'), '履约运营岗位下库存中心应排在主数据之前');
+  // 履约运营的分组优先序：订单与发货排在渠道与文件之前。
   assert.ok(
-    reordered.indexOf('操作审计') < reordered.indexOf('京东工具'),
-    '切岗重排后京东工具入口仍须排在系统管理自身条目之后',
+    reordered.indexOf('订单与发货') < reordered.indexOf('渠道与文件'),
+    '履约运营岗位下订单与发货应排在渠道与文件之前',
   );
 });
 

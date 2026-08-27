@@ -38,23 +38,21 @@ test('my-workbench section leads the navigation with the role workbenches (Issue
 });
 
 test('operations section keeps only the daily high-frequency entries within the admission cap', () => {
+  // UIUX-11：作业中心拆分——发货记录/履约任务迁入「订单与发货」，本组只剩渠道与文件两个高频入口。
   const operations = findNavigationNode(appNavigation, '/operations');
 
   assert.deepEqual(
     operations?.children?.map(({ path, label, hideInMenu }) => ({ path, label, hideInMenu: hideInMenu ?? false })),
     [
       { path: '/workbench/channel-messages', label: '渠道消息', hideInMenu: false },
-      { path: '/fulfillment/tasks', label: '履约任务', hideInMenu: false },
+      { path: '/fulfillment/sales-outbound', label: '文件作业', hideInMenu: false },
       // UIUX-10 #144：采购入口去重——唯一采购入口在我的工作台，本页降级为隐藏直达。
       { path: '/procurement/tickets', label: '采购协同', hideInMenu: true },
       { path: '/procurement/price-compare', label: '采购比价', hideInMenu: true },
-      { path: '/fulfillment/sales-outbound', label: '文件作业', hideInMenu: false },
-      { path: '/fulfillment/shipments', label: '发货记录', hideInMenu: false },
-      { path: '/fulfillment/outbound-recon', label: '出库信息对账', hideInMenu: true },
     ],
   );
   const visibleChildren = operations?.children?.filter(({ hideInMenu }) => !hideInMenu);
-  assert.ok((visibleChildren?.length ?? 0) <= 6, '作业中心可见叶子不得超过高频上限 6');
+  assert.ok((visibleChildren?.length ?? 0) <= 6, '渠道与文件可见叶子不得超过高频上限 6');
   const myWorkbenchVisible = findNavigationNode(appNavigation, '/workbench')?.children?.filter(
     ({ hideInMenu }) => !hideInMenu,
   );
@@ -77,11 +75,11 @@ test('demoted query tools stay routable and keep their section context', () => {
     assert.equal(routablePaths.includes(path), true, `${path} 必须可路由`);
   }
   assert.deepEqual(navigationContext('/procurement/price-compare', ''), {
-    section: '作业中心',
+    section: '渠道与文件',
     page: '采购比价',
   });
   assert.deepEqual(navigationContext('/fulfillment/outbound-recon', ''), {
-    section: '作业中心',
+    section: '订单与发货',
     page: '出库信息对账',
   });
   assert.deepEqual(navigationContext('/workbench/recon', ''), {
@@ -108,11 +106,11 @@ test('京东工具收敛为单入口，六个查询页保留隐藏直达', () =>
     assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
   }
   assert.deepEqual(navigationContext('/fulfillment/jd-stock', ''), {
-    section: '系统管理',
+    section: '配置与主数据',
     page: '库存原始查询',
   });
   assert.deepEqual(navigationContext('/system/jd-tools', ''), {
-    section: '系统管理',
+    section: '配置与主数据',
     page: '京东工具',
   });
 });
@@ -135,31 +133,30 @@ test('provider configuration is a provider-neutral system page', () => {
     label: '履约方配置',
   });
   assert.deepEqual(navigationContext('/system/fulfillment-providers', ''), {
-    section: '系统管理',
+    section: '配置与主数据',
     page: '履约方配置',
   });
 });
 
 test('system menu exposes each connector and provider configuration capability once', () => {
-  const system = findNavigationNode(appNavigation, '/system');
-  const visibleChildren = system?.children?.filter(({ hideInMenu }) => !hideInMenu);
+  // UIUX-11：系统管理并入「配置与主数据」单组；能力清单不变，各出现一次。
+  const settings = findNavigationNode(appNavigation, '/settings');
+  const visible = settings?.children?.filter(({ hideInMenu }) => !hideInMenu)?.map(({ path }) => path) ?? [];
 
-  assert.deepEqual(
-    visibleChildren?.map(({ path, label }) => ({ path, label })),
-    [
-      { path: '/system/connectors', label: '渠道接入' },
-      { path: '/system/audit-logs', label: '操作审计' },
-      { path: '/system/fulfillment-providers', label: '履约方配置' },
-      { path: '/system/operators', label: '运营人员' },
-      { path: '/system/jd-tools', label: '京东工具' },
-    ],
-  );
+  for (const path of [
+    '/system/connectors', '/system/audit-logs', '/system/fulfillment-providers',
+    '/system/operators', '/system/jd-tools',
+  ]) {
+    assert.equal(visible.filter((item) => item === path).length, 1, `${path} 必须在配置与主数据组恰好出现一次`);
+  }
   assert.equal(findNavigationNode(appNavigation, '/system/config')?.hideInMenu, true);
 });
 
 test('product operations expose product archive, SKU mappings, and static bundle management', () => {
-  const product = findNavigationNode(appNavigation, '/product');
-  const visibleChildren = product?.children?.filter(({ hideInMenu }) => !hideInMenu);
+  // UIUX-11：主数据并入「配置与主数据」；三个可见入口保持不变。
+  const settings = findNavigationNode(appNavigation, '/settings');
+  const visibleChildren = settings?.children
+    ?.filter(({ hideInMenu, path }) => !hideInMenu && path.startsWith('/product/'));
 
   assert.deepEqual(visibleChildren, [
     { path: '/product/skus', label: '商品档案' },
@@ -196,11 +193,14 @@ test('orders stay canonical and inventory has one business-level overview', () =
 
   assert.equal(orders?.children?.filter(({ label }) => label === '全部订单').length, 1);
   assert.equal(orders?.children?.some(({ label }) => label.includes('京东')), false);
-  assert.deepEqual(findNavigationNode(appNavigation, '/inventory')?.children?.filter(({ hideInMenu }) => !hideInMenu), [
+  // UIUX-11：库存并入「配置与主数据」；业务级总览仍只有一个。
+  const settingsInventory = findNavigationNode(appNavigation, '/settings')?.children
+    ?.filter(({ hideInMenu, path }) => !hideInMenu && path.startsWith('/inventory/'));
+  assert.deepEqual(settingsInventory, [
     { path: '/inventory/overview', label: '总库存' },
   ]);
   assert.deepEqual(navigationContext('/inventory/overview', ''), {
-    section: '库存中心',
+    section: '配置与主数据',
     page: '总库存',
   });
 });
@@ -211,8 +211,11 @@ test('order presets collapse into one visible entry while direct URLs stay routa
   const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
 
   const visibleChildren = orders?.children?.filter(({ hideInMenu }) => !hideInMenu) ?? [];
-  assert.equal(visibleChildren.length, 1, '订单中心菜单只剩「全部订单」一个入口');
-  assert.equal(visibleChildren[0]?.label, '全部订单');
+  // UIUX-11：订单与发货组 = 全部订单 + 发货记录 + 履约任务；预设视图仍页内切换。
+  assert.deepEqual(
+    visibleChildren.map(({ label }) => label),
+    ['全部订单', '发货记录', '履约任务'],
+  );
   for (const presetPath of ['/orders/pending', '/orders/exceptions', '/orders/tracking']) {
     assert.equal(visiblePaths.includes(presetPath), false, `${presetPath} 不再出现在菜单`);
     assert.equal(routablePaths.includes(presetPath), true, `${presetPath} 直达仍可路由（书签不失效）`);
