@@ -476,6 +476,32 @@ export interface SkuPage extends Omit<MasterDataPage, 'items'> {
   items: SkuRecord[];
 }
 
+/** 商品档案·成本表全列留存的一个单元格：列字母 + 列头 + 文本值（空单元格 value 为 null 以保位）。 */
+export interface ProductArchiveSheetField {
+  column: string;
+  name: string;
+  value: string | null;
+}
+
+/** 表格正身右侧（AU 之后）零散手工草稿格：没有表头，不是表的列。 */
+export interface ProductArchiveSheetExtraCell {
+  column: string;
+  value: string | null;
+}
+
+/** 商品档案·成本表全列留存的一行（= 成本表一行）。fields **顺序即原表列序**，渲染时不得排序。 */
+export interface ProductArchiveSheet {
+  id: string;
+  source_file_name: string;
+  source_file_sha256: string;
+  sheet_name: string;
+  row_no: number;
+  product_name: string;
+  fields: ProductArchiveSheetField[];
+  extra_cells?: ProductArchiveSheetExtraCell[];
+  created_at?: string;
+}
+
 export type ProductBundleStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE';
 
 export interface ProductBundleItem {

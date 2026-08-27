@@ -53,6 +53,7 @@ import type {
   MasterDataRecord,
   OutboundReconQueryType,
   OutboundReconView,
+  ProductArchiveSheet,
   ProductBundleCreateInput,
   ProductBundlePage,
   ProductBundleRecord,
@@ -291,6 +292,9 @@ export const productsApi = {
   }) =>
     apiRequest<MasterDataRecord>(`/api/v1/products/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
   tags: () => apiRequest<string[]>('/api/v1/products/tags'),
+  /** 商品档案·成本表全列留存（只读）。fields 按原表列序返回，渲染时不得排序。 */
+  archiveSheet: (id: string) =>
+    apiRequest<ProductArchiveSheet[]>(`/api/v1/products/${id}/archive-sheet`),
 };
 
 /** POST /api/v1/product-images（multipart），GET /api/v1/product-images?ref=...。 */

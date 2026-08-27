@@ -22,11 +22,13 @@ import {
 } from './skuCommercialPrice';
 import { leadTimeLabel, listingPeriodLabel, marginLabel } from './productArchiveFields';
 import PlatformUploadModal from './PlatformUploadModal';
+import ProductArchiveSheetDrawer from './ProductArchiveSheetDrawer';
 
 export default function SkusPage() {
   const [providerId, setProviderId] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState<string | undefined>();
   const [platformUploadOpen, setPlatformUploadOpen] = useState(false);
+  const [archiveSheetOf, setArchiveSheetOf] = useState<MasterDataRecord | null>(null);
   const providerOptions = useProviderOptions();
   const categoryOptions = useCategoryOptions();
   const providerLabels = new Map(providerOptions.map(({ value, label }) => [String(value), label]));
@@ -97,6 +99,14 @@ export default function SkusPage() {
         const barcode = attr(r, 'barcode');
         return barcode ? <Tag style={{ marginInlineEnd: 0 }}>{String(barcode)}</Tag> : '—';
       },
+    },
+    {
+      title: '成本档案', key: 'archive_sheet', width: 90,
+      render: (_, r) => (
+        <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setArchiveSheetOf(r)}>
+          查看
+        </Button>
+      ),
     },
   ];
 
@@ -189,6 +199,12 @@ export default function SkusPage() {
         onClose={() => setPlatformUploadOpen(false)}
         query={searchQuery}
         providerId={providerId}
+      />
+      <ProductArchiveSheetDrawer
+        open={archiveSheetOf !== null}
+        productId={archiveSheetOf ? String(attr(archiveSheetOf, 'product_id') ?? '') : null}
+        title={archiveSheetOf?.name ?? ''}
+        onClose={() => setArchiveSheetOf(null)}
       />
     </>
   );

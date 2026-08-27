@@ -44,9 +44,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class MasterDataController {
 
     private final MasterDataService service;
+    private final ProductArchiveSheetService archiveSheets;
 
-    public MasterDataController(MasterDataService service) {
+    public MasterDataController(MasterDataService service, ProductArchiveSheetService archiveSheets) {
         this.service = service;
+        this.archiveSheets = archiveSheets;
     }
 
     @GetMapping("/customers")
@@ -90,6 +92,13 @@ public class MasterDataController {
             @RequestParam(defaultValue = "20") @Min(1) @Max(200) int size) { return service.products(page, size); }
     @GetMapping("/products/tags") public List<String> productTags() { return service.productTags(); }
     @GetMapping("/products/{id}") public MasterDataRecord product(@PathVariable String id) { return service.product(id(id)); }
+    /** 商品档案·成本表全列留存：fields 按原表列序返回，只读。 */
+    @GetMapping("/products/{id}/archive-sheet") public List<ProductArchiveSheet> productArchiveSheet(
+            @PathVariable String id) {
+        long productId = id(id);
+        archiveSheets.requireProduct(productId);
+        return archiveSheets.byProduct(productId);
+    }
     @PostMapping("/products") public ResponseEntity<?> createProduct(@Valid @RequestBody ProductWrite body,
             @RequestHeader("Idempotency-Key") String key, @RequestHeader("X-Operator") String operator) {
         return WriteCommands.respond(service.createProduct(body, WriteCommands.requireIdempotencyKey(key), WriteCommands.writeContext(operator)));
