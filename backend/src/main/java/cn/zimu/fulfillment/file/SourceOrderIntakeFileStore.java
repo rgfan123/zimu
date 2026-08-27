@@ -9,7 +9,6 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.Locale;
-import java.util.Set;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -19,14 +18,6 @@ class SourceOrderIntakeFileStore {
 
     static final long MAX_BYTES = 20L * 1024 * 1024;
     private static final byte[] OLE2 = {(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0, (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1};
-    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.ms-excel",
-            "text/csv",
-            "application/csv",
-            "text/plain",
-            "application/octet-stream");
-
     private final Path root;
 
     SourceOrderIntakeFileStore(
@@ -43,12 +34,13 @@ class SourceOrderIntakeFileStore {
         }
         String normalizedType = contentType == null || contentType.isBlank()
                 ? "application/octet-stream"
-                : contentType.toLowerCase(Locale.ROOT).strip();
-        if (!ALLOWED_CONTENT_TYPES.contains(normalizedType)) {
-            throw BusinessException.unprocessable("SOURCE_FILE_CONTENT_TYPE_UNSUPPORTED", "来源订单文件类型不受支持");
-        }
+                : contentType.split(";", 2)[0].toLowerCase(Locale.ROOT).strip();
         String safeName = safeFilename(originalFilename);
         Format format = detect(bytes, safeName);
+        if (!format.accepts(normalizedType)) {
+            throw BusinessException.unprocessable(
+                    "SOURCE_FILE_CONTENT_TYPE_MISMATCH", "文件 MIME、扩展名与实际 Excel/CSV 格式不一致");
+        }
         String sha256 = sha256(bytes);
         Path target = root.resolve(sha256 + "." + format.extension).normalize();
         if (!target.startsWith(root)) {
@@ -93,16 +85,26 @@ class SourceOrderIntakeFileStore {
 
     private Format detect(byte[] bytes, String filename) {
         String extension = extension(filename);
-        if (startsWith(bytes, new byte[] {'P', 'K'}) && "xlsx".equals(extension)) {
-            return Format.XLSX;
+        if (startsWith(bytes, new byte[] {'P', 'K'})) {
+            if ("xlsx".equals(extension)) {
+                return Format.XLSX;
+            }
+            throw formatMismatch();
         }
-        if (startsWith(bytes, OLE2) && "xls".equals(extension)) {
-            return Format.XLS;
+        if (startsWith(bytes, OLE2)) {
+            if ("xls".equals(extension)) {
+                return Format.XLS;
+            }
+            throw formatMismatch();
         }
         if ("csv".equals(extension) && !containsNul(bytes)) {
             return Format.CSV;
         }
-        throw BusinessException.unprocessable(
+        throw formatMismatch();
+    }
+
+    private static BusinessException formatMismatch() {
+        return BusinessException.unprocessable(
                 "SOURCE_FILE_FORMAT_UNSUPPORTED", "文件扩展名与实际 Excel/CSV 格式不一致");
     }
 
@@ -151,14 +153,20 @@ class SourceOrderIntakeFileStore {
     }
 
     private enum Format {
-        XLSX("xlsx"),
-        XLS("xls"),
-        CSV("csv");
+        XLSX("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        XLS("xls", "application/vnd.ms-excel"),
+        CSV("csv", "text/csv", "application/csv", "text/plain");
 
         private final String extension;
+        private final java.util.Set<String> contentTypes;
 
-        Format(String extension) {
+        Format(String extension, String... contentTypes) {
             this.extension = extension;
+            this.contentTypes = java.util.Set.of(contentTypes);
+        }
+
+        boolean accepts(String contentType) {
+            return "application/octet-stream".equals(contentType) || contentTypes.contains(contentType);
         }
     }
 
@@ -169,4 +177,3 @@ class SourceOrderIntakeFileStore {
             String sha256,
             String fileRef) {}
 }
-

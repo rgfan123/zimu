@@ -182,6 +182,7 @@ test('file job page restores the batch from the URL and the review link carries 
 
 test('file job page keeps the batch id in the URL after upload and refresh rehydrates it', async () => {
   const requests: string[] = [];
+  let jobReads = 0;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     requests.push(`${init?.method ?? 'GET'} ${url}`);
@@ -193,7 +194,8 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
       return jsonResponse(intakeJob(), 202);
     }
     if (url === '/api/v1/source-order-intake-jobs/17') {
-      return jsonResponse(intakeJob('SUCCEEDED'));
+      jobReads += 1;
+      return jsonResponse(jobReads < 3 ? { ...intakeJob(), status: 'PROCESSING' } : intakeJob('SUCCEEDED'));
     }
     if (url === '/api/v1/import-batches/7') {
       return jsonResponse(sourceBatch('7'));
@@ -222,8 +224,11 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
   await chooseSourceChannel();
   await control('开始导入').click();
 
+  await harness.waitFor(() => assert.match(harness.bodyText(), /附件任务 SOI-17 · 已接收/));
+  assert.doesNotMatch(harness.bodyText(), /· RECEIVED/);
   await harness.waitFor(() => assert.match(harness.location(), /import_batch=7/), 10_000);
   assert.match(harness.bodyText(), /IMP-B7/);
+  assert.equal(jobReads, 3, 'PROCESSING 必须持续轮询到终态');
 });
 
 test('review page lands on the batch-filtered queue with batch context and an explicit way back', async () => {

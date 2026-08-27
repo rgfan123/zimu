@@ -18,6 +18,7 @@ class SourceOrderIntakeWorker {
 
     private final AsyncTaskStore tasks;
     private final SourceOrderIntakeProcessor processor;
+    private final SourceOrderIntakeService intake;
     private final boolean enabled;
     private final Duration lease;
     private final Duration backoff;
@@ -26,11 +27,13 @@ class SourceOrderIntakeWorker {
     SourceOrderIntakeWorker(
             AsyncTaskStore tasks,
             SourceOrderIntakeProcessor processor,
+            SourceOrderIntakeService intake,
             @Value("${app.source-order-intake-worker.enabled:true}") boolean enabled,
             @Value("${app.source-order-intake-worker.lease-seconds:120}") long leaseSeconds,
             @Value("${app.source-order-intake-worker.backoff-seconds:10}") long backoffSeconds) {
         this.tasks = tasks;
         this.processor = processor;
+        this.intake = intake;
         this.enabled = enabled;
         this.lease = Duration.ofSeconds(leaseSeconds);
         this.backoff = Duration.ofSeconds(backoffSeconds);
@@ -58,9 +61,10 @@ class SourceOrderIntakeWorker {
                 tasks.succeed(task.id(), owner);
             } catch (RuntimeException exception) {
                 log.warn("来源订单附件任务 {} 执行失败，将按退避重试", task.id());
-                tasks.fail(task.id(), owner, "SOURCE_ORDER_INTAKE_FAILED", backoff);
+                intake.recordWorkerFailure(
+                        task.id(), owner, SourceOrderIntakeService.jobId(task.payloadRef()),
+                        "SOURCE_ORDER_INTAKE_FAILED", backoff);
             }
         }
     }
 }
-

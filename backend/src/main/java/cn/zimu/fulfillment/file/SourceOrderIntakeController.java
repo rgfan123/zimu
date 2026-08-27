@@ -4,7 +4,11 @@ import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.WriteCommands;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -54,5 +58,22 @@ class SourceOrderIntakeController {
     Map<String, Object> get(@PathVariable("job_id") String jobId) {
         return service.get(WriteCommands.parseIdentifier(jobId));
     }
-}
 
+    @GetMapping("/api/v1/source-order-intake-jobs/{job_id}/file")
+    ResponseEntity<byte[]> download(
+            @PathVariable("job_id") String jobId,
+            @RequestHeader(value = "X-Operator", required = false) String operator) {
+        SourceOrderIntakeService.FileDownload file = service.download(
+                WriteCommands.parseIdentifier(jobId), WriteCommands.writeContext(operator));
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(file.contentType()))
+                .header(
+                        HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment()
+                                .filename(file.filename(), StandardCharsets.UTF_8)
+                                .build()
+                                .toString())
+                .header("X-Content-Type-Options", "nosniff")
+                .body(file.bytes());
+    }
+}

@@ -16,7 +16,7 @@ import { formatDateTime } from '@/format/dateTime';
 import { ApiError, errorMessage } from '@/api/client';
 import { fileOperationsApi, fulfillmentExportsApi, providersApi } from '@/api/endpoints';
 import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportWecomState, ImportBatch, SourceChannel, SourceOrderIntakeJob, TrackingImportBatch } from '@/api/types';
-import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS } from '@/constants/labels';
+import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS, SOURCE_ORDER_INTAKE_STATUS_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
 import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
@@ -84,29 +84,36 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
   useEffect(() => {
     if (!intakeJob || !['RECEIVED', 'PROCESSING'].includes(intakeJob.status)) return;
     let active = true;
-    const timer = window.setTimeout(() => {
-      fileOperationsApi.getSourceJob(intakeJob.id)
-        .then(async (job) => {
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const job = await fileOperationsApi.getSourceJob(intakeJob.id);
+        if (!active) return;
+        setIntakeJob(job);
+        if (job.status === 'SUCCEEDED' && job.import_batch_id) {
+          const imported = await fileOperationsApi.getSourceBatch(job.import_batch_id);
           if (!active) return;
-          setIntakeJob(job);
-          if (job.status === 'SUCCEEDED' && job.import_batch_id) {
-            const imported = await fileOperationsApi.getSourceBatch(job.import_batch_id);
-            if (!active) return;
-            setResult(imported);
-            setSearchParams({ [FILE_JOB_BATCH_PARAM]: imported.id });
-            message.success('来源订单附件已完成导入');
-            onCompleted();
-            await loadConfirmRows(imported);
-          }
-        })
-        .catch((error) => active && message.error(errorMessage(error)));
-    }, 1000);
+          setResult(imported);
+          setSearchParams({ [FILE_JOB_BATCH_PARAM]: imported.id });
+          message.success('来源订单附件已完成导入');
+          onCompleted();
+          await loadConfirmRows(imported);
+          return;
+        }
+        if (['RECEIVED', 'PROCESSING'].includes(job.status)) {
+          timer = window.setTimeout(poll, 1000);
+        }
+      } catch (error) {
+        if (active) message.error(errorMessage(error));
+      }
+    };
+    timer = window.setTimeout(poll, 1000);
     return () => {
       active = false;
-      window.clearTimeout(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intakeJob?.id, intakeJob?.status]);
+  }, [intakeJob?.id]);
 
   /** 批次标识进 URL（Issue #95）：刷新或浏览器回退后按 ?import_batch= 恢复当前批次，不再依赖页面本地 state。 */
   useEffect(() => {
@@ -314,10 +321,20 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                 ? 'warning'
                 : 'info'}
             showIcon
-            message={`附件任务 ${intakeJob.job_no} · ${intakeJob.status}`}
+            message={`附件任务 ${intakeJob.job_no} · ${SOURCE_ORDER_INTAKE_STATUS_LABELS[intakeJob.status] ?? intakeJob.status}`}
             description={intakeJob.status === 'NEEDS_EXTRACTION'
               ? '原件已安全保存，结构未命中已知模板，等待 Agent 候选提取能力处理。'
               : intakeJob.error_code ?? '后台正在解析并创建来源导入批次。'}
+            action={intakeJob.status === 'FAILED' ? (
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                onClick={() => void fileOperationsApi.downloadSourceOriginal(intakeJob.id)
+                  .catch((error) => message.error(errorMessage(error)))}
+              >
+                下载原件
+              </Button>
+            ) : undefined}
           />
         ) : null}
         {urlBatchId !== null && !result && !urlBatchError ? (

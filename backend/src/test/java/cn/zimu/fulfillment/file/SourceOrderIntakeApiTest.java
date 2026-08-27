@@ -10,6 +10,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.ss.usermodel.Workbook;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -45,6 +47,74 @@ class SourceOrderIntakeApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired AsyncTaskStore tasks;
     @Autowired SourceOrderIntakeProcessor processor;
+    @Autowired SourceOrderIntakeService intake;
+
+    @Test
+    void exhaustedWorkerRetriesMarkTheBusinessJobFailed() throws Exception {
+        byte[] workbook = workbook(
+                List.of("新订单编号", "客户姓名", "联系电话", "商品描述", "数量"),
+                List.of("BROKEN-001", "张三", "13800000000", "羊肉礼盒", "1"));
+        ResponseEntity<Map> submitted = submit("broken.xlsx", workbook, "DAZHE", "intake-broken-0001");
+        long jobId = Long.parseLong(submitted.getBody().get("id").toString());
+        jdbc.update(
+                "UPDATE app.source_order_intake_jobs SET file_ref=? WHERE id=?",
+                Path.of(System.getProperty("java.io.tmpdir"), "zimu-source-order-intake-test",
+                                "source-order-intake", "missing.xlsx")
+                        .toString(),
+                jobId);
+
+        new SourceOrderIntakeWorker(tasks, processor, intake, true, 30, 0).poll();
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM app.source_order_intake_jobs WHERE id=?", String.class, jobId))
+                .isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM app.async_tasks WHERE payload_ref=?",
+                        String.class,
+                        "source-order-intake:" + jobId))
+                .isEqualTo("FAILED");
+    }
+
+    @Test
+    void failedJobOriginalCanBeDownloadedThroughTheControlledJobEndpoint() throws Exception {
+        byte[] workbook = workbook(
+                List.of("新订单编号", "客户姓名", "联系电话", "商品描述", "数量"),
+                List.of("DOWNLOAD-001", "张三", "13800000000", "羊肉礼盒", "1"));
+        ResponseEntity<Map> submitted = submit("失败订单.xlsx", workbook, "DAZHE", "intake-download-0001");
+        long jobId = Long.parseLong(submitted.getBody().get("id").toString());
+        jdbc.update("UPDATE app.source_order_intake_jobs SET status='FAILED' WHERE id=?", jobId);
+
+        HttpHeaders downloadHeaders = new HttpHeaders();
+        downloadHeaders.set("X-Operator", "intake-api-test");
+        ResponseEntity<byte[]> downloaded = http.exchange(
+                "/api/v1/source-order-intake-jobs/" + jobId + "/file",
+                org.springframework.http.HttpMethod.GET,
+                new HttpEntity<>(downloadHeaders),
+                byte[].class);
+
+        assertThat(downloaded.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(downloaded.getBody()).isEqualTo(workbook);
+        assertThat(downloaded.getHeaders().getContentDisposition().getType()).isEqualTo("attachment");
+        assertThat(downloaded.getHeaders().getContentDisposition().getFilename()).isEqualTo("失败订单.xlsx");
+        assertThat(downloaded.getHeaders().getFirst("X-Content-Type-Options")).isEqualTo("nosniff");
+    }
+
+    @Test
+    void mimeExtensionAndMagicMustDescribeTheSameFormat() throws Exception {
+        byte[] workbook = workbook(dazheHeaders(), dazheRow("DAZHE-MIME-001"));
+
+        ResponseEntity<Map> response = submit(
+                "dazhe.xlsx", workbook, MediaType.TEXT_PLAIN, "DAZHE", "intake-mime-0001");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(response.getBody().get("business_code")).isEqualTo("SOURCE_FILE_CONTENT_TYPE_MISMATCH");
+
+        ResponseEntity<Map> disguisedWorkbook = submit(
+                "dazhe.csv", workbook, MediaType.APPLICATION_OCTET_STREAM, "DAZHE", "intake-magic-0001");
+        assertThat(disguisedWorkbook.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(disguisedWorkbook.getBody().get("business_code"))
+                .isEqualTo("SOURCE_FILE_FORMAT_UNSUPPORTED");
+    }
 
     @Test
     void unknownWorkbookIsRetainedBeforeExtractionAndDuplicateSubmissionReusesJob() throws Exception {
@@ -106,7 +176,31 @@ class SourceOrderIntakeApiTest {
                 job.get("import_batch_id"))).isEqualTo("DAZHE");
     }
 
+    @Test
+    void legacyXlsWorkbookUsesTheWorkbookParserInsteadOfCsv() throws Exception {
+        List<String> headers = dazheHeaders();
+        byte[] workbook = legacyWorkbook(headers, dazheRow("DAZHE-XLS-001"));
+        ResponseEntity<Map> submitted = submit("dazhe.xls", workbook, "DAZHE", "intake-xls-0001");
+        long jobId = Long.parseLong(submitted.getBody().get("id").toString());
+
+        AsyncTaskStore.AsyncTask task = tasks.claim(
+                        SourceOrderIntakeService.TASK_TYPE, "xls-owner", Duration.ofSeconds(30))
+                .orElseThrow();
+        processor.process(task);
+        tasks.succeed(task.id(), "xls-owner");
+
+        Map<String, Object> job = jdbc.queryForMap(
+                "SELECT status, import_batch_id FROM app.source_order_intake_jobs WHERE id=?", jobId);
+        assertThat(job.get("status")).isEqualTo("SUCCEEDED");
+        assertThat(job.get("import_batch_id")).isNotNull();
+    }
+
     private ResponseEntity<Map> submit(String filename, byte[] bytes, String sourceChannel, String key) {
+        return submit(filename, bytes, MediaType.APPLICATION_OCTET_STREAM, sourceChannel, key);
+    }
+
+    private ResponseEntity<Map> submit(
+            String filename, byte[] bytes, MediaType partContentType, String sourceChannel, String key) {
         ByteArrayResource resource = new ByteArrayResource(bytes) {
             @Override
             public String getFilename() {
@@ -114,7 +208,9 @@ class SourceOrderIntakeApiTest {
             }
         };
         MultiValueMap<String, Object> form = new LinkedMultiValueMap<>();
-        form.add("file", resource);
+        HttpHeaders partHeaders = new HttpHeaders();
+        partHeaders.setContentType(partContentType);
+        form.add("file", new HttpEntity<>(resource, partHeaders));
         form.add("source_channel", sourceChannel);
         form.add("import_mode", "NEW");
         HttpHeaders headers = new HttpHeaders();
@@ -128,7 +224,15 @@ class SourceOrderIntakeApiTest {
     }
 
     private byte[] workbook(List<String> headers, List<String> values) throws Exception {
-        try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+        return workbookBytes(new XSSFWorkbook(), headers, values);
+    }
+
+    private byte[] legacyWorkbook(List<String> headers, List<String> values) throws Exception {
+        return workbookBytes(new HSSFWorkbook(), headers, values);
+    }
+
+    private byte[] workbookBytes(Workbook workbook, List<String> headers, List<String> values) throws Exception {
+        try (workbook; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             var sheet = workbook.createSheet("Sheet1");
             var header = sheet.createRow(0);
             for (int index = 0; index < headers.size(); index++) {
@@ -141,5 +245,19 @@ class SourceOrderIntakeApiTest {
             workbook.write(output);
             return output.toByteArray();
         }
+    }
+
+    private List<String> dazheHeaders() {
+        return List.of(
+                "渠道订单号", "主商品编码", "供应商商品名称", "商品名称", "订单商品状态",
+                "采购单价(元)", "商品数量", "收货人", "收货人手机", "收货人详细地址",
+                "预计到货时间", "渠道下单时间", "渠道支付时间", "快递单号", "快递公司");
+    }
+
+    private List<String> dazheRow(String orderNo) {
+        return List.of(
+                orderNo, "DZ-SKU-001", "羊肉礼盒", "羊肉礼盒", "待发货",
+                "99", "1", "李四", "13900000000", "北京市朝阳区测试路 1 号",
+                "", "2026-08-27 08:00:00", "2026-08-27 08:01:00", "", "");
     }
 }

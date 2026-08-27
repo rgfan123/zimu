@@ -16,6 +16,8 @@ import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -218,6 +220,40 @@ class LangChain4jRuntimeAdapterTokenAccountingTest {
         assertThat(captureTokens(observability).modelCalls()).isEqualTo(3);
     }
 
+    @Test
+    void deadlineStopsLaterToolSideEffectsInTheSameModelTurn() {
+        responses.add(twoToolCallResponse("slow_tool", "write_tool"));
+        AtomicInteger writes = new AtomicInteger();
+        Map<ToolSpecification, ToolExecutor> tools = new LinkedHashMap<>();
+        tools.put(
+                ToolSpecification.builder().name("slow_tool").description("慢查询").build(),
+                (request, memoryId) -> {
+                    try {
+                        Thread.sleep(300);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return "{\"ok\":true}";
+                });
+        tools.put(
+                ToolSpecification.builder().name("write_tool").description("写操作").build(),
+                (request, memoryId) -> {
+                    writes.incrementAndGet();
+                    return "{\"ok\":true}";
+                });
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties());
+
+        AgentRunResult result = runtime.run(new AgentTaskRequest(
+                "sys",
+                "x",
+                new AgentToolBinding(RUN_ID, tools),
+                null,
+                new AgentExecutionBudget(2, 2, Duration.ofMillis(200), 2)));
+
+        assertThat(result.error()).isEqualTo("AGENT_EXECUTION_BUDGET_EXHAUSTED");
+        assertThat(writes).hasValue(0);
+    }
+
     // ------------------------------------------------------------------
     // 助手
     // ------------------------------------------------------------------
@@ -275,6 +311,16 @@ class LangChain4jRuntimeAdapterTokenAccountingTest {
                 + "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\""
                 + content.replace("\"", "\\\"") + "\"},\"finish_reason\":\"stop\"}],"
                 + "\"usage\":{\"prompt_tokens\":" + prompt + ",\"completion_tokens\":" + completion + "}}";
+    }
+
+    private String twoToolCallResponse(String firstTool, String secondTool) {
+        return "{\"id\":\"c\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"m\","
+                + "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":null,"
+                + "\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{"
+                + "\"name\":\"" + firstTool + "\",\"arguments\":\"{}\"}},{\"id\":\"call_2\","
+                + "\"type\":\"function\",\"function\":{\"name\":\"" + secondTool
+                + "\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],"
+                + usage(10, 1, 11) + "}";
     }
 
     private String usage(int prompt, int completion, int total) {

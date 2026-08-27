@@ -616,7 +616,7 @@ async function downloadFile(path: string, fallbackName: string): Promise<void> {
   } catch {
     filename = plainName ?? fallbackName;
   }
-  if (!/\.(csv|xlsx)$/i.test(filename)) {
+  if (!/\.(csv|xls|xlsx)$/i.test(filename)) {
     filename += blob.type.includes('csv') ? '.csv' : '.xlsx';
   }
   const url = URL.createObjectURL(blob);
@@ -655,6 +655,8 @@ export const fileOperationsApi = {
   },
   getSourceJob: (id: string) =>
     apiRequest<SourceOrderIntakeJob>(`/api/v1/source-order-intake-jobs/${id}`),
+  downloadSourceOriginal: (id: string) =>
+    downloadFile(`/api/v1/source-order-intake-jobs/${id}/file`, `来源订单原件-${id}`),
   uploadSource(file: File, mode: 'NEW' | 'REVISION' = 'NEW', parentBatchId?: string) {
     const form = new FormData();
     form.append('file', file);

@@ -57,6 +57,10 @@ class SourceFileParser {
             "含运毛利额", "含运毛利率", "订单类型", "实物售后");
     private static final Set<String> WANQI_PENDING_STATUSES = Set.of("超时未发货", "待发货");
     private static final Charset GB18030 = Charset.forName("GB18030");
+    private static final byte[] OLE2_MAGIC = {
+        (byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0,
+        (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1
+    };
     private final DataFormatter formatter = new DataFormatter(java.util.Locale.ROOT);
 
     ParsedSourceFile parse(byte[] bytes) {
@@ -64,13 +68,29 @@ class SourceFileParser {
             throw BusinessException.unprocessable("EMPTY_FILE", "上传文件为空");
         }
         try {
-            return isOoxml(bytes) ? parseWorkbook(bytes) : parseCsv(bytes);
+            return isWorkbook(bytes) ? parseWorkbook(bytes) : parseCsv(bytes);
         } catch (BusinessException exception) {
             throw exception;
         } catch (Exception exception) {
             throw BusinessException.unprocessable(
                     "FILE_READ_FAILED", "文件无法识别，请确认文件未损坏且格式为 Excel 或 CSV 后重试");
         }
+    }
+
+    private static boolean isWorkbook(byte[] bytes) {
+        return startsWith(bytes, new byte[] {'P', 'K'}) || startsWith(bytes, OLE2_MAGIC);
+    }
+
+    private static boolean startsWith(byte[] bytes, byte[] prefix) {
+        if (bytes.length < prefix.length) {
+            return false;
+        }
+        for (int index = 0; index < prefix.length; index++) {
+            if (bytes[index] != prefix[index]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private ParsedSourceFile parseWorkbook(byte[] bytes) throws IOException {
@@ -557,10 +577,6 @@ class SourceFileParser {
 
     private boolean blank(String value) {
         return value == null || value.isBlank();
-    }
-
-    private boolean isOoxml(byte[] bytes) {
-        return bytes.length >= 2 && bytes[0] == 'P' && bytes[1] == 'K';
     }
 
     private String digest(String value) {

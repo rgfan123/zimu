@@ -1,11 +1,15 @@
 package cn.zimu.fulfillment.file;
 
+import cn.zimu.fulfillment.common.audit.AuditActorType;
+import cn.zimu.fulfillment.common.audit.AuditLogService;
+import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,11 +29,17 @@ public class SourceOrderIntakeService {
     private final JdbcTemplate jdbc;
     private final AsyncTaskStore tasks;
     private final SourceOrderIntakeFileStore files;
+    private final AuditLogService audit;
 
-    SourceOrderIntakeService(JdbcTemplate jdbc, AsyncTaskStore tasks, SourceOrderIntakeFileStore files) {
+    SourceOrderIntakeService(
+            JdbcTemplate jdbc,
+            AsyncTaskStore tasks,
+            SourceOrderIntakeFileStore files,
+            AuditLogService audit) {
         this.jdbc = jdbc;
         this.tasks = tasks;
         this.files = files;
+        this.audit = audit;
     }
 
     @Transactional
@@ -93,6 +103,36 @@ public class SourceOrderIntakeService {
                 .findFirst()
                 .orElseThrow(() -> new BusinessException(
                         404, "SOURCE_ORDER_INTAKE_JOB_NOT_FOUND", "来源订单附件任务不存在"));
+    }
+
+    public FileDownload download(long id, CommandContext context) {
+        FileReference reference = jdbc.query(
+                        """
+                        SELECT original_file_name, content_type, file_ref
+                        FROM app.source_order_intake_jobs WHERE id=?
+                        """,
+                        (resultSet, rowNumber) -> new FileReference(
+                                resultSet.getString("original_file_name"),
+                                resultSet.getString("content_type"),
+                                resultSet.getString("file_ref")),
+                        id)
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(
+                        404, "SOURCE_ORDER_INTAKE_JOB_NOT_FOUND", "来源订单附件任务不存在"));
+        byte[] bytes = files.load(reference.fileRef());
+        audit.record(new AuditLogService.AuditCommand()
+                .dataScope(DataScope.BUSINESS)
+                .requestId(context.requestId())
+                .traceId(context.traceId())
+                .operator(context.operator())
+                .actorType(AuditActorType.HUMAN)
+                .service("source-order-intake")
+                .operation("original.download")
+                .requestPayload(Map.of("job_id", id))
+                .httpStatus(200)
+                .businessCode("SOURCE_ORDER_ORIGINAL_DOWNLOADED"));
+        return new FileDownload(reference.filename(), reference.contentType(), bytes);
     }
 
     IntakeJob load(long id) {
@@ -168,6 +208,14 @@ public class SourceOrderIntakeService {
                 """,
                 errorCode,
                 id);
+    }
+
+    @Transactional
+    void recordWorkerFailure(
+            long taskId, String owner, long jobId, String errorCode, Duration backoff) {
+        if (tasks.fail(taskId, owner, errorCode, backoff)) {
+            markFailed(jobId, errorCode);
+        }
     }
 
     static long jobId(String payloadRef) {
@@ -265,4 +313,8 @@ public class SourceOrderIntakeService {
             String status,
             String idempotencyKey,
             String submittedBy) {}
+
+    private record FileReference(String filename, String contentType, String fileRef) {}
+
+    public record FileDownload(String filename, String contentType, byte[] bytes) {}
 }
