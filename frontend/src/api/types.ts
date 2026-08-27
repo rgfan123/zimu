@@ -600,6 +600,8 @@ export interface KnownWecomChat {
   label: string | null;
   event_count: number;
   last_seen_at: string | null;
+  /** 会话回复策略：FULL=自由回复（缺省），RECEIPTS_ONLY=静默（只发白名单回执/业务文件）。 */
+  reply_mode: 'FULL' | 'RECEIPTS_ONLY';
 }
 
 /** 内部运营人员（Issue #89）：姓名、企微 userid、所属责任团队；只做映射与责任归属，不做登录/权限。 */

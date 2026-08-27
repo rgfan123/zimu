@@ -30,6 +30,7 @@ class OrderDraftCardRunnerTest {
     private OrderDraftQueryService drafts;
     private WecomOutboundGateway gateway;
     private OrderDraftCardFailureCoordinator failures;
+    private cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService replyPolicies;
     private OrderDraftCardRunner runner;
 
     @BeforeEach
@@ -39,7 +40,28 @@ class OrderDraftCardRunnerTest {
         drafts = mock(OrderDraftQueryService.class);
         gateway = mock(WecomOutboundGateway.class);
         failures = mock(OrderDraftCardFailureCoordinator.class);
-        runner = new OrderDraftCardRunner(cards, tasks, drafts, gateway, failures);
+        replyPolicies = mock(cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService.class);
+        // 缺省 FULL：既有用例全部按「允许对话」跑，静默行为单独立用例
+        when(replyPolicies.allowsConversational(org.mockito.ArgumentMatchers.any())).thenReturn(true);
+        runner = new OrderDraftCardRunner(cards, tasks, drafts, gateway, failures, replyPolicies);
+    }
+
+    @Test
+    void 静默会话不追问_草稿卡落SUPERSEDED不发送() {
+        AsyncTaskStore.AsyncTask task = task(1, 1);
+        OrderDraftCard card = new OrderDraftCard(
+                7L, 41L, 0L, "order-draft:41", "GROUP", "customer-group", "PENDING", 0);
+        when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
+                .thenReturn(true);
+        when(cards.load(7L)).thenReturn(card);
+        when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
+        when(replyPolicies.allowsConversational("customer-group")).thenReturn(false);
+
+        runner.execute(task);
+
+        verify(gateway, never()).send(org.mockito.ArgumentMatchers.any());
+        verify(cards).recordSuperseded(7L, "WECOM_CHAT_REPLY_SILENCED");
+        verify(tasks).succeed(task.id(), task.leaseOwner());
     }
 
     @Test

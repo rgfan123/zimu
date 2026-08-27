@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV59() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV60() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -114,16 +114,16 @@ class ProductionMigrationHistoryCompatTest {
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 59 条历史")
-                .hasSize(59);
+                .as("完整升级后应恰有 60 条历史")
+                .hasSize(60);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
         // V48–V57 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 59))
-                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）与 V54（#113，合并 PR #128 时与礼包 V53 撞号后顺延）、V55（通用业务卡投递）、V56（履约单据 Agent）、V57（来源回填企微投递）、V58（复核认领）与 V59（导出人读文件名）")
+        assertThat(historyAfter.subList(47, 60))
+                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）与 V54（#113，合并 PR #128 时与礼包 V53 撞号后顺延）、V55（通用业务卡投递）、V56（履约单据 Agent）、V57（来源回填企微投递）、V58（复核认领）、V59（导出人读文件名）与 V60（会话回复策略）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -160,7 +160,10 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V58__review_case_claim.sql")),
                         new HistoryRow("59", "V59__fulfillment_export_display_filename.sql",
                                 "fulfillment export display filename",
-                                crc32Of("V59__fulfillment_export_display_filename.sql")));
+                                crc32Of("V59__fulfillment_export_display_filename.sql")),
+                        new HistoryRow("60", "V60__wecom_chat_reply_policies.sql",
+                                "wecom chat reply policies",
+                                crc32Of("V60__wecom_chat_reply_policies.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // V48–V57 分别用内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片与

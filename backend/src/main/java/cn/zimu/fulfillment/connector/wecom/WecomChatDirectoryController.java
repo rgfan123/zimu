@@ -26,16 +26,24 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/wecom")
 public class WecomChatDirectoryController {
 
-    /** label 只对单聊有值（运营人员姓名）；群名企微协议不下发，只有 chatid。 */
+    /**
+     * label 只对单聊有值（运营人员姓名）；群名企微协议不下发，只有 chatid。
+     * replyMode：会话回复策略（FULL=自由回复；RECEIPTS_ONLY=静默，只发白名单回执/回填）。
+     */
     public record KnownChat(
-            String chatId, String chatType, String label, long eventCount, OffsetDateTime lastSeenAt) {}
+            String chatId, String chatType, String label, long eventCount, OffsetDateTime lastSeenAt,
+            String replyMode) {}
 
     public record Directory(List<KnownChat> chats) {}
 
-    private final JdbcTemplate jdbc;
+    public record ReplyPolicyWrite(String replyMode, String note) {}
 
-    public WecomChatDirectoryController(JdbcTemplate jdbc) {
+    private final JdbcTemplate jdbc;
+    private final WecomChatReplyPolicyService replyPolicies;
+
+    public WecomChatDirectoryController(JdbcTemplate jdbc, WecomChatReplyPolicyService replyPolicies) {
         this.jdbc = jdbc;
+        this.replyPolicies = replyPolicies;
     }
 
     @GetMapping("/chats")
@@ -45,11 +53,13 @@ public class WecomChatDirectoryController {
         }
         List<KnownChat> chats = new ArrayList<>(jdbc.query(
                 """
-                SELECT chat_id, count(*) AS event_count, max(received_at) AS last_seen_at
-                FROM app.wecom_events
-                WHERE chat_type = 'group' AND chat_id IS NOT NULL AND chat_id <> ''
-                GROUP BY chat_id
-                ORDER BY max(received_at) DESC
+                SELECT e.chat_id, count(*) AS event_count, max(e.received_at) AS last_seen_at,
+                       min(p.reply_mode) AS reply_mode
+                FROM app.wecom_events e
+                LEFT JOIN app.wecom_chat_reply_policies p ON p.chat_id = e.chat_id
+                WHERE e.chat_type = 'group' AND e.chat_id IS NOT NULL AND e.chat_id <> ''
+                GROUP BY e.chat_id
+                ORDER BY max(e.received_at) DESC
                 LIMIT 50
                 """,
                 (rs, rowNum) -> new KnownChat(
@@ -57,13 +67,15 @@ public class WecomChatDirectoryController {
                         "group",
                         null,
                         rs.getLong("event_count"),
-                        rs.getObject("last_seen_at", OffsetDateTime.class))));
+                        rs.getObject("last_seen_at", OffsetDateTime.class),
+                        mode(rs.getString("reply_mode")))));
         chats.addAll(jdbc.query(
                 """
-                SELECT wecom_userid, display_name
-                FROM app.internal_operators
-                WHERE active AND wecom_userid IS NOT NULL AND btrim(wecom_userid) <> ''
-                ORDER BY id
+                SELECT o.wecom_userid, o.display_name, p.reply_mode
+                FROM app.internal_operators o
+                LEFT JOIN app.wecom_chat_reply_policies p ON p.chat_id = o.wecom_userid
+                WHERE o.active AND o.wecom_userid IS NOT NULL AND btrim(o.wecom_userid) <> ''
+                ORDER BY o.id
                 LIMIT 50
                 """,
                 (rs, rowNum) -> new KnownChat(
@@ -71,7 +83,36 @@ public class WecomChatDirectoryController {
                         "single",
                         rs.getString("display_name"),
                         0,
-                        null)));
+                        null,
+                        mode(rs.getString("reply_mode")))));
         return new Directory(chats);
+    }
+
+    private static String mode(String stored) {
+        return stored == null ? WecomChatReplyPolicyService.MODE_FULL : stored;
+    }
+
+    /**
+     * 设置会话回复策略。业务语义见 {@link WecomChatReplyPolicyService}：
+     * 客户群配 RECEIPTS_ONLY 静默收单，个人助手保持 FULL 自由应答。
+     */
+    @org.springframework.web.bind.annotation.PutMapping("/chats/{chatId}/reply-policy")
+    public KnownChat setReplyPolicy(
+            @org.springframework.web.bind.annotation.PathVariable String chatId,
+            @org.springframework.web.bind.annotation.RequestBody ReplyPolicyWrite body,
+            @RequestHeader(value = "X-Operator", required = false) String operator) {
+        if (operator == null || operator.isBlank()) {
+            throw new BusinessException(401, "ADMIN_AUTH_REQUIRED", "管理后台操作需要认证");
+        }
+        String mode = body == null ? null : body.replyMode();
+        if (!WecomChatReplyPolicyService.MODE_FULL.equals(mode)
+                && !WecomChatReplyPolicyService.MODE_RECEIPTS_ONLY.equals(mode)) {
+            throw new BusinessException(400, "INVALID_REPLY_MODE", "reply_mode 只接受 FULL / RECEIPTS_ONLY");
+        }
+        if (chatId == null || chatId.isBlank() || chatId.length() > 128) {
+            throw new BusinessException(400, "INVALID_CHAT_ID", "chat_id 非法");
+        }
+        replyPolicies.upsert(chatId, mode, body.note(), operator);
+        return new KnownChat(chatId, null, null, 0, null, mode);
     }
 }

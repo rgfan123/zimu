@@ -65,6 +65,7 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
     private final WecomBusinessCardInteractionService businessCardInteractions;
     private final String businessCardBaseUrl;
     private final ObjectProvider<WecomOutboundGateway> outboundGatewayProvider;
+    private final WecomChatReplyPolicyService replyPolicies;
 
     private volatile WecomConnectionManager connectionManager;
     private volatile WecomOutboundGateway outboundGateway;
@@ -77,7 +78,8 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
             WecomOrderDraftCardInteractionService cardInteractions,
             WecomBusinessCardInteractionService businessCardInteractions,
             @Value("${app.wecom-business-card.base-url:}") String businessCardBaseUrl,
-            ObjectProvider<WecomOutboundGateway> outboundGatewayProvider) {
+            ObjectProvider<WecomOutboundGateway> outboundGatewayProvider,
+            WecomChatReplyPolicyService replyPolicies) {
         this.submissionService = submissionService;
         this.connectionManagerProvider = connectionManagerProvider;
         this.jdbc = jdbc;
@@ -90,6 +92,7 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
                 ? "https://work.weixin.qq.com"
                 : businessCardBaseUrl.trim();
         this.outboundGatewayProvider = outboundGatewayProvider;
+        this.replyPolicies = replyPolicies;
     }
 
     @Override
@@ -147,7 +150,7 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
                 frame);
         try {
             long submissionId = submissionService.submit(command);
-            deliverReceipt(reqId, msgType);
+            deliverReceipt(reqId, msgType, chatId);
         } catch (RuntimeException ex) {
             // 不回执：企微会按回调重试（重复回调由幂等键收敛）；证据若已落库则保留。
             log.error("企微消息处理失败，等待通道重试 msgid={}", messageId, ex);
@@ -495,9 +498,18 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         return botId;
     }
 
-    /** 回执：透传回调 req_id；失败重试 1 次，仍失败只告警不重推（04 决策）。 */
-    private void deliverReceipt(String reqId, String msgType) {
+    /**
+     * 回执：透传回调 req_id；失败重试 1 次，仍失败只告警不重推（04 决策）。
+     *
+     * <p>静默会话（客户群）抑制泛文本回执「已接收」——闲聊消息不该被机器人打断；
+     * 文件回执保留：收单文件的确认正是静默会话也要的「特定回执」。
+     */
+    private void deliverReceipt(String reqId, String msgType, String chatId) {
         if (reqId.isBlank()) {
+            return;
+        }
+        if (!"file".equals(msgType) && !replyPolicies.allowsConversational(chatId)) {
+            log.debug("静默会话抑制泛回执 chat_id={}", chatId);
             return;
         }
         ObjectNode body = objectMapper.createObjectNode();

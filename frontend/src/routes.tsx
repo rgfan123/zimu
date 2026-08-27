@@ -45,6 +45,7 @@ import {
   AgentDetailPage,
   AgentRunsPage,
   AgentsListPage,
+  ReplyPolicyPage,
   FulfillmentFilePage,
   RunDetailPage,
 } from '@/pages/agents';
@@ -80,6 +81,7 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/orders/:orderId': <OrderDetailPage />,
   '/agents': <AgentsListPage />,
   '/agents/runs': <AgentRunsPage />,
+  '/agents/reply-policies': <ReplyPolicyPage />,
   '/agents/cost': <AgentCostPage />,
   '/agents/fulfillment-file': <FulfillmentFilePage />,
   '/agents/new': <AgentCreatePage />,

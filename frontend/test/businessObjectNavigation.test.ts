@@ -115,15 +115,15 @@ test('京东工具收敛为单入口，六个查询页保留隐藏直达', () =>
   });
 });
 
-test('采购入口全站唯一（我的工作台），Agent 中心收敛为列表/运行记录两入口', () => {
+test('采购入口全站唯一（我的工作台），Agent 中心收敛为列表/运行记录/会话回复策略三入口', () => {
   const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
   const procurementVisible = visiblePaths.filter((path) => path.startsWith('/workbench/procurement') || path.startsWith('/procurement/'));
   assert.deepEqual(procurementVisible, ['/workbench/procurement'], '采购相关可见入口只能有一个（我的工作台「采购」）');
   const agents = findNavigationNode(appNavigation, '/agents');
   assert.deepEqual(
     agents?.children?.filter(({ hideInMenu }) => !hideInMenu)?.map(({ path }) => path),
-    ['/agents', '/agents/runs'],
-    'Agent 中心可见入口收敛为 Agent 列表 + 运行记录',
+    ['/agents', '/agents/runs', '/agents/reply-policies'],
+    'Agent 中心可见入口：Agent 列表 + 运行记录 + 会话回复策略（按会话控制机器人自动回复）',
   );
 });
 

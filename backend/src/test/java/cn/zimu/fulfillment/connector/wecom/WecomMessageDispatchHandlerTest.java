@@ -459,6 +459,30 @@ class WecomMessageDispatchHandlerTest {
         assertThat(count).isEqualTo(1);
     }
 
+    @Test
+    void 静默会话抑制文本泛回执_文件回执照发() {
+        jdbc.update("INSERT INTO app.wecom_chat_reply_policies (chat_id, reply_mode, updated_by) "
+                + "VALUES ('chat-silent', 'RECEIPTS_ONLY', 'dispatch-test') ON CONFLICT (chat_id) DO NOTHING");
+        when(submissionService.submit(any())).thenReturn(9L);
+
+        // 客户群闲聊：机器人不该插「已接收」
+        handler.onFrame("aibot_msg_callback",
+                textFrame("MSG-SIL-1", "group", "chat-silent", "user-9", "顺丰到了吗"));
+        verify(connectionManager, never()).respond(any(), any());
+
+        // 收单文件：正是静默会话也要的「特定回执」
+        handler.onFrame(
+                "aibot_msg_callback",
+                json(
+                        "{\"cmd\":\"aibot_msg_callback\",\"headers\":{\"req_id\":\"REQ-SIL-2\"},\"body\":{"
+                                + "\"msgid\":\"MSG-SIL-2\",\"aibotid\":\"bot-1\",\"chatid\":\"chat-silent\","
+                                + "\"chattype\":\"group\",\"from\":{\"userid\":\"user-9\"},\"msgtype\":\"file\","
+                                + "\"file\":{\"url\":\"https://media.example/f\",\"aeskey\":\"aes-f\",\"md5sum\":\"m\"}}}"));
+        ArgumentCaptor<JsonNode> receipt = ArgumentCaptor.forClass(JsonNode.class);
+        verify(connectionManager).respond(eq("REQ-SIL-2"), receipt.capture());
+        assertThat(receipt.getValue().path("text").path("content").asText()).contains("已收到文件");
+    }
+
     private JsonNode textFrame(String messageId, String chatType, String chatId, String sender, String content) {
         return json(
                 "{\"cmd\":\"aibot_msg_callback\",\"headers\":{\"req_id\":\"REQ-1\"},\"body\":{"

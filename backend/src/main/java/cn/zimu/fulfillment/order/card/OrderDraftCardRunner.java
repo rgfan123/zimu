@@ -25,18 +25,21 @@ public class OrderDraftCardRunner {
     private final OrderDraftQueryService drafts;
     private final WecomOutboundGateway gateway;
     private final OrderDraftCardFailureCoordinator failures;
+    private final cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService replyPolicies;
 
     public OrderDraftCardRunner(
             OrderDraftCardStore cards,
             AsyncTaskStore tasks,
             OrderDraftQueryService drafts,
             WecomOutboundGateway gateway,
-            OrderDraftCardFailureCoordinator failures) {
+            OrderDraftCardFailureCoordinator failures,
+            cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService replyPolicies) {
         this.cards = cards;
         this.tasks = tasks;
         this.drafts = drafts;
         this.gateway = gateway;
         this.failures = failures;
+        this.replyPolicies = replyPolicies;
     }
 
     public void execute(AsyncTaskStore.AsyncTask task) {
@@ -53,6 +56,13 @@ public class OrderDraftCardRunner {
         if (permit.action() == CardSendAction.SKIP_UNKNOWN) {
             failures.recordDeliveryUnknown(
                     task, cardId, "WECOM_ORDER_DRAFT_CARD_DELIVERY_UNKNOWN");
+            return;
+        }
+
+        if (!replyPolicies.allowsConversational(card.chatId())) {
+            // 静默会话（客户群）不追问：草稿仍在，缺失信息走工作台复核，不打扰群成员
+            cards.recordSuperseded(cardId, "WECOM_CHAT_REPLY_SILENCED");
+            tasks.succeed(task.id(), task.leaseOwner());
             return;
         }
 

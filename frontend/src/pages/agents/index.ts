@@ -10,4 +10,5 @@ export { default as AgentCostPage } from './AgentCostPage';
 export { default as AgentCreatePage } from './AgentCreatePage';
 export { default as FulfillmentFilePage } from './FulfillmentFilePage';
 export { default as RunDetailPage } from './RunDetailPage';
+export { default as ReplyPolicyPage } from './ReplyPolicyPage';
 export { default as EvalsTab } from './EvalsTab';

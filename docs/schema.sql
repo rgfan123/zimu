@@ -587,6 +587,8 @@ CREATE TABLE app.fulfillment_exports (
     tracking_due_at     TIMESTAMPTZ NOT NULL,
     generated_by        VARCHAR(128) NOT NULL,
     generated_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- V59：人读文件名（如「子牧黑猪肉8.27发货清单.xlsx」）；历史导出为空退回批次号命名
+    display_filename    VARCHAR(120),
     CHECK (btrim(export_batch_no) <> ''),
     CHECK (btrim(template_version) <> ''),
     CHECK (btrim(file_ref) <> ''),
@@ -707,8 +709,13 @@ CREATE TABLE app.review_cases (
     resolution_version  BIGINT NOT NULL DEFAULT 0 CHECK (resolution_version >= 0),
     resolved_by         VARCHAR(128),
     resolved_at         TIMESTAMPTZ,
+    -- V58：企微「我来处理」的认领落点；认领不是处置，claimed_* 与 resolved_* 各自独立
+    claimed_by          TEXT,
+    claimed_at          TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK ((claimed_by IS NULL) = (claimed_at IS NULL)),
+    CHECK (claimed_by IS NULL OR btrim(claimed_by) <> ''),
     CHECK (btrim(case_no) <> ''),
     CHECK (btrim(case_type) <> ''),
     CHECK (btrim(responsible_team) <> ''),
@@ -2287,6 +2294,7 @@ CREATE UNIQUE INDEX uq_review_case_open_subject_reason ON app.review_cases(
     (COALESCE(raw_import_row_id, 0))
 ) WHERE status = 'OPEN';
 CREATE INDEX idx_review_cases_queue ON app.review_cases(status, responsible_team, created_at);
+CREATE INDEX review_cases_unclaimed_open_idx ON app.review_cases (created_at) WHERE status = 'OPEN' AND claimed_by IS NULL;
 CREATE INDEX idx_review_cases_order ON app.review_cases(order_id);
 CREATE INDEX idx_review_cases_order_line ON app.review_cases(order_line_id);
 CREATE INDEX idx_review_cases_fulfillment ON app.review_cases(fulfillment_id);
@@ -6701,3 +6709,17 @@ COMMENT ON COLUMN app.source_return_exports.wecom_delivery_status IS
 COMMENT ON COLUMN app.source_return_exports.wecom_media_id_sha256 IS
     '企微临时素材 media_id 的哈希；media_id 本身是 3 天期凭据，按既有纪律不落库明文';
 -- END V57__source_return_wecom_delivery.sql
+
+-- BEGIN V60__wecom_chat_reply_policies.sql
+-- 会话级回复策略：客户群静默收单（白名单回执/回填照发），个人助手自由应答；无行=FULL。
+CREATE TABLE app.wecom_chat_reply_policies (
+    chat_id     VARCHAR(128) PRIMARY KEY CHECK (btrim(chat_id) <> ''),
+    reply_mode  VARCHAR(16) NOT NULL CHECK (reply_mode IN ('FULL', 'RECEIPTS_ONLY')),
+    note        VARCHAR(500),
+    updated_by  VARCHAR(128) NOT NULL CHECK (btrim(updated_by) <> ''),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+COMMENT ON TABLE app.wecom_chat_reply_policies IS
+    '企微会话回复策略：RECEIPTS_ONLY=静默（抑制泛回执与追问草稿卡），无行=FULL 自由回复';
+-- END V60__wecom_chat_reply_policies.sql

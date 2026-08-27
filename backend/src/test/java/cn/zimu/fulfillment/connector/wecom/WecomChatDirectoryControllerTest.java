@@ -64,6 +64,38 @@ class WecomChatDirectoryControllerTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void 回复策略可写可读_非法模式拒绝() {
+        jdbc.update(
+                """
+                INSERT INTO app.wecom_events (event_type, msgid, aibot_id, chat_id, chat_type, raw_payload)
+                VALUES ('template_card_event', 'MSG-POL-1', 'bot', 'wrPOLICYGROUP001', 'group', '{}'::jsonb)
+                """);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Operator", "zimu-admin");
+        headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+
+        ResponseEntity<Map> put = http.exchange(
+                "/api/v1/wecom/chats/wrPOLICYGROUP001/reply-policy", HttpMethod.PUT,
+                new HttpEntity<>(Map.of("reply_mode", "RECEIPTS_ONLY", "note", "客户群静默"), headers), Map.class);
+        assertThat(put.getStatusCode().value()).isEqualTo(200);
+        assertThat(put.getBody().get("reply_mode")).isEqualTo("RECEIPTS_ONLY");
+
+        ResponseEntity<Map> listing = http.exchange(
+                "/api/v1/wecom/chats", HttpMethod.GET, new HttpEntity<>(headers), Map.class);
+        List<Map<String, Object>> chats = (List<Map<String, Object>>) listing.getBody().get("chats");
+        assertThat(chats).anySatisfy(chat -> {
+            assertThat(chat.get("chat_id")).isEqualTo("wrPOLICYGROUP001");
+            assertThat(chat.get("reply_mode")).isEqualTo("RECEIPTS_ONLY");
+        });
+
+        ResponseEntity<Map> bad = http.exchange(
+                "/api/v1/wecom/chats/wrPOLICYGROUP001/reply-policy", HttpMethod.PUT,
+                new HttpEntity<>(Map.of("reply_mode", "WHATEVER"), headers), Map.class);
+        assertThat(bad.getStatusCode().value()).isEqualTo(400);
+    }
+
+    @Test
     void 无操作人_401() {
         ResponseEntity<Map> response = http.getForEntity("/api/v1/wecom/chats", Map.class);
         assertThat(response.getStatusCode().value()).isEqualTo(401);
