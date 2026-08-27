@@ -85,6 +85,7 @@ class WecomBusinessCardPipelineIntegrationTest {
                         BatchConfirmedCard.DOMAIN,
                         JdOutboundFailureCard.DOMAIN,
                         PreShipConfirmCard.DOMAIN,
+                        BatchPreShipConfirmCard.DOMAIN,
                         ShipmentResultCard.DOMAIN);
     }
 

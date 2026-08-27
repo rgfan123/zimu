@@ -84,24 +84,32 @@ public class PreShipConfirmWorker {
         // SKU_MAPPED 的订单**还没有 shipment**——shipment 是确认过程中才建的。
         // 直接去找现成 shipment 的写法在 SKU_MAPPED 订单上必然扑空，
         // 而那正是确认卡最常见的触发时点。
-        List<Long> batchIds = jdbc.query(
-                "SELECT source_import_batch_id FROM app.orders WHERE id = ? AND source_import_batch_id IS NOT NULL",
-                (rs, rowNum) -> rs.getLong(1),
-                payload.orderId());
-        if (batchIds.isEmpty()) {
-            log.warn("发货前确认找不到来源批次 order_id={}", payload.orderId());
-            tasks.failTerminal(task.id(), owner, "PRESHIP_NO_SOURCE_BATCH");
-            return;
+        long batchId;
+        if (payload.batchScoped()) {
+            // 整批卡：载荷里就是批次号
+            batchId = payload.entityId();
+        } else {
+            List<Long> batchIds = jdbc.query(
+                    "SELECT source_import_batch_id FROM app.orders WHERE id = ? AND source_import_batch_id IS NOT NULL",
+                    (rs, rowNum) -> rs.getLong(1),
+                    payload.entityId());
+            if (batchIds.isEmpty()) {
+                log.warn("发货前确认找不到来源批次 order_id={}", payload.entityId());
+                tasks.failTerminal(task.id(), owner, "PRESHIP_NO_SOURCE_BATCH");
+                return;
+            }
+            batchId = batchIds.getFirst();
         }
-        long batchId = batchIds.getFirst();
 
         String operator = "wecom:" + payload.actor();
         CommandContext context = new CommandContext(
                 "preship-" + task.id(), null, operator, operator);
         // 幂等键绑住批次：同一张卡被重复点击、或企微重推同一事件，
         // 都只会确认一次、建一张京东出库单
-        String idempotencyKey = "preship-batch-" + batchId + "-order-" + payload.orderId()
-                + "-v" + payload.version();
+        String idempotencyKey = payload.batchScoped()
+                ? "preship-batch-" + batchId + "-v" + payload.version()
+                : "preship-batch-" + batchId + "-order-" + payload.entityId()
+                        + "-v" + payload.version();
 
         try {
             var confirmed = sourceBatches.confirmSourceBatch(batchId, idempotencyKey, context);
@@ -110,8 +118,8 @@ public class PreShipConfirmWorker {
             if (!confirmed.replayed()) {
                 sourceBatches.submitJdOutboundsForSourceBatch(batchId, context);
             }
-            log.info("企微确认整批完成 batch_id={} order_id={} operator={}",
-                    batchId, payload.orderId(), operator);
+            log.info("企微确认整批完成 batch_id={} entity_id={} operator={}",
+                    batchId, payload.entityId(), operator);
         } catch (BusinessException ex) {
             // 失败已由确认/建单链路自己落审计与告警，这里只收口任务，不重复告警
             log.warn("企微确认被拒 batch_id={} code={} msg={}",
@@ -126,7 +134,16 @@ public class PreShipConfirmWorker {
             return;
         }
         tasks.succeed(task.id(), owner);
-        enqueueResultCard(payload.orderId());
+        if (payload.batchScoped()) {
+            // 整批：每单一张结果卡——读者点的是一张卡，要看的是每一单的结局
+            jdbc.query(
+                            "SELECT id FROM app.orders WHERE source_import_batch_id = ? ORDER BY id",
+                            (rs, rowNum) -> rs.getLong(1),
+                            batchId)
+                    .forEach(this::enqueueResultCard);
+        } else {
+            enqueueResultCard(payload.entityId());
+        }
     }
 
     /** 建单成功后播报：这张卡的读者刚点过确认，他要的是「建成了没有」。 */
@@ -143,14 +160,19 @@ public class PreShipConfirmWorker {
         }
     }
 
-    /** {@code preship:{orderId}:{version}:{actor}:{chatId}}；chatId 可为空。 */
-    record Payload(long orderId, long version, String actor, String chatId) {
+    /**
+     * {@code preship:{orderId}:{version}:{actor}:{chatId}}（单卡）或
+     * {@code preship-batch:{batchId}:{version}:{actor}:{chatId}}（整批卡）；chatId 可为空。
+     */
+    record Payload(boolean batchScoped, long entityId, long version, String actor, String chatId) {
         static Payload parse(String payloadRef) {
             String[] parts = payloadRef.split(":", 5);
-            if (parts.length < 4 || !"preship".equals(parts[0])) {
+            boolean batch = "preship-batch".equals(parts[0]);
+            if (parts.length < 4 || (!batch && !"preship".equals(parts[0]))) {
                 throw new IllegalArgumentException("非法的确认任务载荷: " + payloadRef);
             }
             return new Payload(
+                    batch,
                     Long.parseLong(parts[1]),
                     Long.parseLong(parts[2]),
                     parts[3],

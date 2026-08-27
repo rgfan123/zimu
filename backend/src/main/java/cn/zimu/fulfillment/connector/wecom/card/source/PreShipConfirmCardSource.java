@@ -152,6 +152,8 @@ public class PreShipConfirmCardSource implements WecomBusinessCardSource {
                       AND c.entity_id = o.id
                       AND c.entity_version = o.lock_version
                 WHERE o.order_status = 'SKU_MAPPED'
+                  -- 导入批次的订单走整批确认卡（一批一卡）；单卡只服务无批次的手工单
+                  AND o.source_import_batch_id IS NULL
                   AND o.updated_at >= ?
                   AND c.id IS NULL
                   AND EXISTS (SELECT 1 FROM app.order_lines l WHERE l.order_id = o.id)

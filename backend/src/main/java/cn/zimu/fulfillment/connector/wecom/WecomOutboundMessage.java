@@ -21,6 +21,7 @@ public record WecomOutboundMessage(
         TEXT("text"),
         MARKDOWN("markdown"),
         FILE("file"),
+        IMAGE("image"),
         TEMPLATE_CARD("template_card");
 
         private final String protocolValue;
@@ -38,10 +39,10 @@ public record WecomOutboundMessage(
         chatId = requireText(chatId, "chatId");
         type = Objects.requireNonNull(type, "type");
         switch (type) {
-            case FILE -> {
+            case FILE, IMAGE -> {
                 mediaId = requireText(mediaId, "mediaId");
                 if (content != null || templateCard != null) {
-                    throw new IllegalArgumentException("FILE message must carry only a media id");
+                    throw new IllegalArgumentException("file/image message must carry only a media id");
                 }
             }
             case TEMPLATE_CARD -> {
@@ -73,6 +74,11 @@ public record WecomOutboundMessage(
 
     public static WecomOutboundMessage file(String chatId, String mediaId) {
         return new WecomOutboundMessage(chatId, Type.FILE, null, mediaId, null);
+    }
+
+    /** 图片消息（msgtype=image + image.media_id）：清单表格图等随卡视觉件。 */
+    public static WecomOutboundMessage image(String chatId, String mediaId) {
+        return new WecomOutboundMessage(chatId, Type.IMAGE, null, mediaId, null);
     }
 
     public static WecomOutboundMessage templateCard(String chatId, JsonNode templateCard) {

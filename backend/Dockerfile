@@ -14,7 +14,8 @@ RUN --mount=type=cache,target=/root/.m2 \
 FROM eclipse-temurin:21-jre-alpine
 
 # 三平台订单刷新通道（platform-pull）：容器内直接执行拉取脚本（python3 + requests）。
-RUN apk add --no-cache python3 py3-requests \
+# fontconfig + Noto CJK：待确认清单表格图（Java2D）里的中文渲染；缺了全是方块
+RUN apk add --no-cache python3 py3-requests fontconfig font-noto-cjk \
     && addgroup -S app \
     && adduser -S -G app app \
     && mkdir -p /var/lib/zimu-fulfillment/files \

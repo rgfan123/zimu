@@ -35,6 +35,7 @@ public class WecomBusinessCardInteractionService {
     /** 本服务负责的域。不在此列的 task_id 留给订单草稿卡按原逻辑处理。 */
     public static final Set<String> DOMAINS = Set.of(
             PreShipConfirmCard.DOMAIN,
+            BatchPreShipConfirmCard.DOMAIN,
             ReviewCaseCard.DOMAIN,
             OperationalAlertCard.DOMAIN,
             JdOutboundFailureCard.DOMAIN,
@@ -142,6 +143,7 @@ public class WecomBusinessCardInteractionService {
 
         return switch (taskId.domain()) {
             case PreShipConfirmCard.DOMAIN -> preship(taskId, buttonKey, actor, idempotencyKey);
+            case BatchPreShipConfirmCard.DOMAIN -> batchPreship(taskId, buttonKey, actor, idempotencyKey);
             case ReviewCaseCard.DOMAIN -> review(taskId, buttonKey, actor);
             case OperationalAlertCard.DOMAIN -> alert(taskId, buttonKey, actor);
             case JdOutboundFailureCard.DOMAIN -> new Outcome(
@@ -149,6 +151,49 @@ public class WecomBusinessCardInteractionService {
                     "暂未接线", "京东重试建单请回后台执行");
             default -> new Outcome(
                     false, "WECOM_CARD_ACTION_NOT_APPLICABLE", "这张卡没有可执行的动作", "它是事后播报");
+        };
+    }
+
+    // ------------------------------------------------------------------
+    // preship-batch：整批确认发货 / 驳回（一批一卡）
+    // ------------------------------------------------------------------
+
+    private Outcome batchPreship(WecomTaskId taskId, String buttonKey, String actor, String idempotencyKey) {
+        // 版本断言：批版本 = 批内订单 lock_version 之和，与卡渲染同一口径
+        List<Long> current = jdbc.query(
+                """
+                SELECT sum(o.lock_version)
+                FROM app.orders o
+                WHERE o.source_import_batch_id = ? AND o.data_scope = 'BUSINESS'
+                GROUP BY o.source_import_batch_id
+                """,
+                (rs, rowNum) -> rs.getLong(1),
+                taskId.entityId());
+        if (current.isEmpty()) {
+            return new Outcome(false, "IMPORT_BATCH_NOT_FOUND", "未执行", "批次不存在或没有订单");
+        }
+        if (!taskId.matchesCurrent(taskId.domain(), taskId.entityId(), current.getFirst())) {
+            return new Outcome(
+                    false, "VERSION_CONFLICT", "这张卡已过期",
+                    "批内订单已被改动，请等新卡或回后台查看");
+        }
+        return switch (buttonKey) {
+            case BatchPreShipConfirmCard.CONFIRM_BUTTON_KEY -> {
+                tasks.enqueue(
+                        TASK_TYPE,
+                        "preship-batch:" + taskId.entityId() + ":" + taskId.version() + ":" + actor + ":",
+                        idempotencyKey,
+                        MAX_ATTEMPTS);
+                log.info("整批发货前确认已受理 task_id={} actor={}", taskId, actor);
+                yield new Outcome(
+                        true, "PRESHIP_BATCH_CONFIRM_ACCEPTED", "已确认，整批建单中",
+                        "正在为整批订单建出库单，建成后每单一张结果卡");
+            }
+            case BatchPreShipConfirmCard.REJECT_BUTTON_KEY -> {
+                log.info("整批发货前确认被驳回 task_id={} actor={}", taskId, actor);
+                yield new Outcome(false, "PRESHIP_BATCH_REJECTED", "已驳回", "这一批不会发出");
+            }
+            default -> new Outcome(false, "WECOM_CARD_BUTTON_UNKNOWN", "未执行", "不认识这个按钮");
         };
     }
 

@@ -67,8 +67,9 @@ public class WecomOutboundGateway {
     }
 
     private static Map<String, Object> auditRequest(WecomOutboundMessage message) {
-        if (message.type() == WecomOutboundMessage.Type.FILE) {
-            // 文件消息审计只存 chat_id/type/media_id 摘要，绝不落 media_id 明文或文件名
+        if (message.type() == WecomOutboundMessage.Type.FILE
+                || message.type() == WecomOutboundMessage.Type.IMAGE) {
+            // 文件/图片消息审计只存 chat_id/type/media_id 摘要，绝不落 media_id 明文或文件名
             return Map.of(
                     "chat_id", message.chatId(),
                     "message_type", message.type().protocolValue(),

@@ -1,9 +1,15 @@
 package cn.zimu.fulfillment.connector.wecom.card;
 
+import cn.zimu.fulfillment.connector.wecom.WecomMediaType;
 import cn.zimu.fulfillment.connector.wecom.WecomOutboundGateway;
 import cn.zimu.fulfillment.connector.wecom.WecomOutboundMessage;
 import cn.zimu.fulfillment.connector.wecom.WecomSendResult;
 import cn.zimu.fulfillment.connector.wecom.WecomSendStatus;
+import cn.zimu.fulfillment.connector.wecom.WecomUploadResult;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Duration;
@@ -88,6 +94,13 @@ public class WecomBusinessCardRunner {
             return;
         }
 
+        // 附件先行（如整批确认的明细清单）：先看清单、后见按钮。
+        // 任一附件失败按可重试处理——整卡（含附件）下轮重来；重试可能让人多收到
+        // 一份同样的清单，比「有按钮没明细」的卡安全得多。
+        if (!deliverAttachments(card, source.get(), cardId, task)) {
+            return;
+        }
+
         WecomSendResult result;
         try {
             result = gateway.send(WecomOutboundMessage.templateCard(card.chatId(), rendered.get()));
@@ -111,6 +124,75 @@ public class WecomBusinessCardRunner {
         } else {
             cards.recordUnknown(cardId, stableCode(result));
             tasks.succeed(task.id(), task.leaseOwner());
+        }
+    }
+
+    /** 附件逐个上传并投递；全部成功返回 true，否则已落好状态直接返回 false。 */
+    private boolean deliverAttachments(
+            WecomBusinessCard card,
+            WecomBusinessCardSource source,
+            long cardId,
+            AsyncTaskStore.AsyncTask task) {
+        List<WecomBusinessCardSource.Attachment> attachments;
+        try {
+            attachments = source.attachments(card.entityId(), card.entityVersion());
+        } catch (RuntimeException ex) {
+            log.warn("业务卡附件生成失败 task_id={}", card.taskId(), ex);
+            cards.recordRetryable(cardId, "WECOM_CARD_ATTACHMENT_RENDER_FAILED");
+            tasks.fail(task.id(), task.leaseOwner(), "WECOM_CARD_ATTACHMENT_RENDER_FAILED", Duration.ofSeconds(30));
+            return false;
+        }
+        for (WecomBusinessCardSource.Attachment attachment : attachments) {
+            if (!deliverOne(card, attachment, cardId, task)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean deliverOne(
+            WecomBusinessCard card,
+            WecomBusinessCardSource.Attachment attachment,
+            long cardId,
+            AsyncTaskStore.AsyncTask task) {
+        Path temp = null;
+        try {
+            String suffix = attachment.filename().contains(".")
+                    ? attachment.filename().substring(attachment.filename().lastIndexOf('.'))
+                    : ".bin";
+            temp = Files.createTempFile("wecom-card-attachment", suffix);
+            Files.write(temp, attachment.content());
+            WecomUploadResult upload = gateway.upload(temp, attachment.filename(), attachment.mediaType());
+            if (upload.mediaId() == null || upload.mediaId().isBlank()) {
+                cards.recordRetryable(cardId, "WECOM_CARD_ATTACHMENT_UPLOAD_FAILED");
+                tasks.fail(task.id(), task.leaseOwner(),
+                        "WECOM_CARD_ATTACHMENT_UPLOAD_FAILED", Duration.ofSeconds(30));
+                return false;
+            }
+            WecomOutboundMessage message = attachment.mediaType() == WecomMediaType.IMAGE
+                    ? WecomOutboundMessage.image(card.chatId(), upload.mediaId())
+                    : WecomOutboundMessage.file(card.chatId(), upload.mediaId());
+            WecomSendResult sent = gateway.send(message);
+            if (sent.status() != WecomSendStatus.SUCCESS) {
+                cards.recordRetryable(cardId, "WECOM_CARD_ATTACHMENT_SEND_FAILED");
+                tasks.fail(task.id(), task.leaseOwner(),
+                        "WECOM_CARD_ATTACHMENT_SEND_FAILED", Duration.ofSeconds(30));
+                return false;
+            }
+            return true;
+        } catch (IOException | RuntimeException ex) {
+            log.warn("业务卡附件投递失败 task_id={} file={}", card.taskId(), attachment.filename(), ex);
+            cards.recordRetryable(cardId, "WECOM_CARD_ATTACHMENT_SEND_FAILED");
+            tasks.fail(task.id(), task.leaseOwner(), "WECOM_CARD_ATTACHMENT_SEND_FAILED", Duration.ofSeconds(30));
+            return false;
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                    // 临时文件残留只影响磁盘，不影响业务
+                }
+            }
         }
     }
 

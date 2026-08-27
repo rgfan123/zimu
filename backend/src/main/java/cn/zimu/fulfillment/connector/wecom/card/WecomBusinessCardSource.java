@@ -47,6 +47,28 @@ public interface WecomBusinessCardSource {
     /** 该域的会话路由：单聊 userid 或群 chatid。返回 empty 表示未配置，落 SUPERSEDED。 */
     Optional<Route> route(long entityId);
 
+    /**
+     * 随卡附件（发卡前逐个投递，如整批确认的明细清单）。与 {@link #render} 同一套
+     * 版本纪律：按当前事实即时生成，事实已变时返回空列表。默认为无附件。
+     */
+    default java.util.List<Attachment> attachments(long entityId, long entityVersion) {
+        return java.util.List.of();
+    }
+
+    /** 附件：文件名 + 内容 + 媒体类型（决定走文件消息还是图片消息）。 */
+    record Attachment(
+            String filename, byte[] content, cn.zimu.fulfillment.connector.wecom.WecomMediaType mediaType) {
+        public Attachment {
+            if (filename == null || filename.isBlank()) {
+                throw new IllegalArgumentException("附件文件名不能为空");
+            }
+            if (content == null || content.length == 0) {
+                throw new IllegalArgumentException("附件内容不能为空");
+            }
+            java.util.Objects.requireNonNull(mediaType, "mediaType");
+        }
+    }
+
     /** 会话路由。群聊必须脱敏（收件人手机号与详细地址不得进群），由 source 在渲染时保证。 */
     record Route(RouteType type, String chatId) {
         public Route {
