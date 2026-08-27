@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.connector.wecom.card.source;
 
+import java.net.URI;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -15,9 +16,8 @@ public class CardDeepLinks {
     private final String baseUrl;
 
     public CardDeepLinks(@Value("${app.wecom-business-card.base-url:}") String baseUrl) {
-        this.baseUrl = baseUrl == null || baseUrl.isBlank()
-                ? null
-                : baseUrl.trim().replaceAll("/+$", "");
+        String normalized = baseUrl == null ? null : baseUrl.trim().replaceAll("/+$", "");
+        this.baseUrl = safeAbsoluteHttpBase(normalized) ? normalized : null;
     }
 
     public String of(String path) {
@@ -26,5 +26,27 @@ public class CardDeepLinks {
 
     public boolean configured() {
         return baseUrl != null;
+    }
+
+    private static boolean safeAbsoluteHttpBase(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        try {
+            URI uri = URI.create(value);
+            boolean https = "https".equalsIgnoreCase(uri.getScheme());
+            boolean loopbackHttp = "http".equalsIgnoreCase(uri.getScheme())
+                    && ("localhost".equalsIgnoreCase(uri.getHost())
+                            || "127.0.0.1".equals(uri.getHost())
+                            || "::1".equals(uri.getHost()));
+            return uri.isAbsolute()
+                    && (https || loopbackHttp)
+                    && uri.getHost() != null
+                    && uri.getUserInfo() == null
+                    && uri.getQuery() == null
+                    && uri.getFragment() == null;
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
     }
 }

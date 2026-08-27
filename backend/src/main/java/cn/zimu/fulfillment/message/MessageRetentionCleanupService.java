@@ -152,9 +152,14 @@ public class MessageRetentionCleanupService {
                   AND NOT EXISTS (SELECT 1 FROM app.provider_tracking_drafts td WHERE td.submission_id = ms.id)
                   AND NOT EXISTS (SELECT 1 FROM app.review_cases rc WHERE rc.message_submission_id = ms.id)
                   AND NOT EXISTS (
+                      SELECT 1 FROM app.business_followups bf
+                      WHERE bf.message_submission_id = ms.id)
+                  AND NOT EXISTS (
                       SELECT 1 FROM app.audit_logs al
                       WHERE al.request_payload ->> 'submission_id' = ms.id::text
-                         OR al.response_payload ->> 'submission_id' = ms.id::text)
+                         OR al.response_payload ->> 'submission_id' = ms.id::text
+                         OR al.request_payload ->> 'message_submission_id' = ms.id::text
+                         OR al.response_payload ->> 'message_submission_id' = ms.id::text)
                   AND NOT EXISTS (
                       SELECT 1 FROM app.message_submissions other
                       WHERE other.source_message_id = ms.source_message_id AND other.id <> ms.id)

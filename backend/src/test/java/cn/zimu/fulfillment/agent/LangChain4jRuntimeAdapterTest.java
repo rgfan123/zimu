@@ -11,6 +11,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
@@ -38,6 +39,7 @@ class LangChain4jRuntimeAdapterTest {
     private final AtomicReference<String> lastRequestBody = new AtomicReference<>();
     private volatile int status = 200;
     private volatile String responseBody;
+    private volatile long responseDelayMillis;
 
     @BeforeEach
     void startServer() throws IOException {
@@ -57,6 +59,15 @@ class LangChain4jRuntimeAdapterTest {
         String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
         lastRequestBody.set(body);
         lastAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+        if (responseDelayMillis > 0) {
+            try {
+                Thread.sleep(responseDelayMillis);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                exchange.close();
+                return;
+            }
+        }
         byte[] bytes = responseBody == null
                 ? new byte[0]
                 : responseBody.getBytes(StandardCharsets.UTF_8);
@@ -177,6 +188,24 @@ class LangChain4jRuntimeAdapterTest {
         assertThat(result.outcome()).isEqualTo(AgentOutcome.FAILED);
         assertThat(result.toString()).doesNotContain(API_KEY);
         assertThat(result.toString()).doesNotContain("boom");
+    }
+
+    @Test
+    void executionDeadlineStrictlyBoundsASingleModelCall() throws Exception {
+        serveOk("{\"summary\":\"too late\"}");
+        responseDelayMillis = 2_000;
+        AgentRuntime runtime = new LangChain4jRuntimeAdapter(properties(PROVIDER, MODEL));
+        long started = System.nanoTime();
+
+        AgentRunResult result = runtime.run(new AgentTaskRequest(
+                "sys",
+                "x",
+                AgentToolBinding.empty("run_" + "9".repeat(32)),
+                null,
+                new AgentExecutionBudget(2, 0, Duration.ofMillis(150), 2)));
+
+        assertThat(result.error()).isEqualTo("AGENT_EXECUTION_BUDGET_EXHAUSTED");
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(1));
     }
 
     @Test

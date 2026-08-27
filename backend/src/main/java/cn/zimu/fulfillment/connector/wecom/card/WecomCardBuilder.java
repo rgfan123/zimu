@@ -3,6 +3,7 @@ package cn.zimu.fulfillment.connector.wecom.card;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -13,8 +14,8 @@ import java.util.List;
  * 订单草稿卡是第一张手搓卡，再加四张就是五处各错各的。所有长度上限在此集中执行，
  * 超长一律**截断并加省略号**——静默丢字会让读者以为业务号就是那么短。
  *
- * <p>按钮策略：协议允许 6 个，本构造器硬性上限 3 个（§C 的设计裁定，不是协议限制）。
- * 移动端一屏放不下更多，第 4 个按钮从来不会被点。超限直接抛异常——卡片都是静态组合，
+ * <p>按钮策略：协议允许 6 个，本构造器硬性上限 4 个。客户跟进审批的
+ * 确认 / 重做 / 补充 / 暂停是四个必须的互斥决定，不能把其中一个藏到卡外。超限直接抛异常——卡片都是静态组合，
  * 单元测试必然先撞上，不会漏到线上。
  *
  * <p>不做的事：本类不判断哪些字段该脱敏。脱敏是业务语义（单聊可见全量、群聊必须脱敏），
@@ -31,8 +32,8 @@ public final class WecomCardBuilder {
     public static final int MAX_FIELDS = 6;
     public static final int MAX_BUTTON_TEXT = 10;
 
-    /** §C 设计裁定：协议允许 6 个，实用上限 3 个。 */
-    public static final int MAX_BUTTONS = 3;
+    /** 协议允许 6 个；业务卡只开放经证明必需的 4 个。 */
+    public static final int MAX_BUTTONS = 4;
 
     /** 按钮样式：1 蓝（主操作）/ 2 红（驳回或危险）/ 3 灰（次要）。 */
     public enum ButtonStyle {
@@ -51,10 +52,21 @@ public final class WecomCardBuilder {
         }
     }
 
+    private enum CardType {
+        BUTTON_INTERACTION("button_interaction"),
+        TEXT_NOTICE("text_notice");
+
+        private final String protocolValue;
+
+        CardType(String protocolValue) {
+            this.protocolValue = protocolValue;
+        }
+    }
+
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String ELLIPSIS = "…";
 
-    private final String cardType;
+    private final CardType cardType;
     private final WecomTaskId taskId;
     private final List<Field> fields = new ArrayList<>();
     private final List<Button> buttons = new ArrayList<>();
@@ -63,14 +75,14 @@ public final class WecomCardBuilder {
     private String subTitle;
     private String cardActionUrl;
 
-    private WecomCardBuilder(String cardType, WecomTaskId taskId) {
+    private WecomCardBuilder(CardType cardType, WecomTaskId taskId) {
         this.cardType = cardType;
         this.taskId = taskId;
     }
 
     /** 交互卡：带回调按钮，点击回企微事件。 */
     public static WecomCardBuilder buttonInteraction(WecomTaskId taskId) {
-        return new WecomCardBuilder("button_interaction", requireTaskId(taskId));
+        return new WecomCardBuilder(CardType.BUTTON_INTERACTION, requireTaskId(taskId));
     }
 
     /**
@@ -78,7 +90,7 @@ public final class WecomCardBuilder {
      * task_id 仍然必填——它是这张卡的身份，追溯与去重都要用。
      */
     public static WecomCardBuilder textNotice(WecomTaskId taskId) {
-        return new WecomCardBuilder("text_notice", requireTaskId(taskId));
+        return new WecomCardBuilder(CardType.TEXT_NOTICE, requireTaskId(taskId));
     }
 
     public WecomCardBuilder title(String value) {
@@ -144,8 +156,8 @@ public final class WecomCardBuilder {
     /** 跳转按钮（type=1）：深链回后台，承载一切需要参数的动作。 */
     public WecomCardBuilder jumpButton(String text, String url, ButtonStyle style) {
         requireButtonRoom();
-        if (url == null || url.isBlank()) {
-            throw new IllegalArgumentException("跳转按钮必须带 url");
+        if (!isSafeAbsoluteHttpUrl(url)) {
+            throw new IllegalArgumentException("跳转按钮必须带安全的绝对 HTTP(S) url");
         }
         buttons.add(new Button(truncate(text, MAX_BUTTON_TEXT), null, url, style));
         return this;
@@ -153,6 +165,9 @@ public final class WecomCardBuilder {
 
     /** 整卡点击跳转（card_action）：播报卡没有按钮时的唯一去处。 */
     public WecomCardBuilder cardAction(String url) {
+        if (url != null && !url.isBlank() && !isSafeAbsoluteHttpUrl(url)) {
+            throw new IllegalArgumentException("card_action 必须是安全的绝对 HTTP(S) url");
+        }
         this.cardActionUrl = url == null || url.isBlank() ? null : url;
         return this;
     }
@@ -161,8 +176,9 @@ public final class WecomCardBuilder {
         if (title == null || title.isBlank()) {
             throw new IllegalStateException("卡片必须有 main_title.title");
         }
+        validateCardType();
         ObjectNode card = JSON.createObjectNode();
-        card.put("card_type", cardType);
+        card.put("card_type", cardType.protocolValue);
         ObjectNode mainTitle = card.putObject("main_title").put("title", title);
         if (desc != null) {
             mainTitle.put("desc", desc);
@@ -212,8 +228,35 @@ public final class WecomCardBuilder {
 
     private void requireButtonRoom() {
         if (buttons.size() >= MAX_BUTTONS) {
-            throw new IllegalStateException(
-                    "按钮最多 " + MAX_BUTTONS + " 个（§C 裁定）：第 4 个按钮在移动端不会被点到");
+            throw new IllegalStateException("按钮最多 " + MAX_BUTTONS + " 个");
+        }
+    }
+
+    private void validateCardType() {
+        if (cardType != CardType.TEXT_NOTICE) {
+            return;
+        }
+        if (buttons.stream().anyMatch(button -> button.key() != null)) {
+            throw new IllegalStateException("text_notice 不得携带回调 button_list");
+        }
+        if (!isSafeAbsoluteHttpUrl(cardActionUrl)) {
+            throw new IllegalStateException("text_notice 必须带安全的绝对 HTTP(S) card_action");
+        }
+    }
+
+    private static boolean isSafeAbsoluteHttpUrl(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        try {
+            URI uri = URI.create(value);
+            return uri.isAbsolute()
+                    && ("http".equalsIgnoreCase(uri.getScheme())
+                            || "https".equalsIgnoreCase(uri.getScheme()))
+                    && uri.getHost() != null
+                    && uri.getUserInfo() == null;
+        } catch (IllegalArgumentException ex) {
+            return false;
         }
     }
 

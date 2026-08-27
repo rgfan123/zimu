@@ -23,6 +23,12 @@ import type {
 import type {
   AuditLog,
   AuditLogPage,
+  BusinessFollowUp,
+  BusinessFollowUpCreateInput,
+  BusinessFollowUpDecisionInput,
+  BusinessFollowUpOrganizeInput,
+  BusinessFollowUpPage,
+  BusinessFollowUpSummary,
   ChannelMessageDetail,
   ChannelMessagePage,
   MessageSubmissionDetail,
@@ -93,6 +99,7 @@ import type {
   SkuPage,
   SkuRecord,
   SourceChannel,
+  SourceOrderIntakeJob,
   SourceReturnExport,
   TrackingImportBatch,
   WecomBot,
@@ -677,7 +684,7 @@ async function downloadFile(path: string, fallbackName: string): Promise<void> {
   } catch {
     filename = plainName ?? fallbackName;
   }
-  if (!/\.(csv|xlsx)$/i.test(filename)) {
+  if (!/\.(csv|xls|xlsx)$/i.test(filename)) {
     filename += blob.type.includes('csv') ? '.csv' : '.xlsx';
   }
   const url = URL.createObjectURL(blob);
@@ -701,6 +708,23 @@ export const platformOrdersApi = {
 
 /** 来源订单、履约回传与来源回填组成同一条文件作业闭环。 */
 export const fileOperationsApi = {
+  uploadSourceJob(
+    file: File,
+    sourceChannel: SourceChannel,
+    mode: 'NEW' | 'REVISION' = 'NEW',
+    parentBatchId?: string,
+  ) {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('source_channel', sourceChannel);
+    form.append('import_mode', mode);
+    if (parentBatchId) form.append('parent_import_batch_id', parentBatchId);
+    return multipartRequest<SourceOrderIntakeJob>('/api/v1/source-order-intake-jobs', form);
+  },
+  getSourceJob: (id: string) =>
+    apiRequest<SourceOrderIntakeJob>(`/api/v1/source-order-intake-jobs/${id}`),
+  downloadSourceOriginal: (id: string) =>
+    downloadFile(`/api/v1/source-order-intake-jobs/${id}/file`, `来源订单原件-${id}`),
   uploadSource(file: File, mode: 'NEW' | 'REVISION' = 'NEW', parentBatchId?: string) {
     const form = new FormData();
     form.append('file', file);
@@ -922,6 +946,33 @@ export const messageSubmissionsApi = {
     apiRequest<MessageSubmissionDetail>(`/api/v1/message-submissions/${id}/reinterpret`, {
       method: 'POST',
       body: {},
+      headers: writeHeaders(),
+    }),
+};
+
+export const businessFollowUpsApi = {
+  list: (query: Pick<PageQuery, 'page' | 'size'> & { stage?: string } = {}) =>
+    apiRequest<BusinessFollowUpPage>('/api/v1/business-followups', {
+      params: query as Record<string, QueryValue>,
+    }),
+  detail: (id: string) =>
+    apiRequest<BusinessFollowUp>(`/api/v1/business-followups/${id}`),
+  create: (body: BusinessFollowUpCreateInput) =>
+    apiRequest<BusinessFollowUpSummary>('/api/v1/business-followups', {
+      method: 'POST',
+      body,
+      headers: writeHeaders(),
+    }),
+  organize: (id: string, body: BusinessFollowUpOrganizeInput) =>
+    apiRequest<BusinessFollowUpSummary>(`/api/v1/business-followups/${id}/organize`, {
+      method: 'POST',
+      body,
+      headers: writeHeaders(),
+    }),
+  decide: (id: string, body: BusinessFollowUpDecisionInput) =>
+    apiRequest<BusinessFollowUp>(`/api/v1/business-followups/${id}/decisions`, {
+      method: 'POST',
+      body,
       headers: writeHeaders(),
     }),
 };

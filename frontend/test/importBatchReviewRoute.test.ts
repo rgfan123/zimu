@@ -54,6 +54,37 @@ function sourceBatch(
   };
 }
 
+function intakeJob(status: 'RECEIVED' | 'SUCCEEDED' = 'RECEIVED') {
+  return {
+    id: '17',
+    job_no: 'SOI-17',
+    source_channel: 'CAISHIXIAN',
+    import_mode: 'NEW',
+    parent_import_batch_id: null,
+    original_file_name: 'caishixian.xlsx',
+    file_format: 'XLSX',
+    content_sha256: 'a'.repeat(64),
+    status,
+    error_code: null,
+    import_batch_id: status === 'SUCCEEDED' ? '7' : null,
+    lock_version: status === 'SUCCEEDED' ? 1 : 0,
+    created_at: '2026-08-27T00:00:00Z',
+    updated_at: '2026-08-27T00:00:01Z',
+  };
+}
+
+async function chooseSourceChannel(label = '彩食鲜') {
+  const selector = [...document.querySelectorAll<HTMLElement>('.ant-select-selector')]
+    .find((element) => element.querySelector('.ant-select-selection-placeholder')?.textContent === '选择来源渠道');
+  assert.ok(selector, 'missing source channel selector');
+  await harness.dispatchEvent(selector, new MouseEvent('mousedown', { bubbles: true }));
+  await harness.waitFor(() => assert.ok(document.querySelector('.ant-select-item-option')));
+  const option = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')]
+    .find((element) => element.textContent?.includes(label));
+  assert.ok(option, `missing source channel option ${label}`);
+  await harness.dispatchEvent(option, new MouseEvent('click', { bubbles: true }));
+}
+
 function reviewRow(id: string, status: 'ACCEPTED' | 'NEED_REVIEW') {
   return {
     id,
@@ -151,6 +182,7 @@ test('file job page restores the batch from the URL and the review link carries 
 
 test('file job page keeps the batch id in the URL after upload and refresh rehydrates it', async () => {
   const requests: string[] = [];
+  let jobReads = 0;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     requests.push(`${init?.method ?? 'GET'} ${url}`);
@@ -158,8 +190,13 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
     if (url.startsWith('/api/v1/fulfillment-exports')) {
       return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
     }
-    if (url === '/api/v1/import-batches/source-orders' && init?.method === 'POST') {
-      return jsonResponse(sourceBatch('7'), 201);
+    if (url === '/api/v1/source-order-intake-jobs' && init?.method === 'POST') {
+      return jsonResponse(intakeJob(), 202);
+    }
+    if (url === '/api/v1/source-order-intake-jobs/17') {
+      jobReads += 1;
+      if (jobReads === 1) throw new Error('临时网络故障');
+      return jsonResponse(jobReads < 4 ? { ...intakeJob(), status: 'PROCESSING' } : intakeJob('SUCCEEDED'));
     }
     if (url === '/api/v1/import-batches/7') {
       return jsonResponse(sourceBatch('7'));
@@ -177,7 +214,7 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
   // 全量套件 16 路并行时本文件常最后启动，vite SSR 冷启动可能挤占默认 3s——放宽到 10s（仅时限，断言不变）。
   await harness.waitFor(() => assert.match(harness.bodyText(), /来源订单导入/), 10_000);
 
-  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.csv"]');
+  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.xls,.csv"]');
   assert.ok(fileInput, 'missing source import file input');
   const file = new File(['fixture'], 'caishixian.xlsx', {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -185,10 +222,130 @@ test('file job page keeps the batch id in the URL after upload and refresh rehyd
   Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
   await harness.dispatchEvent(fileInput, new Event('change', { bubbles: true }));
   await harness.waitFor(() => assert.match(harness.bodyText(), /caishixian\.xlsx/), 10_000);
+  await chooseSourceChannel();
+  await control('开始导入').click();
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /附件任务 SOI-17 · 已接收/));
+  assert.match(harness.location(), /intake_job=17/, '处理中的任务标识必须可刷新恢复');
+  assert.doesNotMatch(harness.bodyText(), /· RECEIVED/);
+  await harness.waitFor(() => assert.match(harness.location(), /import_batch=7/), 10_000);
+  assert.match(harness.bodyText(), /IMP-B7/);
+  assert.equal(jobReads, 4, '短暂请求失败后仍必须持续轮询到终态');
+});
+
+test('duplicate upload that already succeeded restores its existing batch immediately', async () => {
+  const requests: string[] = [];
+  let batchReads = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/fulfillment-exports')) {
+      return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
+    }
+    if (url === '/api/v1/source-order-intake-jobs' && init?.method === 'POST') {
+      return jsonResponse(intakeJob('SUCCEEDED'), 202);
+    }
+    if (url === '/api/v1/import-batches/7') {
+      batchReads += 1;
+      if (batchReads === 1) throw new Error('临时网络故障');
+      return jsonResponse(sourceBatch('7'));
+    }
+    if (url === '/api/v1/import-batches/7/rows?page=0&size=200&status=ACCEPTED') {
+      return jsonResponse(page([reviewRow('71', 'ACCEPTED')]));
+    }
+    if (url === '/api/v1/import-batches/7/rows?page=0&size=200&status=NEED_REVIEW') {
+      return jsonResponse(page([reviewRow('72', 'NEED_REVIEW')]));
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/fulfillment/sales-outbound']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /来源订单导入/), 10_000);
+  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.xls,.csv"]');
+  assert.ok(fileInput, 'missing source import file input');
+  Object.defineProperty(fileInput, 'files', {
+    configurable: true,
+    value: [new File(['fixture'], 'caishixian.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })],
+  });
+  await harness.dispatchEvent(fileInput, new Event('change', { bubbles: true }));
+  await chooseSourceChannel();
   await control('开始导入').click();
 
   await harness.waitFor(() => assert.match(harness.location(), /import_batch=7/), 10_000);
   assert.match(harness.bodyText(), /IMP-B7/);
+  assert.equal(
+    requests.filter((request) => request === 'GET /api/v1/source-order-intake-jobs/17').length,
+    0,
+    '已成功的幂等任务不应重新轮询',
+  );
+  assert.equal(batchReads, 2, '已完成批次的短暂读取失败必须自动恢复');
+});
+
+test('refreshing a succeeded intake job URL restores the completed batch', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/fulfillment-exports')) {
+      return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
+    }
+    if (url === '/api/v1/source-order-intake-jobs/17') return jsonResponse(intakeJob('SUCCEEDED'));
+    if (url === '/api/v1/import-batches/7') return jsonResponse(sourceBatch('7'));
+    if (url === '/api/v1/import-batches/7/rows?page=0&size=200&status=ACCEPTED') {
+      return jsonResponse(page([reviewRow('71', 'ACCEPTED')]));
+    }
+    if (url === '/api/v1/import-batches/7/rows?page=0&size=200&status=NEED_REVIEW') {
+      return jsonResponse(page([reviewRow('72', 'NEED_REVIEW')]));
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/fulfillment/sales-outbound?intake_job=17']);
+  await harness.waitFor(() => assert.match(harness.location(), /import_batch=7/), 10_000);
+  assert.match(harness.bodyText(), /IMP-B7/);
+  assert.ok(requests.includes('GET /api/v1/source-order-intake-jobs/17'));
+});
+
+test('a missing intake job stops automatic retries', async () => {
+  let jobReads = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/fulfillment-exports')) {
+      return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
+    }
+    if (url === '/api/v1/source-order-intake-jobs/404') {
+      jobReads += 1;
+      return jsonResponse({ business_code: 'SOURCE_ORDER_INTAKE_JOB_NOT_FOUND', message: '不存在' }, 404);
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/fulfillment/sales-outbound?intake_job=404']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /未找到所需数据/), 10_000);
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+  assert.equal(jobReads, 1, '确定性 404 不应继续轮询');
+});
+
+test('a malformed intake job link fails closed with a visible error', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    requests.push(url);
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/fulfillment-exports')) {
+      return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/fulfillment/sales-outbound?intake_job=abc']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /不是有效的批次编号.*附件任务/), 10_000);
+  assert.equal(requests.some((url) => url.includes('/source-order-intake-jobs/')), false);
 });
 
 test('review page lands on the batch-filtered queue with batch context and an explicit way back', async () => {
@@ -287,8 +444,11 @@ test('operator completes upload → review → back → confirm without touching
     if (url.startsWith('/api/v1/fulfillment-exports')) {
       return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
     }
-    if (url === '/api/v1/import-batches/source-orders' && method === 'POST') {
-      return jsonResponse(sourceBatch('7'), 201);
+    if (url === '/api/v1/source-order-intake-jobs' && method === 'POST') {
+      return jsonResponse(intakeJob(), 202);
+    }
+    if (url === '/api/v1/source-order-intake-jobs/17') {
+      return jsonResponse(intakeJob('SUCCEEDED'));
     }
     if (url === '/api/v1/import-batches/7') {
       return jsonResponse(reviewed ? sourceBatch('7', { needReview: 0 }) : sourceBatch('7'));
@@ -316,7 +476,7 @@ test('operator completes upload → review → back → confirm without touching
   // 上传：选择文件并开始导入
   await harness.mount(['/fulfillment/sales-outbound']);
   await harness.waitFor(() => assert.match(harness.bodyText(), /来源订单导入/));
-  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.csv"]');
+  const fileInput = document.querySelector<HTMLInputElement>('input[type="file"][accept=".xlsx,.xls,.csv"]');
   assert.ok(fileInput, 'missing source import file input');
   const file = new File(['fixture'], 'caishixian.xlsx', {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -324,6 +484,7 @@ test('operator completes upload → review → back → confirm without touching
   Object.defineProperty(fileInput, 'files', { configurable: true, value: [file] });
   await harness.dispatchEvent(fileInput, new Event('change', { bubbles: true }));
   await harness.waitFor(() => assert.match(harness.bodyText(), /caishixian\.xlsx/));
+  await chooseSourceChannel();
   await control('开始导入').click();
 
   await harness.waitFor(() => assert.match(harness.location(), /import_batch=7/));

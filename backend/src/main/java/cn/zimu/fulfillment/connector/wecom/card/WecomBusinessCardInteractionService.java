@@ -46,10 +46,13 @@ public class WecomBusinessCardInteractionService {
 
     private final JdbcTemplate jdbc;
     private final AsyncTaskStore tasks;
+    private final WecomBusinessCardStore cards;
 
-    public WecomBusinessCardInteractionService(JdbcTemplate jdbc, AsyncTaskStore tasks) {
+    public WecomBusinessCardInteractionService(
+            JdbcTemplate jdbc, AsyncTaskStore tasks, WecomBusinessCardStore cards) {
         this.jdbc = jdbc;
         this.tasks = tasks;
+        this.cards = cards;
     }
 
     /**
@@ -134,6 +137,19 @@ public class WecomBusinessCardInteractionService {
             // 点卡片的是谁决定了这次动作的审计主体；认不出人就什么都不做
             return new Outcome(
                     false, "WECOM_CARD_ACTOR_REQUIRED", "未执行", "认不出点击人，无法记录操作主体");
+        }
+        WecomBusinessCard card = cards.findSentByTaskId(taskIdRaw)
+                .filter(value -> value.cardDomain().equals(taskId.domain()))
+                .filter(value -> value.entityId() == taskId.entityId())
+                .filter(value -> value.entityVersion() == taskId.version())
+                .orElse(null);
+        if (card == null) {
+            return new Outcome(
+                    false, "WECOM_CARD_NOT_SENT", "未执行", "这张卡未确认送达或授权已失效");
+        }
+        if (!matchesRoute(card, body, actor)) {
+            return new Outcome(
+                    false, "WECOM_CARD_ROUTE_MISMATCH", "未执行", "这次回调不属于卡片的送达会话");
         }
 
         // 企微会重推同一事件；幂等键含 msgid，收敛由 async_tasks 的唯一约束承担。
@@ -270,14 +286,19 @@ public class WecomBusinessCardInteractionService {
                     false, "REVIEW_CASE_ALREADY_CLAIMED", "已有人认领",
                     claimedBy.equals("wecom:" + actor) ? "你已经认领过了" : claimedBy + " 正在处理");
         }
-        jdbc.update(
+        int updated = jdbc.update(
                 """
                 UPDATE app.review_cases
                    SET claimed_by = ?, claimed_at = now(), updated_at = now()
-                 WHERE id = ? AND status = 'OPEN' AND claimed_by IS NULL
+                 WHERE id = ? AND status = 'OPEN' AND resolution_version = ? AND claimed_by IS NULL
                 """,
                 "wecom:" + actor,
-                taskId.entityId());
+                taskId.entityId(),
+                taskId.version());
+        if (updated == 0) {
+            return new Outcome(
+                    false, "REVIEW_CASE_ALREADY_CLAIMED", "已有人认领", "该事项刚被其他人认领，请刷新后查看");
+        }
         log.info("复核事项已认领 case_id={} actor={}", taskId.entityId(), actor);
         return new Outcome(true, "REVIEW_CASE_CLAIMED", "已认领", "这件事挂在你名下了");
     }
@@ -315,5 +336,14 @@ public class WecomBusinessCardInteractionService {
 
     private static String firstNonBlank(String first, String second) {
         return first != null && !first.isBlank() ? first : (second == null ? "" : second);
+    }
+
+    private static boolean matchesRoute(WecomBusinessCard card, JsonNode body, String actor) {
+        String chatId = body.path("chatid").asText("");
+        return switch (card.routeType()) {
+            case "SINGLE" -> chatId.isBlank() && card.chatId().equals(actor);
+            case "GROUP" -> !chatId.isBlank() && card.chatId().equals(chatId);
+            default -> false;
+        };
     }
 }

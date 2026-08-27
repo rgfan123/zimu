@@ -272,10 +272,10 @@ class WecomLongConnectionClientTest {
 
         try (var senders = Executors.newFixedThreadPool(2)) {
             Future<WecomSendResult> first =
-                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-a", "消息 A")));
+                    senders.submit(() -> client.send(WecomOutboundMessage.markdown("user-a", "消息 A")));
             awaitTrue(() -> blockedSend.get() != null);
             Future<WecomSendResult> second =
-                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-b", "消息 B")));
+                    senders.submit(() -> client.send(WecomOutboundMessage.markdown("user-b", "消息 B")));
 
             Thread.sleep(1_200);
             blockedSend.get().complete(blockedSocket.get());
@@ -332,13 +332,13 @@ class WecomLongConnectionClientTest {
         updatedCard.put("response_type", "update_template_card");
         updatedCard.putObject("template_card")
                 .put("card_type", "text_notice")
-                .put("task_id", "order-draft:41");
+                .put("task_id", "order-draft_41_v0");
         try (var senders = Executors.newFixedThreadPool(3)) {
             Future<WecomSendResult> first =
-                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-a", "消息 A")));
+                    senders.submit(() -> client.send(WecomOutboundMessage.markdown("user-a", "消息 A")));
             awaitTrue(() -> blockedSend.get() != null);
             Future<WecomSendResult> second =
-                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-b", "消息 B")));
+                    senders.submit(() -> client.send(WecomOutboundMessage.markdown("user-b", "消息 B")));
             Future<WecomSendResult> update =
                     senders.submit(() -> client.respondUpdate("event-req-41", updatedCard));
 
@@ -371,7 +371,7 @@ class WecomLongConnectionClientTest {
         updatedCard.put("response_type", "update_template_card");
         updatedCard.putObject("template_card")
                 .put("card_type", "text_notice")
-                .put("task_id", "order-draft:42");
+                .put("task_id", "order-draft_42_v0");
         server.sendMessageErrcode(93000);
 
         WecomSendResult rejected = client.respondUpdateUntil(
@@ -398,7 +398,7 @@ class WecomLongConnectionClientTest {
             updatedCard.put("response_type", "update_template_card");
             updatedCard.putObject("template_card")
                     .put("card_type", "text_notice")
-                    .put("task_id", "order-draft:43");
+                    .put("task_id", "order-draft_43_v0");
             updateResult.complete(client.respondUpdateUntil(
                     frame.path("headers").path("req_id").asText(),
                     updatedCard,
@@ -504,7 +504,7 @@ class WecomLongConnectionClientTest {
 
         try (var senders = Executors.newFixedThreadPool(2)) {
             Future<WecomSendResult> unrelated =
-                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-unrelated", "独立消息")));
+                    senders.submit(() -> client.send(WecomOutboundMessage.markdown("user-unrelated", "独立消息")));
             JsonNode unrelatedFrame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
 
             for (int index = 1; index <= 4; index++) {
@@ -588,7 +588,7 @@ class WecomLongConnectionClientTest {
 
         try (var sender = Executors.newSingleThreadExecutor()) {
             Future<WecomSendResult> unrelated =
-                    sender.submit(() -> client.send(WecomOutboundMessage.text("user-ordinary-overflow", "独立消息")));
+                    sender.submit(() -> client.send(WecomOutboundMessage.markdown("user-ordinary-overflow", "独立消息")));
             JsonNode unrelatedFrame = MAPPER.readTree(server.awaitFrame("aibot_send_msg", 2_000));
 
             server.sendText(cardEvent("event-ordinary-overflow"));
@@ -710,7 +710,7 @@ class WecomLongConnectionClientTest {
         updatedCard.put("response_type", "update_template_card");
         try (var senders = Executors.newFixedThreadPool(2)) {
             Future<WecomSendResult> blockedBusiness =
-                    senders.submit(() -> client.send(WecomOutboundMessage.text("user-a", "消息 A")));
+                    senders.submit(() -> client.send(WecomOutboundMessage.markdown("user-a", "消息 A")));
             awaitTrue(() -> blockedSend.get() != null);
             Future<WecomSendResult> update = senders.submit(() -> client.respondUpdateUntil(
                     "event-deadline",
@@ -734,7 +734,7 @@ class WecomLongConnectionClientTest {
 
         try (var sender = Executors.newSingleThreadExecutor()) {
             Future<WecomSendResult> pending =
-                    sender.submit(() -> client.send(WecomOutboundMessage.text("user-fragment", "分片应答")));
+                    sender.submit(() -> client.send(WecomOutboundMessage.markdown("user-fragment", "分片应答")));
             String outbound = server.awaitFrame("aibot_send_msg", 2_000);
             assertThat(outbound).isNotNull();
             String requestId = MAPPER.readTree(outbound).path("headers").path("req_id").asText();
@@ -780,14 +780,14 @@ class WecomLongConnectionClientTest {
         client.start();
         awaitState(WecomConnectionState.SUBSCRIBED);
 
-        WecomSendResult timedOutSend = client.send(WecomOutboundMessage.text("user-a", "消息 A"));
+        WecomSendResult timedOutSend = client.send(WecomOutboundMessage.markdown("user-a", "消息 A"));
         assertThat(timedOutSend.status()).isEqualTo(WecomSendStatus.FAILED);
         assertThat(timedOutSend.errorMessage()).isEqualTo("TRANSPORT_SEND_FAILED");
         assertThat(timedOutSend.retryable()).isFalse();
 
         awaitTrue(() -> server.connectionCount() >= 2);
         awaitState(WecomConnectionState.SUBSCRIBED);
-        WecomSendResult recoveredSend = client.send(WecomOutboundMessage.text("user-b", "消息 B"));
+        WecomSendResult recoveredSend = client.send(WecomOutboundMessage.markdown("user-b", "消息 B"));
         assertThat(recoveredSend.status()).isEqualTo(WecomSendStatus.SUCCESS);
     }
 

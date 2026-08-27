@@ -6,6 +6,7 @@ import cn.zimu.fulfillment.message.AsyncTaskStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -23,13 +24,15 @@ class WecomBusinessCardInteractionServiceTest {
 
     private RecordingTaskStore tasks;
     private StubJdbc jdbc;
+    private StubCardStore cards;
     private WecomBusinessCardInteractionService service;
 
     @BeforeEach
     void setUp() {
         tasks = new RecordingTaskStore();
         jdbc = new StubJdbc(1L);
-        service = new WecomBusinessCardInteractionService(jdbc, tasks);
+        cards = new StubCardStore();
+        service = new WecomBusinessCardInteractionService(jdbc, tasks, cards);
     }
 
     /**
@@ -64,6 +67,10 @@ class WecomBusinessCardInteractionServiceTest {
         return frame;
     }
 
+    private static ObjectNode callback(String taskId, String buttonKey, String actor) {
+        return frame(WecomTaskId.parse(taskId).orElseThrow().authorize(StubCardStore.AUTH).value(), buttonKey, actor);
+    }
+
     @Test
     void 嵌套与平铺两种帧形状都要认出来() {
         assertThat(WecomBusinessCardInteractionService.taskId(
@@ -92,7 +99,7 @@ class WecomBusinessCardInteractionServiceTest {
     @Test
     void 确认按钮排出建单任务_并当场回一句确定的话() {
         var outcome = service.handle(
-                frame("preship_4_v1", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
+                callback("preship_4_v1", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
 
         assertThat(outcome.accepted()).isTrue();
         assertThat(outcome.businessCode()).isEqualTo("PRESHIP_CONFIRM_ACCEPTED");
@@ -106,7 +113,7 @@ class WecomBusinessCardInteractionServiceTest {
     void 点旧卡直接判版本冲突_不建单() {
         // 卡上是 v0，库里已经是 v1：这张卡描述的事实已经不成立了
         var outcome = service.handle(
-                frame("preship_4_v0", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
+                callback("preship_4_v0", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
 
         assertThat(outcome.accepted()).isFalse();
         assertThat(outcome.businessCode()).isEqualTo("VERSION_CONFLICT");
@@ -116,7 +123,7 @@ class WecomBusinessCardInteractionServiceTest {
     @Test
     void 认不出点击人就不建单_建单必须有审计主体() {
         var outcome = service.handle(
-                frame("preship_4_v1", PreShipConfirmCard.CONFIRM_BUTTON_KEY, ""));
+                callback("preship_4_v1", PreShipConfirmCard.CONFIRM_BUTTON_KEY, ""));
 
         assertThat(outcome.accepted()).isFalse();
         assertThat(outcome.businessCode()).isEqualTo("WECOM_CARD_ACTOR_REQUIRED");
@@ -126,7 +133,7 @@ class WecomBusinessCardInteractionServiceTest {
     @Test
     void 驳回不排任务也不产生外部写() {
         var outcome = service.handle(
-                frame("preship_4_v1", PreShipConfirmCard.REJECT_BUTTON_KEY, "jry"));
+                callback("preship_4_v1", PreShipConfirmCard.REJECT_BUTTON_KEY, "jry"));
 
         assertThat(outcome.accepted()).isFalse();
         assertThat(outcome.businessCode()).isEqualTo("PRESHIP_REJECTED");
@@ -135,7 +142,7 @@ class WecomBusinessCardInteractionServiceTest {
 
     @Test
     void 不认识的按钮一律不执行() {
-        var outcome = service.handle(frame("preship_4_v1", "preship_delete_everything", "jry"));
+        var outcome = service.handle(callback("preship_4_v1", "preship_delete_everything", "jry"));
 
         assertThat(outcome.accepted()).isFalse();
         assertThat(outcome.businessCode()).isEqualTo("WECOM_CARD_BUTTON_UNKNOWN");
@@ -164,11 +171,21 @@ class WecomBusinessCardInteractionServiceTest {
     }
 
     @Test
+    void 可猜的逻辑task_id不是回调能力_绝不得触发建单() {
+        var outcome = service.handle(
+                frame("preship_4_v1", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
+
+        assertThat(outcome.accepted()).isFalse();
+        assertThat(outcome.businessCode()).isEqualTo("WECOM_CARD_NOT_SENT");
+        assertThat(tasks.enqueued).isEmpty();
+    }
+
+    @Test
     void 订单不存在时不建单() {
-        service = new WecomBusinessCardInteractionService(new StubJdbc(null), tasks);
+        service = new WecomBusinessCardInteractionService(new StubJdbc(null), tasks, cards);
 
         var outcome = service.handle(
-                frame("preship_9_v0", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
+                callback("preship_9_v0", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
 
         assertThat(outcome.businessCode()).isEqualTo("ORDER_NOT_FOUND");
         assertThat(tasks.enqueued).isEmpty();
@@ -177,9 +194,9 @@ class WecomBusinessCardInteractionServiceTest {
     @Test
     void 幂等键含msgid_企微重推同一事件不会排出第二个建单任务() {
         var first = service.handle(
-                frame("preship_4_v1", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
+                callback("preship_4_v1", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
         var second = service.handle(
-                frame("preship_4_v1", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
+                callback("preship_4_v1", PreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
 
         assertThat(first.accepted()).isTrue();
         assertThat(second.accepted()).isTrue();
@@ -205,6 +222,30 @@ class WecomBusinessCardInteractionServiceTest {
         @Override
         public void enqueue(String taskType, String payloadRef, String idempotencyKey, int maxAttempts) {
             enqueued.add(new Enqueued(taskType, payloadRef, idempotencyKey));
+        }
+    }
+
+    private static final class StubCardStore extends WecomBusinessCardStore {
+        private static final String AUTH = "0123456789abcdef0123456789abcdef";
+
+        StubCardStore() {
+            super(null);
+        }
+
+        @Override
+        public Optional<WecomBusinessCard> findSentByTaskId(String taskId) {
+            return WecomTaskId.parse(taskId)
+                    .filter(value -> AUTH.equals(value.authorizationRef()))
+                    .map(value -> new WecomBusinessCard(
+                            1L,
+                            value.domain(),
+                            value.entityId(),
+                            value.version(),
+                            taskId,
+                            "SINGLE",
+                            "jry",
+                            "SENT",
+                            1));
         }
     }
 

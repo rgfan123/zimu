@@ -91,6 +91,7 @@ class MessagePipelineOperationsApiTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        jdbc.update("DELETE FROM app.business_followups");
         jdbc.update("DELETE FROM app.review_cases");
         jdbc.update("DELETE FROM app.message_interpretations");
         jdbc.update("DELETE FROM app.message_media");
@@ -332,6 +333,34 @@ class MessagePipelineOperationsApiTest {
                 Long.class,
                 String.valueOf(submissionId));
         assertThat(auditRefs).isEqualTo(1);
+    }
+
+    @Test
+    void cleanupKeepsFollowUpEvidenceWhileRemovingAnIndependentExpiredSubmission() {
+        when(interpreter.interpret(any()))
+                .thenReturn(nonBusiness("跟进证据"))
+                .thenReturn(nonBusiness("可清理证据"));
+        long protectedSubmission = submitText("OPS-FOLLOWUP-PROTECTED", "已进入客户跟进");
+        long deletableSubmission = submitText("OPS-FOLLOWUP-DELETABLE", "普通非业务消息");
+        makeTasksDue();
+        pollWorker();
+        backdate(protectedSubmission);
+        backdate(deletableSubmission);
+        jdbc.update(
+                """
+                INSERT INTO app.business_followups
+                    (message_submission_id, employee_draft, created_by)
+                VALUES (?, '只存在业务表，不依赖审计字段也必须保留', 'retention-test')
+                """,
+                protectedSubmission);
+
+        Map<String, Object> report = postCleanup();
+
+        assertThat(report.get("expired_candidates")).isEqualTo(2);
+        assertThat(report.get("protected_count")).isEqualTo(1);
+        assertThat(report.get("submissions_removed")).isEqualTo(1);
+        assertThat(countSubmissions(protectedSubmission)).isEqualTo(1);
+        assertThat(countSubmissions(deletableSubmission)).isZero();
     }
 
     @Test

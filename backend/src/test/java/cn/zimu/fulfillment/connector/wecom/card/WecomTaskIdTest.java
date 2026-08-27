@@ -19,6 +19,23 @@ class WecomTaskIdTest {
     }
 
     @Test
+    void persistedDeliveryAddsAnOpaqueAuthorizationReferenceWithoutLosingVersion() {
+        WecomTaskId persisted = WecomTaskId.ofVersion("followup-draft", 42, 3)
+                .authorize("0123456789abcdef0123456789abcdef");
+
+        assertThat(persisted.value())
+                .isEqualTo("followup-draft_42_v3_0123456789abcdef0123456789abcdef");
+        assertThat(WecomTaskId.parse(persisted.value()))
+                .get()
+                .satisfies(parsed -> {
+                    assertThat(parsed.entityId()).isEqualTo(42);
+                    assertThat(parsed.version()).isEqualTo(3);
+                    assertThat(parsed.authorizationRef())
+                            .isEqualTo("0123456789abcdef0123456789abcdef");
+                });
+    }
+
+    @Test
     void parseRoundTripsEveryMarker() {
         for (String raw : new String[] {"review_1234_v0", "alert_5678_v2", "export_99_g3"}) {
             assertThat(WecomTaskId.parse(raw)).get().extracting(WecomTaskId::value).isEqualTo(raw);

@@ -9,9 +9,10 @@ public final class RequestContext {
     private final String traceId;
     private final String operator;
     private final String authenticatedOperator;
+    private final AuthenticationKind authenticationKind;
 
     public RequestContext(String requestId, String traceId, String operator) {
-        this(requestId, traceId, operator, null);
+        this(requestId, traceId, operator, null, AuthenticationKind.NONE);
     }
 
     public RequestContext(
@@ -19,10 +20,20 @@ public final class RequestContext {
             String traceId,
             String operator,
             String authenticatedOperator) {
+        this(requestId, traceId, operator, authenticatedOperator, AuthenticationKind.SHARED_BASIC);
+    }
+
+    public RequestContext(
+            String requestId,
+            String traceId,
+            String operator,
+            String authenticatedOperator,
+            AuthenticationKind authenticationKind) {
         this.requestId = requestId;
         this.traceId = traceId;
         this.operator = operator;
         this.authenticatedOperator = authenticatedOperator;
+        this.authenticationKind = authenticationKind == null ? AuthenticationKind.NONE : authenticationKind;
     }
 
     public static void set(RequestContext context) {
@@ -51,5 +62,9 @@ public final class RequestContext {
 
     public String getAuthenticatedOperator() {
         return authenticatedOperator;
+    }
+
+    public AuthenticationKind getAuthenticationKind() {
+        return authenticationKind;
     }
 }

@@ -31,7 +31,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V57）升级，Flyway validate（默认开启）必须成功且只追加
+ * migration set（V1..V64）升级，Flyway validate（默认开启）必须成功且只追加
  * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）、
  * V50（中汇稳定上传意图，Issue #116）、V51（企微业务通知 outbox，Issue #90）与
  * V52（企微订单草稿卡片，Issues #87/#88）、V53（礼包组件删除保护）与 V54（Shipment 来源同步状态机）与 V55（通用业务卡投递，#87/#88）与 V56（履约单据 Agent）；
@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV64() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV72() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -108,22 +108,24 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V57）升级——Flyway validate 默认开启，
-        // V40–V47 校验通过后只追加 V48/V49/V50/V51/V52/V53/V54/V55/V56，任何 repair/改写历史都会在此失败。
+        // 阶段二：完整当前 migration set（V1..V72）升级——Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加 V48–V72，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 64 条历史")
-                .hasSize(64);
+                .as("完整升级后应恰有 72 条历史")
+                .hasSize(72);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48–V64 尚未部署进生产，无生产常量可冻结；此处按当前文件计算校验和，与 Flyway 阶段二
-        // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
-        // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 64))
-                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）与 V54（#113，合并 PR #128 时与礼包 V53 撞号后顺延）、V55（通用业务卡投递）、V56（履约单据 Agent）、V57（来源回填企微投递）、V58（复核认领）、V59（导出人读文件名）、V60（会话回复策略）、V61（会话档案：备注名/Agent 绑定）、V62（企微机器人管理台账：管理界面先行，运行时接线未启用）、V63（商品档案·成本表全列留存：fields 数组序即原表列序）与 V64（来源订单创建时间：orders.source_ordered_at，与结算时间分开）")
+        // V48–V72 按当前文件计算校验和，与 Flyway 阶段二真实写入 flyway_schema_history 的
+        // 校验和互证（前 47 行 isEqualTo(historyBefore) 已保证 V40–V47 未被改写）。
+        // 两条并行开发线在 2026-08-27 合流：V59–V64 为已上线的企微/档案/订单线
+        //（生产已执行，号位不可动），客户跟进线原 V59–V66 八个迁移整体顺延为 V65–V72
+        //（其中 V71 冻结结构化执行意图、V72 新增来源订单附件任务）。
+        assertThat(historyAfter.subList(47, 72))
+                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）、V54（#113 撞号顺延）、V55（通用业务卡投递）、V56（履约单据 Agent）、V57（来源回填企微投递）、V58（复核认领）、V59（导出人读文件名）、V60（会话回复策略）、V61（会话档案）、V62（企微机器人台账）、V63（商品档案全列留存）、V64（来源订单创建时间）、V65–V70（客户跟进：主档/草稿/审批/指派/客户溯源/建客指派，撞号顺延）、V71（结构化执行意图）与 V72（来源订单附件任务）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -175,11 +177,35 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V63__product_archive_sheets.sql")),
                         new HistoryRow("64", "V64__orders_source_ordered_at.sql",
                                 "orders source ordered at",
-                                crc32Of("V64__orders_source_ordered_at.sql")));
+                                crc32Of("V64__orders_source_ordered_at.sql")),
+                        new HistoryRow("65", "V65__business_followups.sql",
+                                "business followups",
+                                crc32Of("V65__business_followups.sql")),
+                        new HistoryRow("66", "V66__kehuzx_followup_drafts.sql",
+                                "kehuzx followup drafts",
+                                crc32Of("V66__kehuzx_followup_drafts.sql")),
+                        new HistoryRow("67", "V67__business_followup_approvals.sql",
+                                "business followup approvals",
+                                crc32Of("V67__business_followup_approvals.sql")),
+                        new HistoryRow("68", "V68__business_followup_assignments.sql",
+                                "business followup assignments",
+                                crc32Of("V68__business_followup_assignments.sql")),
+                        new HistoryRow("69", "V69__kehuzx_customer_assignment_trace.sql",
+                                "kehuzx customer assignment trace",
+                                crc32Of("V69__kehuzx_customer_assignment_trace.sql")),
+                        new HistoryRow("70", "V70__kehuzx_customer_create_assignment.sql",
+                                "kehuzx customer create assignment",
+                                crc32Of("V70__kehuzx_customer_create_assignment.sql")),
+                        new HistoryRow("71", "V71__business_followup_execution_intent.sql",
+                                "business followup execution intent",
+                                crc32Of("V71__business_followup_execution_intent.sql")),
+                        new HistoryRow("72", "V72__source_order_intake_jobs.sql",
+                                "source order intake jobs",
+                                crc32Of("V72__source_order_intake_jobs.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
-        // V48–V57 分别用内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片与
-        // Shipment 来源同步状态机结构证明生效。
+        // 后续断言覆盖内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片、
+        // Shipment 来源同步状态机与客户跟进结构；完整 V48–V72 顺序由上方历史断言锁定。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -436,6 +462,222 @@ class ProductionMigrationHistoryCompatTest {
                     """)))
                     .as("V53 必须只播种一个无 PII 豁免、无写权限的建议型 reviewer")
                     .isEqualTo("1");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.tables
+                    WHERE table_schema='app' AND table_name IN (
+                        'kehuzx_read_evidence', 'kehuzx_read_failures',
+                        'business_followup_draft_versions')
+                    """)))
+                    .as("V60 必须同时持久化远端读取证据与版本化草稿")
+                    .isEqualTo("3");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM app.agent_definitions
+                    WHERE agent_slug='customer-followup-agent' AND version=1
+                      AND status='active' AND enabled AND NOT allow_write
+                      AND tool_whitelist <@ '[
+                        "kehuzx_search_customers", "kehuzx_get_customer_detail",
+                        "kehuzx_search_demands", "kehuzx_search_orders",
+                        "kehuzx_get_order_detail"
+                      ]'::jsonb
+                      AND jsonb_array_length(tool_whitelist)=5
+                    """)))
+                    .as("V60 客户跟进 Agent 只能看到五个命名空间化 Kehuzx 只读工具")
+                    .isEqualTo("1");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='business_followups'
+                      AND column_name IN (
+                        'designated_reviewer_operator_id',
+                        'current_confirmed_draft_version'
+                      )
+                    """)))
+                    .as("V61 必须把指定 +1 与已确认草稿版本作为可约束事实")
+                    .isEqualTo("2");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.tables
+                    WHERE table_schema='app' AND table_name='business_followup_approvals'
+                    """)))
+                    .as("V61 必须持久化绑定草稿版本的人工决定")
+                    .isEqualTo("1");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='business_followup_approvals'
+                      AND column_name IN (
+                        'application_status', 'application_failure_code', 'applied_at'
+                      )
+                    """)))
+                    .as("V61 必须单独持久化 Approval 的应用结果")
+                    .isEqualTo("3");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='wecom_events'
+                      AND column_name IN (
+                        'business_followup_id', 'business_followup_draft_version',
+                        'business_followup_approval_id'
+                      )
+                    """)))
+                    .as("V61 企微事件必须串联跟进、草稿版本与 Approval")
+                    .isEqualTo("3");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='business_followup_assignments'
+                      AND column_name IN (
+                        'followup_id', 'draft_version', 'approval_id', 'agent_run_id',
+                        'task_type', 'logical_target', 'assignee_type', 'assignee_ref',
+                        'status', 'due_at', 'priority', 'idempotency_key',
+                        'execution_task_key', 'request_id', 'external_entity_type',
+                        'external_entity_id', 'result_code'
+                      )
+                    """)))
+                    .as("V62 必须持久化可追溯且可独立执行的 Assignment 契约")
+                    .isEqualTo("17");
+            assertThat(single(statement.executeQuery(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='app' AND table_name='business_followup_assignments'
+                      AND column_name='payload_hash'
+                    """)))
+                    .as("V63 必须持久化确定性 Kehuzx payload hash")
+                    .isEqualTo("1");
+        }
+    }
+
+    @Test
+    void v67MigratesProtocolTaskIdsAndFencesApprovalFacts() throws Exception {
+        String database = "v67_business_followup_approvals";
+        try (Connection connection = DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            statement.execute("CREATE DATABASE " + database);
+        }
+        String databaseUrl = "jdbc:postgresql://" + postgres.getHost() + ":"
+                + postgres.getFirstMappedPort() + "/" + database;
+        // 改号纪事:客户跟进线原 V59-V61 顺延为 V65-V67,阶段点随之 60→66
+        flyway(databaseUrl, MigrationVersion.fromVersion("66")).migrate();
+
+        try (Connection connection = DriverManager.getConnection(
+                databaseUrl, postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            statement.executeUpdate(
+                    """
+                    INSERT INTO app.wecom_business_cards
+                        (id, card_domain, entity_id, entity_version, task_id, route_type, chat_id,
+                         status, request_id, acknowledged_at)
+                    VALUES
+                        (960001, 'review', 42, 0, 'review:42:v0', 'SINGLE', 'operator-chat',
+                         'PENDING', NULL, NULL),
+                        (960008, 'review', 45, 0, 'review:45:v0', 'SINGLE', 'operator-chat',
+                         'SENT', 'sent-request', CURRENT_TIMESTAMP)
+                    """);
+            statement.execute("SET session_replication_role = replica");
+            try {
+                statement.executeUpdate(
+                        """
+                        INSERT INTO app.business_followups
+                            (id, followup_no, message_submission_id, employee_draft, created_by,
+                             stage, processing_status, current_draft_version)
+                        VALUES
+                            (960002, 'BF-0000960002', 960003, '请跟进 KH-260826-001',
+                             'operator-a', 'DRAFT_READY', 'SUCCEEDED', 1)
+                        """);
+                statement.executeUpdate(
+                        """
+                        INSERT INTO app.business_followup_draft_versions
+                            (followup_id, version, source_revision, status, agent_run_id,
+                             agent_slug, agent_version, content, zimu_source_summary,
+                             kehuzx_source_summary)
+                        VALUES
+                            (960002, 1, 1, 'DRAFT', 'run-v60-migration',
+                             'customer-followup-agent', 1, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb)
+                        """);
+                statement.executeUpdate(
+                        """
+                        INSERT INTO app.order_drafts
+                            (id, draft_no, submission_id, source_order_no, status, revision)
+                        VALUES
+                            (960004, 'OD-V60-TASK-ID', 960003, 'SOURCE-V60-TASK-ID', 'OPEN', 7),
+                            (960006, 'OD-V60-SENT-ID', 960003, 'SOURCE-V60-SENT-ID', 'OPEN', 3)
+                        """);
+                statement.executeUpdate(
+                        """
+                        INSERT INTO app.wecom_order_draft_cards
+                            (id, order_draft_id, draft_revision, task_id, route_type, chat_id,
+                             status, request_id, acknowledged_at)
+                        VALUES
+                            (960005, 960004, 7, 'order-draft:960004', 'SINGLE', 'operator-chat',
+                             'PENDING', NULL, NULL),
+                            (960007, 960006, 3, 'order-draft:960006', 'SINGLE', 'operator-chat',
+                             'SENT', 'sent-order-request', CURRENT_TIMESTAMP)
+                        """);
+            } finally {
+                statement.execute("SET session_replication_role = origin");
+            }
+        }
+
+        flyway(databaseUrl, null).migrate();
+
+        try (Connection connection = DriverManager.getConnection(
+                databaseUrl, postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            assertThat(single(statement.executeQuery(
+                    "SELECT task_id FROM app.wecom_business_cards WHERE id=960001")))
+                    .as("明确未触网的存量通用卡必须换成随机授权 task_id")
+                    .matches("review_42_v0_[0-9a-f]{32}");
+            assertThat(single(statement.executeQuery(
+                    "SELECT task_id FROM app.wecom_business_cards WHERE id=960008")))
+                    .as("已外发通用卡的 correlation id 必须原样保留")
+                    .isEqualTo("review:45:v0");
+            assertThat(single(statement.executeQuery(
+                    "SELECT task_id FROM app.wecom_order_draft_cards WHERE id=960005")))
+                    .as("明确未触网的存量订单草稿卡必须换成随机授权 task_id")
+                    .matches("order-draft_960004_v7_[0-9a-f]{32}");
+            assertThat(single(statement.executeQuery(
+                    "SELECT task_id FROM app.wecom_order_draft_cards WHERE id=960007")))
+                    .as("已外发订单草稿卡的 correlation id 必须原样保留")
+                    .isEqualTo("order-draft:960006");
+            assertThat(single(statement.executeQuery(
+                    "SELECT status FROM app.business_followup_draft_versions "
+                            + "WHERE followup_id=960002 AND version=1")))
+                    .as("存量 DRAFT 必须前向迁移为 READY，不覆盖版本内容")
+                    .isEqualTo("READY");
+
+            assertThatThrownBy(() -> statement.executeUpdate(
+                    """
+                    INSERT INTO app.wecom_business_cards
+                        (card_domain, entity_id, entity_version, task_id, route_type, chat_id)
+                    VALUES ('review', 43, 0, 'review:43:v0', 'SINGLE', 'operator-chat')
+                    """))
+                    .as("新冒号 task_id 必须被精确约束拒绝")
+                    .isInstanceOf(Exception.class);
+            assertThatThrownBy(() -> statement.executeUpdate(
+                    """
+                    INSERT INTO app.wecom_business_cards
+                        (card_domain, entity_id, entity_version, task_id, route_type, chat_id)
+                    VALUES ('review', 44, 0, 'review_44_v0_extra', 'SINGLE', 'operator-chat')
+                    """))
+                    .as("下划线 task_id 也必须完整匹配 domain/id/marker 契约")
+                    .isInstanceOf(Exception.class);
+            statement.executeUpdate(
+                    """
+                    INSERT INTO app.wecom_business_cards
+                        (card_domain, entity_id, entity_version, task_id, route_type, chat_id)
+                    VALUES (
+                        'review', 46, 0,
+                        'review_46_v0_0123456789abcdef0123456789abcdef',
+                        'SINGLE', 'operator-chat'
+                    )
+                    """);
+            assertThatThrownBy(() -> statement.executeUpdate(
+                    "UPDATE app.wecom_order_draft_cards SET task_id='order-draft:960004' WHERE id=960005"))
+                    .as("订单草稿卡不能重新写入含冒号的 task_id")
+                    .isInstanceOf(Exception.class);
         }
     }
 

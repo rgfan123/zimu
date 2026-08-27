@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.agent;
 
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -20,6 +21,10 @@ public class AgentModelProperties {
     private String provider = "";
     private String model = "";
     private long requestTimeoutMs = 30_000;
+    private int maxModelCalls = 24;
+    private int maxToolCalls = 64;
+    private long executionTimeoutMs = 300_000;
+    private int maxRepeatedToolCalls = 2;
 
     public String getBaseUrl() {
         return baseUrl;
@@ -59,6 +64,46 @@ public class AgentModelProperties {
 
     public void setRequestTimeoutMs(long requestTimeoutMs) {
         this.requestTimeoutMs = requestTimeoutMs;
+    }
+
+    public int getMaxModelCalls() {
+        return maxModelCalls;
+    }
+
+    public void setMaxModelCalls(int maxModelCalls) {
+        this.maxModelCalls = maxModelCalls;
+    }
+
+    public int getMaxToolCalls() {
+        return maxToolCalls;
+    }
+
+    public void setMaxToolCalls(int maxToolCalls) {
+        this.maxToolCalls = maxToolCalls;
+    }
+
+    public long getExecutionTimeoutMs() {
+        return executionTimeoutMs;
+    }
+
+    public void setExecutionTimeoutMs(long executionTimeoutMs) {
+        this.executionTimeoutMs = executionTimeoutMs;
+    }
+
+    public int getMaxRepeatedToolCalls() {
+        return maxRepeatedToolCalls;
+    }
+
+    public void setMaxRepeatedToolCalls(int maxRepeatedToolCalls) {
+        this.maxRepeatedToolCalls = maxRepeatedToolCalls;
+    }
+
+    public AgentExecutionBudget executionBudget() {
+        return new AgentExecutionBudget(
+                maxModelCalls,
+                maxToolCalls,
+                Duration.ofMillis(executionTimeoutMs),
+                maxRepeatedToolCalls);
     }
 
     /** 传输四元组（base-url/api-key/provider/model）齐全才视为已配置。 */

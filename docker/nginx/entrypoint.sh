@@ -41,6 +41,31 @@ chmod 600 /etc/nginx/backend-auth.inc
 unset basic_credentials
 unset app_admin_password
 
+# Optional production-grade per-user mode. The supplied htpasswd usernames must equal registered
+# InternalOperator.wecom_userid values. Nginx overwrites the browser headers and proves $remote_user
+# to the loopback-only backend with a separate high-entropy assertion token.
+if [ -n "${APP_OPERATOR_HTPASSWD_B64:-}" ]; then
+  : "${APP_GATEWAY_ASSERTION_TOKEN:?APP_GATEWAY_ASSERTION_TOKEN is required with APP_OPERATOR_HTPASSWD_B64}"
+  case "$APP_GATEWAY_ASSERTION_TOKEN" in
+    *[!A-Za-z0-9._~-]*|'')
+      echo "APP_GATEWAY_ASSERTION_TOKEN contains unsupported characters" >&2
+      exit 1
+      ;;
+  esac
+  if [ "${#APP_GATEWAY_ASSERTION_TOKEN}" -lt 32 ]; then
+    echo "APP_GATEWAY_ASSERTION_TOKEN must contain at least 32 characters" >&2
+    exit 1
+  fi
+  printf '%s' "$APP_OPERATOR_HTPASSWD_B64" | base64 -d > /etc/nginx/.htpasswd
+  if ! grep -Eq '^[A-Za-z0-9._@-]+:\$2[aby]\$' /etc/nginx/.htpasswd; then
+    echo "APP_OPERATOR_HTPASSWD_B64 must decode to bcrypt htpasswd entries" >&2
+    exit 1
+  fi
+  printf 'proxy_set_header X-Operator "$remote_user";\nproxy_set_header X-Authenticated-Operator "$remote_user";\nproxy_set_header X-Gateway-Assertion "%s";\nproxy_set_header Authorization "";\n' \
+    "$APP_GATEWAY_ASSERTION_TOKEN" > /etc/nginx/backend-auth.inc
+  echo "[zimu-nginx] per-user gateway identity: ENABLED"
+fi
+
 # Edge Basic Auth toggle: GATEWAY_BASIC_AUTH_ENABLED defaults to on. The gateway
 # must not silently run open — disabling it is an explicit, visible opt-out for
 # controlled LAN acceptance only.
@@ -53,6 +78,10 @@ case "$edge_auth_enabled" in
     exit 1
     ;;
 esac
+if [ -n "${APP_OPERATOR_HTPASSWD_B64:-}" ] && [ "$edge_auth_enabled" != "true" ]; then
+  echo "GATEWAY_BASIC_AUTH_ENABLED must stay true in per-user identity mode" >&2
+  exit 1
+fi
 if [ "$edge_auth_enabled" = "true" ]; then
   printf 'auth_basic "Zimu Fulfillment gateway";\nauth_basic_user_file /etc/nginx/.htpasswd;\n' \
     > /etc/nginx/edge-auth.inc

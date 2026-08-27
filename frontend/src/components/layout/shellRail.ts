@@ -23,6 +23,7 @@ export interface RailGroup {
 const GLYPHS: Record<string, string> = {
   '/workbench/shipping': '▣',
   '/workbench/reviews': '!',
+  '/workbench/business-followups': '◇',
   '/workbench/procurement': '⊟',
   '/workbench/recon': '▦',
   '/dashboard': '◱',

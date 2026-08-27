@@ -1053,7 +1053,7 @@ class ExcelClosedLoopApiTest {
         ResponseEntity<Map> rejectedAsOrder = uploadRaw(
                 "mapping-reference.xlsx", Files.readAllBytes(reference), "mapping-reference-is-not-order");
         assertThat(rejectedAsOrder.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
-        assertThat(rejectedAsOrder.getBody()).containsEntry("business_code", "TEMPLATE_FINGERPRINT_AMBIGUOUS");
+        assertThat(rejectedAsOrder.getBody()).containsEntry("business_code", "TEMPLATE_FINGERPRINT_NOT_FOUND");
     }
 
     @Test

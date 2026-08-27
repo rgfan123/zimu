@@ -911,6 +911,36 @@ export interface ImportBatch {
   processed_at?: string;
 }
 
+export type SourceOrderIntakeStatus =
+  | 'RECEIVED'
+  | 'PROCESSING'
+  | 'NEEDS_EXTRACTION'
+  | 'NEEDS_REVIEW'
+  | 'READY'
+  | 'IMPORTING'
+  | 'OUTBOUND_SUBMITTING'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'RECONCILIATION_REQUIRED'
+  | 'COMPLETED';
+
+export interface SourceOrderIntakeJob {
+  id: string;
+  job_no: string;
+  source_channel: SourceChannel;
+  import_mode: 'NEW' | 'REVISION';
+  parent_import_batch_id?: string | null;
+  original_file_name: string;
+  file_format: 'XLSX' | 'XLS' | 'CSV';
+  content_sha256: string;
+  status: SourceOrderIntakeStatus;
+  error_code?: string | null;
+  import_batch_id?: string | null;
+  lock_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TrackingImportBatch extends ImportBatch {
   business_results?: { shipped?: number; partial?: number; failed?: number };
   rows?: TrackingBatchRow[];
@@ -1510,6 +1540,263 @@ export interface MessageSubmissionDetail {
   interpretations: MessageInterpretation[];
   latest_task?: MessageTaskStatus | null;
   created_at: string;
+}
+
+// ---------- Business Follow-up ----------
+
+export type BusinessFollowUpStage =
+  | 'PENDING_ORGANIZATION'
+  | 'ORGANIZING'
+  | 'DRAFT_READY'
+  | 'NEEDS_INPUT'
+  | 'PENDING_APPROVAL'
+  | 'CONFIRMED'
+  | 'PAUSED';
+
+export type BusinessFollowUpProcessingStatus =
+  | 'NOT_STARTED'
+  | 'PENDING'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'FAILED';
+
+export type BusinessFollowUpBusinessKind = 'CUSTOMER' | 'SAMPLE' | 'FORMAL';
+
+export interface BusinessFollowUpCommercialTerms {
+  payment_terms?: string;
+  reconciliation_date?: string;
+  payment_date?: string;
+  credit_days?: string;
+  invoice_requirement?: string;
+  moq?: string;
+  quoted_price?: string;
+  target_price?: string;
+  remark?: string;
+}
+
+export interface BusinessFollowUpSampleExecutionPlan {
+  sample_name: string;
+  product_name: string;
+  quantity_per_unit: number;
+  quantity_unit: string;
+  unit_count: number;
+  requested_date: string;
+  expected_delivery_date?: string;
+  testing_date?: string;
+  specification?: string;
+  requirements?: string;
+  remark?: string;
+  business_note?: string;
+  commercial_terms?: BusinessFollowUpCommercialTerms;
+}
+
+export interface BusinessFollowUpFormalExecutionItem {
+  product_name: string;
+  quantity_per_unit: number;
+  quantity_unit: string;
+  unit_count: number;
+}
+
+export interface BusinessFollowUpFormalExecutionPlan {
+  order_type: 'formal';
+  name: string;
+  delivery_date: string;
+  delivery_address: string;
+  settlement_period?: string;
+  settlement_method?: string;
+  business_note?: string;
+  commercial_terms?: BusinessFollowUpCommercialTerms;
+  items: BusinessFollowUpFormalExecutionItem[];
+}
+
+export type BusinessFollowUpExecutionPlan =
+  | BusinessFollowUpSampleExecutionPlan
+  | BusinessFollowUpFormalExecutionPlan;
+
+export interface BusinessFollowUpSummary {
+  id: string;
+  followup_no: string;
+  message_submission_id: string;
+  source_message_id: string;
+  source_revision: number;
+  business_kind: BusinessFollowUpBusinessKind;
+  stage: BusinessFollowUpStage;
+  processing_status: BusinessFollowUpProcessingStatus;
+  created_by: string;
+  designated_reviewer?: string | null;
+  designated_reviewer_operator_id?: string | null;
+  agent_slug?: string | null;
+  agent_version?: number | null;
+  task_status?: MessageTaskStatusCode | null;
+  task_attempts?: number | null;
+  task_failure_code?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BusinessFollowUp extends BusinessFollowUpSummary {
+  employee_draft: string;
+  execution_plan: BusinessFollowUpExecutionPlan | null;
+  latest_draft?: BusinessFollowUpDraft | null;
+  draft_versions: BusinessFollowUpDraft[];
+  approvals: BusinessFollowUpApproval[];
+  assignments: BusinessFollowUpAssignment[];
+}
+
+export interface BusinessFollowUpAssignment {
+  id: string;
+  followup_id: string;
+  draft_version: number;
+  approval_id: string;
+  agent_run_id: string;
+  task_type: 'KEHUZX_CUSTOMER_LINK';
+  logical_target: string;
+  assignee_type: 'INTERNAL_OPERATOR' | 'TEAM' | 'DETERMINISTIC_MCP' | 'SPECIALIST_AGENT';
+  assignee_ref: string;
+  status: 'PENDING' | 'RUNNING' | 'WAITING_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'RECONCILIATION_REQUIRED';
+  due_at: string;
+  priority: 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
+  idempotency_key: string;
+  execution_task_key: string;
+  request_id?: string | null;
+  payload_hash?: string | null;
+  confirmed_by_operator_id?: string | null;
+  confirmed_by?: string | null;
+  external_entity_type?: string | null;
+  external_entity_id?: string | null;
+  result_code?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  updated_at: string;
+}
+
+export interface BusinessFollowUpDraftFact {
+  source: 'ZIMU' | 'KEHUZX';
+  label: string;
+  value: string;
+}
+
+export interface BusinessFollowUpDraft {
+  version: number;
+  status: 'READY' | 'NEEDS_INPUT' | 'SUPERSEDED' | 'CONFIRMED' | 'PAUSED';
+  agent_run_id: string;
+  agent_slug: string;
+  agent_version: number;
+  content: {
+    title?: string;
+    summary?: string;
+    agent_suggestion?: string;
+    facts?: BusinessFollowUpDraftFact[];
+    requires_human?: boolean;
+    missing_fields?: string[];
+    questions?: string[];
+    risks?: string[];
+    recommended_actions?: string[];
+    order_snapshot?: {
+      order_draft_id?: string;
+      revision?: number;
+      status?: 'OPEN' | 'CONFIRMED' | 'REJECTED';
+      receiver_name?: string;
+      receiver_phone?: string;
+      receiver_address?: string;
+      settlement_method?: string;
+      missing_fields?: string[];
+      items?: Array<{
+        line_no: number;
+        product_name?: string;
+        spec?: string;
+        quantity?: number;
+        unit?: string;
+      }>;
+    };
+    tool_call_refs?: Array<{ id: string; sequence_no: number; tool_name: string }>;
+  };
+  zimu_source_summary: {
+    source: 'ZIMU';
+    followup_id: string;
+    followup_no: string;
+    message_submission_id: string;
+    source_revision: number;
+  };
+  kehuzx_source_summary: {
+    source: 'KEHUZX';
+    candidate_count: number;
+    failures: Array<
+      | 'KEHUZX_NOT_CONFIGURED'
+      | 'KEHUZX_UNREACHABLE'
+      | 'KEHUZX_TIMEOUT'
+      | 'KEHUZX_AUTH_REJECTED'
+      | 'KEHUZX_CONTRACT_DRIFT'
+      | 'KEHUZX_TOOL_FAILED'
+    >;
+    calls: Array<{
+      tool: string;
+      evidence_id: string;
+      response_digest: string;
+      contract_version: string;
+      upstream_commit?: string | null;
+      queried_at: string;
+    }>;
+  };
+  upstream_refs: Array<{ entity_type: string; id: string }>;
+  created_at: string;
+}
+
+export interface BusinessFollowUpPage extends PageMeta {
+  items: BusinessFollowUpSummary[];
+}
+
+interface BusinessFollowUpCreateBase {
+  message_submission_id: string;
+  employee_draft: string;
+}
+
+export type BusinessFollowUpCreateInput = BusinessFollowUpCreateBase & (
+  | {
+      business_kind?: 'CUSTOMER' | null;
+      execution_plan?: null;
+    }
+  | {
+      business_kind: 'SAMPLE';
+      execution_plan: BusinessFollowUpSampleExecutionPlan;
+    }
+  | {
+      business_kind: 'FORMAL';
+      execution_plan: BusinessFollowUpFormalExecutionPlan;
+    }
+);
+
+export interface BusinessFollowUpOrganizeInput {
+  agent_slug: string;
+  agent_version: number;
+  reviewer_operator_id: string;
+}
+
+export interface BusinessFollowUpDecisionInput {
+  expected_draft_version: number;
+  decision: 'CONFIRM' | 'REDO' | 'NEEDS_INPUT' | 'PAUSE';
+  reason?: string;
+  capability: string;
+}
+
+export interface BusinessFollowUpApproval {
+  id: string;
+  draft_version: number;
+  order_draft_id?: string | null;
+  order_draft_revision?: number | null;
+  designated_reviewer_operator_id: string;
+  decided_by_operator_id: string;
+  decided_by: string;
+  decision: 'CONFIRM' | 'REDO' | 'NEEDS_INPUT' | 'PAUSE';
+  reason?: string | null;
+  source_kind: 'WECOM_CARD' | 'REST';
+  source_event_message_id?: string | null;
+  request_id: string;
+  application_status: 'PENDING' | 'APPLIED' | 'FAILED' | 'SUPERSEDED';
+  application_failure_code?: string | null;
+  applied_at?: string | null;
+  decided_at: string;
 }
 
 // ---------- Demo ----------

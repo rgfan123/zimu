@@ -214,6 +214,17 @@ class SourceBatchJdSdkRoutingApiTest {
                 "UPDATE app.fulfillment_providers SET config=config||'{\"outboundMode\":\"FILE\"}'::jsonb "
                         + "WHERE provider_code='JD'");
         long batchId = upload("SDK-FILE-001");
+        // FILE 路由仍需生成京东导单；为本次导入新建的客户补齐青龙业主号回退值。
+        jdbc.update(
+                """
+                UPDATE app.customers
+                SET profile = jsonb_set(COALESCE(profile, '{}'::jsonb), '{jd_customer_code}',
+                                        '"CUST-SDK-001"'::jsonb, true)
+                WHERE id IN (
+                    SELECT customer_id FROM app.orders WHERE source_import_batch_id=?
+                )
+                """,
+                batchId);
         ResponseEntity<Map> confirmed = confirm(batchId, "sdk-confirm-sdk-file-001");
         assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(confirmed.getBody().get("confirmed_at")).isNotNull();
@@ -225,6 +236,29 @@ class SourceBatchJdSdkRoutingApiTest {
                         + "JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id "
                         + "WHERE rir.import_batch_id=?",
                 Integer.class, batchId)).isEqualTo(1);
+    }
+
+    @Test
+    void fileModeFailsClosedWhenBothProviderAndOrderCustomerCodesAreMissing() throws Exception {
+        jdbc.update(
+                "UPDATE app.fulfillment_providers SET config=config||'{\"outboundMode\":\"FILE\"}'::jsonb "
+                        + "WHERE provider_code='JD'");
+        long batchId = upload("SDK-FILE-MISSING-CUSTOMER-001");
+        jdbc.update(
+                """
+                UPDATE app.customers
+                SET profile = COALESCE(profile, '{}'::jsonb) - 'jd_customer_code'
+                WHERE id IN (
+                    SELECT customer_id FROM app.orders WHERE source_import_batch_id=?
+                )
+                """,
+                batchId);
+
+        ResponseEntity<Map> confirmed = confirm(batchId, "sdk-confirm-file-missing-customer-001");
+
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(confirmed.getBody())
+                .containsEntry("business_code", "JD_EXPORT_PROVIDER_CONFIG_MISSING");
     }
 
     @Test

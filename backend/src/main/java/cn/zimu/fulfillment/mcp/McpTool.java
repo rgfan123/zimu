@@ -33,4 +33,9 @@ public interface McpTool {
     default boolean readOnly() {
         return true;
     }
+
+    /** Agent-internal tools are excluded from the shared stdio MCP discovery and call seams. */
+    default boolean externallyDiscoverable() {
+        return true;
+    }
 }

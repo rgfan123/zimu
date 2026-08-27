@@ -9,6 +9,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import cn.zimu.fulfillment.followup.KehuzxRemoteReadTools;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /** MCP 工具注册表：聚合所有允许的工具，供 tools/list 发现与 tools/call 分发。 */
@@ -22,12 +24,25 @@ public class McpToolRegistry {
             McpWriteTools writeTools,
             McpDomainReadTools domainReadTools,
             McpControlReadTools controlReadTools) {
+        this(readTools, writeTools, domainReadTools, controlReadTools, null);
+    }
+
+    @Autowired
+    public McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools,
+            KehuzxRemoteReadTools kehuzxReadTools) {
         Map<String, McpTool> index = new java.util.LinkedHashMap<>();
         List<McpTool> tools = new java.util.ArrayList<>();
         tools.addAll(readTools.tools());
         tools.addAll(writeTools.tools());
         tools.addAll(domainReadTools.tools());
         tools.addAll(controlReadTools.tools());
+        if (kehuzxReadTools != null) {
+            tools.addAll(kehuzxReadTools.tools());
+        }
         for (McpTool tool : tools) {
             McpTool previous = index.putIfAbsent(tool.name(), tool);
             if (previous != null) {

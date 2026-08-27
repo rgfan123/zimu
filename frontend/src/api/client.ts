@@ -50,6 +50,12 @@ export function errorMessage(err: unknown): string {
     if (err.status === 401 || err.status === 403) return '当前操作未获授权，请联系管理员确认权限';
     if (err.status === 404) return '未找到所需数据，请核对查询条件后重试';
     if (err.status >= 500) return '服务暂时不可用，请稍后重试；如持续失败请联系管理员';
+    if (err.status === 400 && code === 'FOLLOWUP_EXECUTION_PLAN_INVALID') {
+      return '执行计划不符合要求，请检查必填项、格式、数量和日期后重试';
+    }
+    if (err.status === 400 && code === 'FOLLOWUP_BUSINESS_KIND_INVALID') {
+      return '业务类型不受支持，请重新选择普通跟进、样品请求或正式订单';
+    }
     if (err.status === 400) return '提交内容有误，请检查必填项和格式后重试';
     if (err.status === 405) return '当前操作方式不受支持，请刷新页面后重试；如持续失败请联系管理员';
     if (err.status === 409 && code === 'VERSION_CONFLICT') return '数据已被其他操作更新，请刷新后重试';

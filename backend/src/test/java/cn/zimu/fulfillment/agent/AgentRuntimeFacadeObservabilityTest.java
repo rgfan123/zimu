@@ -117,7 +117,7 @@ class AgentRuntimeFacadeObservabilityTest {
         assertThat(start.threadId()).isEqualTo("thread-42");
         assertThat(start.promptVersion()).isEqualTo(PROMPT_VERSION);
         assertThat(start.model()).isEqualTo("app.agent");
-        assertThat(start.agentVersion()).isNull();
+        assertThat(start.agentVersion()).isEqualTo("1");
         assertThat(start.inputDigest()).isEqualTo(AgentPayloadRedactor.digest(INPUT));
         assertThat(start.inputDigest()).isNotEqualTo(INPUT);
         assertThat(start.businessEntityType()).isNull();
@@ -132,6 +132,20 @@ class AgentRuntimeFacadeObservabilityTest {
         assertThat(finish.latencyMs()).isGreaterThanOrEqualTo(0);
         // 未白名单的模型三元组投影为 none
         assertThat(finish.model()).isEqualTo("none");
+    }
+
+    @Test
+    void pinnedRunUsesTheCallerReservedPlatformRunIdForToolsAndEvidence() {
+        when(runtime.run(any())).thenReturn(success());
+        AgentRuntimeFacade facade = facade(enabledDefinition());
+        String reservedRunId = "run_0123456789abcdef0123456789abcdef";
+
+        AgentRunResult result = facade.invokePinnedWithRunId(
+                SLUG, 1, reservedRunId, INPUT, AgentRunContext.empty());
+
+        assertThat(result.runId()).isEqualTo(reservedRunId);
+        assertThat(lastStart().runId()).isEqualTo(reservedRunId);
+        assertThat(lastFinish().runId()).isEqualTo(reservedRunId);
     }
 
     @Test

@@ -396,6 +396,10 @@ const REVIEW_FIELD_LABELS: Record<string, string> = {
   // 此前不放行的结果是抽屉显示「没有可公开展示的补充字段」——数据库里明明有人话，
   // 运营却只能看到一个事项类型码，根本无从下手（2026-08-26 用户实测反馈 #3）。
   message: '系统说明',
+  business_followup_id: '客户跟进编号',
+  followup_reason_code: '客户跟进复核原因',
+  followup_trace_id: '客户跟进追踪号',
+  agent_run_id: 'Agent 运行编号',
   shipment_id: '发货批次编号',
   check_run_no: '映射核对批次',
   source_customer_ref: '来源客户编号',

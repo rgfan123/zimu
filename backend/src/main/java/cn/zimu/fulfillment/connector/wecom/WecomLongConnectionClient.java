@@ -337,12 +337,12 @@ public final class WecomLongConnectionClient implements AutoCloseable, WecomOutb
         ObjectNode body = frame.putObject("body");
         body.put("chatid", message.chatId());
         body.put("msgtype", message.type().protocolValue());
-        // 文件消息（#84）、模板卡片（#87）与 text/markdown 使用各自官方 body 形状。
+        // 文件消息（#84）、模板卡片（#87）与 markdown 使用各自官方 body 形状。
         switch (message.type()) {
             case FILE, IMAGE -> body.putObject(message.type().protocolValue())
                     .put("media_id", message.mediaId());
             case TEMPLATE_CARD -> body.set("template_card", message.templateCard());
-            case TEXT, MARKDOWN -> body.putObject(message.type().protocolValue()).put("content", message.content());
+            case MARKDOWN -> body.putObject("markdown").put("content", message.content());
         }
 
         return sendResult(requestId, awaitAck(frame, requestId, ackTimeoutMillis));

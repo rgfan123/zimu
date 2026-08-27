@@ -17,7 +17,8 @@ class ShipmentResultCardTest {
     private static ShipmentResultCard.View submitted(String trackingNo, String carrier) {
         return new ShipmentResultCard.View(
                 4L, 1L, "FEIXIANG", "D2026825436038809722", "严九",
-                "ESL00000025431188355", trackingNo, carrier, null);
+                "ESL00000025431188355", trackingNo, carrier,
+                "https://zimu.test/fulfillment/shipments?order_no=D2026825436038809722");
     }
 
     @Test

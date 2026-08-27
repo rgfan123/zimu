@@ -8,7 +8,8 @@ import java.util.Objects;
  *
  * <p>{@code FILE} 为文件消息（Issue #84）：协议体为 {@code msgtype=file} +
  * {@code file.media_id}（官方 path/101463），不携带 content 文本；text/markdown 保持
- * {@code content} 语义不变。media_id 是 3 天有效的临时引用，调用方应立即使用、不得持久化明文。
+ * {@code content} 语义不变。主动 text 不在当前协议联合类型内，构造时必须拒绝。
+ * media_id 是 3 天有效的临时引用，调用方应立即使用、不得持久化明文。
  */
 public record WecomOutboundMessage(
         String chatId,
@@ -18,7 +19,6 @@ public record WecomOutboundMessage(
         JsonNode templateCard) {
 
     public enum Type {
-        TEXT("text"),
         MARKDOWN("markdown"),
         FILE("file"),
         IMAGE("image"),
@@ -55,7 +55,7 @@ public record WecomOutboundMessage(
                     throw new IllegalArgumentException("TEMPLATE_CARD must not carry text or a media id");
                 }
             }
-            case TEXT, MARKDOWN -> {
+            case MARKDOWN -> {
                 content = requireText(content, "content");
                 if (mediaId != null || templateCard != null) {
                     throw new IllegalArgumentException("text/markdown message must carry only content");
@@ -65,7 +65,7 @@ public record WecomOutboundMessage(
     }
 
     public static WecomOutboundMessage text(String chatId, String content) {
-        return new WecomOutboundMessage(chatId, Type.TEXT, content, null, null);
+        throw new IllegalArgumentException("active WeCom text messages are not supported; use markdown");
     }
 
     public static WecomOutboundMessage markdown(String chatId, String content) {

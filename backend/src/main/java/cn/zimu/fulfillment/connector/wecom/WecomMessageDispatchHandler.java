@@ -3,6 +3,11 @@ package cn.zimu.fulfillment.connector.wecom;
 import cn.zimu.fulfillment.connector.wecom.card.WecomBusinessCardInteractionService;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
+import cn.zimu.fulfillment.followup.BusinessFollowUpCardInteractionOutcome;
+import cn.zimu.fulfillment.followup.BusinessFollowUpCardInteractionService;
+import cn.zimu.fulfillment.connector.wecom.card.WecomTaskId;
+import cn.zimu.fulfillment.connector.wecom.card.WecomCardBuilder;
+import cn.zimu.fulfillment.connector.wecom.card.source.CardDeepLinks;
 import cn.zimu.fulfillment.order.card.CardConfirmationResult;
 import cn.zimu.fulfillment.order.card.CardConfirmationStatus;
 import cn.zimu.fulfillment.order.card.CardFallbackStatus;
@@ -62,10 +67,12 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
     private final WecomOrderDraftCardInteractionService cardInteractions;
+    private final BusinessFollowUpCardInteractionService followUpCardInteractions;
     private final WecomBusinessCardInteractionService businessCardInteractions;
     private final String businessCardBaseUrl;
     private final ObjectProvider<WecomOutboundGateway> outboundGatewayProvider;
     private final WecomChatReplyPolicyService replyPolicies;
+    private final CardDeepLinks deepLinks;
 
     private volatile WecomConnectionManager connectionManager;
     private volatile WecomOutboundGateway outboundGateway;
@@ -76,15 +83,18 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
             WecomOrderDraftCardInteractionService cardInteractions,
+            BusinessFollowUpCardInteractionService followUpCardInteractions,
             WecomBusinessCardInteractionService businessCardInteractions,
             @Value("${app.wecom-business-card.base-url:}") String businessCardBaseUrl,
             ObjectProvider<WecomOutboundGateway> outboundGatewayProvider,
-            WecomChatReplyPolicyService replyPolicies) {
+            WecomChatReplyPolicyService replyPolicies,
+            CardDeepLinks deepLinks) {
         this.submissionService = submissionService;
         this.connectionManagerProvider = connectionManagerProvider;
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.cardInteractions = cardInteractions;
+        this.followUpCardInteractions = followUpCardInteractions;
         this.businessCardInteractions = businessCardInteractions;
         // card_action 必填（42045）；没配深链基地址时用协议合法的占位，
         // 否则整张回执发不出去，表现又变成「点了没反应」。
@@ -93,6 +103,7 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
                 : businessCardBaseUrl.trim();
         this.outboundGatewayProvider = outboundGatewayProvider;
         this.replyPolicies = replyPolicies;
+        this.deepLinks = deepLinks;
     }
 
     @Override
@@ -277,6 +288,10 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
      * 4.5 秒本地预算为官方 5 秒窗口预留 500ms 发送余量。
      */
     void handleTemplateCardEvent(JsonNode frame, long startedNanos) {
+        if (isFollowUpCard(frame)) {
+            handleFollowUpCardEvent(frame, startedNanos);
+            return;
+        }
         // 业务卡与订单草稿卡是两个实体族，靠 task_id 的域分流。
         // 不分流的表现是业务卡按钮一律回 WECOM_CARD_TASK_ID_INVALID——
         // 点了没反应，而日志里只有一句"无法识别的卡片"。
@@ -366,6 +381,110 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
                 fallbackErrorCode);
     }
 
+    private void handleFollowUpCardEvent(JsonNode frame, long startedNanos) {
+        BusinessFollowUpCardInteractionOutcome outcome;
+        try {
+            outcome = followUpCardInteractions.handle(frame);
+        } catch (RuntimeException ex) {
+            log.error("企微客户跟进卡片事件处理失败，等待平台重试", ex);
+            return;
+        }
+        if (outcome.duplicate()) {
+            log.debug("企微客户跟进卡片事件已由首次回调持有 msgid={}", outcome.messageId());
+            return;
+        }
+        String updateErrorCode = null;
+        String fallbackErrorCode = null;
+        CardUpdateStatus updateStatus;
+        CardFallbackStatus fallbackStatus = CardFallbackStatus.NOT_ATTEMPTED;
+        long deadlineNanos = startedNanos + UPDATE_CARD_BUDGET_NANOS;
+        if (outcome.requestId() == null || outcome.requestId().isBlank()) {
+            updateStatus = CardUpdateStatus.FAILED;
+            updateErrorCode = "UPDATE_REQUEST_ID_MISSING";
+        } else if (outcome.taskId() == null || outcome.taskId().isBlank()) {
+            updateStatus = CardUpdateStatus.FAILED;
+            updateErrorCode = "UPDATE_TASK_ID_INVALID";
+        } else if (System.nanoTime() >= deadlineNanos) {
+            updateStatus = CardUpdateStatus.TIMED_OUT;
+            updateErrorCode = "FAST_PATH_DEADLINE_EXCEEDED";
+        } else {
+            try {
+                WecomSendResult result = connectionManager().respondUpdateUntil(
+                        outcome.requestId(), followUpAcceptedCard(outcome), deadlineNanos);
+                updateStatus = switch (result.status()) {
+                    case SUCCESS -> CardUpdateStatus.SENT;
+                    case TIMEOUT -> CardUpdateStatus.TIMED_OUT;
+                    case FAILED -> CardUpdateStatus.FAILED;
+                };
+                updateErrorCode = updateStatus == CardUpdateStatus.SENT
+                        ? null
+                        : sendFailureCode(result, "UPDATE_NOT_ACKNOWLEDGED");
+            } catch (RuntimeException ex) {
+                updateStatus = CardUpdateStatus.FAILED;
+                updateErrorCode = "UPDATE_SEND_EXCEPTION";
+            }
+        }
+        if (updateStatus != CardUpdateStatus.SENT) {
+            try {
+                WecomSendResult result = outboundGateway().send(WecomOutboundMessage.markdown(
+                        outcome.replyTarget(), followUpFallback(outcome)));
+                fallbackStatus = result.status() == WecomSendStatus.SUCCESS
+                        ? CardFallbackStatus.SENT
+                        : CardFallbackStatus.FAILED;
+                fallbackErrorCode = fallbackStatus == CardFallbackStatus.SENT
+                        ? null
+                        : sendFailureCode(result, "FALLBACK_NOT_ACKNOWLEDGED");
+            } catch (RuntimeException ex) {
+                fallbackStatus = CardFallbackStatus.FAILED;
+                fallbackErrorCode = "FALLBACK_SEND_EXCEPTION";
+            }
+        }
+        try {
+            followUpCardInteractions.recordUpdateOutcome(
+                    outcome.messageId(),
+                    outcome.claimToken(),
+                    updateStatus,
+                    fallbackStatus,
+                    nanosToMillis(System.nanoTime() - startedNanos),
+                    updateErrorCode,
+                    fallbackErrorCode);
+        } catch (RuntimeException ex) {
+            log.error("企微客户跟进卡片更新结果落库失败 msgid={}", outcome.messageId(), ex);
+        }
+    }
+
+    private ObjectNode followUpAcceptedCard(BusinessFollowUpCardInteractionOutcome outcome) {
+        WecomTaskId taskId = WecomTaskId.parse(outcome.taskId())
+                .filter(value -> BusinessFollowUpCardInteractionService.CARD_DOMAIN.equals(value.domain()))
+                .orElseThrow(() -> new IllegalStateException("客户跟进 updateCard task_id 无效"));
+        String detailUrl = deepLinks.of(
+                "/workbench/business-followups?followup_id=" + taskId.entityId());
+        ObjectNode card = WecomCardBuilder.textNotice(taskId)
+                .title("ACCEPTED".equals(outcome.status()) ? "操作已受理" : "操作被拒绝")
+                .desc(outcome.followupNo() + " · " + outcome.businessCode())
+                .cardAction(detailUrl)
+                .build();
+        ObjectNode body = objectMapper.createObjectNode();
+        body.put("response_type", "update_template_card");
+        body.set("template_card", card);
+        return body;
+    }
+
+    private static String followUpFallback(BusinessFollowUpCardInteractionOutcome outcome) {
+        return ("ACCEPTED".equals(outcome.status()) ? "**操作已受理**" : "**操作被拒绝**")
+                + "\n> " + outcome.followupNo() + " · " + outcome.businessCode();
+    }
+
+    private static boolean isFollowUpCard(JsonNode frame) {
+        JsonNode event = frame.path("body").path("event");
+        String raw = event.path("template_card_event").path("task_id")
+                .asText(event.path("task_id").asText(""));
+        return WecomTaskId.parse(raw)
+                .map(WecomTaskId::domain)
+                .filter(BusinessFollowUpCardInteractionService.CARD_DOMAIN::equals)
+                .isPresent();
+    }
+
     private void recordCardUpdateOutcome(
             String messageId,
             String claimToken,
@@ -415,7 +534,7 @@ public class WecomMessageDispatchHandler implements WecomFrameHandler {
         }
         try {
             WecomSendResult result = outboundGateway()
-                    .send(WecomOutboundMessage.text(outcome.replyTarget(), text));
+                    .send(WecomOutboundMessage.markdown(outcome.replyTarget(), text));
             return result.status() == WecomSendStatus.SUCCESS
                     ? FallbackDelivery.sent()
                     : FallbackDelivery.failed(sendFailureCode(result, "FALLBACK_NOT_ACKNOWLEDGED"));

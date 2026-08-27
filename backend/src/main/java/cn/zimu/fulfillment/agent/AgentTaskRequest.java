@@ -10,13 +10,22 @@ package cn.zimu.fulfillment.agent;
  * 收敛前使用）。
  */
 public record AgentTaskRequest(
-        String systemPrompt, String userInput, AgentToolBinding tools, AgentDefinition definition) {
+        String systemPrompt,
+        String userInput,
+        AgentToolBinding tools,
+        AgentDefinition definition,
+        AgentExecutionBudget executionBudget) {
 
     public AgentTaskRequest(String systemPrompt, String userInput) {
-        this(systemPrompt, userInput, null, null);
+        this(systemPrompt, userInput, null, null, null);
     }
 
     public AgentTaskRequest(String systemPrompt, String userInput, AgentToolBinding tools) {
-        this(systemPrompt, userInput, tools, null);
+        this(systemPrompt, userInput, tools, null, null);
+    }
+
+    public AgentTaskRequest(
+            String systemPrompt, String userInput, AgentToolBinding tools, AgentDefinition definition) {
+        this(systemPrompt, userInput, tools, definition, null);
     }
 }
