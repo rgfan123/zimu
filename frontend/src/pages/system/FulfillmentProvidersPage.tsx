@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import {
   App as AntApp,
+  AutoComplete,
   Button,
   Divider,
   Form,
@@ -19,8 +20,8 @@ import {
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { errorMessage } from '@/api/client';
-import { providersApi } from '@/api/endpoints';
-import type { FulfillmentProvider } from '@/api/types';
+import { providersApi, wecomChatsApi } from '@/api/endpoints';
+import type { FulfillmentProvider, KnownWecomChat } from '@/api/types';
 import { PROVIDER_TYPE_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import DataTable from '@/components/DataTable';
@@ -83,9 +84,29 @@ const validateGroupChatId = (_rule: unknown, value: string | undefined) => {
   return Promise.resolve();
 };
 
+/** 下拉候选：群在前（按活跃倒序，事件表就是这个序）、单聊在后；chatid 保持可手填。 */
+function chatOptions(chats: KnownWecomChat[]) {
+  const groups = chats.filter((chat) => chat.chat_type === 'group');
+  const singles = chats.filter((chat) => chat.chat_type === 'single');
+  const describe = (chat: KnownWecomChat) =>
+    chat.chat_type === 'group'
+      ? `群聊 · ${chat.chat_id}${chat.last_seen_at ? `（${chat.last_seen_at.slice(5, 10)} 活跃）` : ''}`
+      : `单聊 · ${chat.chat_id}${chat.label ? `（${chat.label}）` : ''}`;
+  const toOption = (chat: KnownWecomChat) => ({ value: chat.chat_id, label: describe(chat) });
+  return [
+    ...(groups.length > 0 ? [{ label: '机器人所在群聊', options: groups.map(toOption) }] : []),
+    ...(singles.length > 0 ? [{ label: '运营人员单聊', options: singles.map(toOption) }] : []),
+  ];
+}
+
 export default function FulfillmentProvidersPage() {
   const { message: messageApi } = AntApp.useApp();
   const { data, loading, error, reload } = useAsync(() => providersApi.list(), []);
+  // 会话目录加载失败不挡编辑：候选只是便利，chatid 永远可以手填
+  const { data: chatDirectory } = useAsync(
+    () => wecomChatsApi.list().catch(() => ({ chats: [] as KnownWecomChat[] })),
+    [],
+  );
   const [editing, setEditing] = useState<FulfillmentProvider | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
@@ -316,11 +337,19 @@ export default function FulfillmentProvidersPage() {
           </Form.Item>
           <Form.Item
             name="wecom_group_chat_id"
-            label="企微群 chatid"
-            extra="登记该履约方对应的企业微信群 chatid（履约导出后向群内通知用）；留空并保存即清除登记，改完立即生效无需重启"
+            label="企微推送会话 chatid"
+            extra="发货清单等推送的目标会话：从候选选择（机器人收到过消息的群 / 运营人员单聊），或手填。把机器人拉进新群并发一条消息，刷新页面即可出现在候选里。留空并保存即清除登记，改完立即生效无需重启"
             rules={[{ validator: validateGroupChatId }]}
           >
-            <Input placeholder="请输入企微群 chatid（留空并保存 = 清除登记）" maxLength={128} />
+            <AutoComplete
+              options={chatOptions(chatDirectory?.chats ?? [])}
+              filterOption={(input, option) => {
+                const value = (option as { value?: unknown } | undefined)?.value;
+                return typeof value === 'string' && value.toLowerCase().includes(input.toLowerCase());
+              }}
+            >
+              <Input placeholder="选择或输入会话 chatid（留空并保存 = 清除登记）" allowClear />
+            </AutoComplete>
           </Form.Item>
           <Form.Item
             name="wecom_reminder_interval_minutes"

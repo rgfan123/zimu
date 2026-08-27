@@ -82,7 +82,7 @@ test('履约方配置 edit modal submits the registered group chat id in config'
     .find((link) => link.textContent?.includes('编辑'));
   assert.ok(editLink, 'provider directory must expose the edit action');
   await harness.dispatchEvent(editLink, new MouseEvent('click', { bubbles: true }));
-  await harness.waitFor(() => assert.match(harness.bodyText(), /企微群 chatid/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /企微推送会话 chatid/));
 
   const { act } = await import('react');
   const { Simulate } = await import('react-dom/test-utils');
@@ -146,7 +146,7 @@ test('履约方配置 clearing the group chat id submits explicit null', async (
       .find((link) => link.textContent?.includes('编辑'));
     assert.ok(editLink);
     await harness.dispatchEvent(editLink, new MouseEvent('click', { bubbles: true }));
-    await harness.waitFor(() => assert.match(harness.bodyText(), /企微群 chatid/));
+    await harness.waitFor(() => assert.match(harness.bodyText(), /企微推送会话 chatid/));
   };
   const submit = async () => {
     const confirmButton = document.querySelector<HTMLButtonElement>('.ant-modal-footer .ant-btn-primary');

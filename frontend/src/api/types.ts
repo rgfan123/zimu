@@ -592,6 +592,16 @@ export interface FulfillmentProvider {
   wecom_reminder_interval_minutes: number | null;
 }
 
+/** 机器人可达会话（配置推送目标用）：群来自机器人收到过消息的群，单聊来自运营人员绑定的 userid。 */
+export interface KnownWecomChat {
+  chat_id: string;
+  chat_type: 'group' | 'single';
+  /** 单聊 = 运营人员姓名；群聊企微不下发群名，恒为 null。 */
+  label: string | null;
+  event_count: number;
+  last_seen_at: string | null;
+}
+
 /** 内部运营人员（Issue #89）：姓名、企微 userid、所属责任团队；只做映射与责任归属，不做登录/权限。 */
 export interface Operator {
   id: string;

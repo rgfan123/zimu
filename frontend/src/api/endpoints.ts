@@ -41,6 +41,7 @@ import type {
   FulfillmentMetric,
   FulfillmentPage,
   FulfillmentProvider,
+  KnownWecomChat,
   ImportBatch,
   InventoryDetailsResponse,
   InventoryOverviewResponse,
@@ -454,6 +455,11 @@ export const providersApi = {
     config?: Record<string, string | boolean | number | null>;
   }) =>
     apiRequest<FulfillmentProvider>(`/api/v1/fulfillment-providers/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
+};
+
+/** GET /api/v1/wecom/chats —— 机器人可达会话目录（配置企微推送目标时的候选）。 */
+export const wecomChatsApi = {
+  list: () => apiRequest<{ chats: KnownWecomChat[] }>('/api/v1/wecom/chats'),
 };
 
 // ---------- 履约中心 ----------
