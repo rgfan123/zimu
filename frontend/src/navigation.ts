@@ -30,7 +30,9 @@ export const appNavigation = [
   },
   { path: '/dashboard', label: '调度台' },
   // UIUX-11（2026-08-26 用户实测反馈 #4）：侧栏按「一天的工作流」重组，不按功能类别平铺。
-  // 高频组在前（订单与发货、渠道与文件），低频配置合并成单组默认折叠（见 /settings 组）。
+  // 高频组在前（订单与发货、渠道与文件），低频配置默认折叠。
+  // 2026-08-27 用户反馈：原「配置与主数据」9 个可见入口太挤，拆成
+  // 「商品与主数据」（/master-data，商品主数据日常维护）+「系统与接入」（/system，低频系统级配置与审计）。
   {
     path: '/orders',
     label: '订单与发货',
@@ -74,8 +76,8 @@ export const appNavigation = [
     ],
   },
   {
-    path: '/settings',
-    label: '配置与主数据',
+    path: '/master-data',
+    label: '商品与主数据',
     children: [
       { path: '/product/skus', label: '商品档案' },
       { path: '/product/sku-mappings', label: 'SKU 映射' },
@@ -84,9 +86,13 @@ export const appNavigation = [
       { path: '/inventory/details', label: '专业库存明细', hideInMenu: true },
       { path: '/product/products', label: '商品基础信息', hideInMenu: true },
       { path: '/product/categories', label: '品类基础信息', hideInMenu: true },
+    ],
+  },
+  {
+    path: '/system',
+    label: '系统与接入',
+    children: [
       { path: '/system/connectors', label: '渠道接入' },
-      { path: '/system/audit-logs', label: '操作审计' },
-      { path: '/system/config', label: '系统配置', hideInMenu: true },
       { path: '/system/fulfillment-providers', label: '履约方配置' },
       // Issue #89：内部运营人员登记（姓名、企微 userid、所属责任团队）——系统管理配置主线入口
       { path: '/system/operators', label: '运营人员' },
@@ -98,6 +104,8 @@ export const appNavigation = [
       { path: '/fulfillment/jd-serial', label: '序列号查询', hideInMenu: true },
       { path: '/fulfillment/jd-order', label: '京东专业单据', hideInMenu: true },
       { path: '/fulfillment/jd-return', label: '退货退供查询', hideInMenu: true },
+      { path: '/system/audit-logs', label: '操作审计' },
+      { path: '/system/config', label: '系统配置', hideInMenu: true },
     ],
   },
   { path: '/analytics', label: '经营分析' },

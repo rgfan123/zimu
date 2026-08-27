@@ -8,14 +8,14 @@ test('ERP navigation groups task pages under a stable business section', () => {
     section: '我的工作台',
     page: '复核收件箱',
   });
-  // UIUX-11：侧栏按工作流重组——采购协同的隐藏直达挂在「渠道与文件」，
-  // 主数据/库存/系统管理合并为「配置与主数据」单组（低频，默认折叠）。
+  // UIUX-11：侧栏按工作流重组——采购协同的隐藏直达挂在「渠道与文件」。
+  // 2026-08-27：低频配置拆为「商品与主数据」+「系统与接入」两组（均默认折叠）。
   assert.deepEqual(navigationContext('/procurement/tickets', '采购协同'), {
     section: '渠道与文件',
     page: '采购协同',
   });
   assert.deepEqual(navigationContext('/product/sku-mappings', 'SKU 映射'), {
-    section: '配置与主数据',
+    section: '商品与主数据',
     page: 'SKU 映射',
   });
   assert.deepEqual(navigationContext('/fulfillment/shipments', '发货记录'), {

@@ -119,6 +119,7 @@ const routeIcons: Readonly<Record<string, ReactNode>> = {
   '/agents': <RobotOutlined style={{ fontSize: iconFontSize }} />,
   '/inventory': <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
   '/product': <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
+  '/master-data': <DatabaseOutlined style={{ fontSize: iconFontSize }} />,
   '/analytics': <BarChartOutlined style={{ fontSize: iconFontSize }} />,
   '/system': <SettingOutlined style={{ fontSize: iconFontSize }} />,
   '/demo/order': <RocketOutlined style={{ fontSize: iconFontSize }} />,

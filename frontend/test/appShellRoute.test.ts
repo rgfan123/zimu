@@ -48,10 +48,12 @@ test('外壳无顶栏，品牌下方是未选择态的岗位选择器，我的�
   assert.match(body, /今日发货工作台/);
   assert.match(body, /对账工作台/);
   assert.doesNotMatch(body, /模拟下单/, 'Demo 页面不再出现在日常菜单（URL 保留）');
-  // UIUX-11：低频配置合并为「配置与主数据」单组且默认折叠——组头可见，条目收起。
+  // 2026-08-27：低频配置拆为「商品与主数据」+「系统与接入」两组，均默认折叠——组头可见，条目收起。
   // 折叠是用户手势可开合的展示态，不是岗位隐藏（ADR 0004 D1 不受影响）。
-  assert.match(body, /配置与主数据/, '配置与主数据组头必须可见');
-  assert.doesNotMatch(body, /操作审计/, '默认折叠下配置组条目不渲染');
+  assert.match(body, /商品与主数据/, '商品与主数据组头必须可见');
+  assert.match(body, /系统与接入/, '系统与接入组头必须可见');
+  assert.doesNotMatch(body, /商品档案/, '默认折叠下商品与主数据组条目不渲染');
+  assert.doesNotMatch(body, /操作审计/, '默认折叠下系统与接入组条目不渲染');
   assert.doesNotMatch(body, /连接与出库查询/, '六个京东查询页不再直接出现在菜单');
 });
 
@@ -69,9 +71,9 @@ test('选择岗位后跳到该岗位工作台、写入 localStorage，URL 不携
   assert.doesNotMatch(harness.location(), /FULFILLMENT|role|岗位/, '分享 URL 不得携带岗位');
 
   // ADR 0004：岗位只重排导航分组顺序，绝不隐藏——切岗后全部分组组头仍可见（D1：岗位 ≠ 权限）。
-  // UIUX-11 后组头集合：我的工作台 / 订单与发货 / 渠道与文件 / Agent 中心 / 配置与主数据 / 经营分析。
+  // 2026-08-27 后组头集合：我的工作台 / 订单与发货 / 渠道与文件 / Agent 中心 / 商品与主数据 / 系统与接入 / 经营分析。
   const reordered = harness.bodyText();
-  for (const section of ['我的工作台', '订单与发货', '渠道与文件', 'Agent 中心', '配置与主数据', '经营分析']) {
+  for (const section of ['我的工作台', '订单与发货', '渠道与文件', 'Agent 中心', '商品与主数据', '系统与接入', '经营分析']) {
     assert.match(reordered, new RegExp(section), `切换岗位后「${section}」分组必须仍然可见`);
   }
   // 履约运营的分组优先序：订单与发货排在渠道与文件之前。

@@ -111,8 +111,8 @@ export function buildRailGroups(): RailGroup[] {
 
 /** 岗位 → 分组优先顺序。不在表里的分组保持默认相对顺序排在后面；未知岗位不重排。 */
 const ROLE_SECTION_PRIORITY: Record<string, readonly string[]> = {
-  FULFILLMENT_OPS: ['/workbench', '/orders', '/operations', '/settings', 'analytics'],
-  SKU_OPS: ['/workbench', '/operations', '/settings', 'analytics'],
+  FULFILLMENT_OPS: ['/workbench', '/orders', '/operations', '/master-data', '/system', 'analytics'],
+  SKU_OPS: ['/workbench', '/operations', '/master-data', '/system', 'analytics'],
   CUSTOMER_OPS: ['/workbench', '/orders', '/operations', 'analytics'],
   ORDER_OPS: ['/workbench', '/orders', '/operations', 'analytics'],
   FINANCE: ['/workbench', 'analytics', '/orders', '/operations'],

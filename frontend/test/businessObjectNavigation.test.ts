@@ -106,11 +106,11 @@ test('京东工具收敛为单入口，六个查询页保留隐藏直达', () =>
     assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
   }
   assert.deepEqual(navigationContext('/fulfillment/jd-stock', ''), {
-    section: '配置与主数据',
+    section: '系统与接入',
     page: '库存原始查询',
   });
   assert.deepEqual(navigationContext('/system/jd-tools', ''), {
-    section: '配置与主数据',
+    section: '系统与接入',
     page: '京东工具',
   });
 });
@@ -133,29 +133,29 @@ test('provider configuration is a provider-neutral system page', () => {
     label: '履约方配置',
   });
   assert.deepEqual(navigationContext('/system/fulfillment-providers', ''), {
-    section: '配置与主数据',
+    section: '系统与接入',
     page: '履约方配置',
   });
 });
 
 test('system menu exposes each connector and provider configuration capability once', () => {
-  // UIUX-11：系统管理并入「配置与主数据」单组；能力清单不变，各出现一次。
-  const settings = findNavigationNode(appNavigation, '/settings');
-  const visible = settings?.children?.filter(({ hideInMenu }) => !hideInMenu)?.map(({ path }) => path) ?? [];
+  // 2026-08-27：系统级配置与审计独立为「系统与接入」组；能力清单不变，各出现一次。
+  const system = findNavigationNode(appNavigation, '/system');
+  const visible = system?.children?.filter(({ hideInMenu }) => !hideInMenu)?.map(({ path }) => path) ?? [];
 
   for (const path of [
     '/system/connectors', '/system/audit-logs', '/system/fulfillment-providers',
     '/system/operators', '/system/jd-tools',
   ]) {
-    assert.equal(visible.filter((item) => item === path).length, 1, `${path} 必须在配置与主数据组恰好出现一次`);
+    assert.equal(visible.filter((item) => item === path).length, 1, `${path} 必须在系统与接入组恰好出现一次`);
   }
   assert.equal(findNavigationNode(appNavigation, '/system/config')?.hideInMenu, true);
 });
 
 test('product operations expose product archive, SKU mappings, and static bundle management', () => {
-  // UIUX-11：主数据并入「配置与主数据」；三个可见入口保持不变。
-  const settings = findNavigationNode(appNavigation, '/settings');
-  const visibleChildren = settings?.children
+  // 2026-08-27：商品主数据独立为「商品与主数据」组；三个可见入口保持不变。
+  const masterData = findNavigationNode(appNavigation, '/master-data');
+  const visibleChildren = masterData?.children
     ?.filter(({ hideInMenu, path }) => !hideInMenu && path.startsWith('/product/'));
 
   assert.deepEqual(visibleChildren, [
@@ -193,14 +193,14 @@ test('orders stay canonical and inventory has one business-level overview', () =
 
   assert.equal(orders?.children?.filter(({ label }) => label === '全部订单').length, 1);
   assert.equal(orders?.children?.some(({ label }) => label.includes('京东')), false);
-  // UIUX-11：库存并入「配置与主数据」；业务级总览仍只有一个。
-  const settingsInventory = findNavigationNode(appNavigation, '/settings')?.children
+  // 2026-08-27：库存挂在「商品与主数据」组；业务级总览仍只有一个。
+  const masterDataInventory = findNavigationNode(appNavigation, '/master-data')?.children
     ?.filter(({ hideInMenu, path }) => !hideInMenu && path.startsWith('/inventory/'));
-  assert.deepEqual(settingsInventory, [
+  assert.deepEqual(masterDataInventory, [
     { path: '/inventory/overview', label: '总库存' },
   ]);
   assert.deepEqual(navigationContext('/inventory/overview', ''), {
-    section: '配置与主数据',
+    section: '商品与主数据',
     page: '总库存',
   });
 });

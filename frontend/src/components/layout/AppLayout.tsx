@@ -76,16 +76,23 @@ export default function AppLayout() {
   const reviewsBadge = useReviewsBadge(role);
 
   const groups = useMemo(() => railGroupsForRole(role), [role]);
-  // UIUX-11：低频组默认折叠（配置与主数据）。用户的手动开合记在 localStorage；
+  // UIUX-11：低频组默认折叠（商品与主数据、系统与接入）。用户的手动开合记在 localStorage；
   // 含当前路由的组永远展开——把人正在用的入口折起来比平铺更糟。
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
     try {
       const stored = localStorage.getItem('zs-nav-collapsed');
-      if (stored) return new Set(JSON.parse(stored) as string[]);
+      if (stored) {
+        // 2026-08-27：「配置与主数据」（/settings）拆分为「商品与主数据」+「系统与接入」。
+        // 旧存量键迁移到两个新组，保留用户此前的开合选择（有则两组皆收，无则两组皆展）。
+        const keys = (JSON.parse(stored) as string[]).flatMap((key) =>
+          key === '/settings' ? ['/master-data', '/system'] : [key],
+        );
+        return new Set(keys);
+      }
     } catch { /* 私密模式等场景读不到即用默认 */ }
     // 默认全收敛，只留「我的工作台」展开（2026-08-27 用户反馈：默认展开还是太吵）。
     // 含当前路由的组由渲染层强制展开，收敛不会把人正在用的入口藏起来。
-    return new Set(['/orders', '/operations', '/agents', '/settings', 'analytics']);
+    return new Set(['/orders', '/operations', '/agents', '/master-data', '/system', 'analytics']);
   });
   const toggleGroup = (key: string) => {
     setCollapsedGroups((prev) => {
