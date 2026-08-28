@@ -223,7 +223,13 @@ public class SourceReturnPushService {
                 throw BusinessException.conflict("PUSH_ALREADY_CLAIMED",
                         "该回填文件当前推送状态为 " + pushStatus + "，不能重复推送");
             }
-            return new PushIntent(exportId, info.fileRef(), channel, info.importBatchId());
+            return new PushIntent(
+                    exportId,
+                    info.fileRef(),
+                    channel,
+                    info.importBatchId(),
+                    info.originalFileName(),
+                    info.versionNo());
         });
     }
 
@@ -271,7 +277,8 @@ public class SourceReturnPushService {
         Path input;
         Path output = outDir.resolve("result.json");
         try {
-            input = outDir.resolve("return.xlsx");
+            // 临时文件名就是平台收到的 multipart filename，所以按来源原名命名而不是 return.xlsx。
+            input = outDir.resolve(intent.uploadFileName());
             Files.write(input, fileBytes);
         } catch (IOException ex) {
             throw new IllegalStateException("写回填临时文件失败: " + ex.getMessage(), ex);
@@ -412,13 +419,18 @@ public class SourceReturnPushService {
     private ReturnExportInfo load(long exportId) {
         List<ReturnExportInfo> rows = jdbc.query(
                 """
-                SELECT sre.file_ref, ib.source_channel, sre.import_batch_id
+                SELECT sre.file_ref, ib.source_channel, sre.import_batch_id,
+                       ib.original_file_name, sre.version_no
                 FROM app.source_return_exports sre
                 JOIN app.import_batches ib ON ib.id=sre.import_batch_id
                 WHERE sre.id=?
                 """,
                 (rs, rowNum) -> new ReturnExportInfo(
-                        rs.getString("file_ref"), rs.getString("source_channel"), rs.getLong("import_batch_id")),
+                        rs.getString("file_ref"),
+                        rs.getString("source_channel"),
+                        rs.getLong("import_batch_id"),
+                        rs.getString("original_file_name"),
+                        rs.getInt("version_no")),
                 exportId);
         return rows.isEmpty() ? null : rows.getFirst();
     }
@@ -591,9 +603,30 @@ public class SourceReturnPushService {
     }
 
     /** 推送意图（阶段一提交后传入阶段二/三）；包可见便于测试。 */
-    record PushIntent(long exportId, String fileRef, String channel, long importBatchId) {}
+    record PushIntent(
+            long exportId,
+            String fileRef,
+            String channel,
+            long importBatchId,
+            String originalFileName,
+            int versionNo) {
 
-    record ReturnExportInfo(String fileRef, String channel, long importBatchId) {}
+        /**
+         * 上传到平台时用的文件名。
+         *
+         * <p>这个名字直接进多部分表单，是平台真正看到的名字（彩食鲜脚本用
+         * {@code files={"file": (path.name, ...)}}），此前一律是临时文件名 {@code return.xlsx}，
+         * 平台原名全丢。扩展名以实际产物为准。
+         */
+        String uploadFileName() {
+            int dot = fileRef == null ? -1 : fileRef.lastIndexOf('.');
+            String extension = dot < 0 ? ".xlsx" : fileRef.substring(dot);
+            return SourceReturnFileNaming.fileName(originalFileName, channel, versionNo, extension);
+        }
+    }
+
+    record ReturnExportInfo(
+            String fileRef, String channel, long importBatchId, String originalFileName, int versionNo) {}
 
     /** 推送渠道脚本规格。 */
     private record ChannelScriptSpec(String scriptName, String credentialFile, List<String> credentialEnvNames) {}

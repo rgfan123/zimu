@@ -56,7 +56,25 @@ public class SourceReturnWecomDeliveryService {
     }
 
     /** 待投递的回填文件：最终版、且所属渠道没有在线回传能力。 */
-    public record Candidate(long exportId, long importBatchId, String sourceChannel, String fileRef) {}
+    public record Candidate(
+            long exportId,
+            long importBatchId,
+            String sourceChannel,
+            String fileRef,
+            String originalFileName,
+            int versionNo) {
+
+        /**
+         * 实际产物的扩展名，取自 file_ref（存储时按渠道决定 .csv/.xlsx）。
+         *
+         * <p>不能按渠道再推一遍，更不能写死 .xlsx——飞象的回填产物是 CSV，
+         * 之前一律叫 .xlsx，收件人拿到的是扩展名对不上内容的文件。
+         */
+        String extension() {
+            int dot = fileRef == null ? -1 : fileRef.lastIndexOf('.');
+            return dot < 0 ? ".xlsx" : fileRef.substring(dot);
+        }
+    }
 
     /**
      * 领取候选。只挑 {@code is_final} 的版本——非最终版意味着批次还没回填齐，
@@ -68,7 +86,8 @@ public class SourceReturnWecomDeliveryService {
     public List<Candidate> pending(int limit) {
         return jdbc.query(
                 """
-                SELECT sre.id, sre.import_batch_id, ib.source_channel, sre.file_ref
+                SELECT sre.id, sre.import_batch_id, ib.source_channel, sre.file_ref,
+                       ib.original_file_name, sre.version_no
                 FROM app.source_return_exports sre
                 JOIN app.import_batches ib ON ib.id = sre.import_batch_id
                 WHERE sre.is_final = true
@@ -81,7 +100,9 @@ public class SourceReturnWecomDeliveryService {
                         rs.getLong("id"),
                         rs.getLong("import_batch_id"),
                         rs.getString("source_channel"),
-                        rs.getString("file_ref")),
+                        rs.getString("file_ref"),
+                        rs.getString("original_file_name"),
+                        rs.getInt("version_no")),
                 Math.max(1, Math.min(limit, 50)));
     }
 
@@ -108,9 +129,13 @@ public class SourceReturnWecomDeliveryService {
         Path temp = null;
         try {
             byte[] bytes = files.read(candidate.fileRef());
-            String filename = String.format(
-                    "%s-回填-批次%d.xlsx", candidate.sourceChannel(), candidate.importBatchId());
-            temp = Files.createTempFile("zimu-source-return-", ".xlsx");
+            // 收件人多半要把这个文件原样传回来源平台，所以保住平台原名，只追加后缀。
+            String filename = SourceReturnFileNaming.fileName(
+                    candidate.originalFileName(),
+                    candidate.sourceChannel(),
+                    candidate.versionNo(),
+                    candidate.extension());
+            temp = Files.createTempFile("zimu-source-return-", candidate.extension());
             Files.write(temp, bytes);
 
             WecomUploadResult upload = gateway.upload(temp, filename, WecomMediaType.FILE);

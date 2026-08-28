@@ -22,6 +22,7 @@ import { readStoredWorkbenchRole } from '@/workbenchRole';
 import { reviewTeamForRole } from '@/components/layout/useRailBadges';
 import { alertsQueueUrl, reviewsQueueUrl } from '../shared/reviewQueueUrl';
 import ShippingSyncResults, { type SyncState } from './ShippingSyncResults';
+import PendingConfirmationSection from './PendingConfirmationSection';
 import { useShippingSummary } from './useShippingSummary';
 import { groupReviewPreview, JD_GATE_ZERO_COPY, presentAlertRows } from './shippingSkeleton';
 import './workbench.css';
@@ -270,6 +271,7 @@ export default function ShippingWorkbenchPage() {
         </div>
       </section>
 
+      <PendingConfirmationSection />
       <ReviewPreviewSection team={team} reviewOpen={counts.reviewOpen} />
       <AwaitingTrackingSection />
       <AlertsSection />
