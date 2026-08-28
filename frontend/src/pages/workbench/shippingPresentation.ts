@@ -93,7 +93,7 @@ export interface ValidShippingChannelView extends ShippingChannelViewBase {
   rowCounts: ImportRowCounts | null;
   /** 聚福宝 JSON 直连拉取订单数（缺收货人字段，仅报告未入库） */
   orderCount: number | null;
-  /** 一等状态：仅聚福宝 OK 且无批次、有 order_count 时成立（含 0） */
+  /** 一等状态：仅聚福宝 OK 且无批次时成立；order_count 缺失仍须给出补录下一步。 */
   reportOnly: boolean;
   /** 整卡 React Router 落点；无真实落点为 null */
   destination: string | null;
@@ -117,10 +117,10 @@ export type ShippingChannelView = ValidShippingChannelView | InvalidShippingChan
 export interface ShippingSummary {
   /** 生成导入批次的渠道数（有 batch_id 或 batch_no） */
   batchCount: number;
-  /** 全部渠道 row_counts.total 之和 */
-  totalRows: number;
-  /** 仅报告未入库的订单数之和 */
-  reportedOrders: number;
+  /** 全部已生成批次渠道 row_counts.total 之和；任一批次缺口径时为 null。 */
+  totalRows: number | null;
+  /** 仅报告未入库的订单数之和；报告渠道缺 order_count 时为 null。 */
+  reportedOrders: number | null;
   /** FAILED 状态的渠道数 */
   failedCount: number;
   /** SKIPPED 状态的合法渠道数；>0 时不得宣称「三平台已同步完成 / 没有新订单」 */
@@ -218,19 +218,21 @@ function isReportOnlyChannel(channel: Record<string, unknown>): boolean {
   return channel.channel === 'JUFUBAO'
     && channel.status === 'OK'
     && isBlank(channel.batch_id)
-    && isBlank(channel.batch_no)
-    && nonNegativeInteger(channel.order_count) != null;
+    && isBlank(channel.batch_no);
 }
 
 export function summarizeShippingResult(result: { channels: readonly unknown[] }): ShippingSummary {
   const views = result.channels.map(presentShippingChannel);
   const validViews = views.filter((view) => view.validContract);
-  const batchCount = validViews.filter((view) => Boolean(view.batchId || view.batchNo)).length;
-  const totalRows = validViews.reduce((sum, view) => sum + (view.rowCounts?.total ?? 0), 0);
-  const reportedOrders = validViews.reduce((sum, view) => {
-    const count = view.reportOnly ? view.orderCount : null;
-    return count == null ? sum : sum + count;
-  }, 0);
+  const batchViews = validViews.filter((view) => Boolean(view.batchId || view.batchNo));
+  const reportOnlyViews = validViews.filter((view) => view.reportOnly);
+  const batchCount = batchViews.length;
+  const totalRows = batchViews.every((view) => view.rowCounts !== null)
+    ? batchViews.reduce((sum, view) => sum + (view.rowCounts?.total ?? 0), 0)
+    : null;
+  const reportedOrders = reportOnlyViews.every((view) => view.orderCount !== null)
+    ? reportOnlyViews.reduce((sum, view) => sum + (view.orderCount ?? 0), 0)
+    : null;
   const failedCount = validViews.filter((view) => view.status === 'FAILED').length;
   const skippedCount = validViews.filter((view) => view.status === 'SKIPPED').length;
 
@@ -241,7 +243,7 @@ export function summarizeShippingResult(result: { channels: readonly unknown[] }
     failedCount,
     skippedCount,
     contractErrorCount: views.length - validViews.length,
-    hasNewOrders: batchCount > 0 || totalRows > 0 || reportedOrders > 0,
+    hasNewOrders: batchCount > 0 || (totalRows ?? 0) > 0 || (reportedOrders ?? 0) > 0,
   };
 }
 

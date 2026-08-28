@@ -573,3 +573,87 @@
   flex-wrap: wrap;
   align-items: center;
 }
+
+/* 平台拉取结果 / 批次快照：AntD 只承载交互控件，展示密度由工作台 CSS 控制。 */
+.zs-sync-stack,
+.zs-pull-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.zs-sync-loading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--zs-border-2);
+  border-radius: 8px;
+  color: var(--zs-text-3);
+  background: var(--zs-raised);
+}
+.zs-sync-summary {
+  color: var(--zs-text-2);
+  font-size: 13px;
+}
+.zs-sync-channels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+}
+.zs-sync-channel {
+  width: 320px;
+  cursor: pointer;
+}
+.zs-sync-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--zs-border-2);
+  border-radius: 8px;
+  background: var(--zs-raised);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.zs-sync-channel:hover .zs-sync-card,
+.zs-sync-channel:focus-visible .zs-sync-card {
+  border-color: var(--zs-brand-focus);
+  box-shadow: var(--zs-sh2);
+}
+.zs-sync-card-head,
+.zs-sync-card-report,
+.zs-pull-modal-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.zs-sync-card-head {
+  justify-content: space-between;
+}
+.zs-sync-card-meta {
+  color: var(--zs-text-3);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.zs-pull-modal-body {
+  gap: 16px;
+}
+.zs-pull-modal-summary,
+.zs-pull-modal-next {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--zs-text-2);
+}
+.zs-pull-modal-summary .muted,
+.zs-pull-modal-loading {
+  color: var(--zs-text-3);
+}
+.zs-pull-modal-loading {
+  margin: 0;
+}
+.zs-pull-modal-actions {
+  justify-content: flex-end;
+}

@@ -31,6 +31,7 @@ before(async () => {
 
 afterEach(async () => {
   await harness.unmount();
+  window.sessionStorage.clear();
 });
 
 after(async () => {
@@ -63,6 +64,26 @@ function anchorWithHref(href: string): HTMLAnchorElement {
     .find((a) => a.getAttribute('href') === href);
   assert.ok(link, `missing anchor with href ${href}`);
   return link;
+}
+
+function workbenchBlock(selector: string, label: string): HTMLElement {
+  const block = [...document.querySelectorAll<HTMLElement>(selector)]
+    .find((element) => element.textContent?.includes(label));
+  assert.ok(block, `missing workbench block ${label}`);
+  return block;
+}
+
+async function leaveForFileOperationsAndReturn(): Promise<void> {
+  const manualLink = [...document.querySelectorAll<HTMLAnchorElement>('main a')]
+    .find((link) => link.textContent?.includes('手动导入 Excel'));
+  assert.ok(manualLink);
+  await harness.dispatchEvent(manualLink, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.equal(harness.location(), '/fulfillment/sales-outbound'));
+  const returnLink = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    .find((link) => link.getAttribute('href') === '/workbench/shipping' && link.textContent?.includes('今日发货工作台'));
+  assert.ok(returnLink);
+  await harness.dispatchEvent(returnLink, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.equal(harness.location(), '/workbench/shipping'));
 }
 
 test('shipping workbench does not request or render a quota because platform pulls are unlimited', async () => {
@@ -154,6 +175,9 @@ test('successful sync summarizes batch count and total rows and renders one card
   await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-CSX-001/));
   await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-FX-002/));
   await harness.waitFor(() => assert.match(harness.bodyText(), /成功/));
+  assert.match(workbenchBlock('.zs-st', '仅报告未入库').textContent ?? '', /41/);
+  assert.match(workbenchBlock('.zs-pstep', '1 平台拉取').textContent ?? '', /3.*3 成功/);
+  assert.match(workbenchBlock('.zs-pstep', '2 落导入批次').textContent ?? '', /2.*42 行/);
   assert.doesNotMatch(harness.bodyText(), /jufubao\.py/);
 });
 
@@ -384,7 +408,7 @@ test('CAISHIXIAN order_count with a batch plus JUFUBAO report-only only counts t
   assert.doesNotMatch(harness.bodyText(), /拉取 3 单/);
 });
 
-test('JUFUBAO report-only is a first-class status without a fabricated destination', async () => {
+test('JUFUBAO report-only opens an in-place explanation with an executable file-import next step', async () => {
   globalThis.fetch = refreshOnlyFetch(refreshResult([
     channel({
       channel: 'JUFUBAO',
@@ -405,6 +429,49 @@ test('JUFUBAO report-only is a first-class status without a fabricated destinati
   const cardLinks = [...document.querySelectorAll<HTMLAnchorElement>('a')]
     .filter((a) => (a.getAttribute('href') ?? '').startsWith('/fulfillment/sales-outbound?import_batch='));
   assert.equal(cardLinks.length, 0, '仅报告未入库的渠道卡不得伪造导入批次落点');
+
+  const channelCard = [...document.querySelectorAll<HTMLElement>('[role="button"]')]
+    .find((element) => element.textContent?.includes('聚福宝'));
+  assert.ok(channelCard, '聚福宝渠道卡必须可原地打开说明');
+  await harness.dispatchEvent(channelCard, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /聚福宝 · 拉取快照/));
+  assert.equal(harness.location(), '/workbench/shipping');
+  assert.match(harness.bodyText(), /JSON 直连拉到 41 单/);
+  assert.match(harness.bodyText(), /来源缺少收货人字段，本次未生成导入批次/);
+  const uploadLink = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    .find((link) => link.textContent?.includes('去文件作业页上传 Excel 补录'));
+  assert.ok(uploadLink);
+  assert.equal(uploadLink.getAttribute('href'), '/fulfillment/sales-outbound');
+});
+
+test('JUFUBAO without a reported count keeps the number unknown and still offers the Excel next step', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel({
+      channel: 'JUFUBAO',
+      status: 'OK',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      order_count: undefined,
+      business_code: 'OK',
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /聚福宝/));
+
+  const reportedMetric = workbenchBlock('.zs-st', '仅报告未入库');
+  assert.equal(reportedMetric.querySelector('.zs-v')?.textContent, '—');
+  assert.doesNotMatch(harness.bodyText(), /没有新订单|拉取 0 单/);
+  const channelCard = [...document.querySelectorAll<HTMLElement>('[role="button"]')]
+    .find((element) => element.textContent?.includes('聚福宝'));
+  assert.ok(channelCard);
+  await harness.dispatchEvent(channelCard, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /JSON 直连拉取数量暂不可用/));
+  const uploadLink = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    .find((link) => link.textContent?.includes('去文件作业页上传 Excel 补录'));
+  assert.ok(uploadLink);
 });
 
 test('top-level sync failure is readable and retryable', async () => {
@@ -430,20 +497,239 @@ test('top-level sync failure is readable and retryable', async () => {
   assert.equal(calls, 2, '重试必须重新发起同步请求');
 });
 
-test('a channel card with a batch id navigates as a whole card to the file job page', async () => {
-  globalThis.fetch = refreshOnlyFetch(refreshResult([channel()]));
+test('a channel card opens its paged batch snapshot in place through the safe row projection', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    requests.push(url);
+    if (url === REFRESH_URL) return jsonResponse(refreshResult([channel()]));
+    if (url === '/api/v1/import-batches/7/rows?page=0&size=20') {
+      return jsonResponse({
+        items: [{
+          id: 'row-1',
+          sheet_name: '订单',
+          sheet_index: 0,
+          row_index: 2,
+          source_order_ref: 'CSX-1001',
+          raw_cells: {
+            商品编号: 'SKU-CSX-001',
+            身份证号码: '410000000000000000',
+            内部备注: '禁止展示的原始字段',
+          },
+          parsed: {
+            receiver_name: '张三',
+            receiver_phone: '13800000000',
+            receiver_address: '河南省开封市测试路 1 号',
+            product_name: '来源苹果',
+            specification: '5kg/箱',
+            quantity: '2',
+          },
+          status: 'NEED_REVIEW',
+          error_code: 'SKU_MAPPING_REQUIRED',
+          order_id: null,
+          order_line_id: null,
+          jd_cargos: [],
+        }, {
+          id: 'row-2',
+          sheet_name: '订单',
+          sheet_index: 0,
+          row_index: 3,
+          source_order_ref: 'CSX-1002',
+          raw_cells: {
+            商品名称: '来源梨',
+            数量: 3,
+          },
+          parsed: {
+            receiver_name: '李四',
+            receiver_phone: '13900000000',
+            receiver_address: '河南省开封市测试路 2 号',
+          },
+          status: 'REJECTED',
+          error_code: 'IMPORT_VALIDATION',
+          order_id: null,
+          order_line_id: null,
+          jd_cargos: [],
+        }],
+        page: 0,
+        size: 20,
+        total_elements: 31,
+        total_pages: 2,
+      });
+    }
+    if (url === '/api/v1/import-batches/7/rows?page=1&size=20') {
+      return jsonResponse({ items: [], page: 1, size: 20, total_elements: 31, total_pages: 2 });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
 
   await harness.mount(['/workbench/shipping']);
   await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
   await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
 
-  let cardLink: HTMLAnchorElement | undefined;
-  await harness.waitFor(() => {
-    cardLink = anchorWithHref('/fulfillment/sales-outbound?import_batch=7');
+  const channelCard = [...document.querySelectorAll<HTMLElement>('[role="button"]')]
+    .find((element) => element.textContent?.includes('彩食鲜'));
+  assert.ok(channelCard, '渠道卡必须是可点击、可键盘触发的原地操作');
+  await harness.dispatchEvent(channelCard, new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜 · 批次快照/));
+  assert.equal(harness.location(), '/workbench/shipping', '打开快照不得离开工作台');
+  assert.match(harness.bodyText(), /批次 IMP-CSX-001/);
+  assert.match(harness.bodyText(), /共 30 行 · 已接收 28 · 待复核 2 · 拒绝 0/);
+  assert.match(harness.bodyText(), /拉取窗口 2026-08-21/);
+  assert.match(harness.bodyText(), /张三/);
+  assert.match(harness.bodyText(), /13800000000/);
+  assert.match(harness.bodyText(), /河南省开封市测试路 1 号/);
+  assert.deepEqual(
+    [...document.querySelectorAll<HTMLTableCellElement>('.ant-table-thead th')]
+      .map((cell) => cell.textContent?.trim()),
+    ['序号', '渠道单号', '收件人', '电话', '收货地址', '商品', '件数', '状态', '处理结果'],
+  );
+  assert.match(harness.bodyText(), /CSX-1001/);
+  assert.match(harness.bodyText(), /来源苹果/);
+  assert.match(harness.bodyText(), /CSX-1002/);
+  assert.match(harness.bodyText(), /来源梨/);
+  const detailRows = [...document.querySelectorAll<HTMLTableRowElement>('.ant-table-tbody tr.ant-table-row')];
+  assert.deepEqual(
+    detailRows.map((row) => {
+      const cells = [...row.querySelectorAll<HTMLTableCellElement>('td')];
+      return [cells[5]?.textContent?.trim(), cells[6]?.textContent?.trim()];
+    }),
+    [['来源苹果', '2'], ['来源梨', '3']],
+    '商品与件数必须同时使用来源行口径',
+  );
+  assert.match(harness.bodyText(), /待复核/);
+  assert.match(harness.bodyText(), /已拒绝/);
+  assert.doesNotMatch(harness.bodyText(), /发货明细|SKU-CSX-001/);
+  assert.doesNotMatch(harness.bodyText(), /身份证号码|410000000000000000|内部备注|禁止展示的原始字段|raw_cells/);
+  assert.ok(requests.includes('/api/v1/import-batches/7/rows?page=0&size=20'));
+  assert.equal(
+    requests.some((url) => /\/rows\?page=0&size=(?!20(?:&|$))/.test(url)),
+    false,
+    '快照首屏不得一次拉全量',
+  );
+  assert.ok(anchorWithHref('/fulfillment/sales-outbound?import_batch=7').textContent?.includes('去文件作业页确认整批'));
+  assert.doesNotMatch(harness.bodyText(), /确认整批发货/);
+
+  const nextPage = [...document.querySelectorAll<HTMLElement>('li.ant-pagination-next')][0];
+  assert.ok(nextPage, '多页批次必须显示分页控件');
+  await harness.dispatchEvent(nextPage, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.ok(requests.includes('/api/v1/import-batches/7/rows?page=1&size=20')));
+});
+
+test('a failed snapshot row load has a retry and an empty page has an explicit empty state', async () => {
+  let rowCalls = 0;
+  let resolveFirstRows: (response: Response) => void = () => {};
+  const firstRows = new Promise<Response>((resolve) => {
+    resolveFirstRows = resolve;
   });
-  assert.ok(cardLink, '整卡必须渲染为指向文件作业页的链接');
-  await harness.dispatchEvent(cardLink, new MouseEvent('click', { bubbles: true }));
-  await harness.waitFor(() => assert.equal(harness.location(), '/fulfillment/sales-outbound?import_batch=7'));
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === REFRESH_URL) return jsonResponse(refreshResult([channel()]));
+    if (url === '/api/v1/import-batches/7/rows?page=0&size=20') {
+      rowCalls += 1;
+      if (rowCalls === 1) return firstRows;
+      return jsonResponse({ items: [], page: 0, size: 20, total_elements: 0, total_pages: 0 });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜/));
+  const channelCard = [...document.querySelectorAll<HTMLElement>('[role="button"]')]
+    .find((element) => element.textContent?.includes('彩食鲜'));
+  assert.ok(channelCard);
+  await harness.dispatchEvent(channelCard, new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /正在加载批次明细/));
+  resolveFirstRows(apiErrorResponse(500, 'INTERNAL', 'raw backend detail'));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次明细加载失败/));
+  assert.ok(control('重试加载'));
+  await harness.dispatchEvent(control('重试加载'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /该批次暂无明细行/));
+  assert.equal(rowCalls, 2);
+});
+
+test('the latest successful sync snapshot survives leaving and returning in the same tab', async () => {
+  let refreshCalls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === REFRESH_URL) {
+      refreshCalls += 1;
+      return jsonResponse(refreshResult([channel()]));
+    }
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/fulfillment-exports')) {
+      return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-CSX-001/));
+
+  await leaveForFileOperationsAndReturn();
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-CSX-001/));
+  assert.equal(refreshCalls, 1, '跨路由恢复只读 sessionStorage，不得偷偷二次同步');
+  assert.match(workbenchBlock('.zs-pstep', '1 平台拉取').textContent ?? '', /1.*1 成功/);
+});
+
+test('unknown sync metrics stay explicit instead of being fabricated as zero', async () => {
+  globalThis.fetch = refreshOnlyFetch(refreshResult([
+    channel({ row_counts: undefined }),
+    channel({
+      channel: 'JUFUBAO',
+      status: 'FAILED',
+      batch_no: undefined,
+      batch_id: undefined,
+      row_counts: undefined,
+      order_count: undefined,
+      business_code: 'INTERNAL_ERROR',
+    }),
+  ]));
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-CSX-001/));
+
+  const reportedMetric = workbenchBlock('.zs-st', '仅报告未入库');
+  assert.equal(reportedMetric.querySelector('.zs-v')?.textContent, '—');
+  assert.match(reportedMetric.textContent ?? '', /暂无汇总/);
+  const importedSegment = workbenchBlock('.zs-pstep', '2 落导入批次');
+  assert.equal(importedSegment.querySelector('.zs-v')?.textContent, '1');
+  assert.match(importedSegment.textContent ?? '', /暂无汇总/);
+  assert.doesNotMatch(importedSegment.textContent ?? '', /0 行/);
+  assert.match(harness.bodyText(), /生成 1 个导入批次 · 行数暂无汇总/);
+  assert.doesNotMatch(harness.bodyText(), /生成 1 个导入批次 · 共 0 行/);
+});
+
+test('a failed refresh invalidates the older successful session snapshot', async () => {
+  let refreshCalls = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url === REFRESH_URL) {
+      refreshCalls += 1;
+      return refreshCalls === 1
+        ? jsonResponse(refreshResult([channel()]))
+        : apiErrorResponse(500, 'INTERNAL', 'refresh exploded');
+    }
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/fulfillment-exports')) {
+      return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/workbench/shipping']);
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-CSX-001/));
+  await harness.dispatchEvent(control('开始今日订单同步'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /订单同步失败/));
+
+  await leaveForFileOperationsAndReturn();
+  await harness.waitFor(() => assert.doesNotMatch(harness.bodyText(), /批次 IMP-CSX-001|订单同步失败/));
+  assert.equal(refreshCalls, 2);
 });
 
 test('manual import is a real link to the file job page', async () => {
@@ -656,13 +942,19 @@ test('invalid contracts drop batch/count fields and cannot pollute shipping summ
   assert.doesNotMatch(harness.bodyText(), /批次 IMP-PROTO-007|批次 IMP-CSX-008/);
   assert.doesNotMatch(harness.bodyText(), /共 30 行|共 12 行|拉取 99 单|拉取 5 单/);
   assert.doesNotMatch(harness.bodyText(), /3 个导入批次|共 46 行|个渠道失败/);
-  const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  let hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
   assert.equal(
     hrefs.some((href) => href.includes('import_batch=7') || href.includes('import_batch=8')),
     false,
     '非法契约不得生成批次落点',
   );
-  assert.ok(hrefs.includes('/fulfillment/sales-outbound?import_batch=9'), '合法飞象批次仍须可跳转');
+  const legalCard = [...document.querySelectorAll<HTMLElement>('[role="button"]')]
+    .find((element) => element.textContent?.includes('批次 IMP-FX-009'));
+  assert.ok(legalCard, '合法飞象批次仍须可打开快照');
+  await harness.dispatchEvent(legalCard, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /飞象 · 批次快照/));
+  hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  assert.ok(hrefs.includes('/fulfillment/sales-outbound?import_batch=9'), '合法飞象快照应保留文件作业落点');
 });
 
 test('invalid-only contracts surface a page-level format error and never claim three platforms completed', async () => {
@@ -729,8 +1021,13 @@ test('valid plus invalid contracts keep legal batches while contractErrorCount b
   await harness.waitFor(() => assert.match(harness.bodyText(), /未知渠道/));
   assert.doesNotMatch(harness.bodyText(), /没有新订单|三平台已同步完成/);
   assert.doesNotMatch(harness.bodyText(), /批次 IMP-WQ-002|WANQI_PASSWORD|今日无数据/);
+  const legalCard = [...document.querySelectorAll<HTMLElement>('[role="button"]')]
+    .find((element) => element.textContent?.includes('批次 IMP-CSX-001'));
+  assert.ok(legalCard, '合法彩食鲜批次仍须可打开快照');
+  await harness.dispatchEvent(legalCard, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /彩食鲜 · 批次快照/));
   const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
-  assert.ok(hrefs.includes('/fulfillment/sales-outbound?import_batch=7'), '合法彩食鲜批次仍须可跳转');
+  assert.ok(hrefs.includes('/fulfillment/sales-outbound?import_batch=7'), '合法彩食鲜快照应保留文件作业落点');
   assert.equal(hrefs.some((href) => href.includes('import_batch=8')), false, '非法契约批次不得生成落点');
 });
 
@@ -795,13 +1092,19 @@ test('success 200 with prototype channel/status keys stays crash-free without fa
   await harness.waitFor(() => assert.match(harness.bodyText(), /批次 IMP-FX-002/));
   assert.doesNotMatch(harness.bodyText(), /该渠道刷新失败，请稍后重试/);
   assert.doesNotMatch(harness.bodyText(), /没有新订单|三平台已同步完成/);
-  const hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  let hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
   assert.equal(
     hrefs.some((href) => href.includes('import_batch=7') || href.includes('import_batch=8')),
     false,
     '原型键渠道不得生成批次落点',
   );
-  assert.ok(hrefs.includes('/fulfillment/sales-outbound?import_batch=9'), '合法飞象批次仍须可跳转');
+  const legalCard = [...document.querySelectorAll<HTMLElement>('[role="button"]')]
+    .find((element) => element.textContent?.includes('批次 IMP-FX-002'));
+  assert.ok(legalCard, '合法飞象批次仍须可打开快照');
+  await harness.dispatchEvent(legalCard, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /飞象 · 批次快照/));
+  hrefs = [...document.querySelectorAll('a')].map((a) => a.getAttribute('href') ?? '');
+  assert.ok(hrefs.includes('/fulfillment/sales-outbound?import_batch=9'), '合法飞象快照应保留文件作业落点');
   assert.doesNotMatch(harness.bodyText(), /caishixian_fetch_orders\.py|CSX_PASSWORD|jufubao\.py|raw leak/);
   assert.doesNotMatch(harness.bodyText(), /\[object |native code|function Object/);
   assert.ok(document.body, '原型键不得让 DOM 崩溃');

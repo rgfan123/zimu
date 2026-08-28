@@ -28,6 +28,8 @@ import './workbench.css';
 
 const PLACEHOLDER = '暂无汇总';
 const REVIEW_PREVIEW_SIZE = 50;
+const SHIPPING_SYNC_SESSION_KEY = 'zimu.shipping-workbench.latest-platform-pull';
+const PULL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 function formatCount(value: number | null): string {
   return value === null ? '—' : String(value);
@@ -40,18 +42,89 @@ function jumpTo(anchor: string) {
   }
 }
 
+function safeSyncSnapshot(result: Awaited<ReturnType<typeof platformOrdersApi.refresh>>) {
+  const channels = (Array.isArray(result.channels) ? result.channels : []).map((item) => {
+    const candidate: unknown = item;
+    const channel = candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+      ? candidate as Record<string, unknown>
+      : {};
+    const safe: Record<string, unknown> = {};
+    for (const key of ['channel', 'status', 'business_code', 'batch_no', 'batch_id'] as const) {
+      if (typeof channel[key] === 'string') safe[key] = channel[key];
+    }
+    if (typeof channel.order_count === 'number' && Number.isFinite(channel.order_count)) {
+      safe.order_count = channel.order_count;
+    }
+    if (channel.row_counts && typeof channel.row_counts === 'object' && !Array.isArray(channel.row_counts)) {
+      const counts = channel.row_counts as Record<string, unknown>;
+      const safeCounts: Record<string, number> = {};
+      for (const key of ['total', 'accepted', 'need_review', 'rejected'] as const) {
+        if (typeof counts[key] === 'number' && Number.isFinite(counts[key])) safeCounts[key] = counts[key];
+      }
+      safe.row_counts = safeCounts;
+    }
+    return safe;
+  });
+  return {
+    channels,
+    ...(typeof result.date_begin === 'string' && PULL_DATE_PATTERN.test(result.date_begin)
+      ? { date_begin: result.date_begin }
+      : {}),
+    ...(typeof result.date_end === 'string' && PULL_DATE_PATTERN.test(result.date_end)
+      ? { date_end: result.date_end }
+      : {}),
+  } as Awaited<ReturnType<typeof platformOrdersApi.refresh>>;
+}
+
+function restoredSyncState(): SyncState {
+  try {
+    const stored = window.sessionStorage.getItem(SHIPPING_SYNC_SESSION_KEY);
+    if (!stored) return { phase: 'idle' };
+    const parsed = JSON.parse(stored) as { result?: unknown };
+    if (!parsed || typeof parsed !== 'object' || !parsed.result || typeof parsed.result !== 'object') {
+      return { phase: 'idle' };
+    }
+    const result = parsed.result as Awaited<ReturnType<typeof platformOrdersApi.refresh>>;
+    if (!Array.isArray(result.channels)) return { phase: 'idle' };
+    return { phase: 'success', result: safeSyncSnapshot(result) };
+  } catch {
+    return { phase: 'idle' };
+  }
+}
+
+function storeSyncSnapshot(result: Awaited<ReturnType<typeof platformOrdersApi.refresh>>) {
+  try {
+    window.sessionStorage.setItem(
+      SHIPPING_SYNC_SESSION_KEY,
+      JSON.stringify({ result: safeSyncSnapshot(result) }),
+    );
+  } catch {
+    // sessionStorage 不可用时不阻断本次同步；后端 audit 仍是权威留痕。
+  }
+}
+
+function clearSyncSnapshot() {
+  try {
+    window.sessionStorage.removeItem(SHIPPING_SYNC_SESSION_KEY);
+  } catch {
+    // sessionStorage 不可用时仍允许发起本次同步。
+  }
+}
+
 export default function ShippingWorkbenchPage() {
-  const [state, setState] = useState<SyncState>({ phase: 'idle' });
+  const [state, setState] = useState<SyncState>(restoredSyncState);
   // #115：原生 disabled 落到 DOM 前仍可能收到同一事件循环内的第二次触发；ref 是最后一道前端重入门禁。
   // 跨浏览器/跨实例的权威并发边界在后端 PlatformPullSingleFlight（advisory lock）。
   const syncInFlight = useRef(false);
   const navigate = useNavigate();
   const team = reviewTeamForRole(readStoredWorkbenchRole());
-  const counts = useShippingSummary(team);
+  const counts = useShippingSummary(team, state.phase === 'success' ? state.result : null);
 
   const sync = async () => {
     if (syncInFlight.current) return;
     syncInFlight.current = true;
+    // 开始新一次同步时旧快照已不再是“最新结果”；若本次失败，不得跨路由恢复旧成功态。
+    clearSyncSnapshot();
     setState({ phase: 'loading' });
     try {
       // 拉取窗口显式收窄到「今天」：后端默认回溯 30 天，彩食鲜侧导出任务会跑到网关超时
@@ -59,6 +132,7 @@ export default function ShippingWorkbenchPage() {
       const today = dayjs().format('YYYY-MM-DD');
       const result = await platformOrdersApi.refresh({ date_begin: today, date_end: today });
       setState({ phase: 'success', result });
+      storeSyncSnapshot(result);
     } catch (error) {
       setState({ phase: 'error', error });
     } finally {
@@ -67,10 +141,16 @@ export default function ShippingWorkbenchPage() {
   };
 
   const syncing = state.phase === 'loading';
-
   const metrics = [
     { key: 'installed', cls: 'b click', label: '已入库订单', value: counts.installedToday, note: '今日新建', jump: '#zs-pipe' },
-    { key: 'reported', cls: 'w', label: '仅报告未入库', value: null, note: `${PLACEHOLDER} · 见本次同步结果`, jump: null },
+    {
+      key: 'reported',
+      cls: 'w',
+      label: '仅报告未入库',
+      value: counts.reportedNotImported,
+      note: counts.reportedNotImported != null ? '本次同步' : `${PLACEHOLDER} · 见本次同步结果`,
+      jump: null,
+    },
     { key: 'review', cls: 'e click', label: '待我人工复核', value: counts.reviewOpen, note: '阻断整批确认', jump: '#zs-review' },
     { key: 'ready', cls: 'click', label: '待发货', value: counts.readyToExport, note: '已确认待出库', jump: '#zs-pipe' },
     { key: 'waiting', cls: '', label: '发货中', value: counts.waitingProvider, note: '等运单回填', jump: null },
@@ -79,8 +159,18 @@ export default function ShippingWorkbenchPage() {
   ];
 
   const segments = [
-    { name: '1 平台拉取', value: null, status: PLACEHOLDER, cls: 'wait' },
-    { name: '2 落导入批次', value: null, status: PLACEHOLDER, cls: 'wait' },
+    {
+      name: '1 平台拉取',
+      value: counts.platformPullChannels,
+      status: counts.platformPullSuccesses == null ? PLACEHOLDER : `${counts.platformPullSuccesses} 成功`,
+      cls: counts.platformPullSuccesses == null ? 'wait' : '',
+    },
+    {
+      name: '2 落导入批次',
+      value: counts.importedBatches,
+      status: counts.importedRows == null ? PLACEHOLDER : `${counts.importedRows} 行`,
+      cls: counts.importedRows == null ? 'wait' : '',
+    },
     {
       name: '3 SKU / 客户识别',
       value: counts.needReview,

@@ -5,10 +5,20 @@
  * 复核计数按岗位团队过滤（与侧栏徽标 useRailBadges 同口径）；拼不出的口径返回 null（占位）。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
+import type { PlatformOrderRefreshResult } from '@/api/types';
+import { presentShippingChannel, summarizeShippingResult } from './shippingPresentation';
 
 export interface ShippingSummaryCounts {
+  /** 本次平台拉取返回的渠道数 / 成功数。 */
+  platformPullChannels: number | null;
+  platformPullSuccesses: number | null;
+  /** 本次生成的导入批次数 / 已知批次行数。 */
+  importedBatches: number | null;
+  importedRows: number | null;
+  /** 聚福宝仅报告未入库数；未返回或数量缺失时为 null。 */
+  reportedNotImported: number | null;
   /** 今日新建订单（orders created_at 今日）。 */
   installedToday: number | null;
   /** OPEN 复核事项（岗位团队过滤时与徽标同口径）。 */
@@ -28,6 +38,11 @@ export interface ShippingSummaryCounts {
 }
 
 const EMPTY: ShippingSummaryCounts = {
+  platformPullChannels: null,
+  platformPullSuccesses: null,
+  importedBatches: null,
+  importedRows: null,
+  reportedNotImported: null,
   installedToday: null,
   reviewOpen: null,
   needReview: null,
@@ -37,6 +52,32 @@ const EMPTY: ShippingSummaryCounts = {
   returnFileReady: null,
   shippedToday: null,
 };
+
+function platformPullCounts(result: PlatformOrderRefreshResult | null): Pick<
+  ShippingSummaryCounts,
+  'platformPullChannels' | 'platformPullSuccesses' | 'importedBatches' | 'importedRows' | 'reportedNotImported'
+> {
+  if (!result) {
+    return {
+      platformPullChannels: null,
+      platformPullSuccesses: null,
+      importedBatches: null,
+      importedRows: null,
+      reportedNotImported: null,
+    };
+  }
+  const channels = result.channels.map(presentShippingChannel);
+  const validChannels = channels.filter((channel) => channel.validContract);
+  const summary = summarizeShippingResult(result);
+  const jufubao = validChannels.find((channel) => channel.channel === 'JUFUBAO');
+  return {
+    platformPullChannels: channels.length,
+    platformPullSuccesses: validChannels.filter((channel) => channel.status === 'OK').length,
+    importedBatches: summary.batchCount,
+    importedRows: summary.totalRows,
+    reportedNotImported: jufubao?.status === 'OK' ? summary.reportedOrders : null,
+  };
+}
 
 async function countOf(url: string, signal: AbortSignal): Promise<number | null> {
   try {
@@ -54,8 +95,12 @@ function stageCountUrl(stage: string): string {
   return `/api/v1/orders?${params.toString()}`;
 }
 
-export function useShippingSummary(team: string | null): ShippingSummaryCounts {
+export function useShippingSummary(
+  team: string | null,
+  platformPullResult: PlatformOrderRefreshResult | null,
+): ShippingSummaryCounts {
   const [counts, setCounts] = useState<ShippingSummaryCounts>(EMPTY);
+  const pullCounts = useMemo(() => platformPullCounts(platformPullResult), [platformPullResult]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -85,6 +130,11 @@ export function useShippingSummary(team: string | null): ShippingSummaryCounts {
     ]).then(([installedToday, reviewOpen, needReview, readyToExport, waitingProvider, trackingReceived, returnFileReady, shippedToday]) => {
       if (signal.aborted) return;
       setCounts({
+        platformPullChannels: null,
+        platformPullSuccesses: null,
+        importedBatches: null,
+        importedRows: null,
+        reportedNotImported: null,
         installedToday,
         reviewOpen,
         needReview,
@@ -99,5 +149,5 @@ export function useShippingSummary(team: string | null): ShippingSummaryCounts {
     return () => controller.abort();
   }, [team]);
 
-  return counts;
+  return { ...counts, ...pullCounts };
 }

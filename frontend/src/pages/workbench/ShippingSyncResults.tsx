@@ -1,12 +1,12 @@
 /**
  * 同步结果呈现（Issue #107 原样迁出，契约由 shippingWorkbenchRoute.test.ts 锁定）：
  * 结果按渠道独立呈现 OK/FAILED/SKIPPED，聚福宝「仅报告未入库」一等状态；
- * 有 batch_id 的渠道卡整卡可点击跳文件作业页（?import_batch=ID）。
+ * 渠道卡整卡可点击原地打开批次快照；不可逆的整批确认仍留在文件作业页。
  */
 
-import { Alert, Button, Card, Space, Spin, Tag, Typography } from 'antd';
+import { Alert, Button, Spin, Tag } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { Link } from 'react-router-dom';
+import { useState } from 'react';
 import { ApiError, errorMessage } from '@/api/client';
 import type { PlatformOrderRefreshResult } from '@/api/types';
 import {
@@ -15,6 +15,7 @@ import {
   summarizeShippingResult,
   type ShippingChannelView,
 } from './shippingPresentation';
+import PlatformPullSnapshotModal from './PlatformPullSnapshotModal';
 
 export type SyncState =
   | { phase: 'idle' }
@@ -29,17 +30,17 @@ function statusTagColor(status: ShippingChannelView['status']): 'success' | 'err
 }
 
 export default function ShippingSyncResults({ state, onRetry }: { state: SyncState; onRetry: () => void }) {
+  const [selectedChannel, setSelectedChannel] = useState<ShippingChannelView | null>(null);
+
   // ADR 0005：闲置态不占版面——没有同步结果时这里什么都不渲染，第一屏留给数据。
   if (state.phase === 'idle') return null;
 
   if (state.phase === 'loading') {
     return (
-      <Card size="small">
-        <Space>
-          <Spin size="small" />
-          <Typography.Text type="secondary">正在同步三平台订单…</Typography.Text>
-        </Space>
-      </Card>
+      <div className="zs-sync-loading">
+        <Spin size="small" />
+        <span>正在同步三平台订单…</span>
+      </div>
     );
   }
 
@@ -48,7 +49,7 @@ export default function ShippingSyncResults({ state, onRetry }: { state: SyncSta
       ? failedRefreshChannels(state.error)?.map(presentShippingChannel)
       : null;
     return (
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <div className="zs-sync-stack">
         <Alert
           type="error"
           showIcon
@@ -57,29 +58,40 @@ export default function ShippingSyncResults({ state, onRetry }: { state: SyncSta
           action={<Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>重试</Button>}
         />
         {channels?.length ? (
-          <Space wrap size={12} align="start">
-            {channels.map((channel) => <ChannelCard key={channel.channel} channel={channel} />)}
-          </Space>
+          <div className="zs-sync-channels">
+            {channels.map((channel) => (
+              <ChannelCard key={channel.channel} channel={channel} onOpen={() => setSelectedChannel(channel)} />
+            ))}
+          </div>
         ) : null}
-      </Space>
+        {selectedChannel ? (
+          <PlatformPullSnapshotModal channel={selectedChannel} onClose={() => setSelectedChannel(null)} />
+        ) : null}
+      </div>
     );
   }
 
   const summary = summarizeShippingResult(state.result);
   const channels = state.result.channels.map(presentShippingChannel);
   const showAllClear = !summary.hasNewOrders
+    && summary.totalRows !== null
+    && summary.reportedOrders !== null
     && summary.failedCount === 0
     && summary.skippedCount === 0
     && summary.contractErrorCount === 0;
   const showIncompleteAlert = summary.skippedCount > 0
-    || (!summary.hasNewOrders && summary.failedCount > 0);
+    || (!summary.hasNewOrders && summary.failedCount > 0)
+    || summary.totalRows === null
+    || summary.reportedOrders === null;
   const incompleteDescription = [
     summary.failedCount > 0 ? `${summary.failedCount} 个渠道失败，请重试` : '',
     summary.skippedCount > 0 ? `${summary.skippedCount} 个渠道已跳过` : '',
+    summary.totalRows === null ? '批次行数暂无汇总' : '',
+    summary.reportedOrders === null ? '仅报告订单数暂不可用' : '',
   ].filter(Boolean).join(' · ');
 
   return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+    <div className="zs-sync-stack">
       {summary.contractErrorCount > 0 ? (
         <Alert
           type="error"
@@ -89,12 +101,15 @@ export default function ShippingSyncResults({ state, onRetry }: { state: SyncSta
         />
       ) : null}
       {summary.hasNewOrders ? (
-        <Typography.Text>
-          本次同步：生成 {summary.batchCount} 个导入批次 · 共 {summary.totalRows} 行
-          {summary.reportedOrders > 0 ? ` · 仅报告未入库 ${summary.reportedOrders} 单` : ''}
+        <div className="zs-sync-summary">
+          本次同步：生成 {summary.batchCount} 个导入批次
+          {summary.totalRows === null ? ' · 行数暂无汇总' : ` · 共 ${summary.totalRows} 行`}
+          {summary.reportedOrders !== null && summary.reportedOrders > 0
+            ? ` · 仅报告未入库 ${summary.reportedOrders} 单`
+            : ''}
           {summary.failedCount > 0 ? ` · ${summary.failedCount} 个渠道失败` : ''}
           {summary.skippedCount > 0 ? ` · ${summary.skippedCount} 个渠道已跳过` : ''}
-        </Typography.Text>
+        </div>
       ) : null}
       {showIncompleteAlert ? (
         <Alert
@@ -112,51 +127,63 @@ export default function ShippingSyncResults({ state, onRetry }: { state: SyncSta
         />
       ) : null}
       {channels.length > 0 ? (
-        <Space wrap size={12} align="start">
-          {channels.map((channel) => <ChannelCard key={channel.channel} channel={channel} />)}
-        </Space>
+        <div className="zs-sync-channels">
+          {channels.map((channel) => (
+            <ChannelCard key={channel.channel} channel={channel} onOpen={() => setSelectedChannel(channel)} />
+          ))}
+        </div>
       ) : null}
-    </Space>
+      {selectedChannel ? (
+        <PlatformPullSnapshotModal
+          channel={selectedChannel}
+          dateBegin={state.result.date_begin}
+          dateEnd={state.result.date_end}
+          onClose={() => setSelectedChannel(null)}
+        />
+      ) : null}
+    </div>
   );
 }
 
-function ChannelCard({ channel }: { channel: ShippingChannelView }) {
-  const card = (
-    <Card size="small" hoverable={Boolean(channel.destination)} style={{ width: 320 }}>
-      <Space direction="vertical" size={6} style={{ width: '100%' }}>
-        <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Typography.Text strong>{channel.label}</Typography.Text>
+function ChannelCard({ channel, onOpen }: { channel: ShippingChannelView; onOpen: () => void }) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+      className="zs-sync-channel"
+    >
+      <div className="zs-sync-card">
+        <div className="zs-sync-card-head">
+          <strong>{channel.label}</strong>
           <Tag color={statusTagColor(channel.status)}>{channel.statusText}</Tag>
-        </Space>
+        </div>
         {channel.batchNo ? (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          <div className="zs-sync-card-meta">
             批次 {channel.batchNo}
-          </Typography.Text>
+          </div>
         ) : null}
         {channel.reportOnly ? (
-          <Space>
+          <div className="zs-sync-card-report">
             <Tag color="warning">仅报告未入库</Tag>
-            <Typography.Text>拉取 {channel.orderCount} 单</Typography.Text>
-          </Space>
+            <span>{channel.orderCount == null ? '拉取数量暂不可用' : `拉取 ${channel.orderCount} 单`}</span>
+          </div>
         ) : null}
         {channel.rowCounts ? (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          <div className="zs-sync-card-meta">
             共 {channel.rowCounts.total} 行 · 已接收 {channel.rowCounts.accepted} · 待复核 {channel.rowCounts.need_review} · 拒绝 {channel.rowCounts.rejected}
-          </Typography.Text>
+          </div>
         ) : null}
         {channel.message ? (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>{channel.message}</Typography.Text>
+          <div className="zs-sync-card-meta">{channel.message}</div>
         ) : null}
-      </Space>
-    </Card>
+      </div>
+    </div>
   );
-
-  if (channel.destination) {
-    return (
-      <Link to={channel.destination} style={{ display: 'block' }}>
-        {card}
-      </Link>
-    );
-  }
-  return card;
 }

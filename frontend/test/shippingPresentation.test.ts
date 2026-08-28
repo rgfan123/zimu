@@ -262,7 +262,7 @@ test('presentShippingChannel only links Identifier batch ids and ignores malform
     order_count: -1,
   }));
   assert.equal(negative.orderCount, null);
-  assert.equal(negative.reportOnly, false);
+  assert.equal(negative.reportOnly, true, '数量非法不得吃掉聚福宝补录下一步');
 
   const infinite = presentShippingChannel(channel({
     channel: 'JUFUBAO',
@@ -274,6 +274,7 @@ test('presentShippingChannel only links Identifier batch ids and ignores malform
   }));
   assert.equal(infinite.rowCounts, null);
   assert.equal(infinite.orderCount, null);
+  assert.equal(infinite.reportOnly, true);
 
   assert.deepEqual(summarizeShippingResult({
     channels: [
@@ -295,7 +296,7 @@ test('presentShippingChannel only links Identifier batch ids and ignores malform
   }), {
     batchCount: 0,
     totalRows: 0,
-    reportedOrders: 0,
+    reportedOrders: null,
     failedCount: 0,
     skippedCount: 0,
     contractErrorCount: 0,

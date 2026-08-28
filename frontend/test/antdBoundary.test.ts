@@ -20,6 +20,8 @@ const MIGRATED = [
   'src/components/layout/WorkbenchRoleSwitcher.tsx',
   'src/components/layout/GlobalSearchOverlay.tsx',
   'src/pages/workbench/ShippingWorkbenchPage.tsx',
+  'src/pages/workbench/ShippingSyncResults.tsx',
+  'src/pages/workbench/PlatformPullSnapshotModal.tsx',
   'src/pages/workbench/ProcurementWorkbenchPage.tsx',
   'src/pages/workbench/ProcurementSuggestionCard.tsx',
   'src/pages/workbench/ReconWorkbenchPage.tsx',
@@ -64,5 +66,5 @@ test('ADR 0011：外壳与工作台的展示层由手写 CSS 承载', () => {
 
 test('ADR 0011：守门清单只增不减（棘轮）', () => {
   // 清单被缩短意味着有模块「退出」了规矩——这是回退，必须显式改本断言才允许。
-  assert.ok(MIGRATED.length >= 7, '已迁移模块清单不得缩短；新迁移的页面请追加进 MIGRATED');
+  assert.ok(MIGRATED.length >= 9, '已迁移模块清单不得缩短；新迁移的页面请追加进 MIGRATED');
 });
