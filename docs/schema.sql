@@ -7440,3 +7440,11 @@ CREATE INDEX idx_source_sync_auto_retry_due
 COMMENT ON TABLE app.source_sync_auto_states IS
     '在线自动回传资格、租约与退避；NOT_APPLICABLE 表示该渠道继续走文件回传';
 -- END V73__source_sync_auto_states.sql
+
+-- V74–V76 为在途交付线（飞象/聚福宝/彩食鲜）预留后未用，编号跳号直发 V77。
+
+-- BEGIN V77__add_order_line_sku_substituted_event.sql
+INSERT INTO app.order_event_types (code, display_name)
+VALUES ('ORDER_LINE_SKU_SUBSTITUTED', '订单行已换货')
+ON CONFLICT (code) DO NOTHING;
+-- END V77__add_order_line_sku_substituted_event.sql
