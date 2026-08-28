@@ -7448,3 +7448,60 @@ INSERT INTO app.order_event_types (code, display_name)
 VALUES ('ORDER_LINE_SKU_SUBSTITUTED', '订单行已换货')
 ON CONFLICT (code) DO NOTHING;
 -- END V77__add_order_line_sku_substituted_event.sql
+
+-- V78/V81/V82 被在途票占用、V79 永久空置、V80 未用、V83 已被 scheduled_pull_runs 占用，
+-- 飞象在线回传取 V84。
+
+-- BEGIN V84__feixiang_online_shipment_push.sql
+-- 1) platform_intent_key 对飞象同样强制（飞象与聚福宝一样有 Adapter 内层幂等 store）。
+ALTER TABLE app.shipment_syncs
+    DROP CONSTRAINT shipment_syncs_syncing_intent_check,
+    ADD CONSTRAINT shipment_syncs_syncing_intent_check CHECK (
+        sync_status <> 'SYNCING'
+        OR (
+            intent_key IS NOT NULL
+            AND check_hash IS NOT NULL
+            AND artifact_hash IS NOT NULL
+            AND source_line_ref IS NOT NULL
+            AND carrier_code IS NOT NULL
+            AND tracking_number IS NOT NULL
+            AND intent_started_at IS NOT NULL
+            AND attempt_count > 0
+            AND (source_channel NOT IN ('JUFUBAO', 'FEIXIANG') OR platform_intent_key IS NOT NULL)
+        )
+    ),
+    DROP CONSTRAINT shipment_syncs_reconciliation_effect_check,
+    ADD CONSTRAINT shipment_syncs_reconciliation_effect_check CHECK (
+        sync_status <> 'RECONCILIATION_REQUIRED'
+        OR (
+            intent_key IS NOT NULL
+            AND check_hash IS NOT NULL
+            AND artifact_hash IS NOT NULL
+            AND source_line_ref IS NOT NULL
+            AND carrier_code IS NOT NULL
+            AND tracking_number IS NOT NULL
+            AND intent_started_at IS NOT NULL
+            AND effect_started_at IS NOT NULL
+            AND attempt_count > 0
+            AND (source_channel NOT IN ('JUFUBAO', 'FEIXIANG') OR platform_intent_key IS NOT NULL)
+        )
+    );
+
+-- 2) 承运商平台代码走平级键 carrier_api_codes，carrier_mappings 的显示名原样保留
+--    （回填 CSV 的「物流公司」列读的就是那个显示名）。
+UPDATE app.connector_configs
+SET config = jsonb_set(
+        COALESCE(config, '{}'::jsonb),
+        ARRAY['carrier_api_codes'],
+        COALESCE(config -> 'carrier_api_codes', '{}'::jsonb) || '{"JD": "jingdong"}'::jsonb,
+        true
+    ),
+    updated_at = CURRENT_TIMESTAMP
+WHERE source_channel = 'FEIXIANG';
+
+ALTER TABLE app.connector_configs
+    ADD CONSTRAINT connector_configs_carrier_api_codes_object CHECK (
+        config -> 'carrier_api_codes' IS NULL
+        OR jsonb_typeof(config -> 'carrier_api_codes') = 'object'
+    );
+-- END V84__feixiang_online_shipment_push.sql
