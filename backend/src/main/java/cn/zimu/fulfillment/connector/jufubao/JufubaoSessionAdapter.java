@@ -12,6 +12,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.function.Function;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -29,9 +30,19 @@ public final class JufubaoSessionAdapter {
 
     private static final String ACCESS_COOKIE = "JFB-ADMIN-ACCESS-TOKEN";
     private static final String CSRF_COOKIE = "JFB-ADMIN-CSRF-TOKEN";
+    private static final String SESSION_COOKIE = "JFB_SESSION_CID";
     private static final String LOGIN_PATH = "/idaas-auth/v1/login-by-username";
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * 与已验证可用的 {@code scripts/jufubao_fetch_orders.py} 逐字节一致的浏览器 UA。
+     * 旧值 "Mozilla/5.0 (compatible; ZimuFulfillment/1.0)" 是明显的机器人指纹，
+     * 而 Python 参考实现（抓包复刻、实测可登录）从 seed 到登录全程使用真实 Chrome UA。
+     */
+    private static final String BROWSER_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0";
 
     private final URI apiBase;
     private final URI portalBase;
@@ -83,6 +94,9 @@ public final class JufubaoSessionAdapter {
                 .connectTimeout(CONNECT_TIMEOUT)
                 // 写请求必须严格 once；禁止 JDK 在 307/308 后自动重放 POST 或跨 origin 泄露头/body。
                 .followRedirects(HttpClient.Redirect.NEVER)
+                // 对齐 Python 参考实现（requests 固定 HTTP/1.1）；同时 HTTP/1.1 保留自定义头大小写，
+                // 与抓包形状一致，避免平台 WAF 以 h2 指纹区别对待。
+                .version(HttpClient.Version.HTTP_1_1)
                 .build();
     }
 
@@ -142,13 +156,28 @@ public final class JufubaoSessionAdapter {
                     "聚福宝凭据未配置（JUFUBAO_USERNAME/JUFUBAO_PASSWORD；兼容历史 JFUBAO_*）");
         }
         cookies.getCookieStore().removeAll();
+        // 门户 seed 与登录 POST 的头形状对齐 Python 参考实现的 session 级头：
+        // Accept / X-Jfb-Project-Id / 浏览器 UA 三者从 seed 起就全程携带（抓包实测必带）。
         HttpResponse<String> seed = send(HttpRequest.newBuilder(portalBase.resolve("/"))
                 .timeout(REQUEST_TIMEOUT)
+                .header("Accept", "application/json, text/plain, */*")
+                .header("X-Jfb-Project-Id", "supplier")
                 .header("User-Agent", userAgent())
                 .GET()
                 .build());
         if (seed.statusCode() >= 400) {
-            throw new JufubaoSessionException("PLATFORM_UNAVAILABLE", "聚福宝门户不可用");
+            throw new JufubaoSessionException(
+                    "PLATFORM_UNAVAILABLE",
+                    "聚福宝门户不可用（seed HTTP " + seed.statusCode() + "）");
+        }
+        // 研究文档 §2.1：登录请求本身也要带 JFB_SESSION_CID。种不下会话 cookie 就不发登录，
+        // 用独立业务码把失败精确定位到 seed 环节（例如门户 3xx 未跟随、Set-Cookie 缺失）。
+        if (cookieValue(SESSION_COOKIE).isBlank()) {
+            throw new JufubaoSessionException(
+                    "PLATFORM_SESSION_COOKIE_MISSING",
+                    "聚福宝门户未种下会话 Cookie " + SESSION_COOKIE
+                            + "（seed HTTP " + seed.statusCode()
+                            + "，Set-Cookie 名：" + setCookieNames(seed) + "）");
         }
 
         String form = "username=" + encode(username)
@@ -156,24 +185,37 @@ public final class JufubaoSessionAdapter {
                 + "&system=supplier";
         HttpRequest loginRequest = HttpRequest.newBuilder(apiBase.resolve(LOGIN_PATH))
                 .timeout(REQUEST_TIMEOUT)
+                .header("Accept", "application/json, text/plain, */*")
                 .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                 .header("Origin", portalBase.toString())
                 .header("Referer", portalBase.resolve("/").toString())
+                .header("X-Jfb-Project-Id", "supplier")
                 .header("User-Agent", userAgent())
                 .POST(HttpRequest.BodyPublishers.ofString(form))
                 .build();
         HttpResponse<String> loginResponse = send(loginRequest);
+        // 可观测（诊断 L2）：HTTP 状态码 + 响应 Set-Cookie 的名字（绝不含值、绝不含响应体）
+        // 进异常消息，让 connector_configs.last_error 与「测试连接」能区分 401/403/429/5xx。
         if (loginResponse.statusCode() >= 400) {
-            throw new JufubaoSessionException("PLATFORM_AUTH_FAILED", "聚福宝登录失败");
+            throw new JufubaoSessionException(
+                    "PLATFORM_AUTH_FAILED",
+                    "聚福宝登录失败（HTTP " + loginResponse.statusCode()
+                            + "，Set-Cookie 名：" + setCookieNames(loginResponse) + "）");
         }
         JsonNode root = readJson(loginResponse.body(), "聚福宝登录响应无法解析");
         String nextCsrf = cookieValue(CSRF_COOKIE);
         if (!ACCESS_COOKIE.equals(root.path("access_token_cookie_key").asText())
                 || cookieValue(ACCESS_COOKIE).isBlank()) {
-            throw new JufubaoSessionException("PLATFORM_AUTH_FAILED", "聚福宝登录未取得访问令牌");
+            throw new JufubaoSessionException(
+                    "PLATFORM_AUTH_FAILED",
+                    "聚福宝登录未取得访问令牌（HTTP " + loginResponse.statusCode()
+                            + "，Set-Cookie 名：" + setCookieNames(loginResponse) + "）");
         }
         if (nextCsrf.isBlank()) {
-            throw new JufubaoSessionException("PLATFORM_AUTH_FAILED", "聚福宝登录未取得 CSRF 令牌");
+            throw new JufubaoSessionException(
+                    "PLATFORM_AUTH_FAILED",
+                    "聚福宝登录未取得 CSRF 令牌（HTTP " + loginResponse.statusCode()
+                            + "，Set-Cookie 名：" + setCookieNames(loginResponse) + "）");
         }
         csrfToken = nextCsrf;
         authenticated = true;
@@ -282,7 +324,21 @@ public final class JufubaoSessionAdapter {
     }
 
     private static String userAgent() {
-        return "Mozilla/5.0 (compatible; ZimuFulfillment/1.0)";
+        return BROWSER_USER_AGENT;
+    }
+
+    /**
+     * 只提取响应 Set-Cookie 头里的 cookie 名用于诊断消息；绝不读取值——
+     * 令牌与会话值一律不进异常消息、不进日志、不进 last_error。
+     */
+    private static String setCookieNames(HttpResponse<String> response) {
+        List<String> names = response.headers().allValues("Set-Cookie").stream()
+                .map(header -> header.split(";", 2)[0])
+                .map(pair -> pair.split("=", 2)[0].trim())
+                .filter(name -> !name.isEmpty())
+                .distinct()
+                .toList();
+        return names.isEmpty() ? "无" : String.join("、", names);
     }
 
     static final class JufubaoSessionException extends RuntimeException {

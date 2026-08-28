@@ -118,6 +118,8 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
         try {
             JufubaoPullClient.LoginResult login = pullClient.login();
             if (!login.ok()) {
+                // 诊断 L1：登录失败早退必须留痕（渠道 + 业务码）；凭据与响应体绝不入日志。
+                log.warn("聚福宝登录失败，本次拉取中止: channel={}, businessCode={}", channel, login.businessCode());
                 return failed(channel, login.businessCode(), login.message());
             }
             long[] range = epochRange(cursor);
