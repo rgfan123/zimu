@@ -964,8 +964,17 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             }
             List<Long> jdSdkShipmentIds = List.of();
             if (batch.get("confirmed_at") == null) {
+                // ORDER_ALREADY_EXISTS 是良性跳过，不是待处理问题：该行对应的订单早已入库
+                // （见本类 :179 的预检测，它的拒绝文案自己就写着「非失败」）。彩食鲜/飞象改为
+                // JSON 直连后按日期窗口拉取，窗口天然重叠，重复行从异常变成常态——2026-08-28
+                // 生产实例：一批 5 行里 4 张新单全部就绪，却被 1 行良性重复整批挡住确认。
+                // 其余非 ACCEPTED 状态（NEED_REVIEW / RECEIVED / 其它 REJECTED）仍然阻断。
                 Integer blockers = jdbc.queryForObject(
-                        "SELECT count(*) FROM app.raw_import_rows WHERE import_batch_id=? AND status<>'ACCEPTED'",
+                        """
+                        SELECT count(*) FROM app.raw_import_rows
+                        WHERE import_batch_id=? AND status<>'ACCEPTED'
+                          AND NOT (status='REJECTED' AND error_code='ORDER_ALREADY_EXISTS')
+                        """,
                         Integer.class,
                         batchId);
                 if (blockers != null && blockers > 0) {
