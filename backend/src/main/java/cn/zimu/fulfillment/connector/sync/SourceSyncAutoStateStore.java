@@ -136,7 +136,7 @@ public class SourceSyncAutoStateStore {
                         claim.leaseOwner())
                 .stream()
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("自动回传调度租约已丢失: " + claim.shipmentId()));
+                .orElseThrow(() -> new LeaseLostException(claim.shipmentId()));
     }
 
     /** 临时不可用：同一 Shipment/渠道按 1、2、4…倍增长并封顶。 */
@@ -174,7 +174,7 @@ public class SourceSyncAutoStateStore {
                         claim.leaseOwner())
                 .stream()
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("自动回传调度租约已丢失: " + claim.shipmentId()));
+                .orElseThrow(() -> new LeaseLostException(claim.shipmentId()));
     }
 
     public Optional<State> find(long shipmentId, SourceChannel channel) {
@@ -204,7 +204,7 @@ public class SourceSyncAutoStateStore {
                 claim.sourceChannel().name(),
                 claim.leaseOwner());
         if (deleted != 1) {
-            throw new IllegalStateException("自动回传调度租约已丢失: " + claim.shipmentId());
+            throw new LeaseLostException(claim.shipmentId());
         }
     }
 
@@ -227,7 +227,7 @@ public class SourceSyncAutoStateStore {
                         claim.leaseOwner())
                 .stream()
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("自动回传调度租约已丢失: " + claim.shipmentId()));
+                .orElseThrow(() -> new LeaseLostException(claim.shipmentId()));
     }
 
     private static State map(ResultSet rs) throws SQLException {
@@ -268,6 +268,30 @@ public class SourceSyncAutoStateStore {
         PENDING,
         NOT_APPLICABLE,
         RETRY_WAIT
+    }
+
+    /**
+     * 租约已被其他实例接管：这是多实例调度里的**正常并发结果**，不是代码缺陷。
+     *
+     * <p><b>为什么不用 {@code IllegalStateException}</b>：本类是 {@code @Repository}，
+     * Spring 的持久化异常翻译（{@code EntityManagerFactoryUtils.convertJpaAccessExceptionIfPossible}）
+     * 会把逃出代理的 {@code IllegalStateException} 一律改写成
+     * {@code InvalidDataAccessApiUsageException}——字面意思是「你把持久化 API 用错了」。
+     * 一次正常的租约竞争因此在日志与告警里长得像代码缺陷，而调用方也无法按类型区分
+     * 「租约没了」与「SQL 写错了」。给它一个自己的类型，翻译器就不再插手。
+     */
+    public static class LeaseLostException extends RuntimeException {
+
+        private final long shipmentId;
+
+        LeaseLostException(long shipmentId) {
+            super("自动回传调度租约已丢失: " + shipmentId);
+            this.shipmentId = shipmentId;
+        }
+
+        public long shipmentId() {
+            return shipmentId;
+        }
     }
 
     public record Claim(

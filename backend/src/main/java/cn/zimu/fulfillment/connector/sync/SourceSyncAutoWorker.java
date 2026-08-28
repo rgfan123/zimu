@@ -101,21 +101,41 @@ public class SourceSyncAutoWorker {
                 states.claimCandidates(leaseOwner, claimLease, batchSize);
         for (SourceSyncAutoStateStore.Claim candidate : candidates) {
             try {
-                CapabilityDecision capability = runtimeCapability(candidate);
-                if (!capability.onlinePush()) {
-                    states.recordNotApplicable(candidate, capability.reasonCode());
-                    continue;
-                }
-                syncOne(candidate);
-            } catch (BusinessException business) {
-                if (isTransientUnavailable(business.getBusinessCode())) {
-                    retryLater(candidate, business.getBusinessCode(), null);
-                } else {
-                    states.defer(candidate, business.getBusinessCode(), blockedRecheck);
-                }
-            } catch (RuntimeException exception) {
-                retryLater(candidate, "SOURCE_SYNC_AUTO_UNEXPECTED", exception);
+                handle(candidate);
+            } catch (SourceSyncAutoStateStore.LeaseLostException lost) {
+                // 租约已被其他实例接管：这一条归接管者处置。同批其余候选仍属于本 owner，
+                // 不能因为一次正常的租约竞争就整批丢下——放弃的代价是它们要等到租约超时
+                // 才会被任何人再看一眼。
+                log.info("自动回传租约已被接管，跳过 shipment={}", candidate.shipmentId());
             }
+        }
+    }
+
+    /**
+     * 单条候选的处置。收口写（defer / scheduleRetry / recordNotApplicable / complete）本身
+     * 也可能撞上租约丢失——它们在 catch 分支里执行，抛出来就会掀翻整个 for 循环，
+     * 因此统一交由 {@link #poll()} 兜住，本方法只负责按语义分类。
+     */
+    private void handle(SourceSyncAutoStateStore.Claim candidate) {
+        try {
+            CapabilityDecision capability = runtimeCapability(candidate);
+            if (!capability.onlinePush()) {
+                states.recordNotApplicable(candidate, capability.reasonCode());
+                return;
+            }
+            syncOne(candidate);
+        } catch (BusinessException business) {
+            if (isTransientUnavailable(business.getBusinessCode())) {
+                retryLater(candidate, business.getBusinessCode(), null);
+            } else {
+                states.defer(candidate, business.getBusinessCode(), blockedRecheck);
+            }
+        } catch (SourceSyncAutoStateStore.LeaseLostException lost) {
+            // 并发结果而非故障：不能被下面的 RuntimeException 分支伪装成「暂不可用」再排一次重试，
+            // 那会拿一个已经失效的 owner 去写别人的行。
+            throw lost;
+        } catch (RuntimeException exception) {
+            retryLater(candidate, "SOURCE_SYNC_AUTO_UNEXPECTED", exception);
         }
     }
 

@@ -161,8 +161,11 @@ class SourceSyncAutoWorkerIntegrationTest {
         SourceSyncAutoStateStore.Claim current =
                 states.claimCandidates("worker-b", Duration.ofMinutes(10), 20).getFirst();
 
+        // 类型必须是专属的 LeaseLostException：@Repository 的异常翻译会把 IllegalStateException
+        // 改写成 InvalidDataAccessApiUsageException（「持久化 API 用错了」），
+        // 把一次正常的租约竞争伪装成代码缺陷，调用方也就无法按类型分流。
         assertThatThrownBy(() -> states.complete(stale))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(SourceSyncAutoStateStore.LeaseLostException.class)
                 .hasMessageContaining("租约已丢失");
         assertThat(states.find(shipmentId, SourceChannel.JUFUBAO)).get()
                 .extracting(SourceSyncAutoStateStore.State::leaseOwner)
