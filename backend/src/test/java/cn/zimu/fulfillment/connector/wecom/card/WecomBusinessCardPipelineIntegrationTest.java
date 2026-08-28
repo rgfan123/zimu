@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.connector.wecom.card;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import cn.zimu.fulfillment.connector.wecom.card.source.BatchConfirmedCardSource;
 import cn.zimu.fulfillment.connector.wecom.card.source.BusinessFollowUpDraftCardSource;
 import cn.zimu.fulfillment.connector.wecom.card.source.BusinessFollowUpResultCardSource;
 import cn.zimu.fulfillment.connector.wecom.card.source.CardDeepLinks;
@@ -240,6 +241,41 @@ class WecomBusinessCardPipelineIntegrationTest {
         assertThat(resultSource.pending(OffsetDateTime.now().minusHours(1), 20)).isEmpty();
         assertThat(draftSource.route(1)).isEmpty();
         assertThat(draftSource.pending(OffsetDateTime.now().minusHours(1), 20)).isEmpty();
+    }
+
+    @Test
+    void batchTextNoticeIsSuppressedWithoutBaseUrlAndRendersWithAConfiguredBaseUrl() {
+        String suffix = java.util.UUID.randomUUID().toString();
+        Long batchId = jdbc.queryForObject(
+                """
+                INSERT INTO app.import_batches
+                    (batch_no, batch_type, source_channel, template_family, template_version,
+                     template_fingerprint, original_file_name, content_sha256, file_ref,
+                     status, uploaded_by, processed_at)
+                VALUES (?, 'SOURCE_ORDER', 'CAISHIXIAN', 'TEST', '1', ?, 'test.xlsx',
+                        repeat('a', 64), ?, 'COMPLETED', 'tester', CURRENT_TIMESTAMP)
+                RETURNING id
+                """,
+                Long.class,
+                "BATCH-CARD-" + suffix,
+                "fingerprint-" + suffix,
+                "test://" + suffix);
+        WecomBusinessCardSource missingBase =
+                new BatchConfirmedCardSource(jdbc, routes, new CardDeepLinks("  "));
+        WecomBusinessCardSource configuredBase =
+                new BatchConfirmedCardSource(jdbc, routes, new CardDeepLinks("https://zimu.test/"));
+
+        assertThat(missingBase.render(batchId, 1))
+                .as("text_notice 缺少合法 card_action 时必须收口，而不是抛异常进入永久重试")
+                .isEmpty();
+        assertThat(missingBase.pending(OffsetDateTime.now().minusHours(1), 20))
+                .as("缺 base-url 时不得继续扫描并积累新任务")
+                .isEmpty();
+        assertThat(configuredBase.render(batchId, 1)).get().satisfies(card -> {
+            assertThat(card.path("card_type").asText()).isEqualTo("text_notice");
+            assertThat(card.path("card_action").path("url").asText())
+                    .startsWith("https://zimu.test/fulfillment/shipments?batch_no=");
+        });
     }
 
     @Test

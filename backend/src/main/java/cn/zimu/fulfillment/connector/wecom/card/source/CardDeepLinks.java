@@ -1,17 +1,24 @@
 package cn.zimu.fulfillment.connector.wecom.card.source;
 
 import java.net.URI;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
  * 卡片深链构造（{@code app.wecom-business-card.base-url}）。
  *
- * <p>未配置 base-url 时一律返回 null——宁可让卡片只带信息不带跳转，也不发一个
- * 点了报 404 的链接出去。
+ * <p>未配置 base-url 时一律返回 null。交互卡可以据此省略可选跳转；{@code text_notice}
+ * 协议强制要求安全的 {@code card_action}，其 source 必须先调用
+ * {@link #textNoticeAvailable(String, long)} 收口，禁止让必然失败的渲染进入重试。
  */
 @Component
 public class CardDeepLinks {
+
+    public static final String BASE_URL_MISSING = "WECOM_CARD_BASE_URL_MISSING";
+
+    private static final Logger log = LoggerFactory.getLogger(CardDeepLinks.class);
 
     private final String baseUrl;
 
@@ -26,6 +33,22 @@ public class CardDeepLinks {
 
     public boolean configured() {
         return baseUrl != null;
+    }
+
+    /**
+     * {@code text_notice} 的协议门闩。缺配置是确定性部署事实，只诊断一次当前任务并返回
+     * false；调用方以 empty/SUPERSEDED 收口，不得抛成可重试渲染异常。
+     */
+    public boolean textNoticeAvailable(String domain, long entityId) {
+        if (configured()) {
+            return true;
+        }
+        log.warn(
+                "企微 text_notice 卡已跳过 domain={} entity_id={} code={} property=app.wecom-business-card.base-url",
+                domain,
+                entityId,
+                BASE_URL_MISSING);
+        return false;
     }
 
     private static boolean safeAbsoluteHttpBase(String value) {

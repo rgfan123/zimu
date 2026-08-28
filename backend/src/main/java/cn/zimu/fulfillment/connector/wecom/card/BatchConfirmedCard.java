@@ -44,7 +44,7 @@ public final class BatchConfirmedCard {
             String detailUrl) {}
 
     public static ObjectNode render(View view) {
-        WecomCardBuilder builder = WecomCardBuilder
+        return WecomCardBuilder
                 .textNotice(WecomTaskId.ofVersion(DOMAIN, view.batchId(), view.version()))
                 .title("整批确认已完成")
                 .desc(view.batchNo())
@@ -52,10 +52,8 @@ public final class BatchConfirmedCard {
                 .field("订单", view.orderCount() + " 单 / " + view.lineCount() + " 行")
                 // 两条出库通道分别报数：合并成一个数字就看不出哪条通道没走通
                 .field("京东", view.jdShipmentCount() + " 单")
-                .field("导出", view.thirdPartyExportCount() + " 单");
-        if (view.detailUrl() != null && !view.detailUrl().isBlank()) {
-            builder.cardAction(view.detailUrl());
-        }
-        return builder.build();
+                .field("导出", view.thirdPartyExportCount() + " 单")
+                .cardAction(view.detailUrl())
+                .build();
     }
 }

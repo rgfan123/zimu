@@ -41,11 +41,17 @@ public class BatchConfirmedCardSource implements WecomBusinessCardSource {
 
     @Override
     public Optional<Route> route(long entityId) {
+        if (!links.textNoticeAvailable(domain(), entityId)) {
+            return Optional.empty();
+        }
         return routes.resolve(domain());
     }
 
     @Override
     public Optional<ObjectNode> render(long entityId, long entityVersion) {
+        if (!links.textNoticeAvailable(domain(), entityId)) {
+            return Optional.empty();
+        }
         List<BatchConfirmedCard.View> rows = jdbc.query(
                 """
                 SELECT b.id, b.batch_no, b.revision_no,
@@ -91,6 +97,9 @@ public class BatchConfirmedCardSource implements WecomBusinessCardSource {
 
     @Override
     public List<WecomTaskId> pending(OffsetDateTime since, int limit) {
+        if (!links.configured()) {
+            return List.of();
+        }
         return jdbc.query(
                 """
                 SELECT b.id, b.revision_no

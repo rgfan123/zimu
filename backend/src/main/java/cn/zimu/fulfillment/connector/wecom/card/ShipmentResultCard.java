@@ -56,9 +56,6 @@ public final class ShipmentResultCard {
             builder.field("运单号", view.trackingNo());
             builder.field("承运", view.carrier());
         }
-        if (view.detailUrl() != null && !view.detailUrl().isBlank()) {
-            builder.cardAction(view.detailUrl());
-        }
-        return builder.build();
+        return builder.cardAction(view.detailUrl()).build();
     }
 }

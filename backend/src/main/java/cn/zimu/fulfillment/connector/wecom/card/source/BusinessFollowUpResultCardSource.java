@@ -38,7 +38,7 @@ public class BusinessFollowUpResultCardSource implements WecomBusinessCardSource
 
     @Override
     public Optional<Route> route(long approvalId) {
-        if (!links.configured()) {
+        if (!links.textNoticeAvailable(domain(), approvalId)) {
             return Optional.empty();
         }
         Optional<String> designatedUserid = jdbc.query(
@@ -70,7 +70,7 @@ public class BusinessFollowUpResultCardSource implements WecomBusinessCardSource
 
     @Override
     public Optional<ObjectNode> render(long approvalId, long draftVersion, Route route) {
-        if (!links.configured()) {
+        if (!links.textNoticeAvailable(domain(), approvalId)) {
             return Optional.empty();
         }
         List<BusinessFollowUpResultCard.View> rows = jdbc.query(
