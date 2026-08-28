@@ -113,7 +113,10 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                 JOIN raw_line_links rll ON rll.order_line_id=ol.id
                 JOIN app.raw_import_rows rir
                   ON rir.id=rll.raw_row_id AND rir.import_batch_id=ib.id AND rir.status='ACCEPTED'
-                WHERE s.id=? AND rir.raw_cells->>'source_line_ref'=?
+                -- 子单号回退与 SourceLineRefFallback 同源：Excel 链路的 raw_cells 是平台原始列，
+                -- 没有规范键；raw_cells 受 protect_raw_import_row() 保护不可回填，只能读侧回退。
+                WHERE s.id=? AND COALESCE(NULLIF(rir.raw_cells->>'source_line_ref', ''),
+                                          NULLIF(rir.raw_cells->>'子订单编号', ''))=?
                 ORDER BY rir.sheet_index, rir.row_index
                 """,
                 (rs, rowNum) -> new ArtifactRow(

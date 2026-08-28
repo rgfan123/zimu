@@ -282,6 +282,37 @@ class SourceShipmentSyncServiceIntegrationTest {
     }
 
     @Test
+    void excelImportedRowResolvesSubOrderRefFromThePlatformColumn() {
+        // 2026-08-29 生产实证：Excel 链路的 raw_cells 就是平台原始列，没有 source_line_ref
+        // 这个规范键（只有 API 拉单的结构化链路会写）。31 行已接受来源行里只有 1 行有，
+        // 于是所有文件导入的单子在线回传全部卡在 SINGLE_SOURCE_LINE_REQUIRED。
+        // raw_cells 受 protect_raw_import_row() 保护不可回填，历史行只能读侧回退。
+        long shipmentId = seedReadyShipment(
+                true, true, SourceChannel.JUFUBAO,
+                "{\"主单号\":\"main-1\",\"拆单号\":\"sub-1\",\"数量\":\"2\"}");
+
+        SourceSyncCheck check = service.check(shipmentId);
+
+        assertThat(check.blockers())
+                .extracting(SourceSyncBlocker::code)
+                .doesNotContain("SOURCE_SYNC_SINGLE_SOURCE_LINE_REQUIRED");
+        // 回退读出来的必须是平台自己的子单号，不能是主单号，否则回传会写错单。
+        assertThat(check.internal().sourceLineRef()).isEqualTo("sub-1");
+        // 刻意<不>断言 ready：那还要平台侧只读检查通过，取决于本用例没有配置的 gateway 桩，
+        // 与「血缘能不能解析出来」是两回事。
+    }
+
+    @Test
+    void structuredRowKeepsUsingTheCanonicalKeyEvenWhenAPlatformColumnDisagrees() {
+        // 回退只在规范键缺失时生效：结构化链路已经写了权威值，平台列不得把它覆盖掉。
+        long shipmentId = seedReadyShipment(
+                true, true, SourceChannel.JUFUBAO,
+                "{\"source_line_ref\":\"sub-1\",\"拆单号\":\"另一个子单\"}");
+
+        assertThat(factsReader.load(shipmentId).facts().sourceLineRef()).isEqualTo("sub-1");
+    }
+
+    @Test
     void oneRawSourceRowCannotFeedTwoShipmentItems() {
         long shipmentId = seedReadyShipment();
         attachSecondShipmentItemToTheSameRawRow(shipmentId);
@@ -478,10 +509,22 @@ class SourceShipmentSyncServiceIntegrationTest {
         return seedReadyShipment(true, true, channel);
     }
 
+    /** 结构化（API 拉单）链路写下的规范键快照。 */
+    private static final String STRUCTURED_RAW_CELLS =
+            "{\"source_ref\":\"main-1\",\"source_line_ref\":\"sub-1\"}";
+
     private long seedReadyShipment(
             boolean withSourceUnits,
             boolean withTracking,
             SourceChannel channel) {
+        return seedReadyShipment(withSourceUnits, withTracking, channel, STRUCTURED_RAW_CELLS);
+    }
+
+    private long seedReadyShipment(
+            boolean withSourceUnits,
+            boolean withTracking,
+            SourceChannel channel,
+            String rawCellsJson) {
         long customerId = jdbc.queryForObject(
                 "INSERT INTO app.customers(customer_code, customer_name) "
                         + "VALUES ('CUST-SYNC', '同步客户') RETURNING id",
@@ -539,11 +582,10 @@ class SourceShipmentSyncServiceIntegrationTest {
                 INSERT INTO app.raw_import_rows
                     (import_batch_id, sheet_name, sheet_index, row_index, raw_cells,
                      source_order_ref, status, order_id, order_line_id)
-                VALUES (?, 'STRUCTURED', 0, 1,
-                        '{"source_ref":"main-1","source_line_ref":"sub-1"}'::jsonb,
+                VALUES (?, 'STRUCTURED', 0, 1, ?::jsonb,
                         'main-1', 'ACCEPTED', ?, ?)
                 RETURNING id
-                """, Long.class, batchId, orderId, orderLineId);
+                """, Long.class, batchId, rawCellsJson, orderId, orderLineId);
         jdbc.update("""
                 INSERT INTO app.raw_import_row_order_lines(raw_import_row_id, order_line_id, partition_no)
                 VALUES (?, ?, 1)

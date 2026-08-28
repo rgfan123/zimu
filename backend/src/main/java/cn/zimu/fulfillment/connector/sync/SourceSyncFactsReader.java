@@ -47,7 +47,8 @@ public final class SourceSyncFactsReader {
         List<Item> rows = jdbc.query(
                 ITEMS_SQL + (lock ? " FOR UPDATE OF si, f, ol" : ""),
                 (rs, rowNum) -> item(rs),
-                header.importBatchId(), header.importBatchId(), shipmentId);
+                header.importBatchId(), header.importBatchId(),
+                SourceLineRefFallback.keyFor(header.channel()), shipmentId);
         return assemble(header, rows);
     }
 
@@ -127,7 +128,7 @@ public final class SourceSyncFactsReader {
             block(blockers, "SOURCE_SYNC_SINGLE_SOURCE_LINE_REQUIRED", "source_line_ref", "P0 在线回传要求整个 Shipment 只对应一个来源子单");
         }
         String sourceLine = sourceLines.size() == 1 ? sourceLines.iterator().next() : null;
-        if (sourceLine != null && shipmentCount(header.importBatchId(), sourceLine) != 1) {
+        if (sourceLine != null && shipmentCount(header.importBatchId(), header.channel(), sourceLine) != 1) {
             block(blockers, "SOURCE_SYNC_MULTI_SHIPMENT_UNSUPPORTED", "shipment_id", "同一来源子单存在多个 Shipment，必须走人工复核或文件降级");
         }
         if (quantityValid && orderedSource.compareTo(shippedSource) != 0) {
@@ -152,8 +153,10 @@ public final class SourceSyncFactsReader {
         return new Loaded(facts, List.copyOf(blockers), header.projection(), reconciliationIntent);
     }
 
-    private int shipmentCount(long batchId, String sourceLineRef) {
-        Integer count = jdbc.queryForObject(MULTI_SHIPMENT_SQL, Integer.class, batchId, batchId, sourceLineRef);
+    private int shipmentCount(long batchId, SourceChannel channel, String sourceLineRef) {
+        Integer count = jdbc.queryForObject(
+                MULTI_SHIPMENT_SQL, Integer.class,
+                batchId, batchId, SourceLineRefFallback.keyFor(channel), sourceLineRef);
         return count == null ? 0 : count;
     }
 
@@ -270,7 +273,8 @@ public final class SourceSyncFactsReader {
                    f.requested_quantity, f.cumulative_shipped_quantity,
                    f.cancelled_quantity, f.outcome fulfillment_outcome,
                    ol.source_quantity_snapshot, ol.mapping_multiplier_snapshot,
-                   rir.raw_cells->>'source_line_ref' source_line_ref
+                   COALESCE(NULLIF(rir.raw_cells->>'source_line_ref', ''),
+                            NULLIF(rir.raw_cells->>CAST(? AS text), '')) source_line_ref
             FROM app.shipment_items si
             JOIN app.fulfillments f ON f.id=si.fulfillment_id
             JOIN app.order_lines ol ON ol.id=f.order_line_id
@@ -293,6 +297,7 @@ public final class SourceSyncFactsReader {
             JOIN app.raw_import_rows rir ON rir.id=rll.raw_row_id
             JOIN app.fulfillments f ON f.order_line_id=rll.order_line_id
             JOIN app.shipment_items si ON si.fulfillment_id=f.id
-            WHERE rir.raw_cells->>'source_line_ref'=?
+            WHERE COALESCE(NULLIF(rir.raw_cells->>'source_line_ref', ''),
+                           NULLIF(rir.raw_cells->>CAST(? AS text), ''))=?
             """;
 }
