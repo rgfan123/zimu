@@ -5,8 +5,10 @@
  * 两条互不替代的轴（契约 §4.6）：client_mode=MOCK|REAL 控制是否调用真实外部 Client；
  * transport_mode=EXCEL|API 控制文件接入或在线接口接入。当前三平台为 EXCEL + MOCK，
  * 隔离 Demo 也只用 Mock Adapter。credential_secret_ref 为外部密钥引用，本页不提供读取。
- * 账号用户名/密码比照履约方京东 pin 先例：明文只落库内 config，username 非敏感直接回显，
- * password 读回只投影 password_configured 存在性标记，永不回显明文；留空提交 = 保持现值。
+ * 账号用户名 username 非敏感直接回显；password 由服务端以 AES-GCM 加密后落库
+ * （服务端未配置加密密钥 CONNECTOR_CREDENTIAL_KEY 时保存会被明确拒绝，绝不明文落库），
+ * 读回只投影 password_configured 存在性标记，永不回显；留空提交 = 保持现值。
+ * 历史明文残留投影为 password_needs_reentry：需重新输入一次，下一次保存自动清除残留。
  */
 
 import { useMemo, useState } from 'react';
@@ -213,7 +215,7 @@ export default function ConnectorsPage() {
           <Form.Item name="transport_mode" label="接入方式" rules={[{ required: true, message: '请选择接入方式' }]}>
             <Select options={(Object.keys(TRANSPORT_LABELS) as (keyof typeof TRANSPORT_LABELS)[]).map((k) => ({ value: k, label: TRANSPORT_LABELS[k] }))} />
           </Form.Item>
-          <Form.Item name="endpoint" label="服务地址（在线接入）" extra="此处只维护服务地址；访问凭据单独加密保存，页面不提供读取">
+          <Form.Item name="endpoint" label="服务地址（在线接入）" extra="此处只维护服务地址；账号凭据在下方「账号凭据」栏维护">
             <Input placeholder="https://…" />
           </Form.Item>
           <Divider orientation="left" style={{ margin: '8px 0 16px' }}>账号凭据</Divider>
@@ -223,10 +225,20 @@ export default function ConnectorsPage() {
           <Form.Item
             name="password"
             label="账号密码"
-            extra="留空表示保持现有值；保存后只显示是否已配置，永不回显明文"
+            extra={
+              editing?.password_needs_reentry
+                ? '历史保存方式已废弃，请重新输入一次密码；提交后由服务端加密保存，永不回显'
+                : '留空表示保持现有值；提交后由服务端加密保存（密文落库），只显示是否已配置，永不回显'
+            }
           >
             <Input.Password
-              placeholder={editing?.password_configured ? '已配置（不显示明文）' : '未配置'}
+              placeholder={
+                editing?.password_configured
+                  ? '已配置（加密保存，不显示）'
+                  : editing?.password_needs_reentry
+                    ? '需重新输入'
+                    : '未配置'
+              }
             />
           </Form.Item>
           <Form.Item
@@ -250,7 +262,13 @@ export default function ConnectorsPage() {
             items={[
               { key: 'cm', label: '客户端模式', children: <AdminCategoryTag category={editing.client_mode}>{MODE_LABELS[editing.client_mode]}</AdminCategoryTag> },
               { key: 'cc', label: '凭据', children: <AdminStatusTag status={editing.credential_configured ? 'CONFIGURED' : 'UNCONFIGURED'} /> },
-              { key: 'pc', label: '密码', children: <AdminStatusTag status={editing.password_configured ? 'CONFIGURED' : 'UNCONFIGURED'} /> },
+              {
+                key: 'pc',
+                label: '密码',
+                children: editing.password_needs_reentry
+                  ? <Typography.Text type="warning">需重新输入（历史保存方式已废弃）</Typography.Text>
+                  : <AdminStatusTag status={editing.password_configured ? 'CONFIGURED' : 'UNCONFIGURED'} />,
+              },
             ]}
           />
         ) : null}

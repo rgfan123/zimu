@@ -23,9 +23,13 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        // 断言默认 JD 客户端是显式 Mock（MOCK_SUCCESS、client_mode=MOCK）；
-        // 必须显式钉住 MOCK，避免操作者环境里的 JD_LOP_CLIENT_MODE=REAL 泄漏进测试。
-        properties = "app.jd.client-mode=MOCK")
+        properties = {
+            // 断言默认 JD 客户端是显式 Mock（MOCK_SUCCESS、client_mode=MOCK）；
+            // 必须显式钉住 MOCK，避免操作者环境里的 JD_LOP_CLIENT_MODE=REAL 泄漏进测试。
+            "app.jd.client-mode=MOCK",
+            // 渠道密码保存 fail-closed 依赖加密密钥；测试专用密钥（Base64 的 32 字节）。
+            "app.connector.credential-key=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+        })
 class ConnectorApiTest {
 
     @Container
@@ -34,6 +38,9 @@ class ConnectorApiTest {
 
     @Autowired
     private TestRestTemplate http;
+
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Autowired
     private JDWarehouseService jdWarehouseService;
@@ -150,8 +157,8 @@ class ConnectorApiTest {
                 .doesNotContainKey("credential_secret_ref");
     }
 
-    /** 账号用户名/密码先例比对（履约方京东 pin）：username 非敏感直接回显，password 明文只落库内 config，
-     * 读回（响应体、GET 详情、审计负载）一律只投影 password_configured 存在性标记，永不出现明文。 */
+    /** username 非敏感直接回显；password 以 AES-GCM 密文落库（password_encrypted），
+     * 读回（响应体、GET 详情、审计负载、库内 config）一律不出现明文，只投影存在性标记。 */
     @Test
     void connectorPatchPersistsUsernameAndPasswordWithoutEverEchoingPasswordPlaintext() {
         final String password = "FEIXIANG-ACCOUNT-SECRET-001";
@@ -192,6 +199,59 @@ class ConnectorApiTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> requestPayload = (Map<String, Object>) audit.get("request_payload");
         assertThat(requestPayload).containsEntry("username", "feixiang-account-001").containsEntry("password", "***");
+
+        // 落库形态：只有 AES-GCM 密文（v1: 前缀），绝无明文，也不留旧的明文 password 键。
+        String configJson = jdbc.queryForObject(
+                "SELECT config::text FROM app.connector_configs WHERE source_channel = 'FEIXIANG'", String.class);
+        assertThat(configJson).doesNotContain(password);
+        assertThat(jdbc.queryForObject(
+                        "SELECT config->>'password_encrypted' FROM app.connector_configs"
+                                + " WHERE source_channel = 'FEIXIANG'",
+                        String.class))
+                .startsWith("v1:");
+        assertThat(jdbc.queryForObject(
+                        "SELECT jsonb_exists(config, 'password') FROM app.connector_configs"
+                                + " WHERE source_channel = 'FEIXIANG'",
+                        Boolean.class))
+                .isFalse();
+    }
+
+    /** 生产现状复刻：旧明文 password 残留只提示「需重新输入」，任何一次保存都会清掉它，绝不迁移。 */
+    @Test
+    void legacyPlaintextPasswordResidueIsFlaggedForReentryAndClearedByNextSave() {
+        // 模拟历史数据（应用自身已不会写明文；仅测试直接造残留）。
+        jdbc.update(
+                "UPDATE app.connector_configs SET config = config ||"
+                        + " '{\"password\":\"LEGACY-PLAINTEXT-RESIDUE\"}'::jsonb"
+                        + " WHERE source_channel = 'WECOM'");
+
+        ResponseEntity<Map> flagged = http.getForEntity("/api/v1/connectors/WECOM", Map.class);
+        assertThat(flagged.getBody())
+                .containsEntry("password_configured", false)
+                .containsEntry("password_needs_reentry", true);
+        assertThat(flagged.getBody().toString()).doesNotContain("LEGACY-PLAINTEXT-RESIDUE");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", "connector-patch-wecom-clear-legacy-001");
+        headers.set("X-Operator", "integration-test");
+        ResponseEntity<Map> saved = http.exchange(
+                "/api/v1/connectors/WECOM", HttpMethod.PATCH,
+                new HttpEntity<>(Map.of(
+                        "expected_version", ((Number) flagged.getBody().get("version")).longValue(),
+                        "endpoint", "https://wecom.invalid/api"),
+                        headers),
+                Map.class);
+
+        assertThat(saved.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(saved.getBody())
+                .containsEntry("password_configured", false)
+                .containsEntry("password_needs_reentry", false);
+        assertThat(jdbc.queryForObject(
+                        "SELECT jsonb_exists(config, 'password') FROM app.connector_configs"
+                                + " WHERE source_channel = 'WECOM'",
+                        Boolean.class))
+                .isFalse();
     }
 
     @Test
