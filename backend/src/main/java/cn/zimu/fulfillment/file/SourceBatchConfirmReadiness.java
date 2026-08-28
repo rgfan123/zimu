@@ -20,10 +20,21 @@ import org.springframework.stereotype.Component;
 class SourceBatchConfirmReadiness {
 
     /**
-     * ORDER_ALREADY_EXISTS 是良性跳过而非待处理问题：该行对应的订单早已入库。
-     * 与 {@link SourceImportService#confirm} 的豁免口径必须保持一致。
+     * 良性行：无事可做，不是待处理问题，因此不计入阻断。
+     *
+     * <ul>
+     *   <li>{@code ORDER_ALREADY_EXISTS} —— 该来源单早已入库（REJECTED）；</li>
+     *   <li>{@code SOURCE_ORDER_ALREADY_FULFILLED} —— 来源侧已发货（落 NEED_REVIEW，
+     *       非 REJECTED），导「全部订单」必然混入历史已发单。</li>
+     * </ul>
+     *
+     * <p>两者共同的结构特征是<b>从不建单</b>（{@code order_line_id} 恒为 NULL），
+     * 确认动作碰不到它们；谓词用这一点做保险，将来若某类行开始建单会自动变回阻断项。
+     * 与 {@link SourceImportService#confirm} 及 {@code TrackingFileService} 的回传扣留闸
+     * 三处口径必须保持一致。</p>
      */
-    private static final String BENIGN_REJECT_CODE = "ORDER_ALREADY_EXISTS";
+    private static final String BENIGN_PREDICATE =
+            "order_line_id IS NULL AND error_code IN ('ORDER_ALREADY_EXISTS', 'SOURCE_ORDER_ALREADY_FULFILLED')";
 
     private final JdbcTemplate jdbc;
 
@@ -90,13 +101,13 @@ class SourceBatchConfirmReadiness {
                 countRows(batchId, "status='ACCEPTED'"),
                 countPendingRows(batchId),
                 countRows(batchId, blockedPredicate()),
-                countRows(batchId, "status='REJECTED' AND error_code='" + BENIGN_REJECT_CODE + "'"),
+                countRows(batchId, "status<>'ACCEPTED' AND " + BENIGN_PREDICATE),
                 blockers(batchId));
     }
 
     /** 阻断口径：非 ACCEPTED，且排除良性重复行。与确认闸门同一条判据。 */
     static String blockedPredicate() {
-        return "status<>'ACCEPTED' AND NOT (status='REJECTED' AND error_code='" + BENIGN_REJECT_CODE + "')";
+        return "status<>'ACCEPTED' AND NOT (" + BENIGN_PREDICATE + ")";
     }
 
     private int countRows(long batchId, String predicate) {

@@ -790,11 +790,23 @@ public class TrackingFileService {
         // 所以待定行（NEED_REVIEW 待复核 / RECEIVED 处理中）留着就先不出文件：等它们被修好
         // 转 ACCEPTED（补做确认后一并发货）或被判定 REJECTED（明确不发了），批次定论后再一次
         // 出齐。REJECTED 不在此列——那是已经做出的决定，对应行在原表里留空正是正确的回填结果。
+        // 良性行不算「待定」——它们永远不会被修好，扣着回传就是永久扣着。
+        // SOURCE_ORDER_ALREADY_FULFILLED（来源侧已发货）落的是 NEED_REVIEW 而非 REJECTED
+        // （SourceFileParser#withError → SourceImportService 的 valid()?RECEIVED:NEED_REVIEW），
+        // 且 2026-08-28 生产实证：这类行既不生成 review_case、也没有任何行级处置端点，
+        // 没有任何机制能让它离开 NEED_REVIEW。若把它算作待定，飞象/中汇只要导过一次
+        // 「全部订单」（必然混进历史已发单），该批次的回传文件就永久不出——运单号再也回不到
+        // 来源平台，且全程无错误、无日志，静默失败。
+        // 判据与 SourceImportService#confirm、SourceBatchConfirmReadiness 的良性口径同源：
+        // 从不建单（order_line_id 恒为 NULL）即无事可做。
         boolean hasUndecidedRows = Boolean.TRUE.equals(jdbc.queryForObject(
                 """
                 SELECT EXISTS (
                     SELECT 1 FROM app.raw_import_rows
-                    WHERE import_batch_id=? AND status IN ('NEED_REVIEW', 'RECEIVED'))
+                    WHERE import_batch_id=? AND status IN ('NEED_REVIEW', 'RECEIVED')
+                      AND NOT (order_line_id IS NULL
+                               AND error_code IN ('ORDER_ALREADY_EXISTS',
+                                                  'SOURCE_ORDER_ALREADY_FULFILLED')))
                 """,
                 Boolean.class,
                 sourceBatchId));
