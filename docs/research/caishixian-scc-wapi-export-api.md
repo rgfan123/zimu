@@ -179,6 +179,16 @@ content-type: application/json   (仅 POST)
 
 脚本：`scripts/caishixian_fetch_orders.py --mode json`（默认自动补 detail；`--no-detail` 关闭；`--force` 覆盖）。
 
+> **落地状态（2026-08-28）**：`CaishixianConnector` 在线拉取已切换为本节 JSON 直连主链路
+> （orderList 按 totalNum 真翻页 + 逐单 detail + `number.waitDepotNum` 拉取对账），
+> `source_ordered_at` 从 `orderTime` 回填；旧「导出任务」链路（§2.1-2.4，pageSize:10 截断
+> + 窗口不可观测）已从 Connector 移除，平台后台手工导出的 xlsx 仍走文件上传导入兜底。
+> 结构化批次的单 Shipment 回填工作簿由 `CaishixianShipmentArtifactFactory` 结构化分支
+> 从拉取快照重建（`站点编码` 落空串，平台是否接受待生产验证）。
+> §5「orderStatus/pageSize 语义单次观测」的处置：请求契约与解析已被测试桩锁定；
+> 平台侧语义靠生产对账日志（`CAISHIXIAN_PULL_RECONCILIATION_MISMATCH`）自动定案，
+> 拉回行 `orderStatus != 3` 会在 raw 快照打 `order_status_unexpected` 标记。
+
 ### 4.3 可复用线索（顺手发现）
 
 - 任务系统有 4 种 `taskType`：结算、TMS、SCM 都走同一任务链路——未来结算单拉取、TMS 回传可能复用同一套「发起→轮询→下载」模式。
