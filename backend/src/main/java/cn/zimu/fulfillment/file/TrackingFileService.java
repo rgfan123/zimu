@@ -487,9 +487,12 @@ public class TrackingFileService {
                             "第 " + (index + 1) + " 行实发数量必须在 0 与请求数量之间");
                 }
                 String rowResult = shipped.compareTo(line.instructedQuantity()) == 0 ? "SHIPPED" : "PARTIAL";
-                // 兼容下游既有键位：收件人 / 礼包分组标识 取导出指令原值
+                // 兼容下游既有键位：收件人 / 礼包分组标识 取导出指令原值；「结果」是人读八列
+                // 没有的列，把解析推导值一并落进 raw_cells——business_results 读模型
+                // （raw_cells->>'结果' 聚合）才能与上传响应的内存计数保持同一口径。
                 cells.put("收件人", text(line.outputCells().get("收件人")));
                 cells.put("礼包分组标识", text(line.outputCells().get("礼包分组标识")));
+                cells.put("结果", rowResult);
                 result.add(new TrackingRow(
                         index + 1, cells, rowResult, line,
                         shipped, carrier, trackingNo, null, null));
