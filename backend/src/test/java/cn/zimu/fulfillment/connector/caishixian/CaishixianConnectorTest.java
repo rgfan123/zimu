@@ -2,9 +2,10 @@ package cn.zimu.fulfillment.connector.caishixian;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -28,19 +29,74 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-/** 彩食鲜 Connector 单元测试：mock 拉取客户端与导入服务，验证「登录→拉取→进管线」链路与失败路径。 */
+/**
+ * 彩食鲜 Connector 单元测试：mock 拉取客户端与导入服务（transform 用真实实现），
+ * 验证「登录 → orderList 真翻页 → 逐单 detail → 结构化导入」链路、waitDepotNum 拉取对账
+ * 与失败路径。
+ */
 class CaishixianConnectorTest {
 
     private final SourceImportService sourceImportService = mock(SourceImportService.class);
     private final CaishixianPullClient pullClient = mock(CaishixianPullClient.class);
     private final CaishixianShipmentGateway shipmentGateway = mock(CaishixianShipmentGateway.class);
-    private final CaishixianConnector connector =
-            new CaishixianConnector(sourceImportService, pullClient, shipmentGateway);
+    private final CaishixianConnector connector = new CaishixianConnector(
+            sourceImportService, pullClient, new CaishixianOrderTransform(), shipmentGateway);
 
     private static final byte[] XLSX = {'P', 'K', 3, 4, 0, 0, 0, 0};
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON =
+            new com.fasterxml.jackson.databind.ObjectMapper();
 
     private PullCursor cursor() {
         return PullCursor.initial(null, null);
+    }
+
+    private static com.fasterxml.jackson.databind.JsonNode listItem(int sequence) {
+        try {
+            return JSON.readTree("""
+                    {"id": %d, "orderCode": "MAIN-%d", "orderKey": "MAIN-%d-01", "orderStatus": 3,
+                     "receiverName": "收货人%d", "receiverTelephone": "138000000%02d",
+                     "payTime": "2026-08-26 16:20:31", "orderTime": "2026-08-26 16:12:05"}
+                    """.formatted(9000 + sequence, sequence, sequence, sequence, sequence % 100));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static com.fasterxml.jackson.databind.JsonNode detail() {
+        try {
+            return JSON.readTree("""
+                    {"receiverProvince": "河南省", "receiverCity": "郑州市",
+                     "receiverDistrict": "金水区", "receiverAddress": "测试路 1 号",
+                     "supplierOrderGoodsVo": [
+                       {"goodsCode": "G-1", "goodsName": "羊小腿", "count": 2, "spec": "2kg/箱", "unit": "箱"}
+                     ]}
+                    """);
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static CaishixianPullClient.OrderPage page(
+            int pageNum, int totalNum, Integer waitDepotNum, List<com.fasterxml.jackson.databind.JsonNode> orders) {
+        return new CaishixianPullClient.OrderPage(
+                pageNum, totalNum, orders,
+                waitDepotNum,
+                waitDepotNum == null ? Map.of() : Map.of("waitDepotNum", waitDepotNum));
+    }
+
+    private static List<com.fasterxml.jackson.databind.JsonNode> items(int fromInclusive, int toInclusive) {
+        List<com.fasterxml.jackson.databind.JsonNode> list = new java.util.ArrayList<>();
+        for (int sequence = fromInclusive; sequence <= toInclusive; sequence++) {
+            list.add(listItem(sequence));
+        }
+        return list;
+    }
+
+    private Map<String, Object> batch(int accepted, int total) {
+        return Map.of(
+                "id", "41",
+                "batch_no", "PULL-CAISHIXIAN-TEST",
+                "row_counts", Map.of("total", total, "accepted", accepted, "need_review", 0, "rejected", 0));
     }
 
     @Test
@@ -136,28 +192,128 @@ class CaishixianConnectorTest {
     }
 
     @Test
-    void pullOrdersRunsLoginThenPullThenUploadAndReportsAcceptedCount() {
+    void pullOrdersPaginatesByTotalNumUntilAllRowsFetched() {
+        // 验收「orderList 翻页取完」：totalNum=25 > 单页 10 → 三页全部取到，逐单补 detail 后进导入
         when(pullClient.login()).thenReturn(new CaishixianPullClient.LoginResult(true, "OK", "登录成功", "token-1"));
-        when(pullClient.pullDeliverExport(anyString(), anyString(), anyString())).thenReturn(XLSX);
-        Map<String, Object> batch = Map.of(
-                "id", "41",
-                "batch_no", "IMP-ABC",
-                "row_counts", Map.of("total", 3, "accepted", 3, "need_review", 0, "rejected", 0));
-        when(sourceImportService.upload(
-                        any(byte[].class), anyString(), eq("NEW"), isNull(), anyString(), any(CommandContext.class)))
-                .thenReturn(batch);
+        when(pullClient.pullOrderPage(eq("token-1"), anyString(), anyString(), eq(1), eq(CaishixianConnector.PAGE_SIZE)))
+                .thenReturn(page(1, 25, 25, items(1, 10)));
+        when(pullClient.pullOrderPage(eq("token-1"), anyString(), anyString(), eq(2), eq(CaishixianConnector.PAGE_SIZE)))
+                .thenReturn(page(2, 25, 25, items(11, 20)));
+        when(pullClient.pullOrderPage(eq("token-1"), anyString(), anyString(), eq(3), eq(CaishixianConnector.PAGE_SIZE)))
+                .thenReturn(page(3, 25, 25, items(21, 25)));
+        when(pullClient.pullOrderDetail(eq("token-1"), anyString())).thenReturn(detail());
+        when(sourceImportService.importStructured(
+                        eq(SourceChannel.CAISHIXIAN), anyList(), anyString(), any(CommandContext.class)))
+                .thenReturn(batch(25, 25));
 
         PullResult result = connector.pullOrders(cursor());
 
         assertThat(result.status()).isEqualTo(PullResult.PullStatus.OK);
-        assertThat(result.businessCode()).isEqualTo("OK");
-        assertThat(result.pulledCount()).isEqualTo(3);
-        assertThat(result.importBatch()).isEqualTo(new PullResult.ImportBatchReference(
-                "41", "IMP-ABC", Map.of("total", 3, "accepted", 3, "need_review", 0, "rejected", 0)));
-        verify(pullClient).login();
-        verify(pullClient).pullDeliverExport(eq("token-1"), anyString(), anyString());
-        verify(sourceImportService).upload(
-                eq(XLSX), anyString(), eq("NEW"), isNull(), anyString(), any(CommandContext.class));
+        assertThat(result.pulledCount()).isEqualTo(25);
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<cn.zimu.fulfillment.file.StructuredOrderRow>> rowsCaptor =
+                org.mockito.ArgumentCaptor.forClass((Class) List.class);
+        verify(sourceImportService).importStructured(
+                eq(SourceChannel.CAISHIXIAN), rowsCaptor.capture(), anyString(), any(CommandContext.class));
+        assertThat(rowsCaptor.getValue()).hasSize(25);
+        assertThat(rowsCaptor.getValue().getFirst().sourceRef()).isEqualTo("MAIN-1");
+        assertThat(rowsCaptor.getValue().getLast().sourceRef()).isEqualTo("MAIN-25");
+        // 每单 detail 都补到（25 次），第四页从未请求（totalNum 已取满即停）
+        verify(pullClient, org.mockito.Mockito.times(25)).pullOrderDetail(eq("token-1"), anyString());
+        verify(pullClient, never()).pullOrderPage(anyString(), anyString(), anyString(), eq(4), anyInt());
+        // 对账事实进结果 message（实取/totalNum/waitDepotNum 三数一致 → 无告警词）
+        assertThat(result.message()).contains("实取 25").contains("totalNum=25").contains("waitDepotNum=25");
+        assertThat(result.message()).doesNotContain("不一致");
+    }
+
+    @Test
+    void pullOrdersReportsReconciliationMismatchWhenWaitDepotNumDiffers() {
+        // 验收「waitDepotNum 对账」：平台自报待发货 3 单、窗口内只拉到 1 单 → 直接证据进 message
+        when(pullClient.login()).thenReturn(new CaishixianPullClient.LoginResult(true, "OK", "", "token-1"));
+        when(pullClient.pullOrderPage(anyString(), anyString(), anyString(), eq(1), anyInt()))
+                .thenReturn(page(1, 1, 3, items(1, 1)));
+        when(pullClient.pullOrderDetail(anyString(), anyString())).thenReturn(detail());
+        when(sourceImportService.importStructured(
+                        eq(SourceChannel.CAISHIXIAN), anyList(), anyString(), any(CommandContext.class)))
+                .thenReturn(batch(1, 1));
+
+        PullResult result = connector.pullOrders(cursor());
+
+        assertThat(result.status()).isEqualTo(PullResult.PullStatus.OK);
+        assertThat(result.message())
+                .contains("waitDepotNum=3")
+                .contains("实取 1")
+                .contains("不一致")
+                .contains("窗口过滤可能在吞单");
+    }
+
+    @Test
+    void pullOrdersWithZeroRowsStillReportsWaitDepotNumEvidence() {
+        // 「今天拉取三次全部 0 行」场景：0 行 + waitDepotNum=2 → 平台明说还有待发货单没进窗口
+        when(pullClient.login()).thenReturn(new CaishixianPullClient.LoginResult(true, "OK", "", "token-1"));
+        when(pullClient.pullOrderPage(anyString(), anyString(), anyString(), eq(1), anyInt()))
+                .thenReturn(page(1, 0, 2, List.of()));
+
+        PullResult result = connector.pullOrders(cursor());
+
+        assertThat(result.status()).isEqualTo(PullResult.PullStatus.OK);
+        assertThat(result.pulledCount()).isZero();
+        assertThat(result.message())
+                .contains("未拉到订单")
+                .contains("waitDepotNum=2")
+                .contains("不一致");
+        verify(sourceImportService, never()).importStructured(any(), anyList(), anyString(), any());
+    }
+
+    @Test
+    void pullOrdersDegradesSingleOrderToReviewWhenDetailFails() {
+        // 单单 detail 失败只把该单转人工复核，不废整批（ea8fbb2 精神在 detail 层的延伸）
+        when(pullClient.login()).thenReturn(new CaishixianPullClient.LoginResult(true, "OK", "", "token-1"));
+        when(pullClient.pullOrderPage(anyString(), anyString(), anyString(), eq(1), anyInt()))
+                .thenReturn(page(1, 2, 2, items(1, 2)));
+        when(pullClient.pullOrderDetail(anyString(), eq("9001"))).thenReturn(detail());
+        when(pullClient.pullOrderDetail(anyString(), eq("9002")))
+                .thenThrow(new CaishixianPullClient.PullTransportException("网络抖动"));
+        when(sourceImportService.importStructured(
+                        eq(SourceChannel.CAISHIXIAN), anyList(), anyString(), any(CommandContext.class)))
+                .thenReturn(batch(1, 2));
+
+        PullResult result = connector.pullOrders(cursor());
+
+        assertThat(result.status()).isEqualTo(PullResult.PullStatus.OK);
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<cn.zimu.fulfillment.file.StructuredOrderRow>> rowsCaptor =
+                org.mockito.ArgumentCaptor.forClass((Class) List.class);
+        verify(sourceImportService).importStructured(
+                eq(SourceChannel.CAISHIXIAN), rowsCaptor.capture(), anyString(), any(CommandContext.class));
+        assertThat(rowsCaptor.getValue()).hasSize(2);
+        assertThat(rowsCaptor.getValue().get(0).reviewRequired()).isNull();
+        assertThat(rowsCaptor.getValue().get(1).reviewRequired()).isNotNull();
+        assertThat(rowsCaptor.getValue().get(1).reviewRequired().code())
+                .isEqualTo(CaishixianOrderTransform.DETAIL_REVIEW_CODE);
+    }
+
+    @Test
+    void pullOrdersPageGuardDropsExplicitlyInsteadOfSilently() {
+        // 翻页保护上限触顶时：丢弃数显式进 message（绝不静默截断——pageSize:10 旧病不复发）
+        when(pullClient.login()).thenReturn(new CaishixianPullClient.LoginResult(true, "OK", "", "token-1"));
+        when(pullClient.pullOrderPage(anyString(), anyString(), anyString(), anyInt(), anyInt()))
+                .thenAnswer(invocation -> page(
+                        invocation.getArgument(3),
+                        CaishixianConnector.MAX_PAGES * CaishixianConnector.PAGE_SIZE + 7,
+                        null,
+                        items(1, CaishixianConnector.PAGE_SIZE)));
+        when(pullClient.pullOrderDetail(anyString(), anyString())).thenReturn(detail());
+        when(sourceImportService.importStructured(
+                        eq(SourceChannel.CAISHIXIAN), anyList(), anyString(), any(CommandContext.class)))
+                .thenReturn(batch(5000, 5000));
+
+        PullResult result = connector.pullOrders(cursor());
+
+        assertThat(result.status()).isEqualTo(PullResult.PullStatus.OK);
+        assertThat(result.message()).contains("翻页保护上限触顶").contains("显式丢弃 7 行");
+        verify(pullClient, org.mockito.Mockito.times(CaishixianConnector.MAX_PAGES))
+                .pullOrderPage(anyString(), anyString(), anyString(), anyInt(), anyInt());
     }
 
     @Test
@@ -170,7 +326,7 @@ class CaishixianConnectorTest {
         assertThat(result.status()).isEqualTo(PullResult.PullStatus.FAILED);
         assertThat(result.businessCode()).isEqualTo("CREDENTIALS_REQUIRED");
         assertThat(result.ok()).isFalse();
-        verify(sourceImportService, never()).upload(any(), any(), any(), any(), any(), any());
+        verify(sourceImportService, never()).importStructured(any(), anyList(), anyString(), any());
     }
 
     @Test
@@ -187,62 +343,50 @@ class CaishixianConnectorTest {
     @Test
     void pullOrdersReturnsFailedWhenPlatformTransportFails() {
         when(pullClient.login()).thenReturn(new CaishixianPullClient.LoginResult(true, "OK", "", "token-1"));
-        when(pullClient.pullDeliverExport(anyString(), anyString(), anyString()))
-                .thenThrow(new CaishixianPullClient.PullTransportException("轮询超时"));
+        when(pullClient.pullOrderPage(anyString(), anyString(), anyString(), anyInt(), anyInt()))
+                .thenThrow(new CaishixianPullClient.PullTransportException("orderList 第 1 页失败"));
 
         PullResult result = connector.pullOrders(cursor());
 
         assertThat(result.status()).isEqualTo(PullResult.PullStatus.FAILED);
         assertThat(result.businessCode()).isEqualTo("PLATFORM_PULL_ERROR");
-        verify(sourceImportService, never()).upload(any(), any(), any(), any(), any(), any());
-    }
-
-    @Test
-    void pullOrdersTreatsDuplicateOrderAsSuccessWithZeroCount() {
-        when(pullClient.login()).thenReturn(new CaishixianPullClient.LoginResult(true, "OK", "", "token-1"));
-        when(pullClient.pullDeliverExport(anyString(), anyString(), anyString())).thenReturn(XLSX);
-        when(sourceImportService.upload(
-                        any(byte[].class), anyString(), eq("NEW"), isNull(), anyString(), any(CommandContext.class)))
-                .thenThrow(BusinessException.conflict("DUPLICATE_ORDER", "相同来源渠道与来源单号的订单已存在"));
-
-        PullResult result = connector.pullOrders(cursor());
-
-        assertThat(result.ok()).isTrue();
-        assertThat(result.pulledCount()).isZero();
-        assertThat(result.businessCode()).isEqualTo("OK");
+        verify(sourceImportService, never()).importStructured(any(), anyList(), anyString(), any());
     }
 
     @Test
     void pullOrdersReturnsOkWithZeroCountAndMessageWhenNoAcceptedRows() {
-        // 第二轮评审 F 项修复：accepted=0 时不再丢 message——返回 OK+count 0，message 保留批次信息
+        // accepted=0 时不丢 message：批次信息 + 对账事实都保留（F 项修复语义在 JSON 链路延续）
         when(pullClient.login()).thenReturn(new CaishixianPullClient.LoginResult(true, "OK", "", "token-1"));
-        when(pullClient.pullDeliverExport(anyString(), anyString(), anyString())).thenReturn(XLSX);
-        when(sourceImportService.upload(
-                        any(byte[].class), anyString(), eq("NEW"), isNull(), anyString(), any(CommandContext.class)))
-                .thenReturn(Map.of("batch_no", "IMP-EMPTY", "row_counts",
-                        Map.of("total", 0, "accepted", 0, "need_review", 0, "rejected", 0)));
+        when(pullClient.pullOrderPage(anyString(), anyString(), anyString(), eq(1), anyInt()))
+                .thenReturn(page(1, 1, 1, items(1, 1)));
+        when(pullClient.pullOrderDetail(anyString(), anyString())).thenReturn(detail());
+        when(sourceImportService.importStructured(
+                        eq(SourceChannel.CAISHIXIAN), anyList(), anyString(), any(CommandContext.class)))
+                .thenReturn(Map.of("id", "42", "batch_no", "PULL-EMPTY", "row_counts",
+                        Map.of("total", 1, "accepted", 0, "need_review", 0, "rejected", 1)));
 
         PullResult result = connector.pullOrders(cursor());
 
         assertThat(result.status()).isEqualTo(PullResult.PullStatus.OK);
         assertThat(result.businessCode()).isEqualTo("OK");
         assertThat(result.pulledCount()).isZero();
-        assertThat(result.ok()).isTrue();
-        assertThat(result.message()).contains("IMP-EMPTY");
+        assertThat(result.message()).contains("PULL-EMPTY").contains("对账");
     }
 
     @Test
     void pullOrdersReturnsFailedWhenImportRejectsBatch() {
         when(pullClient.login()).thenReturn(new CaishixianPullClient.LoginResult(true, "OK", "", "token-1"));
-        when(pullClient.pullDeliverExport(anyString(), anyString(), anyString())).thenReturn(XLSX);
-        when(sourceImportService.upload(
-                        any(byte[].class), anyString(), eq("NEW"), isNull(), anyString(), any(CommandContext.class)))
-                .thenThrow(BusinessException.badRequest("IMPORT_MODE_INVALID", "import_mode 非法"));
+        when(pullClient.pullOrderPage(anyString(), anyString(), anyString(), eq(1), anyInt()))
+                .thenReturn(page(1, 1, 1, items(1, 1)));
+        when(pullClient.pullOrderDetail(anyString(), anyString())).thenReturn(detail());
+        when(sourceImportService.importStructured(
+                        eq(SourceChannel.CAISHIXIAN), anyList(), anyString(), any(CommandContext.class)))
+                .thenThrow(BusinessException.badRequest("EMPTY_IMPORT", "结构化导入订单为空"));
 
         PullResult result = connector.pullOrders(cursor());
 
         assertThat(result.status()).isEqualTo(PullResult.PullStatus.FAILED);
-        assertThat(result.businessCode()).isEqualTo("IMPORT_MODE_INVALID");
+        assertThat(result.businessCode()).isEqualTo("EMPTY_IMPORT");
         assertThat(result.ok()).isFalse();
     }
 
