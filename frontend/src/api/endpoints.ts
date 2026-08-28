@@ -332,9 +332,10 @@ export function productImageUrl(ref: string): string {
   return `/api/v1/product-images?ref=${encodeURIComponent(ref)}`;
 }
 
-/** GET/POST /api/v1/skus，GET/PATCH /api/v1/skus/{id}。 */
+/** GET/POST /api/v1/skus，GET /api/v1/skus/export，GET/PATCH /api/v1/skus/{id}。 */
 export const skusApi = {
   list: (query: MasterDataListQuery = {}) => apiRequest<SkuPage>('/api/v1/skus', { params: query as Record<string, QueryValue> }),
+  exportFile: () => downloadFile('/api/v1/skus/export', '子牧商品档案'),
   create: (body: {
     provider_id: string;
     product_id: string;

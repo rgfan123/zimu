@@ -5,9 +5,10 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import SkusPage from '@/pages/product/SkusPage';
 
-const { archiveList, archiveSheet, skuList } = vi.hoisted(() => ({
+const { archiveList, archiveSheet, skuExport, skuList } = vi.hoisted(() => ({
   archiveList: vi.fn(),
   archiveSheet: vi.fn(),
+  skuExport: vi.fn(),
   skuList: vi.fn(),
 }));
 
@@ -20,7 +21,7 @@ vi.mock('@/api/endpoints', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/endpoints')>();
   return {
     ...actual,
-    skusApi: { ...actual.skusApi, list: skuList },
+    skusApi: { ...actual.skusApi, list: skuList, exportFile: skuExport },
     productsApi: { ...actual.productsApi, archiveSheet },
     productArchiveSheetsApi: { list: archiveList },
   };
@@ -91,7 +92,9 @@ describe('商品档案页成本表列', () => {
   beforeEach(() => {
     archiveList.mockReset();
     archiveSheet.mockReset();
+    skuExport.mockReset();
     skuList.mockReset();
+    skuExport.mockResolvedValue(undefined);
     archiveList.mockResolvedValue({
       items: [archiveRow('1', '101'), archiveRow('2', null)],
       page: 0,
@@ -209,5 +212,38 @@ describe('商品档案页成本表列', () => {
     expect(await screen.findByText(/共 47 列，按原表列序展示/)).toBeInTheDocument();
     expect(archiveSheet).toHaveBeenCalledWith('101');
     expect(screen.getByRole('cell', { name: '（AK 列无表头）' })).toBeInTheDocument();
+  });
+
+  test('导出表格调用共享下载 API，导出中展示 loading，失败后提示且可以重试', async () => {
+    const user = userEvent.setup();
+    let finishExport: (() => void) | undefined;
+    skuExport.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      finishExport = resolve;
+    }));
+    render(
+      <AntApp>
+        <MemoryRouter>
+          <SkusPage />
+        </MemoryRouter>
+      </AntApp>,
+    );
+
+    await screen.findByText('已挂接 SKU');
+    const exportButton = screen.getByRole('button', { name: '导出表格' });
+    await user.click(exportButton);
+    expect(skuExport).toHaveBeenCalledTimes(1);
+    expect(exportButton).toHaveClass('ant-btn-loading');
+
+    finishExport?.();
+    await waitFor(() => expect(exportButton).not.toHaveClass('ant-btn-loading'));
+
+    skuExport.mockRejectedValueOnce(new Error('download failed'));
+    await user.click(exportButton);
+    expect(await screen.findByText('商品档案导出失败，请重试')).toBeInTheDocument();
+    expect(exportButton).not.toBeDisabled();
+
+    skuExport.mockResolvedValueOnce(undefined);
+    await user.click(exportButton);
+    await waitFor(() => expect(skuExport).toHaveBeenCalledTimes(3));
   });
 });

@@ -3,8 +3,8 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
-import { Alert, Button, Checkbox, Dropdown, Input, Select, Space, Tag, theme, Typography } from 'antd';
-import { CloudUploadOutlined, SettingOutlined } from '@ant-design/icons';
+import { Alert, App, Button, Checkbox, Dropdown, Input, Select, Space, Tag, theme, Typography } from 'antd';
+import { CloudUploadOutlined, DownloadOutlined, SettingOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import MasterDataCrud, { attr, type CrudField } from '@/pages/shared/MasterDataCrud';
@@ -33,11 +33,13 @@ export default function SkusPage() {
   const [providerId, setProviderId] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState<string | undefined>();
   const [platformUploadOpen, setPlatformUploadOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [archiveSheetOf, setArchiveSheetOf] = useState<MasterDataRecord | null>(null);
   const [visibleArchiveColumns, setVisibleArchiveColumns] = useState<ArchiveColumn[]>(
     () => [...DEFAULT_ARCHIVE_COLUMNS],
   );
   const { token } = theme.useToken();
+  const { message } = App.useApp();
   const providerOptions = useProviderOptions();
   const categoryOptions = useCategoryOptions();
   const {
@@ -62,6 +64,16 @@ export default function SkusPage() {
     }),
     [providerId, searchQuery],
   );
+  const exportArchive = useCallback(async () => {
+    setExporting(true);
+    try {
+      await skusApi.exportFile();
+    } catch {
+      message.error('商品档案导出失败，请重试');
+    } finally {
+      setExporting(false);
+    }
+  }, [message]);
 
   const columns: ColumnsType<MasterDataRecord> = [
     { title: '商品 / SKU', key: 'identity', width: 210, render: (_, r) => <ProductIdentity name={r.name} code={r.code} /> },
@@ -206,6 +218,15 @@ export default function SkusPage() {
               列设置（{visibleArchiveColumns.length} / 47）
             </Button>
           </Dropdown>
+          <Button
+            size="small"
+            icon={<DownloadOutlined />}
+            loading={exporting}
+            aria-label="导出表格"
+            onClick={exportArchive}
+          >
+            导出表格
+          </Button>
           <Button size="small" type="primary" ghost icon={<CloudUploadOutlined />}
                   onClick={() => setPlatformUploadOpen(true)}>
             上架

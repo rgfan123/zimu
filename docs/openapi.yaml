@@ -2537,6 +2537,26 @@ paths:
           description: Provider-scoped internal SKU created
           content: { application/json: { schema: { $ref: '#/components/schemas/SkuRecord' } } }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/skus/export:
+    get:
+      tags: [MasterData]
+      operationId: exportSkuArchive
+      summary: 导出全部 active SKU 及其 A..AU 成本档案列
+      description: >-
+        每个 active SKU 一行，固定 8 列后严格按 product_archive_sheets.fields 数组下标
+        导出 A..AU 共 47 列；SKU 级挂接优先，matched_sku_id 为空时按 matched_product_id
+        回退，未挂接 SKU 的 47 列为空单元格。系统自身 SKU/Product 价格字段不进入此文件。
+      responses:
+        '200':
+          description: 子牧商品档案 xlsx，文件名日期按 Asia/Shanghai 业务日生成
+          headers:
+            Content-Disposition:
+              description: UTF-8 filename* 编码的中文下载文件名
+              schema: { type: string }
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/skus/{sku_id}:
     parameters:
       - $ref: '#/components/parameters/SkuId'
