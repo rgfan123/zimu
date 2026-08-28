@@ -1,21 +1,35 @@
 import { Alert, Button, Modal, Table, Tag } from 'antd';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { fileOperationsApi } from '@/api/endpoints';
+import { fileOperationsApi, ordersApi, reviewCasesApi } from '@/api/endpoints';
+import { reasonLabel } from '@/constants/reasonLabels';
 import { presentImportRow, type ImportRowView } from '../fulfillment/fileOperations';
 import { importRowStatusSemantic } from '../shared/semanticStatus';
+import {
+  missingFactLabel, presentSnapshotRowFacts, reviewReasonFor, snapshotOrderIdsToLoad,
+  type SnapshotOrderSource, type SnapshotReviewCase, type SnapshotRowFacts,
+} from './pullSnapshotRows';
 import type { ShippingChannelView } from './shippingPresentation';
 
 const SNAPSHOT_PAGE_SIZE = 20;
 const PULL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+/** 整批复核事项一次拉回（用于「这一行为什么待复核」）；批次行数远小于此上限。 */
+const REVIEW_CASE_FETCH_SIZE = 200;
 
 interface SnapshotRow extends ImportRowView {
   sequence: number;
+  /** 订单实体优先的事实（见 pullSnapshotRows 头注释）。 */
+  facts: SnapshotRowFacts;
 }
 
 interface SnapshotPage {
   rows: ImportRowView[];
   totalElements: number;
+}
+
+/** 缺值统一走这里：没建单说「未建单」，建了单但这项空着说「未提供」——不给破折号。 */
+function factText(value: string | null, facts: SnapshotRowFacts) {
+  return value ?? <span className="muted">{missingFactLabel(facts)}</span>;
 }
 
 interface PlatformPullSnapshotModalProps {
@@ -51,32 +65,56 @@ export default function PlatformPullSnapshotModal({
   const [loading, setLoading] = useState(Boolean(channel.batchId));
   const [error, setError] = useState(false);
   const [response, setResponse] = useState<SnapshotPage | null>(null);
+  // order_id → 订单实体。快照刻意不含 PII（它会进企微卡片），真值只能从订单实体读。
+  const [orders, setOrders] = useState<Record<string, SnapshotOrderSource>>({});
+  // 整批复核事项，用于回答「这一行为什么待复核」（一次请求，不是逐行）。
+  const [reviewCases, setReviewCases] = useState<SnapshotReviewCase[]>([]);
   const windowText = pullWindow(dateBegin, dateEnd);
 
   useEffect(() => {
-    if (!channel.batchId) return undefined;
+    const batchId = channel.batchId;
+    if (!batchId) return undefined;
 
     let cancelled = false;
     setLoading(true);
     setError(false);
-    fileOperationsApi.getSourceRows(channel.batchId, { page, size: SNAPSHOT_PAGE_SIZE })
-      .then((next) => {
+    setOrders({});
+    setReviewCases([]);
+    fileOperationsApi.getSourceRows(batchId, { page, size: SNAPSHOT_PAGE_SIZE })
+      .then(async (next) => {
+        if (cancelled) return;
+        // Project at the API boundary so raw_cells never enter table state or rendering.
+        const rows = next.items.map(presentImportRow);
+        setResponse({ rows, totalElements: next.total_elements });
+        setLoading(false);
+
+        // 事实补齐是**渐进增强**：失败只让个别列退回「未提供」，不把整张表打成错误态。
+        // 逐单拉详情（订单列表没有 import_batch_id 过滤，且列表口径不含商品行）；
+        // 按 order_id 去重后，一单多商品只拉一次，且一页固定 20 行天然有上界。
+        const loaded = await Promise.all(
+          snapshotOrderIdsToLoad(rows).map(async (orderId) => {
+            try {
+              return [orderId, await ordersApi.detail(orderId) as SnapshotOrderSource] as const;
+            } catch {
+              return null;
+            }
+          }),
+        );
         if (!cancelled) {
-          setResponse({
-            // Project at the API boundary so raw_cells never enter table state or rendering.
-            rows: next.items.map(presentImportRow),
-            totalElements: next.total_elements,
-          });
+          setOrders(Object.fromEntries(loaded.filter((entry): entry is NonNullable<typeof entry> => entry !== null)));
         }
+
+        const cases = await reviewCasesApi
+          .list({ import_batch_id: batchId, page: 0, size: REVIEW_CASE_FETCH_SIZE })
+          .catch(() => null);
+        if (!cancelled && cases) setReviewCases(cases.items as SnapshotReviewCase[]);
       })
       .catch(() => {
         if (!cancelled) {
           setResponse(null);
           setError(true);
+          setLoading(false);
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
 
     return () => {
@@ -87,6 +125,11 @@ export default function PlatformPullSnapshotModal({
   const rows: SnapshotRow[] = (response?.rows ?? []).map((row, index) => ({
     ...row,
     sequence: page * SNAPSHOT_PAGE_SIZE + index + 1,
+    facts: presentSnapshotRowFacts(
+      row,
+      row.orderId ? orders[row.orderId] ?? null : null,
+      reviewReasonFor(row, reviewCases),
+    ),
   }));
 
   const summary = channel.rowCounts
@@ -157,6 +200,32 @@ export default function PlatformPullSnapshotModal({
                 showTotal: (total) => `共 ${total} 行`,
                 onChange: (nextPage) => setPage(nextPage - 1),
               }}
+              // 快照不再是主数据源，但仍是「平台原始返回」的证据留档——收进折叠区，可查不碍眼。
+              expandable={{
+                expandedRowRender: (row: SnapshotRow) => (
+                  <div className="zs-pull-modal-evidence">
+                    <div>
+                      <strong>平台原始返回（快照口径，收件人已脱敏）</strong>
+                      <span className="muted">
+                        {' '}第 {row.row} 行 · {row.sheet}
+                        {row.sourceSkuRef !== '—' ? ` · 来源商品编码 ${row.sourceSkuRef}` : ''}
+                      </span>
+                    </div>
+                    <div>
+                      商品 {row.sourceProductName} · 件数 {row.quantity} · 规格 {row.specification}
+                    </div>
+                    <div>
+                      {row.facts.orderId ? (
+                        <Link to={`/orders/${row.facts.orderId}`}>
+                          查看系统订单{row.facts.orderNo ? ` ${row.facts.orderNo}` : ''}
+                        </Link>
+                      ) : (
+                        <span className="muted">该行未建单，无系统订单可查</span>
+                      )}
+                    </div>
+                  </div>
+                ),
+              }}
               columns={[
                 { title: '序号', dataIndex: 'sequence', width: 70 },
                 { title: '渠道单号', dataIndex: 'sourceOrderRef', width: 160 },
@@ -164,38 +233,44 @@ export default function PlatformPullSnapshotModal({
                   title: '收件人',
                   dataIndex: 'receiverName',
                   width: 110,
-                  render: (value: string) => value || '—',
+                  render: (_: unknown, row: SnapshotRow) => factText(row.facts.receiverName, row.facts),
                 },
                 {
                   title: '电话',
                   dataIndex: 'receiverPhone',
                   width: 130,
-                  render: (value: string) => value || '—',
+                  render: (_: unknown, row: SnapshotRow) => factText(row.facts.receiverPhone, row.facts),
                 },
                 {
                   title: '收货地址',
                   dataIndex: 'receiverAddress',
                   width: 260,
-                  render: (value: string) => value || '—',
+                  render: (_: unknown, row: SnapshotRow) => factText(row.facts.receiverAddress, row.facts),
                 },
                 {
                   title: '商品',
                   dataIndex: 'productName',
                   width: 240,
-                  render: (value: string) => value || '—',
+                  render: (_: unknown, row: SnapshotRow) => factText(row.facts.productName, row.facts),
                 },
                 {
                   title: '件数',
                   dataIndex: 'quantity',
                   width: 80,
-                  render: (value: string) => value || '—',
+                  render: (_: unknown, row: SnapshotRow) => factText(row.facts.quantity, row.facts),
                 },
                 {
                   title: '状态',
                   dataIndex: 'status',
                   width: 100,
-                  render: (status: ImportRowView['status']) => (
-                    <Tag color={importRowStatusSemantic(status)}>{rowStatusLabel(status)}</Tag>
+                  render: (status: ImportRowView['status'], row: SnapshotRow) => (
+                    <>
+                      <Tag color={importRowStatusSemantic(status)}>{rowStatusLabel(status)}</Tag>
+                      {/* 只给状态计数说明不了问题——把这一行「为什么」待复核也摆出来。 */}
+                      {row.facts.reviewReasonCode ? (
+                        <div className="muted">{reasonLabel(row.facts.reviewReasonCode)}</div>
+                      ) : null}
+                    </>
                   ),
                 },
                 { title: '处理结果', dataIndex: 'reason', width: 250 },

@@ -742,3 +742,15 @@
 .zs-row-blocked > td {
   background: var(--zs-error-bg);
 }
+
+/* ---------- 批次快照弹窗：平台原始返回（证据折叠区） ----------
+   快照已不再是主数据源（收件人等真值走订单实体），但仍要留档可查，
+   所以收进展开行里：字号压一级、行距收紧，不与主表争视觉权重。 */
+.zs-pull-modal-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--zs-text-2);
+}
