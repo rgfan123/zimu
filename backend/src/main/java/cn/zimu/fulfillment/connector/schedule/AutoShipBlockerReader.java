@@ -71,6 +71,36 @@ class AutoShipBlockerReader {
             GROUP BY 1
             """;
 
+    /**
+     * 批次里「本该建京东单、却连一条建单痕迹都没有」的发货批次数。
+     *
+     * <p><b>这条查询是本类最重要的一条</b>。{@code requireAuthorized} 是
+     * {@code ShipmentJdOutboundService#submit} 的第一行，它抛 403 时
+     * {@code persistSubmitIntent} 还没跑，{@code shipment_jd_outbounds} 里一行都不会写。
+     * 只看 {@code sync_status='SYNC_FAILED'} 的话，「操作人没授权、整批一单没建成」
+     * 与「一切正常」返回的结果完全一样——自动发货会平静地播报 SHIPPED，
+     * 而货一件都没发出去。那正是本特性最该防的事。
+     *
+     * <p>只统计 {@code JD_WAREHOUSE} 履约方的发货批次：第三方履约走导单文件，
+     * 本来就没有京东出库单，把它们算进来会天天误报。
+     *
+     * <p>{@code SYNC_FAILED} **刻意排除**：那种失败已经由上面两条查询给出了具体原因，
+     * 再算一次「未建单」会让同一件事在卡面上出现两遍。这里要抓的是**没有解释**的那些：
+     * 压根没有记录（403 / 从未尝试），或停在 {@code NONE}/{@code SUBMITTING} 的半途。
+     */
+    private static final String NOT_SUBMITTED_SQL =
+            """
+            SELECT count(DISTINCT s.id) AS not_submitted
+            FROM app.shipments s
+            JOIN app.fulfillment_providers fp
+              ON fp.id = s.fulfillment_provider_id AND fp.provider_type = 'JD_WAREHOUSE'
+            JOIN app.raw_import_rows rir ON rir.order_id = s.order_id
+            LEFT JOIN app.shipment_jd_outbounds sjo ON sjo.shipment_id = s.id
+            WHERE rir.import_batch_id = ?
+              AND rir.status = 'ACCEPTED'
+              AND (sjo.shipment_id IS NULL OR sjo.sync_status IN ('NONE', 'SUBMITTING'))
+            """;
+
     /** 已在 {@link #BLOCKER_SQL} 里展开成具体原因的压平码，不重复播报。 */
     private static final String FLATTENED_STOCK_CODE = "JD_STOCK_CHECK_BLOCKED";
 
@@ -83,29 +113,47 @@ class AutoShipBlockerReader {
     /**
      * 一个批次建单失败的全貌。
      *
-     * @param failedShipments 建单失败的发货批次数；0 表示京东侧没有失败
-     * @param blockers        库存/映射阻断码（受控词表，无自由文本）
-     * @param otherCodes      库存判定之外的失败码（受控词表）
+     * @param failedShipments      建单失败（SYNC_FAILED）的发货批次数
+     * @param notSubmittedShipments 本该建京东单却没有 SUBMITTED 记录的发货批次数
+     * @param blockers             库存/映射阻断码（受控词表，无自由文本）
+     * @param otherCodes           库存判定之外的失败码（受控词表）
      */
-    record Failures(int failedShipments, List<Map<String, String>> blockers, List<String> otherCodes) {
+    record Failures(
+            int failedShipments,
+            int notSubmittedShipments,
+            List<Map<String, String>> blockers,
+            List<String> otherCodes) {
 
         static Failures none() {
-            return new Failures(0, List.of(), List.of());
+            return new Failures(0, 0, List.of(), List.of());
         }
 
         boolean any() {
-            return failedShipments > 0 || !blockers.isEmpty() || !otherCodes.isEmpty();
+            return failedShipments > 0
+                    || notSubmittedShipments > 0
+                    || !blockers.isEmpty()
+                    || !otherCodes.isEmpty();
         }
 
-        /** 播报用的归类摘要：缺货、映射校验、京东无答复各自分开。 */
+        /** 播报用的归类摘要：未建单、缺货、映射校验、京东无答复各自分开。 */
         String describe() {
-            Map<AutoShipReasons.Category, List<String>> summary = AutoShipReasons.summarize(blockers);
-            String classified = AutoShipReasons.describe(summary);
+            String classified = AutoShipReasons.describe(AutoShipReasons.summarize(withNotSubmitted()));
             if (otherCodes.isEmpty()) {
                 return classified;
             }
             String others = AutoShipReasons.Category.OTHER.label() + ": " + String.join(", ", otherCodes);
             return classified.isEmpty() ? others : classified + "; " + others;
+        }
+
+        /** 「未建单」参与归类：它是最需要人立刻动手的一类，不该被降格成一句附注。 */
+        List<Map<String, String>> withNotSubmitted() {
+            if (notSubmittedShipments == 0) {
+                return blockers;
+            }
+            List<Map<String, String>> all = new ArrayList<>();
+            all.add(Map.of("code", AutoShipReasons.NOT_SUBMITTED_CODE));
+            all.addAll(blockers);
+            return List.copyOf(all);
         }
     }
 
@@ -133,6 +181,12 @@ class AutoShipBlockerReader {
                 otherCodes.add(code);
             }
         }
-        return new Failures(failed, List.copyOf(blockers), List.copyOf(otherCodes));
+
+        Integer notSubmitted = jdbc.queryForObject(NOT_SUBMITTED_SQL, Integer.class, batchId);
+        return new Failures(
+                failed,
+                notSubmitted == null ? 0 : notSubmitted,
+                List.copyOf(blockers),
+                List.copyOf(otherCodes));
     }
 }

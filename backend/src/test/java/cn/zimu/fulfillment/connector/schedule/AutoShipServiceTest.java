@@ -241,6 +241,7 @@ class AutoShipServiceTest {
         when(confirmer.confirmSourceBatch(anyLong(), anyString(), any())).thenReturn(confirmed());
         when(blockers.of(8L)).thenReturn(new AutoShipBlockerReader.Failures(
                 2,
+                0,
                 List.of(
                         Map.of("code", "JD_STOCK_INSUFFICIENT"),
                         Map.of("code", "JD_SKU_MAPPING_GATE_BLOCKED", "mapping_issue_code", "MAPPING_MISSING")),
@@ -263,13 +264,45 @@ class AutoShipServiceTest {
         when(readiness.candidates(anyInt())).thenReturn(List.of(ready(8L, "B-8")));
         when(confirmer.confirmSourceBatch(anyLong(), anyString(), any())).thenReturn(confirmed());
         when(blockers.of(8L)).thenReturn(new AutoShipBlockerReader.Failures(
-                1, List.of(), List.of("JD_SHIPMENT_OUTBOUND_OPERATOR_UNAUTHORIZED")));
+                1, 0, List.of(), List.of("JD_SHIPMENT_OUTBOUND_OPERATOR_UNAUTHORIZED")));
 
         SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
 
         // 未授权是最容易被「反正就是失败了」掩盖掉的一类，必须原样带出来。
         assertThat(outcome.entries().getFirst().get("reason_codes"))
                 .isEqualTo(List.of("OTHER:JD_SHIPMENT_OUTBOUND_OPERATOR_UNAUTHORIZED"));
+    }
+
+    @Test
+    void aBatchThatLeftNoJdTraceAtAllIsReportedAsNotShippedNotAsSuccess() {
+        when(readiness.candidates(anyInt())).thenReturn(List.of(ready(3L, "B-3")));
+        when(confirmer.confirmSourceBatch(anyLong(), anyString(), any())).thenReturn(confirmed());
+        // 操作人不在 JD_OUTBOUND_AUTHORIZED_OPERATORS 白名单时，requireAuthorized 抛在
+        // persistSubmitIntent 之前，shipment_jd_outbounds 里一行痕迹都没有。
+        // 只看失败表的话，这与「一切正常」长得一模一样——绝不能播报成 SHIPPED。
+        when(blockers.of(3L)).thenReturn(new AutoShipBlockerReader.Failures(0, 2, List.of(), List.of()));
+
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+
+        Map<String, Object> entry = outcome.entries().getFirst();
+        assertThat(entry.get("outcome")).isEqualTo("SHIPPED_WITH_JD_FAILURES");
+        assertThat(entry.get("reason_codes")).isEqualTo(List.of("NOT_SUBMITTED:JD_OUTBOUND_NOT_SUBMITTED"));
+        assertThat(String.valueOf(entry.get("detail"))).contains("未建单");
+        assertThat(outcome.problemCount()).isEqualTo(1);
+    }
+
+    @Test
+    void notShippedIsListedBeforeStockSoItIsReadFirst() {
+        when(readiness.candidates(anyInt())).thenReturn(List.of(ready(3L, "B-3")));
+        when(confirmer.confirmSourceBatch(anyLong(), anyString(), any())).thenReturn(confirmed());
+        when(blockers.of(3L)).thenReturn(new AutoShipBlockerReader.Failures(
+                1, 1, List.of(Map.of("code", "JD_STOCK_INSUFFICIENT")), List.of()));
+
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+
+        // 「货根本没发出去」比「缺货」更需要人立刻动手，卡面字数有限，顺序即优先级。
+        assertThat(outcome.entries().getFirst().get("reason_codes")).isEqualTo(List.of(
+                "NOT_SUBMITTED:JD_OUTBOUND_NOT_SUBMITTED", "STOCK_INSUFFICIENT:JD_STOCK_INSUFFICIENT"));
     }
 
     @Test

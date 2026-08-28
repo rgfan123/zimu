@@ -192,14 +192,14 @@ class AutoShipService implements SourceBatchAutoShipper {
             return blockers.of(candidate.batchId());
         } catch (RuntimeException exception) {
             log.error("读取京东建单失败原因失败 batch_no={}", candidate.batchNo(), exception);
-            return new AutoShipBlockerReader.Failures(0, List.of(), List.of("BLOCKER_READ_FAILED"));
+            return new AutoShipBlockerReader.Failures(0, 0, List.of(), List.of("BLOCKER_READ_FAILED"));
         }
     }
 
-    /** 归类后的原因码，按「缺货 / 映射校验 / 京东无答复 / 其它」分开，不笼统报失败。 */
+    /** 归类后的原因码，按「未建单 / 缺货 / 映射校验 / 京东无答复 / 其它」分开，不笼统报失败。 */
     private static List<String> reasonCodes(AutoShipBlockerReader.Failures failures) {
         List<String> codes = new ArrayList<>();
-        AutoShipReasons.summarize(failures.blockers()).forEach((category, specific) -> specific.stream()
+        AutoShipReasons.summarize(failures.withNotSubmitted()).forEach((category, specific) -> specific.stream()
                 .map(code -> category.name() + ":" + code)
                 .forEach(codes::add));
         failures.otherCodes().stream().map(code -> AutoShipReasons.Category.OTHER.name() + ":" + code).forEach(codes::add);

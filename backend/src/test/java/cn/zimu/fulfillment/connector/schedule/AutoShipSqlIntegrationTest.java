@@ -189,6 +189,56 @@ class AutoShipSqlIntegrationTest {
     }
 
     @Test
+    void aJdShipmentWithNoOutboundTraceAtAllIsCountedAsNotShipped() {
+        Fixture fixture = seedBatch("NOTRACE");
+        acceptedRowWithLine(fixture, 1);
+        seedShipment(fixture, "NOTRACE");
+        // 不建任何 shipment_jd_outbounds 行——这正是 requireAuthorized 抛 403 后的状态：
+        // 它是 submit 的第一行，persistSubmitIntent 还没跑，失败表里一行痕迹都没有。
+        // 若只看 SYNC_FAILED，这与「一切正常」完全无法区分。
+
+        AutoShipBlockerReader.Failures failures = blockers.of(fixture.batchId());
+
+        assertThat(failures.any()).isTrue();
+        assertThat(failures.notSubmittedShipments()).isEqualTo(1);
+        assertThat(failures.describe()).contains("未建单").contains("JD_OUTBOUND_NOT_SUBMITTED");
+    }
+
+    @Test
+    void aSyncFailedShipmentIsNotAlsoCountedAsNotSubmitted() {
+        Fixture fixture = seedBatch("NODOUBLE");
+        acceptedRowWithLine(fixture, 1);
+        long shipmentId = seedShipment(fixture, "NODOUBLE");
+        failOutbound(shipmentId, "NODOUBLE", "JD_STOCK_CHECK_BLOCKED");
+        openStockCase(shipmentId, """
+                [{"code":"JD_STOCK_INSUFFICIENT","message":"库存不足"}]
+                """);
+
+        AutoShipBlockerReader.Failures failures = blockers.of(fixture.batchId());
+
+        // 已经有具体原因的失败不该在卡面上再出现一遍「未建单」。
+        assertThat(failures.notSubmittedShipments()).isZero();
+        assertThat(failures.describe()).isEqualTo("缺货: JD_STOCK_INSUFFICIENT");
+    }
+
+    @Test
+    void aHalfFinishedSubmitIsAlsoUnexplainedAndReported() {
+        Fixture fixture = seedBatch("HALF");
+        acceptedRowWithLine(fixture, 1);
+        long shipmentId = seedShipment(fixture, "HALF");
+        // SUBMITTING：意图落了库但没走完。既不是成功也不是有原因的失败。
+        jdbc.update(
+                """
+                INSERT INTO app.shipment_jd_outbounds
+                    (shipment_id, erp_delivery_no, sync_status, retry_count, request_hash)
+                VALUES (?, 'ERP-AS-HALF', 'SUBMITTING', 1, repeat('a', 64))
+                """,
+                shipmentId);
+
+        assertThat(blockers.of(fixture.batchId()).notSubmittedShipments()).isEqualTo(1);
+    }
+
+    @Test
     void aMalformedBlockerDetailDoesNotBlowUpTheWholeReport() {
         Fixture fixture = seedBatch("BAD");
         acceptedRowWithLine(fixture, 1);
@@ -282,9 +332,12 @@ class AutoShipSqlIntegrationTest {
                 fixture.batchId(), rowIndex, status, errorCode);
     }
 
+    /** 履约方必须是京东云仓：未建单判据只统计 JD_WAREHOUSE，第三方走导单文件本就没有出库单。 */
     private long seedShipment(Fixture fixture, String suffix) {
         Long providerId = jdbc.queryForObject(
-                "SELECT id FROM app.fulfillment_providers WHERE active ORDER BY id LIMIT 1", Long.class);
+                "SELECT id FROM app.fulfillment_providers"
+                        + " WHERE active AND provider_type='JD_WAREHOUSE' ORDER BY id LIMIT 1",
+                Long.class);
         return jdbc.queryForObject(
                 """
                 INSERT INTO app.shipments

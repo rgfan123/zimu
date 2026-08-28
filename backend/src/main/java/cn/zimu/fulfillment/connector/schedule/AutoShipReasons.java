@@ -53,8 +53,21 @@ final class AutoShipReasons {
     private static final Set<String> MAPPING_FALSE_POSITIVE_PRONE = Set.of(
             "MAPPING_MISSING", "INTERNAL_SKU_MISSING");
 
+    /**
+     * 「确认了却根本没建成京东单」——最危险的一种，故排在最前。
+     *
+     * <p>典型成因是 {@code system:scheduled-pull} 不在
+     * {@code app.jd.outbound-authorized-operators} 白名单里：
+     * {@code requireAuthorized} 是 {@code submit} 的第一行，抛在
+     * {@code persistSubmitIntent} 之前，因此 {@code shipment_jd_outbounds} 里
+     * **一行痕迹都不会留下**。只看失败表的话，这种情况和「一切正常」长得一模一样。
+     */
+    static final String NOT_SUBMITTED_CODE = "JD_OUTBOUND_NOT_SUBMITTED";
+
     /** 问题大类。顺序即播报优先级：越靠前越需要人立刻动手。 */
     enum Category {
+        /** 批次确认了，但京东单没建成，且失败表里没有痕迹。货没发出去。 */
+        NOT_SUBMITTED("未建单"),
         /** 真缺货：目标仓可用库存 < 需求件数。补货或换货。 */
         STOCK_INSUFFICIENT("缺货"),
         /** 商品映射/校验未通过：主数据问题，与库存无关。 */
@@ -87,6 +100,9 @@ final class AutoShipReasons {
     static Category categorize(String blockerCode) {
         if (blockerCode == null || blockerCode.isBlank()) {
             return Category.OTHER;
+        }
+        if (NOT_SUBMITTED_CODE.equals(blockerCode)) {
+            return Category.NOT_SUBMITTED;
         }
         if (STOCK_INSUFFICIENT_CODE.equals(blockerCode)) {
             return Category.STOCK_INSUFFICIENT;

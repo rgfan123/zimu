@@ -41,6 +41,17 @@ class AutoShipReasonsTest {
     }
 
     @Test
+    void notSubmittedIsItsOwnCategoryAndOutranksEverythingElse() {
+        // 「确认了却根本没建成京东单」是最危险的一种：货没发出去，而失败表里可能一行痕迹都没有
+        // （操作人未授权时 requireAuthorized 抛在 persistSubmitIntent 之前）。
+        assertThat(AutoShipReasons.categorize("JD_OUTBOUND_NOT_SUBMITTED"))
+                .isEqualTo(AutoShipReasons.Category.NOT_SUBMITTED);
+        // 顺序即播报优先级，卡面字数有限，它必须排在缺货前面。
+        assertThat(AutoShipReasons.Category.NOT_SUBMITTED.ordinal())
+                .isLessThan(AutoShipReasons.Category.STOCK_INSUFFICIENT.ordinal());
+    }
+
+    @Test
     void unknownCodeIsNotSquashedIntoAnyKnownCategory() {
         assertThat(AutoShipReasons.categorize("SOMETHING_NEW")).isEqualTo(AutoShipReasons.Category.OTHER);
         assertThat(AutoShipReasons.categorize(null)).isEqualTo(AutoShipReasons.Category.OTHER);
