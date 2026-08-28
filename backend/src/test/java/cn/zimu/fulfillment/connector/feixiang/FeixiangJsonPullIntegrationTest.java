@@ -75,7 +75,8 @@ class FeixiangJsonPullIntegrationTest {
     void setUp() {
         prefix = "FXIT" + TEST_SEQUENCE.incrementAndGet() + "-";
         platform = new StubPullClient(prefix);
-        connector = new FeixiangConnector(sourceImportService, platform, new FeixiangOrderTransform());
+        connector = FeixiangShipmentTestSupport.pullOnlyConnector(
+                sourceImportService, platform, new FeixiangOrderTransform());
         mapSku("FX-SKU-0001");
         mapSku("FX-SKU-0002");
         mapSku("FX-SKU-0003");

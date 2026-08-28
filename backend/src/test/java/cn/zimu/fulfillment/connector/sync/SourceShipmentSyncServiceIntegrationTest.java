@@ -252,11 +252,32 @@ class SourceShipmentSyncServiceIntegrationTest {
 
     @Test
     void unsupportedSourceChannelIsRejectedAtTheModuleBoundary() {
-        long shipmentId = seedReadyShipmentForChannel(SourceChannel.FEIXIANG);
+        // 这条断言守的是「白名单之外一律拒绝」，因此夹具必须选一个<真正>还没接入在线回传的
+        // 渠道——中汇继续走文件回传。飞象 2026-08-29 起已进白名单，它的默认关闭由下一条用例守。
+        //
+        // 判据取 factsReader 而不是 service.check：中汇没有注册 PlatformConnector，
+        // service.check 会先抛「来源渠道没有可用 Connector」，把渠道白名单这道门遮住。
+        long shipmentId = seedReadyShipmentForChannel(SourceChannel.ZHONGHUI);
 
-        assertThat(service.check(shipmentId).blockers())
+        assertThat(factsReader.load(shipmentId).blockers())
                 .extracting(SourceSyncBlocker::code)
                 .contains("SOURCE_SYNC_CHANNEL_UNSUPPORTED");
+        verify(jufubaoGateway, never()).submit(any());
+    }
+
+    @Test
+    void feixiangPassesTheChannelGateButStaysBlockedUntilTransportIsSwitchedToApi() {
+        long shipmentId = seedReadyShipmentForChannel(SourceChannel.FEIXIANG);
+
+        List<String> blockers = service.check(shipmentId).blockers().stream()
+                .map(SourceSyncBlocker::code)
+                .toList();
+
+        // 飞象已进在线闭环白名单：不再因「渠道不支持」被拒。
+        assertThat(blockers).doesNotContain("SOURCE_SYNC_CHANNEL_UNSUPPORTED");
+        // 但 connector_configs.transport_mode 默认仍是 EXCEL，因此在线回传默认<不开火>——
+        // 开启是一个显式的部署决定，不是合入这段代码的副作用。
+        assertThat(blockers).contains("SOURCE_SYNC_ONLINE_TRANSPORT_REQUIRED");
         verify(jufubaoGateway, never()).submit(any());
     }
 

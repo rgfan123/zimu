@@ -1490,6 +1490,46 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SourceSyncCheck' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/shipments/{shipment_id}/source-sync/feixiang-preview:
+    parameters:
+      - $ref: '#/components/parameters/ShipmentId'
+    get:
+      tags: [Shipments, Connectors]
+      operationId: previewFeixiangShipmentPush
+      summary: 预览飞象在线回传将要发出的报文（dry-run，只读）
+      description: >-
+        只读演练入口：读取内部事实，只读拉取飞象订单当前详情，返回<将要发出的完整
+        form 报文>供人工逐字节核对。不写 shipment_syncs、不登记幂等、不发任何写请求，
+        因此在写门闩仍为 OFF/DRY_RUN（onlinePush 为假、企微人工上传路径原样在跑）时
+        也可反复执行。报文与真写发出的字符串来自同一次构造，不存在两套代码走形。
+        仅飞象渠道可用；只允许网关已认证且与 X-Operator 一致的人工操作员读取。
+        响应不含收货人任何字段，始终 Cache-Control: no-store。
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: >-
+            报文预览。would_emit_http 表示当前门闩下真写是否会发出请求；
+            request.buildable=false 表示承运商未映射或平台不可发，此时无报文。
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  write_mode: { type: string, enum: [OFF, DRY_RUN, ARMED, ON] }
+                  would_emit_http: { type: boolean }
+                  local_blockers: { type: array, items: { type: string } }
+                  platform_available: { type: boolean }
+                  platform_state: { type: string }
+                  business_code: { type: string }
+                  message: { type: string }
+                  order_son_id: { type: string }
+                  express_code: { type: string }
+                  request: { type: object }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/shipments/{shipment_id}/source-sync/execute:
     parameters:
       - $ref: '#/components/parameters/ShipmentId'
@@ -1498,7 +1538,7 @@ paths:
       operationId: executeShipmentSourceSync
       summary: 人工确认并执行一张 Shipment 的来源平台回传
       description: >-
-        仅支持聚福宝和彩食鲜。重新读取并校验 expected_check_hash 后持久化 SYNCING
+        支持聚福宝、彩食鲜和飞象。重新读取并校验 expected_check_hash 后持久化 SYNCING
         意图；每一次不可逆平台写前复验幂等租约并登记 effect started。只有写后查询
         验证终态才进入 SYNCED；可能已有外部效果但无法确认时进入
         RECONCILIATION_REQUIRED，禁止普通重试。

@@ -36,8 +36,8 @@ class FeixiangConnectorTest {
 
     private final SourceImportService sourceImportService = mock(SourceImportService.class);
     private final FeixiangPullClient pullClient = mock(FeixiangPullClient.class);
-    private final FeixiangConnector connector =
-            new FeixiangConnector(sourceImportService, pullClient, new FeixiangOrderTransform());
+    private final FeixiangConnector connector = FeixiangShipmentTestSupport.pullOnlyConnector(
+            sourceImportService, pullClient, new FeixiangOrderTransform());
 
     private PullCursor cursor() {
         return PullCursor.initial(null, null);
