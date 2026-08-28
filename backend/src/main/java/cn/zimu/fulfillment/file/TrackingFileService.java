@@ -1125,8 +1125,10 @@ public class TrackingFileService {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 """
                 SELECT sre.file_ref, sre.template_version, source.effective_source_channel,
+                       sre.version_no, ib.original_file_name,
                        invalidation.id invalidation_id
                 FROM app.source_return_exports sre
+                JOIN app.import_batches ib ON ib.id=sre.import_batch_id
                 JOIN app.v_import_batch_effective_source source ON source.import_batch_id=sre.import_batch_id
                 LEFT JOIN app.source_return_export_invalidations invalidation
                   ON invalidation.source_return_export_id=sre.id
@@ -1149,8 +1151,15 @@ public class TrackingFileService {
                 .operator(context.operator()).actorType(AuditActorType.HUMAN)
                 .service("source-return-export").operation("file.download")
                 .requestPayload(Map.of("export_id", returnId)).httpStatus(200).businessCode("FILE_DOWNLOADED"));
+        // 回填文件还给来源平台，平台可能按文件名识别归档：以原始文件名为基名，只追加后缀。
+        // 扩展名以实际产物为准（飞象是 csv，其余 xlsx），原名扩展名不符时不跟随原名。
+        Object originalFileName = rows.getFirst().get("original_file_name");
         return new ProviderFileService.FileDownload(
-                SourceChannelDisplayNames.displayName(channel) + "-来源回填-" + returnId + suffix,
+                SourceReturnFileNaming.fileName(
+                        originalFileName == null ? null : originalFileName.toString(),
+                        SourceChannelDisplayNames.displayName(channel),
+                        ((Number) rows.getFirst().get("version_no")).intValue(),
+                        suffix),
                 fileStore.read(rows.getFirst().get("file_ref").toString()),
                 contentType);
     }
