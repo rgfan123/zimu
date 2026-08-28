@@ -1044,6 +1044,27 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ProviderSkuMappingReferencePreview' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/import-batches/pending-confirmation:
+    get:
+      tags: [Imports]
+      operationId: listImportBatchesPendingConfirmation
+      summary: 待确认发货的来源订单批次清单
+      description: >-
+        前端「确认发货」入口的数据来源：尚未确认的批次，以及已确认但仍有行没进履约导出的批次
+        （阻断行修好后待补做）。只读，不触发确认副作用。
+      responses:
+        '200':
+          description: 待确认批次及其就绪/待处理行数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PendingConfirmationBatch' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/import-batches/{batch_id}:
     parameters:
       - $ref: '#/components/parameters/BatchId'
@@ -6142,9 +6163,74 @@ components:
               type: array
               items: { type: string }
               description: SDK 直连路由的建单发货批次（shipment_id）。
+        confirm_readiness:
+          allOf:
+            - $ref: '#/components/schemas/ConfirmReadiness'
+          nullable: true
+          description: 仅来源订单批次携带：确认闸门判据，前端按钮可用性直接读它。
+        skipped_rows:
+          type: array
+          nullable: true
+          description: >-
+            仅确认响应携带：本次被跳过的阻断行。它们仍留在批次里，处理完后再次确认即可补做。
+          items: { $ref: '#/components/schemas/ConfirmBlockedRow' }
         error_detail: { type: object, additionalProperties: true }
         received_at: { type: string, format: date-time }
         processed_at: { type: string, format: date-time, nullable: true }
+    ConfirmBlockedRow:
+      type: object
+      required: [row_id, status]
+      description: 一个阻断行的可读说明；reason 取自行上的 error_detail.message，缺失时回退 error_code。
+      properties:
+        row_id: { $ref: '#/components/schemas/Identifier' }
+        source_order_ref: { type: string, nullable: true }
+        status: { type: string, enum: [RECEIVED, ACCEPTED, NEED_REVIEW, REJECTED] }
+        error_code: { type: string, nullable: true }
+        reason: { type: string, nullable: true }
+    ConfirmReadiness:
+      type: object
+      required: [ready_rows, pending_rows, blocked_rows, benign_skipped_rows, confirmable, partial, blockers]
+      description: >-
+        确认闸门的判据投影。确认路径与展示路径读同一份，前端按钮可用性不会和后端闸门分叉。
+      properties:
+        ready_rows: { type: integer, minimum: 0, description: 已接收行数 }
+        pending_rows:
+          type: integer
+          minimum: 0
+          description: 已接收但尚未进入履约导出/发货批次的行数——确认真正会处理的量
+        blocked_rows: { type: integer, minimum: 0, description: 待处理行数（待复核与非良性拒绝） }
+        benign_skipped_rows:
+          type: integer
+          minimum: 0
+          description: 定义上无事可做的行数（订单早已入库、来源侧已发货）
+        confirmable: { type: boolean, description: 有待处理的已接收行才值得确认 }
+        partial: { type: boolean, description: 跳过阻断行的部分确认：能发的和发不了的同时存在 }
+        blockers:
+          type: array
+          items: { $ref: '#/components/schemas/ConfirmBlockedRow' }
+    PendingConfirmationBatch:
+      type: object
+      required:
+        [id, batch_no, status, received_at, total_rows, ready_rows, blocked_rows,
+         benign_skipped_rows, pending_rows, confirmable, partial]
+      description: 待确认发货清单条目：批次身份 + 就绪/待处理行数。
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        batch_no: { type: string }
+        original_file_name: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/ImportBatchStatus' }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        source_channel_display_name: { type: string, nullable: true, example: 彩食鲜 }
+        received_at: { type: string, format: date-time }
+        confirmed_at: { type: string, format: date-time, nullable: true }
+        confirmed_by: { type: string, nullable: true }
+        total_rows: { type: integer, minimum: 0 }
+        ready_rows: { type: integer, minimum: 0 }
+        blocked_rows: { type: integer, minimum: 0 }
+        benign_skipped_rows: { type: integer, minimum: 0 }
+        pending_rows: { type: integer, minimum: 0 }
+        confirmable: { type: boolean }
+        partial: { type: boolean }
     ImportBatchJdOutboundSubmitResult:
       type: object
       required: [submitted_count, skipped_count, items]

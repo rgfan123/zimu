@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { ConfirmReadiness } from '../src/api/types.ts';
 import {
   canConfirmReferenceRow,
   canReceiveTracking,
+  confirmGateOf,
+  confirmScopeHint,
+  groupBlockedRows,
   presentImportRow,
   presentJdCargos,
   presentTrackingBatchRow,
@@ -416,4 +420,94 @@ test('the safe-message allowlist still wins over the code map', () => {
     error_detail: { message: '数量必须大于 0' },
   });
   assert.equal(row.reason, '数量必须大于 0');
+});
+
+// ---------- 部分确认闸门 ----------
+
+/** 构造 confirm_readiness：只写关心的字段，其余按已接收行推。 */
+function readiness(overrides: Partial<ConfirmReadiness> = {}): ConfirmReadiness {
+  const readyRows = overrides.ready_rows ?? 4;
+  const pendingRows = overrides.pending_rows ?? readyRows;
+  const blockedRows = overrides.blocked_rows ?? 0;
+  return {
+    ready_rows: readyRows,
+    pending_rows: pendingRows,
+    blocked_rows: blockedRows,
+    benign_skipped_rows: overrides.benign_skipped_rows ?? 0,
+    confirmable: overrides.confirmable ?? pendingRows > 0,
+    partial: overrides.partial ?? (pendingRows > 0 && blockedRows > 0),
+    blockers: overrides.blockers ?? [],
+  };
+}
+
+test('有阻断行但仍有就绪行时确认按钮可用——这正是部分确认要解决的场景', () => {
+  // 2026-08-28 生产实例：5 行里 4 张就绪新单被 1 行挡住，旧口径会整批禁用。
+  const gate = confirmGateOf(readiness({ ready_rows: 4, pending_rows: 4, blocked_rows: 1 }), false);
+  assert.equal(gate.enabled, true);
+  assert.equal(gate.disabledReason, '');
+  assert.match(gate.label, /4 行/);
+});
+
+test('没有待发货行但有阻断行时禁用，并说明是被什么挡住', () => {
+  const gate = confirmGateOf(
+    readiness({ ready_rows: 0, pending_rows: 0, blocked_rows: 3, confirmable: false }),
+    false,
+  );
+  assert.equal(gate.enabled, false);
+  assert.match(gate.disabledReason, /3 行待处理/);
+});
+
+test('后端没给闸门判据时保守禁用，不自己按行数猜', () => {
+  // 猜出来的口径一旦和后端闸门分叉，用户就会点了才发现被拒。
+  const gate = confirmGateOf(undefined, false);
+  assert.equal(gate.enabled, false);
+  assert.match(gate.disabledReason, /未知/);
+});
+
+test('已确认批次仍有待发货行时给的是补做入口', () => {
+  const gate = confirmGateOf(readiness({ ready_rows: 5, pending_rows: 1, blocked_rows: 0 }), true);
+  assert.equal(gate.enabled, true);
+  assert.match(gate.label, /补做/);
+});
+
+test('已确认且没有待发货行时禁用并说明已全部确认', () => {
+  const gate = confirmGateOf(
+    readiness({ ready_rows: 5, pending_rows: 0, blocked_rows: 0, confirmable: false }),
+    true,
+  );
+  assert.equal(gate.enabled, false);
+  assert.match(gate.disabledReason, /已全部确认/);
+});
+
+test('部分确认提示必须说清跳过几行且还能补做，不能让用户以为丢单', () => {
+  const hint = confirmScopeHint(readiness({ ready_rows: 4, pending_rows: 4, blocked_rows: 1 }));
+  assert.match(hint, /4 行将写入系统订单/);
+  assert.match(hint, /1 行因待处理被跳过/);
+  assert.match(hint, /补做/);
+});
+
+test('没有阻断行时提示不提跳过', () => {
+  const hint = confirmScopeHint(readiness({ ready_rows: 4, pending_rows: 4, blocked_rows: 0 }));
+  assert.match(hint, /4 行将写入系统订单/);
+  assert.doesNotMatch(hint, /跳过/);
+});
+
+test('阻断行按原因归并并带样例单号，让用户看到为什么而不是只有数字', () => {
+  const groups = groupBlockedRows([
+    { row_id: '1', source_order_ref: 'CSX-1', status: 'NEED_REVIEW', error_code: 'SKU_MATCH', reason: '缺少 SKU 映射' },
+    { row_id: '2', source_order_ref: 'CSX-2', status: 'NEED_REVIEW', error_code: 'SKU_MATCH', reason: '缺少 SKU 映射' },
+    { row_id: '3', source_order_ref: 'CSX-3', status: 'REJECTED', error_code: 'IMPORT_VALIDATION', reason: '数量必须大于 0' },
+  ]);
+  assert.equal(groups.length, 2);
+  const skuGroup = groups.find((group) => group.reason === '缺少 SKU 映射');
+  assert.equal(skuGroup?.count, 2);
+  assert.deepEqual(skuGroup?.sampleRefs, ['CSX-1', 'CSX-2']);
+});
+
+test('阻断行没有原因文案时回退到错误码，不显示空白', () => {
+  const groups = groupBlockedRows([
+    { row_id: '9', source_order_ref: null, status: 'NEED_REVIEW', error_code: 'CUSTOMER_MATCH', reason: null },
+  ]);
+  assert.equal(groups[0].reason, 'CUSTOMER_MATCH');
+  assert.deepEqual(groups[0].sampleRefs, []);
 });

@@ -38,8 +38,9 @@ class SourceBatchListService {
      */
     @Transactional(readOnly = true)
     List<Map<String, Object>> pendingConfirmation() {
-        return jdbc.query(
-                """
+        // 阻断/良性口径从 SourceBatchConfirmReadiness 取，不在这里另写一份——
+        // 清单上的「待处理 N 行」和确认闸门必须永远是同一条判据。
+        String sql = """
                 SELECT ib.id, ib.batch_no, ib.original_file_name, ib.status,
                        ib.received_at, ib.confirmed_at, ib.confirmed_by,
                        source.effective_source_channel,
@@ -50,13 +51,8 @@ class SourceBatchListService {
                 CROSS JOIN LATERAL (
                     SELECT count(*) total_rows,
                            count(*) FILTER (WHERE rir.status='ACCEPTED') ready_rows,
-                           count(*) FILTER (
-                               WHERE rir.status<>'ACCEPTED'
-                                 AND NOT (rir.status='REJECTED' AND rir.error_code='ORDER_ALREADY_EXISTS')
-                           ) blocked_rows,
-                           count(*) FILTER (
-                               WHERE rir.status='REJECTED' AND rir.error_code='ORDER_ALREADY_EXISTS'
-                           ) benign_skipped_rows
+                           count(*) FILTER (WHERE %s) blocked_rows,
+                           count(*) FILTER (WHERE %s) benign_skipped_rows
                     FROM app.raw_import_rows rir
                     WHERE rir.import_batch_id=ib.id
                 ) counts
@@ -88,7 +84,11 @@ class SourceBatchListService {
                   AND (ib.confirmed_at IS NULL OR pending.pending_rows > 0)
                 ORDER BY ib.received_at DESC, ib.id DESC
                 LIMIT ?
-                """,
+                """.formatted(
+                        SourceBatchConfirmReadiness.blockedPredicate("rir"),
+                        SourceBatchConfirmReadiness.benignSkippedPredicate("rir"));
+        return jdbc.query(
+                sql,
                 (resultSet, rowNum) -> {
                     Map<String, Object> value = new LinkedHashMap<>();
                     value.put("id", resultSet.getString("id"));

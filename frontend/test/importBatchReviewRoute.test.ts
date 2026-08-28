@@ -26,11 +26,19 @@ after(async () => {
 
 function sourceBatch(
   id: string,
-  overrides: { confirmedAt?: string | null; needReview?: number; accepted?: number; rejected?: number } = {},
+  overrides: {
+    confirmedAt?: string | null;
+    needReview?: number;
+    accepted?: number;
+    rejected?: number;
+    /** 待发货行数；不给时按「未确认=已接收行全部待发货，已确认=没有待发货行」推。 */
+    pendingRows?: number;
+  } = {},
 ) {
   const accepted = overrides.accepted ?? 1;
   const needReview = overrides.needReview ?? 2;
   const rejected = overrides.rejected ?? 0;
+  const pendingRows = overrides.pendingRows ?? (overrides.confirmedAt ? 0 : accepted);
   return {
     id,
     batch_no: `IMP-B${id}`,
@@ -49,6 +57,16 @@ function sourceBatch(
     confirmed_by: overrides.confirmedAt ? 'ops-reviewer' : null,
     settlement_missing: false,
     row_counts: { total: accepted + needReview + rejected, accepted, need_review: needReview, rejected },
+    // 确认闸门判据随批次返回（后端 confirm_readiness）；前端按钮可用性只认它。
+    confirm_readiness: {
+      ready_rows: accepted,
+      pending_rows: pendingRows,
+      blocked_rows: needReview + rejected,
+      benign_skipped_rows: 0,
+      confirmable: pendingRows > 0,
+      partial: pendingRows > 0 && needReview + rejected > 0,
+      blockers: [],
+    },
     generated_fulfillment_export_ids: [],
     received_at: '2026-08-14T06:00:00Z',
   };
@@ -508,12 +526,12 @@ test('operator completes upload → review → back → confirm without touching
     new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }),
   );
   await harness.waitFor(() => assert.equal(harness.location(), '/fulfillment/sales-outbound?import_batch=7'));
-  await harness.waitFor(() => assert.match(harness.bodyText(), /确认本批次（已接收 1 行）/));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /确认发货（1 行）/));
 
   // 确认本批次
-  await control('确认本批次（已接收 1 行）').click();
+  await control('确认发货（1 行）').click();
   await harness.waitFor(() =>
-    assert.match(harness.bodyText(), /确认后已接收的 1 行将写入系统订单并生成履约文件/));
+    assert.match(harness.bodyText(), /确认后 1 行将写入系统订单并生成履约文件/));
   const popconfirmOk = [...document.querySelectorAll<HTMLElement>('.ant-popconfirm-buttons button')]
     .find((candidate) => candidate.textContent?.includes('确认本批次'));
   assert.ok(popconfirmOk, 'missing popconfirm ok button');
