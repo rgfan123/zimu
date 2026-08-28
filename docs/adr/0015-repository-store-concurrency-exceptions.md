@@ -28,7 +28,7 @@
 | 子类 | 抛出场景 |
 |---|---|
 | `SourceSyncAutoStateStore.LeaseLostException` | 自动回传调度租约被接管（首例，改挂基类） |
-| `AsyncTaskStore.LeaseLostException` | `succeedOwned` / `failTerminal` / `recordFailureOwned` / `finalizeFailedOwned` 四处 owned 写落空；followup 两个应用服务（Approval / DraftApplication）的栅栏 LOST_LEASE 分支同样抛它，链路端到端同型 |
+| `AsyncTaskStore.LeaseLostException` | `succeedOwned` / `failTerminal` / `recordFailureOwned` / `finalizeFailedOwned` 四处 owned 写落空；followup 三个应用服务（Approval / DraftApplication / Assignment）的栅栏 LOST_LEASE 分支同样抛它，链路端到端同型 |
 | `JdbcWecomNotificationStore.LeaseLostException` | `finishBatch` 两分支的 owned 收口落空 |
 | `WecomOrderDraftCardEventStore.ClaimConflictException` | `complete` / `recordUpdateOutcome` / `requireToken`：claim 令牌被轮换、结果已被先到的投递写入 |
 | `BusinessFollowUpCardEventStore.ClaimConflictException` | 同上 |

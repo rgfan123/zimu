@@ -539,7 +539,7 @@ class BusinessFollowUpOrganizationIntegrationTest {
         AgentRunResult result = agentResult(runId, false, List.of());
 
         assertThatThrownBy(() -> application.apply(oldClaim, "old-owner", work, result))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(AsyncTaskStore.LeaseLostException.class)
                 .hasMessageContaining("租约");
         assertThat(jdbc.queryForObject(
                         "SELECT count(*) FROM app.business_followup_draft_versions WHERE followup_id = ?",
@@ -552,7 +552,7 @@ class BusinessFollowUpOrganizationIntegrationTest {
                         Integer.class, followupId))
                 .isEqualTo(1);
         assertThatThrownBy(() -> application.apply(newClaim, "new-owner", work, result))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(AsyncTaskStore.LeaseLostException.class)
                 .hasMessageContaining("租约");
         assertThat(jdbc.queryForObject(
                         "SELECT count(*) FROM app.business_followup_draft_versions WHERE followup_id = ?",
