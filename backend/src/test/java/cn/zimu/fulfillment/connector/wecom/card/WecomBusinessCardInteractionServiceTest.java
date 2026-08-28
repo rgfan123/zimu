@@ -253,7 +253,7 @@ class WecomBusinessCardInteractionServiceTest {
     @org.junit.jupiter.api.Test
     void 整批确认点击_受理并入队批载荷() {
         var outcome = service.handle(
-                frame("preship-batch_30_v1", BatchPreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
+                callback("preship-batch_30_v1", BatchPreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
 
         org.assertj.core.api.Assertions.assertThat(outcome.accepted()).isTrue();
         org.assertj.core.api.Assertions.assertThat(outcome.businessCode())
@@ -267,7 +267,7 @@ class WecomBusinessCardInteractionServiceTest {
     void 整批旧卡_版本不符拒绝() {
         // Stub 里当前批版本恒为 1；v0 的卡就是旧卡
         var outcome = service.handle(
-                frame("preship-batch_30_v0", BatchPreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
+                callback("preship-batch_30_v0", BatchPreShipConfirmCard.CONFIRM_BUTTON_KEY, "jry"));
 
         org.assertj.core.api.Assertions.assertThat(outcome.accepted()).isFalse();
         org.assertj.core.api.Assertions.assertThat(outcome.businessCode()).isEqualTo("VERSION_CONFLICT");
@@ -276,7 +276,7 @@ class WecomBusinessCardInteractionServiceTest {
     @org.junit.jupiter.api.Test
     void 整批驳回_不入队任何任务() {
         var outcome = service.handle(
-                frame("preship-batch_30_v1", BatchPreShipConfirmCard.REJECT_BUTTON_KEY, "jry"));
+                callback("preship-batch_30_v1", BatchPreShipConfirmCard.REJECT_BUTTON_KEY, "jry"));
 
         org.assertj.core.api.Assertions.assertThat(outcome.accepted()).isFalse();
         org.assertj.core.api.Assertions.assertThat(outcome.businessCode()).isEqualTo("PRESHIP_BATCH_REJECTED");
