@@ -177,6 +177,10 @@ test('successful source import shows accepted row details before whole-batch con
         template_fingerprint: 'fixture', original_file_name: 'caishixian.xlsx', content_sha256: 'a'.repeat(64),
         status: 'COMPLETED', confirmed_at: null,
         row_counts: { total: 1, accepted: 1, need_review: 0, rejected: 0 },
+        confirm_readiness: {
+          ready_rows: 1, pending_rows: 1, blocked_rows: 0, benign_skipped_rows: 0,
+          confirmable: true, partial: false, blockers: [],
+        },
         generated_fulfillment_export_ids: [], received_at: '2026-08-14T06:00:00Z',
       });
     }
@@ -207,6 +211,10 @@ test('successful source import shows accepted row details before whole-batch con
         template_fingerprint: 'fixture', original_file_name: 'caishixian.xlsx', content_sha256: 'a'.repeat(64),
         status: 'COMPLETED', confirmed_at: '2026-08-14T07:00:00Z', confirmed_by: 'tester',
         row_counts: { total: 1, accepted: 1, need_review: 0, rejected: 0 },
+        confirm_readiness: {
+          ready_rows: 1, pending_rows: 0, blocked_rows: 0, benign_skipped_rows: 0,
+          confirmable: false, partial: false, blockers: [],
+        },
         generated_fulfillment_export_ids: ['91'], received_at: '2026-08-14T06:00:00Z',
       });
     }
@@ -253,7 +261,7 @@ test('successful source import shows accepted row details before whole-batch con
   assert.ok(!headers.includes('系统订单 ID'));
   assert.ok(!headers.includes('系统订单行 ID'));
   assert.ok(requests.includes('GET /api/v1/import-batches/7/rows?page=0&size=200&status=ACCEPTED'));
-  assert.ok(control('确认本批次（已接收 1 行）'));
+  assert.ok(control('确认发货（1 行）'));
 });
 
 test('confirming the batch passes a popconfirm and marks accepted rows as confirmed', async () => {
@@ -276,6 +284,10 @@ test('confirming the batch passes a popconfirm and marks accepted rows as confir
         template_fingerprint: 'fixture', original_file_name: 'caishixian.xlsx', content_sha256: 'a'.repeat(64),
         status: 'COMPLETED', confirmed_at: null,
         row_counts: { total: 1, accepted: 1, need_review: 0, rejected: 0 },
+        confirm_readiness: {
+          ready_rows: 1, pending_rows: 1, blocked_rows: 0, benign_skipped_rows: 0,
+          confirmable: true, partial: false, blockers: [],
+        },
         generated_fulfillment_export_ids: [], received_at: '2026-08-14T06:00:00Z',
       });
     }
@@ -297,6 +309,10 @@ test('confirming the batch passes a popconfirm and marks accepted rows as confir
         template_fingerprint: 'fixture', original_file_name: 'caishixian.xlsx', content_sha256: 'a'.repeat(64),
         status: 'COMPLETED', confirmed_at: '2026-08-14T07:00:00Z', confirmed_by: 'tester',
         row_counts: { total: 1, accepted: 1, need_review: 0, rejected: 0 },
+        confirm_readiness: {
+          ready_rows: 1, pending_rows: 0, blocked_rows: 0, benign_skipped_rows: 0,
+          confirmable: false, partial: false, blockers: [],
+        },
         generated_fulfillment_export_ids: ['91'], received_at: '2026-08-14T06:00:00Z',
       });
     }
@@ -327,11 +343,11 @@ test('confirming the batch passes a popconfirm and marks accepted rows as confir
   await act(async () => control('开始导入').click());
 
   // 全量套件并发时 Vite SSR 与轮询定时器会竞争 CPU；仅放宽等待上限，不改变终态断言。
-  await waitFor(() => assert.match(bodyText(), /确认本批次（已接收 1 行）/), 10_000);
+  await waitFor(() => assert.match(bodyText(), /确认发货（1 行）/), 10_000);
   assert.match(bodyText(), /形成履约承诺/);
 
-  await act(async () => control('确认本批次（已接收 1 行）').click());
-  await waitFor(() => assert.match(document.body.textContent ?? '', /确认后已接收的 1 行将写入系统订单并生成履约文件/));
+  await act(async () => control('确认发货（1 行）').click());
+  await waitFor(() => assert.match(document.body.textContent ?? '', /确认后 1 行将写入系统订单并生成履约文件/));
   const popconfirmOk = [...document.querySelectorAll<HTMLElement>('.ant-popconfirm-buttons button')]
     .find((candidate) => candidate.textContent?.includes('确认本批次'));
   assert.ok(popconfirmOk, 'missing popconfirm ok button');
