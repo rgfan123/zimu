@@ -98,6 +98,13 @@ public final class SourceSyncPolicy {
         if (channel == cn.zimu.fulfillment.common.domain.SourceChannel.CAISHIXIAN) {
             return "3".equals(state);
         }
+        if (channel == cn.zimu.fulfillment.common.domain.SourceChannel.FEIXIANG) {
+            // 飞象没有一张经过验证的订单状态码表：详情里的 express_state 是数字码，语义没抓包
+            // 确认过，猜松了会把待发货单当成已发货丢单，猜紧了等于没判。因此这里认的不是平台
+            // 原始状态码，而是 Connector 用两个无歧义事实合成的判据——详情读得到，且没有任何
+            // 目标商品行已带运单号/物流公司（见 FeixiangShipmentPlanner.WritePlan）。
+            return "SHIPPABLE".equals(state);
+        }
         return false;
     }
 

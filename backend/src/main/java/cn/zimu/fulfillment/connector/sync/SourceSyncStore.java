@@ -4,6 +4,7 @@ import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.connector.SourceShipmentResult;
 import cn.zimu.fulfillment.connector.SourceSyncResult;
+import cn.zimu.fulfillment.connector.feixiang.FeixiangShipmentAttemptStore;
 import cn.zimu.fulfillment.connector.jufubao.JufubaoShipmentAttemptStore;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -527,12 +528,25 @@ public class SourceSyncStore {
         return recovered;
     }
 
+    /**
+     * Adapter 内层原始意图键的<b>登记</b>值。
+     *
+     * <p>它有两个作用：被唯一索引 {@code uq_shipment_syncs_platform_intent} 强制去重，
+     * 以及在人工对账判定「平台未受理」时交回 Adapter 解锁
+     * （{@code PlatformConnector.releaseShipmentIntent}）。渠道没有内层 store 时返回 null，
+     * 此时 reconcile 的 NOT_ACCEPTED 分支不做 release——那是正确的；但反过来，
+     * 有内层 store 的渠道<b>必须</b>在这里登记，否则对账永远解不开内层锁。</p>
+     */
     private static String platformIntentKey(SourceSyncFacts artifact) {
-        if (artifact.sourceChannel() != SourceChannel.JUFUBAO) {
-            return null;
+        if (artifact.sourceChannel() == SourceChannel.JUFUBAO) {
+            return JufubaoShipmentAttemptStore.idempotencyKey(
+                    artifact.sourceLineRef(), artifact.trackingNumber());
         }
-        return JufubaoShipmentAttemptStore.idempotencyKey(
-                artifact.sourceLineRef(), artifact.trackingNumber());
+        if (artifact.sourceChannel() == SourceChannel.FEIXIANG) {
+            return FeixiangShipmentAttemptStore.idempotencyKey(
+                    artifact.sourceLineRef(), artifact.trackingNumber());
+        }
+        return null;
     }
 
     private String recoveryPayloadHash(RecoveryCandidate candidate) {
