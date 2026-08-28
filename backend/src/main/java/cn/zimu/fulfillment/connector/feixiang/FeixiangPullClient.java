@@ -112,7 +112,7 @@ public interface FeixiangPullClient {
 
     /** 生产实现：JDK {@link HttpClient} + {@link CookieManager} 自动管理 {@code fxqf_sess} 会话。 */
     @Component("feixiangPullClient")
-    class Http implements FeixiangPullClient {
+    class Http implements FeixiangPullClient, FeixiangSession {
 
         private static final Logger log = LoggerFactory.getLogger(Http.class);
         private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -362,6 +362,29 @@ public interface FeixiangPullClient {
                 log.debug("飞象订单计数交叉核对不可用（不影响拉取）");
                 return -1;
             }
+        }
+
+        // ------------------------------------------------------- FeixiangSession（回传网关借用会话）
+
+        /**
+         * 平台基址。回传网关不自建 baseUrl，跟随拉取侧同一配置，避免读写打到两个环境。
+         */
+        @Override
+        public String baseUrl() {
+            return baseUrl;
+        }
+
+        /**
+         * 在<b>同一个</b> cookie jar 上发出请求，供同包回传网关复用登录态。
+         *
+         * <p>本方法只是 {@link #send} 的受控出口：会话失效判定、401/403 清登录态、
+         * 「302 落回登录页」的识别全部沿用拉取侧既有实现，回传侧不再复制一份。
+         * 它<b>不</b>决定请求方法与路径——写请求由 {@code FeixiangHttpShipmentGateway}
+         * 在自己的写门闩后面构造，这里不为任何调用方隐含授权。</p>
+         */
+        @Override
+        public HttpResponse<String> exchange(HttpRequest request, String what) {
+            return send(request, what);
         }
 
         // ---------------------------------------------------------------- HTTP 工具
