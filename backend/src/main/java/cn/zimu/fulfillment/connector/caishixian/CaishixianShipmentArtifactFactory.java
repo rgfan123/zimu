@@ -39,7 +39,21 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-/** 从原始彩食鲜工作簿与 raw-row lineage 构造单 Shipment 上传产物。 */
+/**
+ * 从彩食鲜来源血缘构造单 Shipment 上传产物（22 列回填工作簿）。
+ *
+ * <p>两条来源分支：
+ * <ul>
+ *   <li><b>Excel 导入批次</b>（file_ref 指向留存的原始工作簿）：从原始工作簿复制目标行，
+ *       只回填发货列——既有行为一字未动；</li>
+ *   <li><b>结构化批次</b>（在线 JSON 拉取，file_ref 为 {@code structured://…} 占位，没有
+ *       原始工作簿可复制）：按 raw_cells 快照（拉取时从 orderList/orderDetail 白名单落库）
+ *       + Shipment 发货事实重建同样的 22 列模板。「站点编码」为 JSON 契约已知缺失列，
+ *       落空串——平台是否接受空站点编码只能生产验证（研究文档唯一一次失败样例的原因是
+ *       回填列全空，与站点编码无关）。收货人/联系电话取 Shipment 事实（快照里是掩码），
+ *       上传前 Connector 仍会与平台当前收货信息核对。</li>
+ * </ul>
+ */
 @Component
 public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifactFactory {
 
@@ -48,11 +62,16 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
     private static final int MAX_UPLOAD_BYTES = 1024 * 1024;
     private static final Instant FIXED_CORE_TIMESTAMP = Instant.parse("2000-01-01T00:00:00Z");
     private static final LocalDateTime FIXED_ZIP_ENTRY_TIME = LocalDateTime.of(2000, 1, 1, 0, 0);
+    /** 结构化导入批次的 file_ref 前缀（SourceImportService.importStructured 写入）。 */
+    static final String STRUCTURED_FILE_REF_PREFIX = "structured://";
     private static final List<String> REQUIRED_HEADERS = List.of(
             "主订单编号", "子订单编号", "采购单号", "供应商编码", "站点编码", "收货人",
             "联系电话", "省", "市", "区", "详细地址", "物流要求编码", "物流要求名称",
             "商品编号", "商品名称", "下单数量", "订单备注", "发货数量", "物流公司代码",
             "物流单号", "vip订单标识", "错误原因");
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper RAW_CELLS_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
 
     private final JdbcTemplate jdbc;
     private final ContentAddressedFileStore files;
@@ -83,7 +102,8 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                     FROM app.raw_import_row_order_lines rirol
                 )
                 SELECT DISTINCT ib.file_ref, rir.sheet_index, rir.row_index,
-                       si.shipped_quantity, ol.mapping_multiplier_snapshot
+                       si.shipped_quantity, ol.mapping_multiplier_snapshot,
+                       rir.raw_cells::text AS raw_cells
                 FROM app.shipments s
                 JOIN app.orders o ON o.id=s.order_id
                 JOIN app.import_batches ib ON ib.id=o.source_import_batch_id
@@ -101,7 +121,8 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                         rs.getInt("sheet_index"),
                         rs.getInt("row_index"),
                         rs.getBigDecimal("shipped_quantity"),
-                        rs.getBigDecimal("mapping_multiplier_snapshot")),
+                        rs.getBigDecimal("mapping_multiplier_snapshot"),
+                        rs.getString("raw_cells")),
                 facts.shipmentId(),
                 facts.sourceLineRef());
         if (rows.isEmpty()) {
@@ -115,15 +136,21 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                     "CAISHIXIAN_SHIPMENT_ARTIFACT_AMBIGUOUS",
                     "同一 Shipment 的彩食鲜来源行不属于同一原始工作簿");
         }
-        List<RowFill> fills = rows.stream()
-                .map(row -> new RowFill(
-                        row.sheetIndex(),
-                        row.rowIndex(),
-                        sourceQuantity(row.shippedQuantity(), row.multiplier()),
-                        facts.carrierOutputValue(),
-                        facts.trackingNumber()))
-                .toList();
-        byte[] rendered = render(files.read(fileRef), fills);
+        byte[] rendered;
+        if (fileRef.startsWith(STRUCTURED_FILE_REF_PREFIX)) {
+            // 结构化（JSON 拉取）批次：没有原始工作簿字节，从 raw_cells 快照 + 发货事实重建。
+            rendered = renderStructured(facts, rows);
+        } else {
+            List<RowFill> fills = rows.stream()
+                    .map(row -> new RowFill(
+                            row.sheetIndex(),
+                            row.rowIndex(),
+                            sourceQuantity(row.shippedQuantity(), row.multiplier()),
+                            facts.carrierOutputValue(),
+                            facts.trackingNumber()))
+                    .toList();
+            rendered = render(files.read(fileRef), fills);
+        }
         if (rendered.length > MAX_UPLOAD_BYTES) {
             throw BusinessException.unprocessable(
                     "CAISHIXIAN_SHIPMENT_ARTIFACT_TOO_LARGE",
@@ -134,6 +161,99 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                 CONTENT_TYPE,
                 rendered,
                 sha256(rendered));
+    }
+
+    /**
+     * 结构化分支：按 CaishixianOrderTransform 落库的快照键重建 22 列模板行。
+     * 收货人/联系电话取 Shipment 事实（快照中已掩码不可用；Connector 上传前仍会与平台
+     * 当前收货信息核对）；省/市/区/详细地址、单号与商品列取快照明文；「站点编码」JSON
+     * 契约缺失，落空串。发货三列与 Excel 分支同源（实发量按映射倍数换算回来源份数）。
+     */
+    private byte[] renderStructured(SourceSyncFacts facts, List<ArtifactRow> rows) {
+        List<List<String>> lines = new ArrayList<>();
+        for (ArtifactRow row : rows) {
+            com.fasterxml.jackson.databind.JsonNode cells = parseRawCells(row.rawCells());
+            com.fasterxml.jackson.databind.JsonNode snapshot = cells.path("snapshot");
+            int itemIndex = cells.path("item_index").asInt(-1);
+            com.fasterxml.jackson.databind.JsonNode goods = snapshot.path("goods").path(itemIndex);
+            if (snapshot.isMissingNode() || !goods.isObject()) {
+                throw BusinessException.unprocessable(
+                        "CAISHIXIAN_SHIPMENT_SNAPSHOT_INCOMPLETE",
+                        "彩食鲜结构化来源快照缺少商品行，无法重建回填工作簿");
+            }
+            String shippedSourceQuantity = sourceQuantity(row.shippedQuantity(), row.multiplier());
+            lines.add(List.of(
+                    snapshot.path("主订单编号").asText(""),
+                    snapshot.path("子订单编号").asText(""),
+                    snapshot.path("采购单号").asText(""),
+                    snapshot.path("供应商编码").asText(""),
+                    "", // 站点编码：JSON 契约已知缺失（快照 site_code_missing 标记）
+                    blankTo(facts.receiverName()),
+                    blankTo(facts.receiverPhone()),
+                    snapshot.path("省").asText(""),
+                    snapshot.path("市").asText(""),
+                    snapshot.path("区").asText(""),
+                    snapshot.path("详细地址").asText(""),
+                    snapshot.path("物流要求编码").asText(""),
+                    snapshot.path("物流要求名称").asText(""),
+                    goods.path("商品编号").asText(""),
+                    goods.path("商品名称").asText(""),
+                    goods.path("下单数量").asText(""),
+                    snapshot.path("订单备注").asText(""),
+                    shippedSourceQuantity,
+                    blankTo(facts.carrierOutputValue()),
+                    blankTo(facts.trackingNumber()),
+                    snapshot.path("vip订单标识").asText(""),
+                    "")); // 错误原因：回填列，上传时留空
+        }
+        return renderFromValues(lines);
+    }
+
+    private static com.fasterxml.jackson.databind.JsonNode parseRawCells(String rawCells) {
+        try {
+            return RAW_CELLS_MAPPER.readTree(rawCells == null ? "{}" : rawCells);
+        } catch (Exception exception) {
+            throw BusinessException.unprocessable(
+                    "CAISHIXIAN_SHIPMENT_SNAPSHOT_INCOMPLETE",
+                    "彩食鲜结构化来源快照不可解析，无法重建回填工作簿");
+        }
+    }
+
+    private static String blankTo(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    /** 由纯值行构建确定性 22 列工作簿（表头 + 数据行；打包口径与 render 一致）。 */
+    static byte[] renderFromValues(List<List<String>> lines) {
+        if (lines == null || lines.isEmpty()) {
+            throw new IllegalArgumentException("彩食鲜 Shipment 回填行不能为空");
+        }
+        try (var outputWorkbook = new XSSFWorkbook(); var output = new ByteArrayOutputStream()) {
+            var sheet = outputWorkbook.createSheet("待发货订单");
+            Row header = sheet.createRow(0);
+            for (int column = 0; column < REQUIRED_HEADERS.size(); column++) {
+                header.createCell(column).setCellValue(REQUIRED_HEADERS.get(column));
+            }
+            int rowIndex = 1;
+            for (List<String> line : lines) {
+                if (line.size() != REQUIRED_HEADERS.size()) {
+                    throw new IllegalArgumentException("彩食鲜结构化回填行列数与 22 列模板不符");
+                }
+                Row target = sheet.createRow(rowIndex++);
+                for (int column = 0; column < line.size(); column++) {
+                    target.createCell(column).setCellValue(line.get(column));
+                }
+            }
+            var coreProperties = outputWorkbook.getProperties().getCoreProperties();
+            coreProperties.setCreated(Optional.of(Date.from(FIXED_CORE_TIMESTAMP)));
+            coreProperties.setModified(Optional.of(Date.from(FIXED_CORE_TIMESTAMP)));
+            outputWorkbook.write(output);
+            return normalizeOoxmlZip(output.toByteArray());
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new IllegalStateException("彩食鲜单 Shipment 回填工作簿生成失败", exception);
+        }
     }
 
     static byte[] render(byte[] original, List<RowFill> fills) {
@@ -340,5 +460,6 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
             int sheetIndex,
             int rowIndex,
             BigDecimal shippedQuantity,
-            BigDecimal multiplier) {}
+            BigDecimal multiplier,
+            String rawCells) {}
 }

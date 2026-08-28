@@ -153,6 +153,40 @@ class CaishixianShipmentArtifactFactoryTest {
                 .hasMessageContaining("重复 entry");
     }
 
+    @Test
+    void renderFromValuesBuildsDeterministicTwentyTwoColumnTemplate() throws Exception {
+        List<List<String>> lines = List.of(List.of(
+                "main-1", "main-1-01", "CG-1", "20075684", "", "张三", "13800000000",
+                "河南省", "郑州市", "金水区", "测试路 1 号", "ER1", "常温",
+                "G-1", "羊小腿", "2", "尽快发", "2", "JD", "JDVA123", "0", ""));
+
+        byte[] first = CaishixianShipmentArtifactFactory.renderFromValues(lines);
+        byte[] second = CaishixianShipmentArtifactFactory.renderFromValues(lines);
+
+        // 结构化分支的上传幂等哈希依赖字节级确定性
+        assertThat(first).isEqualTo(second);
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(first))) {
+            var sheet = workbook.getSheetAt(0);
+            assertThat(sheet.getRow(0).getCell(0).getStringCellValue()).isEqualTo("主订单编号");
+            assertThat(sheet.getRow(0).getCell(21).getStringCellValue()).isEqualTo("错误原因");
+            assertThat((int) sheet.getRow(0).getLastCellNum()).isEqualTo(22);
+            assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).isEqualTo("main-1");
+            assertThat(sheet.getRow(1).getCell(4).getStringCellValue()).isEmpty(); // 站点编码已知缺失
+            assertThat(sheet.getRow(1).getCell(17).getStringCellValue()).isEqualTo("2");
+            assertThat(sheet.getRow(1).getCell(19).getStringCellValue()).isEqualTo("JDVA123");
+            assertThat(sheet.getLastRowNum()).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void renderFromValuesRejectsWrongColumnCountInsteadOfGuessing() {
+        assertThatThrownBy(() -> CaishixianShipmentArtifactFactory.renderFromValues(
+                List.of(List.of("only", "four", "columns", "here"))))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> CaishixianShipmentArtifactFactory.renderFromValues(List.of()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     private byte[] workbook() throws Exception {
         List<String> headers = List.of(
                 "主订单编号", "子订单编号", "采购单号", "供应商编码", "站点编码", "收货人",

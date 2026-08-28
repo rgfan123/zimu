@@ -719,6 +719,13 @@ public class TrackingFileService {
             return existingFinal.getFirst();
         }
         SourceBatch source = sourceBatch(sourceBatchId);
+        if (source.fileRef() != null && source.fileRef().startsWith("structured://")) {
+            // 结构化（在线 JSON 拉取）批次没有原始工作簿可回写：彩食鲜/聚福宝等结构化渠道的
+            // 发货回传走各自 Connector 的在线 source-sync 通道（彩食鲜由
+            // CaishixianShipmentArtifactFactory 结构化分支重建回填工作簿）。不加此闸门时
+            // fileStore.read("structured://…") 会在京东回填收口路径里抛异常，波及发货主流程。
+            return null;
+        }
         if (holdMultiPartitionSourceReturns(sourceBatchId)) {
             return null;
         }

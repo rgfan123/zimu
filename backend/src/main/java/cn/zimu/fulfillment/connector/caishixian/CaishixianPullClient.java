@@ -9,24 +9,33 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * 彩食鲜「待发货订单」在线拉取客户端（ticket 07）。
+ * 彩食鲜「待发货订单」在线拉取客户端（JSON 直连版）。
  *
- * <p>契约见 {@code docs/research/caishixian-scc-wapi-export-api.md}（2026-08-18 抓包核实）：
+ * <p>契约见 {@code docs/research/caishixian-scc-wapi-export-api.md}（2026-08-18 抓包实测）：
  * <ol>
  *   <li>登录：{@code POST /ucenter/login/scc}，body {@code {username,password,businessCode:"fe-web-scc"}}，
  *       登录成功后在<b>响应头</b>返回新 JWT（自定义头 {@code login-token}）；</li>
- *   <li>发起导出：{@code POST /scc/bbc/order/exportDeliverExcl}，data = 任务 ID；</li>
- *   <li>轮询：{@code GET /task/task/my?sysCode=TASK-SCHEDULING&taskType=csx-b2b-supplier-schedule}，
- *       完成判定 {@code taskStatus==2 && progress==100 && resultCode==200000}；</li>
- *   <li>下载：{@code GET /task/file/download?name=&url=}（url 取自 {@code taskAttach[0].url}，
- *       预签名 COS URL），返回 xlsx 字节（{@code PK} 魔数校验）。</li>
+ *   <li>订单分页列表（§4.4）：{@code POST /scc/bbc/order/orderList}，body
+ *       {@code {payTimeBegin,payTimeEnd,pageNum,pageSize,orderStatus:"3"}}，响应 data 含
+ *       {@code pageNum/pageSize/totalNum/data[]/number{waitDepotNum,...}}；</li>
+ *   <li>订单详情（§4.5）：{@code GET /scc/bbc/order/detail?id=<orderList.id>}，补收货地址
+ *       （receiverProvince/City/District/Address）、商品明细（supplierOrderGoodsVo[]）等。</li>
  * </ol>
+ *
+ * <p>旧「导出任务」链路（exportDeliverExcl → 轮询 → 下载 xlsx）已整体移除：它把
+ * {@code pageSize:10} 写死在导出参数里（超 10 单静默截断），且窗口是否生效在导出文件里
+ * 完全不可观测。JSON 直连按 {@code totalNum} 真翻页取完，并把平台自报的
+ * {@code number.waitDepotNum} 一起带回做拉取对账；导出通道的人工兜底仍然存在——
+ * 平台后台手工导出的 xlsx 走既有文件上传导入路径，本类不再承载。</p>
  *
  * <p>业务请求必带头 {@code login-token: <JWT>} 与 {@code supplier-code: <供应商代码>}。
  * 凭据只走环境变量 {@code CSX_USERNAME} / {@code CSX_PASSWORD} / {@code CSX_SUPPLIER_CODE}，
@@ -48,15 +57,48 @@ public interface CaishixianPullClient {
     LoginResult login();
 
     /**
-     * 发起导出任务 → 轮询至完成 → 下载 xlsx 字节。
+     * 订单列表单页快照（§4.4 实测响应 data 的白名单投影）。
+     *
+     * @param pageNum      平台回显的页码
+     * @param totalNum     平台自报的窗口内订单总数（翻页终止条件的唯一权威）
+     * @param orders       本页订单对象（data.data 原样 JsonNode，只读）
+     * @param waitDepotNum 平台自报「当前待发货单数」（number.waitDepotNum）；平台没报时为
+     *                     null（如实缺失，不造 0）——它是「窗口过滤是否吞单」的对账王牌
+     * @param statusCounts number 里的全部整数计数（对账证据快照，键名与平台一致）
+     */
+    record OrderPage(
+            int pageNum,
+            int totalNum,
+            List<JsonNode> orders,
+            Integer waitDepotNum,
+            Map<String, Integer> statusCounts) {
+        public OrderPage {
+            orders = orders == null ? List.of() : List.copyOf(orders);
+            statusCounts = statusCounts == null ? Map.of() : Map.copyOf(statusCounts);
+        }
+    }
+
+    /**
+     * 拉取订单列表单页（POST /scc/bbc/order/orderList）。
      *
      * @param token    登录返回的 login-token
      * @param payBegin 支付开始日期 yyyy-MM-dd
      * @param payEnd   支付结束日期 yyyy-MM-dd（含）
-     * @return xlsx 字节（PK 魔数已校验）
+     * @param pageNum  页码（从 1 起）
+     * @param pageSize 页大小（与抓包观测一致用 10；翻页取完不依赖页大小）
      * @throws PullTransportException 传输/业务失败
      */
-    byte[] pullDeliverExport(String token, String payBegin, String payEnd);
+    OrderPage pullOrderPage(String token, String payBegin, String payEnd, int pageNum, int pageSize);
+
+    /**
+     * 拉取订单详情（GET /scc/bbc/order/detail?id=）。
+     *
+     * @param platformOrderId orderList 行的 {@code id}（平台内部主键，与 orderCode/orderKey
+     *                        是三个不同身份，绝不混用）
+     * @return 详情 data 节点
+     * @throws PullTransportException 传输/业务失败（调用方按单降级，不废整批）
+     */
+    JsonNode pullOrderDetail(String token, String platformOrderId);
 
     /** 彩食鲜拉取传输/业务失败；消息不携带任何密钥或请求体。 */
     class PullTransportException extends RuntimeException {
@@ -77,16 +119,13 @@ public interface CaishixianPullClient {
 
         private static final String BASE_URL = "https://wapi.freshfood.cn";
         private static final String ORIGIN = "https://scc.freshfood.cn";
-        private static final String SYS_CODE = "TASK-SCHEDULING";
-        private static final String TASK_TYPE_SUPPLIER = "csx-b2b-supplier-schedule";
         private static final String AUTH_HEADER = "login-token";
         private static final String SUPPLIER_CODE_HEADER = "supplier-code";
         private static final String BUSINESS_CODE = "fe-web-scc";
         private static final String DEFAULT_SUPPLIER_CODE = "20075684";
-        private static final int TASK_STATUS_DONE = 2;
+        /** 订单状态筛选：3=待发货（抓包实测；语义基于单次观测，拉回的行会带 orderStatus 交叉验证）。 */
+        private static final String ORDER_STATUS_WAIT_DEPOT = "3";
         private static final String RESULT_CODE_OK = "200000";
-        private static final int POLL_INTERVAL_SECONDS = 5;
-        private static final int POLL_MAX_ROUNDS = 20;
         private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
         private final HttpClient client;
@@ -144,98 +183,54 @@ public interface CaishixianPullClient {
         }
 
         @Override
-        public byte[] pullDeliverExport(String token, String payBegin, String payEnd) {
-            int taskId = startExportTask(token, payBegin, payEnd);
-            JsonNode task = pollUntilDone(token, taskId);
-            String[] attach = taskAttach(task);
-            if (attach == null) {
-                throw new PullTransportException("任务完成但响应中未找到文件 URL（taskAttach 为空）");
+        public OrderPage pullOrderPage(String token, String payBegin, String payEnd, int pageNum, int pageSize) {
+            // 与 §4.4 实测请求体逐字段一致；键序用 LinkedHashMap 固定，方便测试桩逐字节断言。
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("payTimeBegin", payBegin);
+            body.put("payTimeEnd", payEnd);
+            body.put("pageNum", pageNum);
+            body.put("pageSize", pageSize);
+            body.put("orderStatus", ORDER_STATUS_WAIT_DEPOT);
+            JsonNode root = postJson("/scc/bbc/order/orderList", token, body);
+            if (!codeOk(root)) {
+                throw new PullTransportException("orderList 第 " + pageNum + " 页失败: " + messageOf(root, "响应异常"));
             }
-            return downloadFile(token, attach[0], attach[1]);
-        }
-
-        private int startExportTask(String token, String payBegin, String payEnd) {
-            Map<String, Object> body = Map.of(
-                    "payTimeBegin", payBegin,
-                    "payTimeEnd", payEnd,
-                    "pageNum", 1,
-                    "pageSize", 10,
-                    "orderStatus", "3");
-            JsonNode root = postJson("/scc/bbc/order/exportDeliverExcl", token, body);
-            if (!codeOk(root) || !root.path("data").isNumber()) {
-                throw new PullTransportException("发起导出失败: " + messageOf(root, "响应缺少任务 ID"));
+            JsonNode data = root.path("data");
+            if (!data.isObject()) {
+                throw new PullTransportException("orderList 第 " + pageNum + " 页响应缺少 data 对象");
             }
-            return root.path("data").asInt();
-        }
-
-        private JsonNode pollUntilDone(String token, int taskId) {
-            for (int round = 1; round <= POLL_MAX_ROUNDS; round++) {
-                JsonNode root = getJson("/task/task/my?sysCode=" + SYS_CODE + "&taskType=" + TASK_TYPE_SUPPLIER, token);
-                if (codeOk(root) && root.path("data").isArray()) {
-                    for (JsonNode task : root.path("data")) {
-                        if (task.path("id").asInt(-1) != taskId) {
-                            continue;
-                        }
-                        int status = task.path("taskStatus").asInt(-1);
-                        int progress = task.path("currProgress").asInt(-1);
-                        int totalProgress = task.path("totalProgress").asInt(-1);
-                        String resultCode = task.path("resultCode").asText("");
-                        if (status == TASK_STATUS_DONE && progress == 100 && totalProgress == 100
-                                && RESULT_CODE_OK.equals(resultCode)) {
-                            return task;
-                        }
-                        if (status == TASK_STATUS_DONE) {
-                            throw new PullTransportException("导出任务失败: " + taskMessage(task));
-                        }
+            List<JsonNode> orders = new ArrayList<>();
+            if (data.path("data").isArray()) {
+                data.path("data").forEach(orders::add);
+            }
+            JsonNode number = data.path("number");
+            Integer waitDepotNum = number.path("waitDepotNum").isNumber()
+                    ? number.path("waitDepotNum").asInt()
+                    : null;
+            Map<String, Integer> statusCounts = new LinkedHashMap<>();
+            if (number.isObject()) {
+                number.properties().forEach(entry -> {
+                    if (entry.getValue().isNumber()) {
+                        statusCounts.put(entry.getKey(), entry.getValue().asInt());
                     }
-                }
-                log.info("彩食鲜导出任务 {} 尚未完成（{}/{} 轮），{}s 后重试",
-                        taskId, round, POLL_MAX_ROUNDS, POLL_INTERVAL_SECONDS);
-                if (round < POLL_MAX_ROUNDS) {
-                    sleep(POLL_INTERVAL_SECONDS * 1000L);
-                }
+                });
             }
-            throw new PullTransportException(
-                    "轮询超时（" + POLL_MAX_ROUNDS + " 轮 × " + POLL_INTERVAL_SECONDS + "s），任务 " + taskId + " 未完成");
+            return new OrderPage(
+                    data.path("pageNum").asInt(pageNum),
+                    data.path("totalNum").asInt(0),
+                    orders,
+                    waitDepotNum,
+                    statusCounts);
         }
 
-        /** 从任务对象取 [文件名, 文件URL]。taskAttach 是 JSON 字符串（实测），内容为 [{name,url}]。 */
-        private String[] taskAttach(JsonNode task) {
-            JsonNode attach = task.path("taskAttach");
-            if (attach.isTextual()) {
-                try {
-                    attach = mapper.readTree(attach.asText());
-                } catch (Exception exception) {
-                    attach = null;
-                }
+        @Override
+        public JsonNode pullOrderDetail(String token, String platformOrderId) {
+            JsonNode root = getJson(
+                    "/scc/bbc/order/detail?id=" + encode(platformOrderId), token);
+            if (!codeOk(root) || !root.path("data").isObject()) {
+                throw new PullTransportException("orderDetail 失败: " + messageOf(root, "响应异常"));
             }
-            if (attach != null && attach.isArray() && !attach.isEmpty()) {
-                JsonNode first = attach.get(0);
-                String url = first.path("url").asText("");
-                if (!url.isBlank()) {
-                    String name = first.path("name").asText("待发货订单.xlsx");
-                    return new String[] {name, url};
-                }
-            }
-            return null;
-        }
-
-        private byte[] downloadFile(String token, String name, String url) {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(BASE_URL + "/task/file/download?name=" + encode(name) + "&url=" + encode(url)))
-                    .timeout(REQUEST_TIMEOUT.multipliedBy(4))
-                    .header("Accept", "application/json, */*")
-                    .header("Origin", ORIGIN)
-                    .header("Referer", ORIGIN + "/")
-                    .header(AUTH_HEADER, token)
-                    .header(SUPPLIER_CODE_HEADER, supplierCode())
-                    .GET()
-                    .build();
-            byte[] bytes = sendBytes(request);
-            if (bytes == null || bytes.length < 2 || bytes[0] != 'P' || bytes[1] != 'K') {
-                throw new PullTransportException("下载内容不是 xlsx（魔数异常，可能任务未完成）");
-            }
-            return bytes;
+            return root.path("data");
         }
 
         // ---------------------------------------------------------------- 传输工具
@@ -292,23 +287,6 @@ public interface CaishixianPullClient {
             }
         }
 
-        private byte[] sendBytes(HttpRequest request) {
-            try {
-                HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
-                if (response.statusCode() >= 400) {
-                    throw new PullTransportException("下载接口返回 HTTP " + response.statusCode());
-                }
-                return response.body();
-            } catch (PullTransportException exception) {
-                throw exception;
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                throw new PullTransportException("彩食鲜请求被中断");
-            } catch (Exception exception) {
-                throw new PullTransportException("彩食鲜请求失败: " + safeMessage(exception), exception);
-            }
-        }
-
         private JsonNode parse(String body) {
             try {
                 return body == null || body.isBlank() ? mapper.createObjectNode() : mapper.readTree(body);
@@ -329,11 +307,6 @@ public interface CaishixianPullClient {
             return message.isBlank() ? fallback : message;
         }
 
-        private String taskMessage(JsonNode task) {
-            String message = task.path("taskMessage").asText("");
-            return message.isBlank() ? "taskResult=" + task.path("taskResult").asText() : message;
-        }
-
         private String supplierCode() {
             String code = env("CSX_SUPPLIER_CODE");
             return isBlank(code) ? DEFAULT_SUPPLIER_CODE : code;
@@ -350,15 +323,6 @@ public interface CaishixianPullClient {
 
         private static String safeMessage(Throwable exception) {
             return exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
-        }
-
-        private static void sleep(long millis) {
-            try {
-                Thread.sleep(millis);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                throw new PullTransportException("轮询被中断");
-            }
         }
 
         private static String encode(String value) {
