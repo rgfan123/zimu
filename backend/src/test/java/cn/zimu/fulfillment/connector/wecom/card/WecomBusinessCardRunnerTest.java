@@ -2,8 +2,10 @@ package cn.zimu.fulfillment.connector.wecom.card;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -20,6 +22,50 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class WecomBusinessCardRunnerTest {
+
+    @Test
+    void emptyRenderSupersedesTheCardAndCompletesTheTaskWithoutRetrying() {
+        WecomBusinessCardStore cards = mock(WecomBusinessCardStore.class);
+        WecomBusinessCardSourceRegistry sources = mock(WecomBusinessCardSourceRegistry.class);
+        AsyncTaskStore tasks = mock(AsyncTaskStore.class);
+        WecomOutboundGateway gateway = mock(WecomOutboundGateway.class);
+        WecomBusinessCardSource source = mock(WecomBusinessCardSource.class);
+        WecomBusinessCardRunner runner = new WecomBusinessCardRunner(cards, sources, tasks, gateway);
+        AsyncTaskStore.AsyncTask task = new AsyncTaskStore.AsyncTask(
+                8,
+                WecomBusinessCardEnqueuer.TASK_TYPE,
+                "card:20",
+                "RUNNING",
+                1,
+                3,
+                Instant.EPOCH,
+                Instant.EPOCH.plusSeconds(60),
+                "worker-a",
+                null,
+                "card-20",
+                Instant.EPOCH,
+                Instant.EPOCH);
+        WecomBusinessCard card = new WecomBusinessCard(
+                20, BatchConfirmedCard.DOMAIN, 51, 1,
+                "batch_51_v1_0123456789abcdef0123456789abcdef",
+                "GROUP", "wr-group", "PENDING", 0);
+        WecomBusinessCardSource.Route route = new WecomBusinessCardSource.Route(
+                WecomBusinessCardSource.RouteType.GROUP, "wr-group");
+
+        when(tasks.renewLease(8, "worker-a", WecomBusinessCardRunner.LEASE_EXTENSION)).thenReturn(true);
+        when(cards.load(20)).thenReturn(card);
+        when(cards.beginSend(20, 1)).thenReturn(new WecomBusinessCardStore.CardSendPermit(
+                WecomBusinessCardStore.CardSendAction.SEND, 1));
+        when(sources.find(BatchConfirmedCard.DOMAIN)).thenReturn(Optional.of(source));
+        when(source.render(51, 1, route)).thenReturn(Optional.empty());
+
+        runner.execute(task);
+
+        verify(cards).recordSuperseded(20, "WECOM_CARD_FACTS_SUPERSEDED");
+        verify(tasks).succeed(8, "worker-a");
+        verify(tasks, never()).fail(anyLong(), any(), any(), any());
+        verify(gateway, never()).send(any());
+    }
 
     @Test
     void legacySourceRenderMethodRemainsCompatibleWithRouteAwareCallers() {

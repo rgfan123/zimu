@@ -38,9 +38,6 @@ public class BusinessFollowUpResultCardSource implements WecomBusinessCardSource
 
     @Override
     public Optional<Route> route(long approvalId) {
-        if (!links.configured()) {
-            return Optional.empty();
-        }
         Optional<String> designatedUserid = jdbc.query(
                         """
                         SELECT op.wecom_userid
@@ -70,9 +67,6 @@ public class BusinessFollowUpResultCardSource implements WecomBusinessCardSource
 
     @Override
     public Optional<ObjectNode> render(long approvalId, long draftVersion, Route route) {
-        if (!links.configured()) {
-            return Optional.empty();
-        }
         List<BusinessFollowUpResultCard.View> rows = jdbc.query(
                 """
                 SELECT a.id, a.followup_id, a.draft_version, a.decision,
@@ -118,9 +112,6 @@ public class BusinessFollowUpResultCardSource implements WecomBusinessCardSource
 
     @Override
     public List<WecomTaskId> pending(OffsetDateTime since, int limit) {
-        if (!links.configured()) {
-            return List.of();
-        }
         return jdbc.query(
                 """
                 SELECT a.id, a.draft_version

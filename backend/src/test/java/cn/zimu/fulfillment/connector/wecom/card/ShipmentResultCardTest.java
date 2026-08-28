@@ -40,12 +40,32 @@ class ShipmentResultCardTest {
         assertThat(values).contains("JDVA46707982590", "京东物流", "ESL00000025431188355");
     }
 
+    /**
+     * 卡型改成 button_interaction 之后仍要守住原来那条纪律：**唯一的按钮不得产生第二次副作用**。
+     * 「知道了」零参数、零业务写，只表达「我看到了」。
+     */
     @Test
-    void 播报卡不带回调按钮_动作已完成不该诱导再点一次() {
+    void 播报卡只带一个知道了_不诱导再点一次() {
         ObjectNode card = ShipmentResultCard.render(submitted("JDVA46707982590", "京东物流"));
 
-        assertThat(card.path("card_type").asText()).isEqualTo("text_notice");
-        assertThat(card.has("button_list")).isFalse();
+        assertThat(card.path("card_type").asText()).isEqualTo("button_interaction");
+        assertThat(card.path("button_list")).hasSize(1);
+        assertThat(card.path("button_list").get(0).path("key").asText())
+                .isEqualTo(ShipmentResultCard.ACKNOWLEDGE_BUTTON_KEY);
+        assertThat(card.path("button_list").get(0).path("text").asText()).isEqualTo("知道了");
+    }
+
+    /** 深链是可选装饰：本部署的公网入口只有明文 HTTP，配不出 https 基址也必须发得出去。 */
+    @Test
+    void 没有深链也照发_信息本身不依赖跳转() {
+        ObjectNode card = ShipmentResultCard.render(new ShipmentResultCard.View(
+                4L, 1L, "FEIXIANG", "D2026825436038809722", "严九",
+                "ESL00000025431188355", "JDVA46707982590", "京东物流", null));
+
+        assertThat(card.has("card_action")).isFalse();
+        assertThat(card.path("main_title").path("title").asText()).isEqualTo("已发货 · 运单已回填");
+        assertThat(card.path("horizontal_content_list").findValuesAsText("value"))
+                .contains("JDVA46707982590", "京东物流", "ESL00000025431188355");
     }
 
     @Test

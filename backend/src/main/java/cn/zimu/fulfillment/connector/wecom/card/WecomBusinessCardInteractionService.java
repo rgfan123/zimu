@@ -3,6 +3,8 @@ package cn.zimu.fulfillment.connector.wecom.card;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import org.slf4j.Logger;
@@ -39,7 +41,21 @@ public class WecomBusinessCardInteractionService {
             ReviewCaseCard.DOMAIN,
             OperationalAlertCard.DOMAIN,
             JdOutboundFailureCard.DOMAIN,
-            ShipmentResultCard.DOMAIN);
+            ShipmentResultCard.DOMAIN,
+            BatchConfirmedCard.DOMAIN,
+            BusinessFollowUpResultCard.DOMAIN);
+
+    /**
+     * 播报卡的 ack 按钮：域 → 唯一合法的按钮 key。
+     *
+     * <p>这三张卡改成 {@code button_interaction} 之后就带了按钮，点击必须由本服务认领——
+     * 域不在 {@link #DOMAINS} 里的话，点击会落回订单草稿卡处理器并报
+     * {@code WECOM_CARD_TASK_ID_INVALID}，读者看到的是「无法识别这张卡片」。
+     */
+    private static final Map<String, String> BROADCAST_ACK_BUTTON_KEYS = Map.of(
+            BatchConfirmedCard.DOMAIN, BatchConfirmedCard.ACKNOWLEDGE_BUTTON_KEY,
+            ShipmentResultCard.DOMAIN, ShipmentResultCard.ACKNOWLEDGE_BUTTON_KEY,
+            BusinessFollowUpResultCard.DOMAIN, BusinessFollowUpResultCard.ACKNOWLEDGE_BUTTON_KEY);
 
     private static final Logger log = LoggerFactory.getLogger(WecomBusinessCardInteractionService.class);
     private static final int MAX_ATTEMPTS = 3;
@@ -165,9 +181,42 @@ public class WecomBusinessCardInteractionService {
             case JdOutboundFailureCard.DOMAIN -> new Outcome(
                     false, "JD_OUTBOUND_RETRY_NOT_WIRED",
                     "暂未接线", "京东重试建单请回后台执行");
+            case BatchConfirmedCard.DOMAIN,
+                    ShipmentResultCard.DOMAIN,
+                    BusinessFollowUpResultCard.DOMAIN -> broadcastAck(taskId, buttonKey, actor);
             default -> new Outcome(
                     false, "WECOM_CARD_ACTION_NOT_APPLICABLE", "这张卡没有可执行的动作", "它是事后播报");
         };
+    }
+
+    // ------------------------------------------------------------------
+    // 播报卡：知道了（零业务写）
+    // ------------------------------------------------------------------
+
+    /**
+     * 播报卡的「知道了」：**不产生任何业务写**。
+     *
+     * <p>这三张卡（整批确认已完成 / 发货结果 / 客户跟进审批终态）都是事后播报，动作早已发生。
+     * 按钮存在的理由只有两个：给读者一个「我看到了」的收口动作，以及让卡型成为
+     * {@code button_interaction}——从而不再需要 {@code text_notice} 强制的深链
+     * （公网入口只有明文 HTTP，https-only 的深链规则给不出合法基址）。
+     *
+     * <p><b>不做版本断言</b>：{@code preship} / {@code alert} 那类按钮会改业务状态，点旧卡等于
+     * 对着过期事实下命令，必须比对版本。这里没有任何状态可改，一次「我看到了」在哪个版本上
+     * 都成立；反而是拿版本去卡它，会让读者点一张播报卡收到「这张卡已过期」，纯属噪音。
+     *
+     * <p>幂等因此是天然的：再点一次仍然是同一句回执，卡面由整卡替换换成 style=4 的灰态。
+     */
+    private Outcome broadcastAck(WecomTaskId taskId, String buttonKey, String actor) {
+        if (!Objects.equals(BROADCAST_ACK_BUTTON_KEYS.get(taskId.domain()), buttonKey)) {
+            return new Outcome(false, "WECOM_CARD_BUTTON_UNKNOWN", "未执行", "不认识这个按钮");
+        }
+        log.info(
+                "播报卡已知悉 domain={} entity_id={} actor={}",
+                taskId.domain(), taskId.entityId(), actor);
+        return new Outcome(
+                true, "WECOM_CARD_BROADCAST_ACKNOWLEDGED", "已知悉",
+                "这张是事后播报，无需其它操作");
     }
 
     // ------------------------------------------------------------------

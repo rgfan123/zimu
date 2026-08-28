@@ -3,12 +3,16 @@ package cn.zimu.fulfillment.connector.sync;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.connector.ConnectorCapabilities;
+import cn.zimu.fulfillment.connector.PlatformConnector;
+import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -35,25 +39,47 @@ import org.springframework.stereotype.Component;
 public class SourceSyncAutoWorker {
 
     private static final Logger log = LoggerFactory.getLogger(SourceSyncAutoWorker.class);
+    private static final Set<String> TRANSIENT_UNAVAILABLE_CODES = Set.of(
+            "SOURCE_SYNC_CONNECTOR_DISABLED",
+            "SOURCE_SYNC_ONLINE_TRANSPORT_REQUIRED",
+            "SOURCE_SYNC_CONNECTOR_CAPABILITY_UNAVAILABLE",
+            "SOURCE_PLATFORM_CHECK_UNAVAILABLE",
+            "SOURCE_PLATFORM_CHECK_FAILED");
 
     private final SourceShipmentSyncService service;
-    private final JdbcTemplate jdbc;
+    private final PlatformConnectorRegistry connectors;
+    private final SourceSyncAutoStateStore states;
     private final boolean enabled;
     private final String operator;
     private final int batchSize;
+    private final Duration retryInitial;
+    private final Duration retryMax;
+    private final Duration blockedRecheck;
+    private final Duration claimLease;
+    private final String leaseOwner = "source-sync-auto-" + UUID.randomUUID();
 
     public SourceSyncAutoWorker(
             SourceShipmentSyncService service,
-            JdbcTemplate jdbc,
+            PlatformConnectorRegistry connectors,
+            SourceSyncAutoStateStore states,
             @Value("${app.source-sync.auto.enabled:false}") boolean enabled,
             @Value("${app.source-sync.auto.operator:}") String operator,
-            @Value("${app.source-sync.auto.batch-size:20}") int batchSize) {
+            @Value("${app.source-sync.auto.batch-size:20}") int batchSize,
+            @Value("${app.source-sync.auto.retry-initial:PT2M}") Duration retryInitial,
+            @Value("${app.source-sync.auto.retry-max:PT1H}") Duration retryMax,
+            @Value("${app.source-sync.auto.blocked-recheck:PT10M}") Duration blockedRecheck,
+            @Value("${app.source-sync.auto.claim-lease:PT10M}") Duration claimLease) {
         this.service = service;
-        this.jdbc = jdbc;
+        this.connectors = connectors;
+        this.states = states;
         this.operator = operator == null ? "" : operator.trim();
         // 开关为真但没配服务账号 → 不启动。宁可不跑，也不拿一个猜来的身份往客户平台写。
         this.enabled = enabled && !this.operator.isBlank();
         this.batchSize = Math.max(1, Math.min(batchSize, 200));
+        this.retryInitial = retryInitial;
+        this.retryMax = retryMax;
+        this.blockedRecheck = blockedRecheck;
+        this.claimLease = claimLease;
         if (enabled && this.operator.isBlank()) {
             log.warn("source-sync 自动回传已开启但未配置 app.source-sync.auto.operator，保持关闭");
         }
@@ -71,52 +97,136 @@ public class SourceSyncAutoWorker {
         if (!enabled) {
             return;
         }
-        List<Long> candidates = jdbc.queryForList(
-                """
-                SELECT s.id
-                FROM app.shipments s
-                JOIN app.trackings t ON t.shipment_id = s.id
-                LEFT JOIN app.shipment_syncs ss ON ss.shipment_id = s.id
-                WHERE s.shipment_status = 'SHIPPED'
-                  AND (ss.shipment_id IS NULL OR ss.sync_status = 'SYNC_FAILED')
-                ORDER BY s.id
-                LIMIT ?
-                """,
-                Long.class,
-                batchSize);
-        for (Long shipmentId : candidates) {
+        List<SourceSyncAutoStateStore.Claim> candidates =
+                states.claimCandidates(leaseOwner, claimLease, batchSize);
+        for (SourceSyncAutoStateStore.Claim candidate : candidates) {
             try {
-                syncOne(shipmentId);
-            } catch (BusinessException business) {
-                // 业务阻断是预期路径：阻断项已由 execute 落复核事项，这里只记稳定码
-                log.info("自动回传未执行 shipment={} code={}", shipmentId, business.getBusinessCode());
-            } catch (RuntimeException exception) {
-                // 非业务异常是真故障，必须带类型与消息——只打 UNEXPECTED 等于把诊断线索丢了
-                log.warn(
-                        "自动回传异常 shipment={} type={} message={}",
-                        shipmentId,
-                        exception.getClass().getSimpleName(),
-                        exception.getMessage());
+                handle(candidate);
+            } catch (SourceSyncAutoStateStore.LeaseLostException lost) {
+                // 租约已被其他实例接管：这一条归接管者处置。同批其余候选仍属于本 owner，
+                // 不能因为一次正常的租约竞争就整批丢下——放弃的代价是它们要等到租约超时
+                // 才会被任何人再看一眼。
+                log.info("自动回传租约已被接管，跳过 shipment={}", candidate.shipmentId());
             }
         }
     }
 
-    private void syncOne(long shipmentId) {
+    /**
+     * 单条候选的处置。收口写（defer / scheduleRetry / recordNotApplicable / complete）本身
+     * 也可能撞上租约丢失——它们在 catch 分支里执行，抛出来就会掀翻整个 for 循环，
+     * 因此统一交由 {@link #poll()} 兜住，本方法只负责按语义分类。
+     */
+    private void handle(SourceSyncAutoStateStore.Claim candidate) {
+        try {
+            CapabilityDecision capability = runtimeCapability(candidate);
+            if (!capability.onlinePush()) {
+                states.recordNotApplicable(candidate, capability.reasonCode());
+                return;
+            }
+            syncOne(candidate);
+        } catch (BusinessException business) {
+            if (isTransientUnavailable(business.getBusinessCode())) {
+                retryLater(candidate, business.getBusinessCode(), null);
+            } else {
+                states.defer(candidate, business.getBusinessCode(), blockedRecheck);
+            }
+        } catch (SourceSyncAutoStateStore.LeaseLostException lost) {
+            // 并发结果而非故障：不能被下面的 RuntimeException 分支伪装成「暂不可用」再排一次重试，
+            // 那会拿一个已经失效的 owner 去写别人的行。
+            throw lost;
+        } catch (RuntimeException exception) {
+            retryLater(candidate, "SOURCE_SYNC_AUTO_UNEXPECTED", exception);
+        }
+    }
+
+    private void syncOne(SourceSyncAutoStateStore.Claim candidate) {
         CommandContext context = context();
         // 审计主体记 SYSTEM 而不是 HUMAN：自动执行确实不是人点的，写成 HUMAN 会污染
         // 「谁做的」这一事实。actorType 传 null 会在审计写入处炸成非业务异常。
-        SourceSyncCheck check = service.check(shipmentId, context, AuditActorType.SYSTEM);
+        SourceSyncCheck check = service.check(candidate.shipmentId(), context, AuditActorType.SYSTEM);
         if (!check.ready()) {
-            // 未就绪不是异常：检查侧已按需落复核事项，人工在发货台可见
+            Optional<String> unavailable = transientUnavailable(check);
+            if (unavailable.isPresent()) {
+                retryLater(candidate, unavailable.get(), null);
+            } else {
+                // 其他业务门禁仍由既有复核闭环处理，不把它伪装成 connector 故障。
+                String reason = check.blockers().stream()
+                        .map(SourceSyncBlocker::code)
+                        .findFirst()
+                        .orElse("SOURCE_SYNC_CHECK_BLOCKED");
+                states.defer(candidate, reason, blockedRecheck);
+            }
             return;
         }
         service.execute(
-                shipmentId,
+                candidate.shipmentId(),
                 new SourceSyncExecuteCommand(check.checkHash()),
                 // 幂等键绑定 check-hash：事实变化就是新的一次意图，事实不变则天然去重
-                "source-sync-auto-" + shipmentId + "-" + check.checkHash(),
+                "source-sync-auto-" + candidate.shipmentId() + "-" + check.checkHash(),
                 context);
-        log.info("自动回传已执行 shipment={}", shipmentId);
+        states.complete(candidate);
+        log.info("自动回传已执行 shipment={}", candidate.shipmentId());
+    }
+
+    /** 与平台拉取的 runtimeCapability 同类：能力判定先于 service.check 与任何外呼。 */
+    private CapabilityDecision runtimeCapability(SourceSyncAutoStateStore.Claim candidate) {
+        Optional<PlatformConnector> connector = connectors.find(candidate.sourceChannel());
+        if (connector.isEmpty()) {
+            return new CapabilityDecision(
+                    false,
+                    "EXCEL".equals(candidate.transportMode())
+                            ? SourceSyncAutoStateStore.FILE_RETURN_ONLY
+                            : SourceSyncAutoStateStore.ONLINE_PUSH_NOT_APPLICABLE);
+        }
+        ConnectorCapabilities capabilities = connector.get().capabilities();
+        if (capabilities != null && capabilities.onlinePush()) {
+            return new CapabilityDecision(true, null);
+        }
+        return new CapabilityDecision(
+                false,
+                capabilities != null && capabilities.fileExport()
+                        ? SourceSyncAutoStateStore.FILE_RETURN_ONLY
+                        : SourceSyncAutoStateStore.ONLINE_PUSH_NOT_APPLICABLE);
+    }
+
+    private Optional<String> transientUnavailable(SourceSyncCheck check) {
+        return check.blockers().stream()
+                .map(SourceSyncBlocker::code)
+                .filter(SourceSyncAutoWorker::isTransientUnavailable)
+                .findFirst();
+    }
+
+    private static boolean isTransientUnavailable(String code) {
+        return code != null && TRANSIENT_UNAVAILABLE_CODES.contains(code);
+    }
+
+    private void retryLater(
+            SourceSyncAutoStateStore.Claim candidate,
+            String reasonCode,
+            RuntimeException unexpected) {
+        SourceSyncAutoStateStore.State state = states.scheduleRetry(
+                candidate,
+                reasonCode,
+                retryInitial,
+                retryMax);
+        if (unexpected != null) {
+            log.warn(
+                    "自动回传暂不可用 shipment={} code={} attempt={} next_attempt_at={} type={} message={}",
+                    candidate.shipmentId(),
+                    state.reasonCode(),
+                    state.attemptCount(),
+                    state.nextAttemptAt(),
+                    unexpected.getClass().getSimpleName(),
+                    unexpected.getMessage(),
+                    unexpected);
+        } else {
+            log.info(
+                    "自动回传暂不可用 shipment={} code={} attempt={} next_attempt_at={}",
+                    candidate.shipmentId(),
+                    state.reasonCode(),
+                    state.attemptCount(),
+                    state.nextAttemptAt());
+        }
     }
 
     /** authenticatedOperator 与 operator 同值，满足服务端身份一致校验（见类注释的取舍说明）。 */
@@ -124,4 +234,6 @@ public class SourceSyncAutoWorker {
         String requestId = "auto-source-sync-" + UUID.randomUUID();
         return new CommandContext(requestId, requestId, operator, operator);
     }
+
+    private record CapabilityDecision(boolean onlinePush, String reasonCode) {}
 }

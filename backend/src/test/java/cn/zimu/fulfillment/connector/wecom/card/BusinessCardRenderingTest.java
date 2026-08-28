@@ -63,19 +63,33 @@ class BusinessCardRenderingTest {
     // ---------- 整批确认播报卡 ----------
 
     @Test
-    void batchConfirmedCardIsBroadcastOnlyWithNoCallbackButtons() {
+    void batchConfirmedCardOffersOnlyAZeroEffectAcknowledgement() {
         ObjectNode card = BatchConfirmedCard.render(new BatchConfirmedCard.View(
                 7, 3, "BATCH-20260825-01", "彩食鲜", 12, 34, 9, 3, "zimu-admin",
                 "https://zimu.test/batches/7"));
 
-        assertThat(card.path("card_type").asText()).isEqualTo("text_notice");
-        // 动作已完成：任何回调按钮都是在诱导第二次外部副作用（京东建单）
-        assertThat(callbackKeys(card)).isEmpty();
+        assertThat(card.path("card_type").asText()).isEqualTo("button_interaction");
+        // 动作已完成：唯一允许的按钮是零业务写的「知道了」，任何会重做整批建单的按钮都不许出现
+        assertThat(callbackKeys(card))
+                .containsExactly(BatchConfirmedCard.ACKNOWLEDGE_BUTTON_KEY);
         assertThat(card.path("task_id").asText()).isEqualTo("batch_7_v3");
         // 两条出库通道分别报数
         assertThat(fieldValue(card, "京东")).isEqualTo("9 单");
         assertThat(fieldValue(card, "导出")).isEqualTo("3 单");
         assertThat(card.path("sub_title_text").asText()).contains("zimu-admin");
+    }
+
+    /** 深链是可选装饰：本部署配不出 https 基址，缺它也必须发得出去且信息完整。 */
+    @Test
+    void batchConfirmedCardStaysCompleteWithoutADeepLink() {
+        ObjectNode card = BatchConfirmedCard.render(new BatchConfirmedCard.View(
+                51, 1, "BATCH-20260825-51", "彩食鲜", 12, 34, 9, 3, "zimu-admin", null));
+
+        assertThat(card.has("card_action")).isFalse();
+        assertThat(card.path("task_id").asText()).isEqualTo("batch_51_v1");
+        assertThat(fieldValue(card, "订单")).isEqualTo("12 单 / 34 行");
+        assertThat(callbackKeys(card))
+                .containsExactly(BatchConfirmedCard.ACKNOWLEDGE_BUTTON_KEY);
     }
 
     // ---------- 京东出库失败卡 ----------
