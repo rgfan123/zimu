@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.connector.sync;
 
 import cn.zimu.fulfillment.common.domain.SourceChannel;
+import cn.zimu.fulfillment.common.persistence.ConcurrencyConflictException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -272,15 +273,9 @@ public class SourceSyncAutoStateStore {
 
     /**
      * 租约已被其他实例接管：这是多实例调度里的**正常并发结果**，不是代码缺陷。
-     *
-     * <p><b>为什么不用 {@code IllegalStateException}</b>：本类是 {@code @Repository}，
-     * Spring 的持久化异常翻译（{@code EntityManagerFactoryUtils.convertJpaAccessExceptionIfPossible}）
-     * 会把逃出代理的 {@code IllegalStateException} 一律改写成
-     * {@code InvalidDataAccessApiUsageException}——字面意思是「你把持久化 API 用错了」。
-     * 一次正常的租约竞争因此在日志与告警里长得像代码缺陷，而调用方也无法按类型区分
-     * 「租约没了」与「SQL 写错了」。给它一个自己的类型，翻译器就不再插手。
+     * 绕开 {@code @Repository} 持久化异常翻译的完整理由见 {@link ConcurrencyConflictException}。
      */
-    public static class LeaseLostException extends RuntimeException {
+    public static class LeaseLostException extends ConcurrencyConflictException {
 
         private final long shipmentId;
 

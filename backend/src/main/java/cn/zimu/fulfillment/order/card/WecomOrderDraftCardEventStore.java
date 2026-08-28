@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.order.card;
 
+import cn.zimu.fulfillment.common.persistence.ConcurrencyConflictException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -111,7 +112,7 @@ class WecomOrderDraftCardEventStore {
                 input.messageId(),
                 requireToken(claimToken));
         if (updated != 1) {
-            throw new IllegalStateException("template-card event claim was lost before completion");
+            throw new ClaimConflictException("template-card event claim was lost before completion");
         }
     }
 
@@ -141,7 +142,7 @@ class WecomOrderDraftCardEventStore {
                 messageId,
                 requireToken(claimToken));
         if (updated != 1) {
-            throw new IllegalStateException("template-card event claim was lost before update outcome");
+            throw new ClaimConflictException("template-card event claim was lost before update outcome");
         }
     }
 
@@ -181,6 +182,8 @@ class WecomOrderDraftCardEventStore {
                     messageId);
         }
         if (updated != 1) {
+            // claim() 已 FOR UPDATE 锁行，这个 CAS 在锁内不可能输给并发；触发即锁假设被破坏，
+            // 故意保持 ISE（会被翻译成 InvalidDataAccessApiUsageException）以缺陷面目暴露。
             throw new IllegalStateException("template-card event claim changed concurrently");
         }
         return CardEventClaim.claimed(claimToken, attempt);
@@ -296,9 +299,20 @@ class WecomOrderDraftCardEventStore {
 
     private static String requireToken(String value) {
         if (value == null || value.isBlank()) {
-            throw new IllegalStateException("template-card event claim was lost: token missing");
+            throw new ClaimConflictException("template-card event claim was lost: token missing");
         }
         return value;
+    }
+
+    /**
+     * claim 令牌已被轮换/丢失，或结果已被先到的投递写入：回调重投递下的正常并发结果，
+     * 不是缺陷。绕开 {@code @Repository} 持久化异常翻译的完整理由见 {@link ConcurrencyConflictException}。
+     */
+    static class ClaimConflictException extends ConcurrencyConflictException {
+
+        ClaimConflictException(String message) {
+            super(message);
+        }
     }
 
     private static String stable(String value) {

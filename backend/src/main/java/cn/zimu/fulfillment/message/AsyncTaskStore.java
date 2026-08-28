@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.message;
 
+import cn.zimu.fulfillment.common.persistence.ConcurrencyConflictException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -262,7 +263,7 @@ public class AsyncTaskStore {
                 taskId,
                 owner);
         if (updated != 1) {
-            throw new IllegalStateException("异步任务租约已丢失: " + taskId);
+            throw new LeaseLostException(taskId);
         }
     }
 
@@ -307,7 +308,7 @@ public class AsyncTaskStore {
                 taskId,
                 owner);
         if (updated != 1) {
-            throw new IllegalStateException("异步任务租约已丢失: " + taskId);
+            throw new LeaseLostException(taskId);
         }
     }
 
@@ -338,7 +339,7 @@ public class AsyncTaskStore {
                 taskId,
                 owner);
         if (states.isEmpty()) {
-            throw new IllegalStateException("异步任务租约已丢失: " + taskId);
+            throw new LeaseLostException(taskId);
         }
         return "FINALIZING".equals(states.getFirst())
                 ? FailureTransition.FINALIZING
@@ -360,7 +361,7 @@ public class AsyncTaskStore {
                 taskId,
                 owner);
         if (updated != 1) {
-            throw new IllegalStateException("异步任务最终收口租约已丢失: " + taskId);
+            throw new LeaseLostException("异步任务最终收口租约已丢失: " + taskId, taskId);
         }
     }
 
@@ -410,6 +411,30 @@ public class AsyncTaskStore {
 
         public long submissionId() {
             return Long.parseLong(payloadRef.substring("submission:".length()));
+        }
+    }
+
+    /**
+     * 任务租约已被其他 Worker 接管：多实例队列的正常并发结果，不是缺陷。
+     * 绕开 {@code @Repository} 持久化异常翻译的完整理由见 {@link ConcurrencyConflictException}。
+     * 与任务共用一个事务的应用服务（followup 各 *Application）在栅栏判定 LOST_LEASE 时
+     * 也抛本类型，让整条链路可按类型让位。
+     */
+    public static class LeaseLostException extends ConcurrencyConflictException {
+
+        private final long taskId;
+
+        public LeaseLostException(long taskId) {
+            this("异步任务租约已丢失: " + taskId, taskId);
+        }
+
+        public LeaseLostException(String message, long taskId) {
+            super(message);
+            this.taskId = taskId;
+        }
+
+        public long taskId() {
+            return taskId;
         }
     }
 

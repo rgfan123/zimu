@@ -335,8 +335,8 @@ class InterpretationTaskCausalityTest {
                     observedFence.set(taskStore.lockApplicationFence(task.id(), owner));
                     taskStore.succeedOwned(task.id(), owner);
                 }))
-                .hasMessageContaining("租约已丢失")
-                .hasRootCauseInstanceOf(IllegalStateException.class);
+                .isInstanceOf(AsyncTaskStore.LeaseLostException.class)
+                .hasMessageContaining("租约已丢失");
 
         assertThat(observedFence.get().disposition())
                 .isEqualTo(AsyncTaskStore.ApplicationDisposition.LOST_LEASE);

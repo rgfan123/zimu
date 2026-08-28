@@ -56,7 +56,8 @@ public class BusinessFollowUpAssignmentApplication {
                 approvalId);
         AsyncTaskStore.ApplicationFence fence = tasks.lockApplicationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("Assignment projection lease lost: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(
+                    "Assignment projection lease lost: " + task.id(), task.id());
         }
         if (rows.isEmpty()) {
             throw new IllegalStateException("Approval not found: " + approvalId);
@@ -145,7 +146,8 @@ public class BusinessFollowUpAssignmentApplication {
                 assignmentId);
         AsyncTaskStore.ApplicationFence fence = tasks.lockApplicationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("Assignment execution lease lost: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(
+                    "Assignment execution lease lost: " + task.id(), task.id());
         }
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED) {
             tasks.succeedOwned(task.id(), owner);
@@ -217,7 +219,8 @@ public class BusinessFollowUpAssignmentApplication {
         }
         AsyncTaskStore.ApplicationFence fence = tasks.lockApplicationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("Assignment execution lease lost: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(
+                    "Assignment execution lease lost: " + task.id(), task.id());
         }
         ExecutionState state = rows.getFirst();
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED
@@ -261,7 +264,8 @@ public class BusinessFollowUpAssignmentApplication {
         }
         AsyncTaskStore.ApplicationFence fence = tasks.lockApplicationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("Assignment execution lease lost: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(
+                    "Assignment execution lease lost: " + task.id(), task.id());
         }
         ExecutionState state = rows.getFirst();
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED
@@ -340,7 +344,8 @@ public class BusinessFollowUpAssignmentApplication {
                 assignmentId);
         AsyncTaskStore.ApplicationFence fence = tasks.lockApplicationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("Assignment outcome lease lost: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(
+                    "Assignment outcome lease lost: " + task.id(), task.id());
         }
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED) {
             tasks.succeedOwned(task.id(), owner);
@@ -410,7 +415,8 @@ public class BusinessFollowUpAssignmentApplication {
                 assignmentId);
         AsyncTaskStore.ApplicationFence fence = tasks.lockFinalizationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("Assignment finalization lease lost: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(
+                    "Assignment finalization lease lost: " + task.id(), task.id());
         }
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED) {
             tasks.succeedOwned(task.id(), owner);
@@ -455,7 +461,8 @@ public class BusinessFollowUpAssignmentApplication {
         ProjectionFailureFacts facts = projectionFailureFacts(approvalId);
         AsyncTaskStore.ApplicationFence fence = tasks.lockFinalizationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("Assignment projection finalization lease lost: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(
+                    "Assignment projection finalization lease lost: " + task.id(), task.id());
         }
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED) {
             tasks.succeedOwned(task.id(), owner);

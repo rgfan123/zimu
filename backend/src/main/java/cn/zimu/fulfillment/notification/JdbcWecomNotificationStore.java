@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.notification;
 
+import cn.zimu.fulfillment.common.persistence.ConcurrencyConflictException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -573,7 +574,25 @@ public class JdbcWecomNotificationStore implements WecomNotificationStore {
 
     private static void requireOwnedUpdate(int updated, long batchId) {
         if (updated != 1) {
-            throw new IllegalStateException("企微通知批次租约已丢失: " + batchId);
+            throw new LeaseLostException(batchId);
+        }
+    }
+
+    /**
+     * 批次租约已被其他 Worker 接管：多实例投递的正常并发结果，不是缺陷。
+     * 绕开 {@code @Repository} 持久化异常翻译的完整理由见 {@link ConcurrencyConflictException}。
+     */
+    public static class LeaseLostException extends ConcurrencyConflictException {
+
+        private final long batchId;
+
+        LeaseLostException(long batchId) {
+            super("企微通知批次租约已丢失: " + batchId);
+            this.batchId = batchId;
+        }
+
+        public long batchId() {
+            return batchId;
         }
     }
 
