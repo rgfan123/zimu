@@ -67,6 +67,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     private final ShipmentJdOutboundService shipmentJdOutboundService;
     private final ImportRowJdCargoProjectionService jdCargoProjectionService;
     private final IdempotencyService idempotency;
+    private final SourceBatchConfirmReadiness confirmReadiness;
     private final Path fileRoot;
 
     SourceImportService(
@@ -80,6 +81,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             ShipmentJdOutboundService shipmentJdOutboundService,
             ImportRowJdCargoProjectionService jdCargoProjectionService,
             IdempotencyService idempotency,
+            SourceBatchConfirmReadiness confirmReadiness,
             @Value("${app.file-store.root:${java.io.tmpdir}/zimu-fulfillment-files}") String fileRoot) {
         this.parser = parser;
         this.orderCreateService = orderCreateService;
@@ -91,6 +93,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         this.shipmentJdOutboundService = shipmentJdOutboundService;
         this.jdCargoProjectionService = jdCargoProjectionService;
         this.idempotency = idempotency;
+        this.confirmReadiness = confirmReadiness;
         this.fileRoot = Path.of(fileRoot).toAbsolutePath().normalize();
     }
 
@@ -632,6 +635,11 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 """, batchId));
         result.put("generated_source_return_export_ids", ids(
                 "SELECT id FROM app.source_return_exports WHERE import_batch_id=? ORDER BY version_no", batchId));
+        // 确认闸门的判据随批次一起返回：前端按钮可用性直接读它，不再自己按 row_counts 推算，
+        // 否则两边口径一旦分叉，用户就会点了才发现被拒。仅来源订单批次有确认语义。
+        if ("SOURCE_ORDER".equals(result.get("batch_type"))) {
+            result.put("confirm_readiness", confirmReadiness.of(batchId).toPayload());
+        }
         return result;
     }
 
@@ -962,29 +970,32 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             if (!"SOURCE_ORDER".equals(batch.get("batch_type"))) {
                 throw BusinessException.unprocessable("IMPORT_BATCH_TYPE_INVALID", "仅来源订单批次可以确认");
             }
-            List<Long> jdSdkShipmentIds = List.of();
-            if (batch.get("confirmed_at") == null) {
-                // ORDER_ALREADY_EXISTS 是良性跳过，不是待处理问题：该行对应的订单早已入库
-                // （见本类 :179 的预检测，它的拒绝文案自己就写着「非失败」）。彩食鲜/飞象改为
-                // JSON 直连后按日期窗口拉取，窗口天然重叠，重复行从异常变成常态——2026-08-28
-                // 生产实例：一批 5 行里 4 张新单全部就绪，却被 1 行良性重复整批挡住确认。
-                // 其余非 ACCEPTED 状态（NEED_REVIEW / RECEIVED / 其它 REJECTED）仍然阻断。
-                Integer blockers = jdbc.queryForObject(
-                        """
-                        SELECT count(*) FROM app.raw_import_rows
-                        WHERE import_batch_id=? AND status<>'ACCEPTED'
-                          AND NOT (status='REJECTED' AND error_code='ORDER_ALREADY_EXISTS')
-                        """,
-                        Integer.class,
-                        batchId);
-                if (blockers != null && blockers > 0) {
+            // 部分确认：跳过阻断行，先把能发的发出去。
+            //
+            // 旧闸门是全有或全无——一行有问题整批不能确认。2026-08-28 生产实例：一批 5 行里
+            // 4 张就绪新单被 1 行挡住。良性重复（ORDER_ALREADY_EXISTS）此前已单独豁免，但
+            // NEED_REVIEW / 缺 SKU 映射等仍会整批卡死，而这些行的修复往往要等外部信息，
+            // 就绪的货没有理由陪着一起等。
+            //
+            // 现在的判据只问一件事：有没有「已接收但还没进履约导出/发货批次」的行。有就干活，
+            // 阻断行原地留在批次里（状态不变、复核事项不变），修好后再次确认即可补做——
+            // ProviderFileService#candidateRows 本身就排除已导出行，所以重复确认只会捡起新就绪的行。
+            SourceBatchConfirmReadiness.Readiness readiness = confirmReadiness.of(batchId);
+            if (!readiness.confirmable()) {
+                if (readiness.blockedRows() > 0) {
                     throw BusinessException.conflict("IMPORT_BATCH_BLOCKED", "批次仍有待处理的 SKU、文件或数据问题");
                 }
-                // jd-real-sdk-switch 05：按履约方显式配置路由——京东 SDK 直连或导单文件，第三方始终文件。
-                Map<String, Object> routing = providerFileService.routeForSourceBatch(batchId, context.operator());
-                @SuppressWarnings("unchecked")
-                List<Long> sdkShipments = (List<Long>) routing.get("jd_sdk_shipment_ids");
-                Integer uncoveredAcceptedRows = jdbc.queryForObject(
+                if (batch.get("confirmed_at") != null) {
+                    // 已确认且没有新就绪行：幂等重放语义，直接回当前状态。
+                    return confirmResult(batchId, List.of(), readiness, context, payload);
+                }
+                throw BusinessException.conflict("IMPORT_BATCH_NOTHING_READY", "批次没有可确认的已接收行");
+            }
+            // jd-real-sdk-switch 05：按履约方显式配置路由——京东 SDK 直连或导单文件，第三方始终文件。
+            Map<String, Object> routing = providerFileService.routeForSourceBatch(batchId, context.operator());
+            @SuppressWarnings("unchecked")
+            List<Long> sdkShipments = (List<Long>) routing.get("jd_sdk_shipment_ids");
+            Integer uncoveredAcceptedRows = jdbc.queryForObject(
                         """
                         WITH raw_line_links AS (
                             SELECT rir.id raw_row_id, rir.order_line_id
@@ -1015,45 +1026,66 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                               AND rc.status='OPEN'
                               AND rc.reason_code='PROVIDER_SKU_MAPPING_REQUIRED'
                           )
-                        """,
-                        Integer.class,
-                        batchId,
-                        batchId,
-                        batchId);
-                if (uncoveredAcceptedRows != null && uncoveredAcceptedRows > 0) {
-                    throw BusinessException.conflict(
-                            "IMPORT_BATCH_EXPORT_INCOMPLETE",
-                            "批次仍有已接收行未进入发货批次或履约导出，请完成订单复核后重试");
-                }
+                    """,
+                    Integer.class,
+                    batchId,
+                    batchId,
+                    batchId);
+            if (uncoveredAcceptedRows != null && uncoveredAcceptedRows > 0) {
+                throw BusinessException.conflict(
+                        "IMPORT_BATCH_EXPORT_INCOMPLETE",
+                        "批次仍有已接收行未进入发货批次或履约导出，请完成订单复核后重试");
+            }
+            if (batch.get("confirmed_at") == null) {
                 jdbc.update(
                         "UPDATE app.import_batches SET confirmed_at=CURRENT_TIMESTAMP, confirmed_by=? WHERE id=?",
                         context.operator(),
                         batchId);
-                jdSdkShipmentIds = List.copyOf(sdkShipments);
             }
-            Map<String, Object> result = get(batchId);
-            // 京东 SDK 路由的批次由控制器在确认事务提交后触发批量建单（见
-            // SourceImportController.confirm）；失败留痕（SYNC_FAILED/告警/复核）不阻断批次确认。
-            List<Long> autoSubmitShipmentIds = jdSdkShipmentIds;
-            if (!autoSubmitShipmentIds.isEmpty()) {
-                result.put("outbound_routing", Map.of(
-                        "jd_sdk_shipment_ids", autoSubmitShipmentIds.stream().map(String::valueOf).toList()));
-            }
-            auditLogService.record(new AuditLogService.AuditCommand()
-                    .dataScope(DataScope.BUSINESS)
-                    .requestId(context.requestId())
-                    .traceId(context.traceId())
-                    .operator(context.operator())
-                    .actorType(AuditActorType.HUMAN)
-                    .service("source-file-import")
-                    .operation("source-orders.confirm")
-                    .requestPayload(payload)
-                    .responsePayload(result)
-                    .httpStatus(200)
-                    .businessCode("IMPORT_BATCH_CONFIRMED")
-                    .latencyMs(0));
-            return result;
+            // 补做时 confirmed_at 保持首次确认时间：它记录的是「这批开始发货」的时刻，
+            // 不是最后一次补做的时刻。补做痕迹由审计日志与导出记录承载。
+            return confirmResult(batchId, List.copyOf(sdkShipments), confirmReadiness.of(batchId), context, payload);
         });
+    }
+
+    /**
+     * 组装确认响应并留审计痕迹。
+     *
+     * <p>响应里带上本次被跳过的阻断行：用户点了确认必须当场知道哪些行没发出去、为什么，
+     * 以及它们还留在批次里等补做——否则「部分确认」就成了静默丢单。
+     */
+    private Map<String, Object> confirmResult(
+            long batchId,
+            List<Long> jdSdkShipmentIds,
+            SourceBatchConfirmReadiness.Readiness readiness,
+            CommandContext context,
+            Map<String, Object> payload) {
+        Map<String, Object> result = get(batchId);
+        // 京东 SDK 路由的批次由控制器在确认事务提交后触发批量建单（见
+        // SourceImportController.confirm）；失败留痕（SYNC_FAILED/告警/复核）不阻断批次确认。
+        if (!jdSdkShipmentIds.isEmpty()) {
+            result.put("outbound_routing", Map.of(
+                    "jd_sdk_shipment_ids", jdSdkShipmentIds.stream().map(String::valueOf).toList()));
+        }
+        result.put("skipped_rows", readiness.blockers().stream()
+                .map(SourceBatchConfirmReadiness.BlockedRow::toPayload)
+                .toList());
+        auditLogService.record(new AuditLogService.AuditCommand()
+                .dataScope(DataScope.BUSINESS)
+                .requestId(context.requestId())
+                .traceId(context.traceId())
+                .operator(context.operator())
+                .actorType(AuditActorType.HUMAN)
+                .service("source-file-import")
+                .operation("source-orders.confirm")
+                .requestPayload(payload)
+                .responsePayload(result)
+                .httpStatus(200)
+                .businessCode(readiness.blockedRows() > 0
+                        ? "IMPORT_BATCH_PARTIALLY_CONFIRMED"
+                        : "IMPORT_BATCH_CONFIRMED")
+                .latencyMs(0));
+        return result;
     }
 
     /**

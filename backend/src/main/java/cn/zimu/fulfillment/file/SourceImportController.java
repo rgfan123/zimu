@@ -20,9 +20,21 @@ import org.springframework.web.multipart.MultipartFile;
 class SourceImportController {
 
     private final SourceImportService service;
+    private final SourceBatchListService batchList;
 
-    SourceImportController(SourceImportService service) {
+    SourceImportController(SourceImportService service, SourceBatchListService batchList) {
         this.service = service;
+        this.batchList = batchList;
+    }
+
+    /**
+     * 待确认的来源订单批次清单——前端「确认发货」入口的数据来源。
+     *
+     * <p>只读列表，不触发任何确认副作用；确认动作仍走 {@code {batch_id}/confirm}。
+     */
+    @GetMapping("/api/v1/import-batches/pending-confirmation")
+    Map<String, Object> pendingConfirmation() {
+        return Map.of("items", batchList.pendingConfirmation());
     }
 
     @PostMapping(path = "/api/v1/import-batches/source-orders", consumes = "multipart/form-data")

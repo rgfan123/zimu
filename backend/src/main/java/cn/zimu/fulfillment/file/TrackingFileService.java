@@ -779,7 +779,30 @@ public class TrackingFileService {
                 """,
                 Boolean.class,
                 sourceBatchId));
-        if (hasUnfinishedPartition || hasMultiShipmentFollowup || acceptedRows == 0 || returns.size() != acceptedRows) {
+        // 批次里还有「未定论」的行时不出回填文件。
+        //
+        // 部分确认（跳过阻断行先发能发的）之后，acceptedRows 只数已接收行，就绪的那几行发完
+        // 就会满足 returns.size()==acceptedRows——此时若照常生成，出去的就是一份只含首批的
+        // is_final 文件。excel-closed-loop-spec.md 的后续回传条款写得很直白：「不得生成只含
+        // 首批的 is_final=true 文件」。而且数据库层面这份文件一旦推送成功就再也不能失效
+        // （V41 触发器 validate_source_return_invalidation 明令禁止），等于把半份结果钉死。
+        //
+        // 所以待定行（NEED_REVIEW 待复核 / RECEIVED 处理中）留着就先不出文件：等它们被修好
+        // 转 ACCEPTED（补做确认后一并发货）或被判定 REJECTED（明确不发了），批次定论后再一次
+        // 出齐。REJECTED 不在此列——那是已经做出的决定，对应行在原表里留空正是正确的回填结果。
+        boolean hasUndecidedRows = Boolean.TRUE.equals(jdbc.queryForObject(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM app.raw_import_rows
+                    WHERE import_batch_id=? AND status IN ('NEED_REVIEW', 'RECEIVED'))
+                """,
+                Boolean.class,
+                sourceBatchId));
+        if (hasUnfinishedPartition
+                || hasMultiShipmentFollowup
+                || hasUndecidedRows
+                || acceptedRows == 0
+                || returns.size() != acceptedRows) {
             return null;
         }
         ParsedSourceFile original = sourceFileParser.parse(fileStore.read(source.fileRef()));
