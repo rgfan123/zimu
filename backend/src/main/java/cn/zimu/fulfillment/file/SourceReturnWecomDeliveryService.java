@@ -55,24 +55,33 @@ public class SourceReturnWecomDeliveryService {
         this.gateway = gateway;
     }
 
-    /** 待投递的回填文件：最终版、且所属渠道没有在线回传能力。 */
+    /**
+     * 待投递的回填文件：最终版、且所属渠道没有在线回传能力。
+     *
+     * @param sourceChannel <b>有效</b>来源渠道（{@code v_import_batch_effective_source}），
+     *     不是 {@code import_batches.source_channel}。产物本身就是按有效渠道渲染的
+     *     （{@code TrackingFileService#sourceBatch} 读的是同一个视图），所以格式判定、
+     *     文件命名、以及扫描器的在线回传能力判断都必须跟着有效渠道走。归因纠正过的批次
+     *     （V41）两者不同：读错这一列，投递出去的就是「按 A 平台渲染、按 B 平台命名」的文件。
+     */
     public record Candidate(
             long exportId,
             long importBatchId,
             String sourceChannel,
             String fileRef,
             String originalFileName,
-            int versionNo) {
+            int versionNo,
+            String templateVersion) {
 
         /**
-         * 实际产物的扩展名，取自 file_ref（存储时按渠道决定 .csv/.xlsx）。
+         * 实际产物的扩展名，走与 HTTP 下载同一份判定。
          *
-         * <p>不能按渠道再推一遍，更不能写死 .xlsx——飞象的回填产物是 CSV，
-         * 之前一律叫 .xlsx，收件人拿到的是扩展名对不上内容的文件。
+         * <p>此前这里写死 .xlsx——飞象回传内容是 GB18030 编码的 CSV，收件人拿到的
+         * 是扩展名对不上内容的文件（2026-08-28 生产实证：export 8 投递成
+         * FEIXIANG-回填-批次51.xlsx），Excel 打不开，传回平台大概率被拒。
          */
         String extension() {
-            int dot = fileRef == null ? -1 : fileRef.lastIndexOf('.');
-            return dot < 0 ? ".xlsx" : fileRef.substring(dot);
+            return SourceReturnArtifactFormat.of(sourceChannel, templateVersion).extension();
         }
     }
 
@@ -86,10 +95,12 @@ public class SourceReturnWecomDeliveryService {
     public List<Candidate> pending(int limit) {
         return jdbc.query(
                 """
-                SELECT sre.id, sre.import_batch_id, ib.source_channel, sre.file_ref,
-                       ib.original_file_name, sre.version_no
+                SELECT sre.id, sre.import_batch_id, source.effective_source_channel, sre.file_ref,
+                       ib.original_file_name, sre.version_no, sre.template_version
                 FROM app.source_return_exports sre
                 JOIN app.import_batches ib ON ib.id = sre.import_batch_id
+                JOIN app.v_import_batch_effective_source source
+                  ON source.import_batch_id = sre.import_batch_id
                 WHERE sre.is_final = true
                   AND sre.wecom_delivery_status = 'NOT_SENT'
                   AND sre.file_ref NOT LIKE 'structured://%'
@@ -99,10 +110,11 @@ public class SourceReturnWecomDeliveryService {
                 (rs, row) -> new Candidate(
                         rs.getLong("id"),
                         rs.getLong("import_batch_id"),
-                        rs.getString("source_channel"),
+                        rs.getString("effective_source_channel"),
                         rs.getString("file_ref"),
                         rs.getString("original_file_name"),
-                        rs.getInt("version_no")),
+                        rs.getInt("version_no"),
+                        rs.getString("template_version")),
                 Math.max(1, Math.min(limit, 50)));
     }
 

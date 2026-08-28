@@ -229,7 +229,8 @@ public class SourceReturnPushService {
                     channel,
                     info.importBatchId(),
                     info.originalFileName(),
-                    info.versionNo());
+                    info.versionNo(),
+                    info.templateVersion());
         });
     }
 
@@ -415,22 +416,34 @@ public class SourceReturnPushService {
                 Map.of("code", "SCRIPT_ERROR", "message", String.valueOf(ex.getMessage())), latencyMs);
     }
 
-    /** 读取回填文件 + 来源渠道 + 来源导入批次 id（P1 同步 shipment_syncs 的关联键）。 */
+    /**
+     * 读取回填文件 + 来源渠道 + 来源导入批次 id（P1 同步 shipment_syncs 的关联键）。
+     *
+     * <p>渠道取<b>有效</b>来源渠道（{@code v_import_batch_effective_source}）而不是
+     * {@code import_batches.source_channel}：产物本身按有效渠道渲染
+     * （{@code TrackingFileService#sourceBatch} 读同一视图），{@code shipment_syncs.source_channel}
+     * 也由 V54 按有效渠道写入并被互斥触发器按有效渠道比对。归因纠正过的批次（V41）两者不同，
+     * 读错这一列会同时踩三个坑：推给错的平台脚本、扩展名按错的渠道判、
+     * {@code SYNC_SHIPMENTS_SQL} 一行也匹配不上导致推送成功后同步状态永远停在 PENDING。
+     */
     private ReturnExportInfo load(long exportId) {
         List<ReturnExportInfo> rows = jdbc.query(
                 """
-                SELECT sre.file_ref, ib.source_channel, sre.import_batch_id,
-                       ib.original_file_name, sre.version_no
+                SELECT sre.file_ref, source.effective_source_channel, sre.import_batch_id,
+                       ib.original_file_name, sre.version_no, sre.template_version
                 FROM app.source_return_exports sre
                 JOIN app.import_batches ib ON ib.id=sre.import_batch_id
+                JOIN app.v_import_batch_effective_source source
+                  ON source.import_batch_id=sre.import_batch_id
                 WHERE sre.id=?
                 """,
                 (rs, rowNum) -> new ReturnExportInfo(
                         rs.getString("file_ref"),
-                        rs.getString("source_channel"),
+                        rs.getString("effective_source_channel"),
                         rs.getLong("import_batch_id"),
                         rs.getString("original_file_name"),
-                        rs.getInt("version_no")),
+                        rs.getInt("version_no"),
+                        rs.getString("template_version")),
                 exportId);
         return rows.isEmpty() ? null : rows.getFirst();
     }
@@ -609,7 +622,8 @@ public class SourceReturnPushService {
             String channel,
             long importBatchId,
             String originalFileName,
-            int versionNo) {
+            int versionNo,
+            String templateVersion) {
 
         /**
          * 上传到平台时用的文件名。
@@ -619,14 +633,18 @@ public class SourceReturnPushService {
          * 平台原名全丢。扩展名以实际产物为准。
          */
         String uploadFileName() {
-            int dot = fileRef == null ? -1 : fileRef.lastIndexOf('.');
-            String extension = dot < 0 ? ".xlsx" : fileRef.substring(dot);
+            String extension = SourceReturnArtifactFormat.of(channel, templateVersion).extension();
             return SourceReturnFileNaming.fileName(originalFileName, channel, versionNo, extension);
         }
     }
 
     record ReturnExportInfo(
-            String fileRef, String channel, long importBatchId, String originalFileName, int versionNo) {}
+            String fileRef,
+            String channel,
+            long importBatchId,
+            String originalFileName,
+            int versionNo,
+            String templateVersion) {}
 
     /** 推送渠道脚本规格。 */
     private record ChannelScriptSpec(String scriptName, String credentialFile, List<String> credentialEnvNames) {}

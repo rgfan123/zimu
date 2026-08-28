@@ -74,7 +74,7 @@ class SourceReturnPushServiceTest {
         when(jdbc.<SourceReturnPushService.ReturnExportInfo>query(
                 startsWith("SELECT sre.file_ref"), any(RowMapper.class), anyLong()))
                 .thenReturn(List.of(new SourceReturnPushService.ReturnExportInfo(
-                        "ref-1.xlsx", "CAISHIXIAN", 42L, "caishixian-deliver-2026-08-28.xlsx", 1)));
+                        "ref-1", "CAISHIXIAN", 42L, "caishixian-deliver-2026-08-28.xlsx", 1, "1")));
         when(jdbc.update(eq(SourceReturnPushService.CLAIM_SQL), any(), any(), any())).thenReturn(1);
     }
 

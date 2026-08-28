@@ -69,6 +69,7 @@ class WangqiBundlePipelineApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper objectMapper;
     @Autowired ControlledJdClient jd;
+    @Autowired SourceReturnWecomDeliveryService wecomDelivery;
     private long bundleId;
 
     @TestConfiguration
@@ -316,9 +317,34 @@ class WangqiBundlePipelineApiTest {
                 HttpMethod.GET,
                 new HttpEntity<>(operatorHeaders()),
                 byte[].class);
-        assertThat(ContentDisposition.parse(returnedDownload.getHeaders()
-                        .getFirst(HttpHeaders.CONTENT_DISPOSITION)).getFilename())
-                .isEqualTo("大者-来源回填-" + returnId + ".xlsx");
+        // 回填文件还给来源平台，平台可能按文件名识别归档：原始文件名的主干必须原样保住，
+        // 只允许追加后缀（用户裁决：「文件名 你可以添加后缀 但不能改名」）。
+        // 断言钉的是这个性质而不是某个拼出来的字符串——后缀形式以后可以调，基名不许被换掉。
+        String returnedFilename = ContentDisposition.parse(returnedDownload.getHeaders()
+                .getFirst(HttpHeaders.CONTENT_DISPOSITION)).getFilename();
+        assertThat(returnedFilename)
+                .withFailMessage("原名主干必须原样出现在回填文件名里: %s", returnedFilename)
+                .startsWith("wangqi-bundle")
+                .endsWith(".xlsx");
+
+        // 同一份产物的两条出口必须给出同一个扩展名：HTTP 下载（上面那段）与企微投递。
+        // 2026-08-28 生产实证的分叉就发生在这里——飞象 export 8 的产物是 GB18030 CSV，
+        // 下载给 .csv，企微投递却写死 .xlsx。判定收敛到 SourceReturnArtifactFormat 之后，
+        // 这条断言钉住「两条出口对同一份真实产物答案一致」，而不只是同一个函数被调用两遍。
+        SourceReturnWecomDeliveryService.Candidate wecomCandidate = wecomDelivery.pending(50).stream()
+                .filter(candidate -> String.valueOf(candidate.exportId()).equals(returnId))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("待投递候选里没有 export=" + returnId));
+        assertThat(wecomCandidate.extension())
+                .withFailMessage("企微投递与 HTTP 下载对同一份产物给了不同扩展名: 投递=%s 下载=%s",
+                        wecomCandidate.extension(), returnedFilename)
+                .isEqualTo(returnedFilename.substring(returnedFilename.lastIndexOf('.')));
+        // 投递的文件名同样以平台原名为基名，不是另拼一个。
+        assertThat(SourceReturnFileNaming.fileName(
+                        wecomCandidate.originalFileName(), wecomCandidate.sourceChannel(),
+                        wecomCandidate.versionNo(), wecomCandidate.extension()))
+                .startsWith("wangqi-bundle")
+                .endsWith(".xlsx");
         byte[] returned = returnedDownload.getBody();
         try (var returnedWorkbook = WorkbookFactory.create(new ByteArrayInputStream(returned))) {
             var returnedSheet = returnedWorkbook.getSheetAt(0);

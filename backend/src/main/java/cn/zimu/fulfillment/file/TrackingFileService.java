@@ -875,7 +875,8 @@ public class TrackingFileService {
         byte[] file = "FEIXIANG".equals(source.channel())
                 ? trueCsv(source, rendered)
                 : sourceWorkbook(source, rendered, changedByCoordinate);
-        String suffix = "FEIXIANG".equals(source.channel()) ? ".csv" : ".xlsx";
+        // 扩展名由产物格式的单一真源决定，下载与企微投递读同一份判定。
+        String suffix = SourceReturnArtifactFormat.of(source.channel(), source.templateVersion()).extension();
         ContentAddressedFileStore.StoredFile stored = fileStore.put("source-return-exports", file, suffix);
         Integer version = jdbc.queryForObject(
                 "SELECT COALESCE(MAX(version_no), 0)+1 FROM app.source_return_exports WHERE import_batch_id=?",
@@ -1140,12 +1141,9 @@ public class TrackingFileService {
         }
         String channel = rows.getFirst().get("effective_source_channel").toString();
         String templateVersion = rows.getFirst().get("template_version").toString();
-        String suffix = "FEIXIANG".equals(channel) ? ".csv" : ".xlsx";
-        String contentType = "FEIXIANG".equals(channel)
-                ? (templateVersion.startsWith("v2-gb18030-lf")
-                        ? "text/csv;charset=GB18030"
-                        : "text/csv;charset=UTF-8")
-                : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        SourceReturnArtifactFormat format = SourceReturnArtifactFormat.of(channel, templateVersion);
+        String suffix = format.extension();
+        String contentType = format.contentType();
         auditLogService.record(new AuditLogService.AuditCommand()
                 .dataScope(DataScope.BUSINESS).requestId(context.requestId()).traceId(context.traceId())
                 .operator(context.operator()).actorType(AuditActorType.HUMAN)
