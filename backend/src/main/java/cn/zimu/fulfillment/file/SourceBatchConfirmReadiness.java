@@ -20,10 +20,30 @@ import org.springframework.stereotype.Component;
 class SourceBatchConfirmReadiness {
 
     /**
-     * ORDER_ALREADY_EXISTS 是良性跳过而非待处理问题：该行对应的订单早已入库。
-     * 与 {@link SourceImportService#confirm} 的豁免口径必须保持一致。
+     * 「定义上无事可做」的行：订单早已入库，或来源侧早已发完。
+     *
+     * <p>这类行不是待处理问题——确认发货对它们结构上就没有动作可做。飞象用户导「全部订单」
+     * 必然混进历史已发单，2026-08-28 生产实例里 10 行只有 1 张新单，被 9 行
+     * SOURCE_ORDER_ALREADY_FULFILLED 挡住，而这 9 行既没有复核事项也没有行级处置端点，
+     * 用户完全无路可走。
+     *
+     * <p>注意与真正的阻断行区分：NEED_REVIEW（缺 SKU 映射等）是「本应建单却没建成」，
+     * 用户最终是想让它发出去的，那类行走部分确认跳过 + 修好后补做，不在本豁免之列。
      */
-    private static final String BENIGN_REJECT_CODE = "ORDER_ALREADY_EXISTS";
+    private static final String BENIGN_CODES = "'ORDER_ALREADY_EXISTS', 'SOURCE_ORDER_ALREADY_FULFILLED'";
+
+    /**
+     * 良性豁免的结构性保险：这两类行从不建单，{@code order_line_id} 恒为 NULL（生产实测）。
+     * 将来若某类行开始建单，它就会自动回到阻断口径，而不是被静默放过。
+     */
+    private static String benignPredicate(String alias) {
+        return "(" + alias + "order_line_id IS NULL AND " + alias + "error_code IN (" + BENIGN_CODES + "))";
+    }
+
+    /** 表别名前缀：无别名传空串，有别名传 {@code "rir."}。 */
+    private static String prefix(String tableAlias) {
+        return tableAlias == null || tableAlias.isBlank() ? "" : tableAlias + ".";
+    }
 
     private final JdbcTemplate jdbc;
 
@@ -89,14 +109,21 @@ class SourceBatchConfirmReadiness {
         return new Readiness(
                 countRows(batchId, "status='ACCEPTED'"),
                 countPendingRows(batchId),
-                countRows(batchId, blockedPredicate()),
-                countRows(batchId, "status='REJECTED' AND error_code='" + BENIGN_REJECT_CODE + "'"),
+                countRows(batchId, blockedPredicate("")),
+                countRows(batchId, benignSkippedPredicate("")),
                 blockers(batchId));
     }
 
-    /** 阻断口径：非 ACCEPTED，且排除良性重复行。与确认闸门同一条判据。 */
-    static String blockedPredicate() {
-        return "status<>'ACCEPTED' AND NOT (status='REJECTED' AND error_code='" + BENIGN_REJECT_CODE + "')";
+    /** 阻断口径：非 ACCEPTED，且排除「定义上无事可做」的行。与确认闸门同一条判据。 */
+    static String blockedPredicate(String tableAlias) {
+        String alias = prefix(tableAlias);
+        return alias + "status<>'ACCEPTED' AND NOT " + benignPredicate(alias);
+    }
+
+    /** 良性跳过口径：非 ACCEPTED，且确实属于「定义上无事可做」。 */
+    static String benignSkippedPredicate(String tableAlias) {
+        String alias = prefix(tableAlias);
+        return alias + "status<>'ACCEPTED' AND " + benignPredicate(alias);
     }
 
     private int countRows(long batchId, String predicate) {
@@ -149,13 +176,15 @@ class SourceBatchConfirmReadiness {
     }
 
     private List<BlockedRow> blockers(long batchId) {
+        // 注意：文本块会剥掉每行的行尾空白，别把 "AND " 留在文本块末尾再拼接——
+        // 那会拼成 "ANDstatus" 并在运行时炸成 SQL 语法错误。这里整条 SQL 用普通拼接。
+        String sql = "SELECT id, source_order_ref, status, error_code,"
+                + " error_detail->>'message' detail_message"
+                + " FROM app.raw_import_rows"
+                + " WHERE import_batch_id=? AND " + blockedPredicate("")
+                + " ORDER BY sheet_index, row_index LIMIT 200";
         return jdbc.query(
-                """
-                SELECT id, source_order_ref, status, error_code,
-                       error_detail->>'message' detail_message
-                FROM app.raw_import_rows
-                WHERE import_batch_id=? AND """ + blockedPredicate()
-                        + " ORDER BY sheet_index, row_index LIMIT 200",
+                sql,
                 (resultSet, rowNum) -> {
                     String errorCode = resultSet.getString("error_code");
                     String detailMessage = resultSet.getString("detail_message");

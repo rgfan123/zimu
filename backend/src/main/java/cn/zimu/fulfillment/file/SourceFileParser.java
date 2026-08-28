@@ -381,7 +381,15 @@ class SourceFileParser {
      *
      * <p>万齐适配器早有同型拦截（SOURCE_ORDER_ALREADY_FULFILLED），中汇漏了。
      * 判据取来源自己给的事实：发货状态/订单状态说已发货，或物流公司/物流单号已有值。
-     * 不猜、不跳过——落成带错误码的行，让它出现在复核队列里，人能看见为什么没进来。
+     * 不猜、不跳过——落成带错误码的行，人能看见为什么没进来。
+     *
+     * <p><b>更正（2026-08-28 生产实测）</b>：这里原先写「让它出现在复核队列里」，是错的。
+     * 复核事项挂在订单上（{@code review_cases.order_id}），而被本方法拦下的行<b>压根没建单</b>，
+     * 结构上就生不出复核事项——生产库里这类行对应的 {@code review_cases} 一条都没有。
+     * 它们的可见性由另外两处提供：批次行清单里带 error_code/error_detail 原样可查；
+     * 确认闸门投影 {@link SourceBatchConfirmReadiness} 把它们计入
+     * {@code benign_skipped_rows} 并在工作台待确认区显示。既然没建单，确认发货结构上
+     * 碰不到它们，所以它们也不阻断整批确认（口径见 {@code SourceBatchConfirmReadiness}）。
      */
     private ParsedSourceRow zhonghui(String sheet, int sheetIndex, int row, Map<String, String> cells) {
         ParsedSourceRow parsed = zhonghuiRow(sheet, sheetIndex, row, cells);

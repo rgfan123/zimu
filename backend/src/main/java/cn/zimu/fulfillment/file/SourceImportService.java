@@ -981,16 +981,15 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             // 阻断行原地留在批次里（状态不变、复核事项不变），修好后再次确认即可补做——
             // ProviderFileService#candidateRows 本身就排除已导出行，所以重复确认只会捡起新就绪的行。
             SourceBatchConfirmReadiness.Readiness readiness = confirmReadiness.of(batchId);
-            if (!readiness.confirmable()) {
-                if (readiness.blockedRows() > 0) {
-                    throw BusinessException.conflict("IMPORT_BATCH_BLOCKED", "批次仍有待处理的 SKU、文件或数据问题");
-                }
-                if (batch.get("confirmed_at") != null) {
-                    // 已确认且没有新就绪行：幂等重放语义，直接回当前状态。
-                    return confirmResult(batchId, List.of(), readiness, context, payload);
-                }
-                throw BusinessException.conflict("IMPORT_BATCH_NOTHING_READY", "批次没有可确认的已接收行");
+            if (!readiness.confirmable() && readiness.blockedRows() > 0) {
+                // 一行都发不了、却还有待处理行：和从前一样拒绝，让人先去处理。
+                throw BusinessException.conflict("IMPORT_BATCH_BLOCKED", "批次仍有待处理的 SKU、文件或数据问题");
             }
+            // 没有待发货行也没有阻断行（空批次、或已全部确认过）时放行，走完下面的空转。
+            // 与从前的差别要说清楚：旧代码用 confirmed_at==null 把整段路由都跳过，已确认批次
+            // 再点一次是彻底的空操作；现在为了支持补做不能再按 confirmed_at 分叉，于是路由照跑，
+            // 但 ProviderFileService#candidateRows 排除已导出行，跑出来是空集——结果同样是空操作，
+            // 只是空在更下游。confirmed_at 也只在首次确认时写（见下方），补做不会改写它。
             // jd-real-sdk-switch 05：按履约方显式配置路由——京东 SDK 直连或导单文件，第三方始终文件。
             Map<String, Object> routing = providerFileService.routeForSourceBatch(batchId, context.operator());
             @SuppressWarnings("unchecked")
