@@ -60,6 +60,7 @@ import type {
   OutboundReconQueryType,
   OutboundReconView,
   ProductArchiveSheet,
+  ProductArchiveSheetPage,
   ProductBundleCreateInput,
   ProductBundlePage,
   ProductBundleRecord,
@@ -144,6 +145,10 @@ export interface MasterDataListQuery {
 }
 
 export interface CustomerListQuery extends PageQuery {
+  query?: string;
+}
+
+export interface ProductArchiveSheetListQuery extends PageQuery {
   query?: string;
 }
 
@@ -303,6 +308,14 @@ export const productsApi = {
   /** 商品档案·成本表全列留存（只读）。fields 按原表列序返回，渲染时不得排序。 */
   archiveSheet: (id: string) =>
     apiRequest<ProductArchiveSheet[]>(`/api/v1/products/${id}/archive-sheet`),
+};
+
+/** GET /api/v1/product-archive-sheets —— 成本表全部行（含未挂接行），只读。 */
+export const productArchiveSheetsApi = {
+  list: (query: ProductArchiveSheetListQuery = {}) =>
+    apiRequest<ProductArchiveSheetPage>('/api/v1/product-archive-sheets', {
+      params: query as Record<string, QueryValue>,
+    }),
 };
 
 /** POST /api/v1/product-images（multipart），GET /api/v1/product-images?ref=...。 */

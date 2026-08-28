@@ -105,6 +105,7 @@ class OpenApiContractConsistencyTest {
             Map.entry("GET /api/v1/order-drafts", Map.of("PageResponseOrderDraftDetailDto", "OrderDraftPage")),
             Map.entry("GET /api/v1/orders", Map.of("PageResponseOrderSummaryDto", "OrderPage")),
             Map.entry("GET /api/v1/procurement-tickets", Map.of("PageResponseMapStringObject", "ProcurementTicketPage")),
+            Map.entry("GET /api/v1/product-archive-sheets", Map.of("PageResponseProductArchiveSheet", "ProductArchiveSheetPage")),
             Map.entry("GET /api/v1/product-bundles", Map.of("PageResponseMasterDataRecord", "MasterDataPage")),
             Map.entry("GET /api/v1/products", Map.of("PageResponseMasterDataRecord", "MasterDataPage")),
             Map.entry("GET /api/v1/provider-sku-mappings", Map.of("PageResponseMasterDataRecord", "MasterDataPage")),

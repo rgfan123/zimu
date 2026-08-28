@@ -31,7 +31,7 @@ public class ProductArchiveSheetService {
     private static final String SELECT_COLUMNS =
             """
             SELECT id, source_file_name, source_file_sha256, sheet_name, row_no,
-                   product_name, fields, extra_cells, created_at
+                   product_name, matched_product_id, fields, extra_cells, created_at
             FROM app.product_archive_sheets
             """;
 
@@ -105,6 +105,7 @@ public class ProductArchiveSheetService {
 
     private ProductArchiveSheet map(ResultSet rs, int row) throws SQLException {
         OffsetDateTime createdAt = rs.getObject("created_at", OffsetDateTime.class);
+        Long matchedProductId = rs.getObject("matched_product_id", Long.class);
         return new ProductArchiveSheet(
                 String.valueOf(rs.getLong("id")),
                 rs.getString("source_file_name"),
@@ -112,6 +113,7 @@ public class ProductArchiveSheetService {
                 rs.getString("sheet_name"),
                 rs.getInt("row_no"),
                 rs.getString("product_name"),
+                matchedProductId == null ? null : String.valueOf(matchedProductId),
                 parse(rs.getString("fields"), FIELDS),
                 parse(rs.getString("extra_cells"), EXTRA_CELLS),
                 createdAt == null ? null : createdAt.toInstant());

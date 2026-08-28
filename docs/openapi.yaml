@@ -2436,6 +2436,23 @@ paths:
             image/jpeg: { schema: { type: string, format: binary } }
             image/webp: { schema: { type: string, format: binary } }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/product-archive-sheets:
+    get:
+      tags: [MasterData]
+      operationId: listProductArchiveSheets
+      summary: 分页检索全部成本表行（含未挂接行）
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - name: query
+          in: query
+          description: 按成本表商品名称大小写不敏感模糊搜索
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成本表行分页；matched_product_id 为 null 表示尚未挂接商品
+          content: { application/json: { schema: { $ref: '#/components/schemas/ProductArchiveSheetPage' } } }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/products/{product_id}:
     parameters:
       - $ref: '#/components/parameters/ProductId'
@@ -7109,7 +7126,7 @@ components:
         商品档案·成本表全列留存的一行（= 成本表一行）。fields 是**有序数组**，顺序即原表列序，
         库里也存成 jsonb 数组而非对象（jsonb 对象不保证键序）。列语义：AI 线下供货成本/份 = 成本
         （按份 500g 口径）；AJ 售价 = 不含运费售价，只留档、不入 retail_price。
-      required: [id, source_file_name, source_file_sha256, sheet_name, row_no, product_name, fields]
+      required: [id, source_file_name, source_file_sha256, sheet_name, row_no, product_name, matched_product_id, fields]
       properties:
         id: { $ref: '#/components/schemas/Identifier' }
         source_file_name: { type: string }
@@ -7117,6 +7134,11 @@ components:
         sheet_name: { type: string }
         row_no: { type: integer, minimum: 1, description: 原表 Excel 行号（数据行从 2 起） }
         product_name: { type: string }
+        matched_product_id:
+          type: string
+          pattern: '^[1-9][0-9]*$'
+          nullable: true
+          description: 已人工挂接的商品标识；null 表示挂接尚未完成
         fields:
           type: array
           description: 数组序 == 原表列序；空单元格保留元素、value 为 null 以保位
@@ -7137,6 +7159,15 @@ components:
               column: { type: string }
               value: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
+    ProductArchiveSheetPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: { $ref: '#/components/schemas/ProductArchiveSheet' }
     SkuAttributes:
       type: object
       required: [product_id, provider_id, specification, unit, purchase_price, retail_price]

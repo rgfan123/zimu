@@ -235,6 +235,7 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | Customer | `GET/POST /api/v1/customers`，`GET/PATCH /api/v1/customers/{customer_id}` |
 | Category | `GET/POST /api/v1/categories`，`GET/PATCH /api/v1/categories/{category_id}` |
 | Product | `GET/POST /api/v1/products`，`GET/PATCH /api/v1/products/{product_id}` |
+| 商品成本档案 | `GET /api/v1/product-archive-sheets`（含未挂接行，支持 query/page/size），`GET /api/v1/products/{product_id}/archive-sheet`（已挂接到指定商品的行） |
 | SKU | `GET/POST /api/v1/skus`，`GET/PATCH /api/v1/skus/{sku_id}` |
 | 来源 SKU 映射 | `GET/POST /api/v1/source-sku-mappings`，`GET/PATCH /api/v1/source-sku-mappings/{mapping_id}` |
 | 履约方 SKU 映射 | `GET/POST /api/v1/provider-sku-mappings`，`GET/PATCH /api/v1/provider-sku-mappings/{mapping_id}` |

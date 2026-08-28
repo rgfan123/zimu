@@ -1,38 +1,67 @@
 /**
- * 商品档案：以可履约 SKU 为运营主记录，同时展示所属商品、品类、履约方、规格与价格。
+ * 商品档案：以可履约 SKU 为运营主记录，京东 EMG 编号后展示成本表 A..AU 原序列。
  */
 
-import { useState } from 'react';
-import { Button, Input, Select, Space, Tag, Typography } from 'antd';
-import { CloudUploadOutlined } from '@ant-design/icons';
+import { useCallback, useMemo, useState } from 'react';
+import { Alert, Button, Checkbox, Dropdown, Input, Select, Space, Tag, theme, Typography } from 'antd';
+import { CloudUploadOutlined, SettingOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import MasterDataCrud, { attr, type CrudField } from '@/pages/shared/MasterDataCrud';
-import { MainImageThumb } from '@/pages/shared/MainImage';
-import { skusApi } from '@/api/endpoints';
+import { productArchiveSheetsApi, skusApi } from '@/api/endpoints';
 import type { MasterDataRecord } from '@/api/types';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
+import { useAsync } from '@/hooks/useAsync';
 import { useCategoryOptions, useProviderOptions } from './masterOptions';
-import { displaySkuSpecification } from './productArchive';
 import {
   COMMERCIAL_PRICE_PATTERN,
   buildProductWithInitialSkuBody,
   buildSkuUpdateBody,
-  commercialPriceLabel,
 } from './skuCommercialPrice';
-import { leadTimeLabel, listingPeriodLabel, marginLabel } from './productArchiveFields';
 import PlatformUploadModal from './PlatformUploadModal';
 import ProductArchiveSheetDrawer from './ProductArchiveSheetDrawer';
+import {
+  ARCHIVE_COLUMN_OPTIONS,
+  DEFAULT_ARCHIVE_COLUMNS,
+  productArchiveColumnGroups,
+  productArchiveTableScrollX,
+  productArchivesByProduct,
+  type ArchiveColumn,
+} from './productArchiveTable';
 
 export default function SkusPage() {
   const [providerId, setProviderId] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState<string | undefined>();
   const [platformUploadOpen, setPlatformUploadOpen] = useState(false);
   const [archiveSheetOf, setArchiveSheetOf] = useState<MasterDataRecord | null>(null);
+  const [visibleArchiveColumns, setVisibleArchiveColumns] = useState<ArchiveColumn[]>(
+    () => [...DEFAULT_ARCHIVE_COLUMNS],
+  );
+  const { token } = theme.useToken();
   const providerOptions = useProviderOptions();
   const categoryOptions = useCategoryOptions();
-  const providerLabels = new Map(providerOptions.map(({ value, label }) => [String(value), label]));
-  const categoryLabels = new Map(categoryOptions.map(({ value, label }) => [String(value), label]));
+  const {
+    data: archivePage,
+    loading: archiveLoading,
+    error: archiveError,
+    reload: reloadArchive,
+  } = useAsync(() => productArchiveSheetsApi.list({ page: 0, size: 200 }), []);
+  const archiveByProduct = useMemo(
+    () => productArchivesByProduct(archivePage?.items ?? []),
+    [archivePage],
+  );
+  const matchedArchiveCount = archivePage?.items.reduce(
+    (count, row) => count + (row.matched_product_id === null ? 0 : 1),
+    0,
+  ) ?? 0;
+  const fetchSkuPage = useCallback(
+    (query: { page: number; size: number }) => skusApi.list({
+      ...query,
+      provider_id: providerId,
+      query: searchQuery,
+    }),
+    [providerId, searchQuery],
+  );
 
   const columns: ColumnsType<MasterDataRecord> = [
     { title: '商品 / SKU', key: 'identity', width: 210, render: (_, r) => <ProductIdentity name={r.name} code={r.code} /> },
@@ -45,61 +74,7 @@ export default function SkusPage() {
         return emg ? <Tag style={{ marginInlineEnd: 0 }}>{String(emg)}</Tag> : '—';
       },
     },
-    {
-      title: '主图',
-      key: 'main_image',
-      width: 70,
-      render: (_, r) => <MainImageThumb ref={attr(r, 'product_main_image_ref') as string | null | undefined} />,
-    },
-    { title: '品类', key: 'category', width: 150, render: (_, r) => categoryLabels.get(String(attr(r, 'category_id'))) ?? '—' },
-    { title: '规格', key: 'spec', width: 110, render: (_, r) => displaySkuSpecification(attr(r, 'specification')) },
-    { title: '单位', key: 'unit', width: 70, render: (_, r) => String(attr(r, 'unit') ?? '—') },
-    { title: '履约方', key: 'provider', width: 170, render: (_, r) => providerLabels.get(String(attr(r, 'provider_id'))) ?? '—' },
-    {
-      title: '毛利', key: 'margin', width: 100, align: 'right',
-      render: (_, r) => marginLabel(attr(r, 'margin')),
-    },
-    {
-      title: '标签', key: 'tags', width: 200,
-      render: (_, r) => {
-        const tags = attr(r, 'product_tags');
-        if (!Array.isArray(tags) || tags.length === 0) return '—';
-        return (
-          <span>
-            {tags.map((tag) => (
-              <Tag key={String(tag)} style={{ marginInlineEnd: 4 }}>{String(tag)}</Tag>
-            ))}
-          </span>
-        );
-      },
-    },
-    {
-      title: '原料', key: 'ingredients', width: 160, ellipsis: true,
-      render: (_, r) => String(attr(r, 'product_ingredients') ?? '—'),
-    },
-    {
-      title: '上市周期', key: 'listing_period', width: 180,
-      render: (_, r) => listingPeriodLabel(attr(r, 'product_listed_from'), attr(r, 'product_listed_until')),
-    },
-    {
-      title: '发货时效', key: 'lead_time', width: 110,
-      render: (_, r) => leadTimeLabel(attr(r, 'product_lead_time_hours')),
-    },
-    {
-      title: '进货价', key: 'purchase_price', width: 90, align: 'right',
-      render: (_, r) => commercialPriceLabel(attr(r, 'purchase_price')),
-    },
-    {
-      title: '零售价', key: 'retail_price', width: 90, align: 'right',
-      render: (_, r) => commercialPriceLabel(attr(r, 'retail_price')),
-    },
-    {
-      title: '条码', key: 'barcode', width: 130,
-      render: (_, r) => {
-        const barcode = attr(r, 'barcode');
-        return barcode ? <Tag style={{ marginInlineEnd: 0 }}>{String(barcode)}</Tag> : '—';
-      },
-    },
+    ...productArchiveColumnGroups(archiveByProduct, visibleArchiveColumns),
     {
       title: '成本档案', key: 'archive_sheet', width: 90,
       render: (_, r) => (
@@ -157,9 +132,34 @@ export default function SkusPage() {
 
   return (
     <>
-    <MasterDataCrud
-      filters={
-        <Space wrap>
+      {archiveError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="成本表挂接情况读取失败"
+          description="当前无法确认挂接率，列表成本列暂以 — 展示。"
+          action={<Button size="small" onClick={reloadArchive}>重试</Button>}
+          style={{ marginBottom: 16 }}
+        />
+      ) : archiveLoading || archivePage === null ? (
+        <Alert
+          type="info"
+          showIcon
+          message="正在读取成本表挂接情况…"
+          style={{ marginBottom: 16 }}
+        />
+      ) : (
+        <Alert
+          type={matchedArchiveCount < archivePage.total_elements ? 'warning' : 'success'}
+          showIcon
+          message={`成本表挂接率：已挂接 ${matchedArchiveCount} / 成本表共 ${archivePage.total_elements} 行`}
+          description="未挂接行需人工挂接；未挂接 SKU 的成本列显示为 —。"
+          style={{ marginBottom: 16 }}
+        />
+      )}
+      <MasterDataCrud
+        filters={
+          <Space wrap>
           <Input.Search
             style={{ width: 260 }}
             placeholder="搜索 SKU 编码 / 商品名称"
@@ -178,22 +178,51 @@ export default function SkusPage() {
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
             新建会同时创建商品及首个 SKU；后续可在基础信息中维护完整商品资料。
           </Typography.Text>
+          <Dropdown
+            trigger={['click']}
+            placement="bottomRight"
+            popupRender={() => (
+              <Checkbox.Group<ArchiveColumn>
+                value={visibleArchiveColumns}
+                options={ARCHIVE_COLUMN_OPTIONS}
+                onChange={setVisibleArchiveColumns}
+                style={{
+                  width: 680,
+                  maxWidth: 'calc(100vw - 32px)',
+                  maxHeight: 420,
+                  overflowY: 'auto',
+                  padding: 16,
+                  background: token.colorBgElevated,
+                  borderRadius: token.borderRadiusLG,
+                  boxShadow: token.boxShadowSecondary,
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                  gap: '8px 16px',
+                }}
+              />
+            )}
+          >
+            <Button size="small" icon={<SettingOutlined />}>
+              列设置（{visibleArchiveColumns.length} / 47）
+            </Button>
+          </Dropdown>
           <Button size="small" type="primary" ghost icon={<CloudUploadOutlined />}
                   onClick={() => setPlatformUploadOpen(true)}>
             上架
           </Button>
           <Button size="small"><Link to="/product/products">管理商品名称</Link></Button>
           <Button size="small"><Link to="/product/categories">管理品类</Link></Button>
-        </Space>
-      }
-      extraQuery={{ provider_id: providerId, query: searchQuery }}
-      fetchPage={(q) => skusApi.list({ ...q, provider_id: providerId, query: searchQuery })}
-      create={(v) => skusApi.createWithProduct(buildProductWithInitialSkuBody(v))}
-      update={(id, v) => skusApi.update(id, buildSkuUpdateBody(v))}
-      columns={columns}
-      createFields={createFields}
-      updateFields={updateFields}
-    />
+          </Space>
+        }
+        extraQuery={{ provider_id: providerId, query: searchQuery }}
+        fetchPage={fetchSkuPage}
+        create={(v) => skusApi.createWithProduct(buildProductWithInitialSkuBody(v))}
+        update={(id, v) => skusApi.update(id, buildSkuUpdateBody(v))}
+        columns={columns}
+        createFields={createFields}
+        updateFields={updateFields}
+        tableScrollX={productArchiveTableScrollX(visibleArchiveColumns)}
+      />
       <PlatformUploadModal
         open={platformUploadOpen}
         onClose={() => setPlatformUploadOpen(false)}

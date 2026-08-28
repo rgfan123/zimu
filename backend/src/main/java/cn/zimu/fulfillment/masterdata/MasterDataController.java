@@ -99,6 +99,13 @@ public class MasterDataController {
         archiveSheets.requireProduct(productId);
         return archiveSheets.byProduct(productId);
     }
+    /** 商品档案·成本表全量只读检索：包含未挂接行，供列表一次拉取后按商品挂接。 */
+    @GetMapping("/product-archive-sheets") public PageResponse<ProductArchiveSheet> productArchiveSheets(
+            @RequestParam(defaultValue = "0") @Min(0) int page,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(200) int size,
+            @RequestParam(required = false) String query) {
+        return archiveSheets.search(query, page, size);
+    }
     @PostMapping("/products") public ResponseEntity<?> createProduct(@Valid @RequestBody ProductWrite body,
             @RequestHeader("Idempotency-Key") String key, @RequestHeader("X-Operator") String operator) {
         return WriteCommands.respond(service.createProduct(body, WriteCommands.requireIdempotencyKey(key), WriteCommands.writeContext(operator)));

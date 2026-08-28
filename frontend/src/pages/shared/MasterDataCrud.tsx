@@ -42,6 +42,7 @@ export interface MasterDataCrudProps {
   createFields?: CrudField[];
   updateFields?: CrudField[];
   pageSizeOptions?: number[];
+  tableScrollX?: number;
 }
 
 /** 读取 MasterDataRecord 的展示字段：直属字段优先，否则取 attributes（openapi 附加属性）。 */
@@ -89,6 +90,7 @@ export default function MasterDataCrud({
   createFields = [],
   updateFields = [],
   pageSizeOptions = [10, 20, 50],
+  tableScrollX = 860,
 }: MasterDataCrudProps) {
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(10);
@@ -257,7 +259,7 @@ export default function MasterDataCrud({
                 columns={mergedColumns}
                 dataSource={data?.items ?? []}
                 size="middle"
-                scroll={{ x: 860 }}
+                scroll={{ x: tableScrollX }}
                 locale={{ emptyText: <AdminEmpty description="暂无主数据" /> }}
                 pagination={{
                   current: page + 1,

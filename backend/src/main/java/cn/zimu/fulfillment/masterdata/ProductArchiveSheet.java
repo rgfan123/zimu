@@ -19,6 +19,7 @@ public record ProductArchiveSheet(
         String sheetName,
         int rowNo,
         String productName,
+        String matchedProductId,
         List<Field> fields,
         List<ExtraCell> extraCells,
         Instant createdAt) {

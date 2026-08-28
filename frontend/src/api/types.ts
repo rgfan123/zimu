@@ -511,9 +511,14 @@ export interface ProductArchiveSheet {
   sheet_name: string;
   row_no: number;
   product_name: string;
+  matched_product_id: string | null;
   fields: ProductArchiveSheetField[];
   extra_cells?: ProductArchiveSheetExtraCell[];
   created_at?: string;
+}
+
+export interface ProductArchiveSheetPage extends PageMeta {
+  items: ProductArchiveSheet[];
 }
 
 export type ProductBundleStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE';

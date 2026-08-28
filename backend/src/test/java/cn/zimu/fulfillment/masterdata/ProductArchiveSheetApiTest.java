@@ -37,6 +37,7 @@ class ProductArchiveSheetApiTest {
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     private static final String SHA = "e185b33fb5e856e9bdc324d6f4af8278ffb6937db3b09c4405f849208c2c86e4";
+    private static final String SEARCH_SHA = "f285b33fb5e856e9bdc324d6f4af8278ffb6937db3b09c4405f849208c2c86e4";
 
     /** 原表列序：字典序会把「产品名称」排到最后、「B」排到最前，与此顺序不同——正是要防的重排。 */
     private static final List<String> COLUMN_ORDER =
@@ -110,6 +111,36 @@ class ProductArchiveSheetApiTest {
         assertThat(missing.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
+    @Test
+    void archiveSheetSearchSupportsQueryAndPaginationAndExposesNullableProductMatch() {
+        String productId = createProduct("P-ARCHIVE-SHEET-03", "成本档案列表挂接商品");
+        insertSearchRow(71, "archive-list-matched", Long.parseLong(productId));
+        insertSearchRow(72, "archive-list-unmatched", null);
+
+        ResponseEntity<Map> first = http.getForEntity(
+                "/api/v1/product-archive-sheets?query=archive-list&page=0&size=1", Map.class);
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(first.getBody())
+                .containsEntry("page", 0)
+                .containsEntry("size", 1)
+                .containsEntry("total_elements", 2)
+                .containsEntry("total_pages", 2);
+
+        List<Map<String, Object>> firstItems = (List<Map<String, Object>>) first.getBody().get("items");
+        assertThat(firstItems).hasSize(1);
+        assertThat(firstItems.get(0)).containsEntry("product_name", "archive-list-matched");
+        assertThat(String.valueOf(firstItems.get(0).get("matched_product_id"))).isEqualTo(productId);
+
+        ResponseEntity<Map> second = http.getForEntity(
+                "/api/v1/product-archive-sheets?query=archive-list&page=1&size=1", Map.class);
+        assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
+        List<Map<String, Object>> secondItems = (List<Map<String, Object>>) second.getBody().get("items");
+        assertThat(secondItems).hasSize(1);
+        assertThat(secondItems.get(0))
+                .containsEntry("product_name", "archive-list-unmatched")
+                .containsEntry("matched_product_id", null);
+    }
+
     /** 直灌档案行：档案由成本表一次性灌库，应用侧没有写接口，测试按生产同款幂等语句插入。 */
     private void insertRow(String productId, int rowNo, String productName, String cost, String price) {
         String fields = """
@@ -131,6 +162,19 @@ class ProductArchiveSheetApiTest {
                 """,
                 "A产品成本核算26.3.29.xlsx", SHA, "成品", rowNo, productName, fields,
                 Long.parseLong(productId));
+    }
+
+    private void insertSearchRow(int rowNo, String productName, Long matchedProductId) {
+        jdbc.update(
+                """
+                INSERT INTO app.product_archive_sheets (
+                    source_file_name, source_file_sha256, sheet_name, row_no,
+                    product_name, fields, matched_product_id)
+                VALUES (?, ?, ?, ?, ?, '[]'::jsonb, ?)
+                ON CONFLICT (source_file_sha256, row_no) DO NOTHING
+                """,
+                "A产品成本核算26.3.29.xlsx", SEARCH_SHA, "成品", rowNo, productName,
+                matchedProductId);
     }
 
     private String createProduct(String productCode, String productName) {
