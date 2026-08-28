@@ -55,7 +55,7 @@ public class BusinessFollowUpDraftApplicationService {
         LockedFollowUp locked = lock(work.followupId());
         AsyncTaskStore.ApplicationFence fence = tasks.lockApplicationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("异步任务租约已丢失: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(task.id());
         }
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED
                 || locked.sourceRevision() != work.sourceRevision()) {
@@ -210,7 +210,8 @@ public class BusinessFollowUpDraftApplicationService {
         LockedFollowUp locked = lock(ref.followupId());
         AsyncTaskStore.ApplicationFence fence = tasks.lockFinalizationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("异步任务最终收口租约已丢失: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(
+                    "异步任务最终收口租约已丢失: " + task.id(), task.id());
         }
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.SUPERSEDED) {
             tasks.succeedOwned(task.id(), owner);

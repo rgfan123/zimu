@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.followup;
 
+import cn.zimu.fulfillment.common.persistence.ConcurrencyConflictException;
 import cn.zimu.fulfillment.order.card.CardFallbackStatus;
 import cn.zimu.fulfillment.order.card.CardUpdateStatus;
 import java.sql.ResultSet;
@@ -143,7 +144,7 @@ class BusinessFollowUpCardEventStore {
                     EVENT_TYPE,
                     input.messageId());
             if (!status.equals(current)) {
-                throw new IllegalStateException("Business Follow-up card event claim was lost");
+                throw new ClaimConflictException("Business Follow-up card event claim was lost");
             }
         }
     }
@@ -174,7 +175,7 @@ class BusinessFollowUpCardEventStore {
                 messageId,
                 requireToken(claimToken));
         if (updated != 1) {
-            throw new IllegalStateException("Business Follow-up card update outcome already recorded");
+            throw new ClaimConflictException("Business Follow-up card update outcome already recorded");
         }
     }
 
@@ -197,6 +198,8 @@ class BusinessFollowUpCardEventStore {
                 event.id(),
                 recovery ? "PROCESSING" : "RECEIVED");
         if (updated != 1) {
+            // claim() 已 FOR UPDATE 锁行，这个 CAS 在锁内不可能输给并发；触发即锁假设被破坏，
+            // 故意保持 ISE（会被翻译成 InvalidDataAccessApiUsageException）以缺陷面目暴露。
             throw new IllegalStateException("Business Follow-up card claim changed concurrently");
         }
         return Claim.claimed(event.id(), token, attempt);
@@ -243,9 +246,20 @@ class BusinessFollowUpCardEventStore {
 
     private static String requireToken(String value) {
         if (value == null || value.isBlank()) {
-            throw new IllegalStateException("Business Follow-up card claim token missing");
+            throw new ClaimConflictException("Business Follow-up card claim token missing");
         }
         return value;
+    }
+
+    /**
+     * claim 令牌已被轮换/丢失，或结果已被先到的投递写入：回调重投递下的正常并发结果，
+     * 不是缺陷。绕开 {@code @Repository} 持久化异常翻译的完整理由见 {@link ConcurrencyConflictException}。
+     */
+    static class ClaimConflictException extends ConcurrencyConflictException {
+
+        ClaimConflictException(String message) {
+            super(message);
+        }
     }
 
     private static String stable(String value) {

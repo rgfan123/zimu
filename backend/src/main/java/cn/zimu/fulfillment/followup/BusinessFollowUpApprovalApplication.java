@@ -59,7 +59,7 @@ public class BusinessFollowUpApprovalApplication {
         }
         AsyncTaskStore.ApplicationFence fence = tasks.lockApplicationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("异步任务租约已丢失: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(task.id());
         }
         ApprovalWork work = rows.getFirst();
         if (!"PENDING".equals(work.applicationStatus())) {
@@ -148,7 +148,8 @@ public class BusinessFollowUpApprovalApplication {
                 approvalId);
         AsyncTaskStore.ApplicationFence fence = tasks.lockFinalizationFence(task.id(), owner);
         if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
-            throw new IllegalStateException("异步任务最终收口租约已丢失: " + task.id());
+            throw new AsyncTaskStore.LeaseLostException(
+                    "异步任务最终收口租约已丢失: " + task.id(), task.id());
         }
         String failureCode = task.lastError() == null || task.lastError().isBlank()
                 ? "FOLLOWUP_APPROVAL_APPLY_FAILED"
