@@ -18,6 +18,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -31,6 +33,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public final class JufubaoSessionAdapter {
+
+    private static final Logger log = LoggerFactory.getLogger(JufubaoSessionAdapter.class);
 
     private static final String ACCESS_COOKIE = "JFB-ADMIN-ACCESS-TOKEN";
     private static final String CSRF_COOKIE = "JFB-ADMIN-CSRF-TOKEN";
@@ -193,14 +197,15 @@ public final class JufubaoSessionAdapter {
                     "PLATFORM_UNAVAILABLE",
                     "聚福宝门户不可用（seed HTTP " + seed.statusCode() + "）");
         }
-        // 研究文档 §2.1：登录请求本身也要带 JFB_SESSION_CID。种不下会话 cookie 就不发登录，
-        // 用独立业务码把失败精确定位到 seed 环节（例如门户 3xx 未跟随、Set-Cookie 缺失）。
+        // 研究文档 §2.1 记载登录请求会带 JFB_SESSION_CID，但那是对浏览器整段会话的观察，
+        // 不等于登录的前置条件：能跑通的参考实现 scripts/jufubao_fetch_orders.py 在 seed 之后
+        // 不做任何 cookie 校验，直接发登录。2026-08-28 生产实测门户 GET / 恒返回 200 且不带
+        // 任何 Set-Cookie（带与不带 Chrome UA / X-Jfb-Project-Id 均如此），把它当硬前置会拦掉
+        // 本可成功的登录。故降级为告警：记录事实并继续发登录，让平台的真实响应码
+        // （401/403/429/5xx）成为诊断依据，而不是被这道自设的闸提前截断。
         if (cookieValue(SESSION_COOKIE).isBlank()) {
-            throw new JufubaoSessionException(
-                    "PLATFORM_SESSION_COOKIE_MISSING",
-                    "聚福宝门户未种下会话 Cookie " + SESSION_COOKIE
-                            + "（seed HTTP " + seed.statusCode()
-                            + "，Set-Cookie 名：" + setCookieNames(seed) + "）");
+            log.warn("聚福宝门户未种下会话 Cookie {}（seed HTTP {}，Set-Cookie 名：{}）——按参考实现继续登录",
+                    SESSION_COOKIE, seed.statusCode(), setCookieNames(seed));
         }
 
         String form = "username=" + encode(credentials.username())

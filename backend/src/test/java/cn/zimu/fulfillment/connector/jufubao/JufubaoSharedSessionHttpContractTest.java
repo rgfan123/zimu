@@ -104,19 +104,20 @@ class JufubaoSharedSessionHttpContractTest {
     }
 
     @Test
-    void seedReturning200WithoutSessionCookieFailsFastWithDistinctBusinessCode() throws Exception {
-        // 诊断 L5：seed 200 但不种 JFB_SESSION_CID——旧实现会带着缺 cookie 的状态继续发登录，
-        // 失败被归并进 PLATFORM_AUTH_FAILED，无法定位到 seed 环节。
+    void seedReturning200WithoutSessionCookieStillAttemptsLogin() throws Exception {
+        // 2026-08-28 生产实测：门户 GET / 恒返回 200 且不带任何 Set-Cookie（带与不带 Chrome UA /
+        // X-Jfb-Project-Id 均如此）。研究文档 §2.1 记载登录会带 JFB_SESSION_CID，那是对浏览器整段
+        // 会话的观察，不是登录前置条件——能跑通的参考实现 scripts/jufubao_fetch_orders.py 在 seed
+        // 之后不做任何 cookie 校验，直接发登录。故缺 cookie 只告警不阻断，否则会拦掉本可成功的登录。
         AtomicInteger loginCount = new AtomicInteger();
         server = serverSeedingNoCookie(loginCount);
 
         JufubaoPullClient.LoginResult login = session(new ObjectMapper()).login();
 
-        assertThat(login.ok()).isFalse();
-        assertThat(login.businessCode()).isEqualTo("PLATFORM_SESSION_COOKIE_MISSING");
-        assertThat(login.message()).contains("JFB_SESSION_CID");
-        // 缺会话 cookie 时绝不把登录表单发出去。
-        assertThat(loginCount).hasValue(0);
+        // 缺会话 cookie 不得成为自设的闸：登录表单必须真的发出去。
+        assertThat(loginCount).hasValue(1);
+        // 失败原因（若有）应来自登录环节本身，而不是 seed 前置断言。
+        assertThat(login.businessCode()).isNotEqualTo("PLATFORM_SESSION_COOKIE_MISSING");
     }
 
     @Test
