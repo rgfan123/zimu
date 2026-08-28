@@ -964,16 +964,27 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             }
             List<Long> jdSdkShipmentIds = List.of();
             if (batch.get("confirmed_at") == null) {
-                // ORDER_ALREADY_EXISTS 是良性跳过，不是待处理问题：该行对应的订单早已入库
-                // （见本类 :179 的预检测，它的拒绝文案自己就写着「非失败」）。彩食鲜/飞象改为
-                // JSON 直连后按日期窗口拉取，窗口天然重叠，重复行从异常变成常态——2026-08-28
-                // 生产实例：一批 5 行里 4 张新单全部就绪，却被 1 行良性重复整批挡住确认。
-                // 其余非 ACCEPTED 状态（NEED_REVIEW / RECEIVED / 其它 REJECTED）仍然阻断。
+                // 「无事可做」的行不该锁死整批。两类：
+                //   ORDER_ALREADY_EXISTS —— 该来源单早已入库（本类 :179 预检测，文案自称「非失败」）；
+                //   SOURCE_ORDER_ALREADY_FULFILLED —— 来源侧已发货（SourceFileParser :353/:356/:382），
+                //     导「全部订单」时必然混进历史已发单。
+                // 两者都**从不建单**（order_line_id 恒为 NULL），确认发货结构上碰不到它们，
+                // 所以「不重复发货」这条安全性由「没建单」保证，而不是靠锁死批次——
+                // 谓词里的 order_line_id IS NULL 是这条推理的结构性保险，将来若某类行开始建单，
+                // 它会自动重新变回阻断项，而不是静默放行。
+                //
+                // 生产实例（2026-08-28）：彩食鲜一批 5 行里 4 张就绪新单被 1 行良性重复挡住；
+                // 飞象一批 10 行里唯一就绪的新单被 9 行来源已发货行挡住，且这 9 行既没生成复核
+                // 工单、也没有任何行级处置端点——用户完全无路可走。
+                //
+                // 这些行**仍然保持 NEED_REVIEW/REJECTED 原状**，在批次里照常可见可查，
+                // 只是不再阻断其余就绪行的确认。其余非 ACCEPTED 状态一律照旧阻断。
                 Integer blockers = jdbc.queryForObject(
                         """
                         SELECT count(*) FROM app.raw_import_rows
                         WHERE import_batch_id=? AND status<>'ACCEPTED'
-                          AND NOT (status='REJECTED' AND error_code='ORDER_ALREADY_EXISTS')
+                          AND NOT (order_line_id IS NULL
+                                   AND error_code IN ('ORDER_ALREADY_EXISTS', 'SOURCE_ORDER_ALREADY_FULFILLED'))
                         """,
                         Integer.class,
                         batchId);
