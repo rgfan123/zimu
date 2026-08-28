@@ -1,12 +1,18 @@
 package cn.zimu.fulfillment.connector.wecom.card;
 
+import cn.zimu.fulfillment.connector.wecom.card.WecomCardBuilder.ButtonStyle;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 /**
  * 发货结果卡（{@code shipped} 域）：闭环的最后一句话。
  *
- * <p>用 {@code text_notice}：读到这张卡时事情已经发生了，卡上不该有任何"你还要做什么"的暗示。
- * 这与整批确认播报卡是同一条纪律。
+ * <p><b>为什么从 {@code text_notice} 改成 {@code button_interaction}</b>：与整批确认播报卡同因——
+ * {@code text_notice} 强制要求安全的 {@code card_action} 深链，而本部署的公网入口只有明文 HTTP，
+ * https-only 的深链规则（正确，不放宽）永远给不出合法基址，这张卡因此渲染必然失败。
+ * 交互卡的 {@code card_action} 官方标注可选，从根上不再依赖深链。
+ *
+ * <p>唯一的按钮是零参数、零业务写的「知道了」：读到这张卡时事情已经发生了，卡上不该有
+ * 任何「你还要做什么」的暗示，ack 只表达「我看到了」。没人点时卡面信息依然完整。
  *
  * <p><b>运单号可能还没有</b>，这是常态而不是异常——京东建单成功与分配运单号之间隔着仓库作业，
  * 回填靠轮询。因此卡上显式区分「已建单待分配运单」与「运单已回填」两种事实，
@@ -15,6 +21,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 public final class ShipmentResultCard {
 
     public static final String DOMAIN = "shipped";
+
+    public static final String ACKNOWLEDGE_BUTTON_KEY = "acknowledge_shipment_result";
 
     private ShipmentResultCard() {}
 
@@ -43,7 +51,7 @@ public final class ShipmentResultCard {
     public static ObjectNode render(View view) {
         boolean tracked = view.trackingNo() != null && !view.trackingNo().isBlank();
         WecomCardBuilder builder = WecomCardBuilder
-                .textNotice(WecomTaskId.ofVersion(DOMAIN, view.orderId(), view.version()))
+                .buttonInteraction(WecomTaskId.ofVersion(DOMAIN, view.orderId(), view.version()))
                 .title(tracked ? "已发货 · 运单已回填" : "已建单 · 等待分配运单")
                 .desc(PreShipConfirmCard.channelLabel(view.sourceChannel()))
                 .subTitle(tracked
@@ -56,6 +64,11 @@ public final class ShipmentResultCard {
             builder.field("运单号", view.trackingNo());
             builder.field("承运", view.carrier());
         }
-        return builder.cardAction(view.detailUrl()).build();
+        builder.callbackButton("知道了", ACKNOWLEDGE_BUTTON_KEY, ButtonStyle.PRIMARY);
+        // 深链是可选装饰而非前提：没配 base-url 时整卡照发，只是少一个跳转
+        if (view.detailUrl() != null && !view.detailUrl().isBlank()) {
+            builder.cardAction(view.detailUrl());
+        }
+        return builder.build();
     }
 }

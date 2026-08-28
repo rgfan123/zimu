@@ -46,15 +46,17 @@ class BusinessFollowUpCardRenderingTest {
     }
 
     @Test
-    void terminalResultCardHasNoDecisionButtons() {
+    void terminalResultCardOffersOnlyAZeroEffectAcknowledgement() {
         ObjectNode card = BusinessFollowUpResultCard.render(new BusinessFollowUpResultCard.View(
                 91, 41, 3, "BF-0000000041", "CONFIRM", "APPLIED", null,
                 "王小明", "2026-08-26 10:30",
                 "https://zimu.test/workbench/business-followups?followup_id=41"));
 
         assertThat(card.path("task_id").asText()).isEqualTo("followup-result_91_v3");
-        assertThat(card.path("card_type").asText()).isEqualTo("text_notice");
-        assertThat(callbackKeys(card)).isEmpty();
+        assertThat(card.path("card_type").asText()).isEqualTo("button_interaction");
+        // 终态已落定：唯一允许的按钮是零业务写的「知道了」，不得重开任何决定
+        assertThat(callbackKeys(card))
+                .containsExactly(BusinessFollowUpResultCard.ACKNOWLEDGE_BUTTON_KEY);
         assertThat(card.path("card_action").path("url").asText())
                 .isEqualTo("https://zimu.test/workbench/business-followups?followup_id=41");
         assertThat(card.toString()).contains("已确认", "王小明", "BF-0000000041");
@@ -64,6 +66,19 @@ class BusinessFollowUpCardRenderingTest {
                 "王小明", "2026-08-26 10:30",
                 "https://zimu.test/workbench/business-followups?followup_id=41"));
         assertThat(group.toString()).contains("王*").doesNotContain("王小明");
+    }
+
+    /** 深链是可选装饰：本部署配不出 https 基址，缺它也必须发得出去且信息完整。 */
+    @Test
+    void terminalResultCardStaysCompleteWithoutADeepLink() {
+        ObjectNode card = BusinessFollowUpResultCard.render(new BusinessFollowUpResultCard.View(
+                91, 41, 3, "BF-0000000041", "CONFIRM", "APPLIED", null,
+                "王小明", "2026-08-26 10:30", null));
+
+        assertThat(card.has("card_action")).isFalse();
+        assertThat(card.path("card_type").asText()).isEqualTo("button_interaction");
+        assertThat(card.path("task_id").asText()).isEqualTo("followup-result_91_v3");
+        assertThat(card.toString()).contains("已确认", "王小明", "BF-0000000041");
     }
 
     private static List<String> callbackKeys(ObjectNode card) {

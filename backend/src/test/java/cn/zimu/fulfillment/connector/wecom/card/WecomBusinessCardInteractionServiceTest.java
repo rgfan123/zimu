@@ -208,6 +208,64 @@ class WecomBusinessCardInteractionServiceTest {
                 .contains("MSG-1");
     }
 
+    // ---------- 播报卡的「知道了」 ----------
+
+    /**
+     * 三张播报卡改成 button_interaction 后带了按钮，点击必须由本服务认领。
+     *
+     * <p>域没登记进 {@code DOMAINS} 的话，点击会掉回订单草稿卡处理器报
+     * {@code WECOM_CARD_TASK_ID_INVALID}——读者看到的是「无法识别这张卡片」。
+     */
+    @Test
+    void 三个播报域都必须被判给业务卡处理器() {
+        assertThat(WecomBusinessCardInteractionService.handles("batch_51_v1")).isTrue();
+        assertThat(WecomBusinessCardInteractionService.handles("shipped_4_v1")).isTrue();
+        assertThat(WecomBusinessCardInteractionService.handles("followup-result_91_v3")).isTrue();
+    }
+
+    @Test
+    void 播报卡的知道了_受理但不产生任何业务写() {
+        var batch = service.handle(
+                callback("batch_51_v1", BatchConfirmedCard.ACKNOWLEDGE_BUTTON_KEY, "jry"));
+        var shipped = service.handle(
+                callback("shipped_4_v1", ShipmentResultCard.ACKNOWLEDGE_BUTTON_KEY, "jry"));
+        var followup = service.handle(callback(
+                "followup-result_91_v3",
+                BusinessFollowUpResultCard.ACKNOWLEDGE_BUTTON_KEY,
+                "jry"));
+
+        assertThat(batch.accepted()).isTrue();
+        assertThat(batch.businessCode()).isEqualTo("WECOM_CARD_BROADCAST_ACKNOWLEDGED");
+        assertThat(shipped.accepted()).isTrue();
+        assertThat(followup.accepted()).isTrue();
+        assertThat(tasks.enqueued)
+                .as("播报卡的 ack 不排任何任务：动作早已完成，再做一次才是事故")
+                .isEmpty();
+    }
+
+    /**
+     * 播报卡**不做版本断言**：没有状态可改，一次「我看到了」在哪个版本上都成立。
+     * 拿版本去卡它，只会让人点一张播报卡收到「这张卡已过期」——纯噪音。
+     */
+    @Test
+    void 播报卡的旧卡也能确认_它没有会过期的动作() {
+        var outcome = service.handle(
+                callback("batch_51_v0", BatchConfirmedCard.ACKNOWLEDGE_BUTTON_KEY, "jry"));
+
+        assertThat(outcome.accepted()).isTrue();
+        assertThat(outcome.businessCode()).isEqualTo("WECOM_CARD_BROADCAST_ACKNOWLEDGED");
+    }
+
+    /** 按钮 key 按域校验：拿发货结果卡的 key 去点整批确认卡，不认。 */
+    @Test
+    void 播报卡认错按钮key一律不执行() {
+        var outcome = service.handle(
+                callback("batch_51_v1", ShipmentResultCard.ACKNOWLEDGE_BUTTON_KEY, "jry"));
+
+        assertThat(outcome.accepted()).isFalse();
+        assertThat(outcome.businessCode()).isEqualTo("WECOM_CARD_BUTTON_UNKNOWN");
+    }
+
     // ------------------------------------------------------------------
 
     private record Enqueued(String taskType, String payloadRef, String idempotencyKey) {}

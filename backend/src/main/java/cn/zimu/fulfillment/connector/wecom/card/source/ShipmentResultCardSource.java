@@ -41,18 +41,12 @@ public class ShipmentResultCardSource implements WecomBusinessCardSource {
     /** 跟随 preship 的会话，且同样只进单聊。 */
     @Override
     public Optional<Route> route(long entityId) {
-        if (!links.textNoticeAvailable(domain(), entityId)) {
-            return Optional.empty();
-        }
         Optional<Route> configured = routes.resolve(PreShipConfirmCard.DOMAIN);
         return configured.filter(route -> route.type() == RouteType.SINGLE);
     }
 
     @Override
     public Optional<ObjectNode> render(long entityId, long entityVersion) {
-        if (!links.textNoticeAvailable(domain(), entityId)) {
-            return Optional.empty();
-        }
         List<ShipmentResultCard.View> rows = jdbc.query(
                 """
                 SELECT o.id, o.lock_version, o.source_channel, o.source_ref, o.receiver_name,
@@ -93,9 +87,6 @@ public class ShipmentResultCardSource implements WecomBusinessCardSource {
      */
     @Override
     public List<WecomTaskId> pending(OffsetDateTime since, int limit) {
-        if (!links.configured()) {
-            return List.of();
-        }
         return jdbc.query(
                 """
                 SELECT o.id, o.lock_version

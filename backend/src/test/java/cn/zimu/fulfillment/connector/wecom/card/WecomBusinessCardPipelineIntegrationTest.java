@@ -164,31 +164,7 @@ class WecomBusinessCardPipelineIntegrationTest {
     @Test
     void resultSourceRendersOnlyAfterTheApprovalDecisionWasApplied() {
         FollowupFixture fixture = seedReadyFollowup();
-        Long eventId = jdbc.queryForObject(
-                """
-                INSERT INTO app.wecom_events (event_type, msgid, raw_payload)
-                VALUES ('business_followup_card_event', ?, '{}'::jsonb)
-                RETURNING id
-                """,
-                Long.class,
-                "followup-result-" + java.util.UUID.randomUUID());
-        Long approvalId = jdbc.queryForObject(
-                """
-                INSERT INTO app.business_followup_approvals
-                    (followup_id, draft_version, designated_reviewer_operator_id,
-                     decided_by_operator_id, decision, source_kind, source_event_id, request_id,
-                     idempotency_key, request_fingerprint)
-                VALUES (?, 1, ?, ?, 'CONFIRM', 'WECOM_CARD', ?, ?, ?, ?)
-                RETURNING id
-                """,
-                Long.class,
-                fixture.followupId(),
-                fixture.reviewerOperatorId(),
-                fixture.reviewerOperatorId(),
-                eventId,
-                "request-" + java.util.UUID.randomUUID(),
-                "confirm-1",
-                "a".repeat(64));
+        long approvalId = seedConfirmApproval(fixture, "confirm-1");
         WecomBusinessCardSource source = registry.find(BusinessFollowUpResultCard.DOMAIN).orElseThrow();
 
         assertThat(source.render(approvalId, 1)).isEmpty();
@@ -230,21 +206,63 @@ class WecomBusinessCardPipelineIntegrationTest {
                         .contains("处理失败", "FOLLOWUP_APPROVAL_APPLY"));
     }
 
+    /** 终态播报卡缺深链只是少一个跳转，不再是发不发得出去的前提。 */
     @Test
-    void resultSourceFailsClosedWhenNoDeepLinkBaseIsConfigured() {
-        WecomBusinessCardSource resultSource =
+    void followUpResultRendersWithoutADeepLinkBase() {
+        FollowupFixture fixture = seedReadyFollowup();
+        long approvalId = seedConfirmApproval(fixture, "confirm-no-base-url");
+        jdbc.update(
+                "UPDATE app.business_followup_draft_versions SET status='CONFIRMED'"
+                        + " WHERE followup_id=? AND version=1",
+                fixture.followupId());
+        jdbc.update(
+                "UPDATE app.business_followup_approvals"
+                        + " SET application_status='APPLIED', applied_at=CURRENT_TIMESTAMP"
+                        + " WHERE id=?",
+                approvalId);
+        WecomBusinessCardSource source =
                 new BusinessFollowUpResultCardSource(jdbc, routes, new CardDeepLinks("  "));
+
+        assertThat(source.route(approvalId))
+                .as("路由由指定审批人决定，与深链配置无关")
+                .isPresent();
+        assertThat(source.pending(OffsetDateTime.now().minusHours(1), 20))
+                .contains(WecomTaskId.ofVersion(BusinessFollowUpResultCard.DOMAIN, approvalId, 1));
+        assertThat(source.render(approvalId, 1)).get().satisfies(card -> {
+            assertThat(card.path("card_type").asText()).isEqualTo("button_interaction");
+            assertThat(card.has("card_action")).isFalse();
+            assertThat(card.path("task_id").asText())
+                    .isEqualTo("followup-result_" + approvalId + "_v1");
+            assertThat(card.path("button_list").get(0).path("key").asText())
+                    .isEqualTo(BusinessFollowUpResultCard.ACKNOWLEDGE_BUTTON_KEY);
+            assertThat(card.path("main_title").path("title").asText()).isEqualTo("客户跟进审批已确认");
+        });
+    }
+
+    /**
+     * 草稿卡的深链门禁保持原样：它的「回后台补充」是带参动作，没有后台地址就真的做不成。
+     *
+     * <p>终态播报卡（{@code followup-result}）不再列在这里——它已改成 button_interaction，
+     * 见 {@link #followUpResultRendersWithoutADeepLinkBase()}。
+     */
+    @Test
+    void draftSourceFailsClosedWhenNoDeepLinkBaseIsConfigured() {
         WecomBusinessCardSource draftSource =
                 new BusinessFollowUpDraftCardSource(jdbc, mapper, routes, new CardDeepLinks("  "));
 
-        assertThat(resultSource.route(1)).isEmpty();
-        assertThat(resultSource.pending(OffsetDateTime.now().minusHours(1), 20)).isEmpty();
         assertThat(draftSource.route(1)).isEmpty();
         assertThat(draftSource.pending(OffsetDateTime.now().minusHours(1), 20)).isEmpty();
     }
 
+    /**
+     * 三张播报卡改成 {@code button_interaction} 之后的核心断言：**缺 base-url 也照发**。
+     *
+     * <p>这正是积压卡片能自愈的前提——渲染不再依赖一个本部署永远配不出来的 https 深链，
+     * 任务被重新驱动起来就能渲染成功。同时验证 {@code task_id} 的域与版本语义没变：
+     * 生产库里已有 {@code batch_49/50/51} 这类 task_id，改卡型不得破坏这个契约。
+     */
     @Test
-    void batchTextNoticeIsSuppressedWithoutBaseUrlAndRendersWithAConfiguredBaseUrl() {
+    void batchConfirmedRendersAsButtonInteractionWithOrWithoutABaseUrl() {
         String suffix = java.util.UUID.randomUUID().toString();
         Long batchId = jdbc.queryForObject(
                 """
@@ -266,16 +284,96 @@ class WecomBusinessCardPipelineIntegrationTest {
                 new BatchConfirmedCardSource(jdbc, routes, new CardDeepLinks("https://zimu.test/"));
 
         assertThat(missingBase.render(batchId, 1))
-                .as("text_notice 缺少合法 card_action 时必须收口，而不是抛异常进入永久重试")
-                .isEmpty();
+                .as("没配深链基址也必须发得出去——播报卡的信息本身不依赖跳转")
+                .get()
+                .satisfies(card -> {
+                    assertThat(card.path("card_type").asText()).isEqualTo("button_interaction");
+                    assertThat(card.has("card_action"))
+                            .as("交互卡的 card_action 是可选的，没有基址就不要编一个出来")
+                            .isFalse();
+                    assertThat(card.path("task_id").asText())
+                            .as("域与版本语义不变：生产库里已有 batch_<id>_v<version> 这类 task_id")
+                            .isEqualTo("batch_" + batchId + "_v1");
+                    assertThat(card.path("button_list")).hasSize(1);
+                    assertThat(card.path("button_list").get(0).path("key").asText())
+                            .isEqualTo(BatchConfirmedCard.ACKNOWLEDGE_BUTTON_KEY);
+                    assertThat(card.path("button_list").get(0).path("text").asText())
+                            .isEqualTo("知道了");
+                    // 播报卡的信息完整性：没人点按钮时这些字段仍然把事情说清楚了
+                    assertThat(card.path("main_title").path("title").asText())
+                            .isEqualTo("整批确认已完成");
+                    assertThat(card.path("horizontal_content_list")).hasSize(3);
+                });
         assertThat(missingBase.pending(OffsetDateTime.now().minusHours(1), 20))
-                .as("缺 base-url 时不得继续扫描并积累新任务")
-                .isEmpty();
+                .as("扫描不再被深链配置挡住")
+                .extracting(WecomTaskId::entityId)
+                .contains(batchId);
+        assertThat(missingBase.route(batchId))
+                .as("路由同样不该被深链配置挡住")
+                .isEqualTo(routes.resolve(BatchConfirmedCard.DOMAIN));
         assertThat(configuredBase.render(batchId, 1)).get().satisfies(card -> {
-            assertThat(card.path("card_type").asText()).isEqualTo("text_notice");
+            assertThat(card.path("card_type").asText()).isEqualTo("button_interaction");
             assertThat(card.path("card_action").path("url").asText())
+                    .as("将来公网入口上了 HTTPS，配上 base-url 即自动恢复跳转")
                     .startsWith("https://zimu.test/fulfillment/shipments?batch_no=");
         });
+    }
+
+    /**
+     * 生产积压卡片（batch_49/50/51）的自愈边界，两半都要如实钉住。
+     *
+     * <p><b>能的一半</b>：投递行停在 FAILED——那是旧代码 {@code text_notice} 缺 card_action
+     * 抛异常留下的痕迹。投递围栏允许 FAILED 再发一次，而现在的渲染已经不依赖深链，会成功。
+     *
+     * <p><b>不能的一半</b>：这些实体不会被扫描重新发现——{@code pending()} 靠
+     * {@code LEFT JOIN wecom_business_cards ... c.id IS NULL} 排除已建卡的实体。
+     * 而它们的 {@code async_tasks} 行在耗尽 3 次尝试后是终态 {@code FAILED}，
+     * {@code claim()} 只捡 PENDING 与租约过期的 RUNNING/FINALIZING。
+     * 也就是说：光换代码不会让它们自己回来，需要一次把任务重新置为 PENDING 的清理动作。
+     */
+    @Test
+    void aCardLeftFailedByTheOldRenderCanBeResentButIsNoLongerRediscoveredByScanning() {
+        String suffix = java.util.UUID.randomUUID().toString();
+        Long batchId = jdbc.queryForObject(
+                """
+                INSERT INTO app.import_batches
+                    (batch_no, batch_type, source_channel, template_family, template_version,
+                     template_fingerprint, original_file_name, content_sha256, file_ref,
+                     status, uploaded_by, processed_at)
+                VALUES (?, 'SOURCE_ORDER', 'CAISHIXIAN', 'TEST', '1', ?, 'test.xlsx',
+                        md5(?) || md5(?), ?, 'COMPLETED', 'tester', CURRENT_TIMESTAMP)
+                RETURNING id
+                """,
+                Long.class,
+                "BATCH-STUCK-" + suffix,
+                "fingerprint-" + suffix,
+                // content_sha256 唯一：同类里另一个用例已占用 repeat('a', 64)
+                suffix,
+                suffix,
+                "test://" + suffix);
+        WecomBusinessCard card = store.create(
+                WecomTaskId.ofVersion(BatchConfirmedCard.DOMAIN, batchId, 1),
+                WecomBusinessCardSource.RouteType.GROUP,
+                "wr-batch-group");
+        // 复现生产形态：旧渲染抛异常 → recordRetryable 把投递行落成 FAILED
+        jdbc.update(
+                "UPDATE app.wecom_business_cards"
+                        + " SET status='FAILED', last_error='WECOM_CARD_RENDER_FAILED' WHERE id=?",
+                card.id());
+        // 生产没配 base-url，自愈判定必须在「没有深链」这个前提下做
+        WecomBusinessCardSource source =
+                new BatchConfirmedCardSource(jdbc, routes, new CardDeepLinks(""));
+
+        assertThat(store.beginSend(card.id(), 1).action())
+                .as("FAILED 的投递行允许再发一次——自愈的前提在围栏这边是成立的")
+                .isEqualTo(WecomBusinessCardStore.CardSendAction.SEND);
+        assertThat(source.render(batchId, 1))
+                .as("新渲染不再依赖深链，重新驱动后就能发出去")
+                .isPresent();
+        assertThat(source.pending(OffsetDateTime.now().minusHours(1), 20))
+                .as("但扫描不会重新发现它：投递行已存在，pending() 按设计跳过")
+                .extracting(WecomTaskId::entityId)
+                .doesNotContain(batchId);
     }
 
     @Test
@@ -679,6 +777,35 @@ class WecomBusinessCardPipelineIntegrationTest {
                 String.valueOf(orderDraftId),
                 followupId);
         return new FollowupFixture(followupId, reviewerId, userid);
+    }
+
+    /** 一条 CONFIRM 审批（尚未 apply）；{@code idempotencyKey} 由调用方保证唯一。 */
+    private long seedConfirmApproval(FollowupFixture fixture, String idempotencyKey) {
+        Long eventId = jdbc.queryForObject(
+                """
+                INSERT INTO app.wecom_events (event_type, msgid, raw_payload)
+                VALUES ('business_followup_card_event', ?, '{}'::jsonb)
+                RETURNING id
+                """,
+                Long.class,
+                "followup-result-" + java.util.UUID.randomUUID());
+        return jdbc.queryForObject(
+                """
+                INSERT INTO app.business_followup_approvals
+                    (followup_id, draft_version, designated_reviewer_operator_id,
+                     decided_by_operator_id, decision, source_kind, source_event_id, request_id,
+                     idempotency_key, request_fingerprint)
+                VALUES (?, 1, ?, ?, 'CONFIRM', 'WECOM_CARD', ?, ?, ?, ?)
+                RETURNING id
+                """,
+                Long.class,
+                fixture.followupId(),
+                fixture.reviewerOperatorId(),
+                fixture.reviewerOperatorId(),
+                eventId,
+                "request-" + java.util.UUID.randomUUID(),
+                idempotencyKey,
+                "a".repeat(64));
     }
 
     private record FollowupFixture(long followupId, long reviewerOperatorId, String reviewerUserid) {}

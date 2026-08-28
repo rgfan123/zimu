@@ -9,9 +9,21 @@ import org.springframework.stereotype.Component;
 /**
  * 卡片深链构造（{@code app.wecom-business-card.base-url}）。
  *
- * <p>未配置 base-url 时一律返回 null。交互卡可以据此省略可选跳转；{@code text_notice}
- * 协议强制要求安全的 {@code card_action}，其 source 必须先调用
- * {@link #textNoticeAvailable(String, long)} 收口，禁止让必然失败的渲染进入重试。
+ * <p>未配置 base-url 时一律返回 null——宁可让卡片只带信息不带跳转，也不发一个点了报 404
+ * 的链接出去。所有在用的卡都是 {@code button_interaction}，其 {@code card_action}
+ * 官方标注可选，因此深链只是可选装饰，缺配置不影响发卡。
+ *
+ * <p><b>为什么 {@link #safeAbsoluteHttpBase} 只收 https 与回环 http（不放宽）</b>：
+ * 深链会带上业务单号进企微会话，走明文 HTTP 等于把它交给链路上的任何人。本部署的公网
+ * 入口目前只有明文 HTTP、不支持 TLS，所以这条规则的现实后果就是「深链配不上」——
+ * 这正是把三张播报卡从 {@code text_notice} 改成 {@code button_interaction} 的原因，
+ * 而不是放宽规则的理由。等公网入口上了 HTTPS，配上 base-url 即可自动恢复跳转。
+ *
+ * <p><b>{@link #textNoticeAvailable(String, long)} 目前没有调用方，是刻意保留的纵深防御</b>：
+ * {@code text_notice} 协议强制要求安全的 {@code card_action}，缺配置时渲染必然抛异常，
+ * 而 Runner 会把渲染异常当成可重试失败——表现是每 30 秒空转一次、直到任务耗尽次数，
+ * 谁也看不出根因是少配了一个属性。将来任何新增的 {@code text_notice} 卡，其 source
+ * 必须先调用本方法收口成可诊断的终态（empty → SUPERSEDED），禁止让必然失败的渲染进入重试。
  */
 @Component
 public class CardDeepLinks {
