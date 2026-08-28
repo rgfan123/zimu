@@ -10,6 +10,18 @@
 > HTTP 请求行），并且必须叠加真实逐人认证主体；共享 Basic 账号不用来伪造点击者身份。存量已外发卡的旧
 > `task_id` 不改写，仅新投递强制随机授权形状。
 
+> **2026-08-28 补充（三张播报卡改卡型）**：整批确认完成、发货结果、客户跟进审批终态
+> 三张卡由 `text_notice` 改为 `button_interaction`。原因是协议物理约束与本部署的网络现实
+> 直接冲突：`text_notice` 强制要求一个安全的 `card_action` 深链，而公网入口只有明文 HTTP、
+> 不支持 TLS，`CardDeepLinks` 的 https-only 规则（正确，不放宽）永远给不出合法基址——
+> 结果是这三张卡渲染必然抛异常，生产里一张也没发出去。`button_interaction` 的 `card_action`
+> 官方标注可选，从根上不再需要深链。
+> **播报卡的按钮纪律不变**：只允许一个零参数、零业务写的 `[知道了]`，
+> 灰化沿用 `WecomMessageDispatchHandler` 已有的 `style=4` 整卡替换 + `ack_` 幂等收口；
+> 任何会产生第二次外部副作用的按钮仍然禁止。`task_id` 的域与版本语义不变
+> （`batch_49/50/51` 这类存量 task_id 继续有效）。
+> 公网入口将来上了 HTTPS，配上 `app.wecom-business-card.base-url` 即自动恢复整卡跳转。
+
 **评审时间**：2026-08-23 · **基准**：`master` @ `4547244`
 **时机说明**：全仓 `template_card` / `button_interaction` / `aibot_respond_update_msg` **零命中**，
 一行卡片 JSON 都还没写——这份意见是开工前的约束，不是事后返工。
@@ -87,7 +99,7 @@ ack 关联、`TIMEOUT` 不可重试、审计脱敏、背压优先级。
 |---|---|---|---|
 | 复核事项创建 | `button_interaction` | `case_no`、`case_type`、`reason_code`→人话、`responsible_team`、关联订单/批次号、创建时间 | `[我来处理]`(回调，认领到点击人) `[去后台处理]`(跳转)。**不放「确认」**——resolveCustomer/resolveSku 需要参数 |
 | 运营告警 | `button_interaction` | `alert_no`、`severity`(RED→`desc_color=1`，YELLOW→`2`)、`message`、关联 shipment/order、`detail.business_code` | `[知道了]`(回调→`acknowledge`，已有 `IdempotentResult`+`lock_version`，零参数幂等，完美适配) `[去处理]`(跳转) |
-| 整批确认完成 | **`text_notice`**（播报型） | `batch_no`、来源渠道、订单数/行数、`jd_sdk_shipment_ids` size、第三方导出数、确认人 | **无回调按钮**，只放跳转——动作已完成，卡片是事后播报 |
+| 整批确认完成 | `button_interaction`（播报型；2026-08-28 由 `text_notice` 改，见顶部补充） | `batch_no`、来源渠道、订单数/行数、`jd_sdk_shipment_ids` size、第三方导出数、确认人 | 只放一个零业务写的 `[知道了]`；**不得出现任何会重做整批建单的按钮**——动作已完成，卡片是事后播报 |
 | 京东出库失败 | `button_interaction` | `erp_delivery_no`、`failure_phase`、`business_code`、`retry_count` | **把 `retryable` 直接映射成按钮的有无**（代码已算好 `!"RECONCILIATION_REQUIRED".equals(safeCode)`）：true → `[重试建单]`；false → **只给 `[去对账]`**。别让人点了才报错 |
 | 运单回填失败 | — | — | **不做**：它是同步 API 的 422/409，当场返回调用方，没有异步观众。真正需要推送的下游 #84 已完成 |
 
