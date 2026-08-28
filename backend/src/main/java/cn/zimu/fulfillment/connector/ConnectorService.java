@@ -8,6 +8,8 @@ import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.connector.credential.ConnectorCredentialCipher;
+import cn.zimu.fulfillment.connector.credential.ConnectorCredentialException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.EnumMap;
@@ -26,6 +28,7 @@ public class ConnectorService {
     private final ObjectMapper objectMapper;
     private final IdempotencyService idempotencyService;
     private final AuditLogService auditLogService;
+    private final ConnectorCredentialCipher credentialCipher;
     private final Map<SourceChannel, PlatformConnector> connectors = new EnumMap<>(SourceChannel.class);
 
     public ConnectorService(
@@ -33,11 +36,13 @@ public class ConnectorService {
             ObjectMapper objectMapper,
             IdempotencyService idempotencyService,
             AuditLogService auditLogService,
+            ConnectorCredentialCipher credentialCipher,
             List<PlatformConnector> platformConnectors) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.idempotencyService = idempotencyService;
         this.auditLogService = auditLogService;
+        this.credentialCipher = credentialCipher;
         platformConnectors.forEach(connector -> connectors.put(connector.channel(), connector));
     }
 
@@ -129,8 +134,16 @@ public class ConnectorService {
             if (patch.password().isBlank()) {
                 throw BusinessException.badRequest("PASSWORD_INVALID", "密码不能为空");
             }
-            config.put("password", patch.password());
+            // 应用层加密后落库（AES-GCM）。fail-closed：密钥未配置/无效直接拒绝保存，
+            // 绝不退回明文；错误码原样透出（CREDENTIAL_KEY_MISSING / CREDENTIAL_KEY_INVALID）。
+            try {
+                config.put("password_encrypted", credentialCipher.encrypt(channel.name(), patch.password()));
+            } catch (ConnectorCredentialException exception) {
+                throw BusinessException.unprocessable(exception.businessCode(), exception.getMessage());
+            }
         }
+        // 历史明文 password 键：不使用、不迁移；任何一次成功保存都顺带清除残留。
+        config.remove("password");
         String mode = Optional.ofNullable(patch.clientMode()).orElse(current.clientMode());
         String transport = Optional.ofNullable(patch.transportMode()).orElse(current.transportMode());
         boolean enabled = Optional.ofNullable(patch.enabled()).orElse(current.enabled());
@@ -211,12 +224,18 @@ public class ConnectorService {
             String channel, String mode, String transport, boolean enabled, String configJson, long version) {
         Map<String, Object> config = readConfig(configJson);
         String endpoint = config.get("endpoint") instanceof String value ? value : null;
-        // username 非敏感，直接回显；password 与 credential_secret_ref 一样只投影存在性标记，永不回显明文。
+        // username 非敏感，直接回显；密码只投影存在性标记，密文与明文一律不回显。
         String username = config.get("username") instanceof String value ? value : null;
         boolean credentialConfigured = config.get("credential_secret_ref") instanceof String value && !value.isBlank();
-        boolean passwordConfigured = config.get("password") instanceof String value && !value.isBlank();
+        // 只承认加密密文；历史明文 password 残留不算「已配置」，投影为「需重新输入」，
+        // 下一次保存会将残留清除（applyPatch 统一 remove）。
+        boolean passwordConfigured = config.get("password_encrypted") instanceof String value && !value.isBlank();
+        boolean passwordNeedsReentry = !passwordConfigured
+                && config.get("password") instanceof String legacy
+                && !legacy.isBlank();
         return new ConnectorConfigView(
-                channel, mode, transport, enabled, endpoint, username, credentialConfigured, passwordConfigured, version);
+                channel, mode, transport, enabled, endpoint, username,
+                credentialConfigured, passwordConfigured, passwordNeedsReentry, version);
     }
 
     private Map<String, Object> readConfig(String json) {

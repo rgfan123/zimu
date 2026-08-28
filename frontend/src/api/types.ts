@@ -705,8 +705,10 @@ export interface ConnectorConfig {
   /** 渠道账号用户名：非敏感标识符，按既有投影原样回显；未配置为 null/undefined。 */
   username?: string | null;
   credential_configured?: boolean;
-  /** 渠道账号密码是否已配置：与 credential_configured 同源做法，只投影存在性标记，永不回显明文。 */
+  /** 渠道账号密码是否已配置：仅承认服务端加密密文，只投影存在性标记，密文与明文一律不回显。 */
   password_configured?: boolean;
+  /** 历史明文密码残留（已废弃、不再使用）：需要在界面重新输入一次，下一次保存会清除残留。 */
+  password_needs_reentry?: boolean;
   version: number;
 }
 
