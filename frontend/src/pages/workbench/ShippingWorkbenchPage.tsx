@@ -10,12 +10,14 @@ import { Button } from 'antd';
 import dayjs from 'dayjs';
 import { CloudSyncOutlined, FileExcelOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
-import { platformOrdersApi } from '@/api/endpoints';
+import { ordersApi, platformOrdersApi } from '@/api/endpoints';
 import { useAsync } from '@/hooks/useAsync';
 import { errorMessage } from '@/api/client';
 import { formatDateTime } from '@/format/dateTime';
 import { extractBlockerCases, mergeBlockers, groupBlockers, PREVIEW_BLOCKED_REASON, type BlockerCase } from './blockerGrouping';
 import { extractStockBlockerCases, mergeStockBlockers, STOCK_BLOCKED_REASON, type StockBlockerCase } from './stockBlockerCases';
+import { orderIdsToLoad, presentStockBlockerCard } from './reviewCardPresentation';
+import { toOrderFacts } from './orderFacts';
 import { JdBlockerFixDrawer } from './JdBlockerFixDrawer';
 import { presentAwaitingTracking } from './awaitingTracking';
 import { readStoredWorkbenchRole } from '@/workbenchRole';
@@ -29,6 +31,8 @@ import './workbench.css';
 
 const PLACEHOLDER = '暂无汇总';
 const REVIEW_PREVIEW_SIZE = 50;
+/** 逐单拉订单详情的上限：第一屏不该为了小字副行打出几十个请求；超出的卡片退回诚实态。 */
+const ORDER_FACTS_LIMIT = 20;
 const SHIPPING_SYNC_SESSION_KEY = 'zimu.shipping-workbench.latest-platform-pull';
 const PULL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -307,6 +311,25 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
   const [fixing, setFixing] = useState<BlockerCase | null>(null);
   const [fixingStock, setFixingStock] = useState<StockBlockerCase | null>(null);
 
+  // 卡片要显示的「平台商品名 + 收货人」两样都不在复核事项里（前者事项带的是我方内部名，
+  // 后者根本不带，且 raw_cells 里的姓名/电话已被导入时脱敏），只能按 order_id 去订单详情取。
+  // 去重后逐单拉；单条失败不拖垮整屏，卡片自动退回「收货人信息待加载」的诚实态。
+  const stockOrderIds = useMemo(() => orderIdsToLoad(stockBlockerCases), [stockBlockerCases]);
+  const stockOrderKey = stockOrderIds.join(',');
+  const orderFacts = useAsync(async () => {
+    const loaded = await Promise.all(
+      stockOrderIds.slice(0, ORDER_FACTS_LIMIT).map(async (orderId) => {
+        try {
+          return [orderId, toOrderFacts(await ordersApi.detail(orderId))] as const;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return Object.fromEntries(loaded.filter((entry): entry is NonNullable<typeof entry> => entry !== null));
+  }, [stockOrderKey]);
+  const factsFor = (orderId: string | null) => (orderId ? orderFacts.data?.[orderId] ?? null : null);
+
   return (
     <section className="zs-sec" id="zs-review">
       <div className="zs-card">
@@ -357,24 +380,37 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
                       </div>
                     ))
                   ) : group.reasonCode === STOCK_BLOCKED_REASON && stockBlockerCases.length > 0 ? (
-                    stockBlockerCases.map((stockCase) => (
-                      <div className="zs-rqi" key={stockCase.caseId}>
-                        <div className="zs-w">
+                    stockBlockerCases.map((stockCase) => {
+                      // 主行「平台商品名 + 具体原因」、副行收货人，RC 编码退进 title 属性——
+                      // 它对人没有信息量，但排查时还得能对上单（见 reviewCardPresentation 头注释）。
+                      const view = presentStockBlockerCard(stockCase, factsFor(stockCase.orderId));
+                      const body = (
+                        <>
                           <div className="zs-l1">
-                            {stockCase.caseNo ?? `事项 ${stockCase.caseId}`}
-                            <span className="zs-c">{stockCase.blockers.length} 项</span>
+                            {view.title}
+                            <span className="zs-c">{view.blockerCount} 项</span>
                           </div>
-                          <div className="zs-l2">
-                            {stockCase.blockers.map((b) => b.productName ?? b.goodsNo ?? b.code).join(' · ')}
+                          <div className="zs-l2">{view.subtitle}</div>
+                        </>
+                      );
+                      return (
+                        <div className="zs-rqi" key={view.caseId} title={view.caseNo ?? undefined}>
+                          <div className="zs-w">
+                            {/* 整块文案就是通往该订单的链接；没有关联订单时不造假链接，退成纯文本。 */}
+                            {view.orderHref ? (
+                              <Link className="zs-rql" to={view.orderHref}>{body}</Link>
+                            ) : (
+                              body
+                            )}
+                          </div>
+                          <div className="zs-a">
+                            <button type="button" className="zs-lnk pri" onClick={() => setFixingStock(stockCase)}>
+                              就地处置
+                            </button>
                           </div>
                         </div>
-                        <div className="zs-a">
-                          <button type="button" className="zs-lnk" onClick={() => setFixingStock(stockCase)}>
-                            就地处置
-                          </button>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <div className="zs-rqi">
                       <div className="zs-w">
@@ -402,6 +438,7 @@ function ReviewPreviewSection({ team, reviewOpen }: { team: string | null; revie
         shipmentId={fixing?.shipmentId ?? fixingStock?.shipmentId ?? null}
         blockers={fixing ? mergeBlockers([fixing]) : []}
         stockBlockers={fixingStock ? mergeStockBlockers([fixingStock]) : undefined}
+        orderId={fixingStock?.orderId ?? null}
         onClose={() => { setFixing(null); setFixingStock(null); }}
         onResolved={() => preview.reload?.()}
       />

@@ -39,6 +39,15 @@ export const REASON_LABELS: Record<string, string> = {
   JD_TRACKING_TERMINAL_EXCEPTION: '京东运单终态异常待复核',
   MULTIPLE_TRACKINGS_FOR_OUTBOUND: '京东多运单待确认',
   SOURCE_SYNC_BLOCKED: '来源同步阻断待处理',
+  // 京东库存/映射阻断码（review_cases.detail.blockers[].code，见 ShipmentJdStockCheckService
+  // 的 stockBlocker/mappingGateBlocker 四个生成点）。与 reason_code 同表：同属 JD_* 命名空间、
+  // 互不重名，且工作台卡片标题与复核队列分组必须是同一句话，拆两张表必然长歪（UIUX-03 #137）。
+  // 文案按「能直接接在商品名后面」写，例：「牛肉饼(1.2kg) 缺货」。
+  JD_STOCK_INSUFFICIENT: '缺货',
+  JD_STOCK_TARGET_WAREHOUSE_NOT_OBSERVED: '目标仓无库存记录',
+  JD_STOCK_RESPONSE_AMBIGUOUS: '京东库存数据重复',
+  JD_STOCK_RESPONSE_INVALID: '京东库存数据异常',
+  JD_SKU_MAPPING_GATE_BLOCKED: '京东商品校验未通过',
   // 运营告警（operational_alerts.alert_type；JD_SKU_MAPPING 当前降级审计通道，落库放开后同口径）
   JD_SHIPMENT_OUTBOUND_SUBMIT_FAILED: '京东出库提交失败',
   PROCUREMENT_REQUIRED: '需采购补货',
@@ -59,9 +68,51 @@ export const REASON_LABELS: Record<string, string> = {
 };
 
 /**
+ * 京东 SKU 映射门禁的逐项失败原因（`detail.blockers[].mapping_issue_code`，见
+ * ShipmentJdSkuMappingGateService 的 `issue(...)` 生成点）。
+ *
+ * <p><b>为什么不并进 REASON_LABELS</b>：这些码是无前缀的通用词（MAPPING_MISSING /
+ * GOODS_DISABLED …），并进全站表迟早和某个新增 reason_code 撞名却不同义，正是
+ * UIUX-03 明令禁止的「同名不同义」。它们同属一个独立命名空间，因此在**同一个文件**里
+ * 单开一张表——全站仍然只有这一处定义，没有第二套文案。
+ *
+ * <p>为什么需要它：门禁有 14 种失败原因，落到 blocker 上 code 一律被塌缩成
+ * `JD_SKU_MAPPING_GATE_BLOCKED`（见 mappingGateBlocker 注释：为保持既有消费方按 code
+ * 分组的口径不变）。真正的原因只在 `mapping_issue_code` 里，此前前端整个丢掉了，
+ * 于是 12 种毛病在工作台上长成同一句「京东库存判定未通过」。
+ */
+export const MAPPING_ISSUE_LABELS: Record<string, string> = {
+  INTERNAL_SKU_MISSING: '未关联内部 SKU',
+  INTERNAL_SKU_INACTIVE: '内部 SKU 已停用',
+  MAPPING_MISSING: '未配置京东商品映射',
+  MAPPING_INACTIVE: '京东商品映射已停用',
+  GOODS_NO_MISSING: '京东商品编码为空',
+  UNIT_CONVERSION_MISSING: '缺京东件数换算',
+  UNIT_CONVERSION_INVALID: '京东件数换算无效',
+  NON_INTEGRAL_QUANTITY: '数量换算不成整件',
+  JD_GOODS_QUERY_FAILED: '京东商品查询失败',
+  JD_GOODS_NOT_FOUND: '京东查无此商品',
+  GOODS_NO_CONFLICT: '京东商品编码不一致',
+  ERP_GOODS_NO_CONFLICT: '京东 ERP 商品编码不一致',
+  GOODS_STATUS_MISSING: '京东商品状态缺失',
+  GOODS_DISABLED: '京东商品已停用',
+};
+
+/**
  * 未登记的原因码回退为原码而非掩盖性兜底文案——
  * 掩盖性兜底会让调度台出现同名卡片且掩盖新增枚举值；对账测试保证缺译即失败。
  */
 export function reasonLabel(code: string): string {
   return REASON_LABELS[code] ?? code;
+}
+
+/**
+ * 阻断项的一句话原因：有 `mapping_issue_code` 就用它（那才是真原因），否则用 blocker 的
+ * `code`。两张表都查不到时回退原码——同 reasonLabel 的诚实呈现口径，不编造兜底文案。
+ */
+export function blockerReasonLabel(code: string, mappingIssueCode?: string | null): string {
+  if (mappingIssueCode) {
+    return MAPPING_ISSUE_LABELS[mappingIssueCode] ?? REASON_LABELS[mappingIssueCode] ?? mappingIssueCode;
+  }
+  return reasonLabel(code);
 }
