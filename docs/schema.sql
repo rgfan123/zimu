@@ -7403,3 +7403,11 @@ CREATE TRIGGER trg_source_order_intake_jobs_updated_at
 BEFORE UPDATE ON app.source_order_intake_jobs
 FOR EACH ROW EXECUTE FUNCTION app.set_updated_at();
 -- END V72__source_order_intake_jobs.sql
+
+-- V73–V76 已被四条在途交付线预留（connector 四路），编号跳号直发 V77。
+
+-- BEGIN V77__add_order_line_sku_substituted_event.sql
+INSERT INTO app.order_event_types (code, display_name)
+VALUES ('ORDER_LINE_SKU_SUBSTITUTED', '订单行已换货')
+ON CONFLICT (code) DO NOTHING;
+-- END V77__add_order_line_sku_substituted_event.sql
