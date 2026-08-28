@@ -339,6 +339,27 @@ app:
     script-timeout: ${APP_PLATFORM_PULL_SCRIPT_TIMEOUT:PT10M}
     # 刷新默认拉取窗口（到今天为止的天数）。
     default-days: ${APP_PLATFORM_PULL_DEFAULT_DAYS:30}
+  scheduled-pull:
+    # 定时三平台拉取：每天 09:00 与 18:00 各一次。仍受 app.scheduling.enabled 总开关管，
+    # 关掉全局调度时本特性也不会跑。
+    enabled: ${SCHEDULED_PULL_ENABLED:true}
+    # 时间表进配置，不写死在代码里。Spring cron 六段：秒 分 时 日 月 周。
+    morning-cron: ${SCHEDULED_PULL_MORNING_CRON:0 0 9 * * *}
+    evening-cron: ${SCHEDULED_PULL_EVENING_CRON:0 0 18 * * *}
+    zone: ${SCHEDULED_PULL_ZONE:Asia/Shanghai}
+    auto-ship:
+      # 独立开关：关掉它只停自动发货，定时拉取照常。
+      #
+      # **默认 false 是刻意的**。确认发货会向京东建真实出库单，是花真钱的动作，
+      # 不该因为「升了个版本」就自己开始跑。打开它需要两件事同时做到：
+      #   1. SCHEDULED_AUTO_SHIP_ENABLED=true
+      #   2. 把 system:scheduled-pull 加进 JD_OUTBOUND_AUTHORIZED_OPERATORS
+      # 第 2 条不是本特性发明的门闩，是 ShipmentJdOutboundService#requireAuthorized
+      # 既有的授权面——「谁能建真单」的裁决权留在配置面，不因为换了入口就放宽。
+      enabled: ${SCHEDULED_AUTO_SHIP_ENABLED:false}
+      # 单次运行最多自动确认多少个批次：定时任务不该在一次运行里把积压全部发出去，
+      # 出了问题的爆炸半径必须有上界。剩余的下一个时段继续。
+      batch-limit: ${SCHEDULED_AUTO_SHIP_BATCH_LIMIT:20}
   seed:
     demo-enabled: ${DEMO_SEED_ENABLED:false}
     reference-date: ${DEMO_SEED_REFERENCE_DATE:}
