@@ -45,3 +45,26 @@ grep -c GATEWAY_BASIC_AUTH_ENABLED /tmp/off.yml && grep -c MCP_MODULES /tmp/off.
 
 用户欠一次 #178 企微实测（「测试」群 @孔小弟 问商品）。重启仅数秒；
 若用户恰在测试中，请其重发一次即可。
+
+---
+
+# 第二次部署：real-beeb441（2026-08-28 晚）
+
+## 回滚目标（本次是统一的，可一把梭）
+
+部署前三层**均为 `real-fdf94f5`**（上一次部署已消除标签分裂）。
+回滚：三层统一改回 `real-fdf94f5`，重跑 compose up 即可。
+
+## 本次内容
+
+- 8eaeb9c feat(workbench): 平台拉取批次快照弹窗（9 列，企微形态，来源口径）
+- 59cdfb2 feat(agent): Token 列解析 + 随筛选历史汇总（后端 /token-usage 补 outcome/business_entity_id）
+- beeb441 docs(scratch): 过程记录
+
+无数据库迁移。后端两道 Testcontainers 门禁（TokenUsage 集成 + OpenAPI 契约）已在开发机真 PostgreSQL 跑绿。
+nginx 层无变更，由 real-fdf94f5 打 tag 对齐。
+
+## 验收补充项（在通用清单之上）
+
+- 前端产物 grep：「当前筛选历史 Token 汇总」「批次快照」类字符串
+- GET /api/v1/agent-runs/token-usage?outcome=FAILED 不再 400（新参数生效）
