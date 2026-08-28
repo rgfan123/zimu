@@ -145,9 +145,20 @@ public class AgentTokenUsageReadService {
             clauses.add("agent_slug = ?");
             params.add(filter.slug());
         }
+        if (filter.outcome() != null) {
+            switch (filter.outcome()) {
+                case SUCCESS, NEEDS_INPUT -> clauses.add("status = 'SUCCESS'");
+                case REJECTED -> clauses.add("status = 'FAILED' AND error_type = 'PII_GUARDED'");
+                case FAILED -> clauses.add("status = 'FAILED' AND error_type <> 'PII_GUARDED'");
+            }
+        }
         if (filter.businessEntityType() != null) {
             clauses.add("business_entity_type = ?");
             params.add(filter.businessEntityType());
+        }
+        if (filter.businessEntityId() != null) {
+            clauses.add("business_entity_id = ?");
+            params.add(filter.businessEntityId());
         }
         if (filter.startedFrom() != null) {
             clauses.add("started_at >= ?");

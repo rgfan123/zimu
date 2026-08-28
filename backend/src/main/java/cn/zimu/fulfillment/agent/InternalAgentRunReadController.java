@@ -64,7 +64,8 @@ public class InternalAgentRunReadController {
             @RequestParam(name = "group_by", required = false) String groupBy,
             @RequestParam(name = "limit", required = false, defaultValue = "100") int limit) {
         return tokenUsage.summarize(AgentTokenUsageFilter.of(
-                slug, runMode, businessEntityType, startedFrom, startedTo, groupBy, limit));
+                slug, null, runMode, businessEntityType, null,
+                startedFrom, startedTo, groupBy, limit));
     }
 
     @GetMapping("/{runId}")

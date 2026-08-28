@@ -14,6 +14,7 @@ import {
   formatTime,
   importBatchStageComplete,
   modelVisibilityPresentation,
+  parseTokenUsage,
   rangeToStartedParams,
   runModePresentation,
   runOutcomePresentation,
@@ -180,6 +181,61 @@ test('JSON / 时间 / 耗时格式化：null 与非法值一律「—」', () =>
   assert.equal(formatTime(null), '—');
   assert.equal(formatTime('not-a-date'), '—');
   assert.match(formatTime('2026-08-13T10:00:00+08:00'), /^2026-08-13 \d{2}:\d{2}:\d{2}$/);
+});
+
+test('token_usage 正常形状逐字段解析为展示模型', () => {
+  assert.deepEqual(
+    parseTokenUsage({
+      model_calls: 1,
+      total_tokens: 1966,
+      prompt_tokens: 1634,
+      completion_tokens: 332,
+    }),
+    {
+      modelCalls: 1,
+      totalTokens: 1966,
+      promptTokens: 1634,
+      completionTokens: 332,
+    },
+  );
+});
+
+test('token_usage 缺字段、字段类型错或非有限数时返回 null', () => {
+  const invalidValues: unknown[] = [
+    { model_calls: 1, total_tokens: 1966, prompt_tokens: 1634 },
+    { model_calls: '1', total_tokens: 1966, prompt_tokens: 1634, completion_tokens: 332 },
+    { model_calls: 1, total_tokens: Number.NaN, prompt_tokens: 1634, completion_tokens: 332 },
+    { model_calls: 1, total_tokens: 1966, prompt_tokens: Number.POSITIVE_INFINITY, completion_tokens: 332 },
+    { model_calls: 1, total_tokens: 1966, prompt_tokens: 1634, completion_tokens: null },
+  ];
+
+  for (const value of invalidValues) {
+    assert.equal(parseTokenUsage(value), null);
+  }
+});
+
+test('token_usage 的 null、非对象和数组返回 null', () => {
+  for (const value of [null, undefined, 'raw-json', 42, true, []]) {
+    assert.equal(parseTokenUsage(value), null);
+  }
+});
+
+test('token_usage 多余字段不影响已知字段解析', () => {
+  assert.deepEqual(
+    parseTokenUsage({
+      model_calls: 2,
+      total_tokens: 2500,
+      prompt_tokens: 2000,
+      completion_tokens: 500,
+      over_threshold: true,
+    }),
+    {
+      modelCalls: 2,
+      totalTokens: 2500,
+      promptTokens: 2000,
+      completionTokens: 500,
+    },
+  );
 });
 
 // ---------- 运行记录 URL：筛选与分页进 query string，可分享可刷新 ----------

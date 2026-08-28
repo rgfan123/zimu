@@ -105,6 +105,42 @@ class AgentTokenUsageSummaryIntegrationTest {
     }
 
     @Test
+    void filtersByOutcomeUsingTheRunListSemantics() {
+        insertRun(SLUG_A, "SUCCESS", 100, 10, 110, 1, 100, "LIVE", null, false);
+        insertRun(SLUG_A, "FAILED", 200, 20, 220, 1, 100, "LIVE", null, false);
+
+        TokenUsageSummaryItem item = service.summarize(
+                filter(null, "FAILED", null, null, "AGENT")).items().get(0);
+
+        assertThat(item.runs()).isEqualTo(1);
+        assertThat(item.failedRuns()).isEqualTo(1);
+        assertThat(item.totalTokens()).isEqualTo(220);
+    }
+
+    @Test
+    void filtersByBusinessEntityId() {
+        insertRun(SLUG_A, "SUCCESS", 100, 10, 110, 1, 100, "LIVE", "ORDER", "ORDER-1", false);
+        insertRun(SLUG_A, "SUCCESS", 200, 20, 220, 1, 100, "LIVE", "ORDER", "ORDER-2", false);
+
+        TokenUsageSummaryItem item = service.summarize(
+                filter(null, null, null, "ORDER-2", "AGENT")).items().get(0);
+
+        assertThat(item.runs()).isEqualTo(1);
+        assertThat(item.totalTokens()).isEqualTo(220);
+    }
+
+    @Test
+    void omittingOutcomeAndBusinessEntityIdKeepsTheExistingAggregateScope() {
+        insertRun(SLUG_A, "SUCCESS", 100, 10, 110, 1, 100, "LIVE", "ORDER", "ORDER-1", false);
+        insertRun(SLUG_A, "FAILED", 200, 20, 220, 1, 100, "LIVE", "ORDER", "ORDER-2", false);
+
+        TokenUsageSummaryItem totals = service.summarize(filter(null, null, "AGENT")).totals();
+
+        assertThat(totals.runs()).isEqualTo(2);
+        assertThat(totals.totalTokens()).isEqualTo(330);
+    }
+
+    @Test
     void overThresholdRunsAreCountedViaJsonbExists() {
         insertRun(SLUG_A, "SUCCESS", 100, 10, 110, 1, 100, "LIVE", null, false);
         insertRun(SLUG_A, "SUCCESS", 90_000, 5_000, 95_000, 7, 60_000, "LIVE", null, true);
@@ -150,7 +186,13 @@ class AgentTokenUsageSummaryIntegrationTest {
     // ------------------------------------------------------------------
 
     private AgentTokenUsageFilter filter(String slug, String runMode, String groupBy) {
-        return AgentTokenUsageFilter.of(slug, runMode, null, null, null, groupBy, 100);
+        return filter(slug, null, runMode, null, groupBy);
+    }
+
+    private AgentTokenUsageFilter filter(
+            String slug, String outcome, String runMode, String businessEntityId, String groupBy) {
+        return AgentTokenUsageFilter.of(
+                slug, outcome, runMode, null, businessEntityId, null, null, groupBy, 100);
     }
 
     private void insertRun(
@@ -164,6 +206,23 @@ class AgentTokenUsageSummaryIntegrationTest {
             String runMode,
             String businessEntityType,
             boolean overThreshold) {
+        insertRun(
+                slug, status, prompt, completion, total, modelCalls, latencyMs,
+                runMode, businessEntityType, null, overThreshold);
+    }
+
+    private void insertRun(
+            String slug,
+            String status,
+            Integer prompt,
+            Integer completion,
+            Integer total,
+            Integer modelCalls,
+            int latencyMs,
+            String runMode,
+            String businessEntityType,
+            String businessEntityId,
+            boolean overThreshold) {
         String tokenUsage = total == null
                 ? null
                 : "{\"prompt_tokens\":" + prompt + ",\"completion_tokens\":" + completion
@@ -175,8 +234,8 @@ class AgentTokenUsageSummaryIntegrationTest {
                 """
                 INSERT INTO app.agent_runs
                     (run_id, agent_slug, model, input_digest, status, error_type, latency_ms,
-                     token_usage, business_entity_type, run_mode, finished_at)
-                VALUES (?, ?, 'none', ?, ?, ?, ?, ?::jsonb, ?, ?, CURRENT_TIMESTAMP)
+                     token_usage, business_entity_type, business_entity_id, run_mode, finished_at)
+                VALUES (?, ?, 'none', ?, ?, ?, ?, ?::jsonb, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 newRunId(),
                 slug,
@@ -186,6 +245,7 @@ class AgentTokenUsageSummaryIntegrationTest {
                 latencyMs,
                 tokenUsage,
                 businessEntityType,
+                businessEntityId,
                 runMode);
     }
 

@@ -191,6 +191,29 @@ function runDetail(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function tokenUsageSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    group_by: 'AGENT',
+    run_mode: 'LIVE',
+    items: [],
+    totals: {
+      group_key: '',
+      runs: 1,
+      failed_runs: 0,
+      runs_without_token_usage: 0,
+      over_threshold_runs: 0,
+      prompt_tokens: 1000,
+      completion_tokens: 200,
+      total_tokens: 1200,
+      max_run_total_tokens: 1200,
+      model_calls: 1,
+      total_latency_ms: 1200,
+      max_run_latency_ms: 1200,
+      ...overrides,
+    },
+  };
+}
+
 before(async () => {
   installDom();
   ({ createRoot } = await import('react-dom/client'));
@@ -321,6 +344,11 @@ test('P3 /agents/runs：默认不传 run_mode（只取 LIVE）；切 PREVIEW 后
   globalThis.fetch = (input) => {
     const url = String(input);
     requestedUrls.push(url);
+    if (url.startsWith('/api/v1/agent-runs/token-usage')) {
+      return Promise.resolve(jsonResponse(tokenUsageSummary({
+        total_tokens: url.includes('run_mode=PREVIEW') ? 990 : 110,
+      })));
+    }
     if (url.includes('run_mode=PREVIEW')) {
       return Promise.resolve(
         jsonResponse({
@@ -333,10 +361,15 @@ test('P3 /agents/runs：默认不传 run_mode（只取 LIVE）；切 PREVIEW 后
   };
   await mountRoute(['/agents/runs']);
 
-  // 默认 LIVE：请求不带 run_mode 参数
+  // 默认 LIVE：列表与汇总都不带 run_mode 参数
   await waitFor(() => assert.match(bodyText(), /run_33333333333333333333333333333333/));
-  assert.ok(requestedUrls[0].startsWith('/api/v1/agent-runs'), `请求应命中 agent-runs：${requestedUrls[0]}`);
-  assert.doesNotMatch(requestedUrls[0], /run_mode/, '默认请求不得携带 run_mode');
+  await waitFor(() => assert.equal(requestedUrls.length, 2));
+  const initialList = requestedUrls.find((url) => !url.includes('/token-usage'));
+  const initialSummary = requestedUrls.find((url) => url.includes('/token-usage'));
+  assert.ok(initialList, '必须请求运行列表');
+  assert.ok(initialSummary, '必须请求 Token 汇总');
+  assert.doesNotMatch(initialList, /run_mode/, '默认列表请求不得携带 run_mode');
+  assert.doesNotMatch(initialSummary, /run_mode/, '默认汇总请求不得携带 run_mode');
 
   // 切到 PREVIEW：请求带 run_mode=PREVIEW，页面出现醒目标识
   // （rc-segmented 的选项是包着 radio input 的 label，onChange 由 input 的 change 触发）
@@ -348,9 +381,214 @@ test('P3 /agents/runs：默认不传 run_mode（只取 LIVE）；切 PREVIEW 后
   assert.ok(previewRadio, 'PREVIEW 选项必须包含 radio input');
   await act(async () => simulate.change(previewRadio, { target: { checked: true } }));
   await waitFor(() => assert.match(bodyText(), /run_22222222222222222222222222222222/));
-  assert.ok(requestedUrls.at(-1)?.includes('run_mode=PREVIEW'), `切换后请求必须带 run_mode=PREVIEW：${requestedUrls.at(-1)}`);
+  await waitFor(() => {
+    const previewRequests = requestedUrls.filter((url) => url.includes('run_mode=PREVIEW'));
+    assert.equal(previewRequests.length, 2);
+    assert.ok(previewRequests.some((url) => url.includes('/token-usage')));
+    assert.ok(previewRequests.some((url) => !url.includes('/token-usage')));
+  });
   assert.match(bodyText(), /正在查看 PREVIEW/);
   assert.match(bodyText(), /草稿试跑/);
+});
+
+test('P3 /agents/runs：Token 列结构化，汇总与列表同源携带 outcome 和 business_entity_id', async () => {
+  const requestedUrls: string[] = [];
+  globalThis.fetch = (input) => {
+    const url = String(input);
+    requestedUrls.push(url);
+    if (url.startsWith('/api/v1/agent-runs/token-usage')) {
+      return Promise.resolve(jsonResponse(tokenUsageSummary({
+        runs: 4,
+        runs_without_token_usage: 2,
+        prompt_tokens: 10_000,
+        completion_tokens: 2_345,
+        total_tokens: 12_345,
+        model_calls: 7,
+      })));
+    }
+    return Promise.resolve(jsonResponse({
+      items: [
+        runListItem('run_44444444444444444444444444444444', {
+          outcome: 'FAILED',
+          status: 'FAILED',
+          token_usage: {
+            model_calls: 2,
+            total_tokens: 1966,
+            prompt_tokens: 1634,
+            completion_tokens: 332,
+          },
+        }),
+        runListItem('run_55555555555555555555555555555555', {
+          outcome: 'FAILED',
+          status: 'FAILED',
+          token_usage: { total_tokens: 99, raw_json_marker: 'SHOULD_NOT_RENDER' },
+        }),
+      ],
+      total: 2,
+    }));
+  };
+
+  await mountRoute(['/agents/runs?outcome=FAILED&business_entity_id=ORDER-42']);
+
+  await waitFor(() => assert.match(bodyText(), /12,345/));
+  assert.match(bodyText(), /1,966/);
+  assert.match(bodyText(), /入 1,634 \/ 出 332/);
+  assert.match(bodyText(), /2 次调用/);
+  assert.match(bodyText(), /2 次运行未记录 token/);
+  assert.doesNotMatch(bodyText(), /SHOULD_NOT_RENDER|raw_json_marker|model_calls/);
+
+  const invalidRow = [...document.querySelectorAll('tbody tr')].find((row) =>
+    row.textContent?.includes('run_55555555555555555555555555555555'),
+  );
+  assert.ok(invalidRow, '异常 token_usage 的运行行必须存在');
+  assert.match(invalidRow.textContent ?? '', /—/);
+
+  await waitFor(() => assert.equal(requestedUrls.length, 2));
+  for (const url of requestedUrls) {
+    assert.match(url, /outcome=FAILED/);
+    assert.match(url, /business_entity_id=ORDER-42/);
+  }
+});
+
+test('P3 /agents/runs：Token 汇总失败可重试，失败期间不伪装成 0', async () => {
+  let summaryAttempts = 0;
+  globalThis.fetch = (input) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/agent-runs/token-usage')) {
+      summaryAttempts += 1;
+      return Promise.resolve(
+        summaryAttempts === 1
+          ? jsonResponse({ business_code: 'INTERNAL_ERROR', message: 'boom', http_status: 500 }, 500)
+          : jsonResponse(tokenUsageSummary({ total_tokens: 999 })),
+      );
+    }
+    return Promise.resolve(jsonResponse({ items: [], total: 0 }));
+  };
+
+  await mountRoute(['/agents/runs']);
+
+  await waitFor(() => assert.match(bodyText(), /Token 汇总加载失败/));
+  const summary = document.querySelector<HTMLElement>('[aria-label="当前筛选 Token 汇总"]');
+  assert.ok(summary, '必须有独立的 Token 汇总区域');
+  assert.doesNotMatch(summary.textContent ?? '', /总 Token\s*0/);
+  const retry = [...summary.querySelectorAll<HTMLElement>('button')].find((button) =>
+    button.textContent?.includes('重试'),
+  );
+  assert.ok(retry, '汇总失败必须提供重试');
+  await act(async () => simulate.click(retry));
+  await waitFor(() => assert.match(summary.textContent ?? '', /999/));
+});
+
+test('P3 /agents/runs：Token 汇总加载中显示骨架，不沿用旧数值', async () => {
+  let releaseSummary: ((response: Response) => void) | undefined;
+  const pendingSummary = new Promise<Response>((resolve) => {
+    releaseSummary = resolve;
+  });
+  globalThis.fetch = (input) => {
+    const url = String(input);
+    return url.startsWith('/api/v1/agent-runs/token-usage')
+      ? pendingSummary
+      : Promise.resolve(jsonResponse({ items: [], total: 0 }));
+  };
+
+  await mountRoute(['/agents/runs']);
+
+  const summary = document.querySelector<HTMLElement>('[aria-label="当前筛选 Token 汇总"]');
+  assert.ok(summary, '加载开始时汇总区域必须已经存在');
+  assert.ok(summary.querySelector('.ant-skeleton'), '加载态必须显示骨架');
+  assert.doesNotMatch(summary.textContent ?? '', /总 Token\s*0/);
+
+  assert.ok(releaseSummary);
+  await act(async () => releaseSummary?.(jsonResponse(tokenUsageSummary())));
+  await waitFor(() => assert.match(summary.textContent ?? '', /1,200/));
+});
+
+test('P3 /agents/runs：筛选切换同步重置旧汇总，新请求完成前不显示上一口径', async () => {
+  let releasePreviewSummary: ((response: Response) => void) | undefined;
+  const pendingPreviewSummary = new Promise<Response>((resolve) => {
+    releasePreviewSummary = resolve;
+  });
+  globalThis.fetch = (input) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/agent-runs/token-usage')) {
+      return url.includes('run_mode=PREVIEW')
+        ? pendingPreviewSummary
+        : Promise.resolve(jsonResponse(tokenUsageSummary({ total_tokens: 1200 })));
+    }
+    return Promise.resolve(jsonResponse({ items: [], total: 0 }));
+  };
+
+  await mountRoute(['/agents/runs']);
+  await waitFor(() => assert.match(bodyText(), /1,200/));
+  const previousSummary = document.querySelector<HTMLElement>('[aria-label="当前筛选 Token 汇总"]');
+  assert.ok(previousSummary);
+
+  const previewOption = [...document.querySelectorAll<HTMLElement>('.ant-segmented-item')].find((element) =>
+    element.textContent?.includes('PREVIEW'),
+  );
+  const previewRadio = previewOption?.querySelector<HTMLInputElement>('input[type="radio"]');
+  assert.ok(previewRadio);
+  await act(async () => simulate.change(previewRadio, { target: { checked: true } }));
+
+  const nextSummary = document.querySelector<HTMLElement>('[aria-label="当前筛选 Token 汇总"]');
+  assert.ok(nextSummary);
+  assert.notEqual(nextSummary, previousSummary, '筛选口径变化必须重挂汇总区域，不能复用旧状态');
+  assert.ok(nextSummary.querySelector('.ant-skeleton'));
+  assert.doesNotMatch(nextSummary.textContent ?? '', /1,200/);
+
+  assert.ok(releasePreviewSummary);
+  await act(async () => releasePreviewSummary?.(jsonResponse(tokenUsageSummary({ total_tokens: 999 }))));
+  await waitFor(() => assert.match(nextSummary.textContent ?? '', /999/));
+});
+
+test('P3 /agents/runs：分组达到端点上限时拒绝展示可能少算的 totals', async () => {
+  globalThis.fetch = (input) => {
+    const url = String(input);
+    if (!url.startsWith('/api/v1/agent-runs/token-usage')) {
+      return Promise.resolve(jsonResponse({ items: [], total: 0 }));
+    }
+    const summary = tokenUsageSummary({ total_tokens: 1200 });
+    return Promise.resolve(jsonResponse({
+      ...summary,
+      items: Array.from({ length: 500 }, (_, index) => ({
+        ...summary.totals,
+        group_key: `agent-${index}`,
+      })),
+    }));
+  };
+
+  await mountRoute(['/agents/runs']);
+
+  await waitFor(() => assert.match(bodyText(), /筛选范围过大，无法确认完整 Token 汇总/));
+  const summary = document.querySelector<HTMLElement>('[aria-label="当前筛选 Token 汇总"]');
+  assert.ok(summary);
+  assert.equal(summary.getAttribute('role'), 'region');
+  assert.doesNotMatch(summary.textContent ?? '', /总 Token\s*1,200/);
+  assert.match(summary.textContent ?? '', /缩小 Agent 或时间范围/);
+});
+
+test('P3 /agents/runs：Token 汇总空态不显示 0', async () => {
+  globalThis.fetch = (input) => {
+    const url = String(input);
+    return Promise.resolve(
+      url.startsWith('/api/v1/agent-runs/token-usage')
+        ? jsonResponse(tokenUsageSummary({
+            runs: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            model_calls: 0,
+          }))
+        : jsonResponse({ items: [], total: 0 }),
+    );
+  };
+
+  await mountRoute(['/agents/runs']);
+
+  await waitFor(() => assert.match(bodyText(), /当前筛选范围内暂无 Token 汇总/));
+  const summary = document.querySelector<HTMLElement>('[aria-label="当前筛选 Token 汇总"]');
+  assert.ok(summary);
+  assert.doesNotMatch(summary.textContent ?? '', /总 Token\s*0/);
 });
 
 // ---------- P4：input_digest 说明文案 + 工具调用序列 + 错误态 ----------

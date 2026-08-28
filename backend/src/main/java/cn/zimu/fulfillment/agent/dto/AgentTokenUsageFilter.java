@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.agent.dto;
 
 import cn.zimu.fulfillment.agent.AgentDefinition;
+import cn.zimu.fulfillment.agent.AgentOutcome;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import java.time.OffsetDateTime;
 
@@ -9,8 +10,10 @@ import java.time.OffsetDateTime;
  * （同一批参数在两个端点上不应有两套规则）。
  *
  * @param slug               限定单个 Agent（可选）
+ * @param outcome            结果维度（可选；映射与运行记录列表一致）
  * @param runMode            LIVE/PREVIEW；null 默认 LIVE
  * @param businessEntityType 限定业务实体类型（可选）
+ * @param businessEntityId   限定业务实体 ID（可选）
  * @param startedFrom        开始时间下界（含，可选）
  * @param startedTo          开始时间上界（含，可选）
  * @param groupBy            分组维度；null 默认 AGENT
@@ -18,8 +21,10 @@ import java.time.OffsetDateTime;
  */
 public record AgentTokenUsageFilter(
         String slug,
+        AgentOutcome outcome,
         String runMode,
         String businessEntityType,
+        String businessEntityId,
         OffsetDateTime startedFrom,
         OffsetDateTime startedTo,
         TokenUsageGroupBy groupBy,
@@ -31,8 +36,10 @@ public record AgentTokenUsageFilter(
     /** 校验并构造（参数非法抛 400 VALIDATION_ERROR）。 */
     public static AgentTokenUsageFilter of(
             String slug,
+            String outcome,
             String runMode,
             String businessEntityType,
+            String businessEntityId,
             String startedFrom,
             String startedTo,
             String groupBy,
@@ -44,13 +51,25 @@ public record AgentTokenUsageFilter(
         if (runMode != null && !"LIVE".equals(runMode) && !"PREVIEW".equals(runMode)) {
             throw BusinessException.badRequest("VALIDATION_ERROR", "run_mode 必须是 LIVE 或 PREVIEW: " + runMode);
         }
+        AgentOutcome parsedOutcome = null;
+        if (outcome != null) {
+            try {
+                parsedOutcome = AgentOutcome.valueOf(outcome);
+            } catch (IllegalArgumentException ex) {
+                throw BusinessException.badRequest(
+                        "VALIDATION_ERROR",
+                        "outcome 必须是 SUCCESS/NEEDS_INPUT/REJECTED/FAILED 之一: " + outcome);
+            }
+        }
         if (limit < 1 || limit > MAX_LIMIT) {
             throw BusinessException.badRequest("VALIDATION_ERROR", "limit 必须在 1.." + MAX_LIMIT);
         }
         return new AgentTokenUsageFilter(
                 slug,
+                parsedOutcome,
                 runMode,
                 businessEntityType,
+                businessEntityId,
                 parseInstant(startedFrom, "started_from"),
                 parseInstant(startedTo, "started_to"),
                 TokenUsageGroupBy.parse(groupBy),

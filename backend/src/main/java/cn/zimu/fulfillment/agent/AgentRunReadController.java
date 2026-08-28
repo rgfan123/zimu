@@ -56,14 +56,17 @@ public class AgentRunReadController {
     @GetMapping("/token-usage")
     public TokenUsageSummaryResponse tokenUsage(
             @RequestParam(name = "slug", required = false) String slug,
+            @RequestParam(name = "outcome", required = false) String outcome,
             @RequestParam(name = "run_mode", required = false) String runMode,
             @RequestParam(name = "business_entity_type", required = false) String businessEntityType,
+            @RequestParam(name = "business_entity_id", required = false) String businessEntityId,
             @RequestParam(name = "started_from", required = false) String startedFrom,
             @RequestParam(name = "started_to", required = false) String startedTo,
             @RequestParam(name = "group_by", required = false) String groupBy,
             @RequestParam(name = "limit", required = false, defaultValue = "100") int limit) {
         return tokenUsage.summarize(AgentTokenUsageFilter.of(
-                slug, runMode, businessEntityType, startedFrom, startedTo, groupBy, limit));
+                slug, outcome, runMode, businessEntityType, businessEntityId,
+                startedFrom, startedTo, groupBy, limit));
     }
 
     /** 运行详情：元信息 + 工具调用序列 + 关联评测结果摘要（202 轮询面）。 */

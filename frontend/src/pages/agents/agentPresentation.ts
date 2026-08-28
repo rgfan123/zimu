@@ -484,6 +484,40 @@ export function costLocation(filters: CostFilters): string {
   return query ? `/agents/cost?${query}` : '/agents/cost';
 }
 
+export interface RunTokenUsage {
+  modelCalls: number | null;
+  totalTokens: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * 历史 token_usage 是不可信 JSON：四个展示字段必须同时存在且均为有限数。
+ * 任一字段缺失或形状异常都让整格回到「未知」，不能拿残缺数据拼出貌似可信的汇总。
+ */
+export function parseTokenUsage(value: unknown): RunTokenUsage | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+
+  const modelCalls = Reflect.get(value, 'model_calls');
+  const totalTokens = Reflect.get(value, 'total_tokens');
+  const promptTokens = Reflect.get(value, 'prompt_tokens');
+  const completionTokens = Reflect.get(value, 'completion_tokens');
+  if (
+    !isFiniteNumber(modelCalls) ||
+    !isFiniteNumber(totalTokens) ||
+    !isFiniteNumber(promptTokens) ||
+    !isFiniteNumber(completionTokens)
+  ) {
+    return null;
+  }
+
+  return { modelCalls, totalTokens, promptTokens, completionTokens };
+}
+
 /** 千分位；token 是计数不是金额，绝不做费用换算（单价属计费口径，不进业务库）。 */
 export function formatTokens(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';

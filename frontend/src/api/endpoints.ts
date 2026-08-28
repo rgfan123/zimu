@@ -1025,9 +1025,11 @@ export interface AgentRunsQuery {
 /** GET /api/v1/agent-runs/token-usage 的查询参数（AgentTokenUsageFilter，snake_case）。 */
 export interface AgentTokenUsageQuery {
   slug?: string;
+  outcome?: string;
   /** 不传 = LIVE；PREVIEW 是草稿试跑，混进成本视图会让「线上花了多少」失去意义 */
   run_mode?: string;
   business_entity_type?: string;
+  business_entity_id?: string;
   started_from?: string;
   started_to?: string;
   /** AGENT（默认）/ DAY / BUSINESS_ENTITY_TYPE；后端按枚举白名单校验 */

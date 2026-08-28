@@ -261,6 +261,19 @@ Connector 配置分成两条互不替代的轴：`client_mode=MOCK|REAL` 控制�
 
 分析默认今日，可传 `date_from/date_to`。三个 Analytics 端点与 ReviewCase 队列均可传单值 `source_channel`；前端多选按渠道并发后去重合并，使订单/商品、积压/漏斗与人工介入保持同一渠道口径。「实际发货数量」按来源包装乘数换算后的 Canonical SKU 实发件数，礼包展开组件；不统计来源包装数、礼包份数或重量。商品分析行同时返回当前渠道的活动来源 SKU 映射/包装乘数与京东 SKU 编码，供热力图下钻展示。
 
+### 4.8 Agent 运行消耗汇总
+
+| Method | Path | 用途 |
+|---|---|---|
+| GET | `/api/v1/agent-runs/token-usage` | 按当前运行记录筛选范围汇总 token、模型调用次数、运行数与未计量运行数 |
+
+汇总端点的可选筛选参数为 `slug`、`outcome`、`run_mode`、`business_entity_type`、
+`business_entity_id`、`started_from`、`started_to`；其中 `outcome` 与
+`business_entity_id` 的名称和语义与 `GET /api/v1/agent-runs` 逐字一致。两者缺省时不追加对应
+WHERE 条件，行为与扩展前一致。`outcome` 的派生口径仍由运行行的 `status + error_type` 决定：
+`SUCCESS/NEEDS_INPUT` 对应成功行，`REJECTED` 对应 `PII_GUARDED` 失败行，其余失败行为
+`FAILED`。`runs_without_token_usage > 0` 表示 token 求和只是已计量部分的下界，调用方必须显式标注。
+
 ## 5. 受信任内部 API
 
 ### 5.1 创建订单

@@ -52,12 +52,22 @@ paths:
         required: false
         schema:
           type: string
+      - name: outcome
+        in: query
+        required: false
+        schema:
+          type: string
       - name: run_mode
         in: query
         required: false
         schema:
           type: string
       - name: business_entity_type
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: business_entity_id
         in: query
         required: false
         schema:

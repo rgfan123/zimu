@@ -13,18 +13,25 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Button,
+  Card,
+  Col,
   DatePicker,
+  Empty,
   Input,
+  Row,
   Segmented,
   Select,
+  Skeleton,
   Space,
+  Statistic,
   Tag,
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { agentRunsApi } from '@/api/endpoints';
+import { errorMessage } from '@/api/client';
+import { agentRunsApi, type AgentTokenUsageQuery } from '@/api/endpoints';
 import type { RunListItem } from '@/api/agentTypes';
 import { useAsync } from '@/hooks/useAsync';
 import PageShell from '@/components/PageShell';
@@ -33,9 +40,10 @@ import DataTable from '@/components/DataTable';
 import {
   OUTCOME_OPTIONS,
   RUNS_DEFAULT_LIMIT,
-  formatCompactJson,
   formatLatency,
   formatTime,
+  formatTokens,
+  parseTokenUsage,
   rangeToStartedParams,
   runModePresentation,
   runOutcomePresentation,
@@ -48,12 +56,124 @@ import {
 const PREVIEW_BANNER =
   '正在查看 PREVIEW（草稿试跑）记录 —— 仅用于验证草稿行为，不计入对线上运行状态的判断。';
 
+const TOKEN_SUMMARY_GROUP_LIMIT = 500;
+
+function TokenUsageSummaryCard({ query }: { query: AgentTokenUsageQuery }) {
+  const summary = useAsync(
+    () =>
+      agentRunsApi.tokenUsage({
+        ...query,
+        group_by: 'AGENT',
+        limit: TOKEN_SUMMARY_GROUP_LIMIT,
+      }),
+    [
+      query.slug,
+      query.outcome,
+      query.run_mode,
+      query.business_entity_type,
+      query.business_entity_id,
+      query.started_from,
+      query.started_to,
+    ],
+  );
+  const reachedGroupLimit =
+    summary.data !== null && summary.data.items.length >= TOKEN_SUMMARY_GROUP_LIMIT;
+
+  return (
+    <Card
+      size="small"
+      title="当前筛选历史 Token 汇总"
+      aria-label="当前筛选 Token 汇总"
+      role="region"
+    >
+      {summary.loading ? (
+        <Skeleton active paragraph={{ rows: 1 }} />
+      ) : summary.error ? (
+        <Alert
+          showIcon
+          type="error"
+          message="Token 汇总加载失败"
+          description={errorMessage(summary.error)}
+          action={(
+            <Button size="small" icon={<ReloadOutlined />} onClick={summary.reload}>
+              重试
+            </Button>
+          )}
+        />
+      ) : reachedGroupLimit ? (
+        <Alert
+          showIcon
+          type="warning"
+          message="筛选范围过大，无法确认完整 Token 汇总"
+          description="汇总分组已达到接口的 500 组上限；请缩小 Agent 或时间范围后再查看，当前不展示可能少算的数字。"
+        />
+      ) : !summary.data || summary.data.totals.runs === 0 ? (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="当前筛选范围内暂无 Token 汇总"
+        />
+      ) : (
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Row gutter={[16, 12]} wrap>
+            <Col flex="1 1 140px">
+              <Statistic
+                title="总 Token"
+                value={summary.data.totals.total_tokens}
+                formatter={() => formatTokens(summary.data?.totals.total_tokens)}
+              />
+            </Col>
+            <Col flex="1 1 140px">
+              <Statistic
+                title="输入 Token"
+                value={summary.data.totals.prompt_tokens}
+                formatter={() => formatTokens(summary.data?.totals.prompt_tokens)}
+              />
+            </Col>
+            <Col flex="1 1 140px">
+              <Statistic
+                title="输出 Token"
+                value={summary.data.totals.completion_tokens}
+                formatter={() => formatTokens(summary.data?.totals.completion_tokens)}
+              />
+            </Col>
+            <Col flex="1 1 140px">
+              <Statistic
+                title="模型调用次数"
+                value={summary.data.totals.model_calls}
+                formatter={() => formatTokens(summary.data?.totals.model_calls)}
+                suffix="次"
+              />
+            </Col>
+            <Col flex="1 1 140px">
+              <Statistic
+                title="运行次数"
+                value={summary.data.totals.runs}
+                formatter={() => formatTokens(summary.data?.totals.runs)}
+                suffix="次"
+              />
+            </Col>
+          </Row>
+          {summary.data.totals.runs_without_token_usage > 0 ? (
+            <Alert
+              showIcon
+              type="warning"
+              message={`${summary.data.totals.runs_without_token_usage} 次运行未记录 token`}
+              description="以上 Token 只汇总已计量运行，不能当作全部运行的完整消耗。"
+            />
+          ) : null}
+        </Space>
+      )}
+    </Card>
+  );
+}
+
 export default function AgentRunsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const appliedFilters = runsFiltersFromParams(searchParams);
   const [initialFilters] = useState(appliedFilters);
   const [draftFilters, setDraftFilters] = useState<RunsFilters>(initialFilters);
+  const [summaryRefreshVersion, setSummaryRefreshVersion] = useState(0);
 
   const page = useMemo(() => {
     const rawLimit = Number(searchParams.get('limit'));
@@ -67,16 +187,21 @@ export default function AgentRunsPage() {
     };
   }, [searchParams]);
 
+  // 列表与汇总只从这一份已应用筛选构造请求，避免同屏口径再次漂移。
+  const appliedQuery: AgentTokenUsageQuery = {
+    slug: appliedFilters.slug,
+    outcome: appliedFilters.outcome,
+    run_mode: appliedFilters.runMode,
+    business_entity_type: appliedFilters.businessEntityType,
+    business_entity_id: appliedFilters.businessEntityId,
+    started_from: appliedFilters.startedFrom,
+    started_to: appliedFilters.startedTo,
+  };
+
   const runs = useAsync(
     () =>
       agentRunsApi.list({
-        slug: appliedFilters.slug,
-        outcome: appliedFilters.outcome,
-        run_mode: appliedFilters.runMode,
-        business_entity_type: appliedFilters.businessEntityType,
-        business_entity_id: appliedFilters.businessEntityId,
-        started_from: appliedFilters.startedFrom,
-        started_to: appliedFilters.startedTo,
+        ...appliedQuery,
         limit: page.limit,
         offset: page.offset,
       }),
@@ -109,6 +234,10 @@ export default function AgentRunsPage() {
   };
 
   const isPreview = appliedFilters.runMode === 'PREVIEW';
+  const summaryViewKey = `${runsSearchParams(
+    appliedFilters,
+    { limit: RUNS_DEFAULT_LIMIT, offset: 0 },
+  ).toString()}::${summaryRefreshVersion}`;
 
   const columns: ColumnsType<RunListItem> = [
     {
@@ -176,12 +305,26 @@ export default function AgentRunsPage() {
     {
       title: 'Token',
       dataIndex: 'token_usage',
-      width: 160,
-      render: (value: unknown) => (
-        <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
-          {formatCompactJson(value)}
-        </Typography.Text>
-      ),
+      width: 190,
+      render: (value: unknown) => {
+        const usage = parseTokenUsage(value);
+        if (!usage) return <Typography.Text type="secondary">—</Typography.Text>;
+        return (
+          <Space direction="vertical" size={0}>
+            <Typography.Text strong style={{ fontFamily: 'monospace' }}>
+              {formatTokens(usage.totalTokens)}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ fontFamily: 'monospace', fontSize: 12 }}>
+              入 {formatTokens(usage.promptTokens)} / 出 {formatTokens(usage.completionTokens)}
+            </Typography.Text>
+            {usage.modelCalls !== null && usage.modelCalls > 1 ? (
+              <Tag bordered={false} style={{ fontSize: 11, marginInlineEnd: 0 }}>
+                {formatTokens(usage.modelCalls)} 次调用
+              </Tag>
+            ) : null}
+          </Space>
+        );
+      },
     },
     {
       title: '关联业务实体',
@@ -226,7 +369,13 @@ export default function AgentRunsPage() {
               查询
             </Button>
             <Button onClick={resetFilters}>重置</Button>
-            <Button icon={<ReloadOutlined />} onClick={runs.reload}>
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={() => {
+                runs.reload();
+                setSummaryRefreshVersion((version) => version + 1);
+              }}
+            >
               刷新
             </Button>
           </Space>
@@ -318,6 +467,8 @@ export default function AgentRunsPage() {
       </FilterBar>
 
       {isPreview ? <Alert showIcon type="warning" message={PREVIEW_BANNER} /> : null}
+
+      <TokenUsageSummaryCard key={summaryViewKey} query={appliedQuery} />
 
       <DataTable<RunListItem>
         rowClassName={() => (isPreview ? 'agent-run-preview-row' : '')}
