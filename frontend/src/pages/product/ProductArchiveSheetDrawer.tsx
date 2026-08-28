@@ -13,6 +13,7 @@ import { Drawer, Space, Table, Typography } from 'antd';
 import { productsApi } from '@/api/endpoints';
 import type { ProductArchiveSheet, ProductArchiveSheetField } from '@/api/types';
 import { AdminEmpty, AdminFailureAlert, AdminLoading } from '@/pages/shared/AdminVisualComponents';
+import { formatArchiveValue } from './archiveValueFormat';
 import '@/pages/shared/adminSurface.css';
 
 const FIELD_COLUMNS = [
@@ -21,12 +22,13 @@ const FIELD_COLUMNS = [
   {
     title: '值',
     dataIndex: 'value',
-    render: (value: string | null) =>
-      value === null || value === undefined ? (
-        <Typography.Text type="secondary">—</Typography.Text>
-      ) : (
-        <span style={{ fontVariantNumeric: 'tabular-nums' }}>{value}</span>
-      ),
+    render: (value: string | null, row: ProductArchiveSheetField) => {
+      if (value === null || value === undefined) {
+        return <Typography.Text type="secondary">—</Typography.Text>;
+      }
+      const view = formatArchiveValue(row.column, value);
+      return <span style={{ fontVariantNumeric: 'tabular-nums' }} title={view.full}>{view.text}</span>;
+    },
   },
 ];
 

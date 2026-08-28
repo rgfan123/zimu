@@ -8,6 +8,7 @@
 import type { ColumnsType } from 'antd/es/table';
 import type { MasterDataRecord, ProductArchiveSheet } from '@/api/types';
 import { attr } from '@/pages/shared/MasterDataCrud';
+import { formatArchiveValue } from './archiveValueFormat';
 
 const ARCHIVE_FIELDS = [
   { column: 'A', title: '产品名称' },
@@ -131,9 +132,10 @@ function archiveFieldColumns(
         if (value === null || value === undefined || value === '') {
           return '—';
         }
+        const view = formatArchiveValue(field.column, value);
         return numeric
-          ? <span style={{ fontVariantNumeric: 'tabular-nums' }}>{value}</span>
-          : value;
+          ? <span style={{ fontVariantNumeric: 'tabular-nums' }} title={view.full}>{view.text}</span>
+          : view.text;
       },
     });
   }
