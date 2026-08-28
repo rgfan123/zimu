@@ -9,9 +9,9 @@
  * 路由（除 view 外参数原样保留），其余情况原样渲染本页。
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type Key, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { Alert, Card, Empty, Select, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Empty, Input, Popconfirm, Select, Space, Tag, Typography } from 'antd';
 import { CheckSquareOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
@@ -43,6 +43,30 @@ import { useQueuePagination } from './queuePagination';
 import { REASON_LABELS, REVIEW_STATUS_LABELS, TEAM_LABELS, TEAM_OPTIONS } from './queuePresentation';
 import { reasonLabel } from '@/constants/labels';
 import { formatDateTime } from '@/format/dateTime';
+import { buildDismissCommand, buildManualResolution, reviewAction } from './manualReviewActions';
+
+type BatchReviewAction = 'RESOLVE_MANUALLY' | 'DISMISS';
+
+interface BatchReviewFailure {
+  id: string;
+  caseNo: string;
+  message: string;
+}
+
+interface BatchReviewResult {
+  successCount: number;
+  failures: BatchReviewFailure[];
+}
+
+/** 批量只覆盖无需专用表单的通用闭环；客户、SKU、草稿等事项必须逐条处理。 */
+function batchSelectable(item: ReviewCase): boolean {
+  if (item.status !== 'OPEN' || reviewAction(item) !== 'NAVIGATE') return false;
+  return item.allowed_actions.includes('RESOLVE_MANUALLY') || item.allowed_actions.includes('DISMISS');
+}
+
+function batchFailureMessage(error: unknown): string {
+  return error instanceof Error && !('status' in error) ? error.message : errorMessage(error);
+}
 
 /** 路由层兼容门：旧 view=alerts 链接重定向到新提醒路由，其余原样渲染复核页。 */
 export function ReviewQueueCompatRoute() {
@@ -87,9 +111,32 @@ export default function ManualReviewPage() {
   }, []);
   const roleFilterActive = Boolean(roleTeam) && team === roleTeam;
   /** URL 筛选变化（含浏览器回退/前进）时回到第一页，避免带着旧页码看新筛选。 */
-  const urlFilterKey = `${status}|${reasonCode ?? ''}|${team ?? ''}`;
+  const urlFilterKey = `${status}|${reasonCode ?? ''}|${team ?? ''}|${batchId ?? ''}|${batchFilterInvalid ?? ''}`;
   const { page, size, setPage, onPageChange } = useQueuePagination(urlFilterKey);
   const [selected, setSelected] = useState<ReviewCase | null>(null);
+  const [selectedQueueIndex, setSelectedQueueIndex] = useState<number | null>(null);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
+  const [batchNote, setBatchNote] = useState('');
+  const [batchSubmitting, setBatchSubmitting] = useState(false);
+  const [batchResult, setBatchResult] = useState<BatchReviewResult>();
+  const [hiddenBatchSuccessIds, setHiddenBatchSuccessIds] = useState<Set<string>>(() => new Set());
+  const [queueRevision, setQueueRevision] = useState(0);
+  const queueContextKey = `${urlFilterKey}|${page}|${size}`;
+  const [selectionContextKey, setSelectionContextKey] = useState(queueContextKey);
+  const queueContextRef = useRef(queueContextKey);
+  const batchGeneration = useRef(0);
+  if (queueContextRef.current !== queueContextKey) {
+    queueContextRef.current = queueContextKey;
+    batchGeneration.current += 1;
+  }
+
+  useEffect(() => {
+    setSelectedRowKeys([]);
+    setSelectionContextKey(queueContextKey);
+    setBatchNote('');
+    setBatchResult(undefined);
+    setHiddenBatchSuccessIds(new Set());
+  }, [queueContextKey]);
 
   const queue = useAsync(
     () => !queueVisible
@@ -100,12 +147,93 @@ export default function ManualReviewPage() {
         }),
     [page, size, status, team, reasonCode, batchId, queueVisible],
   );
+  useEffect(() => {
+    if (queue.data) setQueueRevision((current) => current + 1);
+  }, [queue.data]);
   const batch = useAsync(
     () => (batchId ? fileOperationsApi.getSourceBatch(batchId) : Promise.resolve(null)),
     [batchId],
   );
   const batchMissing = batch.error instanceof ApiError && batch.error.status === 404;
-  const items = useMemo(() => queue.data?.items ?? [], [queue.data]);
+  const rawItems = useMemo(() => queue.data?.items ?? [], [queue.data]);
+  const items = useMemo(
+    () => rawItems.filter((item) => !hiddenBatchSuccessIds.has(item.id)),
+    [hiddenBatchSuccessIds, rawItems],
+  );
+  const selectedItems = useMemo(() => {
+    const selectedIds = new Set(selectedRowKeys.map(String));
+    return items.filter((item) => selectedIds.has(item.id));
+  }, [items, selectedRowKeys]);
+  const nextSelected = useMemo(() => {
+    if (!selected) return null;
+    const currentIndex = items.findIndex((item) => item.id === selected.id);
+    const nextIndex = currentIndex >= 0 ? currentIndex + 1 : selectedQueueIndex;
+    return nextIndex === null ? null : items[nextIndex] ?? null;
+  }, [items, selected, selectedQueueIndex]);
+  const selectedReasonCodes = new Set(selectedItems.map((item) => item.reason_code));
+  const sameBatchType = selectedReasonCodes.size <= 1;
+  const canBatchResolve = selectedItems.length > 0
+    && sameBatchType
+    && selectionContextKey === queueContextKey
+    && !queue.loading
+    && selectedItems.every((item) => item.allowed_actions.includes('RESOLVE_MANUALLY'));
+  const canBatchDismiss = selectedItems.length > 0
+    && sameBatchType
+    && selectionContextKey === queueContextKey
+    && !queue.loading
+    && selectedItems.every((item) => item.allowed_actions.includes('DISMISS'));
+  const hiddenOnCurrentPage = rawItems.filter((item) => hiddenBatchSuccessIds.has(item.id)).length;
+
+  async function runBatch(action: BatchReviewAction) {
+    const rows = [...selectedItems];
+    const startedInContext = queueContextKey;
+    const startedGeneration = ++batchGeneration.current;
+    const actionAllowed = action === 'RESOLVE_MANUALLY' ? canBatchResolve : canBatchDismiss;
+    if (!actionAllowed || rows.length === 0 || batchSubmitting) return;
+
+    setBatchSubmitting(true);
+    setBatchResult(undefined);
+    const succeededIds: string[] = [];
+    const failures: BatchReviewFailure[] = [];
+    for (const item of rows) {
+      try {
+        // 每次 API 调用都会独立经过 writeHeaders → trustedWriteHeaders → newRequestId；
+        // 因而每行既是独立事务，也使用兼容明文 HTTP 的独立幂等键。
+        if (action === 'RESOLVE_MANUALLY') {
+          await reviewCasesApi.resolve(item.id, buildManualResolution(item, batchNote));
+        } else {
+          await reviewCasesApi.dismiss(item.id, buildDismissCommand(item, batchNote));
+        }
+        succeededIds.push(item.id);
+      } catch (error) {
+        failures.push({ id: item.id, caseNo: item.case_no, message: batchFailureMessage(error) });
+      }
+    }
+
+    // 用户可能在逐行提交期间切换筛选/页码；写操作照常完成，但旧上下文结果不得污染新队列。
+    if (queueContextRef.current !== startedInContext || batchGeneration.current !== startedGeneration) {
+      setBatchSubmitting(false);
+      queue.reload();
+      return;
+    }
+    setHiddenBatchSuccessIds((current) => new Set([...current, ...succeededIds]));
+    setSelectedRowKeys(failures.map((item) => item.id));
+    setBatchResult({ successCount: succeededIds.length, failures });
+    if (failures.length === 0) setBatchNote('');
+    setBatchSubmitting(false);
+    queue.reload();
+  }
+
+  function selectCase(item: ReviewCase | null) {
+    if (!item) {
+      setSelected(null);
+      setSelectedQueueIndex(null);
+      return;
+    }
+    const queueIndex = items.findIndex((candidate) => candidate.id === item.id);
+    if (queueIndex >= 0) setSelectedQueueIndex(queueIndex);
+    setSelected(item);
+  }
 
   /**
    * 队列筛选变更：写回 URL（保留 import_batch 等其他参数）并回到第一页。
@@ -149,7 +277,7 @@ export default function ManualReviewPage() {
       render: (value: ReviewCaseStatus) => <Tag color={reviewCaseStatusSemantic(value)}>{REVIEW_STATUS_LABELS[value] ?? value}</Tag>,
     },
     { title: '进入队列时间', dataIndex: 'created_at', width: 150, render: (value: string) => formatDateTime(value) },
-    { title: '操作', key: 'action', width: 90, fixed: 'right', render: (_, item) => <Typography.Link onClick={() => setSelected(item)}>查看处理</Typography.Link> },
+    { title: '操作', key: 'action', width: 90, fixed: 'right', render: (_, item) => <Typography.Link onClick={() => selectCase(item)}>查看处理</Typography.Link> },
   ];
 
   return (
@@ -202,11 +330,93 @@ export default function ManualReviewPage() {
           ) : null}
         </Card>
       ) : null}
+      {selectedItems.length > 0 ? (
+        <Card size="small" title={`批量处理（已选 ${selectedItems.length} 项）`}>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            {!sameBatchType ? (
+              <Alert type="warning" showIcon message="批量处理需选择同类事项" />
+            ) : !canBatchResolve && !canBatchDismiss ? (
+              <Alert type="warning" showIcon message="所选事项没有共同的批量动作" />
+            ) : null}
+            <Input.TextArea
+              aria-label="批量处理备注"
+              value={batchNote}
+              onChange={(event) => setBatchNote(event.target.value)}
+              rows={2}
+              maxLength={1000}
+              showCount
+              placeholder="填写本次批量处理依据（可选）"
+            />
+            <Space wrap>
+              <Button
+                type="primary"
+                disabled={!canBatchResolve || batchSubmitting}
+                loading={batchSubmitting}
+                onClick={() => void runBatch('RESOLVE_MANUALLY')}
+              >
+                批量标记已处理（{selectedItems.length}）
+              </Button>
+              <Popconfirm
+                title="确认批量关闭所选复核事项？"
+                description="每项会独立提交并记录审计；失败项保留在队列中。"
+                okText="确认关闭"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+                disabled={!canBatchDismiss || batchSubmitting}
+                onConfirm={() => runBatch('DISMISS')}
+              >
+                <Button danger disabled={!canBatchDismiss || batchSubmitting}>批量关闭（{selectedItems.length}）</Button>
+              </Popconfirm>
+              <Typography.Text type="secondary">
+                仅支持无需客户、SKU 等专用输入的同类事项。
+              </Typography.Text>
+            </Space>
+          </Space>
+        </Card>
+      ) : null}
+      {batchResult ? (
+        <Alert
+          type={batchResult.failures.length === 0 ? 'success' : 'warning'}
+          showIcon
+          message={`批量处理完成：成功 ${batchResult.successCount} 项，失败 ${batchResult.failures.length} 项`}
+          description={batchResult.failures.length > 0 ? (
+            <Space direction="vertical" size={2}>
+              {batchResult.failures.map((failure) => (
+                <Typography.Text key={failure.id} type="danger">
+                  {failure.caseNo}：{failure.message}
+                </Typography.Text>
+              ))}
+            </Space>
+          ) : undefined}
+        />
+      ) : null}
       {queueVisible ? (
         <QueueTable<ReviewCase>
           rowKey="id"
           columns={reviewColumns}
           items={items}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: (keys) => {
+              if (!batchSubmitting) {
+                const nextIds = new Set(keys.map(String));
+                const failureIds = new Set(batchResult?.failures.map((failure) => failure.id) ?? []);
+                const keepsFailureRetry = failureIds.size > 0
+                  && nextIds.size === failureIds.size
+                  && [...failureIds].every((id) => nextIds.has(id));
+                if (!keepsFailureRetry) {
+                  setBatchNote('');
+                  setBatchResult(undefined);
+                }
+                setSelectedRowKeys(keys);
+                setSelectionContextKey(queueContextKey);
+              }
+            },
+            getCheckboxProps: (item) => ({
+              disabled: batchSubmitting || !batchSelectable(item),
+              title: batchSelectable(item) ? undefined : '此事项需使用专用表单，不能批量处理',
+            }),
+          }}
           loading={queue.loading}
           error={queue.error}
           errorTitle="复核队列加载失败"
@@ -221,10 +431,12 @@ export default function ManualReviewPage() {
               ) : '当前没有复核事项'}
             />
           }
-          total={queue.data?.total_elements ?? 0}
+          total={Math.max(0, (queue.data?.total_elements ?? 0) - hiddenOnCurrentPage)}
           page={page}
           pageSize={size}
-          onPageChange={onPageChange}
+          onPageChange={(nextPage, nextSize) => {
+            if (!batchSubmitting) onPageChange(nextPage, nextSize);
+          }}
           onReload={queue.reload}
           filterControls={
             <>
@@ -232,6 +444,7 @@ export default function ManualReviewPage() {
               <Select<ReviewCaseStatus>
                 id="review-status-filter"
                 value={status} style={{ width: 130 }}
+                disabled={batchSubmitting}
                 onChange={(value) => updateQueueFilters({ status: value })}
                 options={Object.entries(REVIEW_STATUS_LABELS).map(([value, label]) => ({ value: value as ReviewCaseStatus, label }))}
               />
@@ -243,6 +456,7 @@ export default function ManualReviewPage() {
                 optionFilterProp="label"
                 placeholder="全部事项"
                 value={reasonCode} style={{ width: 200 }}
+                disabled={batchSubmitting}
                 onChange={(value) => updateQueueFilters({ reasonCode: value ?? null })}
                 options={Object.entries(REASON_LABELS).map(([value, label]) => ({ value, label }))}
               />
@@ -251,6 +465,7 @@ export default function ManualReviewPage() {
                 id="review-team-filter"
                 allowClear placeholder="全部团队"
                 value={team} style={{ width: 160 }}
+                disabled={batchSubmitting}
                 onChange={(value) => updateQueueFilters({ team: value ?? null })}
                 options={TEAM_OPTIONS}
               />
@@ -267,9 +482,11 @@ export default function ManualReviewPage() {
 
       <ReviewCaseDrawer
         selected={selected}
-        onClose={() => setSelected(null)}
+        nextCase={nextSelected}
+        queueRevision={queueRevision}
+        onClose={() => selectCase(null)}
         onQueueReload={queue.reload}
-        onRefreshCase={setSelected}
+        onRefreshCase={selectCase}
       />
     </PageShell>
   );

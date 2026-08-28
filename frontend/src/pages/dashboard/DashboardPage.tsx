@@ -199,6 +199,7 @@ export default function DashboardPage() {
             spark={summary?.trend.map((t) => t.order_count)}
             loading={loading}
             tooltip="今日业务订单总数（BUSINESS 数据域）"
+            valueHref="/orders"
           />
         </Col>
         <Col xs={24} sm={12} xl={6}>
@@ -211,6 +212,7 @@ export default function DashboardPage() {
             spark={summary?.trend.map((t) => t.shipped_order_count)}
             loading={loading}
             tooltip="今日已实际发货的订单数"
+            valueHref="/orders/tracking"
           />
         </Col>
         <Col xs={24} sm={12} xl={6}>

@@ -3,6 +3,7 @@ import { after, afterEach, before, test } from 'node:test';
 import {
   control,
   createRouteHarness,
+  apiErrorResponse,
   jsonResponse,
   page,
   reviewCaseFixture,
@@ -35,6 +36,18 @@ function operationalAlert(id: string) {
     detail: {},
     version: 0,
     created_at: '2026-08-20T02:00:00Z',
+  };
+}
+
+function batchReviewCase(
+  id: string,
+  reasonCode: string,
+  allowedActions: Array<'RESOLVE_MANUALLY' | 'DISMISS'> = ['RESOLVE_MANUALLY', 'DISMISS'],
+) {
+  return {
+    ...reviewCaseFixture(id, { reasonCode, team: 'ORDER_OPS', caseNo: `RC-BATCH-${id}` }),
+    allowed_actions: allowedActions,
+    version: Number(id),
   };
 }
 
@@ -74,6 +87,239 @@ test('status/reason_code/responsible_team 从 URL 恢复并实际影响队列请
   ), '队列请求必须带 URL 中的全部筛选');
   assert.match(harness.bodyText(), /SKU 映射待确认/, '事项类型筛选控件显示 URL 中的值');
   assert.match(harness.bodyText(), /商品运营/, '责任团队筛选控件显示 URL 中的值');
+});
+
+test('复核主队列支持行选择，运营提醒队列不传选择能力时保持原状', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = reviewsFetch(requests);
+
+  await harness.mount(['/workbench/reviews?status=OPEN&reason_code=SKU_MAPPING_REQUIRED']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /RC-FIXTURE-1/));
+  assert.ok(
+    document.querySelectorAll<HTMLInputElement>('.ant-table input[type="checkbox"]').length >= 2,
+    '复核队列必须渲染表头全选与行选择框',
+  );
+
+  await harness.unmount();
+  await harness.mount(['/workbench/alerts?status=OPEN']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /ALERT-Q-9/));
+  assert.equal(
+    document.querySelectorAll<HTMLInputElement>('.ant-table input[type="checkbox"]').length,
+    0,
+    '运营提醒未传 rowSelection 时不得新增选择列',
+  );
+});
+
+test('跨事项类型混选时禁用批量动作并明确说明同类限制', async () => {
+  const rows = [
+    batchReviewCase('1', 'SYNC_FAILED'),
+    batchReviewCase('2', 'WECOM_TRACKING_FILE_REVIEW'),
+  ];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/review-cases?')) return jsonResponse(page(rows));
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await harness.mount(['/workbench/reviews?status=OPEN']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /RC-BATCH-2/));
+  const selectAll = document.querySelector<HTMLInputElement>('.ant-table-thead input[type="checkbox"]');
+  assert.ok(selectAll, '复核队列必须提供全选框');
+  await harness.dispatchEvent(selectAll, new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /批量处理需选择同类事项/));
+  assert.notEqual(control('批量标记已处理（2）').getAttribute('disabled'), null);
+  assert.notEqual(control('批量关闭（2）').getAttribute('disabled'), null);
+});
+
+test('批量逐行独立提交：幂等键独立，成功行移除，失败行可见且可重试', async () => {
+  let openRows = [
+    batchReviewCase('1', 'SYNC_FAILED', ['RESOLVE_MANUALLY']),
+    batchReviewCase('2', 'SYNC_FAILED', ['RESOLVE_MANUALLY']),
+  ];
+  let secondAttempts = 0;
+  const writeRequests: Array<{ url: string; idempotencyKey: string | null; body: unknown }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    if (url.startsWith('/api/v1/review-cases?') && method === 'GET') return jsonResponse(page(openRows));
+    if (url.match(/^\/api\/v1\/review-cases\/[12]\/resolve$/) && method === 'POST') {
+      const id = url.split('/')[4];
+      writeRequests.push({
+        url,
+        idempotencyKey: new Headers(init?.headers).get('Idempotency-Key'),
+        body: JSON.parse(String(init?.body)),
+      });
+      if (id === '2' && secondAttempts++ === 0) {
+        return apiErrorResponse(409, 'VERSION_CONFLICT', '版本冲突');
+      }
+      openRows = openRows.filter((row) => row.id !== id);
+      return jsonResponse({ ...batchReviewCase(id, 'SYNC_FAILED'), status: 'RESOLVED' });
+    }
+    throw new Error(`unexpected request: ${method} ${url}`);
+  };
+
+  await harness.mount(['/workbench/reviews?status=OPEN']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /RC-BATCH-2/));
+  const selectAll = document.querySelector<HTMLInputElement>('.ant-table-thead input[type="checkbox"]');
+  assert.ok(selectAll);
+  await harness.dispatchEvent(selectAll, new MouseEvent('click', { bubbles: true }));
+
+  const cryptoDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  let randomFill = 0;
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      getRandomValues(array: Uint8Array) {
+        array.fill(++randomFill);
+        return array;
+      },
+    },
+  });
+  try {
+    await harness.dispatchEvent(control('批量标记已处理（2）'), new MouseEvent('click', { bubbles: true }));
+    await harness.waitFor(() => assert.match(harness.bodyText(), /成功 1 项，失败 1 项/));
+    assert.doesNotMatch(harness.bodyText(), /RC-BATCH-1/, '成功行必须从当前界面移除');
+    assert.match(harness.bodyText(), /RC-BATCH-2/, '失败行必须留在当前界面');
+    assert.match(harness.bodyText(), /数据已被其他操作更新/, '失败原因必须留在界面可查');
+
+    await harness.dispatchEvent(control('批量标记已处理（1）'), new MouseEvent('click', { bubbles: true }));
+    await harness.waitFor(() => assert.match(harness.bodyText(), /成功 1 项，失败 0 项/));
+    assert.doesNotMatch(harness.bodyText(), /RC-BATCH-2/, '重试成功后失败行才移除');
+  } finally {
+    if (cryptoDescriptor) Object.defineProperty(globalThis, 'crypto', cryptoDescriptor);
+    else delete (globalThis as { crypto?: unknown }).crypto;
+  }
+
+  assert.deepEqual(writeRequests.map((request) => request.url), [
+    '/api/v1/review-cases/1/resolve',
+    '/api/v1/review-cases/2/resolve',
+    '/api/v1/review-cases/2/resolve',
+  ]);
+  assert.deepEqual(writeRequests.map((request) => request.body), [
+    { expected_version: 1, note: '' },
+    { expected_version: 2, note: '' },
+    { expected_version: 2, note: '' },
+  ]);
+  assert.ok(writeRequests.every((request) => request.idempotencyKey), '每行请求必须带幂等键');
+  assert.equal(
+    new Set(writeRequests.map((request) => request.idempotencyKey)).size,
+    3,
+    '每行及重试都必须使用独立幂等键',
+  );
+});
+
+test('单条处理成功后 Drawer 可直接载入当前筛选下的下一条', async () => {
+  let rows = [
+    batchReviewCase('1', 'SYNC_FAILED', ['RESOLVE_MANUALLY']),
+    batchReviewCase('2', 'SYNC_FAILED', ['RESOLVE_MANUALLY']),
+  ];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    if (url.startsWith('/api/v1/review-cases?') && method === 'GET') return jsonResponse(page(rows));
+    if (url === '/api/v1/review-cases/1/resolve' && method === 'POST') {
+      rows = rows.filter((row) => row.id !== '1');
+      return jsonResponse({ ...batchReviewCase('1', 'SYNC_FAILED'), status: 'RESOLVED' });
+    }
+    throw new Error(`unexpected request: ${method} ${url}`);
+  };
+
+  await harness.mount(['/workbench/reviews?status=OPEN']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /RC-BATCH-2/));
+  await harness.dispatchEvent(control('查看处理'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /复核事项 RC-BATCH-1/));
+  await harness.dispatchEvent(control('标记已处理'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /当前事项已处理/));
+  assert.ok(control('处理下一条'));
+  await harness.dispatchEvent(control('处理下一条'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /复核事项 RC-BATCH-2/));
+  assert.match(harness.bodyText(), /标记已处理/, '下一条必须直接载入原有单条处理表单');
+});
+
+test('页末事项处理后，刷新出的后续页首项仍可作为下一条连续处理', async () => {
+  const allRows = Array.from({ length: 21 }, (_, index) => (
+    batchReviewCase(String(index + 1), 'SYNC_FAILED', ['RESOLVE_MANUALLY'])
+  ));
+  let resolved = false;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    if (url.startsWith('/api/v1/review-cases?') && method === 'GET') {
+      const items = resolved ? [...allRows.slice(0, 19), allRows[20]] : allRows.slice(0, 20);
+      return jsonResponse({
+        items,
+        page: 0,
+        size: 20,
+        total_elements: resolved ? 20 : 21,
+        total_pages: resolved ? 1 : 2,
+      });
+    }
+    if (url === '/api/v1/review-cases/20/resolve' && method === 'POST') {
+      resolved = true;
+      return jsonResponse({ ...allRows[19], status: 'RESOLVED' });
+    }
+    throw new Error(`unexpected request: ${method} ${url}`);
+  };
+
+  await harness.mount(['/workbench/reviews?status=OPEN']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /RC-BATCH-20/));
+  const row20 = [...document.querySelectorAll<HTMLTableRowElement>('.ant-table-tbody tr')]
+    .find((row) => row.textContent?.includes('RC-BATCH-20'));
+  const openRow20 = [...(row20?.querySelectorAll<HTMLElement>('a') ?? [])]
+    .find((link) => link.textContent?.includes('查看处理'));
+  assert.ok(openRow20, '当前页末行必须可打开');
+  await harness.dispatchEvent(openRow20, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /复核事项 RC-BATCH-20/));
+  await harness.dispatchEvent(control('标记已处理'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.ok(control('处理下一条')));
+  await harness.dispatchEvent(control('处理下一条'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /复核事项 RC-BATCH-21/));
+});
+
+test('旧事项写请求晚到时不会覆盖新打开事项的 Drawer 状态', async () => {
+  const rows = [
+    batchReviewCase('1', 'SYNC_FAILED', ['RESOLVE_MANUALLY']),
+    batchReviewCase('2', 'SYNC_FAILED', ['RESOLVE_MANUALLY']),
+  ];
+  let finishResolve: (() => void) | undefined;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    if (url.startsWith('/api/v1/review-cases?') && method === 'GET') return jsonResponse(page(rows));
+    if (url === '/api/v1/review-cases/1/resolve' && method === 'POST') {
+      return new Promise<Response>((resolve) => {
+        finishResolve = () => resolve(jsonResponse({ ...rows[0], status: 'RESOLVED' }));
+      });
+    }
+    throw new Error(`unexpected request: ${method} ${url}`);
+  };
+
+  await harness.mount(['/workbench/reviews?status=OPEN']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /RC-BATCH-2/));
+  await harness.dispatchEvent(control('查看处理'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /复核事项 RC-BATCH-1/));
+  await harness.dispatchEvent(control('标记已处理'), new MouseEvent('click', { bubbles: true }));
+  assert.ok(finishResolve, '第一条写请求必须保持待返回');
+
+  const closeDrawer = document.querySelector<HTMLButtonElement>('.ant-drawer-close');
+  assert.ok(closeDrawer);
+  await harness.dispatchEvent(closeDrawer, new MouseEvent('click', { bubbles: true }));
+  const row2 = [...document.querySelectorAll<HTMLTableRowElement>('.ant-table-tbody tr')]
+    .find((row) => row.textContent?.includes('RC-BATCH-2'));
+  const openRow2 = [...(row2?.querySelectorAll<HTMLElement>('a') ?? [])]
+    .find((link) => link.textContent?.includes('查看处理'));
+  assert.ok(openRow2);
+  await harness.dispatchEvent(openRow2, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /复核事项 RC-BATCH-2/));
+
+  finishResolve();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.match(harness.bodyText(), /复核事项 RC-BATCH-2/);
+  assert.doesNotMatch(harness.bodyText(), /当前事项已处理/, '第一条的晚到成功态不得覆盖第二条');
+  assert.match(harness.bodyText(), /标记已处理/, '第二条原处理表单必须保持可用');
 });
 
 test('reason_code 与 responsible_team 同时出现时组合过滤（工作台行上下文）', async () => {

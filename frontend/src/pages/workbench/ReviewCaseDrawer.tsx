@@ -152,6 +152,10 @@ function FactGroupSection({ detail, groups }: { detail: Record<string, unknown>;
 
 export interface ReviewCaseDrawerProps {
   selected: ReviewCase | null;
+  /** 当前筛选与排序下，紧随当前事项之后的一条；不存在时不显示连续作业入口。 */
+  nextCase: ReviewCase | null;
+  /** 队列成功载入新快照时递增；连续作业必须等成功写后的新快照到达。 */
+  queueRevision: number;
   onClose: () => void;
   /** 列表侧刷新（成功动作后重新拉取队列；不负责关闭抽屉）。 */
   onQueueReload: () => void;
@@ -159,7 +163,17 @@ export interface ReviewCaseDrawerProps {
   onRefreshCase: (item: ReviewCase | null) => void;
 }
 
-export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onRefreshCase }: ReviewCaseDrawerProps) {
+interface CompletedReview {
+  message: string;
+  queueRevision: number;
+}
+
+interface CaseWriteRequest {
+  caseId: string;
+  token: number;
+}
+
+export default function ReviewCaseDrawer({ selected, nextCase, queueRevision, onClose, onQueueReload, onRefreshCase }: ReviewCaseDrawerProps) {
   const navigate = useNavigate();
   const [messageApi, messageContext] = message.useMessage();
   const [masterId, setMasterId] = useState<string>();
@@ -171,6 +185,10 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
   const [note, setNote] = useState('');
   const [submitError, setSubmitError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [completed, setCompleted] = useState<CompletedReview>();
+  const activeCaseId = useRef<string | null>(selected?.id ?? null);
+  const writeRequest = useRef(0);
+  activeCaseId.current = selected?.id ?? null;
 
   useEffect(() => {
     setMasterId(undefined);
@@ -179,7 +197,31 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
     setSubmitError(undefined);
     setMasterQuery('');
     setMasterOptions(emptyMasterDataOptionState());
+    setCompleted(undefined);
+    setSubmitting(false);
+    writeRequest.current += 1;
   }, [selected?.id]);
+
+  function beginWrite(caseId: string): CaseWriteRequest {
+    return { caseId, token: ++writeRequest.current };
+  }
+
+  function isActiveWrite(request: CaseWriteRequest): boolean {
+    return activeCaseId.current === request.caseId && writeRequest.current === request.token;
+  }
+
+  function completeCurrent(messageText: string, caseId: string) {
+    // 成功写无论 Drawer 是否已切换都要刷新队列；只把成功态写进仍匹配的当前事项。
+    onQueueReload();
+    if (activeCaseId.current !== caseId) return;
+    messageApi.success(messageText);
+    setCompleted({ message: messageText, queueRevision });
+  }
+
+  function openNextCase() {
+    if (!nextCase) return;
+    onRefreshCase(nextCase);
+  }
 
   useEffect(() => {
     if (!selected || selected.status !== 'OPEN') return;
@@ -211,6 +253,7 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
 
   async function submitReview() {
     if (!selected) return;
+    const request = beginWrite(selected.id);
     setSubmitting(true);
     setSubmitError(undefined);
     try {
@@ -227,13 +270,13 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
       } else {
         throw new Error('该事项需要前往关联页面处理');
       }
-      messageApi.success('复核事项已处理并记录审计');
-      onClose();
-      onQueueReload();
+      completeCurrent('复核事项已处理并记录审计', request.caseId);
     } catch (error) {
-      setSubmitError(error instanceof Error && !('status' in error) ? error.message : errorMessage(error));
+      if (isActiveWrite(request)) {
+        setSubmitError(error instanceof Error && !('status' in error) ? error.message : errorMessage(error));
+      }
     } finally {
-      setSubmitting(false);
+      if (isActiveWrite(request)) setSubmitting(false);
     }
   }
 
@@ -257,49 +300,46 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
 
   async function resolveManually() {
     if (!selected) return;
+    const request = beginWrite(selected.id);
     setSubmitting(true);
     setSubmitError(undefined);
     try {
       await reviewCasesApi.resolve(selected.id, buildManualResolution(selected, note));
-      messageApi.success('复核事项已标记已解决并记录审计');
-      onClose();
-      onQueueReload();
+      completeCurrent('复核事项已标记已解决并记录审计', request.caseId);
     } catch (error) {
-      setSubmitError(errorMessage(error));
+      if (isActiveWrite(request)) setSubmitError(errorMessage(error));
     } finally {
-      setSubmitting(false);
+      if (isActiveWrite(request)) setSubmitting(false);
     }
   }
 
   async function dismissCase() {
     if (!selected) return;
+    const request = beginWrite(selected.id);
     setSubmitting(true);
     setSubmitError(undefined);
     try {
       await reviewCasesApi.dismiss(selected.id, buildDismissCommand(selected, note));
-      messageApi.success('复核事项已关闭并记录审计');
-      onClose();
-      onQueueReload();
+      completeCurrent('复核事项已关闭并记录审计', request.caseId);
     } catch (error) {
-      setSubmitError(errorMessage(error));
+      if (isActiveWrite(request)) setSubmitError(errorMessage(error));
     } finally {
-      setSubmitting(false);
+      if (isActiveWrite(request)) setSubmitting(false);
     }
   }
 
   async function confirmJdTrackingConflict() {
     if (!selected) return;
+    const request = beginWrite(selected.id);
     setSubmitting(true);
     setSubmitError(undefined);
     try {
       await reviewCasesApi.resolveJdTrackingConflict(selected.id, buildManualResolution(selected, note));
-      messageApi.success('京东运单冲突已确认处理并记录审计');
-      onClose();
-      onQueueReload();
+      completeCurrent('京东运单冲突已确认处理并记录审计', request.caseId);
     } catch (error) {
-      setSubmitError(errorMessage(error));
+      if (isActiveWrite(request)) setSubmitError(errorMessage(error));
     } finally {
-      setSubmitting(false);
+      if (isActiveWrite(request)) setSubmitting(false);
     }
   }
 
@@ -312,28 +352,34 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
       setSubmitError('该事项缺少关联 Shipment，无法重跑库存核对');
       return;
     }
+    const request = beginWrite(selected.id);
     setSubmitting(true);
     setSubmitError(undefined);
     try {
       const result = await shipmentsApi.checkJdStock(shipmentId);
+      if (!isActiveWrite(request)) {
+        onQueueReload();
+        return;
+      }
       if (result.stock_status === 'PASSED') {
-        messageApi.success('库存核对通过，阻断事项已自动解除');
-        onClose();
+        completeCurrent('库存核对通过，阻断事项已自动解除', request.caseId);
       } else {
         messageApi.warning('库存仍不足，阻断保持不变');
         const refreshed = await reviewCasesApi.detail(selected.id);
+        if (!isActiveWrite(request)) return;
         onRefreshCase(refreshed);
+        onQueueReload();
       }
-      onQueueReload();
     } catch (error) {
-      setSubmitError(errorMessage(error));
+      if (isActiveWrite(request)) setSubmitError(errorMessage(error));
     } finally {
-      setSubmitting(false);
+      if (isActiveWrite(request)) setSubmitting(false);
     }
   }
 
   async function rerunJdSkuMapping() {
     if (!selected || reviewAction(selected) !== 'JD_SKU_MAPPING') return;
+    const request = beginWrite(selected.id);
     setSubmitting(true);
     setSubmitError(undefined);
     try {
@@ -341,37 +387,47 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
         check: shipmentsApi.checkJdSkuMapping,
         loadReviewCase: reviewCasesApi.detail,
       });
+      if (!isActiveWrite(request)) {
+        onQueueReload();
+        return;
+      }
       const { result } = outcome;
       const feedback = jdSkuMappingRerunResultMessage(result);
       if (result.gate_status === 'PASSED') {
-        messageApi.success(feedback);
-        onClose();
+        completeCurrent(feedback, request.caseId);
       } else {
         messageApi.warning(feedback);
         onRefreshCase(outcome.refreshedCase);
+        onQueueReload();
       }
-      onQueueReload();
     } catch (error) {
-      setSubmitError(errorMessage(error));
+      if (isActiveWrite(request)) setSubmitError(errorMessage(error));
     } finally {
-      setSubmitting(false);
+      if (isActiveWrite(request)) setSubmitting(false);
     }
   }
 
   function completeOrderDraft(action: 'CONFIRMED' | 'REJECTED', orderId?: string | null) {
-    messageApi.success(action === 'CONFIRMED' ? '订单草稿已确认并生成正式订单' : '订单草稿已拒绝');
-    onClose();
-    onQueueReload();
-    if (action === 'CONFIRMED' && orderId) navigate(`/orders/${orderId}`);
+    if (!selected) return;
+    const messageText = action === 'CONFIRMED' ? '订单草稿已确认并生成正式订单' : '订单草稿已拒绝';
+    if (action === 'CONFIRMED' && orderId) {
+      onQueueReload();
+      if (activeCaseId.current !== selected.id) return;
+      messageApi.success(messageText);
+      onClose();
+      navigate(`/orders/${orderId}`);
+      return;
+    }
+    completeCurrent(messageText, selected.id);
   }
 
   function completeTrackingDraft() {
-    messageApi.success('运单草稿已确认并记录正式运单');
-    onClose();
-    onQueueReload();
+    if (!selected) return;
+    completeCurrent('运单草稿已确认并记录正式运单', selected.id);
   }
 
   const selectedAction = selected ? reviewAction(selected) : 'NAVIGATE';
+  const queueRefreshedAfterCompletion = completed ? queueRevision > completed.queueRevision : false;
   const requiresMaster = selectedAction === 'CUSTOMER' || selectedAction === 'SKU';
   const allowedActions = new Set(selected?.allowed_actions ?? []);
   const canResolveJdTracking = selected?.status === 'OPEN' && allowedActions.has('RESOLVE_JD_TRACKING_CONFLICT');
@@ -403,7 +459,24 @@ export default function ReviewCaseDrawer({ selected, onClose, onQueueReload, onR
       width={selectedAction === 'ORDER_DRAFT' || selectedAction === 'TRACKING_DRAFT' ? 920 : 620}
     >
       {messageContext}
-      {selected && selectedAction === 'ORDER_DRAFT' ? (
+      {selected && completed ? (
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Alert
+            type="success"
+            showIcon
+            message="当前事项已处理"
+            description={!queueRefreshedAfterCompletion
+              ? `${completed.message}。正在刷新当前筛选队列…`
+              : nextCase
+              ? `${completed.message}。下一条：${nextCase.case_no}（${reasonLabel(nextCase.reason_code)}）`
+              : `${completed.message}。当前筛选下暂时没有下一条事项。`}
+          />
+          <Space>
+            {queueRefreshedAfterCompletion && nextCase ? <Button type="primary" onClick={openNextCase}>处理下一条</Button> : null}
+            <Button onClick={onClose}>返回队列</Button>
+          </Space>
+        </Space>
+      ) : selected && selectedAction === 'ORDER_DRAFT' ? (
         <OrderDraftReviewPanel
           reviewCase={selected}
           onCompleted={(action, result) => completeOrderDraft(action, result.confirmed_order_id)}

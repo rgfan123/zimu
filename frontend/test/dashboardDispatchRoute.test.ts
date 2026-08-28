@@ -82,6 +82,22 @@ function cssRgb(hex: string): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+test('今日订单 KPI 使用既有订单预设跳转，不伪造日期 query', async () => {
+  globalThis.fetch = dashboardFetch([]);
+
+  await harness.mount(['/dashboard']);
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /今日已发订单/));
+  const allOrdersLink = document.querySelector<HTMLAnchorElement>('a[href="/orders"]');
+  const shippedOrdersLink = document.querySelector<HTMLAnchorElement>('a[href="/orders/tracking"]');
+  assert.ok(allOrdersLink, '今日订单数必须链接到全部订单列表');
+  assert.ok(shippedOrdersLink, '今日已发订单必须链接到既有已发货预设');
+  assert.match(allOrdersLink.textContent ?? '', /12/);
+  assert.match(shippedOrdersLink.textContent ?? '', /9/);
+  assert.doesNotMatch(allOrdersLink.getAttribute('href') ?? '', /date|\?/);
+  assert.doesNotMatch(shippedOrdersLink.getAttribute('href') ?? '', /date|\?/);
+});
+
 test('待人工介入 KPI 整张 Card 可点击，直达 OPEN 完整列表，且不带伪造时间参数', async () => {
   const requests: string[] = [];
   globalThis.fetch = dashboardFetch(requests, [

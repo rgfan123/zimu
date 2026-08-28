@@ -7,13 +7,14 @@
 
 import type { ReactNode } from 'react';
 import { Button, Card, Typography } from 'antd';
+import type { TableProps } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import DataTable from '@/components/DataTable';
 import FilterBar from '@/components/FilterBar';
 import { ATTENTION_COLORS } from '@/pages/shared/semanticStatus';
 
-export interface QueueTableProps<T> {
+export interface QueueTableProps<T extends object> {
   rowKey: string;
   columns: ColumnsType<T>;
   items: T[];
@@ -29,6 +30,8 @@ export interface QueueTableProps<T> {
   /** 筛选控件行（状态 / 事项类型 / 责任团队等 Select）。 */
   filterControls: ReactNode;
   onReload: () => void;
+  /** 可选行选择能力；提醒队列不传时不渲染选择列。 */
+  rowSelection?: TableProps<T>['rowSelection'];
 }
 
 export default function QueueTable<T extends object>({
@@ -45,6 +48,7 @@ export default function QueueTable<T extends object>({
   onPageChange,
   filterControls,
   onReload,
+  rowSelection,
 }: QueueTableProps<T>) {
   return (
     <>
@@ -58,6 +62,7 @@ export default function QueueTable<T extends object>({
           loading={loading}
           columns={columns}
           dataSource={items}
+          rowSelection={rowSelection}
           // 两页既有口径均为 x:900（区别于 DataTable 默认 x=960），保持拆分前的横向滚动行为。
           scroll={{ x: 900 }}
           error={error}
