@@ -159,16 +159,20 @@ class AutoShipService implements SourceBatchAutoShipper {
         AutoShipBlockerReader.Failures failures = readFailures(candidate);
 
         if (!unexpected.isEmpty()) {
-            // 本类判定「完全就绪」，闸门却跳过了行——两套判据分叉了。
-            // 货已经发了一部分，必须让人立刻知道，且要知道是判据出了问题而不是数据出了问题。
+            // 本类判定「完全就绪」，闸门却跳过了行。两种可能，都必须让人立刻知道：
+            //   1. 镜像判据（AutoShipBlockedPredicate）与 file 包里的原件分叉了；
+            //   2. 取候选与确认之间有行变成了阻断（读候选不在事务里，这个窗口真实存在）。
+            // 无论哪种，货都已经发了一部分——所以上面照常建单：确认事务已经提交，
+            // 不建单只会留下一批「已确认却没有京东单」的发货批次，那是更糟的中间态。
             log.error(
                     "自动发货判据与确认闸门分叉：批次被判完全就绪但闸门跳过了行 batch_no={} codes={}",
                     candidate.batchNo(),
                     unexpected);
-            return new Result(
-                    entry(candidate, "READINESS_DIVERGED", unexpected, "判据分叉：闸门跳过了行，请核对阻断口径"),
-                    true,
-                    true);
+            List<String> codes = new ArrayList<>(unexpected);
+            codes.addAll(reasonCodes(failures));
+            String detail = "判据分叉：闸门跳过了行，请核对阻断口径"
+                    + (failures.any() ? "；" + failures.describe() : "");
+            return new Result(entry(candidate, "READINESS_DIVERGED", codes, detail), true, true);
         }
         if (failures.any()) {
             return new Result(
