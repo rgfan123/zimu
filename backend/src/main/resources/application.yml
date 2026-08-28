@@ -67,6 +67,10 @@ app:
   caishixian:
     verify-attempts: ${CSX_SHIPMENT_VERIFY_ATTEMPTS:5}
     verify-delay: ${CSX_SHIPMENT_VERIFY_DELAY:PT2S}
+  connector:
+    # 渠道凭据应用层加密密钥（AES-GCM）：Base64 编码的 16/24/32 字节。
+    # 未配置时界面保存密码会被拒绝（fail-closed），渠道凭据整体退回纯环境变量模式。
+    credential-key: ${CONNECTOR_CREDENTIAL_KEY:}
   jufubao:
     api-base: ${JUFUBAO_API_BASE:https://supplier-apis.jufubao.cn}
     portal-base: ${JUFUBAO_PORTAL_BASE:https://g.jufubao.cn}

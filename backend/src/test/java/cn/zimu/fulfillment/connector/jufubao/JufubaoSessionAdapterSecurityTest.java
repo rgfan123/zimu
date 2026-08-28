@@ -22,6 +22,7 @@ class JufubaoSessionAdapterSecurityTest {
     void productionConstructorRejectsPlaintextOrNonOfficialOrigins() {
         assertThatThrownBy(() -> new JufubaoSessionAdapter(
                         mapper,
+                        (channel, fallback) -> fallback,
                         "http://supplier-apis.jufubao.cn",
                         "https://g.jufubao.cn",
                         "user",
@@ -35,6 +36,7 @@ class JufubaoSessionAdapterSecurityTest {
 
         assertThatThrownBy(() -> new JufubaoSessionAdapter(
                         mapper,
+                        (channel, fallback) -> fallback,
                         "https://attacker.example",
                         "https://g.jufubao.cn",
                         "user",
@@ -51,6 +53,7 @@ class JufubaoSessionAdapterSecurityTest {
     void productionConstructorRejectsCredentialBearingOrPathfulOrigins() {
         assertThatThrownBy(() -> new JufubaoSessionAdapter(
                         mapper,
+                        (channel, fallback) -> fallback,
                         "https://user@supplier-apis.jufubao.cn",
                         "https://g.jufubao.cn",
                         "user",
@@ -63,6 +66,7 @@ class JufubaoSessionAdapterSecurityTest {
 
         assertThatThrownBy(() -> new JufubaoSessionAdapter(
                         mapper,
+                        (channel, fallback) -> fallback,
                         "https://supplier-apis.jufubao.cn/api",
                         "https://g.jufubao.cn",
                         "user",

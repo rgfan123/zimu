@@ -1,5 +1,9 @@
 package cn.zimu.fulfillment.connector.jufubao;
 
+import cn.zimu.fulfillment.common.domain.SourceChannel;
+import cn.zimu.fulfillment.connector.credential.ConnectorCredentialException;
+import cn.zimu.fulfillment.connector.credential.ConnectorCredentialsResolver;
+import cn.zimu.fulfillment.connector.credential.ConnectorCredentialsResolver.ResolvedCredentials;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.CookieManager;
@@ -46,8 +50,10 @@ public final class JufubaoSessionAdapter {
 
     private final URI apiBase;
     private final URI portalBase;
-    private final String username;
-    private final String password;
+    /** 环境变量链解析出的回退凭据；界面配置的凭据每次认证时经 resolver 动态取得。 */
+    private final String envUsername;
+    private final String envPassword;
+    private final ConnectorCredentialsResolver credentialsResolver;
     private final ObjectMapper mapper;
     private final CookieManager cookies;
     private final HttpClient client;
@@ -59,6 +65,7 @@ public final class JufubaoSessionAdapter {
     @Autowired
     public JufubaoSessionAdapter(
             ObjectMapper mapper,
+            ConnectorCredentialsResolver credentialsResolver,
             @Value("${app.jufubao.api-base:https://supplier-apis.jufubao.cn}") String apiBase,
             @Value("${app.jufubao.portal-base:https://g.jufubao.cn}") String portalBase,
             @Value("${app.jufubao.username:}") String configuredUsername,
@@ -72,7 +79,18 @@ public final class JufubaoSessionAdapter {
                 productionBase(portalBase, "g.jufubao.cn"),
                 firstNonBlank(configuredUsername, username, legacyUsername),
                 firstNonBlank(configuredPassword, password, legacyPassword),
-                mapper);
+                mapper,
+                credentialsResolver);
+    }
+
+    /** package-private 测试 seam：不接界面凭据，只用给定的静态凭据（等价旧行为）。 */
+    JufubaoSessionAdapter(
+            URI apiBase,
+            URI portalBase,
+            String username,
+            String password,
+            ObjectMapper mapper) {
+        this(apiBase, portalBase, username, password, mapper, (channel, fallback) -> fallback);
     }
 
     JufubaoSessionAdapter(
@@ -80,11 +98,13 @@ public final class JufubaoSessionAdapter {
             URI portalBase,
             String username,
             String password,
-            ObjectMapper mapper) {
+            ObjectMapper mapper,
+            ConnectorCredentialsResolver credentialsResolver) {
         this.apiBase = apiBase;
         this.portalBase = portalBase;
-        this.username = username == null ? "" : username;
-        this.password = password == null ? "" : password;
+        this.envUsername = username == null ? "" : username;
+        this.envPassword = password == null ? "" : password;
+        this.credentialsResolver = credentialsResolver;
         this.mapper = mapper;
         validateInternalBase(apiBase, "supplier-apis.jufubao.cn");
         validateInternalBase(portalBase, "g.jufubao.cn");
@@ -150,10 +170,13 @@ public final class JufubaoSessionAdapter {
         if (authenticated) {
             return generation;
         }
-        if (username.isBlank() || password.isBlank()) {
+        // 每次认证时解析凭据：界面「渠道接入」保存的凭据优先，回退环境变量链。
+        // 不在构造期缓存——界面改完密码无需重启，下次登录尝试自然用新值。
+        ResolvedCredentials credentials = resolveCredentials();
+        if (credentials.username().isBlank() || credentials.password().isBlank()) {
             throw new JufubaoSessionException(
                     "CREDENTIALS_REQUIRED",
-                    "聚福宝凭据未配置（JUFUBAO_USERNAME/JUFUBAO_PASSWORD；兼容历史 JFUBAO_*）");
+                    "聚福宝凭据未配置（界面「渠道接入」账号凭据，或 JUFUBAO_USERNAME/JUFUBAO_PASSWORD；兼容历史 JFUBAO_*）");
         }
         cookies.getCookieStore().removeAll();
         // 门户 seed 与登录 POST 的头形状对齐 Python 参考实现的 session 级头：
@@ -180,8 +203,8 @@ public final class JufubaoSessionAdapter {
                             + "，Set-Cookie 名：" + setCookieNames(seed) + "）");
         }
 
-        String form = "username=" + encode(username)
-                + "&password=" + encode(password)
+        String form = "username=" + encode(credentials.username())
+                + "&password=" + encode(credentials.password())
                 + "&system=supplier";
         HttpRequest loginRequest = HttpRequest.newBuilder(apiBase.resolve(LOGIN_PATH))
                 .timeout(REQUEST_TIMEOUT)
@@ -221,6 +244,16 @@ public final class JufubaoSessionAdapter {
         authenticated = true;
         generation++;
         return generation;
+    }
+
+    /** 凭据解析失败映射为会话业务错误，让 login()/testConnection 以业务码返回而非 500。 */
+    private ResolvedCredentials resolveCredentials() {
+        ResolvedCredentials environmentFallback = new ResolvedCredentials(envUsername, envPassword);
+        try {
+            return credentialsResolver.resolve(SourceChannel.JUFUBAO, environmentFallback);
+        } catch (ConnectorCredentialException exception) {
+            throw new JufubaoSessionException(exception.businessCode(), exception.getMessage());
+        }
     }
 
     private synchronized void invalidate(long expectedGeneration) {
