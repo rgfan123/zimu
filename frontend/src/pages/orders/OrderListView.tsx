@@ -127,6 +127,19 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
         render: (v: OrderSummary['processing_health']) => <StatusTag kind="health" value={v} />,
       },
       {
+        title: '异常原因',
+        dataIndex: 'attention_reason',
+        width: 220,
+        render: (value?: string) =>
+          value ? (
+            <Typography.Text ellipsis={{ tooltip: value }} style={{ display: 'inline-block', maxWidth: 200 }}>
+              {value}
+            </Typography.Text>
+          ) : (
+            '—'
+          ),
+      },
+      {
         title: '进度',
         key: 'progress',
         width: 130,
@@ -372,7 +385,7 @@ export default function OrderListView({ preset, onPresetChange }: OrderListViewP
           dataSource={data?.items ?? []}
           loading={loading}
           size="middle"
-          scroll={{ x: 1350 }}
+          scroll={{ x: 1570 }}
           onRow={(record) => ({
             onClick: () => navigate(`/orders/${record.id}`),
             style: { cursor: 'pointer' },

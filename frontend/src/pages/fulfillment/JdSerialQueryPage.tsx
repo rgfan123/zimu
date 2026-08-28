@@ -141,6 +141,8 @@ interface DisplayRow {
   value: string;
 }
 
+const RESULT_ROW_LIMIT = 24;
+
 /** 业务码 2001（或消息含权限字样）视为「权限未开通」，不是系统错误。 */
 function isPermissionDenied(result: JdQueryResult): boolean {
   if (result.business_code === '2001') return true;
@@ -161,14 +163,14 @@ function displayValue(raw: unknown): string | null {
 }
 
 function collectWhitelistedRows(kind: QueryKind, value: unknown, rows: DisplayRow[], seen: Set<string>): void {
-  if (rows.length >= 24 || value === null || value === undefined) return;
+  if (rows.length > RESULT_ROW_LIMIT || value === null || value === undefined) return;
   if (Array.isArray(value)) {
     for (const item of value) collectWhitelistedRows(kind, item, rows, seen);
     return;
   }
   if (typeof value !== 'object') return;
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (rows.length >= 24) return;
+    if (rows.length > RESULT_ROW_LIMIT) return;
     const normalized = normalizeKey(key);
     if (KIND_WHITELISTS[kind].has(normalized)) {
       const label = FIELD_LABELS[normalized];
@@ -234,6 +236,8 @@ export default function JdSerialQueryPage() {
   if (sdkResult?.result.success) {
     collectWhitelistedRows(sdkResult.kind, sdkResult.result.data, rows, new Set());
   }
+  const rowsTruncated = rows.length > RESULT_ROW_LIMIT;
+  const displayedRows = rows.slice(0, RESULT_ROW_LIMIT);
   const permissionDenied = sdkResult ? isPermissionDenied(sdkResult.result) : false;
   const mockMode = sdkResult?.result.business_code === 'MOCK_SUCCESS';
 
@@ -300,19 +304,28 @@ export default function JdSerialQueryPage() {
                   </Space>
                 }
                 description={
-                  rows.length ? (
-                    <Descriptions
-                      size="small"
-                      column={{ xs: 1, sm: 2 }}
-                      items={rows.map((row, index) => ({
-                        key: `${row.label}-${index}`,
-                        label: row.label,
-                        children: row.value,
-                      }))}
-                    />
-                  ) : (
-                    <Typography.Text type="secondary">本次结果没有可展示的业务字段。</Typography.Text>
-                  )
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    {rowsTruncated ? (
+                      <Alert
+                        type="warning"
+                        showIcon
+                        message={`仅展示前 ${RESULT_ROW_LIMIT} 条，请调整查询条件或使用分页参数继续查询。`}
+                      />
+                    ) : null}
+                    {displayedRows.length ? (
+                      <Descriptions
+                        size="small"
+                        column={{ xs: 1, sm: 2 }}
+                        items={displayedRows.map((row, index) => ({
+                          key: `${row.label}-${index}`,
+                          label: row.label,
+                          children: row.value,
+                        }))}
+                      />
+                    ) : (
+                      <Typography.Text type="secondary">本次结果没有可展示的业务字段。</Typography.Text>
+                    )}
+                  </Space>
                 }
               />
             ) : permissionDenied ? (

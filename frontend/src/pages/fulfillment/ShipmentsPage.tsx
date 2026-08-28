@@ -16,7 +16,7 @@ import PageShell from '@/components/PageShell';
 import { errorMessage } from '@/api/client';
 import { jdWarehouseApi, providersApi, shipmentsApi } from '@/api/endpoints';
 import type { JdClientStatus, JdReceiverAddressCandidate, Shipment, ShipmentJdOutboundPreview, ShipmentStatus } from '@/api/types';
-import { CHANNEL_LABELS, SHIPMENT_STATUS_LABELS } from '@/constants/labels';
+import { CHANNEL_LABELS, SHIPMENT_STATUS_COLORS, SHIPMENT_STATUS_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
 import { shipmentTimeLabel } from '@/presentation/shipment';
@@ -38,13 +38,6 @@ function num(v: string | number | undefined | null): string {
   const n = typeof v === 'number' ? v : parseFloat(v);
   return Number.isFinite(n) ? n.toLocaleString('zh-CN') : String(v);
 }
-
-const STATUS_COLORS: Record<ShipmentStatus, string> = {
-  CREATED: 'processing',
-  SHIPPED: 'success',
-  FAILED: 'error',
-  DELIVERED: 'green',
-};
 
 /**
  * 京东结构化收货地址批量确认（jd-real-sdk-switch 04）。
@@ -352,7 +345,7 @@ export default function ShipmentsPage() {
       title: '状态',
       dataIndex: 'shipment_status',
       width: 100,
-      render: (v: ShipmentStatus) => <Tag color={STATUS_COLORS[v]}>{SHIPMENT_STATUS_LABELS[v] ?? v}</Tag>,
+      render: (v: ShipmentStatus) => <Tag color={SHIPMENT_STATUS_COLORS[v]}>{SHIPMENT_STATUS_LABELS[v] ?? v}</Tag>,
     },
     {
       title: '京东建单',
@@ -468,7 +461,7 @@ export default function ShipmentsPage() {
                   : detail.data.order_id },
                 { key: 'p', label: '履约方', children: providerName(detail.data.provider_id) },
                 { key: 'ob', label: '出库单号', children: detail.data.outbound_order_no ?? '—' },
-                { key: 's', label: '状态', children: <Tag color={STATUS_COLORS[detail.data.shipment_status]}>{SHIPMENT_STATUS_LABELS[detail.data.shipment_status]}</Tag> },
+                { key: 's', label: '状态', children: <Tag color={SHIPMENT_STATUS_COLORS[detail.data.shipment_status]}>{SHIPMENT_STATUS_LABELS[detail.data.shipment_status] ?? detail.data.shipment_status}</Tag> },
                 {
                   key: 't',
                   label: '运单',

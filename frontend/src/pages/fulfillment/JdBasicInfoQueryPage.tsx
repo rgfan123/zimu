@@ -198,7 +198,7 @@ const QUERIES: QueryOption[] = [
   },
 ];
 
-const MAX_ROWS = 40;
+const RESULT_ROW_LIMIT = 40;
 
 interface DisplayRow {
   label: string;
@@ -218,14 +218,14 @@ function scalarValue(raw: unknown): string | null {
 
 /** 递归收集白名单字段；数组逐条展开，列表结果会重复出现同一标签。 */
 function collectWhitelisted(value: unknown, whitelist: Record<string, string>, rows: DisplayRow[]): void {
-  if (rows.length >= MAX_ROWS || value === null || value === undefined) return;
+  if (rows.length > RESULT_ROW_LIMIT || value === null || value === undefined) return;
   if (Array.isArray(value)) {
     for (const item of value) collectWhitelisted(item, whitelist, rows);
     return;
   }
   if (typeof value !== 'object') return;
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (rows.length >= MAX_ROWS) return;
+    if (rows.length > RESULT_ROW_LIMIT) return;
     const label = whitelist[normalizeKey(key)];
     const scalar = scalarValue(raw);
     if (label && scalar !== null) {
@@ -269,6 +269,8 @@ export default function JdBasicInfoQueryPage() {
 
   const rows: DisplayRow[] = [];
   if (result?.success) collectWhitelisted(result.data, option.whitelist, rows);
+  const rowsTruncated = rows.length > RESULT_ROW_LIMIT;
+  const displayedRows = rows.slice(0, RESULT_ROW_LIMIT);
 
   const mode = sdkStatus.data?.client_mode;
   const liveReady = sdkStatus.data?.live_ready ?? false;
@@ -362,11 +364,18 @@ export default function JdBasicInfoQueryPage() {
               description={
                 <Space direction="vertical" size={6} style={{ width: '100%' }}>
                   <Typography.Text type="secondary">请求 ID：{result.request_id ?? '—'}</Typography.Text>
-                  {rows.length ? (
+                  {rowsTruncated ? (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message={`仅展示前 ${RESULT_ROW_LIMIT} 条，请调整查询条件或使用分页参数继续查询。`}
+                    />
+                  ) : null}
+                  {displayedRows.length ? (
                     <Descriptions
                       size="small"
                       column={{ xs: 1, sm: 2 }}
-                      items={rows.map((row, index) => ({
+                      items={displayedRows.map((row, index) => ({
                         key: `${row.label}-${index}`,
                         label: row.label,
                         children: row.value,

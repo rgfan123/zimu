@@ -261,6 +261,8 @@ interface DisplayRow {
   value: string;
 }
 
+const RESULT_ROW_LIMIT = 40;
+
 interface JdStockClientStatus {
   client_mode: 'MOCK' | 'REAL';
   credentials_configured: boolean;
@@ -286,14 +288,14 @@ function scalarValue(value: unknown): string | null {
 }
 
 function collectRows(value: unknown, labels: Record<string, string>, rows: DisplayRow[]): void {
-  if (rows.length >= 40 || value === null || value === undefined) return;
+  if (rows.length > RESULT_ROW_LIMIT || value === null || value === undefined) return;
   if (Array.isArray(value)) {
     for (const item of value) collectRows(item, labels, rows);
     return;
   }
   if (typeof value !== 'object') return;
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (rows.length >= 40) return;
+    if (rows.length > RESULT_ROW_LIMIT) return;
     const normalized = key.replace(/[^A-Za-z0-9]/g, '').toLowerCase();
     const label = labels[normalized];
     const scalar = scalarValue(raw);
@@ -371,6 +373,8 @@ export default function JdStockQueryPage() {
 
   const rows: DisplayRow[] = [];
   if (result?.success) collectRows(result.data, labels, rows);
+  const rowsTruncated = rows.length > RESULT_ROW_LIMIT;
+  const displayedRows = rows.slice(0, RESULT_ROW_LIMIT);
 
   const permissionDenied = result !== null && !result.success && result.business_code === PERMISSION_DENIED_CODE;
   const mode = sdkStatus.data?.client_mode;
@@ -482,11 +486,18 @@ export default function JdStockQueryPage() {
               message={mode === 'MOCK' ? '模拟查询完成（不代表真实权限）' : '查询完成'}
               description={
                 <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                  {rows.length ? (
+                  {rowsTruncated ? (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message={`仅展示前 ${RESULT_ROW_LIMIT} 条，请调整查询条件或使用分页参数继续查询。`}
+                    />
+                  ) : null}
+                  {displayedRows.length ? (
                     <Descriptions
                       size="small"
                       column={{ xs: 1, sm: 2 }}
-                      items={rows.map((row, index) => ({
+                      items={displayedRows.map((row, index) => ({
                         key: `${row.label}-${index}`,
                         label: row.label,
                         children: row.value,

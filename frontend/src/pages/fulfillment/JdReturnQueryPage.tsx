@@ -118,9 +118,13 @@ const jdReturnApi = {
     apiRequest<JdQueryResult>(
       `/api/v1/jd-return/rtw-orders/${encodeURIComponent(erpReturnToWarehouseNo)}`,
     ),
-  returnToSupplier: (erpReturnToSupplierNo: string) =>
+  returnToSupplier: (
+    erpReturnToSupplierNo: string,
+    returnToSupplierDetailFlag: QueryValue,
+  ) =>
     apiRequest<JdQueryResult>(
       `/api/v1/jd-return/return-to-suppliers/${encodeURIComponent(erpReturnToSupplierNo)}`,
+      { params: { return_to_supplier_detail_flag: returnToSupplierDetailFlag } },
     ),
 };
 
@@ -184,7 +188,10 @@ export default function JdReturnQueryPage() {
           ? await jdReturnApi.rtwOrders(params)
           : target === 'rtwDetail'
             ? await jdReturnApi.rtwOrderDetail(String(values.erp_return_to_warehouse_no ?? ''))
-            : await jdReturnApi.returnToSupplier(String(values.erp_return_to_supplier_no ?? ''));
+            : await jdReturnApi.returnToSupplier(
+                String(values.erp_return_to_supplier_no ?? ''),
+                params.return_to_supplier_detail_flag,
+              );
       setResult(outcome);
     } catch (err) {
       setResult(null);
@@ -279,7 +286,12 @@ export default function JdReturnQueryPage() {
             </Form.Item>
           ))}
           {kind !== 'rtwDetail' ? (
-            <Form.Item label="返回明细" style={{ marginBottom: 0 }} tooltip="不填则使用京东接口默认行为；详情 / 退供单后端默认返回明细与批次。">
+            <Form.Item
+              name={kind === 'rtwList' ? 'return_to_warehouse_details_flag' : 'return_to_supplier_detail_flag'}
+              label="返回明细"
+              style={{ marginBottom: 0 }}
+              tooltip="不填则使用京东接口默认行为；详情 / 退供单后端默认返回明细与批次。"
+            >
               <Select style={{ width: 120 }} options={FLAG_OPTIONS} allowClear placeholder="默认" />
             </Form.Item>
           ) : null}
