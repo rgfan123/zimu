@@ -286,6 +286,19 @@ app:
       JD:
         name: 京东物流
         enabled: true
+  feixiang:
+    shipment:
+      # 飞象在线回传（POST /order/ajaxSendOrderProduct）写门闩，默认 OFF。
+      # 这一位同时驱动 ConnectorCapabilities.onlinePush，而 onlinePush 在本仓里是路由开关：
+      # 为真时 SourceReturnWecomScanner 会停止把飞象回填文件投递到企微（今天唯一在生产
+      # 验证过的回传通道），SourceSyncAutoWorker 会把飞象纳入自动执行循环。因此：
+      #   OFF     （默认）onlinePush=false；企微人工上传路径原样保留，自动 Worker 不碰飞象。
+      #   DRY_RUN onlinePush 仍为 false；构造并审计完整报文但绝不发出，供人工逐字节核对。
+      #   ARMED   onlinePush=true，且全局只放行<一次>真实写入（首发人工确认门闩）；
+      #           用掉后必须人工核对平台结果再显式升到 ON。
+      #   ON      onlinePush=true，常态放行。
+      # 不认识的值一律回落 OFF，绝不因配置写错而意外开火。
+      write-mode: ${FEIXIANG_SHIPMENT_WRITE_MODE:OFF}
   jd:
     client-mode: ${JD_LOP_CLIENT_MODE:MOCK}
     # 写接口总闸：ON 才放行 /api/v1/jd-write 写端点；生产默认保持 OFF（未配置时 HTTP 403 + WRITE_MODE_DISABLED 拒绝）
