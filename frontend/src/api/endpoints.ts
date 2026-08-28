@@ -121,6 +121,12 @@ import {
   shipmentJdOutboundIdempotencyKey,
   shipmentJdOutboundSubmitRequest,
 } from './shipmentJdOutbound';
+import {
+  sourceSyncExecuteRequest,
+  sourceSyncIdempotencyKey,
+  type SourceSyncCheck,
+  type SourceSyncOutcome,
+} from './sourceSync';
 
 /** 写操作只由浏览器生成幂等键；操作人由受信网关认证后注入。 */
 export function writeHeaders(options?: TrustedWriteHeaderOptions): Record<string, string> {
@@ -581,6 +587,16 @@ export const shipmentsApi = {
       idempotencyKey: shipmentJdOutboundIdempotencyKey(id),
     }));
     return apiRequest<ShipmentJdOutboundSubmitResult>(request.path, request.options);
+  },
+  /** 只读：去来源平台读一次当前事实，返回稳定 check_hash 供 execute 绑定。 */
+  checkSourceSync: (id: string) =>
+    apiRequest<SourceSyncCheck>(`/api/v1/shipments/${id}/source-sync/check`),
+  /** 不可逆：把运单号写回来源平台。哈希与 check 对不上服务端会拒。 */
+  executeSourceSync: (id: string, expectedCheckHash: string) => {
+    const request = sourceSyncExecuteRequest(id, expectedCheckHash, writeHeaders({
+      idempotencyKey: sourceSyncIdempotencyKey(id),
+    }));
+    return apiRequest<SourceSyncOutcome>(request.path, request.options);
   },
   checkJdSkuMapping: (id: string) =>
     apiRequest<ShipmentJdSkuMappingGateResult>(`/api/v1/shipments/${id}/jd-sku-mapping-check`, {

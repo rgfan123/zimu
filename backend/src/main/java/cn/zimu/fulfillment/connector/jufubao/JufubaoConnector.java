@@ -203,6 +203,13 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                     carrierMapped,
                     effectHash);
         } catch (RuntimeException exception) {
+            // 与拉取失败同一纪律：不回显异常正文（可能带响应体、表单字段与凭据）。
+            // 但类型与子单号必须留下——2026-08-29 生产上一单在平台已手动发过货，
+            // 这里只吐出「读取失败」四个字，分不清是「已发货所以读不到」还是「登录挂了」。
+            log.warn(
+                    "聚福宝 Shipment 事实读取失败 sub_order_id={} type={}",
+                    result.sourceLineRef(),
+                    exception.getClass().getSimpleName());
             return SourcePlatformCheckResult.unavailable(
                     channel(),
                     "JUFUBAO_PLATFORM_CHECK_UNAVAILABLE",

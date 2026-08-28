@@ -19,6 +19,7 @@ import type { JdClientStatus, JdReceiverAddressCandidate, Shipment, ShipmentJdOu
 import { CHANNEL_LABELS, SHIPMENT_STATUS_COLORS, SHIPMENT_STATUS_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
+import SourceSyncPanel from '@/pages/fulfillment/SourceSyncPanel';
 import { shipmentTimeLabel } from '@/presentation/shipment';
 import {
   jdReceiverAddressBatchIdempotencyKey,
@@ -286,6 +287,17 @@ export default function ShipmentsPage() {
   const jdRuntime = useAsync<JdClientStatus | null>(
     () => (selected && isJdShipment ? jdWarehouseApi.status() : Promise.resolve(null)),
     [selected?.id, isJdShipment],
+  );
+  /**
+   * 来源回传入口的显示条件：已发货 + 已有正式运单号。
+   *
+   * <p>刻意<b>不</b>在这里判渠道支不支持在线回传——那是服务端 check 的结论（会连同
+   * 平台当前事实一起给出），前端另写一份判断迟早会和后端漂移。
+   */
+  const canSyncToSource = Boolean(
+    detail.data
+      && detail.data.shipment_status === 'SHIPPED'
+      && detail.data.tracking?.tracking_number,
   );
   const jdPresentation = jdOutboundPresentation(detail.data?.jd_outbound);
   const jdRuntimeGate = jdOutboundRuntimeGate(jdRuntime.data);
@@ -567,6 +579,15 @@ export default function ShipmentsPage() {
                   </Popconfirm>
                 </Space>
               </Card>
+            ) : null}
+            {canSyncToSource ? (
+              <SourceSyncPanel
+                shipmentId={detail.data.id}
+                onSynced={() => {
+                  detail.reload();
+                  list.reload();
+                }}
+              />
             ) : null}
             {detail.data.receiver ? (
               <Descriptions
