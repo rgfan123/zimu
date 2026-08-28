@@ -199,6 +199,12 @@ app:
       jd-outbound:
         type: ${WECOM_CARD_JD_OUTBOUND_ROUTE_TYPE:GROUP}
         chat-id: ${WECOM_CARD_JD_OUTBOUND_CHAT_ID:}
+      # 定时拉取与自动发货的运行播报：只在这次运行有需要人处理的事项时发。
+      # 卡面只有渠道名、受控词表原因码与计数，没有收件人任何字段，因此可以进群
+      # （对比 preship：那张卡带手机号与详细地址，源码里硬过滤 SINGLE）。
+      scheduled-pull:
+        type: ${WECOM_CARD_SCHEDULED_PULL_ROUTE_TYPE:GROUP}
+        chat-id: ${WECOM_CARD_SCHEDULED_PULL_CHAT_ID:}
       # 客户跟进卡默认单聊指定 +1；只有显式配置 GROUP 时才改投群聊脱敏卡。
       followup-draft:
         type: ${WECOM_CARD_FOLLOWUP_DRAFT_ROUTE_TYPE:SINGLE}

@@ -104,7 +104,8 @@ class WecomBusinessCardPipelineIntegrationTest {
                         BusinessFollowUpResultCard.DOMAIN,
                         PreShipConfirmCard.DOMAIN,
                         BatchPreShipConfirmCard.DOMAIN,
-                        ShipmentResultCard.DOMAIN);
+                        ShipmentResultCard.DOMAIN,
+                        ScheduledPullReportCard.DOMAIN);
     }
 
     @Test
