@@ -6,6 +6,7 @@ import cn.zimu.fulfillment.connector.PlatformConnector;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.stereotype.Component;
 
 /** 唯一的 source-sync 渠道解析表；重复 channel 在启动期失败，禁止 silent last-wins。 */
@@ -32,5 +33,10 @@ public final class PlatformConnectorRegistry {
                     "SOURCE_SYNC_CONNECTOR_UNAVAILABLE", "来源渠道没有可用 Connector: " + channel);
         }
         return connector;
+    }
+
+    /** 能力门闩使用的只读查找；结构性不存在与运行期调用失败必须由上层分开裁决。 */
+    public Optional<PlatformConnector> find(SourceChannel channel) {
+        return Optional.ofNullable(connectors.get(channel));
     }
 }

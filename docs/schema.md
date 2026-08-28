@@ -86,7 +86,7 @@ erDiagram
 
 订单来源主/子单号存在时直接使用；缺失时，Adapter 只能在同一 import batch、同一 Sheet 内把连续且 Receiver 姓名/电话/地址规范化后完全相同的行归为一个 CanonicalOrder。禁止跨 Sheet 或跨文件猜测合并。
 
-### 3.3 履约、发货与采购（10）
+### 3.3 履约、发货与采购（11）
 
 | 表 | 职责 | 关键约束 |
 |---|---|---|
@@ -96,6 +96,7 @@ erDiagram
 | `shipment_jd_outbounds` | Shipment 级京东出库集成记录 | `shipment_id` / `erp_delivery_no` 唯一；独立持久同步状态、请求指纹、外部引用、失败/对账事实和当次 `client_mode`，旧记录为 `UNKNOWN` |
 | `trackings` | Shipment 的物流公司与运单号 | P0 一个 Shipment 最多一个 Tracking；运单只追加，不覆盖冲突值 |
 | `shipment_syncs` | Shipment 向来源渠道回传的权威状态与 durable intent 投影 | `(shipment_id, source_channel)` 唯一；SYNCING 必须保存 intent/platform intent、check/artifact hash、来源行、承运商、运单、开始时间与累计尝试次数；`lock_version` 做 CAS；PENDING 必须清空旧确认事实；与文件 fallback 共享 Shipment 行锁 |
+| `source_sync_auto_states` | 在线自动回传的资格终态、领取租约与重试时钟 | `(shipment_id, source_channel)` 主键；`PENDING/RETRY_WAIT` 到期后以租约原子领取，确定性人工门禁以 `PENDING` 延后复查；`NOT_APPLICABLE` 表示渠道继续走文件回传且不再轮询；不替代 `shipment_syncs` 业务状态 |
 | `procurement_tickets` | 我方库存缺口协同工单头 | 仅允许 `inventory_managed_by_us=true` 的履约方；第三方短发不能创建该工单 |
 | `procurement_ticket_items` | 缺货 SKU/礼包组件明细 | 普通项必须是本行 SKU，礼包项必须是本行组件；fulfilled 只能由只追加回执累计 |
 | `procurement_receipts` | 一次 SUCCESS/PARTIAL/FAILED 回执头 | 一张工单可接收多次回执；只追加 |

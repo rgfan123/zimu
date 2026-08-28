@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV72() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV73() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -108,24 +108,24 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V72）升级——Flyway validate 默认开启，
-        // V40–V47 校验通过后只追加 V48–V72，任何 repair/改写历史都会在此失败。
+        // 阶段二：完整当前 migration set（V1..V73）升级——Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加 V48–V73，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 72 条历史")
-                .hasSize(72);
+                .as("完整升级后应恰有 73 条历史")
+                .hasSize(73);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48–V72 按当前文件计算校验和，与 Flyway 阶段二真实写入 flyway_schema_history 的
+        // V48–V73 按当前文件计算校验和，与 Flyway 阶段二真实写入 flyway_schema_history 的
         // 校验和互证（前 47 行 isEqualTo(historyBefore) 已保证 V40–V47 未被改写）。
         // 两条并行开发线在 2026-08-27 合流：V59–V64 为已上线的企微/档案/订单线
         //（生产已执行，号位不可动），客户跟进线原 V59–V66 八个迁移整体顺延为 V65–V72
         //（其中 V71 冻结结构化执行意图、V72 新增来源订单附件任务）。
-        assertThat(historyAfter.subList(47, 72))
-                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）、V54（#113 撞号顺延）、V55（通用业务卡投递）、V56（履约单据 Agent）、V57（来源回填企微投递）、V58（复核认领）、V59（导出人读文件名）、V60（会话回复策略）、V61（会话档案）、V62（企微机器人台账）、V63（商品档案全列留存）、V64（来源订单创建时间）、V65–V70（客户跟进：主档/草稿/审批/指派/客户溯源/建客指派，撞号顺延）、V71（结构化执行意图）与 V72（来源订单附件任务）")
+        assertThat(historyAfter.subList(47, 73))
+                .as("升级只追加 V48–V72 既有迁移与 V73（自动回传资格终态及退避）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -201,7 +201,10 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V71__business_followup_execution_intent.sql")),
                         new HistoryRow("72", "V72__source_order_intake_jobs.sql",
                                 "source order intake jobs",
-                                crc32Of("V72__source_order_intake_jobs.sql")));
+                                crc32Of("V72__source_order_intake_jobs.sql")),
+                        new HistoryRow("73", "V73__source_sync_auto_states.sql",
+                                "source sync auto states",
+                                crc32Of("V73__source_sync_auto_states.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // 后续断言覆盖内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片、
