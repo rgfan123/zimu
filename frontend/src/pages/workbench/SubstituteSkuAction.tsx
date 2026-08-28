@@ -9,6 +9,11 @@ export interface SubstituteSkuActionProps {
   /** 该阻断锁定的订单行——换货只改这一行的 sku_id，不动其它行。 */
   orderLineId: string;
   shipmentId: string;
+  /**
+   * 该行的「数量 + 单位」，仅用于把「整行全换」这件事在确认框里说清楚（如「2 件」）。
+   * 拿不到就不显示数量，不猜。
+   */
+  quantityLabel?: string | null;
   /** 换货并重新核对完成后回调（无论核对结果通过与否），供上层刷新列表/阻塞计数。 */
   onSubstituted?: () => void;
 }
@@ -21,8 +26,18 @@ export interface SubstituteSkuActionProps {
  * <p>候选 SKU 按当前发货批次的履约方过滤，只是不让候选列表里出现明显不对的选项——
  * 真正的同履约方/active/映射校验都在后端（OrderLineSkuSubstitutionService），
  * 这里的过滤只是 UX，不是安全边界。
+ *
+ * <p><b>语义是「整行替换」，不是「按数量拆分」</b>——界面必须把这一点说死。
+ * 后端 `substitute-sku` 的契约只有 `{new_sku_id, expected_order_version}`：没有数量字段，
+ * 它把 `order_lines.sku_id` 整个改掉，原数量原样搬到新 SKU 上
+ * （`InitialFulfillmentService.create` 继承未变的 `requested_quantity`），
+ * 且 `requireDetachableShipmentItems` 明确「任何一条不满足就整体拒绝，不做部分换货」。
+ * 因此**一个缺货品拆成多个替代品分配数量，当前后端做不到**（`fulfillments.order_line_id`
+ * 上有 UNIQUE，一行挂不了第二个履约单元）。这里如实标注，不做「看起来能拆」的假界面。
  */
-export function SubstituteSkuAction({ orderLineId, shipmentId, onSubstituted }: SubstituteSkuActionProps) {
+export function SubstituteSkuAction({
+  orderLineId, shipmentId, quantityLabel, onSubstituted,
+}: SubstituteSkuActionProps) {
   const [options, setOptions] = useState<SkuRecord[]>([]);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -91,14 +106,21 @@ export function SubstituteSkuAction({ orderLineId, shipmentId, onSubstituted }: 
           }))}
         />
         <Popconfirm
-          title="将此商品替换为所选 SKU 并重新核对京东库存"
+          title="整行替换并重新核对京东库存"
+          description={(
+            <div style={{ maxWidth: 320 }}>
+              本行{quantityLabel ? ` ${quantityLabel}` : ''}将<strong>全部</strong>改为所选 SKU，数量原样搬过去。
+              <br />
+              暂不支持拆成多个替代品分配数量。
+            </div>
+          )}
           okText="确认换货"
           cancelText="取消"
           disabled={!selected}
           onConfirm={confirm}
         >
           <Button size="small" type="primary" loading={submitting} disabled={!selected}>
-            换货
+            整行换货
           </Button>
         </Popconfirm>
       </Space>

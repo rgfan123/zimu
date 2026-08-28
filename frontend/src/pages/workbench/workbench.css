@@ -335,6 +335,83 @@
   min-width: 128px;
   flex: none;
 }
+.zs-rqi .zs-l1 {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--zs-heading);
+  line-height: 1.5;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.zs-rqi .zs-l1 .zs-c {
+  margin-left: auto;
+  font-family: var(--zs-mono);
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--zs-text-3);
+  flex: none;
+}
+/* 整块文案即通往该订单的链接：铺满 .zs-w，行内颜色不被链接色改写（标题/副行各有自己的层级）。 */
+.zs-rql {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+.zs-rqi:hover {
+  background: var(--zs-fill-4);
+}
+.zs-rql:hover .zs-l1 {
+  color: var(--zs-brand-active);
+}
+
+/* ---------- 行内动作（.zs-lnk：列表行右侧的次要按钮） ----------
+   历史上 .zs-lnk 只有类名没有任何样式，于是「就地处置」在页面上是一个裸 <button>，
+   跟旁边的 <Link> 长得还不一样（2026-08-28 用户反馈「没有样式，很干巴」）。
+   这里补齐：沿用 shell.css 侧栏按钮同一套 token（fill-3 底 / border-2 描边 / brand-bg 选中），
+   不自创第二套色板。<button> 与 <a> 共用同一条规则，保证两种标签视觉一致。 */
+.zs-lnk {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid var(--zs-border-2);
+  border-radius: 6px;
+  background: var(--zs-fill-3);
+  color: var(--zs-text-2);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.zs-lnk:hover {
+  border-color: var(--zs-border);
+  background: var(--zs-fill-2);
+  color: var(--zs-text);
+}
+.zs-lnk:focus-visible {
+  outline: 2px solid var(--zs-brand-focus);
+  outline-offset: 1px;
+}
+.zs-lnk[disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+/* 主行动（当前只有「就地处置」）：品牌底色，与页面里 AntD type="primary" 同一语义层级。 */
+.zs-lnk.pri {
+  background: var(--zs-brand-bg);
+  border-color: var(--zs-brand-focus);
+  color: var(--zs-brand-active);
+}
+.zs-lnk.pri:hover {
+  background: var(--zs-brand-bg);
+  border-color: var(--zs-brand);
+  color: var(--zs-brand-active);
+}
 
 /* ---------- 工作台表格（原型 .tw/table 密度） ---------- */
 .zs-tw {
@@ -656,4 +733,24 @@
 }
 .zs-pull-modal-actions {
   justify-content: flex-end;
+}
+
+/* ---------- 就地处置面板：本次阻断的订单行 ----------
+   商品清单里把出问题的那几行标出来，人不用拿商品名逐行比对。
+   面板在 Drawer 里（React portal，脱离 .zs- 容器），所以这条规则不嵌套在任何祖先选择器下。
+   底色用既有 error token，不自创第二套告警色。 */
+.zs-row-blocked > td {
+  background: var(--zs-error-bg);
+}
+
+/* ---------- 批次快照弹窗：平台原始返回（证据折叠区） ----------
+   快照已不再是主数据源（收件人等真值走订单实体），但仍要留档可查，
+   所以收进展开行里：字号压一级、行距收紧，不与主表争视觉权重。 */
+.zs-pull-modal-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--zs-text-2);
 }

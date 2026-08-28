@@ -25,6 +25,12 @@ export interface StockBlockerItem {
   orderLineIds: string[];
   /** 拿得到就带的「缺哪个本地字段」；远端事实类问题（如商品已停用）没有这个字段。 */
   missingField: string | null;
+  /**
+   * 映射门禁的**真正**失败原因码。门禁有 14 种 issue，落到 blocker 上 code 一律被塌缩成
+   * `JD_SKU_MAPPING_GATE_BLOCKED`（mappingGateBlocker 为保持既有按 code 分组口径不变），
+   * 真原因只在这个字段里。此前前端整个丢掉，于是 12 种毛病在工作台上长成同一句话。
+   */
+  mappingIssueCode: string | null;
 }
 
 export interface StockBlockerCase {
@@ -32,6 +38,10 @@ export interface StockBlockerCase {
   caseNo: string | null;
   /** 仅当 subject_type==='SHIPMENT' 时有值——阻塞项自身不带发货单身份，只能由事项注入。 */
   shipmentId: string | null;
+  /** 事项关联的订单（ReviewCaseDto.order_id）；整卡点击就跳这个订单。 */
+  orderId: string | null;
+  /** 事项关联的订单业务单号（ReviewCaseDto.order_no）。 */
+  orderNo: string | null;
   blockers: StockBlockerItem[];
 }
 
@@ -59,6 +69,7 @@ function readStockBlocker(raw: unknown): StockBlockerItem | null {
     skuId: stringOrNull(record.sku_id),
     orderLineIds,
     missingField: stringOrNull(record.missing_field),
+    mappingIssueCode: stringOrNull(record.mapping_issue_code),
   };
 }
 
@@ -101,6 +112,8 @@ export function extractStockBlockerCases(items: unknown[]): StockBlockerCase[] {
         record.subject_type === 'SHIPMENT' && typeof record.subject_id === 'string'
           ? record.subject_id
           : null,
+      orderId: stringOrNull(record.order_id),
+      orderNo: stringOrNull(record.order_no),
       blockers,
     });
   }
