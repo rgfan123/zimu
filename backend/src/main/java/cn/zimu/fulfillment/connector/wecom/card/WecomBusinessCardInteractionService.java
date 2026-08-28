@@ -43,19 +43,21 @@ public class WecomBusinessCardInteractionService {
             JdOutboundFailureCard.DOMAIN,
             ShipmentResultCard.DOMAIN,
             BatchConfirmedCard.DOMAIN,
-            BusinessFollowUpResultCard.DOMAIN);
+            BusinessFollowUpResultCard.DOMAIN,
+            ScheduledPullReportCard.DOMAIN);
 
     /**
      * 播报卡的 ack 按钮：域 → 唯一合法的按钮 key。
      *
-     * <p>这三张卡改成 {@code button_interaction} 之后就带了按钮，点击必须由本服务认领——
+     * <p>这几张卡改成 {@code button_interaction} 之后就带了按钮，点击必须由本服务认领——
      * 域不在 {@link #DOMAINS} 里的话，点击会落回订单草稿卡处理器并报
      * {@code WECOM_CARD_TASK_ID_INVALID}，读者看到的是「无法识别这张卡片」。
      */
     private static final Map<String, String> BROADCAST_ACK_BUTTON_KEYS = Map.of(
             BatchConfirmedCard.DOMAIN, BatchConfirmedCard.ACKNOWLEDGE_BUTTON_KEY,
             ShipmentResultCard.DOMAIN, ShipmentResultCard.ACKNOWLEDGE_BUTTON_KEY,
-            BusinessFollowUpResultCard.DOMAIN, BusinessFollowUpResultCard.ACKNOWLEDGE_BUTTON_KEY);
+            BusinessFollowUpResultCard.DOMAIN, BusinessFollowUpResultCard.ACKNOWLEDGE_BUTTON_KEY,
+            ScheduledPullReportCard.DOMAIN, ScheduledPullReportCard.ACKNOWLEDGE_BUTTON_KEY);
 
     private static final Logger log = LoggerFactory.getLogger(WecomBusinessCardInteractionService.class);
     private static final int MAX_ATTEMPTS = 3;
@@ -183,7 +185,8 @@ public class WecomBusinessCardInteractionService {
                     "暂未接线", "京东重试建单请回后台执行");
             case BatchConfirmedCard.DOMAIN,
                     ShipmentResultCard.DOMAIN,
-                    BusinessFollowUpResultCard.DOMAIN -> broadcastAck(taskId, buttonKey, actor);
+                    BusinessFollowUpResultCard.DOMAIN,
+                    ScheduledPullReportCard.DOMAIN -> broadcastAck(taskId, buttonKey, actor);
             default -> new Outcome(
                     false, "WECOM_CARD_ACTION_NOT_APPLICABLE", "这张卡没有可执行的动作", "它是事后播报");
         };
