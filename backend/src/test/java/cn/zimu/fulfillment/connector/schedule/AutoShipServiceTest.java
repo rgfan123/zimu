@@ -202,6 +202,23 @@ class AutoShipServiceTest {
         verify(confirmer, org.mockito.Mockito.times(1)).confirmSourceBatch(eq(1L), anyString(), any());
     }
 
+    @Test
+    void aRejectionWithNoBusinessCodeStillDoesNotBreakTheRun() {
+        when(readiness.candidates(anyInt())).thenReturn(List.of(ready(1L, "B-1"), ready(2L, "B-2")));
+        // BusinessException 不保证 businessCode 非空；List.of(null) 会抛 NPE，
+        // 而那个 NPE 会从 catch 块里逃出去，把「失败不连坐」整条要求掀翻。
+        when(confirmer.confirmSourceBatch(eq(1L), anyString(), any()))
+                .thenThrow(new BusinessException(409, null, "说不清为什么"));
+        when(confirmer.confirmSourceBatch(eq(2L), anyString(), any())).thenReturn(confirmed());
+
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+
+        assertThat(outcome.entries()).extracting(entry -> entry.get("outcome"))
+                .containsExactly("CONFIRM_REJECTED", "SHIPPED");
+        assertThat(outcome.entries().getFirst().get("reason_codes")).isEqualTo(List.of("AUTO_SHIP_REJECTED"));
+        assertThat(outcome.shippedBatches()).isEqualTo(1);
+    }
+
     // ------------------------------------------------------------------
     // 要求 5：爆炸半径有界 + 可整体关闭
     // ------------------------------------------------------------------

@@ -131,7 +131,7 @@ class AutoShipService implements SourceBatchAutoShipper {
                     exception.getBusinessCode(),
                     exception.getMessage());
             return new Result(
-                    entry(candidate, "CONFIRM_REJECTED", List.of(exception.getBusinessCode()), ""),
+                    entry(candidate, "CONFIRM_REJECTED", List.of(code(exception)), ""),
                     true,
                     false);
         } catch (RuntimeException exception) {
@@ -249,6 +249,16 @@ class AutoShipService implements SourceBatchAutoShipper {
     private static CommandContext context(AutoShipReadiness.Candidate candidate) {
         String id = "auto-ship-" + candidate.batchId();
         return new CommandContext(id, id, OPERATOR, OPERATOR);
+    }
+
+    /**
+     * 业务码兜底。{@code BusinessException} 不保证 businessCode 非空，而
+     * {@code List.of(null)} 会抛 NPE——那个 NPE 会从 catch 块里逃出 {@code process}，
+     * 掀翻「一批失败不连坐」这条硬性要求，让一次运行里后面的批次全部不再处理。
+     */
+    private static String code(BusinessException exception) {
+        String businessCode = exception.getBusinessCode();
+        return businessCode == null || businessCode.isBlank() ? "AUTO_SHIP_REJECTED" : businessCode;
     }
 
     private static Map<String, Object> entry(
