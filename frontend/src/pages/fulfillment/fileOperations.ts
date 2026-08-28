@@ -1,7 +1,81 @@
-import type { ExportUsageStatus, ImportRowCounts, RawImportRow, RawImportRowErrorDetail, RawRowStatus, TrackingBatchRow } from '@/api/types';
+import type { ConfirmBlockedRow, ConfirmReadiness, ExportUsageStatus, ImportRowCounts, RawImportRow, RawImportRowErrorDetail, RawRowStatus, TrackingBatchRow } from '@/api/types';
 
 export function summarizeImportBatch(counts: ImportRowCounts): string {
   return `共 ${counts.total} 行，已接收 ${counts.accepted} 行，待复核 ${counts.need_review} 行，拒绝 ${counts.rejected} 行`;
+}
+
+/** 确认按钮的可用性判据来源。 */
+export interface ConfirmGate {
+  enabled: boolean;
+  label: string;
+  /** 不可用时给出理由；可用时为空串 */
+  disabledReason: string;
+}
+
+/**
+ * 确认按钮的可用性与文案。
+ *
+ * 判据只认后端返回的 confirm_readiness——它就是后端确认闸门本身用的那份投影。
+ * 后端没给（旧响应、非来源批次）时保守禁用并说明原因，不自己按 row_counts 猜，
+ * 猜出来的口径和闸门分叉就会出现「点了才发现被拒」。
+ */
+export function confirmGateOf(readiness: ConfirmReadiness | undefined, confirmed: boolean): ConfirmGate {
+  if (!readiness) {
+    return { enabled: false, label: '确认发货', disabledReason: '批次就绪状态未知，请刷新后重试' };
+  }
+  if (!readiness.confirmable) {
+    if (readiness.blocked_rows > 0) {
+      return {
+        enabled: false,
+        label: '确认发货',
+        disabledReason: `${readiness.blocked_rows} 行待处理，且没有可发货的行`,
+      };
+    }
+    return {
+      enabled: false,
+      label: '确认发货',
+      disabledReason: confirmed ? '本批次已全部确认，没有待发货的行' : '批次没有可发货的已接收行',
+    };
+  }
+  const label = confirmed
+    ? `补做确认（${readiness.pending_rows} 行待发货）`
+    : `确认发货（${readiness.pending_rows} 行）`;
+  return { enabled: true, label, disabledReason: '' };
+}
+
+/**
+ * 部分确认的提示语：说清这次发几行、跳过几行。
+ *
+ * 阻断行是被跳过而不是被丢弃，所以必须同时说明它们留在批次里等补做——
+ * 否则「部分确认」在用户眼里就和静默丢单没区别。
+ */
+export function confirmScopeHint(readiness: ConfirmReadiness | undefined): string {
+  if (!readiness || !readiness.confirmable) return '';
+  const shipping = `确认后 ${readiness.pending_rows} 行将写入系统订单并生成履约文件`;
+  if (readiness.blocked_rows === 0) return `${shipping}。`;
+  return `${shipping}；${readiness.blocked_rows} 行因待处理被跳过，仍留在本批次，处理完后可再次确认补做。`;
+}
+
+/** 阻断行按原因归并，让用户看到「为什么」而不是只有一个数字。 */
+export function groupBlockedRows(
+  blockers: ConfirmBlockedRow[],
+): Array<{ reason: string; count: number; sampleRefs: string[] }> {
+  const groups = new Map<string, { reason: string; count: number; sampleRefs: string[] }>();
+  for (const blocker of blockers) {
+    const reason = blocker.reason?.trim() || blocker.error_code?.trim() || '未说明原因';
+    const existing = groups.get(reason);
+    const ref = blocker.source_order_ref?.trim();
+    if (existing) {
+      groups.set(reason, {
+        reason,
+        count: existing.count + 1,
+        sampleRefs: ref && existing.sampleRefs.length < 3 ? [...existing.sampleRefs, ref] : existing.sampleRefs,
+      });
+      continue;
+    }
+    groups.set(reason, { reason, count: 1, sampleRefs: ref ? [ref] : [] });
+  }
+  return [...groups.values()];
 }
 
 export function canReceiveTracking(exportKind: string, status: ExportUsageStatus): boolean {

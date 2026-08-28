@@ -49,6 +49,7 @@ import type {
   FulfillmentProvider,
   KnownWecomChat,
   ImportBatch,
+  PendingConfirmationBatch,
   InventoryDetailsResponse,
   InventoryOverviewResponse,
   JdQueryResult,  JdClientStatus,
@@ -747,10 +748,25 @@ export const fileOperationsApi = {
     return multipartRequest<ImportBatch>('/api/v1/import-batches/source-orders', form);
   },
   getSourceBatch: (id: string) => apiRequest<ImportBatch>(`/api/v1/import-batches/${id}`),
+  /** 待确认的来源批次清单——「确认发货」入口的数据来源，只读、无副作用。 */
+  pendingConfirmationBatches: () =>
+    apiRequest<{ items: PendingConfirmationBatch[] }>('/api/v1/import-batches/pending-confirmation'),
   confirmSourceBatch: (id: string) => apiRequest<ImportBatch>(`/api/v1/import-batches/${id}/confirm`, {
     method: 'POST',
     body: {},
     headers: writeHeaders({ idempotencyKey: `import-batch-confirm-${id}` }),
+  }),
+  /**
+   * 补做确认：阻断行修好后，把新就绪的行接着发出去。
+   *
+   * 不能沿用 confirmSourceBatch 的稳定幂等键——那个键会被判为重放，补做会静默变成空操作。
+   * 这里走随机键（writeHeaders 内部用 newRequestId，明文 HTTP 下有非 crypto 回退），
+   * 重复点击是安全的：后端对批次行加锁，且 candidateRows 本身排除已导出行。
+   */
+  reconfirmSourceBatch: (id: string) => apiRequest<ImportBatch>(`/api/v1/import-batches/${id}/confirm`, {
+    method: 'POST',
+    body: {},
+    headers: writeHeaders(),
   }),
   /** 05：对批次内京东发货批次批量触发 SDK 建单；已提交跳过，失败项可安全重试。 */
   submitJdOutboundsForBatch: (id: string) =>

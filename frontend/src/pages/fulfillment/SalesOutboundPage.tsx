@@ -29,6 +29,8 @@ import {
 } from '@/pages/shared/batchUrl';
 import {
   canReceiveTracking,
+  confirmGateOf,
+  confirmScopeHint,
   presentImportRow,
   presentJdCargos,
   presentTrackingBatchRow,
@@ -279,13 +281,21 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     setConfirming(true);
     setConfirmError(null);
     try {
-      const confirmed = await fileOperationsApi.confirmSourceBatch(result.id);
+      // 已确认过的批次走补做入口：稳定幂等键会被判为重放，补做会静默变成空操作。
+      const confirmed = result.confirmed_at
+        ? await fileOperationsApi.reconfirmSourceBatch(result.id)
+        : await fileOperationsApi.confirmSourceBatch(result.id);
       setResult(confirmed);
       const sdkCount = confirmed.outbound_routing?.jd_sdk_shipment_ids?.length ?? 0;
+      const skipped = confirmed.skipped_rows?.length ?? 0;
+      // 跳过的行必须当场说清楚，并说明还能补做——否则部分确认在用户眼里就是静默丢单。
+      const skippedNote = skipped > 0
+        ? `；${skipped} 行因待处理被跳过，仍留在本批次，处理完后可再次确认补做`
+        : '';
       if (sdkCount > 0) {
-        message.success(`本批次已确认：${sdkCount} 个发货批次走京东 SDK 建单；未就绪的已落待处理，可在「发货单」页确认地址后重试`);
+        message.success(`本批次已确认：${sdkCount} 个发货批次走京东 SDK 建单；未就绪的已落待处理，可在「发货单」页确认地址后重试${skippedNote}`);
       } else {
-        message.success('本批次已确认，履约文件已生成');
+        message.success(`本批次已确认，履约文件已生成${skippedNote}`);
       }
       onCompleted();
       // 确认后重载明细：已接收行建立系统订单关联，逐行结果需反映"已确认"
@@ -318,11 +328,14 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
     }
   };
 
-  const confirmable = result && result.row_counts.need_review === 0 && result.row_counts.rejected === 0;
-  const confirmLabel = result ? `确认本批次（已接收 ${result.row_counts.accepted} 行）` : '确认本批次';
-  const confirmDisabledReason = result && result.row_counts.need_review + result.row_counts.rejected > 0
-    ? `待复核 ${result.row_counts.need_review} 行、拒绝 ${result.row_counts.rejected} 行，请先处理后再确认`
-    : '';
+  // 可用性判据只认后端的 confirm_readiness——它就是确认闸门本身用的那份投影。
+  // 此前按 row_counts 自己推算（待复核或拒绝不为零就禁用），在部分确认下会误禁：
+  // 有阻断行但同时有就绪行时，后端是允许跳过阻断行先发的。
+  const confirmGate = confirmGateOf(result?.confirm_readiness, Boolean(result?.confirmed_at));
+  const confirmable = Boolean(result) && confirmGate.enabled;
+  const confirmLabel = confirmGate.label;
+  const confirmDisabledReason = confirmGate.disabledReason;
+  const confirmScope = confirmScopeHint(result?.confirm_readiness);
 
   return (
     <Card
@@ -424,35 +437,41 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
             description={result.confirmed_at
               ? `${summarizeImportBatch(result.row_counts)}；批次已确认，生成履约文件 ${result.generated_fulfillment_export_ids?.length ?? 0} 份，已形成履约承诺。`
               : `${summarizeImportBatch(result.row_counts)}；确认后已接收行将写入系统订单，并生成履约文件，形成履约承诺。请核对整个批次后统一确认。`}
-            action={result.confirmed_at ? (
-              <Button
-                icon={<ReloadOutlined />}
-                loading={jdSubmitting}
-                onClick={submitJdOutbounds}
-              >
-                重试京东建单
-              </Button>
-            ) : (
-              <Tooltip title={confirmDisabledReason || undefined}>
-                <span>
-                  <Popconfirm
-                    title={confirmLabel}
-                    description={`确认后已接收的 ${result.row_counts.accepted} 行将写入系统订单并生成履约文件，形成履约承诺；待复核 ${result.row_counts.need_review} 行、拒绝 ${result.row_counts.rejected} 行不在本次确认范围。`}
-                    okText="确认本批次"
-                    cancelText="取消"
-                    onConfirm={confirmBatch}
-                    disabled={!confirmable}
-                  >
-                    <Button
-                      type="primary"
-                      loading={confirming}
-                      disabled={!confirmable}
-                    >
-                      {confirmLabel}
-                    </Button>
-                  </Popconfirm>
-                </span>
-              </Tooltip>
+            action={(
+              <Space>
+                {/* 已确认的批次仍可能有待发货行：阻断行修好后在这里补做，不用再回上传流程。 */}
+                {confirmable ? (
+                  <Tooltip title={confirmDisabledReason || undefined}>
+                    <span>
+                      <Popconfirm
+                        title={confirmLabel}
+                        description={confirmScope}
+                        okText="确认本批次"
+                        cancelText="取消"
+                        onConfirm={confirmBatch}
+                        disabled={!confirmable}
+                      >
+                        <Button type="primary" loading={confirming} disabled={!confirmable}>
+                          {confirmLabel}
+                        </Button>
+                      </Popconfirm>
+                    </span>
+                  </Tooltip>
+                ) : (
+                  <Tooltip title={confirmDisabledReason || undefined}>
+                    <span>
+                      <Button type="primary" disabled>
+                        {confirmLabel}
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )}
+                {result.confirmed_at ? (
+                  <Button icon={<ReloadOutlined />} loading={jdSubmitting} onClick={submitJdOutbounds}>
+                    重试京东建单
+                  </Button>
+                ) : null}
+              </Space>
             )}
           />
         ) : null}

@@ -885,6 +885,59 @@ export interface ImportRowCounts {
   rejected: number;
 }
 
+/**
+ * 一个阻断行的可读说明。用户要看到的是原因，不是一个数字。
+ * reason 由后端从 error_detail.message 取，缺失时回退 error_code。
+ */
+export interface ConfirmBlockedRow {
+  row_id: string;
+  source_order_ref?: string | null;
+  status: RawRowStatus;
+  error_code?: string | null;
+  reason?: string | null;
+}
+
+/**
+ * 确认闸门的判据，由后端随批次一起返回。
+ *
+ * 前端按钮可用性直接读 confirmable，不要自己按 row_counts 推算——两边口径一旦分叉，
+ * 用户就会点了才发现被拒。
+ */
+export interface ConfirmReadiness {
+  /** 已接收行数 */
+  ready_rows: number;
+  /** 已接收但还没进履约导出/发货批次的行数——确认真正会处理的量 */
+  pending_rows: number;
+  /** 待处理行数（待复核与非良性拒绝） */
+  blocked_rows: number;
+  /** 良性跳过行数：订单早已存在 */
+  benign_skipped_rows: number;
+  confirmable: boolean;
+  /** 跳过阻断行的部分确认：能发的和发不了的同时存在 */
+  partial: boolean;
+  blockers: ConfirmBlockedRow[];
+}
+
+/** 待确认批次清单条目。 */
+export interface PendingConfirmationBatch {
+  id: string;
+  batch_no: string;
+  original_file_name?: string | null;
+  status: string;
+  source_channel?: SourceChannel | null;
+  source_channel_display_name?: string | null;
+  received_at: string;
+  confirmed_at?: string | null;
+  confirmed_by?: string | null;
+  total_rows: number;
+  ready_rows: number;
+  blocked_rows: number;
+  benign_skipped_rows: number;
+  pending_rows: number;
+  confirmable: boolean;
+  partial: boolean;
+}
+
 export interface ImportBatch {
   id: string;
   batch_no: string;
@@ -908,12 +961,16 @@ export interface ImportBatch {
   confirmed_by?: string | null;
   settlement_missing: boolean;
   row_counts: ImportRowCounts;
+  /** 仅来源订单批次携带：确认闸门判据，与后端同源。 */
+  confirm_readiness?: ConfirmReadiness;
   generated_fulfillment_export_ids?: string[];
   generated_source_return_export_ids?: string[];
   /** 仅确认响应携带：京东 SDK 直连路由的建单发货批次（05）。 */
   outbound_routing?: {
     jd_sdk_shipment_ids?: string[];
   };
+  /** 仅确认响应携带：本次被跳过的阻断行，留在批次里等补做。 */
+  skipped_rows?: ConfirmBlockedRow[];
   received_at: string;
   processed_at?: string;
 }
