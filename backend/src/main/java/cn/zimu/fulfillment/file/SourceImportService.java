@@ -923,10 +923,22 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         return matches.isEmpty() ? null : matches.getFirst();
     }
 
+    /**
+     * 礼包解析对所有来源渠道开放（2026-08-28）。
+     *
+     * <p>此前只对大者/万旗/万齐开放，因为只有它们的导出表被观察到含礼包行。但聚福宝
+     * 与企微同日各来了一张「子牧牛肉惠选礼包1400g」，被判为普通 SKU 行后落
+     * SKU_MAPPING_REQUIRED 卡死，而 {@code resolve-bundle} 只受理 CUSTOM_BUNDLE 行，
+     * 于是既进不来也修不了——白名单本身成了死路。
+     *
+     * <p>放开的代价是：名称命中 {@link #looksLikeBundle}（含礼包/礼盒/组合）且没有礼包
+     * 映射的行，会从「普通 SKU 行」改判为「待解析礼包行」。改前已核实生产
+     * {@code source_channel_skus} 中不存在名称命中这三个词的活跃映射，因此不打断任何
+     * 既有流程；将来若某渠道确有以此命名的单品，应为它建礼包映射或调整命名，
+     * 而不是把渠道重新关掉——关掉会让该渠道的真礼包再次变成无法修复的死行。
+     */
     private boolean bundleSourceChannel(SourceChannel channel) {
-        return channel == SourceChannel.DAZHE
-                || channel == SourceChannel.WANGQI
-                || channel == SourceChannel.WANQI;
+        return channel != null;
     }
 
     private OrderItemInput singleItem(ParsedSourceRow row) {
