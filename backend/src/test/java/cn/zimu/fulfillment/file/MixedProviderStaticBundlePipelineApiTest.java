@@ -614,22 +614,47 @@ class MixedProviderStaticBundlePipelineApiTest {
                 Map.class);
     }
 
+    /**
+     * 双格式回填全量发货结果：v2 人读八列（03b296f9 起的下发格式）只需填快递公司/运单号，
+     * 「数量」保持导出指令原值即代表全部发出；v1 兼容 24 列按旧列名填结果/实发/物流单号。
+     * 礼包多行共用同一出库单号与运单号，逐行填写。
+     */
     private byte[] fillThirdPartyTracking(byte[] bytes) throws Exception {
         try (XSSFWorkbook workbook = new XSSFWorkbook(new java.io.ByteArrayInputStream(bytes));
                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             var sheet = workbook.getSheetAt(0);
+            var header = sheet.getRow(0);
+            var fmt = new DataFormatter();
+            java.util.Map<String, Integer> columns = new java.util.LinkedHashMap<>();
+            for (int index = 0; index < header.getLastCellNum(); index++) {
+                columns.put(fmt.formatCellValue(header.getCell(index)).strip(), index);
+            }
             for (int rowIndex = 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
                 var row = sheet.getRow(rowIndex);
-                row.getCell(18).setCellValue("SHIPPED");
-                row.getCell(19).setCellValue(row.getCell(17).getStringCellValue());
-                row.getCell(20).setCellValue("京东物流");
-                row.getCell(21).setCellValue("TP-MIXED-BUNDLE-001");
-                row.getCell(22).setCellValue("");
-                row.getCell(23).setCellValue("");
+                if (row == null) continue;
+                if (columns.containsKey("运单号")) {
+                    fillCell(row, columns.get("快递公司"), "京东物流");
+                    fillCell(row, columns.get("运单号"), "TP-MIXED-BUNDLE-001");
+                } else {
+                    fillCell(row, columns.get("结果"), "SHIPPED");
+                    fillCell(row, columns.get("实际发货数量"),
+                            fmt.formatCellValue(row.getCell(columns.get("请求发货数量"))));
+                    fillCell(row, columns.get("快递公司"), "京东物流");
+                    fillCell(row, columns.get("物流单号"), "TP-MIXED-BUNDLE-001");
+                    fillCell(row, columns.get("发货时间"), "");
+                    fillCell(row, columns.get("异常原因"), "");
+                }
             }
             workbook.write(output);
             return output.toByteArray();
         }
+    }
+
+    private static void fillCell(org.apache.poi.ss.usermodel.Row row, Integer index, String value) {
+        if (index == null) return;
+        var cell = row.getCell(index);
+        if (cell == null) cell = row.createCell(index);
+        cell.setCellValue(value == null ? "" : value);
     }
 
     private HttpHeaders operatorHeaders() {
