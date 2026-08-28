@@ -17,6 +17,9 @@ const MAPPING_GATE_BLOCKER = {
   sku_id: '48',
   order_line_ids: ['5'],
   missing_field: 'provider_skus.external_codes.jd_pieces_per_unit',
+  // 门禁 14 种 issue 落到 blocker 上 code 一律被塌缩成 JD_SKU_MAPPING_GATE_BLOCKED，
+  // 真原因只在这个字段里（ShipmentJdStockCheckService.mappingGateBlocker）。
+  mapping_issue_code: 'UNIT_CONVERSION_MISSING',
 };
 
 const INSUFFICIENT_BLOCKER = {
@@ -36,6 +39,8 @@ function reviewCase(overrides: Record<string, unknown> = {}) {
     reason_code: STOCK_BLOCKED_REASON,
     subject_type: 'SHIPMENT',
     subject_id: '17',
+    order_id: '31',
+    order_no: 'SO-20260828-0007',
     detail: { blockers: [MAPPING_GATE_BLOCKER] },
     ...overrides,
   };
@@ -48,6 +53,8 @@ test('extractStockBlockerCases：解析出完整商品身份与换货定位字�
     caseId: '42',
     caseNo: 'RC-JD-STOCK-ABC',
     shipmentId: '17',
+    orderId: '31',
+    orderNo: 'SO-20260828-0007',
     blockers: [{
       code: 'JD_SKU_MAPPING_GATE_BLOCKED',
       message: '非‘件’单位必须配置显式京东件数换算',
@@ -57,8 +64,15 @@ test('extractStockBlockerCases：解析出完整商品身份与换货定位字�
       skuId: '48',
       orderLineIds: ['5'],
       missingField: 'provider_skus.external_codes.jd_pieces_per_unit',
+      mappingIssueCode: 'UNIT_CONVERSION_MISSING',
     }],
   });
+});
+
+test('extractStockBlockerCases：缺 order_id/order_no 的事项回落为 null（整卡不造假链接）', () => {
+  const cases = extractStockBlockerCases([reviewCase({ order_id: undefined, order_no: undefined })]);
+  assert.equal(cases[0].orderId, null);
+  assert.equal(cases[0].orderNo, null);
 });
 
 test('extractStockBlockerCases：非目标 reason_code 一律忽略', () => {
@@ -90,6 +104,7 @@ test('extractStockBlockerCases：可选字段缺失时回落为 null / 空数组
     skuId: null,
     orderLineIds: [],
     missingField: null,
+    mappingIssueCode: null,
   });
 });
 

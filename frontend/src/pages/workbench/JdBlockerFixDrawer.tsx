@@ -65,13 +65,19 @@ export interface JdBlockerFixDrawerProps {
    * 不跑下面履约方配置表单那一套加载/保存逻辑。两者互斥，由调用方决定传哪一个。
    */
   stockBlockers?: StockBlockerItem[];
+  /**
+   * 库存/映射阻断所属订单（复核事项的 `order_id`）。只在 stock 模式下有意义：
+   * StockBlockerPanel 用它拉订单详情，把「订单来源 / 收货人 / 商品清单」摆在处置动作旁边——
+   * 处置前得先看清这是谁的哪一单，否则换货就是盲改。缺失时面板只渲染阻断明细。
+   */
+  orderId?: string | null;
   onClose: () => void;
   /** 阻塞清零时回调，供发货台刷新计数。 */
   onResolved?: () => void;
 }
 
 export function JdBlockerFixDrawer({
-  open, shipmentId, blockers, stockBlockers, onClose, onResolved,
+  open, shipmentId, blockers, stockBlockers, orderId, onClose, onResolved,
 }: JdBlockerFixDrawerProps) {
   const isStockMode = Boolean(stockBlockers && stockBlockers.length > 0);
   const [form] = Form.useForm();
@@ -255,7 +261,12 @@ export function JdBlockerFixDrawer({
       destroyOnClose
     >
       {isStockMode ? (
-        <StockBlockerPanel shipmentId={shipmentId} blockers={stockBlockers ?? []} onResolved={onResolved} />
+        <StockBlockerPanel
+          shipmentId={shipmentId}
+          orderId={orderId ?? null}
+          blockers={stockBlockers ?? []}
+          onResolved={onResolved}
+        />
       ) : (
         <>
       {loadError ? (
