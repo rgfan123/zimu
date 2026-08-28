@@ -113,6 +113,28 @@ class AutoShipSqlIntegrationTest {
         assertThat(readiness.candidates(2)).hasSize(2);
     }
 
+    @Test
+    void staleBlockedBatchesCannotStarveReadyOnesOutOfTheCandidateList() {
+        // 阻断批次要等人处理，会在候选里挂很多天。若与就绪批次共用 LIMIT 且只按收单时间排，
+        // 攒够 batch-limit 个陈年阻断批次就会把就绪批次全部挤出去——自动发货悄悄停摆，
+        // 而运行记录看上去一切正常（每次都「处理」了满额批次）。
+        // received_at 显式拉到所有其它夹具之前，否则本用例会被同类里别的批次干扰而失去判别力：
+        // 阻断批次最老（不修的话它们必然排第一），就绪批次次老。
+        for (int index = 0; index < 3; index++) {
+            Fixture stale = seedBatch("STARVE-BLK" + index, "2020-01-0" + (index + 1) + "T00:00:00+08");
+            acceptedRowWithLine(stale, 1);
+            problemRow(stale, 2, "NEED_REVIEW", "PROVIDER_SKU_MAPPING_REQUIRED");
+        }
+        Fixture fresh = seedBatch("STARVE-OK", "2021-01-01T00:00:00+08");
+        acceptedRowWithLine(fresh, 1);
+
+        List<AutoShipReadiness.Candidate> candidates = readiness.candidates(1);
+
+        assertThat(candidates).hasSize(1);
+        assertThat(candidates.getFirst().batchId()).isEqualTo(fresh.batchId());
+        assertThat(candidates.getFirst().fullyReady()).isTrue();
+    }
+
     // ------------------------------------------------------------------
     // 京东失败原因回读
     // ------------------------------------------------------------------
@@ -269,6 +291,14 @@ class AutoShipSqlIntegrationTest {
     }
 
     private Fixture seedBatch(String suffix) {
+        return seedBatch(suffix, null);
+    }
+
+    /**
+     * @param receivedAt 显式收单时间；传 null 走默认（now）。
+     *     必须在 INSERT 时给定——app.protect_import_batch_source 触发器让来源字段在 UPDATE 时不可变。
+     */
+    private Fixture seedBatch(String suffix, String receivedAt) {
         Long customerId = jdbc.queryForObject("SELECT id FROM app.customers ORDER BY id LIMIT 1", Long.class);
         Long providerId = jdbc.queryForObject(
                 "SELECT id FROM app.fulfillment_providers WHERE active ORDER BY id LIMIT 1", Long.class);
@@ -278,13 +308,14 @@ class AutoShipSqlIntegrationTest {
                 INSERT INTO app.import_batches
                     (batch_no, batch_type, import_mode, revision_no, source_channel,
                      template_family, template_version, template_fingerprint, original_file_name,
-                     content_sha256, file_ref, status, uploaded_by)
+                     content_sha256, file_ref, status, uploaded_by, received_at)
                 VALUES ('IMP-AS-' || ?, 'SOURCE_ORDER', 'NEW', 1, 'FEIXIANG',
                         'FEIXIANG_SOURCE_ORDER', 'v1', 'FX-as-' || ?, 'orders.xlsx',
-                        md5(?) || md5(? || '-2'), 'file://as-' || ?, 'COMPLETED', 'auto-ship-test')
+                        md5(?) || md5(? || '-2'), 'file://as-' || ?, 'COMPLETED', 'auto-ship-test',
+                        COALESCE(?::timestamptz, CURRENT_TIMESTAMP))
                 RETURNING id
                 """,
-                Long.class, suffix, suffix, suffix, suffix, suffix);
+                Long.class, suffix, suffix, suffix, suffix, suffix, receivedAt);
         Long orderId = jdbc.queryForObject(
                 """
                 INSERT INTO app.orders

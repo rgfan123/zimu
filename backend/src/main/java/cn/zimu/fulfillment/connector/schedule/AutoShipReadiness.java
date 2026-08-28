@@ -72,7 +72,12 @@ class AutoShipReadiness {
             WHERE ib.batch_type='SOURCE_ORDER'
               AND (ib.confirmed_at IS NULL OR pending.pending_rows > 0)
               AND (counts.blocked_rows > 0 OR pending.pending_rows > 0)
-            ORDER BY ib.received_at, ib.id
+            -- 完全就绪的排前面，然后才按收单时间。
+            -- 阻断批次要等人处理，可能在候选里挂很多天；若与就绪批次共用 LIMIT 且按时间排，
+            -- 攒够 batch-limit 个陈年阻断批次就会把就绪批次全部挤出候选——
+            -- 表现是自动发货悄悄停摆，而运行记录看上去一切正常（每次都「处理」了 20 个批次）。
+            -- 阻断批次只是拿来播报的，被挤掉的代价远小于就绪批次发不出去。
+            ORDER BY (counts.blocked_rows = 0) DESC, ib.received_at, ib.id
             LIMIT ?
             """
                     .formatted(BLOCKED_PREDICATE, BLOCKED_PREDICATE);
