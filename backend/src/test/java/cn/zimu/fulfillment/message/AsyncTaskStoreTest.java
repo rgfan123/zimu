@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.message;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -28,6 +29,8 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -59,6 +62,9 @@ class AsyncTaskStoreTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     @BeforeEach
     void clearTasks() {
         // 同一类内多个测试共享数据库；每个测试前清空任务表保证自包含与确定性
@@ -87,6 +93,66 @@ class AsyncTaskStoreTest {
         Optional<AsyncTaskStore.AsyncTask> recovered = taskStore.claim("worker-d", Duration.ofSeconds(30));
         assertThat(recovered).isPresent();
         assertThat(recovered.get().attempts()).isEqualTo(2);
+    }
+
+    // 以下四条断言的是**精确类型**：@Repository 的持久化异常翻译会把 IllegalStateException
+    // 改写成 InvalidDataAccessApiUsageException，任何一处退回 ISE 这里都会立刻变红。
+
+    @Test
+    void staleOwnerSucceedOwnedSurfacesLeaseLostAsDedicatedType() {
+        long taskId = enqueueAndClaim("lease-lost-succeed", "owner-a");
+        jdbc.update("UPDATE app.async_tasks SET lease_until = statement_timestamp() WHERE id = ?", taskId);
+
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        assertThatThrownBy(() -> transaction.executeWithoutResult(
+                        status -> taskStore.succeedOwned(taskId, "owner-a")))
+                .isInstanceOf(AsyncTaskStore.LeaseLostException.class)
+                .hasMessageContaining("租约已丢失: " + taskId);
+    }
+
+    @Test
+    void reclaimedTaskRejectsStaleOwnerFailTerminalWithLeaseLost() {
+        long taskId = enqueueAndClaim("lease-lost-terminal", "owner-a");
+        jdbc.update(
+                "UPDATE app.async_tasks SET lease_until = CURRENT_TIMESTAMP - interval '1 minute' WHERE id = ?",
+                taskId);
+        assertThat(taskStore.claim("owner-b", Duration.ofSeconds(30))).isPresent();
+
+        assertThatThrownBy(() -> taskStore.failTerminal(taskId, "owner-a", "stale terminal write"))
+                .isInstanceOf(AsyncTaskStore.LeaseLostException.class)
+                .hasMessageContaining("租约已丢失: " + taskId);
+    }
+
+    @Test
+    void staleOwnerRecordFailureOwnedSurfacesLeaseLostAsDedicatedType() {
+        long taskId = enqueueAndClaim("lease-lost-record-failure", "owner-a");
+        jdbc.update("UPDATE app.async_tasks SET lease_until = statement_timestamp() WHERE id = ?", taskId);
+
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status ->
+                        taskStore.recordFailureOwned(
+                                taskId, "owner-a", "stale failure", Duration.ofSeconds(1))))
+                .isInstanceOf(AsyncTaskStore.LeaseLostException.class)
+                .hasMessageContaining("租约已丢失: " + taskId);
+    }
+
+    @Test
+    void staleOwnerFinalizeFailedOwnedSurfacesLeaseLostAsDedicatedType() {
+        long taskId = enqueueAndClaim("lease-lost-finalize", "owner-a");
+        jdbc.update(
+                "UPDATE app.async_tasks SET status = 'FINALIZING', lease_until = statement_timestamp() WHERE id = ?",
+                taskId);
+
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status ->
+                        taskStore.finalizeFailedOwned(taskId, "owner-a", "stale finalization")))
+                .isInstanceOf(AsyncTaskStore.LeaseLostException.class)
+                .hasMessageContaining("最终收口租约已丢失: " + taskId);
+    }
+
+    private long enqueueAndClaim(String idempotencyKey, String owner) {
+        taskStore.enqueue("TEST_TASK", "submission:1", idempotencyKey, 3);
+        return taskStore.claim(owner, Duration.ofSeconds(30)).orElseThrow().id();
     }
 
     @Test

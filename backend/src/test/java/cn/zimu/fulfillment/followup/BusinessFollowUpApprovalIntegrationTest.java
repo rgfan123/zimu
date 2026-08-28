@@ -8,6 +8,8 @@ import cn.zimu.fulfillment.common.web.AuthenticationKind;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import cn.zimu.fulfillment.message.ChannelMessageCommand;
 import cn.zimu.fulfillment.message.MessageSubmissionService;
+import cn.zimu.fulfillment.order.card.CardFallbackStatus;
+import cn.zimu.fulfillment.order.card.CardUpdateStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Duration;
@@ -437,6 +439,60 @@ class BusinessFollowUpApprovalIntegrationTest {
                 input.messageId()))
                 .containsEntry("processing_status", "ACCEPTED")
                 .containsEntry("processing_attempt", 2);
+        retireApprovalTasks(fixture.followupId());
+    }
+
+    @Test
+    void staleClaimTokenWritesSurfaceClaimConflictAsDedicatedType() {
+        Fixture fixture = ready("event-claim-conflict");
+        BusinessFollowUpCardEventStore.Input input = new BusinessFollowUpCardEventStore.Input(
+                "event-claim-conflict",
+                "req-event-claim-conflict",
+                "bot-followup",
+                "",
+                "single",
+                fixture.userid(),
+                null,
+                "confirm_followup",
+                fixture.taskId(),
+                fixture.followupId(),
+                1,
+                fixture.userid());
+        BusinessFollowUpCardEventStore.Claim first = events.claim(input);
+        assertThat(first.process()).isTrue();
+
+        // 精确类型断言：一旦退回 IllegalStateException，@Repository 的持久化异常翻译会把它
+        // 改写成 InvalidDataAccessApiUsageException，这里立刻变红。
+        assertThatThrownBy(() -> events.complete(
+                        input, null, "ACCEPTED", "FOLLOWUP_APPROVAL_ACCEPTED", null))
+                .isInstanceOf(BusinessFollowUpCardEventStore.ClaimConflictException.class)
+                .hasMessageContaining("token missing");
+
+        jdbc.update(
+                "UPDATE app.wecom_events SET processing_started_at=CURRENT_TIMESTAMP - INTERVAL '91 seconds' "
+                        + "WHERE event_type=? AND msgid=?",
+                BusinessFollowUpCardEventStore.EVENT_TYPE,
+                input.messageId());
+        BusinessFollowUpCardEventStore.Claim rotated = events.claim(input);
+        assertThat(rotated.process()).isTrue();
+        assertThat(rotated.claimToken()).isNotEqualTo(first.claimToken());
+
+        assertThatThrownBy(() -> events.complete(
+                        input, first.claimToken(), "REJECTED", "FOLLOWUP_APPROVAL_REJECTED", null))
+                .isInstanceOf(BusinessFollowUpCardEventStore.ClaimConflictException.class)
+                .hasMessageContaining("claim was lost");
+        assertThatThrownBy(() -> events.recordUpdateOutcome(
+                        input.messageId(),
+                        first.claimToken(),
+                        CardUpdateStatus.SENT,
+                        CardFallbackStatus.NOT_ATTEMPTED,
+                        7,
+                        null,
+                        null))
+                .isInstanceOf(BusinessFollowUpCardEventStore.ClaimConflictException.class)
+                .hasMessageContaining("already recorded");
+
+        events.complete(input, rotated.claimToken(), "REJECTED", "FOLLOWUP_APPROVAL_REJECTED", null);
         retireApprovalTasks(fixture.followupId());
     }
 

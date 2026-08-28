@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.notification;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import cn.zimu.fulfillment.operator.OperatorResolver;
 import cn.zimu.fulfillment.operator.OperatorTeamResolution;
@@ -276,6 +277,34 @@ class WecomNotificationStoreIntegrationTest {
                 "OPERATOR_TEAM_NO_MEMBERS",
                 "test cleanup");
         store.finishBatch(reclaimed.id(), "short-lease-worker-b");
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void staleOwnerFinishBatchSurfacesLeaseLostAsDedicatedType() throws Exception {
+        long order = insertOrder("ORD-NOTIFY-LEASE-2", "BUSINESS", "notify-lease-2");
+        insertEvent(order, 1, "TRACKING_RECEIVED", "BUSINESS", null);
+
+        NotificationBatch original = store.claim("lease-lost-worker-a", Duration.ofSeconds(1), 20)
+                .orElseThrow();
+        Thread.sleep(1250);
+        NotificationBatch reclaimed = store.claim("lease-lost-worker-b", Duration.ofMinutes(2), 20)
+                .orElseThrow();
+        assertThat(reclaimed.id()).isEqualTo(original.id());
+
+        // 精确类型断言：一旦退回 IllegalStateException，@Repository 的持久化异常翻译会把它
+        // 改写成 InvalidDataAccessApiUsageException，这里立刻变红。
+        assertThatThrownBy(() -> store.finishBatch(original.id(), "lease-lost-worker-a"))
+                .isInstanceOf(JdbcWecomNotificationStore.LeaseLostException.class)
+                .hasMessageContaining("租约已丢失: " + original.id());
+
+        store.recordBlocked(
+                reclaimed.id(),
+                "team:FULFILLMENT_OPS",
+                null,
+                "OPERATOR_TEAM_NO_MEMBERS",
+                "test cleanup");
+        store.finishBatch(reclaimed.id(), "lease-lost-worker-b");
     }
 
     @Test

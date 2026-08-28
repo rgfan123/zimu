@@ -125,8 +125,10 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
                 "ORDER_DRAFT_CONFIRMED",
                 "wecom:operator-card-fence",
                 Instant.now());
+        // 精确类型断言：一旦退回 IllegalStateException，@Repository 的持久化异常翻译会把它
+        // 改写成 InvalidDataAccessApiUsageException，这里立刻变红。
         assertThatThrownBy(() -> events.complete(input, first.claimToken(), confirmed))
-                .hasRootCauseInstanceOf(IllegalStateException.class)
+                .isInstanceOf(WecomOrderDraftCardEventStore.ClaimConflictException.class)
                 .hasMessageContaining("claim was lost");
         assertThatThrownBy(() -> events.recordUpdateOutcome(
                         input.messageId(),
@@ -136,7 +138,7 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
                         20,
                         null,
                         null))
-                .hasRootCauseInstanceOf(IllegalStateException.class)
+                .isInstanceOf(WecomOrderDraftCardEventStore.ClaimConflictException.class)
                 .hasMessageContaining("claim was lost");
 
         events.complete(input, recovered.claimToken(), confirmed);
@@ -167,7 +169,7 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
                         99,
                         "LATE_FAILURE",
                         null))
-                .hasRootCauseInstanceOf(IllegalStateException.class)
+                .isInstanceOf(WecomOrderDraftCardEventStore.ClaimConflictException.class)
                 .hasMessageContaining("claim was lost");
         assertThat(jdbc.queryForMap(
                         """
@@ -179,6 +181,33 @@ class WecomOrderDraftCardEventStoreIntegrationTest {
                 .containsEntry("update_latency_ms", 21)
                 .containsEntry("update_error_code", null)
                 .containsEntry("fallback_status", "NOT_ATTEMPTED");
+    }
+
+    @Test
+    void missingClaimTokenIsRejectedAsClaimConflictNotTranslatedApiMisuse() {
+        CardEventInput input = input("EVT-CARD-FENCE-5", firstDraftId);
+        assertThat(events.claim(input).process()).isTrue();
+
+        CardConfirmationResult confirmed = new CardConfirmationResult(
+                CardConfirmationStatus.CONFIRMED,
+                "OD-CARD-FENCE-1",
+                List.of(),
+                "ORDER_DRAFT_CONFIRMED",
+                "wecom:operator-card-fence",
+                Instant.now());
+        assertThatThrownBy(() -> events.complete(input, null, confirmed))
+                .isInstanceOf(WecomOrderDraftCardEventStore.ClaimConflictException.class)
+                .hasMessageContaining("token missing");
+        assertThatThrownBy(() -> events.recordUpdateOutcome(
+                        input.messageId(),
+                        " ",
+                        CardUpdateStatus.SENT,
+                        CardFallbackStatus.NOT_ATTEMPTED,
+                        5,
+                        null,
+                        null))
+                .isInstanceOf(WecomOrderDraftCardEventStore.ClaimConflictException.class)
+                .hasMessageContaining("token missing");
     }
 
     @Test
