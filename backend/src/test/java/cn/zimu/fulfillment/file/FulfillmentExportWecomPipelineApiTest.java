@@ -1057,8 +1057,11 @@ class FulfillmentExportWecomPipelineApiTest {
                 if (cell == null) cell = row.createCell(col);
                 cell.setCellValue(value == null ? "" : value);
             };
-            // 双格式：v2 人读八列（运单号/快递公司）优先；v1 兼容 24 列按旧列名
+            // 双格式：v2 人读八列优先；v1 兼容 24 列按旧列名。v2 没有「结果/实际发货数量」
+            // 两列——「数量」列承载实发（03b296f9：与指令相等=全部发出，改小=部分发货），
+            // 所以必须把 quantity 回写进「数量」，否则 PARTIAL 会被解析成全量发货。
             if (columns.containsKey("运单号")) {
+                put.accept(columns.get("数量"), quantity);
                 put.accept(columns.get("快递公司"), "京东物流");
                 put.accept(columns.get("运单号"), trackingNumber);
             } else {
