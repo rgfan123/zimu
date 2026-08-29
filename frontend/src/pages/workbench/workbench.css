@@ -673,15 +673,43 @@
   color: var(--zs-text-2);
   font-size: 13px;
 }
+/* 三个渠道一张卡、逐行纵向：行之间用分隔线而不是各自描边，读起来是一张表不是三张卡。 */
 .zs-sync-channels {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: flex-start;
+  flex-direction: column;
+  border: 1px solid var(--zs-border-2);
+  border-radius: 8px;
+  background: var(--zs-raised);
+  overflow: hidden;
 }
-.zs-sync-channel {
-  width: 320px;
+.zs-sync-row {
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  padding: 10px 12px;
   cursor: pointer;
+}
+.zs-sync-row + .zs-sync-row {
+  border-top: 1px solid var(--zs-border-2);
+}
+.zs-sync-row:hover,
+.zs-sync-row:focus-visible {
+  background: var(--zs-fill-4);
+}
+/* 渠道名列定宽：三行的状态标签要落在同一条竖线上，否则纵向排列就白排了。 */
+.zs-sync-row-name {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 0 0 180px;
+}
+.zs-sync-row-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--zs-text-3);
+  font-size: 12px;
+  line-height: 1.55;
 }
 .zs-sync-card {
   display: flex;
