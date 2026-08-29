@@ -20,6 +20,9 @@ import { orderIdsToLoad, presentStockBlockerCard } from './reviewCardPresentatio
 import { toOrderFacts } from './orderFacts';
 import { JdBlockerFixDrawer } from './JdBlockerFixDrawer';
 import { presentAwaitingTracking } from './awaitingTracking';
+import { pendingSourceSyncNote, presentPendingSourceSync } from './pendingSourceSync';
+import { CHANNEL_LABELS } from '@/constants/labels';
+import type { SourceChannel } from '@/api/types';
 import { readStoredWorkbenchRole } from '@/workbenchRole';
 import { reviewTeamForRole } from '@/components/layout/useRailBadges';
 import { alertsQueueUrl, reviewsQueueUrl } from '../shared/reviewQueueUrl';
@@ -278,6 +281,7 @@ export default function ShippingWorkbenchPage() {
       <PendingConfirmationSection />
       <ReviewPreviewSection team={team} reviewOpen={counts.reviewOpen} />
       <AwaitingTrackingSection />
+      <PendingSourceSyncSection />
       <AlertsSection />
     </div>
   );
@@ -526,6 +530,68 @@ function AwaitingTrackingSection() {
                   </div>
                 ))}
               </details>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 已经发出货、拿到运单号，但还没告诉客户平台的批次。
+ *
+ * <p>之前这一段是空的：状态转 SHIPPED 之后单子就从工作台消失了，回传这一步在界面上
+ * 无处可见。2026-08-29 有两张聚福宝单因此躺了一整天。
+ */
+function PendingSourceSyncSection() {
+  const data = useAsync(async () => {
+    const response = await fetch('/api/v1/shipments?shipment_status=SHIPPED&size=50', {
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(`发货批次加载失败（${response.status}）`);
+    const body = (await response.json()) as { items?: unknown[] };
+    return presentPendingSourceSync(body.items ?? []);
+  }, []);
+
+  const view = data.data;
+
+  return (
+    <section className="zs-sec" id="zs-source-sync">
+      <div className="zs-card">
+        <div className="zs-hd">
+          <h3>待回传给客户平台</h3>
+          {view && view.total > 0 ? <span className="zs-tag">{view.total} 单</span> : null}
+        </div>
+        <div className="zs-bd zs-flush">
+          {data.loading ? (
+            <div className="zs-hint" style={{ padding: '12px 16px' }}>正在加载…</div>
+          ) : data.error ? (
+            <div className="zs-hint" style={{ padding: '12px 16px' }}>加载失败：{errorMessage(data.error)}</div>
+          ) : !view || view.total === 0 ? (
+            <div className="zs-hint" style={{ padding: '12px 16px' }}>
+              货都发了，客户平台那边也都知道了。
+            </div>
+          ) : (
+            <div className="zs-rq" style={{ padding: 12 }}>
+              {view.rows.map((row) => {
+                const note = pendingSourceSyncNote(row);
+                return (
+                  <div className="zs-rqi" key={row.shipmentId}>
+                    <div className="zs-w">
+                      <div className="zs-l1">
+                        {CHANNEL_LABELS[row.channel as SourceChannel] ?? row.channel}
+                        {row.receiverName ? ` · ${row.receiverName}` : ''}
+                      </div>
+                      <div className="zs-l2">
+                        {row.shipmentNo} · 运单 {row.trackingNumber}
+                        {note ? ` · ${note}` : ''}
+                      </div>
+                    </div>
+                    <Link className="zs-lnk" to="/fulfillment/shipments">去回传</Link>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

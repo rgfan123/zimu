@@ -31,8 +31,16 @@ public class FulfillmentReadService {
             FROM app.shipments s
             JOIN app.orders o ON o.id = s.order_id
             LEFT JOIN app.customers c ON c.id = o.customer_id
+            -- 只按 shipment_id 关联：一张 Shipment 归属一个订单、一个来源渠道，
+            -- 不会出现同一 Shipment 对多渠道的回传记录。这里是给列表看状态用的，
+            -- 权威判断仍在 SourceSyncFactsReader。
+            LEFT JOIN app.shipment_syncs ss ON ss.shipment_id = s.id
             WHERE o.data_scope = 'BUSINESS'
             """;
+    /** 三个 Shipment 读取口共用的投影：加列必须加在这里，否则列表与详情会漂移。 */
+    private static final String SHIPMENT_SELECT =
+            "SELECT s.*, o.order_no, o.receiver_name, o.source_channel, c.customer_name,"
+                    + " ss.sync_status source_sync_status ";
     private static final String TICKET_FROM = """
             FROM app.procurement_tickets pt
             JOIN app.fulfillments f ON f.id = pt.fulfillment_id
@@ -86,7 +94,7 @@ public class FulfillmentReadService {
         long total = count(SHIPMENT_FROM + filters, args);
         List<Object> pageArgs = pageArgs(args, page, size);
         List<Map<String, Object>> items = jdbc.query(
-                "SELECT s.*, o.order_no, o.receiver_name, c.customer_name " + SHIPMENT_FROM + filters
+                SHIPMENT_SELECT + SHIPMENT_FROM + filters
                         + " ORDER BY s.created_at DESC, s.id DESC LIMIT ? OFFSET ?",
                 (rs, row) -> shipment(rs), pageArgs.toArray());
         items.forEach(this::hydrateShipment);
@@ -96,7 +104,7 @@ public class FulfillmentReadService {
     @Transactional(readOnly = true)
     public Map<String, Object> shipment(long id) {
         Map<String, Object> value = jdbc.query(
-                "SELECT s.*, o.order_no, o.receiver_name, c.customer_name " + SHIPMENT_FROM + " AND s.id = ?",
+                SHIPMENT_SELECT + SHIPMENT_FROM + " AND s.id = ?",
                 rs -> rs.next() ? shipment(rs) : null,
                 id);
         if (value == null) throw BusinessException.notFound("发货单不存在");
@@ -112,7 +120,7 @@ public class FulfillmentReadService {
                 orderId));
         if (!exists) throw BusinessException.notFound("订单不存在");
         List<Map<String, Object>> result = jdbc.query(
-                "SELECT s.*, o.order_no, o.receiver_name, c.customer_name " + SHIPMENT_FROM
+                SHIPMENT_SELECT + SHIPMENT_FROM
                         + " AND s.order_id=? ORDER BY s.shipment_sequence, s.id",
                 (rs, row) -> shipment(rs), orderId);
         result.forEach(this::hydrateShipment);
@@ -341,6 +349,10 @@ public class FulfillmentReadService {
                 "outbound_order_no", rs.getString("outbound_order_no"),
                 "shipment_sequence", rs.getInt("shipment_sequence"),
                 "shipment_status", rs.getString("shipment_status"),
+                "source_channel", rs.getString("source_channel"),
+                // 无回传记录时为 null，前端据此区分「还没回传」与「不适用」；
+                // 权威结论仍要走 source-sync/check，这里只够列表打个标。
+                "source_sync_status", rs.getString("source_sync_status"),
                 "receiver", map("name", rs.getString("receiver_name_snapshot"),
                         "phone", rs.getString("receiver_phone_snapshot"),
                         "address", rs.getString("receiver_address_snapshot")),
