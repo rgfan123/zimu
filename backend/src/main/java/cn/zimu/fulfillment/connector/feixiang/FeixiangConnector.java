@@ -179,12 +179,18 @@ public class FeixiangConnector extends AbstractHttpPullConnector {
             return success(channel, 0, "飞象 " + begin + " 至 " + end + " 窗口内没有待发货订单（平台计数同为 0）");
         }
         if (reported > 0) {
-            log.error("飞象列表页解析失效: 平台自报 {} 单，实际解析出 0 单（window={}~{}）", reported, begin, end);
+            // 指纹必须跟着错误一起走：只报「结构不匹配」而不带结构，等于每次排查都要重新抓包。
+            // 2026-08-29 生产上就卡在这里——last_error 里除了这句话什么线索都没有。
+            String fingerprint = listed.listPageFingerprint();
+            log.error(
+                    "飞象列表页解析失效: 平台自报 {} 单，实际解析出 0 单（window={}~{}）指纹={}",
+                    reported, begin, end, fingerprint);
             return failed(
                     channel,
                     "FEIXIANG_ORDER_LIST_UNPARSEABLE",
                     "飞象平台自报窗口内有 " + reported + " 单，但列表页解析出 0 单——"
-                            + "列表页 HTML 结构与解析规则不匹配，已停止并报错，未按「无新数据」处理");
+                            + "列表页 HTML 结构与解析规则不匹配，已停止并报错，未按「无新数据」处理"
+                            + (fingerprint == null ? "" : "；列表页结构指纹：" + fingerprint));
         }
         log.error("飞象列表页解析出 0 单，且平台计数不可用，无法确认是真无单还是解析失效（window={}~{}）", begin, end);
         return failed(

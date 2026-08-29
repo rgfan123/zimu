@@ -61,9 +61,23 @@ public interface FeixiangPullClient {
      * @param platformReportedCount 平台 {@code ajaxOrderNum} 自报的区间订单数；未知为 {@code -1}
      * @param truncated          是否因页数上限提前停止（true 时必然有被丢弃的订单，须显式记录）
      */
-    record PendingOrderList(List<String> orderSonIds, int platformReportedCount, boolean truncated) {
+    record PendingOrderList(
+            List<String> orderSonIds,
+            int platformReportedCount,
+            boolean truncated,
+            /**
+             * 解析出 0 单时的列表页结构指纹（见 {@link FeixiangListPageFingerprint}）。
+             *
+             * <p>解析成功时为 null——只有失败才需要它，正常路径不该把页面结构搬进内存。
+             */
+            String listPageFingerprint) {
         public PendingOrderList {
             orderSonIds = orderSonIds == null ? List.of() : List.copyOf(orderSonIds);
+        }
+
+        /** 旧构造保留给不关心指纹的调用方（含测试夹具）。 */
+        PendingOrderList(List<String> orderSonIds, int platformReportedCount, boolean truncated) {
+            this(orderSonIds, platformReportedCount, truncated, null);
         }
 
         /** 被丢弃的订单数；平台计数未知时返回 -1（未知就说未知，不猜 0）。 */
@@ -236,7 +250,21 @@ public interface FeixiangPullClient {
                 truncated |= collectState(state, start, end, ids);
             }
             int reported = countPendingOrders(start, end);
-            return new PendingOrderList(List.copyOf(ids), reported, truncated);
+            // 一单都没解析出来时，多打一次第一页取结构指纹。这一次额外请求只在故障路径上发生：
+            // 没有它，last_error 只剩一句「结构不匹配」，每次排查都得重新抓包（2026-08-29 实证）。
+            String fingerprint = ids.isEmpty()
+                    ? FeixiangListPageFingerprint.of(safeFirstPage(start, end))
+                    : null;
+            return new PendingOrderList(List.copyOf(ids), reported, truncated, fingerprint);
+        }
+
+        /** 取指纹是诊断行为，本身不得再把拉取打挂——任何异常都降级成一句说明。 */
+        private String safeFirstPage(String start, String end) {
+            try {
+                return getListPage(1, PENDING_ORDER_STATES.getFirst(), start, end);
+            } catch (RuntimeException exception) {
+                return null;
+            }
         }
 
         /**
