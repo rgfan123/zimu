@@ -8,7 +8,10 @@
 #
 # 密钥纪律：9 个值全部由本脚本用 openssl 现场生成，写进一个 600 权限的本地临时文件，
 # scp 到远端后立即销毁本地副本。**任何一个值都不会被打印到终端、不会进日志。**
-# 唯一的例外是最后留下的 secrets 备份路径——你自己决定要不要留、留哪。
+#
+# 【写法约定】所有变量展开一律用 ${VAR} 花括号形式。原因是实测出来的：bash 3.2 在
+# UTF-8 locale 下会把紧跟其后的全角字符（如「）」）吃进变量名，报 "VAR?: unbound variable"。
+# C locale 下不复现，所以这个坑只会在真实终端里炸，不会在 CI 或非交互 shell 里暴露。
 
 set -euo pipefail
 
@@ -19,80 +22,118 @@ REMOTE_ROOT_WIN='C:\Deploy\kehuzx'
 NETWORK="${NETWORK:-zimu-kehuzx-private}"
 PG_DIGEST='sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297'
 PG_REF="postgres:16.10-alpine@${PG_DIGEST}"
+PG_SHIP_TAG='kehuzx-postgres:16.10-alpine-pinned'
+
+WORKDIR="$(mktemp -d -t kehuzx-deploy)"
+cleanup() { rm -rf "${WORKDIR}"; }
+trap cleanup EXIT
 
 say()  { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
-ask()  { read -r -p "$1 [y/N] " a; [[ "$a" == y || "$a" == Y ]]; }
+ask()  { read -r -p "$1 [y/N] " a; [[ "${a:-}" == y || "${a:-}" == Y ]]; }
 
 # ── 0. 前置检查（只读，任何一条不过就停） ────────────────────────────────────
 say "0. 前置检查"
 
-[[ -d "$KEHUZX_REPO" ]] || die "kehuzx 仓不存在：$KEHUZX_REPO（用 KEHUZX_REPO= 覆盖）"
-cd "$KEHUZX_REPO"
+[[ -d "${KEHUZX_REPO}" ]] || die "kehuzx 仓不存在: ${KEHUZX_REPO} (用 KEHUZX_REPO= 覆盖)"
+cd "${KEHUZX_REPO}"
 
 SHA="$(git rev-parse --short=7 HEAD)"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [[ -z "$(git status --porcelain)" ]] || die "kehuzx 工作区有未提交改动，先处理干净——镜像必须对应一个确定的提交"
-ok "kehuzx 发布基准：$BRANCH @ $SHA"
+ok "kehuzx 发布基准: ${BRANCH} @ ${SHA}"
 
-[[ -f compose.production.yml ]] || die "缺 compose.production.yml（该文件只存在于 fork 分支）"
+[[ -f compose.production.yml ]] || die "缺 compose.production.yml (该文件只存在于 fork 分支)"
 [[ -f deploy/preflight.sh ]]    || die "缺 deploy/preflight.sh"
 ok "生产编排与 preflight 就位"
 
 for d in 519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 \
          e4bf2a82ad0a4037d28035ae71529873c069b13eb0455466ae0bc13363826e34 \
          65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0 ; do
-  docker images --digests --format '{{.Digest}}' | grep -q "$d" \
-    || die "基础镜像缺失（摘要 ${d:0:12}…）。zimupc 连不上 Docker Hub，必须先在本机拉全再搬。"
+  docker images --digests --format '{{.Digest}}' | grep -q "${d}" \
+    || die "基础镜像缺失 (摘要 ${d:0:12}...)。zimupc 连不上 Docker Hub，必须先在本机拉全再搬。"
 done
 ok "三个 pinned 基础镜像在本机"
 
-PG_LOCAL="$(docker images --digests --format '{{.Repository}}:{{.Tag}} {{.Digest}}' \
-            | awk -v d="$PG_DIGEST" '$2==d {print $1; exit}')"
-[[ -n "$PG_LOCAL" ]] || die "本机没有 compose 钉死的 postgres 摘要 $PG_DIGEST"
-ok "postgres 摘要镜像在本机（$PG_LOCAL）"
+# 这个 postgres 在本机很可能是**无标签**镜像（标签被后续 pull 抢走），所以按 ID 取，
+# 不能按 repo:tag 取——docker tag "postgres:<none>" 是跑不通的。
+PG_ID="$(docker images --digests --format '{{.ID}} {{.Digest}}' \
+         | awk -v d="${PG_DIGEST}" '$2==d {print $1}' | head -1)"
+[[ -n "${PG_ID}" ]] || die "本机没有 compose 钉死的 postgres 摘要 ${PG_DIGEST}"
+ok "postgres 摘要镜像在本机 (image id ${PG_ID})"
 
-ssh -o ConnectTimeout=15 "$REMOTE" "echo ok" >/dev/null 2>&1 || die "$REMOTE 不可达"
-ok "$REMOTE 可达"
+ssh -o ConnectTimeout=15 "${REMOTE}" "echo ok" >/dev/null 2>&1 || die "${REMOTE} 不可达"
+ok "${REMOTE} 可达"
 
-if ssh "$REMOTE" "if exist ${REMOTE_ROOT_WIN}\\shared\\.env (echo EXISTS)" 2>/dev/null | grep -q EXISTS; then
+if ssh "${REMOTE}" "if exist ${REMOTE_ROOT_WIN}\\shared\\.env (echo EXISTS)" 2>/dev/null | grep -q EXISTS; then
   die "${REMOTE_ROOT_WIN}\\shared\\.env 已存在。本脚本只做首次部署；重复跑会用新密钥覆盖旧的，导致已落库的数据连不上。"
 fi
 ok "远端是干净的首次部署"
 
 # ── 1. 构建镜像（本机，amd64 交叉构建） ──────────────────────────────────────
-say "1. 构建 kehuzx 镜像（linux/amd64）"
+say "1. 构建 kehuzx 镜像 (linux/amd64)"
 docker build --platform linux/amd64 -f backend/Dockerfile  -t "kehuzx-backend:${SHA}" .
 docker build --platform linux/amd64 -f frontend/Dockerfile -t "kehuzx-web:${SHA}" .
-docker tag "$PG_LOCAL" "kehuzx-postgres:pinned"   # 给无标签的摘要镜像一个可搬运的名字
+docker tag "${PG_ID}" "${PG_SHIP_TAG}"
 ok "kehuzx-backend:${SHA} / kehuzx-web:${SHA} 构建完成"
 
 # ── 2. 搬运到 zimupc ────────────────────────────────────────────────────────
-say "2. 搬运镜像到 $REMOTE（zimupc 连不上 Docker Hub，只能这样）"
-docker save "kehuzx-backend:${SHA}" "kehuzx-web:${SHA}" "kehuzx-postgres:pinned" \
-  | gzip -1 | ssh "$REMOTE" "docker load"
-# 远端把 pinned 名字还原成 compose 认的摘要引用
-ssh "$REMOTE" "docker tag kehuzx-postgres:pinned ${PG_REF%@*}" >/dev/null 2>&1 || true
+say "2. 搬运镜像到 ${REMOTE} (zimupc 连不上 Docker Hub，只能这样)"
+docker save "kehuzx-backend:${SHA}" "kehuzx-web:${SHA}" "${PG_SHIP_TAG}" \
+  | gzip -1 | ssh "${REMOTE}" "docker load"
 ok "镜像已在远端"
+
+# docker save/load 不保留 RepoDigests，所以 compose 里那个摘要钉死的 postgres 引用
+# 在远端很可能解析不了（解析不了就会去 pull，而 zimupc 拉不动）。这里实测一次再决定，
+# 不靠猜。
+say "2b. 检查摘要引用能否在远端解析"
+if ssh "${REMOTE}" "docker image inspect ${PG_REF} >nul 2>&1 && echo RESOLVES || echo MISSING" \
+   | tr -d '\r' | grep -q RESOLVES; then
+  ok "摘要引用可解析，按原编排直接起，无需 override"
+  PG_OVERRIDE_ARG=""
+else
+  warn "摘要引用不可解析（save/load 会丢 RepoDigests，符合预期）"
+  echo "     处置：加一个只改 postgres 镜像引用的 override，指向刚搬过去的 ${PG_SHIP_TAG}。"
+  echo "     摘要**已在本机核对过**（第 0 步按 ${PG_DIGEST} 选的镜像），"
+  echo "     所以钉死摘要要保证的「就是这个镜像」仍然成立，只是 compose 改用标签寻址。"
+  cat > "${WORKDIR}/postgres-local.override.yml" <<OVERRIDE
+# 由 scripts/deploy-kehuzx-zimupc.sh 生成。
+# 为什么需要它：compose.production.yml 用 postgres:16.10-alpine@${PG_DIGEST} 钉死镜像，
+# 但 zimupc 连不上 Docker Hub，镜像只能 docker save|load 搬过来，而 save/load 不保留
+# RepoDigests，导致摘要引用在本地解析不了、compose 会去 pull 然后失败。
+# 摘要的核对发生在构建机上（按该摘要挑的镜像再打标签搬运），供应链保证不变。
+services:
+  preflight:
+    image: ${PG_SHIP_TAG}
+  db:
+    image: ${PG_SHIP_TAG}
+  provision-runtime:
+    image: ${PG_SHIP_TAG}
+OVERRIDE
+  ok "override 已生成"
+  PG_OVERRIDE_ARG="-f ${REMOTE_ROOT_WIN}\\shared\\postgres-local.override.yml"
+fi
 
 # ── 3. 推送发布目录 ─────────────────────────────────────────────────────────
 say "3. 推送发布目录到 ${REMOTE_ROOT_WIN}\\releases\\${SHA}"
-ssh "$REMOTE" "mkdir ${REMOTE_ROOT_WIN}\\releases\\${SHA} 2>nul & mkdir ${REMOTE_ROOT_WIN}\\shared 2>nul & exit 0"
-TARBALL="$(mktemp -t kehuzx-release).tar.gz"
-git archive HEAD | gzip -1 > "$TARBALL"
-scp -q "$TARBALL" "${REMOTE}:${REMOTE_ROOT}/releases/${SHA}/release.tar.gz"
-rm -f "$TARBALL"
-ssh "$REMOTE" "cd /d ${REMOTE_ROOT_WIN}\\releases\\${SHA} && tar -xzf release.tar.gz && del release.tar.gz"
+ssh "${REMOTE}" "mkdir ${REMOTE_ROOT_WIN}\\releases\\${SHA} 2>nul & mkdir ${REMOTE_ROOT_WIN}\\shared 2>nul & exit 0"
+git archive HEAD | gzip -1 > "${WORKDIR}/release.tar.gz"
+scp -q "${WORKDIR}/release.tar.gz" "${REMOTE}:${REMOTE_ROOT}/releases/${SHA}/release.tar.gz"
+ssh "${REMOTE}" "cd /d ${REMOTE_ROOT_WIN}\\releases\\${SHA} && tar -xzf release.tar.gz && del release.tar.gz"
+if [[ -f "${WORKDIR}/postgres-local.override.yml" ]]; then
+  scp -q "${WORKDIR}/postgres-local.override.yml" "${REMOTE}:${REMOTE_ROOT}/shared/postgres-local.override.yml"
+fi
 ok "发布目录就位"
 
 # ── 4. 生成密钥（不打印、不入日志） ─────────────────────────────────────────
 say "4. 生成 9 个互不相同的高熵密钥"
-echo "  注意：compose 会主动拒绝「一把钥匙当两把用」，所以每个值都独立生成。"
+echo "  compose 会主动拒绝「一把钥匙当两把用」，所以每个值都独立生成。"
 echo "  这些值不会被打印，也不会出现在任何日志里。"
 
-ENVFILE="$(mktemp -t kehuzx-env)"
-chmod 600 "$ENVFILE"
+ENVFILE="${WORKDIR}/.env"
+: > "${ENVFILE}"; chmod 600 "${ENVFILE}"
 gen() { openssl rand -base64 48 | tr -d '\n=+/' | cut -c1-40; }
 
 {
@@ -111,58 +152,56 @@ gen() { openssl rand -base64 48 | tr -d '\n=+/' | cut -c1-40; }
   echo "KEHUZX_MCP_WRITE_ENABLED=0"
   echo "ZIMU_KEHUZX_NETWORK=${NETWORK}"
   echo "KEHUZX_RELEASE_SHA=${SHA}"
-} > "$ENVFILE"
+} > "${ENVFILE}"
 
-# 自检：9 个密钥值必须两两不同
-DUP="$(grep -E '^KEHUZX_(POSTGRES_PASSWORD|RUNTIME_DB_PASSWORD|SECRET_KEY|MCP_READ_TOKEN|MCP_FOLLOWUP_READ_TOKEN|MCP_WRITE_TOKEN|MCP_APPROVAL_SIGNING_KEY)=' "$ENVFILE" \
+DUP="$(grep -E '^KEHUZX_(POSTGRES_PASSWORD|RUNTIME_DB_PASSWORD|SECRET_KEY|MCP_READ_TOKEN|MCP_FOLLOWUP_READ_TOKEN|MCP_WRITE_TOKEN|MCP_APPROVAL_SIGNING_KEY)=' "${ENVFILE}" \
       | cut -d= -f2- | sort | uniq -d | wc -l | tr -d ' ')"
-[[ "$DUP" == "0" ]] || { rm -f "$ENVFILE"; die "生成的密钥出现重复，已中止（这不该发生）"; }
+[[ "${DUP}" == "0" ]] || die "生成的密钥出现重复，已中止 (这不该发生)"
 ok "9 个值生成完毕，自检两两不同"
-echo "  写路径先关着（KEHUZX_MCP_WRITE_ENABLED=0）——票 11 才开，票 10 只验读。"
+echo "  写路径先关着 (KEHUZX_MCP_WRITE_ENABLED=0) —— 票 11 才开，票 10 只验读。"
 
-scp -q "$ENVFILE" "${REMOTE}:${REMOTE_ROOT}/shared/.env"
+scp -q "${ENVFILE}" "${REMOTE}:${REMOTE_ROOT}/shared/.env"
 ok "已写入 ${REMOTE_ROOT_WIN}\\shared\\.env"
 
-BACKUP="${HOME}/kehuzx-secrets-${SHA}-$(date +%Y%m%d-%H%M%S).env"
-if ask "  在本机留一份密钥备份吗？（不留的话，密钥只存在于 zimupc 上）"; then
-  cp "$ENVFILE" "$BACKUP"; chmod 600 "$BACKUP"
-  echo "  备份：$BACKUP （600 权限，请自行妥善保管或删除）"
+if ask "  在本机留一份密钥备份吗? (不留的话，密钥只存在于 zimupc 上)"; then
+  BACKUP="${HOME}/kehuzx-secrets-${SHA}-$(date +%Y%m%d-%H%M%S).env"
+  cp "${ENVFILE}" "${BACKUP}"; chmod 600 "${BACKUP}"
+  echo "  备份: ${BACKUP}  (600 权限，请自行妥善保管或删除)"
 fi
-rm -f "$ENVFILE"
+# WORKDIR 连同 .env 会在脚本退出时由 trap 删除
 
 # ── 5. 建 external 网络 ─────────────────────────────────────────────────────
-say "5. 建专用内网 $NETWORK"
-if ssh "$REMOTE" "docker network ls --format \"{{.Name}}\"" | tr -d '\r' | grep -qx "$NETWORK"; then
+say "5. 建专用内网 ${NETWORK}"
+if ssh "${REMOTE}" "docker network ls --format \"{{.Name}}\"" | tr -d '\r' | grep -qx "${NETWORK}"; then
   ok "网络已存在"
 else
-  ssh "$REMOTE" "docker network create ${NETWORK}" >/dev/null
-  ok "网络已创建（子牧侧要等 Part B 才会接上它）"
+  ssh "${REMOTE}" "docker network create ${NETWORK}" >/dev/null
+  ok "网络已创建 (子牧侧要等 Part B 才会接上它)"
 fi
 
 # ── 6. 起 kehuzx 栈 ────────────────────────────────────────────────────────
 say "6. 起 kehuzx 栈"
-echo "  顺序由 compose 的 depends_on 保证：preflight → db → provision-runtime → migrate"
+echo "  顺序由 compose 的 depends_on 保证: preflight → db → provision-runtime → migrate"
 echo "  → bootstrap → api / mcp / web。api、mcp、web 都不发布宿主端口。"
-ask "  现在起栈？" || die "已中止（镜像与配置已就位，随时可重跑本步）"
+ask "  现在起栈?" || die "已中止 (镜像与配置已就位，随时可重跑本步)"
 
-ssh "$REMOTE" "cd /d ${REMOTE_ROOT_WIN}\\releases\\${SHA} && docker compose --env-file ${REMOTE_ROOT_WIN}\\shared\\.env -f compose.production.yml -p kehuzx up -d"
+ssh "${REMOTE}" "cd /d ${REMOTE_ROOT_WIN}\\releases\\${SHA} && docker compose --env-file ${REMOTE_ROOT_WIN}\\shared\\.env -f compose.production.yml ${PG_OVERRIDE_ARG} -p kehuzx up -d"
 
 # ── 7. 验收 ────────────────────────────────────────────────────────────────
 say "7. 验收"
-ssh "$REMOTE" "docker ps --filter name=kehuzx --format \"{{.Names}} | {{.Image}} | {{.Status}}\"" | tr -d '\r'
+ssh "${REMOTE}" "docker ps --filter name=kehuzx --format \"{{.Names}} | {{.Image}} | {{.Status}}\"" | tr -d '\r'
 echo
-echo "  期望：kehuzx 的 api / mcp / web / db 四个容器 Up 且 healthy。"
-echo "  子牧侧此刻**仍未接通**——「客户跟进」菜单还是隐藏的，这是对的。"
+echo "  期望: kehuzx 的 api / mcp / web / db 四个容器 Up 且 healthy。"
+echo "  子牧侧此刻**仍未接通** —— 「客户跟进」菜单还是隐藏的，这是对的。"
 echo
-say "Part A 完成。Part B（子牧侧通电）请看下面。"
+say "Part A 完成。Part B 见下。"
 cat <<'NEXT'
 
   Part B 需要改生产子牧的 offline.runtime.override.yml 并重建 backend 容器，
   这会重启生产。本脚本刻意不做，原因有两条：
 
   1. 另一个会话正在用同一个 override 文件部署履约详情 500 修复。两边同时改同一个
-     文件会互相覆盖——Part B 应当**搭他们那趟车**，在同一次 override 编辑里一起改，
-     而不是各改各的再各自 up -d。
+     文件会互相覆盖 —— Part B 应当搭他们那趟车，在同一次 override 编辑里一起改。
 
   2. 生产 release 目录 agent-platform-e50bb3e-20260825-0759 的 docker-compose.yml
      里根本没有 kehuzx 网络（那个 release 早于 kehuzx 接入）。所以子牧 backend 要
