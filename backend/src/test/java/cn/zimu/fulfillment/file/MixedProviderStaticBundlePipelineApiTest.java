@@ -412,6 +412,24 @@ class MixedProviderStaticBundlePipelineApiTest {
         assertThat(evidence)
                 .containsEntry("_provider_sku_code_scope", "INTERNAL_ROUTING")
                 .doesNotContainKey("provider_sku_externally_verified");
+
+        // 模拟 V1 允许的历史数组证据；生产事实仍保持 append-only，测试只临时绕过更新触发器造夹具。
+        jdbc.execute("ALTER TABLE app.fulfillment_export_items "
+                + "DISABLE TRIGGER trg_fulfillment_export_item_append_only");
+        try {
+            jdbc.update(
+                    "UPDATE app.fulfillment_export_items SET output_cells='[]'::jsonb "
+                            + "WHERE fulfillment_export_id=?",
+                    Long.parseLong(exportIds.getFirst().toString()));
+        } finally {
+            jdbc.execute("ALTER TABLE app.fulfillment_export_items "
+                    + "ENABLE TRIGGER trg_fulfillment_export_item_append_only");
+        }
+        Map<String, Object> legacyArrayExport = get(
+                "/api/v1/fulfillment-exports/" + exportIds.getFirst());
+        assertThat(castMap(castList(legacyArrayExport.get("lines")).getFirst()))
+                .containsEntry("provider_sku_code", tpSku.get("sku_code"))
+                .doesNotContainKey("provider_sku_code_scope");
     }
 
     @Test

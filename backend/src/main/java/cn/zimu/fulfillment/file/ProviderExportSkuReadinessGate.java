@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.file;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.order.ProviderExportReadinessRechecker;
 import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuFulfillmentReadiness;
 import cn.zimu.fulfillment.sku.SkuFulfillmentReadinessService;
@@ -17,7 +18,7 @@ import org.springframework.stereotype.Service;
 
 /** 履约导出分片的共享 SKU readiness 门禁；普通行与礼包组件使用同一派生规则。 */
 @Service
-class ProviderExportSkuReadinessGate {
+class ProviderExportSkuReadinessGate implements ProviderExportReadinessRechecker {
 
     private final JdbcTemplate jdbc;
     private final SkuRepository skus;
@@ -50,6 +51,11 @@ class ProviderExportSkuReadinessGate {
     /** 续发文件必须在创建 Shipment/文件前重新核对该 Fulfillment 的 SKU readiness。 */
     void requireFulfillmentReady(long fulfillmentId) {
         throwIfBlocked(blocked("f.id=?", fulfillmentId));
+    }
+
+    @Override
+    public void requireReady(long orderLineId, long fulfillmentId) {
+        throwIfBlocked(blocked("ol.id=? AND f.id=?", orderLineId, fulfillmentId));
     }
 
     private List<BlockedPartition> blocked(String scope, Object... args) {

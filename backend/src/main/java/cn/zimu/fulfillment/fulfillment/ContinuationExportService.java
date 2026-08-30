@@ -9,6 +9,7 @@ import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.version.OrderVersionService;
 import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.sku.SkuReadinessCatalogLock;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +30,7 @@ public class ContinuationExportService {
     private final OrderEventService events;
     private final OrderVersionService versions;
     private final AuditLogService audits;
+    private final SkuReadinessCatalogLock skuCatalogLock;
 
     public ContinuationExportService(
             JdbcTemplate jdbc,
@@ -37,7 +39,8 @@ public class ContinuationExportService {
             FulfillmentReadService reads,
             OrderEventService events,
             OrderVersionService versions,
-            AuditLogService audits) {
+            AuditLogService audits,
+            SkuReadinessCatalogLock skuCatalogLock) {
         this.jdbc = jdbc;
         this.idempotency = idempotency;
         this.providerFiles = providerFiles;
@@ -45,6 +48,7 @@ public class ContinuationExportService {
         this.events = events;
         this.versions = versions;
         this.audits = audits;
+        this.skuCatalogLock = skuCatalogLock;
     }
 
     @Transactional
@@ -63,6 +67,8 @@ public class ContinuationExportService {
 
     private Map<String, Object> doCreate(
             long fulfillmentId, ContinuationExportCommand command, CommandContext context) {
+        // 全系统统一 catalog → fulfillment 行锁顺序，避免与来源导出及目录写事务形成环路。
+        skuCatalogLock.acquireShared();
         Context state = lockContext(fulfillmentId);
         if (state.version() != command.expectedVersion()) {
             throw BusinessException.conflict("VERSION_CONFLICT", "履约任务已更新，请刷新后重试");

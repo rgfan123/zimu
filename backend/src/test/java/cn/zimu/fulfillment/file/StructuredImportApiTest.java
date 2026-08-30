@@ -15,6 +15,9 @@ import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.customer.ImportedCustomerIdentity;
 import cn.zimu.fulfillment.order.OrderCreateService;
+import cn.zimu.fulfillment.order.ReadySourceBatchExporter;
+import cn.zimu.fulfillment.order.ReviewCaseResolutionService;
+import cn.zimu.fulfillment.order.VersionedNoteCommand;
 import cn.zimu.fulfillment.order.domain.LineType;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
 import cn.zimu.fulfillment.order.dto.BundleComponentInput;
@@ -55,6 +58,8 @@ class StructuredImportApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired SourceOrderCandidateMaterializer candidateMaterializer;
     @Autowired ProviderFileService providerFileService;
+    @Autowired ReadySourceBatchExporter readySourceBatchExporter;
+    @Autowired ReviewCaseResolutionService reviewCaseResolutionService;
     @MockitoSpyBean OrderCreateService orderCreateService;
 
     private static final java.util.concurrent.atomic.AtomicInteger SEQ =
@@ -649,6 +654,80 @@ class StructuredImportApiTest {
                 """,
                 Integer.class,
                 batchId)).isZero();
+
+        List<Map<String, Object>> cases = jdbc.queryForList(
+                """
+                SELECT id, resolution_version
+                FROM app.review_cases
+                WHERE import_batch_id=? AND case_type='FULFILLMENT_EXPORT'
+                ORDER BY order_line_id
+                """,
+                batchId);
+        Map<String, Object> firstCase = cases.getFirst();
+        jdbc.update("UPDATE app.provider_skus SET active=FALSE WHERE id=?", providerMappingId);
+        try {
+            assertThatThrownBy(() -> reviewCaseResolutionService.resolveManually(
+                            ((Number) firstCase.get("id")).longValue(),
+                            new VersionedNoteCommand(
+                                    ((Number) firstCase.get("resolution_version")).longValue(),
+                                    "尚未修复时不能关闭"),
+                            "ticket05-reject-unready-resolution-" + firstCase.get("id"),
+                            ctx()))
+                    .isInstanceOfSatisfying(BusinessException.class, error ->
+                            assertThat(error.getBusinessCode()).isEqualTo("PROVIDER_EXPORT_SKU_NOT_READY"));
+        } finally {
+            jdbc.update("UPDATE app.provider_skus SET active=TRUE WHERE id=?", providerMappingId);
+        }
+        for (Map<String, Object> reviewCase : cases) {
+            long caseId = ((Number) reviewCase.get("id")).longValue();
+            reviewCaseResolutionService.resolveManually(
+                    caseId,
+                    new VersionedNoteCommand(
+                            ((Number) reviewCase.get("resolution_version")).longValue(),
+                            "履约映射已恢复"),
+                    "ticket05-resolve-provider-readiness-" + caseId,
+                    ctx());
+        }
+        assertThat(jdbc.queryForList(
+                "SELECT processing_stage FROM app.order_lines "
+                        + "WHERE order_id=(SELECT id FROM app.orders WHERE source_import_batch_id=? LIMIT 1)",
+                batchId)).allSatisfy(line -> assertThat(line).containsEntry("processing_stage", "READY_TO_EXPORT"));
+
+        jdbc.update("UPDATE app.provider_skus SET active=FALSE WHERE id=?", providerMappingId);
+        try {
+            providerFileService.routeForSourceBatch(batchId, "ticket05-provider-ops");
+        } finally {
+            jdbc.update("UPDATE app.provider_skus SET active=TRUE WHERE id=?", providerMappingId);
+        }
+        assertThat(jdbc.queryForList(
+                """
+                SELECT id, status, reason_code, resolution_version
+                FROM app.review_cases
+                WHERE import_batch_id=? AND case_type='FULFILLMENT_EXPORT'
+                ORDER BY order_line_id
+                """,
+                batchId)).hasSize(2).allSatisfy(reviewCase -> assertThat(reviewCase)
+                        .containsEntry("status", "OPEN")
+                        .containsEntry("reason_code", "PROVIDER_MAPPING_INACTIVE")
+                        .containsEntry("resolution_version", 2L));
+
+        for (Map<String, Object> reviewCase : jdbc.queryForList(
+                "SELECT id, resolution_version FROM app.review_cases "
+                        + "WHERE import_batch_id=? AND case_type='FULFILLMENT_EXPORT' ORDER BY order_line_id",
+                batchId)) {
+            long caseId = ((Number) reviewCase.get("id")).longValue();
+            reviewCaseResolutionService.resolveManually(
+                    caseId,
+                    new VersionedNoteCommand(
+                            ((Number) reviewCase.get("resolution_version")).longValue(),
+                            "履约映射再次恢复"),
+                    "ticket05-reresolve-provider-readiness-" + caseId,
+                    ctx());
+        }
+        assertThat((List<?>) providerFileService
+                        .routeForSourceBatch(batchId, "ticket05-provider-ops")
+                        .get("file_export_ids"))
+                .hasSize(1);
     }
 
     @Test
@@ -722,6 +801,30 @@ class StructuredImportApiTest {
                         + "WHERE rir.import_batch_id=?",
                 Integer.class,
                 batchId)).isZero();
+    }
+
+    @Test
+    void readySourceBatchExporterPublicPortOwnsTheReadinessLockTransaction() {
+        String ref = orderRef("CSX-TP-READY-EXPORT-PORT");
+        Map<String, Object> imported = sourceImportService.importStructured(
+                SourceChannel.CAISHIXIAN,
+                List.of(new StructuredOrderRow(
+                        ref,
+                        null,
+                        order(ref, ref + "-L1", ref + "-L2"),
+                        Map.of("source_ref", ref))),
+                batchNo(),
+                ctx());
+        long batchId = Long.parseLong(imported.get("id").toString());
+        candidateMaterializer.materializeStaged(batchId, ctx());
+
+        List<Long> exportIds = readySourceBatchExporter.generateReadyExports(batchId, "ticket05-provider-ops");
+
+        assertThat(exportIds).hasSize(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.fulfillment_export_items WHERE fulfillment_export_id=?",
+                Integer.class,
+                exportIds.getFirst())).isEqualTo(2);
     }
 
     @Test

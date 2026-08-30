@@ -11,6 +11,7 @@ import cn.zimu.fulfillment.fulfillment.ContinuationExportGenerator;
 import cn.zimu.fulfillment.order.ReadySourceBatchExporter;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -368,7 +369,15 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                          order_id, order_line_id, fulfillment_id, import_batch_id,
                          raw_import_row_id, detail)
                     VALUES (?, 'FULFILLMENT_EXPORT', 'OPEN', 'SKU_OPS', ?, ?, ?, ?, ?, ?, ?::jsonb)
-                    ON CONFLICT (case_no) DO NOTHING
+                    ON CONFLICT (case_no) DO UPDATE SET
+                        status='OPEN', responsible_team=EXCLUDED.responsible_team,
+                        reason_code=EXCLUDED.reason_code, order_id=EXCLUDED.order_id,
+                        order_line_id=EXCLUDED.order_line_id, fulfillment_id=EXCLUDED.fulfillment_id,
+                        import_batch_id=EXCLUDED.import_batch_id,
+                        raw_import_row_id=EXCLUDED.raw_import_row_id,
+                        detail=EXCLUDED.detail, resolution=NULL, resolved_by=NULL, resolved_at=NULL,
+                        resolution_version=review_cases.resolution_version+1,
+                        updated_at=CURRENT_TIMESTAMP
                     """,
                     "RC-PROVIDER-READINESS-" + partition.orderLineId(),
                     partition.primaryReasonCode(),
@@ -385,10 +394,12 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
     private SourceRowEvidence sourceRowEvidence(long sourceBatchId, long orderLineId) {
         return jdbc.query(
                         """
-                        SELECT rir.id, ib.source_channel, rir.sheet_name, rir.row_index,
+                        SELECT rir.id, source.effective_source_channel source_channel,
+                               rir.sheet_name, rir.row_index,
                                rir.order_line_id=? direct_order_line
                         FROM app.raw_import_rows rir
-                        JOIN app.import_batches ib ON ib.id=rir.import_batch_id
+                        JOIN app.v_import_batch_effective_source source
+                          ON source.import_batch_id=rir.import_batch_id
                         LEFT JOIN app.raw_import_row_order_lines rirol ON rirol.raw_import_row_id=rir.id
                         WHERE rir.import_batch_id=?
                           AND (rir.order_line_id=? OR rirol.order_line_id=?)
@@ -411,6 +422,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
     }
 
     @Override
+    @Transactional
     public List<Long> generateReadyExports(long sourceBatchId, String operator) {
         return generateForSourceBatch(sourceBatchId, operator);
     }
@@ -1284,7 +1296,10 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
             return Map.of();
         }
         try {
-            return objectMapper.readValue(value, new TypeReference<Map<String, Object>>() {});
+            JsonNode parsed = objectMapper.readTree(value);
+            return parsed != null && parsed.isObject()
+                    ? objectMapper.convertValue(parsed, new TypeReference<Map<String, Object>>() {})
+                    : Map.of();
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("履约导出证据不是合法 JSON 对象", exception);
         }

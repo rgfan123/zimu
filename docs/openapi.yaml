@@ -6553,6 +6553,10 @@ components:
         raw_import_row_id: { $ref: '#/components/schemas/Identifier' }
         outbound_order_no: { type: string }
         provider_sku_code: { type: string }
+        provider_sku_code_scope:
+          type: string
+          enum: [INTERNAL_ROUTING, PROVIDER_EXTERNAL]
+          description: INTERNAL_ROUTING 表示仅供本系统确定性路由，不代表第三方外部编码已核验。
         instructed_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
         unit: { type: string }
         item_amount: { type: string, enum: ['0.00'] }

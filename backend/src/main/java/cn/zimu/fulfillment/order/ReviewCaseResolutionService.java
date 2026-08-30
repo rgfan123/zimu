@@ -26,6 +26,7 @@ import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
 import cn.zimu.fulfillment.order.dto.ReviewCaseDto;
 import cn.zimu.fulfillment.sku.Sku;
+import cn.zimu.fulfillment.sku.SkuReadinessCatalogLock;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
 import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
@@ -41,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
@@ -48,6 +50,20 @@ import org.springframework.transaction.annotation.Transactional;
 /** 人工复核命令用例；只接受明确的既有主数据引用。 */
 @Service
 public class ReviewCaseResolutionService {
+
+    private static final Set<String> PROVIDER_EXPORT_READINESS_REASONS = Set.of(
+            "PRODUCT_INACTIVE",
+            "SKU_INACTIVE",
+            "PROVIDER_INACTIVE",
+            "SPECIFICATION_REQUIRED",
+            "UNIT_REQUIRED",
+            "PROVIDER_MAPPING_REQUIRED",
+            "PROVIDER_MAPPING_INACTIVE",
+            "UNIT_CONVERSION_REQUIRED",
+            "BARCODE_CONFLICT",
+            "REVIEW_REQUIRED",
+            "PROVIDER_ASSIGNMENT_CONFLICT",
+            "SKU_REFERENCE_INVALID");
 
     /**
      * 无专用解决动作的阻断事项（主数据已在其他页面修复、异常已线下处理等），
@@ -63,6 +79,18 @@ public class ReviewCaseResolutionService {
             "CARRIER_MAPPING",
             "SOURCE_SKU_MAPPING_REQUIRED",
             "PROVIDER_SKU_MAPPING_REQUIRED",
+            "PRODUCT_INACTIVE",
+            "SKU_INACTIVE",
+            "PROVIDER_INACTIVE",
+            "SPECIFICATION_REQUIRED",
+            "UNIT_REQUIRED",
+            "PROVIDER_MAPPING_REQUIRED",
+            "PROVIDER_MAPPING_INACTIVE",
+            "UNIT_CONVERSION_REQUIRED",
+            "BARCODE_CONFLICT",
+            "REVIEW_REQUIRED",
+            "PROVIDER_ASSIGNMENT_CONFLICT",
+            "SKU_REFERENCE_INVALID",
             "JD_STOCK_BLOCKED",
             "WECOM_NEED_REVIEW",
             "WECOM_ORDER_CHANGE",
@@ -98,6 +126,8 @@ public class ReviewCaseResolutionService {
     private final AuditLogService audits;
     private final OrderMapper mapper;
     private final EntityManager entityManager;
+    private final SkuReadinessCatalogLock skuCatalogLock;
+    private final ProviderExportReadinessRechecker providerExportReadiness;
 
     public ReviewCaseResolutionService(
             ReviewCaseRepository reviewCases,
@@ -117,7 +147,9 @@ public class ReviewCaseResolutionService {
             IdempotencyService idempotency,
             AuditLogService audits,
             OrderMapper mapper,
-            EntityManager entityManager) {
+            EntityManager entityManager,
+            SkuReadinessCatalogLock skuCatalogLock,
+            ProviderExportReadinessRechecker providerExportReadiness) {
         this.reviewCases = reviewCases;
         this.orders = orders;
         this.customers = customers;
@@ -136,6 +168,8 @@ public class ReviewCaseResolutionService {
         this.audits = audits;
         this.mapper = mapper;
         this.entityManager = entityManager;
+        this.skuCatalogLock = skuCatalogLock;
+        this.providerExportReadiness = providerExportReadiness;
     }
 
     @Transactional(readOnly = true)
@@ -384,12 +418,27 @@ public class ReviewCaseResolutionService {
             CommandContext context) {
         Map<String, Object> payload = Map.of("case_id", caseId, "command", command);
         return idempotency.execute("review_case.resolve", idempotencyKey, payload, 200, () -> {
+            // Catalog 必须先于 ReviewCase/OrderLine 行锁；与来源导出、续发保持同一锁序。
+            skuCatalogLock.acquireShared();
             ReviewCase reviewCase = requireOpenVisibleCase(
                     caseId, command.expectedVersion(), MANUAL_RESOLVABLE_REASONS.toArray(String[]::new));
+            if (PROVIDER_EXPORT_READINESS_REASONS.contains(reviewCase.getReasonCode())) {
+                if (reviewCase.getOrderLineId() == null || reviewCase.getFulfillmentId() == null) {
+                    throw BusinessException.conflict(
+                            "PROVIDER_EXPORT_REVIEW_LINEAGE_MISSING",
+                            "履约就绪复核缺少订单行或履约分片，不能安全关闭");
+                }
+                providerExportReadiness.requireReady(
+                        reviewCase.getOrderLineId(), reviewCase.getFulfillmentId());
+            }
             Map<String, Object> resolution = new LinkedHashMap<>();
             resolution.put("resolution_type", "MANUAL_RESOLVED");
             resolution.put("note", Optional.ofNullable(command.note()).orElse(""));
             ReviewCaseDto result = close(reviewCase, ReviewCaseStatus.RESOLVED, resolution, context.operator());
+            if (PROVIDER_EXPORT_READINESS_REASONS.contains(reviewCase.getReasonCode())
+                    && reviewCase.getOrderId() != null) {
+                resumeOrderIfReady(requireBusinessOrder(reviewCase.getOrderId()), context.operator());
+            }
             recordAudit("review_case.resolve", reviewCase.getOrderId(), payload, result, context);
             return result;
         });
