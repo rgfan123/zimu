@@ -1737,7 +1737,7 @@ export interface BusinessFollowUpAssignment {
   draft_version: number;
   approval_id: string;
   agent_run_id: string;
-  task_type: 'KEHUZX_CUSTOMER_LINK';
+  task_type: 'KEHUZX_CUSTOMER_LINK' | 'KEHUZX_CUSTOMER_CREATE';
   logical_target: string;
   assignee_type: 'INTERNAL_OPERATOR' | 'TEAM' | 'DETERMINISTIC_MCP' | 'SPECIALIST_AGENT';
   assignee_ref: string;

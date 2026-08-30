@@ -4816,7 +4816,7 @@ components:
         draft_version: { type: integer, format: int32, minimum: 1 }
         approval_id: { $ref: '#/components/schemas/Identifier' }
         agent_run_id: { type: string, minLength: 1 }
-        task_type: { type: string, enum: [KEHUZX_CUSTOMER_LINK] }
+        task_type: { type: string, enum: [KEHUZX_CUSTOMER_LINK, KEHUZX_CUSTOMER_CREATE] }
         logical_target: { type: string, minLength: 1 }
         assignee_type:
           type: string
