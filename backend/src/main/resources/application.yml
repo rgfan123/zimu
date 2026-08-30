@@ -211,6 +211,8 @@ app:
     poll-ms: ${SOURCE_ORDER_INTAKE_WORKER_POLL_MS:1000}
     lease-seconds: ${SOURCE_ORDER_INTAKE_WORKER_LEASE_SECONDS:120}
     backoff-seconds: ${SOURCE_ORDER_INTAKE_WORKER_BACKOFF_SECONDS:10}
+    # AutomaticRelease 的服务端身份；若批次路由到 JD，还必须显式加入 JD_OUTBOUND_AUTHORIZED_OPERATORS。
+    automatic-release-operator: ${SOURCE_ORDER_AUTOMATIC_RELEASE_OPERATOR:source-order-automatic-release}
   message-interpreter:
     provider: ${MESSAGE_INTERPRETER_PROVIDER:}
     model: ${MESSAGE_INTERPRETER_MODEL:}

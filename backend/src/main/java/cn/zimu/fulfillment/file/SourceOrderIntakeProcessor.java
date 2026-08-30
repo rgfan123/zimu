@@ -68,9 +68,12 @@ public class SourceOrderIntakeProcessor {
                     context);
             long batchId = Long.parseLong(batch.get("id").toString());
             try {
-                automaticRelease.releaseIfTrusted(parsed, batchId);
+                automaticRelease.releaseIfTrusted(batchId);
             } catch (BusinessException exception) {
-                if ("IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())) {
+                if ("IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())
+                        || "AUTOMATIC_RELEASE_OUTBOUND_BLOCKED".equals(exception.getBusinessCode())
+                        || "TEMPLATE_PROFILE_REVOKED".equals(exception.getBusinessCode())
+                        || "TEMPLATE_PROFILE_MISMATCH".equals(exception.getBusinessCode())) {
                     intake.markNeedsReview(jobId, batchId, exception.getBusinessCode());
                     return;
                 }

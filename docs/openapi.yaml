@@ -5993,13 +5993,14 @@ components:
         processed_at: { type: string, format: date-time, nullable: true }
     ImportBatchJdOutboundSubmitResult:
       type: object
-      required: [submitted_count, skipped_count, items]
+      required: [submitted_count, skipped_count, failed_count, items]
       description: >-
         批次内京东履约发货批次的批量 SDK 建单结果（jd-real-sdk-switch 05）。已提交
         （SUBMITTED）的跳过；失败项留痕后可安全重试，重试不重复提交已成功项。
       properties:
         submitted_count: { type: integer, minimum: 0 }
         skipped_count: { type: integer, minimum: 0 }
+        failed_count: { type: integer, minimum: 0 }
         items:
           type: array
           items: { $ref: '#/components/schemas/ImportBatchJdOutboundSubmitItem' }

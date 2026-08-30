@@ -21,7 +21,6 @@ import java.util.Map;
 import java.util.Objects;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /** 将已通过整批门禁的来源候选原子转换为 CanonicalOrder 与 raw-row 血缘。 */
@@ -47,19 +46,11 @@ class SourceOrderCandidateMaterializer {
         this.readinessGate = readinessGate;
     }
 
-    void materializePrepared(
-            long batchId,
-            List<SourceOrderCandidate> candidates,
-            CommandContext context) {
-        materialize(batchId, candidates, context);
-        persistMaterializedReadinessSnapshot(batchId, candidates);
-    }
-
     /**
-     * 重新确认曾因 SKU readiness 阻断的批次。独立事务保证候选要么全部成为正式订单，
-     * 要么一个也不落库；提交后既有 ProviderFile 校验才能读取到完整订单集合。
+     * 确认待放行批次。加入调用方的确认事务，保证候选成单、Provider 校验、履约路由和
+     * confirmed_at 要么一起提交，要么一起回滚。
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     boolean materializeStaged(long batchId, CommandContext context) {
         StagedBatch batch = jdbc.query(
                         """
@@ -94,7 +85,7 @@ class SourceOrderCandidateMaterializer {
         Integer hardBlockers = jdbc.queryForObject(
                 """
                 SELECT count(*) FROM app.raw_import_rows
-                WHERE import_batch_id=? AND status<>'ACCEPTED'
+                WHERE import_batch_id=? AND status IN ('NEED_REVIEW', 'REJECTED')
                   AND COALESCE(error_code, '') NOT IN ('SKU_READINESS', 'BATCH_ATOMIC_RELEASE_BLOCKED')
                 """,
                 Integer.class,
@@ -131,17 +122,6 @@ class SourceOrderCandidateMaterializer {
                 json(updated),
                 batchId);
         return true;
-    }
-
-    private void persistMaterializedReadinessSnapshot(
-            long batchId, List<SourceOrderCandidate> candidates) {
-        Map<String, Object> detail = new LinkedHashMap<>();
-        detail.put("candidate_status", "MATERIALIZED");
-        detail.put("source_order_readiness_candidates", readinessCandidates(candidates));
-        jdbc.update(
-                "UPDATE app.import_batches SET error_detail=?::jsonb WHERE id=?",
-                json(detail),
-                batchId);
     }
 
     private List<SourceOrderReadinessCandidate> readinessCandidates(

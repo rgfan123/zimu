@@ -37,7 +37,6 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /** 将已经过订单应用层门禁的行按单一履约方生成不可变文件。 */
@@ -311,7 +310,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 providerId);
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     void validateSourceBatchExportability(long sourceBatchId) {
         holdThirdPartyBundleLinesWithoutProviderSku(sourceBatchId);
         candidateRows(sourceBatchId).stream()

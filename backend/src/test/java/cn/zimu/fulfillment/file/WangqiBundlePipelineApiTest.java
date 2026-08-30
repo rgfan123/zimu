@@ -212,9 +212,12 @@ class WangqiBundlePipelineApiTest {
         assertThat(batch).containsEntry("source_channel", "DAZHE");
         assertThat(castMap(batch.get("row_counts")))
                 .withFailMessage("upload body: %s", batch)
-                .containsEntry("accepted", 1)
+                .containsEntry("accepted", 0)
                 .containsEntry("need_review", 0);
         String batchId = batch.get("id").toString();
+
+        ResponseEntity<Map> confirmed = confirm(batchId);
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         Map<String, Object> batchRows = get("/api/v1/import-batches/" + batchId + "/rows?page=0&size=20");
         assertThat(batchRows).containsEntry("total_elements", 1);
@@ -245,8 +248,6 @@ class WangqiBundlePipelineApiTest {
         assertThat(components).extracting(item -> item.get("total_quantity"))
                 .containsExactly("2.000", "4.000");
 
-        ResponseEntity<Map> confirmed = confirm(batchId);
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         Map<String, Object> routing = castMap(confirmed.getBody().get("outbound_routing"));
         List<?> shipmentIds = (List<?>) routing.get("jd_sdk_shipment_ids");
         assertThat(shipmentIds).hasSize(1);
@@ -373,6 +374,10 @@ class WangqiBundlePipelineApiTest {
                 .isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
 
+        ResponseEntity<Map> confirmed = confirm(
+                batchId, "wangqi-cargo-confirm-002", "req-wangqi-cargo-confirm-002");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+
         // 同一原始行投影出 2 条京东货品（与 SDK 建单 cargoInfos 同序、同量）：
         // 组件一 = 2 件（购买 2 × quantity_per_bundle 1 × jd_pieces_per_unit 1），
         // 组件二 = 4 件（2 × 2 × 1）；两者都必须是冻结前实时换算的精确整数。
@@ -386,9 +391,6 @@ class WangqiBundlePipelineApiTest {
                 .containsExactly(2, 4);
 
         // 确认 → 地址确认 → 提交建单：实际提交快照同样包含两条货品
-        ResponseEntity<Map> confirmed = confirm(
-                batchId, "wangqi-cargo-confirm-002", "req-wangqi-cargo-confirm-002");
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<?> jdShipmentIds = (List<?>) castMap(confirmed.getBody().get("outbound_routing"))
                 .get("jd_sdk_shipment_ids");
         assertThat(jdShipmentIds).hasSize(1);

@@ -241,14 +241,22 @@ class StructuredImportApiTest {
                 SourceChannel.CAISHIXIAN, List.of(row), batchNo(), ctx());
 
         assertThat(result.get("status")).isEqualTo("COMPLETED");
+        long batchId = Long.parseLong((String) result.get("id"));
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        batchId))
+                .as("结构化导入也必须等到批次确认才创建正式订单")
+                .isZero();
+        sourceImportService.confirm(batchId, "confirm-structured-lineage-" + ref, ctx());
         // 一单两商品 → 两条 raw 行，均 ACCEPTED 且关联订单行
         Integer accepted = jdbc.queryForObject(
                 "SELECT count(*) FROM app.raw_import_rows WHERE import_batch_id=? AND status='ACCEPTED'",
-                Integer.class, Long.parseLong((String) result.get("id")));
+                Integer.class, batchId);
         assertThat(accepted).isEqualTo(2);
         Integer linked = jdbc.queryForObject(
                 "SELECT count(*) FROM app.raw_import_rows WHERE import_batch_id=? AND order_id IS NOT NULL AND order_line_id IS NOT NULL",
-                Integer.class, Long.parseLong((String) result.get("id")));
+                Integer.class, batchId);
         assertThat(linked).isEqualTo(2);
         Integer orders = jdbc.queryForObject(
                 "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
@@ -351,6 +359,10 @@ class StructuredImportApiTest {
                 ctx());
 
         assertThat(result.get("status")).isEqualTo("COMPLETED");
+        sourceImportService.confirm(
+                Long.parseLong(result.get("id").toString()),
+                "confirm-jufubao-customer-" + ref,
+                ctx());
         Map<String, Object> mapping = jdbc.queryForMap(
                 """
                 SELECT csr.source_customer_ref, csr.customer_id, o.customer_id order_customer_id,
@@ -364,7 +376,7 @@ class StructuredImportApiTest {
                 sourceCustomerRef);
         assertThat(mapping)
                 .containsEntry("source_customer_ref", sourceCustomerRef)
-                .containsEntry("order_status", "SKU_MAPPED");
+                .containsEntry("order_status", "FULFILLING");
         assertThat(mapping.get("customer_id")).isEqualTo(mapping.get("order_customer_id"));
         assertThat(((Number) mapping.get("customer_id")).longValue()).isEqualTo(legacyCustomerId);
         assertThat(jdbc.queryForObject(
@@ -387,10 +399,12 @@ class StructuredImportApiTest {
         // 第一批：旧单
         String oldRef = orderRef("CSX-ORDER-001");
         CommandContext firstCtx = ctx();
-        sourceImportService.importStructured(SourceChannel.CAISHIXIAN,
+        Map<String, Object> first = sourceImportService.importStructured(SourceChannel.CAISHIXIAN,
                 List.of(new StructuredOrderRow(oldRef, null,
                         order(oldRef, oldRef + "-L1", oldRef + "-L2"), Map.of())),
                 batchNo(), firstCtx);
+        sourceImportService.confirm(
+                Long.parseLong(first.get("id").toString()), "confirm-old-" + oldRef, ctx());
 
         // 第二批：重复旧单 + 新单 → 旧单跳过（不写 raw 行）、新单正常，批次仍 COMPLETED
         String newRef = orderRef("CSX-ORDER-002");
@@ -404,6 +418,8 @@ class StructuredImportApiTest {
                 batchNo(), secondCtx);
 
         assertThat(second.get("status")).isEqualTo("COMPLETED");
+        sourceImportService.confirm(
+                Long.parseLong(second.get("id").toString()), "confirm-new-" + newRef, ctx());
         // 新单创建、旧单不重复创建
         Integer newOrders = jdbc.queryForObject(
                 "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
@@ -440,6 +456,13 @@ class StructuredImportApiTest {
                 SourceChannel.CAISHIXIAN, List.of(row), batchNo() + "-RETRY", ctx());
 
         assertThat((String) replay.get("id")).isEqualTo((String) first.get("id"));
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
+                        Integer.class,
+                        ref))
+                .isZero();
+        sourceImportService.confirm(
+                Long.parseLong(first.get("id").toString()), "confirm-idempotent-" + ref, ctx());
         Integer orders = jdbc.queryForObject(
                 "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
                 Integer.class, ref);

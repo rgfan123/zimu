@@ -128,6 +128,55 @@ class SourceBatchSkuReadinessGate {
         requireCandidateLinesReady(mappingChannel, readinessCandidateLines(candidates));
     }
 
+    /** 在 catalog 共享锁仍由导入事务持有时，冻结当前存在的来源映射目标与包装乘数。 */
+    List<SourceOrderCandidate> snapshotCurrentMappings(
+            SourceChannel mappingChannel, List<SourceOrderCandidate> candidates) {
+        catalogLock.acquireShared();
+        Set<String> refs = candidates.stream()
+                .flatMap(candidate -> candidate.order().items().stream())
+                .filter(item -> item.lineType() == LineType.SINGLE)
+                .map(OrderItemInput::sourceSkuRef)
+                .filter(Objects::nonNull)
+                .filter(ref -> !ref.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        if (refs.isEmpty()) {
+            return candidates;
+        }
+        Map<String, SourceChannelSku> mappingByRef = new LinkedHashMap<>();
+        sourceMappings.findAllBySourceChannelAndSourceSkuRefIn(mappingChannel, refs)
+                .forEach(mapping -> mappingByRef.put(mapping.getSourceSkuRef(), mapping));
+        Map<Long, Sku> skuById = new LinkedHashMap<>();
+        skus.findAllById(mappingByRef.values().stream().map(SourceChannelSku::getSkuId).distinct().toList())
+                .forEach(sku -> skuById.put(sku.getId(), sku));
+        List<SourceOrderCandidate> frozen = new ArrayList<>();
+        for (SourceOrderCandidate candidate : candidates) {
+            List<SourceOrderCandidate.SourceMappingSnapshot> snapshots = new ArrayList<>();
+            for (int itemIndex = 0; itemIndex < candidate.order().items().size(); itemIndex++) {
+                OrderItemInput item = candidate.order().items().get(itemIndex);
+                SourceChannelSku mapping = item.lineType() == LineType.SINGLE
+                        ? mappingByRef.get(item.sourceSkuRef())
+                        : null;
+                Sku sku = mapping == null ? null : skuById.get(mapping.getSkuId());
+                if (mapping != null) {
+                    snapshots.add(new SourceOrderCandidate.SourceMappingSnapshot(
+                            itemIndex,
+                            mapping.getSourceSkuRef(),
+                            mapping.getSkuId(),
+                            sku == null ? null : sku.getSkuCode(),
+                            mapping.getQuantityMultiplier()));
+                }
+            }
+            frozen.add(new SourceOrderCandidate(
+                    candidate.candidateKey(),
+                    candidate.order(),
+                    candidate.rows(),
+                    candidate.createIdempotencyKey(),
+                    candidate.actor(),
+                    snapshots));
+        }
+        return List.copyOf(frozen);
+    }
+
     private void requireCandidateLinesReady(
             SourceChannel mappingChannel, List<CandidateLine> lines) {
         catalogLock.acquireShared();
@@ -143,13 +192,17 @@ class SourceBatchSkuReadinessGate {
             sourceMappings.findAllBySourceChannelAndSourceSkuRefIn(mappingChannel, refs)
                     .forEach(mapping -> mappingByRef.put(mapping.getSourceSkuRef(), mapping));
         }
-        Map<String, Sku> skuByCode = new LinkedHashMap<>();
-        lines.stream()
+        List<String> directSkuCodes = lines.stream()
                 .map(CandidateLine::skuCode)
                 .filter(Objects::nonNull)
                 .filter(code -> !code.isBlank())
                 .distinct()
-                .forEach(code -> skus.findBySkuCode(code).ifPresent(sku -> skuByCode.put(code, sku)));
+                .toList();
+        Map<String, Sku> skuByCode = new LinkedHashMap<>();
+        if (!directSkuCodes.isEmpty()) {
+            skus.findBySkuCodeIn(directSkuCodes)
+                    .forEach(sku -> skuByCode.put(sku.getSkuCode(), sku));
+        }
         List<Long> skuIds = java.util.stream.Stream.concat(
                         mappingByRef.values().stream().map(SourceChannelSku::getSkuId),
                         skuByCode.values().stream().map(Sku::getId))
@@ -180,9 +233,21 @@ class SourceBatchSkuReadinessGate {
             if (line.sourceSkuRef() != null) {
                 detail.put("source_sku_ref", line.sourceSkuRef());
             }
-            if (sku != null) {
-                detail.put("sku_id", Long.toString(sku.getId()));
-                detail.put("sku_code", sku.getSkuCode());
+            Long expectedSkuId = line.frozenSkuId() == null
+                    ? sku == null ? null : sku.getId()
+                    : line.frozenSkuId();
+            String expectedSkuCode = line.skuCode() == null
+                    ? sku == null ? null : sku.getSkuCode()
+                    : line.skuCode();
+            if (expectedSkuId != null) {
+                detail.put("sku_id", Long.toString(expectedSkuId));
+            }
+            if (expectedSkuCode != null) {
+                detail.put("sku_code", expectedSkuCode);
+            }
+            if (sku != null && line.frozenSkuId() != null && !line.frozenSkuId().equals(sku.getId())) {
+                detail.put("current_sku_id", Long.toString(sku.getId()));
+                detail.put("current_sku_code", sku.getSkuCode());
             }
             List<String> reasons = new ArrayList<>();
             List<Map<String, String>> actionable = new ArrayList<>();
@@ -216,6 +281,8 @@ class SourceBatchSkuReadinessGate {
             List<SourceOrderReadinessCandidate> candidates) {
         List<CandidateLine> lines = new ArrayList<>();
         for (SourceOrderReadinessCandidate candidate : candidates) {
+            Map<Integer, SourceOrderCandidate.SourceMappingSnapshot> mappingByItem = new LinkedHashMap<>();
+            candidate.sourceMappings().forEach(snapshot -> mappingByItem.put(snapshot.itemIndex(), snapshot));
             int itemCursor = 0;
             int lineNo = 1;
             for (SourceOrderReadinessCandidate.CandidateRow row : candidate.rows()) {
@@ -223,17 +290,21 @@ class SourceBatchSkuReadinessGate {
                     if (itemCursor >= candidate.items().size()) {
                         throw new IllegalStateException("来源订单候选的原始行分片超过商品行数量");
                     }
+                    int currentItemIndex = itemCursor;
                     OrderItemInput item = candidate.items().get(itemCursor++);
                     if (item.lineType() == LineType.SINGLE) {
+                        SourceOrderCandidate.SourceMappingSnapshot mapping = mappingByItem.get(currentItemIndex);
                         lines.add(new CandidateLine(
                                 row.rawImportRowId(),
                                 candidate.candidateKey(),
                                 lineNo,
                                 item.sourceSkuRef(),
-                                item.skuCode()));
+                                mapping == null ? null : mapping.skuId(),
+                                mapping == null ? item.skuCode() : mapping.skuCode(),
+                                mapping == null ? null : mapping.quantityMultiplier()));
                     } else if (item.components() == null || item.components().isEmpty()) {
                         lines.add(new CandidateLine(
-                                row.rawImportRowId(), candidate.candidateKey(), lineNo, null, null));
+                                row.rawImportRowId(), candidate.candidateKey(), lineNo, null, null, null, null));
                     } else {
                         int candidateLineNo = lineNo;
                         item.components().forEach(component -> lines.add(new CandidateLine(
@@ -241,7 +312,9 @@ class SourceBatchSkuReadinessGate {
                                 candidate.candidateKey(),
                                 candidateLineNo,
                                 component.sourceSkuRef(),
-                                component.skuCode())));
+                                null,
+                                component.skuCode(),
+                                null)));
                     }
                     lineNo++;
                 }
@@ -277,6 +350,14 @@ class SourceBatchSkuReadinessGate {
                     "MAPPING_MULTIPLIER",
                     "来源包装乘数缺失或不是正数",
                     "核对一个来源销售单位包含的 Canonical SKU 件数"));
+        }
+        if (line.mappingMultiplier() != null
+                && (mapping.getQuantityMultiplier() == null
+                    || mapping.getQuantityMultiplier().compareTo(line.mappingMultiplier()) != 0)) {
+            issues.add(issue(
+                    "MAPPING_MULTIPLIER",
+                    "当前来源包装乘数与上传时冻结值冲突",
+                    "核对一个来源销售单位包含的 Canonical SKU 件数后重新导入批次"));
         }
         if (sku == null) {
             issues.add(issue(
@@ -340,6 +421,9 @@ class SourceBatchSkuReadinessGate {
     private List<Map<String, String>> mappingIssues(
             BatchLine line, Map<String, SourceChannelSku> mappingByIdentity) {
         List<Map<String, String>> issues = new ArrayList<>();
+        if (line.directInternalSku()) {
+            return issues;
+        }
         SourceChannelSku mapping = line.sourceSkuRef() == null
                 ? null
                 : mappingByIdentity.get(mappingKey(line.mappingChannel(), line.sourceSkuRef()));
@@ -400,30 +484,43 @@ class SourceBatchSkuReadinessGate {
                 )
                 SELECT DISTINCT rll.raw_import_row_id, ib.source_channel recorded_source_channel,
                        source.effective_source_channel mapping_source_channel, rir.raw_cells::text raw_cells,
-                       o.id order_id, ol.id order_line_id, ol.line_no, ol.sku_id,
-                       ol.sku_code_snapshot, ol.mapping_multiplier_snapshot
+                       o.id order_id, ol.id order_line_id, ol.line_no,
+                       COALESCE(olc.sku_id, ol.sku_id) sku_id,
+                       COALESCE(component_sku.sku_code, ol.sku_code_snapshot) sku_code_snapshot,
+                       CASE WHEN olc.id IS NULL THEN ol.mapping_multiplier_snapshot END mapping_multiplier_snapshot,
+                       (olc.id IS NOT NULL) direct_internal_sku
                 FROM raw_line_links rll
                 JOIN app.raw_import_rows rir ON rir.id=rll.raw_import_row_id AND rir.status='ACCEPTED'
                 JOIN app.import_batches ib ON ib.id=rir.import_batch_id
                 JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
                 JOIN app.order_lines ol ON ol.id=rll.order_line_id
-                    AND ol.line_type='SINGLE' AND ol.sku_id IS NOT NULL
+                    AND ((ol.line_type='SINGLE' AND ol.sku_id IS NOT NULL)
+                         OR (ol.line_type='CUSTOM_BUNDLE' AND ol.bundle_id IS NOT NULL))
+                LEFT JOIN app.order_line_components olc
+                    ON olc.order_line_id=ol.id AND ol.line_type='CUSTOM_BUNDLE'
+                LEFT JOIN app.skus component_sku ON component_sku.id=olc.sku_id
                 JOIN app.orders o ON o.id=ol.order_id AND o.source_import_batch_id=?
-                ORDER BY rll.raw_import_row_id, o.id, ol.line_no, ol.id
+                WHERE ol.line_type='SINGLE' OR olc.id IS NOT NULL
+                ORDER BY rll.raw_import_row_id, o.id, ol.line_no, ol.id,
+                         COALESCE(olc.sku_id, ol.sku_id)
                 """,
                 (resultSet, rowNumber) -> {
                     SourceChannel recordedChannel =
                             SourceChannel.valueOf(resultSet.getString("recorded_source_channel"));
+                    boolean directInternalSku = resultSet.getBoolean("direct_internal_sku");
                     return new BatchLine(
                             resultSet.getLong("raw_import_row_id"),
                             SourceChannel.valueOf(resultSet.getString("mapping_source_channel")),
-                            sourceSkuRef(recordedChannel, resultSet.getString("raw_cells")),
+                            directInternalSku
+                                    ? null
+                                    : sourceSkuRef(recordedChannel, resultSet.getString("raw_cells")),
                             resultSet.getLong("order_id"),
                             resultSet.getLong("order_line_id"),
                             resultSet.getInt("line_no"),
                             resultSet.getLong("sku_id"),
                             resultSet.getString("sku_code_snapshot"),
-                            resultSet.getBigDecimal("mapping_multiplier_snapshot"));
+                            resultSet.getBigDecimal("mapping_multiplier_snapshot"),
+                            directInternalSku);
                 },
                 sourceBatchId,
                 sourceBatchId,
@@ -469,14 +566,17 @@ class SourceBatchSkuReadinessGate {
             int lineNo,
             long skuId,
             String skuCode,
-            BigDecimal mappingMultiplier) {}
+            BigDecimal mappingMultiplier,
+            boolean directInternalSku) {}
 
     private record CandidateLine(
             long rawImportRowId,
             String candidateKey,
             int lineNo,
             String sourceSkuRef,
-            String skuCode) {
+            Long frozenSkuId,
+            String skuCode,
+            BigDecimal mappingMultiplier) {
 
         boolean directInternalSku() {
             return (sourceSkuRef == null || sourceSkuRef.isBlank())

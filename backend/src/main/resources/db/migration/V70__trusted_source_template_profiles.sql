@@ -20,7 +20,8 @@ CREATE TABLE app.source_template_profiles (
     UNIQUE (source_channel, template_family, template_version, template_fingerprint),
     CHECK (
         (status='TRUSTED' AND revoked_by IS NULL AND revoked_at IS NULL)
-        OR (status='REVOKED' AND btrim(revoked_by) <> '' AND revoked_at IS NOT NULL)
+        OR (status='REVOKED' AND revoked_by IS NOT NULL
+            AND btrim(revoked_by) <> '' AND revoked_at IS NOT NULL)
     )
 );
 
@@ -44,6 +45,11 @@ BEGIN
     END IF;
     IF OLD.status='REVOKED' AND NEW.status IS DISTINCT FROM OLD.status THEN
         RAISE EXCEPTION 'revoked source template profile cannot be trusted again';
+    END IF;
+    IF OLD.status='REVOKED'
+       AND (NEW.revoked_by IS DISTINCT FROM OLD.revoked_by
+            OR NEW.revoked_at IS DISTINCT FROM OLD.revoked_at) THEN
+        RAISE EXCEPTION 'revoked source template profile evidence is immutable';
     END IF;
     RETURN NEW;
 END;

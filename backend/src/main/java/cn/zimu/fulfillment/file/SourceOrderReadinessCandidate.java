@@ -7,11 +7,13 @@ import java.util.List;
 record SourceOrderReadinessCandidate(
         String candidateKey,
         List<CandidateRow> rows,
-        List<OrderItemInput> items) {
+        List<OrderItemInput> items,
+        List<SourceOrderCandidate.SourceMappingSnapshot> sourceMappings) {
 
     SourceOrderReadinessCandidate {
         rows = List.copyOf(rows);
         items = List.copyOf(items);
+        sourceMappings = sourceMappings == null ? List.of() : List.copyOf(sourceMappings);
     }
 
     static SourceOrderReadinessCandidate from(SourceOrderCandidate candidate) {
@@ -20,7 +22,8 @@ record SourceOrderReadinessCandidate(
                 candidate.rows().stream()
                         .map(row -> new CandidateRow(row.rawImportRowId(), row.partitionCount()))
                         .toList(),
-                candidate.order().items());
+                candidate.order().items(),
+                candidate.sourceMappings());
     }
 
     record CandidateRow(long rawImportRowId, int partitionCount) {

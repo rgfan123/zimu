@@ -45,25 +45,18 @@ class SourceTemplateProfileService {
     }
 
     private Map<String, Object> doTrust(long batchId, CommandContext context) {
-        BatchTemplate source = jdbc.query(
-                        """
-                        SELECT source.effective_source_channel, ib.template_family,
-                               ib.template_version, ib.template_fingerprint, ib.confirmed_at
-                        FROM app.import_batches ib
-                        JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
-                        WHERE ib.id=? AND ib.batch_type='SOURCE_ORDER'
-                        FOR SHARE OF ib
-                        """,
-                        (resultSet, rowNumber) -> new BatchTemplate(
-                                SourceChannel.valueOf(resultSet.getString("effective_source_channel")),
-                                resultSet.getString("template_family"),
-                                resultSet.getString("template_version"),
-                                resultSet.getString("template_fingerprint"),
-                                resultSet.getObject("confirmed_at", OffsetDateTime.class)),
-                        batchId)
-                .stream()
-                .findFirst()
-                .orElseThrow(() -> BusinessException.notFound("来源订单批次不存在: " + batchId));
+        List<Long> locked = jdbc.query(
+                """
+                SELECT id FROM app.import_batches
+                WHERE id=? AND batch_type='SOURCE_ORDER'
+                FOR SHARE
+                """,
+                (resultSet, rowNumber) -> resultSet.getLong(1),
+                batchId);
+        if (locked.isEmpty()) {
+            throw BusinessException.notFound("来源订单批次不存在: " + batchId);
+        }
+        BatchTemplate source = batchTemplate(batchId);
         if (source.confirmedAt() == null) {
             throw BusinessException.conflict(
                     "IMPORT_BATCH_CONFIRMATION_REQUIRED", "只有已由操作员确认的来源批次可以授权模板信任");
@@ -124,38 +117,97 @@ class SourceTemplateProfileService {
         return result;
     }
 
-    Optional<TrustedTemplate> trusted(ParsedSourceFile parsed) {
-        return find(
-                        parsed.sourceChannel(),
-                        parsed.templateFamily(),
-                        parsed.templateVersion(),
-                        parsed.templateFingerprint())
-                .filter(profile -> "TRUSTED".equals(profile.status()));
+    private BatchTemplate batchTemplate(long batchId) {
+        return jdbc.query(
+                        """
+                        SELECT source.effective_source_channel, source.effective_template_family,
+                               ib.template_version, source.effective_template_fingerprint, ib.confirmed_at
+                        FROM app.import_batches ib
+                        JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
+                        WHERE ib.id=? AND ib.batch_type='SOURCE_ORDER'
+                        """,
+                        (resultSet, rowNumber) -> new BatchTemplate(
+                                SourceChannel.valueOf(resultSet.getString("effective_source_channel")),
+                                resultSet.getString("effective_template_family"),
+                                resultSet.getString("template_version"),
+                                resultSet.getString("effective_template_fingerprint"),
+                                resultSet.getObject("confirmed_at", OffsetDateTime.class)),
+                        batchId)
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> BusinessException.notFound("来源订单批次不存在: " + batchId));
     }
 
-    void requireBatchMatch(TrustedTemplate profile, long batchId) {
-        Boolean matches = jdbc.queryForObject(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM app.import_batches ib
-                    JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
-                    WHERE ib.id=? AND ib.batch_type='SOURCE_ORDER'
-                      AND source.effective_source_channel=?
-                      AND ib.template_family=? AND ib.template_version=?
-                      AND ib.template_fingerprint=?
-                )
-                """,
-                Boolean.class,
-                batchId,
-                profile.sourceChannel().name(),
-                profile.templateFamily(),
-                profile.templateVersion(),
-                profile.templateFingerprint());
-        if (!Boolean.TRUE.equals(matches)) {
+    /** 上传完成后只按数据库中的有效归因身份查找 standing authorization。 */
+    Optional<TrustedTemplate> trustedForBatch(long batchId) {
+        return jdbc.query(
+                        """
+                        SELECT profile.id, profile.profile_no, profile.source_channel,
+                               profile.template_family, profile.template_version,
+                               profile.template_fingerprint, profile.status, profile.trusted_at
+                        FROM app.import_batches ib
+                        JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
+                        JOIN app.source_template_profiles profile
+                          ON profile.source_channel=source.effective_source_channel
+                         AND profile.template_family=source.effective_template_family
+                         AND profile.template_version=ib.template_version
+                         AND profile.template_fingerprint=source.effective_template_fingerprint
+                         AND profile.status='TRUSTED'
+                        WHERE ib.id=? AND ib.batch_type='SOURCE_ORDER'
+                        """,
+                        (resultSet, rowNumber) -> template(resultSet),
+                        batchId)
+                .stream()
+                .findFirst();
+    }
+
+    /**
+     * AutomaticRelease 最终授权检查。先锁批次再用新语句读取有效归因，随后锁 profile 再读取状态，
+     * 避免等待并发 correction/revocation 后继续使用语句开始时的旧快照。
+     */
+    void requireTrustedBatchMatchForRelease(long profileId, long batchId) {
+        List<Long> batchLocks = jdbc.query(
+                "SELECT id FROM app.import_batches WHERE id=? AND batch_type='SOURCE_ORDER' FOR UPDATE",
+                (resultSet, rowNumber) -> resultSet.getLong(1),
+                batchId);
+        if (batchLocks.isEmpty()) {
+            throw BusinessException.notFound("来源订单批次不存在: " + batchId);
+        }
+        BatchTemplate batch = batchTemplate(batchId);
+        List<Long> profileLocks = jdbc.query(
+                "SELECT id FROM app.source_template_profiles WHERE id=? FOR SHARE",
+                (resultSet, rowNumber) -> resultSet.getLong(1),
+                profileId);
+        if (profileLocks.isEmpty()) {
+            throw BusinessException.conflict(
+                    "TEMPLATE_PROFILE_MISMATCH", "受信模板授权不存在，已停止自动放行");
+        }
+        TrustedTemplate profile = findById(profileId)
+                .orElseThrow(() -> new IllegalStateException("已锁定的受信模板无法读取"));
+        if (!"TRUSTED".equals(profile.status())) {
+            throw BusinessException.conflict(
+                    "TEMPLATE_PROFILE_REVOKED", "受信模板授权已撤销，已停止自动放行");
+        }
+        if (batch.channel() != profile.sourceChannel()
+                || !batch.family().equals(profile.templateFamily())
+                || !batch.version().equals(profile.templateVersion())
+                || !batch.fingerprint().equals(profile.templateFingerprint())) {
             throw BusinessException.conflict(
                     "TEMPLATE_PROFILE_MISMATCH", "来源批次结构与受信模板版本不一致，已停止自动放行");
         }
+    }
+
+    private Optional<TrustedTemplate> findById(long profileId) {
+        return jdbc.query(
+                        """
+                        SELECT id, profile_no, source_channel, template_family, template_version,
+                               template_fingerprint, status, trusted_at
+                        FROM app.source_template_profiles WHERE id=?
+                        """,
+                        (resultSet, rowNumber) -> template(resultSet),
+                        profileId)
+                .stream()
+                .findFirst();
     }
 
     private Optional<TrustedTemplate> find(

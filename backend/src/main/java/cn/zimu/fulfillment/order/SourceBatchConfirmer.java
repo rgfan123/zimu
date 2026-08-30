@@ -12,11 +12,11 @@ import java.util.Map;
  * <p><b>为什么是接口而不是把方法改成 public</b>：{@code SourceImportService.confirm}
  * 是包私有的，那是有意的边界——确认牵动建 shipment、建京东单、写审计，
  * 不该让任意包都能直接调。照 {@link ReadySourceBatchExporter} 已建立的写法开一个窄口，
- * 暴露的就只有这两个动作。
+ * 暴露的只有人工确认、受信模板确认和配对出站三个窄动作。
  *
- * <p><b>两个方法必须成对调用</b>，且顺序固定：先 {@code confirm}，
- * 仅当它**不是幂等重放**时才 {@code submitJdOutbounds}。重放时再调一次
- * 等于对同一批货发起第二次外部建单——幂等键能挡住，但不该依赖它兜底。
+ * <p><b>确认与出站必须成对调用</b>，且顺序固定：先确认，再出站。HTTP/企微同步调用方只在
+ * 首次确认后触发；可崩溃恢复的 AutomaticRelease 重入时仍进入出站，由 Shipment 的已提交围栏
+ * 跳过成功项，补上“确认已提交但任务尚未收尾”窗口。
  */
 public interface SourceBatchConfirmer {
 
@@ -24,6 +24,10 @@ public interface SourceBatchConfirmer {
     IdempotentResult<Map<String, Object>> confirmSourceBatch(
             long sourceBatchId, String idempotencyKey, CommandContext context);
 
-    /** 对该批次里走 SDK 路由的发货批次触发京东建单。只在首次确认后调用。 */
-    void submitJdOutboundsForSourceBatch(long sourceBatchId, CommandContext context);
+    /** 受信模板自动确认；实现必须在确认事务内锁定并复验 profile 与批次有效模板身份。 */
+    IdempotentResult<Map<String, Object>> confirmTrustedSourceBatch(
+            long sourceBatchId, long templateProfileId, String idempotencyKey, CommandContext context);
+
+    /** 对该批次里走 SDK 路由的发货批次触发京东建单，并返回逐项成功/失败事实。 */
+    Map<String, Object> submitJdOutboundsForSourceBatch(long sourceBatchId, CommandContext context);
 }

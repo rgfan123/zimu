@@ -126,8 +126,13 @@ class MixedProviderStaticBundlePipelineApiTest {
         ResponseEntity<Map> uploaded = upload(workbook());
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
-        assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+        assertThat(castMap(uploaded.getBody().get("row_counts")))
+                .containsEntry("accepted", 0)
+                .containsEntry("total", 1);
         assertThat(uploaded.getBody()).containsEntry("error_detail", null);
+
+        ResponseEntity<Map> confirmed = confirm(batchId);
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         Map<String, Object> orderPage = get("/api/v1/orders?query=" + SOURCE_ORDER_REF + "&page=0&size=20");
         String orderId = castMap(castList(orderPage.get("items")).getFirst()).get("id").toString();
@@ -136,14 +141,13 @@ class MixedProviderStaticBundlePipelineApiTest {
         assertThat(lines).hasSize(2);
         assertThat(lines).allSatisfy(line -> assertThat(line)
                 .containsEntry("line_type", "CUSTOM_BUNDLE")
-                .containsEntry("bundle_id", bundleId)
-                .containsEntry("processing_stage", "READY_TO_EXPORT"));
+                .containsEntry("bundle_id", bundleId));
+        assertThat(lines).extracting(line -> line.get("processing_stage"))
+                .containsExactlyInAnyOrder("READY_TO_EXPORT", "WAITING_PROVIDER");
         assertThat(lines).extracting(line -> line.get("provider_id")).doesNotHaveDuplicates();
         assertThat(lines).extracting(line -> ((List<?>) line.get("components")).size())
                 .containsExactlyInAnyOrder(1, 2);
 
-        ResponseEntity<Map> confirmed = confirm(batchId);
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<?> jdShipmentIds = (List<?>) castMap(confirmed.getBody().get("outbound_routing"))
                 .get("jd_sdk_shipment_ids");
         assertThat(jdShipmentIds).hasSize(1);
@@ -295,7 +299,12 @@ class MixedProviderStaticBundlePipelineApiTest {
                 "mix-upload-cargo-001");
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
-        assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+        assertThat(castMap(uploaded.getBody().get("row_counts")))
+                .containsEntry("accepted", 0)
+                .containsEntry("total", 1);
+
+        ResponseEntity<Map> confirmed = confirm(batchId, "mix-confirm-cargo-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         // 混合履约方礼包按 provider 分片：行投影只暴露京东分片的货品（数量 = 购买 1 ×
         // quantity_per_bundle 1 × jd_pieces_per_unit 1），第三方组件不得出现
@@ -308,8 +317,6 @@ class MixedProviderStaticBundlePipelineApiTest {
                 .containsKey("product_name"));
 
         // 确认 → 地址确认 → 提交建单：提交后行投影优先冻结实际提交值
-        ResponseEntity<Map> confirmed = confirm(batchId, "mix-confirm-cargo-001");
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<?> jdShipmentIds = (List<?>) castMap(confirmed.getBody().get("outbound_routing"))
                 .get("jd_sdk_shipment_ids");
         assertThat(jdShipmentIds).hasSize(1);
@@ -375,7 +382,26 @@ class MixedProviderStaticBundlePipelineApiTest {
                         "羊蝎子鸵鸟复核礼包"),
                 "mix-upload-recheck-001");
         String batchId = uploaded.getBody().get("id").toString();
-        assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+        assertThat(castMap(uploaded.getBody().get("row_counts")))
+                .containsEntry("accepted", 0)
+                .containsEntry("total", 1);
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .as("上传只保存候选，人工确认前不得提前创建正式订单")
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.fulfillments f
+                        JOIN app.order_lines ol ON ol.id=f.order_line_id
+                        JOIN app.orders o ON o.id=ol.order_id
+                        WHERE o.source_import_batch_id=?
+                        """,
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isZero();
 
         jdbc.update("UPDATE app.skus SET active=FALSE WHERE id=?",
                 Long.parseLong(tpSku.get("id").toString()));
@@ -397,6 +423,76 @@ class MixedProviderStaticBundlePipelineApiTest {
                         Integer.class,
                         Long.parseLong(batchId)))
                 .isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .as("确认阶段任一组件阻断时整批仍不得留下正式订单")
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.fulfillments f
+                        JOIN app.order_lines ol ON ol.id=f.order_line_id
+                        JOIN app.orders o ON o.id=ol.order_id
+                        WHERE o.source_import_batch_id=?
+                        """,
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isZero();
+
+        jdbc.update("UPDATE app.skus SET active=TRUE WHERE id=?",
+                Long.parseLong(tpSku.get("id").toString()));
+        ResponseEntity<Map> recovered = confirm(batchId, "mix-confirm-recheck-recovered-001");
+        assertThat(recovered.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void legacyMaterializedBundleWithoutCandidateSnapshotStillRechecksEveryComponent() throws Exception {
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-LEGACY-OSTRICH", "鸵鸟遗留组件", "TP-LEGACY-OSTRICH-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-LEGACY-001",
+                "羊蝎子鸵鸟遗留礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-legacy-001");
+        createSourceBundleMapping(
+                "WQ-MIXED-LEGACY-BUNDLE-001",
+                "羊蝎子鸵鸟遗留礼包",
+                bundleId,
+                "mix-source-bundle-legacy-001");
+
+        ResponseEntity<Map> uploaded = upload(
+                workbook(
+                        "WQ-MIXED-LEGACY-ORDER-001",
+                        "WQ-MIXED-LEGACY-BUNDLE-001",
+                        "羊蝎子鸵鸟遗留礼包"),
+                "mix-upload-legacy-001");
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+        assertThat(confirm(Long.toString(batchId), "mix-confirm-legacy-seed-001").getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        // 模拟升级前已经成单、尚待确认且没有 ticket-04 候选快照的历史批次。
+        jdbc.update(
+                "UPDATE app.import_batches SET confirmed_at=NULL, confirmed_by=NULL, error_detail=NULL WHERE id=?",
+                batchId);
+        jdbc.update("UPDATE app.skus SET active=FALSE WHERE id=?",
+                Long.parseLong(tpSku.get("id").toString()));
+
+        ResponseEntity<Map> blocked = confirm(Long.toString(batchId), "mix-confirm-legacy-recheck-001");
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(blocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_at IS NULL FROM app.import_batches WHERE id=?",
+                        Boolean.class,
+                        batchId))
+                .isTrue();
     }
 
     @Test

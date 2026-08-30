@@ -65,6 +65,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     private final ImportRowJdCargoProjectionService jdCargoProjectionService;
     private final SourceBatchSkuReadinessGate sourceBatchSkuReadinessGate;
     private final SourceOrderCandidateMaterializer candidateMaterializer;
+    private final SourceTemplateProfileService templateProfiles;
     private final IdempotencyService idempotency;
     private final Path fileRoot;
 
@@ -79,6 +80,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             ImportRowJdCargoProjectionService jdCargoProjectionService,
             SourceBatchSkuReadinessGate sourceBatchSkuReadinessGate,
             SourceOrderCandidateMaterializer candidateMaterializer,
+            SourceTemplateProfileService templateProfiles,
             IdempotencyService idempotency,
             @Value("${app.file-store.root:${java.io.tmpdir}/zimu-fulfillment-files}") String fileRoot) {
         this.parser = parser;
@@ -91,6 +93,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         this.jdCargoProjectionService = jdCargoProjectionService;
         this.sourceBatchSkuReadinessGate = sourceBatchSkuReadinessGate;
         this.candidateMaterializer = candidateMaterializer;
+        this.templateProfiles = templateProfiles;
         this.idempotency = idempotency;
         this.fileRoot = Path.of(fileRoot).toAbsolutePath().normalize();
     }
@@ -192,6 +195,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                             + sha256(entry.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8)),
                     AuditActorType.AGENT));
         }
+        candidates = sourceBatchSkuReadinessGate.snapshotCurrentMappings(parsed.sourceChannel(), candidates);
         if (nonSkuBlocker) {
             stageCandidates(batchId, candidates, null);
         } else {
@@ -211,7 +215,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                                 "import_mode", mode,
                                 "settlement_missing", parsed.sourceChannel() == SourceChannel.WANQI));
             }
-            candidateMaterializer.materializePrepared(batchId, candidates, context);
+            stageReadyCandidates(batchId, candidates);
         }
         // raw 行已与订单行建立血缘后，把 sheet/行号并入 SKU 映射类复核事项并直连 raw_import_row_id。
         enrichReviewCasesWithSourceRow(batchId);
@@ -276,6 +280,33 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         jdbc.update(
                 "UPDATE app.import_batches SET error_detail=?::jsonb WHERE id=?",
                 json(batchDetail),
+                batchId);
+    }
+
+    /**
+     * 解析与 SKU readiness 均通过时也只保存整批候选；正式订单只能由人工确认或
+     * AutomaticRelease 在同一个放行事务中创建。原始行保持 RECEIVED，直到正式订单血缘与它
+     * 在同一事务中写入；这样也继续满足数据库的“ACCEPTED 必须有订单血缘”不变量。
+     */
+    private void stageReadyCandidates(long batchId, List<SourceOrderCandidate> candidates) {
+        for (SourceOrderCandidate candidate : candidates) {
+            for (SourceOrderCandidate.CandidateRow row : candidate.rows()) {
+                jdbc.update(
+                        """
+                        UPDATE app.raw_import_rows
+                        SET error_code=NULL, error_detail=NULL,
+                            order_id=NULL, order_line_id=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND import_batch_id=? AND status='RECEIVED'
+                        """,
+                        row.rawImportRowId(),
+                        batchId);
+            }
+        }
+        jdbc.update(
+                "UPDATE app.import_batches SET error_detail=?::jsonb WHERE id=?",
+                json(Map.of(
+                        "candidate_status", "PENDING",
+                        "source_order_candidates", candidates)),
                 batchId);
     }
 
@@ -522,6 +553,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     "pull-" + batchNo + "-" + orderIndex,
                     AuditActorType.SYSTEM));
         }
+        candidates = sourceBatchSkuReadinessGate.snapshotCurrentMappings(channel, candidates);
         if (nonSkuBlocker) {
             stageCandidates(batchId, candidates, null);
         } else {
@@ -536,7 +568,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                         "source-order-structured-import", "source-orders.importStructured",
                         Map.of("batch_no", batchNo, "content_sha256", contentSha));
             }
-            candidateMaterializer.materializePrepared(batchId, candidates, context);
+            stageReadyCandidates(batchId, candidates);
         }
         // raw 行已与订单行建立血缘后，把 sheet/行号并入 SKU 映射类复核事项并直连 raw_import_row_id。
         enrichReviewCasesWithSourceRow(batchId);
@@ -1042,26 +1074,46 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     @Override
     public IdempotentResult<Map<String, Object>> confirmSourceBatch(
             long sourceBatchId, String idempotencyKey, cn.zimu.fulfillment.common.web.CommandContext context) {
-        return confirm(sourceBatchId, idempotencyKey, context);
+        return confirm(sourceBatchId, null, idempotencyKey, context);
     }
 
     @Override
-    public void submitJdOutboundsForSourceBatch(
+    @Transactional
+    public IdempotentResult<Map<String, Object>> confirmTrustedSourceBatch(
+            long sourceBatchId,
+            long templateProfileId,
+            String idempotencyKey,
+            cn.zimu.fulfillment.common.web.CommandContext context) {
+        return confirm(sourceBatchId, templateProfileId, idempotencyKey, context);
+    }
+
+    @Override
+    public Map<String, Object> submitJdOutboundsForSourceBatch(
             long sourceBatchId, cn.zimu.fulfillment.common.web.CommandContext context) {
-        submitJdOutboundsForBatch(sourceBatchId, context);
+        return submitJdOutboundsForBatch(sourceBatchId, context);
     }
 
     IdempotentResult<Map<String, Object>> confirm(
             long batchId, String idempotencyKey, CommandContext context) {
-        Map<String, Object> payload = Map.of("batch_id", batchId);
+        return confirm(batchId, null, idempotencyKey, context);
+    }
+
+    private IdempotentResult<Map<String, Object>> confirm(
+            long batchId, Long templateProfileId, String idempotencyKey, CommandContext context) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("batch_id", batchId);
+        if (templateProfileId != null) {
+            payload.put("template_profile_id", templateProfileId);
+        }
         return idempotency.execute("source_import.confirm", idempotencyKey, payload, 200, () -> {
-            // 覆盖候选成单（REQUIRES_NEW）、Provider 校验和最终路由，避免阶段之间穿插主数据写入。
+            if (templateProfileId != null) {
+                templateProfiles.requireTrustedBatchMatchForRelease(templateProfileId, batchId);
+            }
+            // 覆盖候选成单、Provider 校验和最终路由，避免阶段之间穿插主数据写入。
             sourceBatchSkuReadinessGate.acquireCatalogSnapshot();
-            // readiness 阻断时上传只保存整批候选；重试确认先在独立事务中原子成单，
-            // 这样后续 REQUIRES_NEW Provider 校验能看到完整且已提交的订单集合。
+            // 所有上传都只保存整批候选；确认事务内先复核再成单，后续任一门禁失败时
+            // 整个事务回滚，不能留下 CanonicalOrder/Fulfillment 半成品。
             candidateMaterializer.materializeStaged(batchId, context);
-            // Provider 校验使用 REQUIRES_NEW 并可能写 ReviewCase（外键需要读取批次行），
-            // 因此必须保留在 import_batch FOR UPDATE 之前，避免持锁后自我等待。
             providerFileService.validateSourceBatchExportability(batchId);
             Map<String, Object> batch = jdbc.queryForMap(
                     "SELECT batch_type, confirmed_at FROM app.import_batches WHERE id=? FOR UPDATE",
@@ -1210,6 +1262,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("submitted_count", items.size());
         result.put("skipped_count", skipped);
+        result.put("failed_count", items.stream().filter(item -> item.containsKey("business_code")).count());
         result.put("items", items);
         return result;
     }

@@ -19,6 +19,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -43,6 +44,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
             "app.source-order-intake-worker.enabled=false",
+            "app.source-order-intake-worker.automatic-release-operator=source-order-automatic-release",
+            "app.jd.client-mode=MOCK",
+            "app.jd.write-mode=ON",
+            "app.jd.outbound-authorized-operators=source-order-automatic-release",
             "app.file-store.root=${java.io.tmpdir}/zimu-source-order-intake-test"
         })
 class SourceOrderIntakeApiTest {
@@ -57,6 +62,29 @@ class SourceOrderIntakeApiTest {
     @Autowired SourceOrderIntakeProcessor processor;
     @Autowired SourceOrderIntakeService intake;
     @MockitoSpyBean SourceImportService imports;
+
+    @BeforeEach
+    void configureAutomaticReleaseJdRoute() {
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config=config||'{
+                    "sourceNo":"ISV-AUTO-001","warehouseNo":"WH-AUTO-001",
+                    "erpShopNo":"SHOP-AUTO-001","shopNo":"SHOP-AUTO-001",
+                    "ownerNo":"OWNER-AUTO-001","customerCode":"CUST-AUTO-001",
+                    "pin":"PIN-AUTO-001","carrierNo":"JD","salesPlatformSource":"6",
+                    "townRequired":false,"addressAnalysis":"2","outboundMode":"SDK"
+                }'::jsonb
+                WHERE provider_code='JD'
+                """);
+        jdbc.update(
+                """
+                UPDATE app.provider_skus
+                SET external_codes=jsonb_set(external_codes, '{jd_pieces_per_unit}', '1'::jsonb, true)
+                WHERE fulfillment_provider_id=(
+                    SELECT id FROM app.fulfillment_providers WHERE provider_code='JD')
+                """);
+    }
 
     @AfterEach
     void removeTrustedTemplateFixtures() {
@@ -284,7 +312,7 @@ class SourceOrderIntakeApiTest {
     @Test
     void trustedTemplateAutomaticallyConfirmsAndRunsThePairedOutboundStep() throws Exception {
         clearInvocations(imports);
-        upsertReadyDazheMapping("DZ-SKU-AUTO-READY");
+        upsertReadyDazheJdMapping("DZ-SKU-AUTO-READY");
         String suffix = java.util.UUID.randomUUID().toString().substring(0, 8).toUpperCase();
         byte[] firstWorkbook = workbook(
                 dazheHeaders(),
@@ -325,13 +353,21 @@ class SourceOrderIntakeApiTest {
                 .isTrue();
         assertThat(jdbc.queryForObject(
                         """
-                        SELECT count(*) FROM app.fulfillment_export_items fei
-                        JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id
-                        WHERE rir.import_batch_id=?
+                        SELECT count(*)
+                        FROM app.shipment_jd_outbounds outbound
+                        JOIN app.shipments shipment ON shipment.id=outbound.shipment_id
+                        JOIN app.orders orders ON orders.id=shipment.order_id
+                        WHERE orders.source_import_batch_id=? AND outbound.sync_status='SUBMITTED'
                         """,
                         Integer.class,
                         batchId))
-                .isPositive();
+                .as("受信模板的 JD AutomaticRelease 必须产生真实 Mock 建单事实")
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_by FROM app.import_batches WHERE id=?",
+                        String.class,
+                        batchId))
+                .isEqualTo("source-order-automatic-release");
         verify(imports).submitJdOutboundsForSourceBatch(org.mockito.ArgumentMatchers.eq(batchId), any());
 
         // 模拟“确认已提交、出站步骤或任务收尾前进程中断”后的同任务重入；
@@ -340,6 +376,62 @@ class SourceOrderIntakeApiTest {
         processor.process(task);
         verify(imports, times(2))
                 .submitJdOutboundsForSourceBatch(org.mockito.ArgumentMatchers.eq(batchId), any());
+    }
+
+    @Test
+    void trustedTemplateDoesNotMarkJobSucceededWhenPairedJdOutboundIsRejected() throws Exception {
+        upsertReadyDazheJdMapping("DZ-SKU-AUTO-JD-REJECT");
+        String suffix = java.util.UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        ResponseEntity<Map> first = uploadSource(
+                "dazhe-jd-reject-seed.xlsx",
+                workbook(
+                        dazheHeaders(),
+                        dazheRow(
+                                "DAZHE-JD-REJECT-SEED-" + suffix,
+                                "DZ-SKU-AUTO-JD-REJECT",
+                                "牛腱子自动放行拒绝测试")),
+                "ticket-04-jd-reject-seed-" + suffix);
+        long seedBatchId = Long.parseLong(first.getBody().get("id").toString());
+        assertThat(confirmSourceBatch(seedBatchId, "ticket-04-jd-reject-confirm-" + suffix).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+        trustTemplate(seedBatchId, "ticket-04-jd-reject-trust-" + suffix);
+
+        // 移除京东代解析能力；AutomaticRelease 会创建 Shipment，但因地址未经人工确认而被真实门禁拒绝。
+        jdbc.update(
+                "UPDATE app.fulfillment_providers SET config=config-'addressAnalysis' WHERE provider_code='JD'");
+        ResponseEntity<Map> submitted = submit(
+                "dazhe-jd-reject-next.xlsx",
+                workbook(
+                        dazheHeaders(),
+                        dazheRow(
+                                "DAZHE-JD-REJECT-NEXT-" + suffix,
+                                "DZ-SKU-AUTO-JD-REJECT",
+                                "牛腱子自动放行拒绝测试")),
+                "DAZHE",
+                "ticket-04-jd-reject-intake-" + suffix);
+        long jobId = Long.parseLong(submitted.getBody().get("id").toString());
+        AsyncTaskStore.AsyncTask task = tasks.claim(
+                        SourceOrderIntakeService.TASK_TYPE, "jd-reject-owner", Duration.ofSeconds(30))
+                .orElseThrow();
+        processor.process(task);
+
+        Map<String, Object> job = jdbc.queryForMap(
+                "SELECT status, error_code, import_batch_id FROM app.source_order_intake_jobs WHERE id=?",
+                jobId);
+        assertThat(job)
+                .containsEntry("status", "NEEDS_REVIEW")
+                .containsEntry("error_code", "AUTOMATIC_RELEASE_OUTBOUND_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*)
+                        FROM app.shipment_jd_outbounds outbound
+                        JOIN app.shipments shipment ON shipment.id=outbound.shipment_id
+                        JOIN app.orders orders ON orders.id=shipment.order_id
+                        WHERE orders.source_import_batch_id=? AND outbound.sync_status='SUBMITTED'
+                        """,
+                        Integer.class,
+                        ((Number) job.get("import_batch_id")).longValue()))
+                .isZero();
     }
 
     @Test
@@ -554,6 +646,26 @@ class SourceOrderIntakeApiTest {
                     (source_channel, source_sku_ref, source_product_name, source_specification,
                      quantity_multiplier, sku_id, active)
                 VALUES ('DAZHE', ?, '羊小腿自动放行测试', '标准箱', 1.000, ?, TRUE)
+                ON CONFLICT (source_channel, source_sku_ref) DO UPDATE
+                SET sku_id=EXCLUDED.sku_id, quantity_multiplier=1.000, active=TRUE
+                """,
+                sourceSkuRef,
+                skuId);
+    }
+
+    private void upsertReadyDazheJdMapping(String sourceSkuRef) {
+        long skuId = jdbc.queryForObject(
+                """
+                SELECT sku_id FROM app.source_channel_skus
+                WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-JD-001'
+                """,
+                Long.class);
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                VALUES ('DAZHE', ?, '牛腱子自动放行测试', '500g/袋', 1.000, ?, TRUE)
                 ON CONFLICT (source_channel, source_sku_ref) DO UPDATE
                 SET sku_id=EXCLUDED.sku_id, quantity_multiplier=1.000, active=TRUE
                 """,
