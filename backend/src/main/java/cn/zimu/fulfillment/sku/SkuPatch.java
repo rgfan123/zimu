@@ -2,7 +2,6 @@ package cn.zimu.fulfillment.sku;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonSetter;
-import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
@@ -25,8 +24,7 @@ public final class SkuPatch {
     private String netContentUnit;
     private boolean netContentUnitPresent;
 
-    @Min(value = 1, message = "包装件数必须为正整数")
-    private Integer packageCount;
+    private Object packageCount;
     private boolean packageCountPresent;
 
     @Size(max = 32, message = "包装单位超长")
@@ -86,12 +84,12 @@ public final class SkuPatch {
         this.netContentUnitPresent = true;
     }
 
-    public Integer packageCount() {
+    public Object packageCount() {
         return packageCount;
     }
 
     @JsonSetter("package_count")
-    public void setPackageCount(Integer packageCount) {
+    public void setPackageCount(Object packageCount) {
         this.packageCount = packageCount;
         this.packageCountPresent = true;
     }

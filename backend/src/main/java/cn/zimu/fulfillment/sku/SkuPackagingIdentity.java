@@ -3,6 +3,7 @@ package cn.zimu.fulfillment.sku;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.error.FieldErrorItem;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -22,7 +23,7 @@ public record SkuPackagingIdentity(
             Pattern.CASE_INSENSITIVE);
 
     public static SkuPackagingIdentity optional(
-            Object rawValue, String rawUnit, Integer rawCount, String rawPackageUnit) {
+            Object rawValue, String rawUnit, Object rawCount, String rawPackageUnit) {
         boolean any = rawValue != null || rawUnit != null || rawCount != null || rawPackageUnit != null;
         if (!any) return null;
         if (rawValue == null || isBlank(rawUnit) || rawCount == null || isBlank(rawPackageUnit)) {
@@ -40,18 +41,16 @@ public record SkuPackagingIdentity(
         if (value.signum() <= 0 || value.scale() > 3 || value.precision() - value.scale() > 15) {
             throw invalid("net_content_value", "净含量必须是正数，最多十五位整数和三位小数");
         }
-        if (rawCount <= 0) {
-            throw invalid("package_count", "包装件数必须为正整数");
-        }
+        int count = parsePackageCount(rawCount);
         return new SkuPackagingIdentity(
                 value,
                 normalizeContentUnit(rawUnit),
-                rawCount,
+                count,
                 rawPackageUnit.trim());
     }
 
     public static SkuPackagingIdentity required(
-            Object rawValue, String rawUnit, Integer rawCount, String rawPackageUnit) {
+            Object rawValue, String rawUnit, Object rawCount, String rawPackageUnit) {
         SkuPackagingIdentity identity = optional(rawValue, rawUnit, rawCount, rawPackageUnit);
         if (identity == null) {
             throw invalid("net_content_value", "净含量与包装字段必须完整填写或全部清空");
@@ -89,11 +88,13 @@ public record SkuPackagingIdentity(
 
         BigDecimal displayedValue = new BigDecimal(matcher.group(1));
         String displayedUnit = normalizeContentUnit(matcher.group(2));
-        int displayedCount = matcher.group(4) == null ? 1 : Integer.parseInt(matcher.group(4));
+        BigInteger displayedCount = matcher.group(4) == null
+                ? BigInteger.ONE
+                : new BigInteger(matcher.group(4));
         String displayedPackageUnit = matcher.group(3) != null ? matcher.group(3) : matcher.group(5);
 
         if (!sameContent(displayedValue, displayedUnit, netContentValue, netContentUnit)
-                || displayedCount != packageCount
+                || !displayedCount.equals(BigInteger.valueOf(packageCount.longValue()))
                 || (displayedPackageUnit != null && !displayedPackageUnit.equals(packageUnit))) {
             throw invalid("specification", "规格展示与净含量或包装字段不一致");
         }
@@ -108,6 +109,21 @@ public record SkuPackagingIdentity(
         return normalized.chars().allMatch(character -> character < 128)
                 ? normalized.toLowerCase(Locale.ROOT)
                 : normalized;
+    }
+
+    private static int parsePackageCount(Object value) {
+        BigInteger integer;
+        if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+            integer = BigInteger.valueOf(((Number) value).longValue());
+        } else if (value instanceof BigInteger bigInteger) {
+            integer = bigInteger;
+        } else {
+            throw invalid("package_count", "包装件数必须使用 JSON 正整数");
+        }
+        if (integer.signum() <= 0 || integer.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) > 0) {
+            throw invalid("package_count", "包装件数必须是正整数且不超过 2147483647");
+        }
+        return integer.intValue();
     }
 
     private static boolean sameContent(

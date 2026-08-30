@@ -274,6 +274,137 @@ class ProductSkuStructuredIdentityApiTest {
     }
 
     @Test
+    void fractionalPackageCountIsRejectedInsteadOfBeingSilentlyTruncated() {
+        int skuCountBefore = items("/api/v1/skus").size();
+        Map<String, Object> product = firstItem("/api/v1/products");
+        Map<String, Object> provider = firstProvider();
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("provider_id", provider.get("id"));
+        request.put("product_id", product.get("id"));
+        request.put("specification", "500g×1袋");
+        request.put("unit", "件");
+        request.put("net_content_value", "500");
+        request.put("net_content_unit", "g");
+        request.put("package_count", 1.9);
+        request.put("package_unit", "袋");
+
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/skus",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders("sku-fractional-count-001", "req-fractional-count-001")),
+                Map.class);
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(rejected.getBody()).containsEntry("business_code", "INVALID_SKU_IDENTITY");
+        assertThat(items("/api/v1/skus")).hasSize(skuCountBefore);
+    }
+
+    @Test
+    void productWithInitialSkuAlsoRejectsFractionalPackageCount() {
+        int productCountBefore = items("/api/v1/products").size();
+        int skuCountBefore = items("/api/v1/skus").size();
+        Map<String, Object> category = firstItem("/api/v1/categories");
+        Map<String, Object> provider = firstProvider();
+        Map<String, Object> product = new LinkedHashMap<>();
+        product.put("product_code", "PROD-FRACTIONAL-PACKAGE-001");
+        product.put("product_name", "小数包装件数测试商品");
+        product.put("category_id", category.get("id"));
+        Map<String, Object> sku = new LinkedHashMap<>();
+        sku.put("provider_id", provider.get("id"));
+        sku.put("specification", "500g×1袋");
+        sku.put("unit", "件");
+        sku.put("net_content_value", "500");
+        sku.put("net_content_unit", "g");
+        sku.put("package_count", 1.9);
+        sku.put("package_unit", "袋");
+
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/products/with-sku",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        Map.of("product", product, "sku", sku),
+                        writeHeaders("initial-sku-fractional-count-001", "req-initial-fractional-count-001")),
+                Map.class);
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(rejected.getBody()).containsEntry("business_code", "INVALID_SKU_IDENTITY");
+        assertThat(items("/api/v1/products")).hasSize(productCountBefore);
+        assertThat(items("/api/v1/skus")).hasSize(skuCountBefore);
+    }
+
+    @Test
+    void oversizedDisplayPackageCountIsRejectedOnPatchWithoutReturningInternalError() {
+        Map<String, Object> product = firstItem("/api/v1/products");
+        Map<String, Object> provider = firstProvider();
+        Map<String, Object> create = new LinkedHashMap<>();
+        create.put("provider_id", provider.get("id"));
+        create.put("product_id", product.get("id"));
+        create.put("specification", "500g/袋");
+        create.put("unit", "袋");
+        create.put("net_content_value", "500");
+        create.put("net_content_unit", "g");
+        create.put("package_count", 1);
+        create.put("package_unit", "袋");
+        ResponseEntity<Map> created = http.exchange(
+                "/api/v1/skus",
+                HttpMethod.POST,
+                new HttpEntity<>(create, writeHeaders("sku-overflow-patch-create-001", "req-overflow-create-001")),
+                Map.class);
+        String skuId = created.getBody().get("id").toString();
+
+        Map<String, Object> patch = new LinkedHashMap<>();
+        patch.put("expected_version", 0);
+        patch.put("specification", "500g×999999999999999999999袋");
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/skus/" + skuId,
+                HttpMethod.PATCH,
+                new HttpEntity<>(patch, writeHeaders("sku-overflow-patch-001", "req-overflow-patch-001")),
+                Map.class);
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(rejected.getBody()).containsEntry("business_code", "INVALID_SKU_IDENTITY");
+        Map<String, Object> unchanged = http.getForObject("/api/v1/skus/" + skuId, Map.class);
+        assertThat(unchanged).containsEntry("version", 0);
+        assertThat(attributes(unchanged)).containsEntry("specification", "500g/袋");
+    }
+
+    @Test
+    void fractionalPackageCountPatchIsRejectedWithoutChangingTheStoredIdentity() {
+        Map<String, Object> product = firstItem("/api/v1/products");
+        Map<String, Object> provider = firstProvider();
+        Map<String, Object> create = new LinkedHashMap<>();
+        create.put("provider_id", provider.get("id"));
+        create.put("product_id", product.get("id"));
+        create.put("specification", "500g/袋");
+        create.put("unit", "袋");
+        create.put("net_content_value", "500");
+        create.put("net_content_unit", "g");
+        create.put("package_count", 1);
+        create.put("package_unit", "袋");
+        ResponseEntity<Map> created = http.exchange(
+                "/api/v1/skus",
+                HttpMethod.POST,
+                new HttpEntity<>(create, writeHeaders("sku-fractional-patch-create-001", "req-fractional-patch-create-001")),
+                Map.class);
+        String skuId = created.getBody().get("id").toString();
+
+        Map<String, Object> patch = new LinkedHashMap<>();
+        patch.put("expected_version", 0);
+        patch.put("package_count", 1.9);
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/skus/" + skuId,
+                HttpMethod.PATCH,
+                new HttpEntity<>(patch, writeHeaders("sku-fractional-patch-001", "req-fractional-patch-001")),
+                Map.class);
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(rejected.getBody()).containsEntry("business_code", "INVALID_SKU_IDENTITY");
+        Map<String, Object> unchanged = http.getForObject("/api/v1/skus/" + skuId, Map.class);
+        assertThat(unchanged).containsEntry("version", 0);
+        assertThat(attributes(unchanged)).containsEntry("package_count", 1);
+    }
+
+    @Test
     void skuDisplaySpecificationCannotContradictItsStructuredPackagingIdentity() {
         int skuCountBefore = items("/api/v1/skus").size();
         Map<String, Object> product = firstItem("/api/v1/products");
