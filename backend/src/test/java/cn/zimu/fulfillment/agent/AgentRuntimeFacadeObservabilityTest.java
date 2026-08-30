@@ -59,7 +59,16 @@ class AgentRuntimeFacadeObservabilityTest {
 
     private static AgentToolBindingFactory bindingFactory() {
         return new AgentToolBindingFactory(
-                new McpToolRegistry(readTools(), emptyWriteTools(), emptyDomainTools(), McpToolTestSupport.emptyControlTools()),
+                new McpToolRegistry(
+                        readTools(),
+                        emptyWriteTools(),
+                        emptyDomainTools(),
+                        McpToolTestSupport.emptyControlTools(),
+                        null,
+                        null,
+                        "default",
+                        false,
+                        false),
                 new McpAgentIdentity(""),
                 new ObjectMapper());
     }

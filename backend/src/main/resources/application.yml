@@ -259,7 +259,7 @@ app:
     enabled: ${MCP_ENABLED:false}
     # 写工具的操作人身份，由启动方注入（环境变量 MCP_AGENT_IDENTITY）；工具参数无法伪造。
     agent-identity: ${MCP_AGENT_IDENTITY:}
-    # 分模块暴露（env MCP_MODULES，逗号分隔）：空 = 全部模块（向后兼容）；非空只注册列出的模块，
+    # 分模块暴露（env MCP_MODULES，逗号分隔）：空 = 不暴露任何模块；非空只注册列出的模块，
     # 未列出模块的工具在 tools/list 与 tools/call 上都查不到；未知模块名启动期 fail-fast。
     modules: ${MCP_MODULES:}
     http:

@@ -1,5 +1,11 @@
 package cn.zimu.fulfillment.mcp;
 
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.arrayNode;
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.listNode;
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.mapNode;
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.objectNode;
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.pageNode;
+
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.WriteCommands;
@@ -7,11 +13,17 @@ import cn.zimu.fulfillment.fulfillment.ProviderTrackingDraft;
 import cn.zimu.fulfillment.fulfillment.TrackingDraftService;
 import cn.zimu.fulfillment.fulfillment.dto.ProviderTrackingDraftDetailDto;
 import cn.zimu.fulfillment.message.ChannelMessageQueryService;
+import cn.zimu.fulfillment.message.ChannelMediaEvidenceDto;
+import cn.zimu.fulfillment.message.ChannelMessageDetailDto;
+import cn.zimu.fulfillment.message.ChannelMessageSummaryDto;
+import cn.zimu.fulfillment.message.InterpretationDto;
 import cn.zimu.fulfillment.message.MessageMedia;
 import cn.zimu.fulfillment.message.MessageMediaRepository;
 import cn.zimu.fulfillment.message.MessageSubmission;
+import cn.zimu.fulfillment.message.MessageSubmissionDetailDto;
 import cn.zimu.fulfillment.message.MessageSubmissionQueryService;
 import cn.zimu.fulfillment.message.MessageSubmissionRepository;
+import cn.zimu.fulfillment.message.TaskStatusDto;
 import cn.zimu.fulfillment.order.OrderDraft;
 import cn.zimu.fulfillment.order.OrderDraftQueryService;
 import cn.zimu.fulfillment.order.OrderMapper;
@@ -21,6 +33,7 @@ import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
 import cn.zimu.fulfillment.order.dto.OrderDraftDetailDto;
 import cn.zimu.fulfillment.order.dto.OrderDraftLineDto;
+import cn.zimu.fulfillment.order.dto.ReviewCaseDto;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -192,19 +205,23 @@ public class McpReadTools {
     private JsonNode listChannelMessages(McpRequestContext context, Map<String, Object> args) {
         int page = page(args, 0);
         int size = pageSize(args, 20);
-        return json(messageQuery.list(page, size));
+        return pageNode(messageQuery.list(page, size), McpReadTools::channelMessageSummaryNode);
     }
 
     private JsonNode getChannelMessage(McpRequestContext context, Map<String, Object> args) {
-        return json(messageQuery.detail(identifier(args, "message_id")));
+        return channelMessageDetailNode(messageQuery.detail(identifier(args, "message_id")));
     }
 
     private JsonNode getMessageSubmission(McpRequestContext context, Map<String, Object> args) {
-        return json(submissionQuery.detail(identifier(args, "submission_id")));
+        return messageSubmissionNode(submissionQuery.detail(identifier(args, "submission_id")));
     }
 
     private JsonNode listInterpretations(McpRequestContext context, Map<String, Object> args) {
-        return json(submissionQuery.detail(identifier(args, "submission_id")).interpretations());
+        ArrayNode result = arrayNode();
+        submissionQuery.detail(identifier(args, "submission_id"))
+                .interpretations()
+                .forEach(value -> result.add(interpretationNode(value)));
+        return result;
     }
 
     @Transactional(readOnly = true)
@@ -234,21 +251,26 @@ public class McpReadTools {
     private JsonNode listOrderDrafts(McpRequestContext context, Map<String, Object> args) {
         OrderDraft.Status status = optionalStatus(args, "status", OrderDraft.Status.class);
         Long submissionId = optionalIdentifier(args, "submission_id");
-        return json(orderDrafts.list(status, submissionId, page(args, 0), pageSize(args, 20)));
+        return pageNode(
+                orderDrafts.list(status, submissionId, page(args, 0), pageSize(args, 20)),
+                McpReadTools::orderDraftNode);
     }
 
     private JsonNode getOrderDraft(McpRequestContext context, Map<String, Object> args) {
-        return json(orderDrafts.detail(identifier(args, "draft_id")));
+        return orderDraftNode(orderDrafts.detail(identifier(args, "draft_id")));
     }
 
     private JsonNode listTrackingDrafts(McpRequestContext context, Map<String, Object> args) {
         ProviderTrackingDraft.Status status = optionalStatus(args, "status", ProviderTrackingDraft.Status.class);
         Long submissionId = optionalIdentifier(args, "submission_id");
-        return json(trackingDrafts.list(page(args, 0), pageSize(args, 20), status == null ? null : status.name(), submissionId));
+        return pageNode(
+                trackingDrafts.list(
+                        page(args, 0), pageSize(args, 20), status == null ? null : status.name(), submissionId),
+                McpReadTools::trackingDraftNode);
     }
 
     private JsonNode getTrackingDraft(McpRequestContext context, Map<String, Object> args) {
-        return json(trackingDrafts.detail(identifier(args, "draft_id")));
+        return trackingDraftNode(trackingDrafts.detail(identifier(args, "draft_id")));
     }
 
     private JsonNode getOrderDraftCandidates(McpRequestContext context, Map<String, Object> args) {
@@ -258,9 +280,9 @@ public class McpReadTools {
         result.put("draft_no", draft.draftNo());
         result.put("status", draft.status());
         result.put("revision", draft.revision());
-        result.set("customer_candidates", json(draft.customerCandidates()));
+        result.set("customer_candidates", listNode(draft.customerCandidates()));
         result.put("customer_name_raw", draft.customerNameRaw());
-        result.set("missing_fields", json(draft.missingFields()));
+        result.set("missing_fields", listNode(draft.missingFields()));
         ObjectNode receiver = result.putObject("receiver");
         receiver.put("name", draft.receiverName());
         receiver.put("phone", draft.receiverPhone());
@@ -269,7 +291,7 @@ public class McpReadTools {
         for (OrderDraftLineDto line : draft.lines()) {
             ObjectNode item = lines.addObject();
             item.put("line_no", line.lineNo());
-            item.set("sku_candidates", json(line.skuCandidates()));
+            item.set("sku_candidates", listNode(line.skuCandidates()));
             item.put("product_name_raw", line.productNameRaw());
             item.put("spec_raw", line.specRaw());
             item.put("unit_raw", line.unitRaw());
@@ -287,12 +309,12 @@ public class McpReadTools {
         result.put("revision", draft.revision());
         result.put("raw_receiver_name", draft.rawReceiverName());
         result.put("masked_receiver_name", draft.maskedReceiverName());
-        result.set("carrier_candidates", json(draft.carrierCandidates()));
-        result.set("task_candidates", json(draft.taskCandidates()));
+        result.set("carrier_candidates", listNode(draft.carrierCandidates()));
+        result.set("task_candidates", listNode(draft.taskCandidates()));
         result.put("shipment_judgment", draft.shipmentJudgment());
         result.put("default_full_shipment", draft.defaultFullShipment());
         result.put("actual_quantity", draft.actualQuantity());
-        result.set("validation_issues", json(draft.validationIssues()));
+        result.set("validation_issues", listNode(draft.validationIssues()));
         return result;
     }
 
@@ -317,11 +339,220 @@ public class McpReadTools {
                 spec, PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt")));
         List<cn.zimu.fulfillment.order.dto.ReviewCaseDto> items =
                 result.getContent().stream().map(orderMapper::toReviewCase).toList();
-        return json(new PageResponse<>(items, page, size, result.getTotalElements(), result.getTotalPages()));
+        return pageNode(
+                new PageResponse<>(items, page, size, result.getTotalElements(), result.getTotalPages()),
+                McpReadTools::reviewCaseNode);
     }
 
     private JsonNode getReviewCase(McpRequestContext context, Map<String, Object> args) {
-        return json(reviewCaseResolution.detail(identifier(args, "case_id")));
+        return reviewCaseNode(reviewCaseResolution.detail(identifier(args, "case_id")));
+    }
+
+    // ------------------------------------------------------------------
+    // 显式对外投影：DTO 新增字段不会自动进入 MCP
+    // ------------------------------------------------------------------
+
+    static ObjectNode channelMessageSummaryNode(ChannelMessageSummaryDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("corp_id", value.corpId());
+        node.put("connection_id", value.connectionId());
+        node.put("bot_id", value.botId());
+        node.put("message_id", value.messageId());
+        node.put("chat_id", value.chatId());
+        node.put("chat_type", value.chatType());
+        node.put("sender_user_id", value.senderUserId());
+        node.put("message_type", value.messageType());
+        node.put("content_preview", value.contentPreview());
+        node.put("received_at", value.receivedAt() == null ? null : value.receivedAt().toString());
+        return node;
+    }
+
+    static ObjectNode channelMessageDetailNode(ChannelMessageDetailDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("corp_id", value.corpId());
+        node.put("connection_id", value.connectionId());
+        node.put("bot_id", value.botId());
+        node.put("message_id", value.messageId());
+        node.put("chat_id", value.chatId());
+        node.put("chat_type", value.chatType());
+        node.put("sender_user_id", value.senderUserId());
+        node.put("message_type", value.messageType());
+        node.put("content", value.content());
+        node.put("quote_type", value.quoteType());
+        node.put("quote_content", value.quoteContent());
+        node.put("raw_payload_ref", value.rawPayloadRef());
+        node.put("submission_id", value.submissionId());
+        node.put("received_at", value.receivedAt() == null ? null : value.receivedAt().toString());
+        ArrayNode mediaRefs = node.putArray("media_refs");
+        value.mediaRefs().forEach(media -> mediaRefs.add(channelMediaEvidenceNode(media)));
+        return node;
+    }
+
+    static ObjectNode channelMediaEvidenceNode(ChannelMediaEvidenceDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("media_type", value.mediaType());
+        node.put("content_type", value.contentType());
+        if (value.sizeBytes() == null) {
+            node.putNull("size_bytes");
+        } else {
+            node.put("size_bytes", value.sizeBytes());
+        }
+        return node;
+    }
+
+    static ObjectNode messageSubmissionNode(MessageSubmissionDetailDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("submission_no", value.submissionNo());
+        node.put("status", value.status());
+        node.put("source_message_id", value.sourceMessageId());
+        node.put("current_intent", value.currentIntent());
+        node.put("latest_error", value.latestError());
+        ArrayNode interpretations = node.putArray("interpretations");
+        value.interpretations().forEach(item -> interpretations.add(interpretationNode(item)));
+        node.set("latest_task", value.latestTask() == null
+                ? com.fasterxml.jackson.databind.node.NullNode.instance
+                : taskStatusNode(value.latestTask()));
+        node.put("created_at", value.createdAt() == null ? null : value.createdAt().toString());
+        return node;
+    }
+
+    static ObjectNode interpretationNode(InterpretationDto value) {
+        ObjectNode node = objectNode();
+        node.put("version", value.version());
+        node.put("intent", value.intent());
+        node.put("provider", value.provider());
+        node.put("model", value.model());
+        node.put("prompt_version", value.promptVersion());
+        node.put("error", value.error());
+        node.put("created_at", value.createdAt() == null ? null : value.createdAt().toString());
+        return node;
+    }
+
+    static ObjectNode taskStatusNode(TaskStatusDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("task_type", value.taskType());
+        node.put("status", value.status());
+        node.put("attempts", value.attempts());
+        node.put("max_attempts", value.maxAttempts());
+        node.put("last_error", value.lastError());
+        node.put("created_at", value.createdAt() == null ? null : value.createdAt().toString());
+        return node;
+    }
+
+    static ObjectNode orderDraftNode(OrderDraftDetailDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("draft_no", value.draftNo());
+        node.put("source_order_no", value.sourceOrderNo());
+        node.put("submission_id", value.submissionId());
+        node.put("status", value.status());
+        node.put("revision", value.revision());
+        node.put("customer_id", value.customerId());
+        node.put("customer_code", value.customerCode());
+        node.put("customer_name", value.customerName());
+        node.set("customer_candidates", listNode(value.customerCandidates()));
+        node.put("customer_name_raw", value.customerNameRaw());
+        node.put("receiver_name", value.receiverName());
+        node.put("receiver_phone", value.receiverPhone());
+        node.put("receiver_address", value.receiverAddress());
+        node.put("settlement_method", value.settlementMethod());
+        node.put("settlement_time", value.settlementTime() == null ? null : value.settlementTime().toString());
+        node.set("missing_fields", listNode(value.missingFields()));
+        ArrayNode lines = node.putArray("lines");
+        value.lines().forEach(line -> lines.add(orderDraftLineNode(line)));
+        node.put("review_case_id", value.reviewCaseId());
+        if (value.reviewCaseVersion() == null) {
+            node.putNull("review_case_version");
+        } else {
+            node.put("review_case_version", value.reviewCaseVersion());
+        }
+        node.put("suspected_duplicate_of", value.suspectedDuplicateOf());
+        node.put("confirmed_order_id", value.confirmedOrderId());
+        node.put("confirmed_by", value.confirmedBy());
+        node.put("confirmed_at", value.confirmedAt() == null ? null : value.confirmedAt().toString());
+        node.put("created_at", value.createdAt() == null ? null : value.createdAt().toString());
+        node.put("updated_at", value.updatedAt() == null ? null : value.updatedAt().toString());
+        return node;
+    }
+
+    static ObjectNode orderDraftLineNode(OrderDraftLineDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("line_no", value.lineNo());
+        node.put("sku_id", value.skuId());
+        node.put("sku_code", value.skuCode());
+        node.set("sku_candidates", listNode(value.skuCandidates()));
+        node.put("product_name_raw", value.productNameRaw());
+        node.put("spec_raw", value.specRaw());
+        node.put("unit_raw", value.unitRaw());
+        node.put("quantity", value.quantity());
+        return node;
+    }
+
+    static ObjectNode trackingDraftNode(ProviderTrackingDraftDetailDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("draft_no", value.draftNo());
+        node.put("submission_id", value.submissionId());
+        node.put("line_no", value.lineNo());
+        node.put("raw_receiver_name", value.rawReceiverName());
+        node.put("masked_receiver_name", value.maskedReceiverName());
+        node.put("tracking_no", value.trackingNo());
+        node.put("carrier_code", value.carrierCode());
+        node.set("carrier_candidates", listNode(value.carrierCandidates()));
+        node.set("manual_carrier_options", listNode(value.manualCarrierOptions()));
+        node.put("task_id", value.taskId());
+        node.set("task_candidates", listNode(value.taskCandidates()));
+        node.put("source", value.source());
+        node.put("confirmation_scope", value.confirmationScope());
+        node.put("shipment_judgment", value.shipmentJudgment());
+        node.put("default_full_shipment", value.defaultFullShipment());
+        node.put("actual_quantity", value.actualQuantity());
+        node.set("validation_issues", listNode(value.validationIssues()));
+        node.put("status", value.status());
+        node.put("revision", value.revision());
+        node.put("confirmed_by", value.confirmedBy());
+        node.put("confirmed_at", value.confirmedAt() == null ? null : value.confirmedAt().toString());
+        node.put("review_case_id", value.reviewCaseId());
+        if (value.reviewCaseVersion() == null) {
+            node.putNull("review_case_version");
+        } else {
+            node.put("review_case_version", value.reviewCaseVersion());
+        }
+        node.put("created_at", value.createdAt() == null ? null : value.createdAt().toString());
+        return node;
+    }
+
+    static ObjectNode reviewCaseNode(ReviewCaseDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("case_no", value.caseNo());
+        node.put("case_type", value.caseType());
+        node.put("responsible_team", value.responsibleTeam());
+        node.put("reason_code", value.reasonCode());
+        node.put("status", value.status());
+        node.put("order_id", value.orderId());
+        node.put("order_line_id", value.orderLineId());
+        node.put("subject_type", value.subjectType());
+        node.put("subject_id", value.subjectId());
+        node.set("detail", mapNode(value.detail()));
+        node.set("suggestions", listNode(value.suggestions()));
+        node.set("allowed_actions", listNode(value.allowedActions()));
+        node.set("resolution", value.resolution() == null
+                ? com.fasterxml.jackson.databind.node.NullNode.instance
+                : mapNode(value.resolution()));
+        node.put("resolved_by", value.resolvedBy());
+        node.put("resolved_at", value.resolvedAt() == null ? null : value.resolvedAt().toString());
+        node.put("version", value.version());
+        node.put("created_at", value.createdAt() == null ? null : value.createdAt().toString());
+        node.put("subject_no", value.subjectNo());
+        node.put("order_no", value.orderNo());
+        return node;
     }
 
     // ------------------------------------------------------------------
@@ -402,10 +633,6 @@ public class McpReadTools {
             throw BusinessException.badRequest(
                     "INVALID_PARAMETERS", "参数 " + key + " 必须是 " + String.join("/", names));
         }
-    }
-
-    private JsonNode json(Object value) {
-        return objectMapper.valueToTree(value);
     }
 
     private static ObjectNode schema(Map<String, ObjectNode> properties, List<String> required) {

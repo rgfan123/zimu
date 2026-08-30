@@ -19,24 +19,27 @@ import org.junit.jupiter.api.Test;
  * MCP 分模块暴露（用户诉求：「有些 mcp 我不想提供给公共 agent」）的注册表行为验收。
  *
  * <p>不经 Spring/Testcontainers：{@link McpToolRegistry} 的模块过滤是纯构造期逻辑，
- * 用 Mockito 桩出 provider 的 {@code tools()} 即可覆盖——空配置 = 全部模块、
+ * 用 Mockito 桩出 provider 的 {@code tools()} 即可覆盖——空配置 = 零模块、
  * 显式模块只留列出的工具、被过滤的工具在 {@code find}/{@code tools/call} 上一致地
  * 「查不到」（不是列表里藏起来但还能调用的假隔离）、未知模块名启动期 fail-fast。
  */
 class McpToolRegistryModuleFilterTest {
 
     @Test
-    void emptyModulesPropertyRegistersAllModules() {
+    void emptyModulesPropertyRegistersNoModules() {
         McpToolRegistry registry = registry("",
                 tool("read_a", "masterdata"),
                 tool("read_b", "inventory"),
+                tool("get_order_draft", "messages"),
                 writeTool("write_c", "write"));
 
-        assertThat(registry.all()).extracting(McpTool::name)
-                .containsExactlyInAnyOrder("read_a", "read_b", "write_c");
-        assertThat(registry.find("read_a")).isPresent();
-        assertThat(registry.find("write_c")).isPresent();
-        assertThat(registry.writeToolNames()).containsExactly("write_c");
+        assertThat(registry.all()).isEmpty();
+        assertThat(registry.find("read_a")).isEmpty();
+        assertThat(registry.find("get_order_draft"))
+                .as("messages 模块在默认配置下必须不注册")
+                .isEmpty();
+        assertThat(registry.find("write_c")).isEmpty();
+        assertThat(registry.writeToolNames()).isEmpty();
     }
 
     @Test
@@ -107,16 +110,53 @@ class McpToolRegistryModuleFilterTest {
     }
 
     @Test
-    void blankAndWhitespaceOnlyModulesPropertyBehavesAsAllModules() {
+    void blankAndWhitespaceOnlyModulesPropertyRegistersNoModules() {
         McpToolRegistry viaBlank = registry("   ", tool("read_a", "masterdata"));
-        assertThat(viaBlank.find("read_a")).isPresent();
+        assertThat(viaBlank.find("read_a")).isEmpty();
 
-        // 逗号分隔后全是空片段（如单独一个逗号）同样退化为「全部模块」，不是「零模块」
+        // 逗号分隔后全是空片段（如单独一个逗号）同样是「零模块」。
         McpToolRegistry viaCommaOnly = registry(" , ", tool("read_a", "masterdata"));
-        assertThat(viaCommaOnly.find("read_a")).isPresent();
+        assertThat(viaCommaOnly.find("read_a")).isEmpty();
+    }
+
+    /**
+     * MCP 开着却一个模块都没启用 = 配置事故，启动期就该炸。
+     *
+     * <p>由来：空值语义从「全开」翻成「不开」之后，配置丢失的失败模式从「PII 外泄」
+     * 变成「机器人全哑」。哑是静默的——没人会立刻发现，等运营察觉已过去很久。
+     * 让它在部署那一刻由部署者当场看见，远好过第二天业务同事问「机器人怎么不说话」。
+     */
+    @Test
+    void enabledMcpWithZeroResolvedModulesFailsFastAtStartup() {
+        assertThatThrownBy(() -> registry("", true, tool("read_a", "masterdata")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("app.mcp.enabled=true")
+                .hasMessageContaining("masterdata");
+
+        // 只有空白/逗号的配置同样算「解析后为空」，不能因为字符串非空就放过
+        assertThatThrownBy(() -> registry(" , ", true, tool("read_a", "masterdata")))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    /** MCP 未开启时，空模块是合法状态（整体关闭），不该炸。 */
+    @Test
+    void disabledMcpWithZeroModulesIsLegal() {
+        McpToolRegistry registry = registry("", false, tool("read_a", "masterdata"));
+        assertThat(registry.find("read_a")).isEmpty();
+    }
+
+    /** MCP 开着且显式列了模块——正常态，不炸。 */
+    @Test
+    void enabledMcpWithExplicitModulesStartsNormally() {
+        McpToolRegistry registry = registry("masterdata", true, tool("read_a", "masterdata"));
+        assertThat(registry.find("read_a")).isPresent();
     }
 
     private static McpToolRegistry registry(String modulesProperty, McpTool... tools) {
+        return registry(modulesProperty, false, tools);
+    }
+
+    private static McpToolRegistry registry(String modulesProperty, boolean mcpEnabled, McpTool... tools) {
         List<McpTool> readTools = new ArrayList<>();
         List<McpTool> writeTools = new ArrayList<>();
         for (McpTool tool : tools) {
@@ -130,7 +170,7 @@ class McpToolRegistryModuleFilterTest {
         when(domains.tools()).thenReturn(List.of());
         McpControlReadTools control = mock(McpControlReadTools.class);
         when(control.tools()).thenReturn(List.of());
-        return new McpToolRegistry(reads, writes, domains, control, null, null, modulesProperty);
+        return new McpToolRegistry(reads, writes, domains, control, null, null, modulesProperty, mcpEnabled, false);
     }
 
     private static McpTool tool(String name, String module) {

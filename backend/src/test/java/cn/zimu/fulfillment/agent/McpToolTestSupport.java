@@ -34,7 +34,14 @@ public final class McpToolTestSupport {
         when(domains.tools()).thenReturn(List.of());
         McpControlReadTools control = mock(McpControlReadTools.class);
         when(control.tools()).thenReturn(List.of());
-        return new McpToolRegistry(reads, writes, domains, control);
+        // 模块集按传入工具实际声明的模块推导，而不是写死一个名字：
+        // 空值语义已改为「不暴露任何模块」（ADR 0015），而硬编码名字（曾经是 "default"）
+        // 会撞上「未知模块名启动期 fail-fast」。夹具的语义是「把我给的工具都暴露出来」。
+        String modules = java.util.Arrays.stream(tools)
+                .map(McpTool::module)
+                .distinct()
+                .collect(java.util.stream.Collectors.joining(","));
+        return new McpToolRegistry(reads, writes, domains, control, null, null, modules, false, false);
     }
 
     /** 空控制面工具组（仅测试：注册表构造占位，list_agent_tools 由真实类覆盖）。 */

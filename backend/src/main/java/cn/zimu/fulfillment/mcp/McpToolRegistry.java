@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
  * MCP 工具注册表：聚合所有允许的工具，供 tools/list 发现与 tools/call 分发。
  *
  * <p>分模块暴露（用户诉求：「有些 mcp 我不想提供给公共 agent」）：{@code app.mcp.modules}
- * （env {@code MCP_MODULES}，逗号分隔）为空时注册全部模块（向后兼容）；非空时只把列出模块的
+ * （env {@code MCP_MODULES}，逗号分隔）为空时不注册任何模块；非空时只把列出模块的
  * 工具收进 {@link #byName}——被排除的工具在 {@link #find} 上直接查不到，{@code tools/call}
  * 因此天然按「工具不存在」拒绝，不会出现「列表里藏起来但还能调用」的假隔离。未知模块名
  * （相对全部工具实际声明的模块集合）在构造期 fail-fast，防止拼错模块名静默放行全部工具。
@@ -35,7 +35,9 @@ public class McpToolRegistry {
             McpWriteTools writeTools,
             McpDomainReadTools domainReadTools,
             McpControlReadTools controlReadTools) {
-        this(readTools, writeTools, domainReadTools, controlReadTools, null, null, "");
+        // 便捷构造器只在测试/内嵌场景用：modules 空 + mcpEnabled=false，
+        // 既不暴露任何工具，也不触发「开着却零模块」的启动期自检。
+        this(readTools, writeTools, domainReadTools, controlReadTools, null, null, "", false, false);
     }
 
     @Autowired
@@ -46,7 +48,9 @@ public class McpToolRegistry {
             McpControlReadTools controlReadTools,
             McpOrdersReadTools ordersReadTools,
             KehuzxRemoteReadTools kehuzxReadTools,
-            @Value("${app.mcp.modules:}") String modulesProperty) {
+            @Value("${app.mcp.modules:}") String modulesProperty,
+            @Value("${app.mcp.enabled:false}") boolean mcpEnabled,
+            @Value("${app.mcp.http.enabled:false}") boolean mcpHttpEnabled) {
         List<McpTool> tools = new java.util.ArrayList<>();
         tools.addAll(readTools.tools());
         tools.addAll(writeTools.tools());
@@ -73,6 +77,31 @@ public class McpToolRegistry {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         Set<String> enabledModules = parseModules(modulesProperty, knownModules);
 
+        // 启动期自检（同事 2026-08-28 提议，采纳）：MCP 开着却一个模块都没启用，
+        // 是配置事故而非合法状态——运维不会有意「开启 MCP 且不暴露任何工具」。
+        //
+        // 为什么是 fail-fast 而不是 WARN：本条纪律此前只活在部署脚本的 grep 里，
+        // 换个部署路径或手改 override 就守不住。空值语义翻成「不开」之后，
+        // 失败模式从「PII 外泄」变成「机器人全哑」——哑是静默的，没人会立刻发现，
+        // 等运营察觉时已过去很久。让它在部署那一刻炸，由部署者当场看见，
+        // 远好过让业务同事第二天问「机器人怎么不说话了」。
+        // 与本类既有的「未知模块名启动期 fail-fast」同源，不是新范式。
+        // 注意条件是「任一传输面开着」而不是只看 stdio：生产实测 app.mcp.enabled 未设（=false）、
+        // 只开了 app.mcp.http.enabled，若只看前者，这道自检在生产永远不触发，等于没有。
+        //
+        // 影响面比「对外 MCP」更宽：本注册表同时是内部 Agent 平台的工具源
+        // （AgentToolInvoker 从 find(name) 取工具），所以 MCP_MODULES 丢失会让
+        // 对外 HTTP 面与企微机器人一起变哑。这正是必须在启动期炸掉的理由。
+        if ((mcpEnabled || mcpHttpEnabled) && enabledModules.isEmpty()) {
+            throw new IllegalStateException(
+                    "app.mcp.modules（env MCP_MODULES）解析后为空，但 MCP 传输面是开的"
+                            + "（app.mcp.enabled=" + mcpEnabled
+                            + ", app.mcp.http.enabled=" + mcpHttpEnabled + "）："
+                            + "空值语义是「不暴露任何模块」，这会让 MCP 面与内部 Agent 平台都拿不到工具。"
+                            + "要暴露请显式列出模块（已知：" + knownModules + "）；"
+                            + "确实要整体关闭请把两个传输面开关都设为 false。");
+        }
+
         Map<String, McpTool> index = new java.util.LinkedHashMap<>();
         for (McpTool tool : tools) {
             if (enabledModules.contains(tool.module())) {
@@ -83,20 +112,20 @@ public class McpToolRegistry {
     }
 
     /**
-     * 解析 {@code app.mcp.modules}。空值（未配置）= 全部已知模块，向后兼容一期「注册即暴露」；
+     * 解析 {@code app.mcp.modules}。空值（未配置）= 零模块，防止环境变量丢失时 fail-open；
      * 非空则只启用列出的模块，列出的模块名必须都在 {@code knownModules} 中出现过，否则
      * fail-fast——拼错模块名要么整段部署起不来，绝不能静默放行全部工具当无事发生。
      */
     private static Set<String> parseModules(String modulesProperty, Set<String> knownModules) {
         if (modulesProperty == null || modulesProperty.isBlank()) {
-            return knownModules;
+            return Set.of();
         }
         Set<String> requested = Arrays.stream(modulesProperty.split(","))
                 .map(String::strip)
                 .filter(value -> !value.isEmpty())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         if (requested.isEmpty()) {
-            return knownModules;
+            return Set.of();
         }
         Set<String> unknown = requested.stream()
                 .filter(module -> !knownModules.contains(module))

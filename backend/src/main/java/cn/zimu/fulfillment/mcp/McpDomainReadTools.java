@@ -1,6 +1,12 @@
 package cn.zimu.fulfillment.mcp;
 
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.arrayNode;
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.listNode;
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.mapNode;
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.objectNode;
+
 import cn.zimu.fulfillment.common.audit.AuditActorType;
+import cn.zimu.fulfillment.common.dto.MasterDataRecord;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.batch.ImportBatchProgress;
@@ -16,12 +22,21 @@ import cn.zimu.fulfillment.connector.sync.SourceSyncStatus;
 import cn.zimu.fulfillment.fulfillment.FulfillmentController;
 import cn.zimu.fulfillment.fulfillment.FulfillmentReadService;
 import cn.zimu.fulfillment.inventory.InventoryDetailsService;
+import cn.zimu.fulfillment.inventory.InventoryDetailCapability;
+import cn.zimu.fulfillment.inventory.InventoryDetailContext;
+import cn.zimu.fulfillment.inventory.InventoryDetailObservation;
+import cn.zimu.fulfillment.inventory.InventoryDetailsResponse;
+import cn.zimu.fulfillment.inventory.InventoryDetailTool;
+import cn.zimu.fulfillment.inventory.InventoryCoverage;
+import cn.zimu.fulfillment.inventory.InventoryOverviewItem;
+import cn.zimu.fulfillment.inventory.InventoryOverviewResponse;
 import cn.zimu.fulfillment.inventory.InventoryOverviewService;
 import cn.zimu.fulfillment.masterdata.MasterDataService;
-import cn.zimu.fulfillment.masterdata.ProductArchiveSheet;
+import cn.zimu.fulfillment.masterdata.ProductArchiveSummary;
 import cn.zimu.fulfillment.masterdata.ProductArchiveSheetService;
 import cn.zimu.fulfillment.sku.ProviderSkuDetail;
 import cn.zimu.fulfillment.sku.SkuDetail;
+import cn.zimu.fulfillment.sku.FulfillmentProviderDto;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -280,7 +295,9 @@ public class McpDomainReadTools {
         String status = optionalStatus(args, "status");
         Instant from = optionalDate(args, "date_from");
         Instant to = optionalDate(args, "date_to");
-        return json(reads.tickets(page(args, 0), pageSize(args, 20), from, to, status));
+        return pageNode(
+                reads.tickets(page(args, 0), pageSize(args, 20), from, to, status),
+                McpProjectionSupport::mapNode);
     }
 
     private JsonNode getProcurementTicket(McpRequestContext context, Map<String, Object> args) {
@@ -289,13 +306,14 @@ public class McpDomainReadTools {
         long fulfillmentId = Long.parseLong(value.get("fulfillment_id").toString());
         Map<String, Object> orderLine = reads.orderLineForFulfillment(fulfillmentId);
         value.put("order_line", orderLine == null ? objectMapper.nullNode() : orderLine);
-        return json(value);
+        return mapNode(value);
     }
 
     private JsonNode listProcurementReceipts(McpRequestContext context, Map<String, Object> args) {
         long ticketId = identifier(args, "ticket_id");
         Map<String, Object> value = reads.ticket(ticketId);
-        return json(value.get("receipts"));
+        Object receipts = value.get("receipts");
+        return receipts instanceof Iterable<?> iterable ? listNode(iterable) : arrayNode();
     }
 
     // ------------------------------------------------------------------
@@ -342,7 +360,7 @@ public class McpDomainReadTools {
         Long providerId = optionalIdentifier(args, "provider_id");
         Long skuId = optionalIdentifier(args, "sku_id");
         String warehouseCode = optionalWarehouseCode(args);
-        return json(inventoryOverview.overview(
+        return inventoryOverviewNode(inventoryOverview.overview(
                 page(args, 0), pageSize(args, 20), providerId, skuId, warehouseCode));
     }
 
@@ -350,7 +368,7 @@ public class McpDomainReadTools {
         long providerId = identifier(args, "provider_id");
         long skuId = identifier(args, "sku_id");
         String warehouseCode = optionalWarehouseCode(args);
-        return json(inventoryDetails.details(providerId, skuId, warehouseCode));
+        return inventoryDetailsNode(inventoryDetails.details(providerId, skuId, warehouseCode));
     }
 
     // ------------------------------------------------------------------
@@ -358,15 +376,21 @@ public class McpDomainReadTools {
     // ------------------------------------------------------------------
 
     private JsonNode listProducts(McpRequestContext context, Map<String, Object> args) {
-        return json(masterData.products(page(args, 0), pageSize(args, 20)));
+        return pageNode(
+                masterData.products(page(args, 0), pageSize(args, 20)),
+                McpDomainReadTools::masterDataRecordNode);
     }
 
     private JsonNode listCategories(McpRequestContext context, Map<String, Object> args) {
-        return json(masterData.categories(page(args, 0), pageSize(args, 20)));
+        return pageNode(
+                masterData.categories(page(args, 0), pageSize(args, 20)),
+                McpDomainReadTools::masterDataRecordNode);
     }
 
     private JsonNode listFulfillmentProviders(McpRequestContext context, Map<String, Object> args) {
-        return json(masterData.providers());
+        ArrayNode result = arrayNode();
+        masterData.providers().forEach(provider -> result.add(fulfillmentProviderNode(provider)));
+        return result;
     }
 
     private JsonNode checkShipmentSourceSync(McpRequestContext context, Map<String, Object> args) {
@@ -616,6 +640,160 @@ public class McpDomainReadTools {
         return item;
     }
 
+    static ObjectNode inventoryOverviewNode(InventoryOverviewResponse value) {
+        ObjectNode node = objectNode();
+        ArrayNode items = node.putArray("items");
+        value.items().forEach(item -> items.add(inventoryOverviewItemNode(item)));
+        node.put("page", value.page());
+        node.put("size", value.size());
+        node.put("total_elements", value.totalElements());
+        node.put("total_pages", value.totalPages());
+        node.set("coverage", inventoryCoverageNode(value.coverage()));
+        return node;
+    }
+
+    static ObjectNode inventoryOverviewItemNode(InventoryOverviewItem value) {
+        ObjectNode node = objectNode();
+        node.put("provider_id", value.providerId());
+        node.put("provider_code", value.providerCode());
+        node.put("provider_name", value.providerName());
+        node.put("provider_type", value.providerType());
+        node.put("sku_id", value.skuId());
+        node.put("sku_code", value.skuCode());
+        node.put("product_name", value.productName());
+        node.put("specification", value.specification());
+        node.put("unit", value.unit());
+        node.put("quantity_unit", value.quantityUnit());
+        node.put("warehouse_code", value.warehouseCode());
+        node.put("observation_status", value.observationStatus());
+        node.put("total_quantity", value.totalQuantity());
+        node.put("available_quantity", value.availableQuantity());
+        node.put("unavailable_quantity", value.unavailableQuantity());
+        node.put("observed_at", value.observedAt() == null ? null : value.observedAt().toString());
+        if (value.observationAgeSeconds() == null) {
+            node.putNull("observation_age_seconds");
+        } else {
+            node.put("observation_age_seconds", value.observationAgeSeconds());
+        }
+        node.put("freshness_status", value.freshnessStatus());
+        node.put("source_type", value.sourceType());
+        return node;
+    }
+
+    static ObjectNode inventoryCoverageNode(InventoryCoverage value) {
+        ObjectNode node = objectNode();
+        node.put("provider_count", value.providerCount());
+        node.put("observed_provider_count", value.observedProviderCount());
+        node.put("sku_count", value.skuCount());
+        node.put("observed_sku_count", value.observedSkuCount());
+        node.put("warehouse_count", value.warehouseCount());
+        node.put("latest_observed_at", value.latestObservedAt() == null ? null : value.latestObservedAt().toString());
+        node.put("stale_count", value.staleCount());
+        node.put("oldest_observed_at", value.oldestObservedAt() == null ? null : value.oldestObservedAt().toString());
+        node.put("partial", value.partial());
+        node.put("freshness_policy", value.freshnessPolicy());
+        return node;
+    }
+
+    static ObjectNode inventoryDetailsNode(InventoryDetailsResponse value) {
+        ObjectNode node = objectNode();
+        node.set("context", inventoryDetailContextNode(value.context()));
+        node.set("observation", inventoryDetailObservationNode(value.observation()));
+        node.put("query_time", value.queryTime() == null ? null : value.queryTime().toString());
+        node.put("freshness_policy", value.freshnessPolicy());
+        ArrayNode capabilities = node.putArray("capabilities");
+        value.capabilities().forEach(item -> capabilities.add(inventoryDetailCapabilityNode(item)));
+        return node;
+    }
+
+    static ObjectNode inventoryDetailContextNode(InventoryDetailContext value) {
+        ObjectNode node = objectNode();
+        node.put("provider_id", value.providerId());
+        node.put("provider_code", value.providerCode());
+        node.put("provider_name", value.providerName());
+        node.put("provider_type", value.providerType());
+        node.put("sku_id", value.skuId());
+        node.put("sku_code", value.skuCode());
+        node.put("product_name", value.productName());
+        node.put("specification", value.specification());
+        node.put("unit", value.unit());
+        node.put("provider_sku_code", value.providerSkuCode());
+        node.put("warehouse_code", value.warehouseCode());
+        return node;
+    }
+
+    static ObjectNode inventoryDetailObservationNode(InventoryDetailObservation value) {
+        ObjectNode node = objectNode();
+        node.put("observation_status", value.observationStatus());
+        node.put("total_quantity", value.totalQuantity());
+        node.put("available_quantity", value.availableQuantity());
+        node.put("unavailable_quantity", value.unavailableQuantity());
+        node.put("quantity_unit", value.quantityUnit());
+        node.put("observed_at", value.observedAt() == null ? null : value.observedAt().toString());
+        if (value.observationAgeSeconds() == null) {
+            node.putNull("observation_age_seconds");
+        } else {
+            node.put("observation_age_seconds", value.observationAgeSeconds());
+        }
+        node.put("expires_at", value.expiresAt() == null ? null : value.expiresAt().toString());
+        node.put("freshness_status", value.freshnessStatus());
+        node.put("source_type", value.sourceType());
+        node.put("data_mode", value.dataMode());
+        return node;
+    }
+
+    static ObjectNode inventoryDetailCapabilityNode(InventoryDetailCapability value) {
+        ObjectNode node = objectNode();
+        node.put("group", value.group());
+        node.put("label", value.label());
+        node.put("integration_status", value.integrationStatus());
+        node.put("runtime_mode", value.runtimeMode());
+        node.put("source_type", value.sourceType());
+        node.put("explanation", value.explanation());
+        ArrayNode tools = node.putArray("tools");
+        value.tools().forEach(tool -> tools.add(inventoryDetailToolNode(tool)));
+        return node;
+    }
+
+    static ObjectNode inventoryDetailToolNode(InventoryDetailTool value) {
+        ObjectNode node = objectNode();
+        node.put("code", value.code());
+        node.put("label", value.label());
+        return node;
+    }
+
+    static ObjectNode masterDataRecordNode(MasterDataRecord value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("code", value.code());
+        node.put("name", value.name());
+        node.put("active", value.active());
+        node.put("version", value.version());
+        node.set("attributes", mapNode(value.attributes()));
+        node.put("created_at", value.createdAt() == null ? null : value.createdAt().toString());
+        node.put("updated_at", value.updatedAt() == null ? null : value.updatedAt().toString());
+        return node;
+    }
+
+    static ObjectNode fulfillmentProviderNode(FulfillmentProviderDto value) {
+        ObjectNode node = objectNode();
+        node.put("id", value.id());
+        node.put("provider_code", value.providerCode());
+        node.put("provider_name", value.providerName());
+        node.put("provider_type", value.providerType());
+        node.put("tracking_sla_minutes", value.trackingSlaMinutes());
+        node.put("active", value.active());
+        node.put("version", value.version());
+        node.set("jd_config", mapNode(value.jdConfig()));
+        node.put("wecom_group_chat_id", value.wecomGroupChatId());
+        if (value.wecomReminderIntervalMinutes() == null) {
+            node.putNull("wecom_reminder_interval_minutes");
+        } else {
+            node.put("wecom_reminder_interval_minutes", value.wecomReminderIntervalMinutes());
+        }
+        return node;
+    }
+
     // ------------------------------------------------------------------
     // 分页与参数助手
     // ------------------------------------------------------------------
@@ -739,10 +917,6 @@ public class McpDomainReadTools {
             return Integer.parseInt(text);
         }
         throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 " + key + " 必须是整数");
-    }
-
-    private JsonNode json(Object value) {
-        return objectMapper.valueToTree(value);
     }
 
     private static ObjectNode node() {

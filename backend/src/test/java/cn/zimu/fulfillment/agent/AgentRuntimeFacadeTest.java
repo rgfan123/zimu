@@ -63,7 +63,16 @@ class AgentRuntimeFacadeTest {
     /** 绑定工厂使用含白名单工具的迷你注册表：白名单之外的工具不注册，与生产「注册表唯一工具源」一致。 */
     private static AgentToolBindingFactory bindingFactory() {
         return new AgentToolBindingFactory(
-                new McpToolRegistry(readTools(), emptyWriteTools(), emptyDomainTools(), McpToolTestSupport.emptyControlTools()),
+                new McpToolRegistry(
+                        readTools(),
+                        emptyWriteTools(),
+                        emptyDomainTools(),
+                        McpToolTestSupport.emptyControlTools(),
+                        null,
+                        null,
+                        "default",
+                        false,
+                        false),
                 new McpAgentIdentity(""),
                 new ObjectMapper());
     }
