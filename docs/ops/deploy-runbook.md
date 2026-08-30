@@ -58,7 +58,10 @@ ssh zimupc "type C:\\Deploy\\zimu\\releases\\agent-platform-e50bb3e-20260825-075
   | sed -e "s/backend:real-[a-z0-9]*/backend:$TAG/" \
         -e "s/frontend:real-[a-z0-9]*/frontend:$TAG/" \
         -e "s/nginx:real-[a-z0-9]*/nginx:$TAG/" > /tmp/off.yml
-grep -c GATEWAY_BASIC_AUTH_ENABLED /tmp/off.yml   # 必须 >=1,否则认证会被抹掉
+# 两项都必须 >=1 才允许 scp:
+grep -c GATEWAY_BASIC_AUTH_ENABLED /tmp/off.yml   # 抹掉 = 公网入口失去认证
+grep -c MCP_MODULES                /tmp/off.yml   # 抹掉 = 公网 30000 从 11 个只读工具
+                                                  #        放大到全部 28 个,含客户 PII
 scp -q /tmp/off.yml "zimupc:$R/offline.runtime.override.yml"
 ```
 
@@ -87,7 +90,15 @@ curl -sS -o /dev/null -w "%{http_code}\n" http://114.244.13.53:28443/
 ## 回滚
 
 override 里把镜像标签改回上一个 `real-<sha>`(旧镜像还在 zimupc 上,`docker images` 可查),
-重跑第 4 步。数据库迁移**不会**随之回滚——若新版本带了迁移,回滚前先确认旧代码能在新 schema 上跑,
+重跑第 4 步。
+
+> **三个标签可能不同步,回滚不能一把梭。**
+> 只改了 backend 就单独发过一次时,frontend/nginx 还停在更早的版本。
+> 例:2026-08-28 生产是 backend `real-88cc262` + frontend/nginx `real-6638925`。
+> **回滚前先 `docker ps --format "{{.Names}}|{{.Image}}"` 把三个当前标签抄下来**,
+> 各自回各自的;用一个标签统一改回去会把没出问题的那层也一起拖旧。
+
+数据库迁移**不会**随之回滚——若新版本带了迁移,回滚前先确认旧代码能在新 schema 上跑,
 否则用 `C:\Deploy\zimu\backups\` 里的 pg_dump 恢复。
 
 ## 踩过的坑
