@@ -81,7 +81,12 @@ export function buildProductCreateBody(values: Record<string, unknown>) {
   const period = patchListingPeriod(values.listing_period);
   const tags = normalizeTags(values.tags);
   return {
-    product_code: String(values.product_code),
+    // 留空即由服务端发号（V86 触发器）。**不能用 String(...)**：AntD 对未填字段给 undefined，
+    // String(undefined) 是字面量 "undefined"，落库后触发器因「非空」而不发号，
+    // 界面承诺的自动生成静默失效，还往 product_code 写进一个假编码。
+    ...(optionalTrimmedString(values.product_code)
+      ? { product_code: optionalTrimmedString(values.product_code) }
+      : {}),
     product_name: String(values.product_name),
     category_id: String(values.category_id),
     ...(optionalTrimmedString(values.ingredients) ? { ingredients: optionalTrimmedString(values.ingredients) } : {}),

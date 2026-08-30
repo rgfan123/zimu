@@ -7685,8 +7685,12 @@ components:
               status: { type: string, enum: [ACCEPTED, SKIPPED] }
     ProductWrite:
       type: object
-      required: [product_code, product_name, category_id]
+      required: [product_name, category_id]
       properties:
+        # 留空即由系统发号（V86 的 app.fill_product_code() 触发器，形如 PROD-000123），
+        # 与 sku_code 同一套做法。仍允许显式传值：外部约定的编码必须能存活。
+        # 注意：调用方留空时必须**整个不发这个字段**，发空串或字面量 "undefined"
+        # 都会让触发器因「非空」而不发号，静默写进一个假编码。
         product_code: { type: string, minLength: 1, maxLength: 64 }
         product_name: { type: string, minLength: 1, maxLength: 128 }
         category_id: { $ref: '#/components/schemas/Identifier' }

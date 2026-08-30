@@ -288,7 +288,8 @@ export const categoriesApi = {
 export const productsApi = {
   list: (query: PageQuery = {}) => apiRequest<MasterDataPage>('/api/v1/products', { params: query as Record<string, QueryValue> }),
   create: (body: {
-    product_code: string;
+    /** 留空即由服务端发号（V86 触发器）；留空时必须整个不发这个字段，发 "" 或 "undefined" 都会让触发器不发号。 */
+    product_code?: string;
     product_name: string;
     category_id: string;
     ingredients?: string;
@@ -358,7 +359,8 @@ export const skusApi = {
     apiRequest<SkuRecord>('/api/v1/skus', { method: 'POST', body, headers: writeHeaders() }),
   createWithProduct: (body: {
     product: {
-      product_code: string;
+      /** 留空即由服务端发号（V86 触发器）；留空时必须整个不发这个字段，发 "" 或 "undefined" 都会让触发器不发号。 */
+      product_code?: string;
       product_name: string;
       category_id: string;
       active?: boolean;

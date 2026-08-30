@@ -65,7 +65,10 @@ export function buildProductWithInitialSkuBody(values: Record<string, unknown>) 
   const active = typeof values.active === 'boolean' ? values.active : undefined;
   return {
     product: {
-      product_code: String(values.product_code),
+      // 同 productArchiveFields：留空要真的不发这个字段，不能发 "undefined"。
+      ...(optionalTrimmedString(values.product_code)
+        ? { product_code: optionalTrimmedString(values.product_code) }
+        : {}),
       product_name: String(values.product_name),
       category_id: String(values.category_id),
       active,
