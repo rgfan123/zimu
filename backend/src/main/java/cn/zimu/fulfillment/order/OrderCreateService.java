@@ -709,6 +709,10 @@ public class OrderCreateService {
                 return new ComponentResolution(false, null, "SKU_MAPPING_REQUIRED", input);
             }
             Sku sku = skuRepository.findBySkuCode(input.skuCode()).orElse(null);
+            if (sku != null && !sku.isActive()) {
+                throw BusinessException.unprocessable(
+                        "BUNDLE_BOM_INACTIVE", "静态礼包 BOM 含停用 SKU，不能展开");
+            }
             return sku == null
                     ? new ComponentResolution(false, null, "SKU_MAPPING_REQUIRED", input)
                     : new ComponentResolution(true, sku, null, input);
@@ -735,10 +739,14 @@ public class OrderCreateService {
     }
 
     private Sku requireSku(SourceChannelSku mapping) {
-        return skuRepository
+        Sku sku = skuRepository
                 .findById(mapping.getSkuId())
                 .orElseThrow(() -> BusinessException.conflict(
                         "SKU_MASTER_MISSING", "内部 SKU 主数据缺失: " + mapping.getSkuId()));
+        if (!sku.isActive()) {
+            throw BusinessException.unprocessable("SKU_INACTIVE", "来源 SKU 映射指向停用 SKU，不能建单");
+        }
+        return sku;
     }
 
     private ReviewCase orderReviewCase(Order order, CanonicalOrderInput input) {

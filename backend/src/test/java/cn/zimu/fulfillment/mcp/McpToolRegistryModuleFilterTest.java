@@ -148,8 +148,34 @@ class McpToolRegistryModuleFilterTest {
         JsonNode call = server.handleRequest(
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
                         + "\"params\":{\"name\":\"submit_jd_outbound\",\"arguments\":{}}}");
+        JsonNode unknown = server.handleRequest(
+                "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+                        + "\"params\":{\"name\":\"not_a_real_tool\",\"arguments\":{}}}");
         assertThat(call.path("error").path("code").asInt()).isEqualTo(-32602);
-        assertThat(call.path("error").path("message").asText()).contains("read-only");
+        assertThat(call.path("error").path("message").asText())
+                .isEqualTo("Unknown tool: submit_jd_outbound")
+                .doesNotContain("read-only", "write", "restricted");
+        assertThat(unknown.path("error").path("message").asText())
+                .isEqualTo("Unknown tool: not_a_real_tool");
+    }
+
+    @Test
+    void protocolRejectsNonObjectArgumentsWithoutTerminatingSubsequentRequests() {
+        McpToolRegistry registry = registry("masterdata", "masterdata", tool("search_skus", "masterdata"));
+        McpServer server = new McpServer(registry, new McpAgentIdentity("protocol-test"), new ObjectMapper());
+
+        for (String invalid : List.of("[]", "\"text\"", "42", "true")) {
+            JsonNode response = server.handleRequest(
+                    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\","
+                            + "\"params\":{\"name\":\"search_skus\",\"arguments\":" + invalid + "}}");
+            assertThat(response.path("error").path("code").asInt()).isEqualTo(-32602);
+            assertThat(response.path("error").path("message").asText())
+                    .isEqualTo("Invalid params: tools/call arguments must be an object");
+
+            JsonNode ping = server.handleRequest(
+                    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\",\"params\":{}}");
+            assertThat(ping.has("result")).isTrue();
+        }
     }
 
     @Test
@@ -166,6 +192,19 @@ class McpToolRegistryModuleFilterTest {
         assertThatThrownBy(() -> registry("masterdata", "", false, true, tool))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("app.mcp.http.enabled=true");
+    }
+
+    @Test
+    void enabledTransportFailsFastWhenConfiguredModulesContainNoPublicReadTool() {
+        assertThatThrownBy(() -> registry(
+                        "write",
+                        "write",
+                        true,
+                        false,
+                        writeTool("submit_jd_outbound", "write")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("可公开只读工具")
+                .hasMessageContaining("app.mcp.protocol-modules");
     }
 
     @Test

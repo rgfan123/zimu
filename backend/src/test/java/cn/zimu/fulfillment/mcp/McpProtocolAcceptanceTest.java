@@ -255,9 +255,16 @@ class McpProtocolAcceptanceTest {
     void writeToolCallIsRejectedOnReadOnlyStdioWithoutSideEffects() throws Exception {
         JsonNode response = rpc(AGENT, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
                 + "\"params\":{\"name\":\"reinterpret_submission\",\"arguments\":{}}}");
+        JsonNode unknown = rpc(AGENT, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                + "\"params\":{\"name\":\"not_a_real_tool\",\"arguments\":{}}}");
         assertThat(response.has("error")).as("写工具调用必须以 JSON-RPC 错误拒绝: %s", response).isTrue();
         assertThat(response.get("error").get("code").asInt()).isEqualTo(-32602);
-        assertThat(response.get("error").get("message").asText()).contains("read-only");
+        assertThat(response.get("error").get("message").asText())
+                .isEqualTo("Unknown tool: reinterpret_submission")
+                .doesNotContain("read-only", "write", "restricted");
+        assertThat(unknown.get("error").get("code").asInt()).isEqualTo(-32602);
+        assertThat(unknown.get("error").get("message").asText())
+                .isEqualTo("Unknown tool: not_a_real_tool");
         // 拒绝发生在工具执行之前：不得留下任何写审计/副作用
         assertThat(audits.findAll().stream()
                         .filter(audit -> "mcp.reinterpret_submission".equals(audit.getOperation()))

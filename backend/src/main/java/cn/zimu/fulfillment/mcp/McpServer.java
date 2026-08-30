@@ -147,20 +147,25 @@ public class McpServer {
         }
         String name = params.get("name").asText();
         McpTool tool = registry.findProtocolTool(name).orElse(null);
-        if (tool == null || !tool.externallyDiscoverable()) {
+        // 协议面把未登记、内部专用与写工具统一投影为「不存在」，避免调用结果
+        // 泄露被隐藏工具的名称、类型或限制原因。tools/list 与 tools/call 使用同一可见边界。
+        if (tool == null || !tool.externallyDiscoverable() || !tool.readOnly()) {
             return errorResponse(INVALID_PARAMS, "Unknown tool: " + name, id);
         }
-        // 08 决策：stdio 面一期收紧为只读——外部客户端共用全局 identity、无 per-agent 权限，
-        // 写工具与只读接口不共存（tools/list 也不暴露），调用写工具按无效请求拒绝。
-        // 拒绝先于身份/幂等处理：只读接口上写工具不存在，认证语义（MCP_AUTH_REQUIRED）
-        // 只对暴露出的只读工具生效。HTTP 传输复用同一分发逻辑，写工具同样一律拒绝。
-        if (!tool.readOnly()) {
-            return errorResponse(INVALID_PARAMS, "Tool is read-only restricted: " + name, id);
-        }
         JsonNode arguments = params.get("arguments");
-        Map<String, Object> args = arguments == null || arguments.isNull()
-                ? Map.of()
-                : mapper.convertValue(arguments, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        if (arguments != null && !arguments.isNull() && !arguments.isObject()) {
+            return errorResponse(INVALID_PARAMS, "Invalid params: tools/call arguments must be an object", id);
+        }
+        Map<String, Object> args;
+        try {
+            args = arguments == null || arguments.isNull()
+                    ? Map.of()
+                    : mapper.convertValue(
+                            arguments,
+                            new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        } catch (IllegalArgumentException invalidArguments) {
+            return errorResponse(INVALID_PARAMS, "Invalid params: tools/call arguments must be an object", id);
+        }
         McpRequestContext context = identity.newContext();
         ObjectNode result = mapper.createObjectNode();
         try {

@@ -103,6 +103,7 @@ public class McpBundleReadTools {
                 bundle.bundleName(),
                 bundle.status(),
                 bundle.components().size(),
+                bundle.allComponentsActive(),
                 bundle.fulfillmentProviders());
         putNullable(node, "category_id", bundle.categoryId());
         putNullable(node, "barcode", bundle.barcode());
@@ -130,6 +131,7 @@ public class McpBundleReadTools {
                 bundle.bundleName(),
                 bundle.status(),
                 bundle.componentCount(),
+                bundle.allComponentsActive(),
                 bundle.fulfillmentProviders());
     }
 
@@ -139,14 +141,18 @@ public class McpBundleReadTools {
             String name,
             String status,
             int componentCount,
+            boolean allComponentsActive,
             List<ProviderSummary> providers) {
         ObjectNode node = objectMapper.createObjectNode();
         node.put("id", id);
         node.put("bundle_code", code);
         node.put("bundle_name", name);
         node.put("status", status);
-        node.put("available_for_ordering", "ACTIVE".equals(status));
+        node.put("available_for_ordering", "ACTIVE".equals(status) && allComponentsActive);
         node.put("component_count", componentCount);
+        node.put("bom_status", componentCount == 0
+                ? "EMPTY"
+                : allComponentsActive ? "READY" : "INACTIVE_COMPONENT");
         ArrayNode providerNodes = node.putArray("fulfillment_providers");
         providers.forEach(provider -> providerNodes.add(providerNode(provider)));
         int shipmentUnits = providers.size();
@@ -169,6 +175,7 @@ public class McpBundleReadTools {
         node.put("unit", component.unit());
         node.put("quantity_per_bundle", component.quantityPerBundle());
         putNullable(node, "purchase_price", component.purchasePrice());
+        node.put("sku_status", component.active() ? "ACTIVE" : "INACTIVE");
         node.set("fulfillment_provider", providerNode(component.provider()));
         return node;
     }

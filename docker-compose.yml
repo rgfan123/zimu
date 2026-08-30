@@ -155,10 +155,12 @@ services:
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_BASE_URL: ${AGENT_BASE_URL:-}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
-      AGENT_TOOL_MODULES: ${AGENT_TOOL_MODULES:-messages,orders,masterdata,inventory,procurement,orders-read,bundles-read,followup,control,write}
-      # MCP 工具面按模块开放。留空 = 不开放任何 MCP 工具（后端默认 fail-safe），这条透传只是
-      # 让 .env.example 里的示例值真的能生效。部署侧要覆盖它，请写在 override 文件的
-      # environment 里（override 的 environment 优先级高于本文件）；写在 env_file 里会被本行盖掉。
+      # 只在变量未设置时取默认值；显式空值必须保留为零 Agent 工具面。
+      AGENT_TOOL_MODULES: ${AGENT_TOOL_MODULES-messages,orders,masterdata,inventory,procurement,orders-read,bundles-read,followup,control,write}
+      # 新协议变量用无值映射透传：未设置时不进入容器（Spring 继续回退 MCP_MODULES）；
+      # 显式空时则会以空值进入容器并覆盖旧变量。留空 = 不开放任何 MCP 工具。
+      MCP_PROTOCOL_MODULES:
+      # 迁移期兼容旧部署；新变量未设置时 application.yml 才读取此值。
       MCP_MODULES: ${MCP_MODULES:-}
       # Kehuzx read and deterministic write identities are independent.
       KEHUZX_MCP_ENABLED: ${KEHUZX_MCP_ENABLED:-false}

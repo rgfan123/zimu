@@ -150,19 +150,29 @@ class McpHttpTransportAcceptanceTest {
 
     @Test
     void writeToolCallIsRejectedOnHttpTransportJustLikeStdio() throws Exception {
-        // 08 决策：只读收紧是协议分发层的不变式，不因传输面分叉——HTTP 面同样拒绝写工具。
+        // 只读收紧是协议分发层的不变式；写工具还必须与未知工具不可区分。
         String request = "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\","
                 + "\"params\":{\"name\":\"reinterpret_submission\",\"arguments\":{}}}";
+        String unknownRequest = "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\","
+                + "\"params\":{\"name\":\"not_a_real_tool\",\"arguments\":{}}}";
 
         ResponseEntity<String> httpResponse = postToMcp(bearer(), request);
         // JSON-RPC 错误仍是协议层结果，HTTP 状态码是 200（鉴权已通过，请求已被正确处理）。
         assertThat(httpResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
         JsonNode body = mapper.readTree(httpResponse.getBody());
         assertThat(body.get("error").get("code").asInt()).isEqualTo(-32602);
-        assertThat(body.get("error").get("message").asText()).contains("read-only");
+        assertThat(body.get("error").get("message").asText())
+                .isEqualTo("Unknown tool: reinterpret_submission")
+                .doesNotContain("read-only", "write", "restricted");
+
+        JsonNode unknownBody = mapper.readTree(postToMcp(bearer(), unknownRequest).getBody());
+        assertThat(unknownBody.get("error").get("code").asInt()).isEqualTo(-32602);
+        assertThat(unknownBody.get("error").get("message").asText())
+                .isEqualTo("Unknown tool: not_a_real_tool");
 
         JsonNode directBody = directStdioRpc(request);
         assertThat(body).isEqualTo(directBody);
+        assertThat(unknownBody).isEqualTo(directStdioRpc(unknownRequest));
     }
 
     @Test

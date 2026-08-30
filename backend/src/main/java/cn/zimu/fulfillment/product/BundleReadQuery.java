@@ -27,6 +27,7 @@ public interface BundleReadQuery {
             String bundleName,
             String status,
             int componentCount,
+            boolean allComponentsActive,
             List<ProviderSummary> fulfillmentProviders) {
 
         public BundleSummary {
@@ -44,6 +45,7 @@ public interface BundleReadQuery {
             String settlementCost,
             String status,
             List<BundleComponent> components,
+            boolean allComponentsActive,
             List<ProviderSummary> fulfillmentProviders) {
 
         public BundleDetail {
@@ -63,6 +65,7 @@ public interface BundleReadQuery {
             String unit,
             String quantityPerBundle,
             String purchasePrice,
+            boolean active,
             ProviderSummary provider) {}
 
     record BundleCandidate(

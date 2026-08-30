@@ -13,10 +13,10 @@ import cn.zimu.fulfillment.order.domain.Order;
 import cn.zimu.fulfillment.order.domain.OrderLine;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -69,8 +69,12 @@ public class OrderLineBundleResolutionService {
             long orderLineId, long bundleId, String idempotencyKey, CommandContext context) {
         Map<String, Object> payload = Map.of("order_line_id", orderLineId, "bundle_id", bundleId);
         return idempotency.execute("order_line.resolve_bundle", idempotencyKey, payload, 200, () -> {
-            Map<String, Object> line = requireResolvableLine(orderLineId, bundleId);
-            long orderId = ((Number) line.get("order_id")).longValue();
+            // 不同幂等键仍可能同时操作同一订单。所有该入口的写事务统一先锁订单，再锁订单行，
+            // 最后锁复核事项；后续判定 OPEN 工单、全行结构及建 fulfillment 都基于同一串行快照。
+            long orderId = lockOrderForLine(orderLineId);
+            lockOrderLines(orderId);
+            Map<String, Object> line = requireResolvableLine(orderLineId, orderId, bundleId);
+            lockOrderReviews(orderId);
             String sourceChannel = (String) line.get("source_channel");
             String sourceRef = (String) line.get("source_bundle_ref");
             String productName = (String) line.get("product_name_snapshot");
@@ -78,6 +82,12 @@ public class OrderLineBundleResolutionService {
 
             requireConsistentMapping(sourceChannel, sourceRef, productName, bundleId);
             List<Map<String, Object>> bom = requireActiveBundleBom(bundleId);
+            List<List<Map<String, Object>>> providerGroups = groupBomByProvider(bom);
+
+            // V88 前存量行没有 source_sku_ref。必须在任何分片复制和 fulfillment 创建之前，
+            // 把本次实际命中的来源键原子写回；V89 会在分配完成后冻结它。
+            backfillSourceSkuRef(orderLineId, sourceRef);
+            List<Long> partitionLineIds;
 
             if (!alreadyExpanded) {
                 BigDecimal requested = (BigDecimal) line.get("requested_quantity");
@@ -85,110 +95,30 @@ public class OrderLineBundleResolutionService {
                     throw BusinessException.unprocessable("BUNDLE_QUANTITY_NOT_INTEGER", "礼包行数量必须为整数");
                 }
 
-                // 同履约方门禁：与 createBundleLine 的 BUNDLE_MIXED_PROVIDERS 同源
-                Long providerId = ((Number) bom.getFirst().get("fulfillment_provider_id")).longValue();
-                for (Map<String, Object> item : bom) {
-                    if (!Objects.equals(((Number) item.get("fulfillment_provider_id")).longValue(), providerId)) {
-                        throw BusinessException.unprocessable(
-                                "BUNDLE_MIXED_PROVIDERS", "礼包组件必须归属同一履约方");
-                    }
-                }
-
-                // 库触发器规定：礼包行必须先落履约方，才允许挂组件——先改行，后插组件
-                jdbc.update(
-                        """
-                        UPDATE app.order_lines
-                           SET bundle_id = ?, fulfillment_provider_id = ?,
-                               processing_stage = 'READY_TO_EXPORT',
-                               exception_code = NULL, exception_reason = NULL,
-                               mapping_multiplier_snapshot = 1.000,
-                               source_quantity_snapshot = COALESCE(source_quantity_snapshot, requested_quantity),
-                               updated_at = now()
-                         WHERE id = ?
-                        """,
-                        bundleId, providerId, orderLineId);
-
-                int componentNo = 1;
-                for (Map<String, Object> item : bom) {
-                    BigDecimal perBundle = (BigDecimal) item.get("quantity_per_bundle");
-                    jdbc.update(
-                            """
-                            INSERT INTO app.order_line_components
-                                (order_line_id, component_no, sku_id, quantity_per_bundle, total_quantity,
-                                 product_name_snapshot, specification_snapshot, unit_snapshot)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            orderLineId,
-                            componentNo++,
-                            ((Number) item.get("sku_id")).longValue(),
-                            perBundle,
-                            requested.multiply(perBundle).setScale(3, RoundingMode.HALF_UP),
-                            item.get("product_name"),
-                            item.get("specification"),
-                            item.get("unit"));
-                }
+                partitionLineIds = expandByProvider(
+                        line, orderLineId, orderId, bundleId, requested, providerGroups);
+            } else {
+                partitionLineIds = existingPartitionLineIds(orderLineId);
             }
+            backfillPartitionSourceSkuRefs(partitionLineIds, sourceRef);
 
-            // 发货批次路由（candidateRows）只认挂了履约单元的行——创建端逐行建
-            // （OrderCreateService），复核端补建（resumeOrderIfReady），此处同样必须建，
-            // 否则批次确认时该行进不了发货批次，卡 IMPORT_BATCH_EXPORT_INCOMPLETE（生产实证）
-            if (!fulfillments.existsByOrderLineId(orderLineId)) {
-                Order orderEntity = orders.findById(orderId).orElseThrow();
-                OrderLine lineEntity = orderLines.findById(orderLineId).orElseThrow();
-                initialFulfillments.create(orderEntity, lineEntity);
-            }
+            closeResolvedMappingReviews(orderLineId, bundleId, context.operator());
 
-            // 整单门禁与创建端同构：仍有未解析行则维持 NEED_REVIEW，否则进 SKU_MAPPED
-            Integer unresolved = jdbc.queryForObject(
-                    "SELECT count(*) FROM app.order_lines WHERE order_id=? AND processing_stage='NEED_REVIEW'",
-                    Integer.class, orderId);
-            boolean fullyMapped = unresolved != null && unresolved == 0;
+            // 不能用 processing_stage 作为「结构已映射」的替身：订单级复核会让已经映射的普通 SKU
+            // 同样停在 NEED_REVIEW。先关本工单，再同时检查其它 OPEN 工单与每一行真实结构。
+            boolean fullyMapped = !hasOpenReviews(orderId) && allLineStructuresMapped(orderId);
             if (fullyMapped) {
-                int flipped = jdbc.update(
-                        """
-                        UPDATE app.orders SET order_status='SKU_MAPPED',
-                               lock_version = lock_version + 1, updated_at = now()
-                         WHERE id = ? AND order_status = 'NEED_REVIEW'
-                        """,
-                        orderId);
-                if (flipped > 0) {
-                    events.append(orderId, "SKU_MAPPED", orderLineId, null, null, null,
-                            DataScope.BUSINESS,
-                            Map.of("resolved_by_bundle", bundleId, "order_line_id", orderLineId),
-                            context.operator());
-                }
+                resumeWholeOrder(orderId, orderLineId, bundleId, context);
+            } else {
+                keepWholeOrderFailClosed(orderId);
             }
-
-            // 原始行回到 ACCEPTED：血缘（order_id/order_line_id）从建单起就在行上，触发器放行
-            jdbc.update(
-                    """
-                    UPDATE app.raw_import_rows
-                       SET status='ACCEPTED', error_code=NULL, error_detail=NULL, updated_at=now()
-                     WHERE order_line_id = ? AND status = 'NEED_REVIEW'
-                    """,
-                    orderLineId);
-
-            // 顺手关掉本行自己的映射工单：批次确认闸与发货批次路由都把 OPEN 工单当拦路石，
-            // 就地解析完还留着 OPEN 等于修好了门却锁着锁
-            jdbc.update(
-                    """
-                    UPDATE app.review_cases
-                       SET status='RESOLVED',
-                           resolution=jsonb_build_object(
-                               'resolution_type', 'BUNDLE_RESOLVED',
-                               'bundle_id', ?::text),
-                           resolved_by=?, resolved_at=now(), updated_at=now()
-                     WHERE order_line_id = ? AND status = 'OPEN'
-                       AND reason_code IN ('SKU_MAPPING_REQUIRED', 'SKU_MAPPING_CONFLICT')
-                    """,
-                    bundleId, context.operator(), orderLineId);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("order_line_id", String.valueOf(orderLineId));
             result.put("order_id", String.valueOf(orderId));
             result.put("bundle_id", String.valueOf(bundleId));
-            result.put("component_count",
-                    alreadyExpanded ? ((Number) line.get("components")).intValue() : bom.size());
+            result.put("component_count", bom.size());
+            result.put("partition_count", providerGroups.size());
             result.put("order_fully_mapped", fullyMapped);
             return result;
         });
@@ -201,11 +131,49 @@ public class OrderLineBundleResolutionService {
      *    生产实证：展开与建履约单元之间一旦断电/缺步骤，必须能重进把状态收敛齐。
      * 已按「其它」礼包展开的行拒绝——那是主数据冲突，不是重放。
      */
-    private Map<String, Object> requireResolvableLine(long orderLineId, long requestedBundleId) {
+    private long lockOrderForLine(long orderLineId) {
+        List<Long> orderIds = jdbc.query(
+                "SELECT order_id FROM app.order_lines WHERE id=?",
+                (rs, n) -> rs.getLong(1),
+                orderLineId);
+        if (orderIds.isEmpty()) {
+            throw BusinessException.notFound("订单行不存在");
+        }
+        long orderId = orderIds.getFirst();
+        List<Long> locked = jdbc.query(
+                "SELECT id FROM app.orders WHERE id=? FOR UPDATE",
+                (rs, n) -> rs.getLong(1),
+                orderId);
+        if (locked.isEmpty()) {
+            throw BusinessException.notFound("订单不存在");
+        }
+        return orderId;
+    }
+
+    private void lockOrderLines(long orderId) {
+        jdbc.query(
+                "SELECT id FROM app.order_lines WHERE order_id=? ORDER BY id FOR UPDATE",
+                rs -> {
+                    // 行锁本身就是结果；无需把主键物化到业务对象。
+                },
+                orderId);
+    }
+
+    private void lockOrderReviews(long orderId) {
+        jdbc.query(
+                "SELECT id FROM app.review_cases WHERE order_id=? ORDER BY id FOR UPDATE",
+                rs -> {
+                    // 与订单行相同，只消费结果以持有到事务结束。
+                },
+                orderId);
+    }
+
+    private Map<String, Object> requireResolvableLine(
+            long orderLineId, long lockedOrderId, long requestedBundleId) {
         List<Map<String, Object>> rows = jdbc.query(
                 """
-                SELECT ol.id, ol.order_id, ol.line_type, ol.processing_stage, ol.exception_code,
-                       ol.bundle_id, ol.requested_quantity,
+                SELECT ol.id, ol.order_id, ol.line_no, ol.line_type, ol.processing_stage, ol.exception_code,
+                       ol.bundle_id, ol.requested_quantity, ol.source_sku_ref,
                        o.source_channel, o.order_status,
                        ol.product_name_snapshot,
                        -- 来源礼包第一把键 = 与 SKU 映射同源的 source_sku_ref（V88 起随建单落行）。
@@ -219,15 +187,18 @@ public class OrderLineBundleResolutionService {
                            ol.product_name_snapshot)                       AS source_bundle_ref,
                        (SELECT count(*) FROM app.order_line_components c WHERE c.order_line_id = ol.id) AS components
                 FROM app.order_lines ol JOIN app.orders o ON o.id = ol.order_id
-                WHERE ol.id = ?
+                WHERE ol.id = ? AND ol.order_id = ?
+                FOR UPDATE OF ol
                 """,
                 (rs, n) -> {
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("order_id", rs.getLong("order_id"));
+                    row.put("line_no", rs.getInt("line_no"));
                     row.put("line_type", rs.getString("line_type"));
                     row.put("processing_stage", rs.getString("processing_stage"));
                     row.put("exception_code", rs.getString("exception_code"));
                     row.put("bundle_id", rs.getObject("bundle_id"));
+                    row.put("source_sku_ref", rs.getString("source_sku_ref"));
                     row.put("source_bundle_ref", rs.getString("source_bundle_ref"));
                     row.put("product_name_snapshot", rs.getString("product_name_snapshot"));
                     row.put("requested_quantity", rs.getBigDecimal("requested_quantity"));
@@ -235,7 +206,8 @@ public class OrderLineBundleResolutionService {
                     row.put("components", rs.getInt("components"));
                     return row;
                 },
-                orderLineId);
+                orderLineId,
+                lockedOrderId);
         if (rows.isEmpty()) {
             throw BusinessException.notFound("订单行不存在");
         }
@@ -263,6 +235,147 @@ public class OrderLineBundleResolutionService {
         return line;
     }
 
+    private void backfillSourceSkuRef(long orderLineId, String sourceRef) {
+        if (sourceRef == null || sourceRef.isBlank()) {
+            throw BusinessException.unprocessable(
+                    "SOURCE_BUNDLE_MAPPING_MISSING", "待解析礼包缺少可持久化的来源商品标识");
+        }
+        jdbc.update(
+                """
+                UPDATE app.order_lines
+                   SET source_sku_ref=?, updated_at=now()
+                 WHERE id=? AND NULLIF(btrim(source_sku_ref), '') IS NULL
+                """,
+                sourceRef,
+                orderLineId);
+    }
+
+    private void backfillPartitionSourceSkuRefs(List<Long> lineIds, String sourceRef) {
+        for (Long lineId : lineIds) {
+            jdbc.update(
+                    """
+                    UPDATE app.order_lines
+                       SET source_sku_ref=?, updated_at=now()
+                     WHERE id=? AND NULLIF(btrim(source_sku_ref), '') IS NULL
+                    """,
+                    sourceRef,
+                    lineId);
+        }
+    }
+
+    private void closeResolvedMappingReviews(long orderLineId, long bundleId, String operator) {
+        jdbc.update(
+                """
+                UPDATE app.review_cases
+                   SET status='RESOLVED',
+                       resolution=jsonb_build_object(
+                           'resolution_type', 'BUNDLE_RESOLVED',
+                           'bundle_id', ?::text),
+                       resolved_by=?, resolved_at=now(), updated_at=now()
+                 WHERE order_line_id = ? AND status = 'OPEN'
+                   AND reason_code IN ('SKU_MAPPING_REQUIRED', 'SKU_MAPPING_CONFLICT')
+                """,
+                bundleId,
+                operator,
+                orderLineId);
+    }
+
+    private boolean hasOpenReviews(long orderId) {
+        Boolean exists = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM app.review_cases WHERE order_id=? AND status='OPEN')",
+                Boolean.class,
+                orderId);
+        return Boolean.TRUE.equals(exists);
+    }
+
+    private boolean allLineStructuresMapped(long orderId) {
+        Boolean mapped = jdbc.queryForObject(
+                """
+                SELECT NOT EXISTS (
+                    SELECT 1
+                    FROM app.order_lines ol
+                    WHERE ol.order_id=?
+                      AND CASE ol.line_type
+                          WHEN 'SINGLE' THEN ol.sku_id IS NULL OR ol.fulfillment_provider_id IS NULL
+                          WHEN 'CUSTOM_BUNDLE' THEN ol.bundle_id IS NULL
+                              OR ol.fulfillment_provider_id IS NULL
+                              OR NOT EXISTS (
+                                  SELECT 1 FROM app.order_line_components c WHERE c.order_line_id=ol.id)
+                          ELSE true
+                      END
+                )
+                """,
+                Boolean.class,
+                orderId);
+        return Boolean.TRUE.equals(mapped);
+    }
+
+    private void resumeWholeOrder(
+            long orderId, long resolvedLineId, long bundleId, CommandContext context) {
+        jdbc.update(
+                """
+                UPDATE app.order_lines
+                   SET processing_stage='READY_TO_EXPORT', exception_code=NULL, exception_reason=NULL,
+                       updated_at=now()
+                 WHERE order_id=? AND processing_stage='NEED_REVIEW'
+                """,
+                orderId);
+
+        // 发货批次路由只认挂了履约单元的行。最后一道复核关闭时必须补齐整单，
+        // 不能只给刚解析的礼包行建 fulfillment。
+        Order orderEntity = orders.findById(orderId).orElseThrow();
+        for (OrderLine lineEntity : orderLines.findByOrderIdOrderByLineNoAsc(orderId)) {
+            if (!fulfillments.existsByOrderLineId(lineEntity.getId())) {
+                initialFulfillments.create(orderEntity, lineEntity);
+            }
+        }
+
+        int flipped = jdbc.update(
+                """
+                UPDATE app.orders SET order_status='SKU_MAPPED',
+                       lock_version=lock_version+1, updated_at=now()
+                 WHERE id=? AND order_status='NEED_REVIEW'
+                """,
+                orderId);
+        jdbc.update(
+                """
+                UPDATE app.raw_import_rows
+                   SET status='ACCEPTED', error_code=NULL, error_detail=NULL, updated_at=now()
+                 WHERE order_id=? AND status='NEED_REVIEW'
+                """,
+                orderId);
+        jdbc.update(
+                """
+                UPDATE app.import_batches ib
+                   SET status=CASE WHEN EXISTS (
+                           SELECT 1 FROM app.raw_import_rows rir
+                           WHERE rir.import_batch_id=ib.id
+                             AND rir.status IN ('NEED_REVIEW','REJECTED'))
+                       THEN 'COMPLETED_WITH_REVIEW' ELSE 'COMPLETED' END,
+                       processed_at=now()
+                 WHERE ib.id=(SELECT source_import_batch_id FROM app.orders WHERE id=?)
+                   AND ib.batch_type='SOURCE_ORDER'
+                """,
+                orderId);
+        if (flipped > 0) {
+            events.append(orderId, "SKU_MAPPED", resolvedLineId, null, null, null,
+                    DataScope.BUSINESS,
+                    Map.of("resolved_by_bundle", bundleId, "order_line_id", resolvedLineId),
+                    context.operator());
+        }
+    }
+
+    private void keepWholeOrderFailClosed(long orderId) {
+        jdbc.update(
+                """
+                UPDATE app.order_lines
+                   SET processing_stage='NEED_REVIEW', updated_at=now()
+                 WHERE order_id=? AND processing_stage='READY_TO_EXPORT'
+                   AND fulfillment_committed_at IS NULL
+                """,
+                orderId);
+    }
+
     /**
      * 主数据一致性门禁：映射必须已存在、启用、乘数 1，且指向的就是这个礼包——与 resolveSku 的冲突语义同构。
      *
@@ -279,7 +392,7 @@ public class OrderLineBundleResolutionService {
                     "SOURCE_BUNDLE_MAPPING_MISSING",
                     "来源礼包映射仍未配置（" + sourceChannel + ":" + sourceRef + "），请先在映射矩阵补配");
         }
-        if (mapped.stream().noneMatch(id -> id == bundleId)) {
+        if (mapped.size() != 1 || mapped.getFirst() != bundleId) {
             throw BusinessException.conflict(
                     "SOURCE_BUNDLE_MAPPING_CONFLICT", "该来源礼包已映射到其它礼包档案，请先处理主数据冲突");
         }
@@ -289,11 +402,11 @@ public class OrderLineBundleResolutionService {
     private List<Map<String, Object>> requireActiveBundleBom(long bundleId) {
         List<Map<String, Object>> bom = jdbc.query(
                 """
-                SELECT bi.sku_id, bi.quantity_per_bundle, s.fulfillment_provider_id,
+                SELECT bi.sku_id, bi.quantity_per_bundle, s.fulfillment_provider_id, s.active,
                        p.product_name, s.specification, s.unit
                 FROM app.bundle_items bi
                 JOIN app.product_bundles b ON b.id = bi.bundle_id AND b.status = 'ACTIVE'
-                JOIN app.skus s ON s.id = bi.sku_id AND s.active
+                JOIN app.skus s ON s.id = bi.sku_id
                 JOIN app.products p ON p.id = s.product_id
                 WHERE bi.bundle_id = ?
                 ORDER BY bi.sort_no
@@ -303,6 +416,7 @@ public class OrderLineBundleResolutionService {
                     row.put("sku_id", rs.getLong("sku_id"));
                     row.put("quantity_per_bundle", rs.getBigDecimal("quantity_per_bundle"));
                     row.put("fulfillment_provider_id", rs.getLong("fulfillment_provider_id"));
+                    row.put("sku_active", rs.getBoolean("active"));
                     row.put("product_name", rs.getString("product_name"));
                     row.put("specification", rs.getString("specification"));
                     row.put("unit", rs.getString("unit"));
@@ -313,6 +427,159 @@ public class OrderLineBundleResolutionService {
             throw BusinessException.unprocessable(
                     "BUNDLE_BOM_EMPTY", "礼包档案无有效 BOM（未启用或组件 SKU 停用），不能展开");
         }
+        if (bom.stream().anyMatch(item -> !Boolean.TRUE.equals(item.get("sku_active")))) {
+            throw BusinessException.unprocessable(
+                    "BUNDLE_BOM_INACTIVE", "礼包 BOM 含停用 SKU，不能展开");
+        }
         return bom;
+    }
+
+    private List<List<Map<String, Object>>> groupBomByProvider(List<Map<String, Object>> bom) {
+        Map<Long, List<Map<String, Object>>> groups = new LinkedHashMap<>();
+        for (Map<String, Object> item : bom) {
+            long providerId = ((Number) item.get("fulfillment_provider_id")).longValue();
+            groups.computeIfAbsent(providerId, ignored -> new ArrayList<>()).add(item);
+        }
+        return groups.values().stream().map(List::copyOf).toList();
+    }
+
+    /**
+     * 人工补配与自动导入保持同一分片模型：原行承载第一 provider，其余 provider 新增相邻订单行；
+     * 同一 raw_import_row 通过 partition_no=1..N 关联所有分片，primary order_line_id 保持不变。
+     */
+    private List<Long> expandByProvider(
+            Map<String, Object> sourceLine,
+            long primaryLineId,
+            long orderId,
+            long bundleId,
+            BigDecimal requested,
+            List<List<Map<String, Object>>> providerGroups) {
+        int additional = providerGroups.size() - 1;
+        int originalLineNo = ((Number) sourceLine.get("line_no")).intValue();
+        if (additional > 0) {
+            int maxLineNo = jdbc.queryForObject(
+                    "SELECT max(line_no) FROM app.order_lines WHERE order_id=?", Integer.class, orderId);
+            int offset = maxLineNo + additional + 1;
+            jdbc.update(
+                    "UPDATE app.order_lines SET line_no=line_no+? WHERE order_id=? AND line_no>?",
+                    offset,
+                    orderId,
+                    originalLineNo);
+            jdbc.update(
+                    "UPDATE app.order_lines SET line_no=line_no-?+? WHERE order_id=? AND line_no>?",
+                    offset,
+                    additional,
+                    orderId,
+                    originalLineNo + offset);
+        }
+
+        List<Long> lineIds = new ArrayList<>(providerGroups.size());
+        lineIds.add(primaryLineId);
+        for (int partitionIndex = 0; partitionIndex < providerGroups.size(); partitionIndex++) {
+            List<Map<String, Object>> group = providerGroups.get(partitionIndex);
+            long providerId = ((Number) group.getFirst().get("fulfillment_provider_id")).longValue();
+            long lineId;
+            if (partitionIndex == 0) {
+                lineId = primaryLineId;
+                jdbc.update(
+                        """
+                        UPDATE app.order_lines
+                           SET bundle_id=?, fulfillment_provider_id=?, processing_stage='NEED_REVIEW',
+                               exception_code=NULL, exception_reason=NULL,
+                               mapping_multiplier_snapshot=1.000,
+                               source_quantity_snapshot=COALESCE(source_quantity_snapshot, requested_quantity),
+                               updated_at=now()
+                         WHERE id=?
+                        """,
+                        bundleId,
+                        providerId,
+                        primaryLineId);
+            } else {
+                lineId = jdbc.queryForObject(
+                        """
+                        INSERT INTO app.order_lines
+                            (order_id, line_no, line_type, bundle_id, fulfillment_provider_id,
+                             product_name_snapshot, sku_code_snapshot, source_sku_ref,
+                             specification_snapshot, unit_snapshot, source_quantity_snapshot,
+                             mapping_multiplier_snapshot, requested_quantity, processing_stage)
+                        SELECT order_id, ?, line_type, ?, ?, product_name_snapshot, sku_code_snapshot,
+                               source_sku_ref, specification_snapshot, unit_snapshot,
+                               COALESCE(source_quantity_snapshot, requested_quantity), 1.000,
+                               requested_quantity, 'NEED_REVIEW'
+                        FROM app.order_lines WHERE id=?
+                        RETURNING id
+                        """,
+                        Long.class,
+                        originalLineNo + partitionIndex,
+                        bundleId,
+                        providerId,
+                        primaryLineId);
+                lineIds.add(lineId);
+            }
+            insertComponents(lineId, requested, group);
+        }
+        attachRawLineage(primaryLineId, lineIds);
+        return List.copyOf(lineIds);
+    }
+
+    private void insertComponents(long lineId, BigDecimal requested, List<Map<String, Object>> group) {
+        int componentNo = 1;
+        for (Map<String, Object> item : group) {
+            BigDecimal perBundle = (BigDecimal) item.get("quantity_per_bundle");
+            jdbc.update(
+                    """
+                    INSERT INTO app.order_line_components
+                        (order_line_id, component_no, sku_id, quantity_per_bundle, total_quantity,
+                         product_name_snapshot, specification_snapshot, unit_snapshot)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    lineId,
+                    componentNo++,
+                    ((Number) item.get("sku_id")).longValue(),
+                    perBundle,
+                    requested.multiply(perBundle).setScale(3, RoundingMode.HALF_UP),
+                    item.get("product_name"),
+                    item.get("specification"),
+                    item.get("unit"));
+        }
+    }
+
+    private void attachRawLineage(long primaryLineId, List<Long> lineIds) {
+        List<Long> rawIds = jdbc.query(
+                """
+                SELECT DISTINCT rir.id
+                FROM app.raw_import_rows rir
+                LEFT JOIN app.raw_import_row_order_lines rirol ON rirol.raw_import_row_id=rir.id
+                WHERE rir.order_line_id=? OR rirol.order_line_id=?
+                """,
+                (rs, n) -> rs.getLong(1),
+                primaryLineId,
+                primaryLineId);
+        for (Long rawId : rawIds) {
+            for (int index = 0; index < lineIds.size(); index++) {
+                jdbc.update(
+                        """
+                        INSERT INTO app.raw_import_row_order_lines(raw_import_row_id,order_line_id,partition_no)
+                        VALUES (?,?,?) ON CONFLICT (raw_import_row_id,order_line_id) DO NOTHING
+                        """,
+                        rawId,
+                        lineIds.get(index),
+                        index + 1);
+            }
+        }
+    }
+
+    private List<Long> existingPartitionLineIds(long primaryLineId) {
+        List<Long> lineIds = jdbc.query(
+                """
+                SELECT rirol.order_line_id
+                FROM app.raw_import_rows rir
+                JOIN app.raw_import_row_order_lines rirol ON rirol.raw_import_row_id=rir.id
+                WHERE rir.order_line_id=?
+                ORDER BY rirol.partition_no
+                """,
+                (rs, n) -> rs.getLong(1),
+                primaryLineId);
+        return lineIds.isEmpty() ? List.of(primaryLineId) : List.copyOf(lineIds);
     }
 }

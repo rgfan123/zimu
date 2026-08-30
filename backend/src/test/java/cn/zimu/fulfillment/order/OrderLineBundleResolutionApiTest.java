@@ -1,9 +1,19 @@
 package cn.zimu.fulfillment.order;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
@@ -33,6 +43,7 @@ class OrderLineBundleResolutionApiTest {
 
     @Autowired org.springframework.boot.test.web.client.TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
+    @Autowired DataSource dataSource;
 
     private long seedBlockedBundleOrder(String suffix) {
         Long customerId = jdbc.queryForObject(
@@ -87,6 +98,60 @@ class OrderLineBundleResolutionApiTest {
     private long lineOf(long orderId) {
         return jdbc.queryForObject(
                 "SELECT id FROM app.order_lines WHERE order_id=?", Long.class, orderId);
+    }
+
+    private long appendMappedSingleLine(long orderId, int lineNo, String suffix) {
+        return jdbc.queryForObject(
+                """
+                INSERT INTO app.order_lines
+                    (order_id, line_no, line_type, sku_id, fulfillment_provider_id,
+                     product_name_snapshot, sku_code_snapshot, source_sku_ref,
+                     specification_snapshot, unit_snapshot, source_quantity_snapshot,
+                     mapping_multiplier_snapshot, requested_quantity, processing_stage)
+                SELECT ?, ?, 'SINGLE', s.id, s.fulfillment_provider_id,
+                       p.product_name || '-' || ?, s.sku_code, 'MAPPED-' || ?,
+                       s.specification, s.unit, 1.000, 1.000, 1.000, 'NEED_REVIEW'
+                FROM app.skus s JOIN app.products p ON p.id=s.product_id
+                WHERE s.active AND s.fulfillment_provider_id IS NOT NULL
+                ORDER BY s.id LIMIT 1
+                RETURNING id
+                """,
+                Long.class,
+                orderId,
+                lineNo,
+                suffix,
+                suffix);
+    }
+
+    private void appendRawReviewRow(long orderId, long lineId, int rowIndex, String sourceRef) {
+        Long batchId = jdbc.queryForObject(
+                "SELECT source_import_batch_id FROM app.orders WHERE id=?", Long.class, orderId);
+        jdbc.update(
+                """
+                INSERT INTO app.raw_import_rows
+                    (import_batch_id, sheet_name, sheet_index, row_index, raw_cells,
+                     source_order_ref, status, error_code, error_detail, order_id, order_line_id)
+                VALUES (?, 'sheet1', 0, ?, jsonb_build_object('主商品编码', ?),
+                        'RAW-' || ?, 'NEED_REVIEW', 'SKU_MAPPING_REQUIRED', '{}'::jsonb, ?, ?)
+                """,
+                batchId,
+                rowIndex,
+                sourceRef,
+                sourceRef,
+                orderId,
+                lineId);
+    }
+
+    private void mapBundle(String sourceRef, long bundleId) {
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_bundles
+                    (source_channel, source_bundle_ref, source_bundle_name,
+                     quantity_multiplier, bundle_id, active)
+                VALUES ('DAZHE', ?, '子牧测试礼包', 1.000, ?, true)
+                """,
+                sourceRef,
+                bundleId);
     }
 
     /** 自包含夹具：两件装礼包（复用种子里的启用 SKU），不依赖环境预置礼包。 */
@@ -266,5 +331,251 @@ class OrderLineBundleResolutionApiTest {
         ResponseEntity<Map> other = resolve(lineId, otherBundle, "resolve-bundle-d4-3");
         assertThat(other.getStatusCode().value()).isEqualTo(409);
         assertThat(other.getBody().get("business_code")).isEqualTo("SOURCE_BUNDLE_MAPPING_CONFLICT");
+    }
+
+    @Test
+    void 礼包复核是最后阻断时_整单统一恢复并为普通SKU与礼包都建履约() {
+        long bundleId = activeBundleWithBom();
+        long orderId = seedBlockedBundleOrder("WHOLE-A");
+        long bundleLineId = lineOf(orderId);
+        long singleLineId = appendMappedSingleLine(orderId, 2, "WHOLE-A");
+        appendRawReviewRow(orderId, bundleLineId, 1, "子牧测试礼包-WHOLE-A");
+        appendRawReviewRow(orderId, singleLineId, 2, "MAPPED-WHOLE-A");
+        mapBundle("子牧测试礼包-WHOLE-A", bundleId);
+
+        ResponseEntity<Map> response = resolve(bundleLineId, bundleId, "resolve-bundle-whole-a");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).containsEntry("order_fully_mapped", true);
+        assertThat(jdbc.queryForList(
+                        "SELECT processing_stage FROM app.order_lines WHERE order_id=? ORDER BY line_no",
+                        String.class,
+                        orderId))
+                .containsExactly("READY_TO_EXPORT", "READY_TO_EXPORT");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.fulfillments f JOIN app.order_lines ol ON ol.id=f.order_line_id "
+                                + "WHERE ol.order_id=?",
+                        Integer.class,
+                        orderId))
+                .isEqualTo(2);
+        assertThat(jdbc.queryForObject(
+                        "SELECT order_status FROM app.orders WHERE id=?", String.class, orderId))
+                .isEqualTo("SKU_MAPPED");
+        assertThat(jdbc.queryForList(
+                        "SELECT status FROM app.raw_import_rows WHERE order_id=? ORDER BY row_index",
+                        String.class,
+                        orderId))
+                .containsExactly("ACCEPTED", "ACCEPTED");
+    }
+
+    @Test
+    void 仍有其它OPEN复核时_整单保持failClosed且不得提前只给礼包建履约() {
+        long bundleId = activeBundleWithBom();
+        long orderId = seedBlockedBundleOrder("WHOLE-B");
+        long bundleLineId = lineOf(orderId);
+        long singleLineId = appendMappedSingleLine(orderId, 2, "WHOLE-B");
+        appendRawReviewRow(orderId, bundleLineId, 1, "子牧测试礼包-WHOLE-B");
+        appendRawReviewRow(orderId, singleLineId, 2, "MAPPED-WHOLE-B");
+        jdbc.update(
+                """
+                INSERT INTO app.review_cases
+                    (case_no, case_type, status, responsible_team, reason_code, order_id, order_line_id)
+                VALUES ('RC-BUNDLE-OTHER-WHOLE-B', 'ORDER', 'OPEN', 'ORDER_OPS',
+                        'CUSTOMER_MATCH_REQUIRED', ?, ?)
+                """,
+                orderId,
+                singleLineId);
+        mapBundle("子牧测试礼包-WHOLE-B", bundleId);
+
+        ResponseEntity<Map> response = resolve(bundleLineId, bundleId, "resolve-bundle-whole-b");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).containsEntry("order_fully_mapped", false);
+        assertThat(jdbc.queryForList(
+                        "SELECT processing_stage FROM app.order_lines WHERE order_id=? ORDER BY line_no",
+                        String.class,
+                        orderId))
+                .containsExactly("NEED_REVIEW", "NEED_REVIEW");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.fulfillments f JOIN app.order_lines ol ON ol.id=f.order_line_id "
+                                + "WHERE ol.order_id=?",
+                        Integer.class,
+                        orderId))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT order_status FROM app.orders WHERE id=?", String.class, orderId))
+                .isEqualTo("NEED_REVIEW");
+        assertThat(jdbc.queryForList(
+                        "SELECT status FROM app.raw_import_rows WHERE order_id=? ORDER BY row_index",
+                        String.class,
+                        orderId))
+                .containsExactly("NEED_REVIEW", "NEED_REVIEW");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.review_cases WHERE order_id=? AND status='OPEN'",
+                        Integer.class,
+                        orderId))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void 不同幂等键并发解析同一订单行_由订单锁串行且只展开一次() throws Exception {
+        long bundleId = activeBundleWithBom();
+        long orderId = seedBlockedBundleOrder("CONCURRENT");
+        long lineId = lineOf(orderId);
+        mapBundle("子牧测试礼包-CONCURRENT", bundleId);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(4)) {
+            List<Future<ResponseEntity<Map>>> futures = java.util.stream.IntStream.range(0, 4)
+                    .mapToObj(index -> executor.submit(() -> {
+                        start.await(5, TimeUnit.SECONDS);
+                        return resolve(lineId, bundleId, "resolve-bundle-concurrent-" + index);
+                    }))
+                    .toList();
+            start.countDown();
+            for (Future<ResponseEntity<Map>> future : futures) {
+                assertThat(future.get(20, TimeUnit.SECONDS).getStatusCode()).isEqualTo(HttpStatus.OK);
+            }
+        }
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.order_line_components WHERE order_line_id=?",
+                        Integer.class,
+                        lineId))
+                .isEqualTo(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.bundle_items WHERE bundle_id=?", Integer.class, bundleId));
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.fulfillments WHERE order_line_id=?", Integer.class, lineId))
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.order_events WHERE order_id=? AND event_type_code='SKU_MAPPED'",
+                        Integer.class,
+                        orderId))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void legacy空sourceRef解析时先回填真实来源键_分配后不可改写() {
+        long bundleId = activeBundleWithBom();
+        long orderId = seedBlockedBundleOrder("LEGACY-REF");
+        long lineId = lineOf(orderId);
+        appendRawReviewRow(orderId, lineId, 1, "LEGACY-ACTUAL-REF");
+        mapBundle("LEGACY-ACTUAL-REF", bundleId);
+
+        assertThat(resolve(lineId, bundleId, "resolve-bundle-legacy-ref").getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT source_sku_ref FROM app.order_lines WHERE id=?", String.class, lineId))
+                .isEqualTo("LEGACY-ACTUAL-REF");
+        assertThatThrownBy(() -> jdbc.update(
+                        "UPDATE app.order_lines SET source_sku_ref='TAMPERED' WHERE id=?", lineId))
+                .rootCause()
+                .hasMessageContaining("order-line source SKU identity is immutable after fulfillment allocation");
+    }
+
+    @Test
+    void 同一UPDATE同时写sourceRef与committedAt_也必须冻结() {
+        long orderId = seedBlockedBundleOrder("SAME-UPDATE");
+        long lineId = lineOf(orderId);
+        jdbc.update("UPDATE app.order_lines SET source_sku_ref='ORIGINAL' WHERE id=?", lineId);
+
+        assertThatThrownBy(() -> jdbc.update(
+                        """
+                        UPDATE app.order_lines
+                           SET source_sku_ref='TAMPERED', fulfillment_committed_at=now()
+                         WHERE id=?
+                        """,
+                        lineId))
+                .rootCause()
+                .hasMessageContaining("order-line source SKU identity is immutable after fulfillment allocation");
+    }
+
+    @Test
+    void 已提交行不能用同一UPDATE清空committedAt并改写sourceRef() {
+        long orderId = seedBlockedBundleOrder("CLEAR-COMMITTED");
+        long lineId = lineOf(orderId);
+        jdbc.update("UPDATE app.order_lines SET source_sku_ref='ORIGINAL' WHERE id=?", lineId);
+        jdbc.update("UPDATE app.order_lines SET fulfillment_committed_at=now() WHERE id=?", lineId);
+
+        assertThatThrownBy(() -> jdbc.update(
+                        """
+                        UPDATE app.order_lines
+                           SET source_sku_ref='TAMPERED', fulfillment_committed_at=NULL
+                         WHERE id=?
+                        """,
+                        lineId))
+                .rootCause()
+                .hasMessageContaining("order-line source SKU identity is immutable after fulfillment allocation");
+    }
+
+    @Test
+    void 未提交fulfillment插入先锁行_并发sourceRef改写等待后拒绝() throws Exception {
+        long orderId = seedBlockedBundleOrder("TOCTOU");
+        long lineId = lineOf(orderId);
+        Map<String, Object> sku = jdbc.queryForMap(
+                "SELECT id, fulfillment_provider_id FROM app.skus WHERE active "
+                        + "AND fulfillment_provider_id IS NOT NULL ORDER BY id LIMIT 1");
+        long providerId = ((Number) sku.get("fulfillment_provider_id")).longValue();
+        jdbc.update(
+                """
+                UPDATE app.order_lines
+                   SET line_type='SINGLE', sku_id=?, fulfillment_provider_id=?, source_sku_ref='ORIGINAL',
+                       source_quantity_snapshot=1.000, mapping_multiplier_snapshot=1.000,
+                       processing_stage='READY_TO_EXPORT', exception_code=NULL, exception_reason=NULL
+                 WHERE id=?
+                """,
+                ((Number) sku.get("id")).longValue(),
+                providerId,
+                lineId);
+
+        try (Connection allocating = dataSource.getConnection();
+                Connection rewriting = dataSource.getConnection();
+                ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            allocating.setAutoCommit(false);
+            rewriting.setAutoCommit(false);
+            try (PreparedStatement insert = allocating.prepareStatement(
+                    """
+                    INSERT INTO app.fulfillments
+                        (fulfillment_no, order_line_id, fulfillment_provider_id, requested_quantity)
+                    VALUES (?, ?, ?, 1.000)
+                    """)) {
+                insert.setString(1, "FL-TOCTOU-" + lineId);
+                insert.setLong(2, lineId);
+                insert.setLong(3, providerId);
+                assertThat(insert.executeUpdate()).isEqualTo(1);
+            }
+
+            CountDownLatch issued = new CountDownLatch(1);
+            Future<SQLException> outcome = executor.submit(() -> {
+                issued.countDown();
+                try (PreparedStatement update = rewriting.prepareStatement(
+                        "UPDATE app.order_lines SET source_sku_ref='TAMPERED' WHERE id=?")) {
+                    update.setLong(1, lineId);
+                    update.executeUpdate();
+                    rewriting.commit();
+                    return null;
+                } catch (SQLException failure) {
+                    rewriting.rollback();
+                    return failure;
+                }
+            });
+            assertThat(issued.await(5, TimeUnit.SECONDS)).isTrue();
+            org.awaitility.Awaitility.await()
+                    .during(java.time.Duration.ofMillis(200))
+                    .atMost(java.time.Duration.ofSeconds(3))
+                    .untilAsserted(() -> assertThat(outcome)
+                            .as("source ref update should wait on the allocation row lock")
+                            .isNotDone());
+
+            allocating.commit();
+            SQLException failure = outcome.get(10, TimeUnit.SECONDS);
+            assertThat((Throwable) failure)
+                    .isNotNull()
+                    .hasMessageContaining("order-line source SKU identity is immutable after fulfillment allocation");
+        }
+        assertThat(jdbc.queryForObject(
+                        "SELECT source_sku_ref FROM app.order_lines WHERE id=?", String.class, lineId))
+                .isEqualTo("ORIGINAL");
     }
 }

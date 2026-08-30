@@ -37,6 +37,16 @@
 Agent 与协议面分别建立索引、分别校验未知模块。协议 `tools/list` / `tools/call`
 只访问协议索引，并继续拒绝写工具和 `externallyDiscoverable=false` 的内部工具；
 即使协议模块清单误含 `write` 或 `control`，也不会把这些工具开放出去。
+对不可见的内部工具、写工具与真正的未知工具，`tools/call` 统一返回
+`Unknown tool`，不通过错误文案泄露某个被隐藏工具是否存在或为何受限。
+传输面启用时，启动自检按最终 `readOnly && externallyDiscoverable` 的实际工具数判断；
+清单非空但只包含 `write` / 内部 `control` 工具同样 fail-fast，不能启动成全哑服务。
+
+Compose 边界必须保留「未设置」与「显式空」的差别：
+
+- `AGENT_TOOL_MODULES` 使用 `${AGENT_TOOL_MODULES-default}`，未设置时才取默认清单，显式空保持零工具。
+- `MCP_PROTOCOL_MODULES` 使用 Compose 无值映射透传。未设置时不进入容器，Spring 回退
+  `MCP_MODULES`；显式空时以空值进入容器，并按新变量优先规则覆盖旧值。
 
 自检选 fail-fast 而非 WARN 的理由：语义翻转把配置丢失的失败模式从
 「PII 外泄」变成「机器人全哑」。外泄是响亮的（有人会看到不该看到的数据），

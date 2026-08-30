@@ -61,7 +61,7 @@ ssh zimupc "type C:\\Deploy\\zimu\\releases\\agent-platform-e50bb3e-20260825-075
 # 三项都必须 >=1 才允许 scp:
 grep -c GATEWAY_BASIC_AUTH_ENABLED /tmp/off.yml   # 抹掉 = 公网入口失去认证
 grep -c AGENT_TOOL_MODULES         /tmp/off.yml   # 抹掉 = 内部 Agent 工具面为空或漂移
-grep -c MCP_MODULES                /tmp/off.yml   # 抹掉 = 公共协议面无工具并在传输开启时启动失败
+grep -Ec 'MCP_PROTOCOL_MODULES|MCP_MODULES' /tmp/off.yml # 新旧变量至少保留一个，新变量显式空会覆盖旧值
 scp -q /tmp/off.yml "zimupc:$R/offline.runtime.override.yml"
 ```
 

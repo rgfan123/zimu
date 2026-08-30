@@ -18,6 +18,7 @@ import java.io.ByteArrayOutputStream;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,9 +39,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * <ol>
  *   <li><b>三条路径同键</b>——文件导入与 API 拉单对同一个商品必须给出同一个结果；
  *       改造前拉单根本不查礼包映射，礼包行恒为 SINGLE 死行。</li>
- *   <li><b>存量映射不破</b>——生产 39 条礼包映射里 ID 键与名称键并存
- *       （DAZHE bundle 1 挂 P26011900044 与中文名，JUFUBAO bundle 33 挂 66500527 与中文名），
- *       两种键在两条自动链路上都必须命中。名称键那一条改造前只有人工 resolve-bundle 能命中。</li>
+ *   <li><b>稳定身份不降级</b>——渠道给出稳定 ID 时只按 ID 查；只有无稳定 ID 的 legacy 模板
+ *       才以名称作为身份键，防止同名映射劫持另一商品。</li>
  *   <li><b>SKU 映射优先于名字猜测</b>——名字含礼包/礼盒/组合但已有活跃 SKU 映射的<i>单品</i>
  *       不许被判成待解析礼包行；改造前文件链路会劫持它，而拉单链路正常走 SKU 映射。</li>
  * </ol>
@@ -104,10 +104,25 @@ class SourceBundleKeyUnificationApiTest {
         int bomSize = jdbc.queryForObject(
                 "SELECT count(*) FROM app.bundle_items WHERE bundle_id=?", Integer.class, bundleId);
         assertThat(componentCount(pullLines)).isEqualTo(componentCount(fileLines)).isEqualTo(bomSize);
+        long pullLineId = ((Number) pullLines.getFirst().get("id")).longValue();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT snapshot->'lines'->0->>'source_sku_ref'
+                        FROM app.order_versions
+                        WHERE order_id=(SELECT order_id FROM app.order_lines WHERE id=?)
+                        ORDER BY version_no DESC LIMIT 1
+                        """,
+                        String.class,
+                        pullLineId))
+                .as("OrderVersion 必须冻结来源商品身份")
+                .isEqualTo(productId);
+        assertThatThrownBy(() -> jdbc.update(
+                        "UPDATE app.order_lines SET source_sku_ref='TAMPERED' WHERE id=?", pullLineId))
+                .hasStackTraceContaining("order-line source SKU identity is immutable after fulfillment allocation");
     }
 
     @Test
-    void 名称键存量映射_两条自动链路都命中_不再只能人工补救() throws Exception {
+    void 稳定ID未命中时名称键不得劫持_两条自动链路都保持待复核() throws Exception {
         String productId = productId();
         String productName = "【京东配送】子牧牛肉惠选礼包2000g-" + productId;
         long bundleId = activeBundle("BUNDLE-KEY-NAME-" + productId);
@@ -119,13 +134,164 @@ class SourceBundleKeyUnificationApiTest {
         List<Map<String, Object>> pullLines = linesOf(importPull(productId, productName));
 
         assertThat(bundleFacts(fileLines))
-                .as("名称键必须仍然命中：存量映射一条都不许静默失配")
-                .isEqualTo(List.of(expanded()));
-        assertThat(boundBundleIds(fileLines)).containsExactly(bundleId);
-        assertThat(boundBundleIds(pullLines)).containsExactly(bundleId);
+                .as("平台给出稳定商品 ID 时，未命中的 ID 不能被同名礼包映射静默劫持")
+                .isEqualTo(List.of(unresolved()));
+        assertThat(boundBundleIds(fileLines)).isEmpty();
+        assertThat(boundBundleIds(pullLines)).isEmpty();
         assertThat(sourceSkuRefs(fileLines)).containsOnly(productId);
         assertThat(sourceSkuRefs(pullLines)).containsOnly(productId);
         assertThat(bundleFacts(pullLines)).isEqualTo(bundleFacts(fileLines));
+    }
+
+    @Test
+    void 无稳定ID的legacy名称键仍可自动命中() {
+        String productName = "子牧 legacy 礼包-" + productId();
+        long bundleId = activeBundle("BUNDLE-KEY-LEGACY-" + productId());
+        bundleMapping(productName, bundleId);
+
+        List<Map<String, Object>> pullLines = linesOf(importPull(productName, productName));
+
+        assertThat(bundleFacts(pullLines)).containsExactly(expanded());
+        assertThat(boundBundleIds(pullLines)).containsExactly(bundleId);
+        assertThat(sourceSkuRefs(pullLines)).containsExactly(productName);
+    }
+
+    @Test
+    void 同一稳定ID同时存在礼包映射与SKU映射时必须failClosed() throws Exception {
+        String productId = productId();
+        String productName = "冲突商品-" + productId;
+        long bundleId = activeBundle("BUNDLE-KEY-CONFLICT-" + productId);
+        bundleMapping(productId, bundleId);
+        skuMapping(productId, productName);
+
+        assertThatThrownBy(() -> importFile(productId, productName))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.getBusinessCode()).isEqualTo("SOURCE_PRODUCT_MAPPING_CONFLICT"));
+        assertThatThrownBy(() -> importPull(productId, productName))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.getBusinessCode()).isEqualTo("SOURCE_PRODUCT_MAPPING_CONFLICT"));
+    }
+
+    @Test
+    void 结构化商品A拆成两个履约分片时保留原itemIndex_商品B不串行() {
+        String bundleRef = productId();
+        String singleRef = productId();
+        long bundleId = activeMixedProviderBundle("BUNDLE-LINEAGE-" + bundleRef);
+        bundleMapping(bundleRef, bundleId);
+        skuMapping(singleRef, "普通商品-" + singleRef);
+
+        String orderRef = importPullWithTwoItems(bundleRef, singleRef);
+        long orderId = jdbc.queryForObject(
+                "SELECT id FROM app.orders WHERE source_channel='JUFUBAO' AND source_ref=?", Long.class, orderRef);
+        List<Map<String, Object>> rawRows = jdbc.queryForList(
+                """
+                SELECT rir.id, rir.raw_cells->>'item_index' item_index, rir.order_line_id
+                FROM app.raw_import_rows rir
+                WHERE rir.order_id=? ORDER BY rir.row_index
+                """,
+                orderId);
+
+        assertThat(rawRows).extracting(row -> row.get("item_index")).containsExactly("0", "1");
+        long bundleRawId = ((Number) rawRows.getFirst().get("id")).longValue();
+        long singleRawId = ((Number) rawRows.get(1).get("id")).longValue();
+        assertThat(jdbc.queryForList(
+                        "SELECT partition_no FROM app.raw_import_row_order_lines WHERE raw_import_row_id=? ORDER BY partition_no",
+                        Integer.class,
+                        bundleRawId))
+                .containsExactly(1, 2);
+        assertThat(jdbc.queryForList(
+                        "SELECT partition_no FROM app.raw_import_row_order_lines WHERE raw_import_row_id=? ORDER BY partition_no",
+                        Integer.class,
+                        singleRawId))
+                .containsExactly(1);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(DISTINCT fulfillment_provider_id) FROM app.order_lines WHERE order_id=? AND bundle_id=?",
+                        Integer.class,
+                        orderId,
+                        bundleId))
+                .isEqualTo(2);
+    }
+
+    @Test
+    void 人工补配混合履约礼包后resolve按provider分片并补齐原始血缘() {
+        String productId = productId();
+        String productName = "人工混合履约礼包-" + productId;
+        List<Map<String, Object>> blocked = linesOf(importPull(productId, productName));
+        long firstLineId = ((Number) blocked.getFirst().get("id")).longValue();
+        long bundleId = activeMixedProviderBundle("BUNDLE-MANUAL-MIXED-" + productId);
+        bundleMapping(productId, bundleId);
+        // 模拟 V88 前存量行：source_sku_ref 尚未落列，但旧编码快照仍保存真实来源键。
+        // resolve 必须先把该键回填到主行，再复制到所有 provider 分片，最后才允许建 fulfillment。
+        jdbc.update(
+                "UPDATE app.order_lines SET source_sku_ref=NULL, sku_code_snapshot=? WHERE id=?",
+                productId,
+                firstLineId);
+
+        bundleResolution.resolveBundle(firstLineId, bundleId, "resolve-mixed-" + productId, ctx());
+
+        long orderId = jdbc.queryForObject("SELECT order_id FROM app.order_lines WHERE id=?", Long.class, firstLineId);
+        List<Long> partitionLines = jdbc.queryForList(
+                """
+                SELECT rirol.order_line_id
+                FROM app.raw_import_rows rir
+                JOIN app.raw_import_row_order_lines rirol ON rirol.raw_import_row_id=rir.id
+                WHERE rir.order_line_id=? ORDER BY rirol.partition_no
+                """,
+                Long.class,
+                firstLineId);
+        assertThat(partitionLines).hasSize(2).startsWith(firstLineId);
+        assertThat(jdbc.queryForList(
+                        "SELECT partition_no FROM app.raw_import_row_order_lines WHERE order_line_id IN (?,?) ORDER BY partition_no",
+                        Integer.class,
+                        partitionLines.get(0),
+                        partitionLines.get(1)))
+                .containsExactly(1, 2);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(DISTINCT fulfillment_provider_id) FROM app.order_lines WHERE order_id=? AND bundle_id=?",
+                        Integer.class,
+                        orderId,
+                        bundleId))
+                .isEqualTo(2);
+        assertThat(jdbc.queryForList(
+                        "SELECT source_sku_ref FROM app.order_lines WHERE id IN (?,?) ORDER BY line_no",
+                        String.class,
+                        partitionLines.get(0),
+                        partitionLines.get(1)))
+                .containsExactly(productId, productId);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.fulfillments f JOIN app.order_lines ol ON ol.id=f.order_line_id WHERE ol.order_id=?",
+                        Integer.class,
+                        orderId))
+                .isEqualTo(2);
+    }
+
+    @Test
+    void BOM含任意inactiveSku时自动与人工路径都整体拒绝() throws Exception {
+        String automaticRef = productId();
+        long bundleId = activeBundle("BUNDLE-INACTIVE-" + automaticRef);
+        long inactiveSkuId = jdbc.queryForObject(
+                "SELECT sku_id FROM app.bundle_items WHERE bundle_id=? ORDER BY sort_no LIMIT 1", Long.class, bundleId);
+        jdbc.update("UPDATE app.skus SET active=false WHERE id=?", inactiveSkuId);
+        try {
+            bundleMapping(automaticRef, bundleId);
+            assertThatThrownBy(() -> importPull(automaticRef, "停用组件礼包-" + automaticRef))
+                    .isInstanceOfSatisfying(BusinessException.class, error ->
+                            assertThat(error.getBusinessCode()).isEqualTo("BUNDLE_BOM_INACTIVE"));
+
+            String manualRef = productId();
+            List<Map<String, Object>> blocked = linesOf(importPull(manualRef, "人工停用组件礼包-" + manualRef));
+            long lineId = ((Number) blocked.getFirst().get("id")).longValue();
+            bundleMapping(manualRef, bundleId);
+            assertThatThrownBy(() -> bundleResolution.resolveBundle(
+                            lineId, bundleId, "resolve-inactive-" + manualRef, ctx()))
+                    .isInstanceOfSatisfying(BusinessException.class, error ->
+                            assertThat(error.getBusinessCode()).isEqualTo("BUNDLE_BOM_INACTIVE"));
+            assertThat(jdbc.queryForObject(
+                            "SELECT count(*) FROM app.order_line_components WHERE order_line_id=?", Integer.class, lineId))
+                    .isZero();
+        } finally {
+            jdbc.update("UPDATE app.skus SET active=true WHERE id=?", inactiveSkuId);
+        }
     }
 
     @Test
@@ -193,8 +359,6 @@ class SourceBundleKeyUnificationApiTest {
         String productName = "子牧牛肉惠选礼包非整数-" + productId;
         long bundleId = activeBundle("BUNDLE-KEY-FRACTIONAL-" + productId);
         bundleMapping(productId, bundleId);
-        // 同时存在 SKU 映射，专门防止实现把非整数礼包静默降级后沿单品映射进入 READY_TO_EXPORT。
-        skuMapping(productId, productName);
 
         assertThatThrownBy(() -> importFile(productId, productName, "1.5"))
                 .isInstanceOfSatisfying(BusinessException.class, error ->
@@ -292,8 +456,20 @@ class SourceBundleKeyUnificationApiTest {
                 "exception_code", "none");
     }
 
+    private Map<String, String> unresolved() {
+        return Map.of(
+                "line_type", "CUSTOM_BUNDLE",
+                "bundle_id", "none",
+                "processing_stage", "NEED_REVIEW",
+                "exception_code", "SKU_MAPPING_REQUIRED");
+    }
+
     private List<Long> boundBundleIds(List<Map<String, Object>> lines) {
-        return lines.stream().map(line -> ((Number) line.get("bundle_id")).longValue()).toList();
+        return lines.stream()
+                .map(line -> (Number) line.get("bundle_id"))
+                .filter(Objects::nonNull)
+                .map(Number::longValue)
+                .toList();
     }
 
     private List<Map<String, Object>> linesOf(String orderRef) {
@@ -354,6 +530,62 @@ class SourceBundleKeyUnificationApiTest {
         }
         jdbc.update("UPDATE app.product_bundles SET status='ACTIVE', updated_at=now() WHERE id=?", bundleId);
         return bundleId;
+    }
+
+    private long activeMixedProviderBundle(String bundleCode) {
+        List<Long> skus = jdbc.query(
+                """
+                SELECT id FROM (
+                    SELECT DISTINCT ON (fulfillment_provider_id) id, fulfillment_provider_id
+                    FROM app.skus
+                    WHERE active AND fulfillment_provider_id IS NOT NULL
+                    ORDER BY fulfillment_provider_id, id
+                ) candidates ORDER BY fulfillment_provider_id LIMIT 2
+                """,
+                (rs, n) -> rs.getLong(1));
+        assertThat(skus).as("种子数据必须至少有两个履约方的启用 SKU").hasSize(2);
+        Long bundleId = jdbc.queryForObject(
+                "INSERT INTO app.product_bundles (bundle_code,bundle_name,status) VALUES (?,?,'DRAFT') RETURNING id",
+                Long.class,
+                bundleCode,
+                bundleCode);
+        jdbc.update(
+                "INSERT INTO app.bundle_items(bundle_id,sort_no,sku_id,quantity_per_bundle) VALUES (?,1,?,1.000),(?,2,?,1.000)",
+                bundleId,
+                skus.get(0),
+                bundleId,
+                skus.get(1));
+        jdbc.update("UPDATE app.product_bundles SET status='ACTIVE', updated_at=now() WHERE id=?", bundleId);
+        return bundleId;
+    }
+
+    private String importPullWithTwoItems(String bundleRef, String singleRef) {
+        String orderRef = "JFB-PULL-TWO-" + bundleRef;
+        CanonicalOrderInput input = new CanonicalOrderInput(
+                SourceChannel.JUFUBAO,
+                orderRef,
+                "v1",
+                new CustomerInput(null, CUSTOMER_REF, "礼包键测试客户"),
+                new Receiver(RECEIVER_NAME, RECEIVER_PHONE, "河南省", "郑州市", "金水区", null, "测试路 1 号"),
+                List.of(
+                        new OrderItemInput(orderRef + "-A", LineType.SINGLE, null, bundleRef,
+                                "混合履约礼包-" + bundleRef, "标准箱", "箱", "1", null),
+                        new OrderItemInput(orderRef + "-B", LineType.SINGLE, null, singleRef,
+                                "普通商品-" + singleRef, "标准箱", "箱", "1", null)),
+                new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                null,
+                "bundle-lineage-test",
+                List.of());
+        sourceImportService.importStructured(
+                SourceChannel.JUFUBAO,
+                List.of(new StructuredOrderRow(
+                        orderRef,
+                        orderRef + "-L",
+                        input,
+                        Map.of("goods", List.of(Map.of("id", bundleRef), Map.of("id", singleRef))))),
+                "PULL-TWO-" + bundleRef,
+                ctx());
+        return orderRef;
     }
 
     private void bundleMapping(String sourceBundleRef, long bundleId) {

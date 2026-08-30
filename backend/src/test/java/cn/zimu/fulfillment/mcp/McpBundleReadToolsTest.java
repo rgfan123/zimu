@@ -116,6 +116,33 @@ class McpBundleReadToolsTest {
     }
 
     @Test
+    void inactiveComponentMakesWholeBomUnavailableWithoutHidingAnyComponent() throws Exception {
+        long provider = createProvider("MCPBINACTIVE", "停用组件测试仓", "THIRD_PARTY");
+        long activeSku = createSku(provider, "MCP-ACTIVE", "启用组件", "1kg", "袋", "10.00");
+        long inactiveSku = createSku(provider, "MCP-INACTIVE", "停用组件", "500g", "袋", "8.00");
+        long bundleId = createBundle(
+                "BUNDLE-INACTIVE-COMPONENT",
+                "含停用组件礼包",
+                "ACTIVE",
+                List.of(new Item(activeSku, 1), new Item(inactiveSku, 2)));
+        jdbc.update("UPDATE app.skus SET active=false WHERE id=?", inactiveSku);
+
+        JsonNode detail = callResult("get_bundle", Map.of("bundle_id", String.valueOf(bundleId)));
+        assertThat(detail.get("components")).hasSize(2);
+        assertThat(values(detail.get("components"), "sku_status"))
+                .containsExactlyInAnyOrder("ACTIVE", "INACTIVE");
+        assertThat(detail.get("bom_status").asText()).isEqualTo("INACTIVE_COMPONENT");
+        assertThat(detail.get("available_for_ordering").asBoolean()).isFalse();
+
+        JsonNode summary = callResult("list_bundles", Map.of("query", "含停用组件礼包"))
+                .get("items")
+                .get(0);
+        assertThat(summary.get("component_count").asInt()).isEqualTo(2);
+        assertThat(summary.get("bom_status").asText()).isEqualTo("INACTIVE_COMPONENT");
+        assertThat(summary.get("available_for_ordering").asBoolean()).isFalse();
+    }
+
+    @Test
     void candidateSearchReturnsCostMappingAndInventoryFactsWithoutInventingZero() throws Exception {
         long provider = createProvider("MCPBCAND", "候选履约方", "THIRD_PARTY");
         long mapped = createSku(provider, "MCP-CAND-1", "牛腩块", "1kg/袋", "袋", "58.20");

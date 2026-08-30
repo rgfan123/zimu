@@ -55,9 +55,11 @@ public class BundleReadService implements BundleReadQuery {
         List<BundleRow> rows = jdbc.query(
                 """
                 SELECT pb.id, pb.bundle_code, pb.bundle_name, pb.status,
-                       count(bi.id) AS component_count
+                       count(bi.id) AS component_count,
+                       count(bi.id) > 0 AND bool_and(COALESCE(s.active, false)) AS all_components_active
                 FROM app.product_bundles pb
                 LEFT JOIN app.bundle_items bi ON bi.bundle_id=pb.id
+                LEFT JOIN app.skus s ON s.id=bi.sku_id
                 """
                         + where
                         + " GROUP BY pb.id, pb.bundle_code, pb.bundle_name, pb.status"
@@ -67,7 +69,8 @@ public class BundleReadService implements BundleReadQuery {
                         resultSet.getString("bundle_code"),
                         resultSet.getString("bundle_name"),
                         resultSet.getString("status"),
-                        resultSet.getInt("component_count")),
+                        resultSet.getInt("component_count"),
+                        resultSet.getBoolean("all_components_active")),
                 pageArgs.toArray());
         Map<String, List<ProviderSummary>> providers = providersFor(rows.stream().map(BundleRow::id).toList());
         List<BundleSummary> items = rows.stream()
@@ -77,6 +80,7 @@ public class BundleReadService implements BundleReadQuery {
                         row.bundleName(),
                         row.status(),
                         row.componentCount(),
+                        row.allComponentsActive(),
                         providers.getOrDefault(row.id(), List.of())))
                 .toList();
         return new PageResponse<>(items, page, size, total, totalPages(total, size));
@@ -107,7 +111,7 @@ public class BundleReadService implements BundleReadQuery {
         List<BundleComponent> components = jdbc.query(
                 """
                 SELECT bi.sort_no, bi.sku_id, bi.quantity_per_bundle,
-                       s.sku_code, s.product_id, s.specification, s.unit, s.purchase_price,
+                       s.sku_code, s.product_id, s.specification, s.unit, s.purchase_price, s.active,
                        p.product_code, p.product_name,
                        fp.id AS provider_id, fp.provider_code, fp.provider_name, fp.provider_type
                 FROM app.bundle_items bi
@@ -128,6 +132,7 @@ public class BundleReadService implements BundleReadQuery {
                         resultSet.getString("unit"),
                         quantity(resultSet.getBigDecimal("quantity_per_bundle")),
                         price(resultSet.getBigDecimal("purchase_price")),
+                        resultSet.getBoolean("active"),
                         provider(resultSet)),
                 bundleId);
         Map<String, ProviderSummary> providers = new LinkedHashMap<>();
@@ -143,6 +148,7 @@ public class BundleReadService implements BundleReadQuery {
                 header.settlementCost(),
                 header.status(),
                 components,
+                !components.isEmpty() && components.stream().allMatch(BundleComponent::active),
                 List.copyOf(providers.values()));
     }
 
@@ -373,7 +379,12 @@ public class BundleReadService implements BundleReadQuery {
     }
 
     private record BundleRow(
-            String id, String bundleCode, String bundleName, String status, int componentCount) {}
+            String id,
+            String bundleCode,
+            String bundleName,
+            String status,
+            int componentCount,
+            boolean allComponentsActive) {}
 
     private record BundleHeader(
             String id,

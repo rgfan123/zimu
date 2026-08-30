@@ -50,9 +50,10 @@ class McpBundleReadToolsUnitTest {
                 "ACTIVE",
                 List.of(
                         new BundleComponent(
-                                1, "11", "SKU-JD-000011", "21", "P-21", "牛腩", "500g", "袋", "2", "30.00", jd),
+                                1, "11", "SKU-JD-000011", "21", "P-21", "牛腩", "500g", "袋", "2", "30.00", true, jd),
                         new BundleComponent(
-                                2, "12", "SKU-TP-000012", "22", "P-22", "羊排", "400g", "盒", "1", "40.00", thirdParty)),
+                                2, "12", "SKU-TP-000012", "22", "P-22", "羊排", "400g", "盒", "1", "40.00", true, thirdParty)),
+                true,
                 List.of(jd, thirdParty));
 
         JsonNode result = tool("get_bundle").invoke(context, Map.of("bundle_id", "9"));
@@ -68,7 +69,7 @@ class McpBundleReadToolsUnitTest {
     void listKeepsInactiveStateAndCandidateKeepsUnknownInventory() {
         ProviderSummary providerSummary = new ProviderSummary("3", "TP3", "三方仓", "THIRD_PARTY");
         reads.bundles = new PageResponse<>(
-                List.of(new BundleSummary("8", "B-8", "下架牛腩礼包", "INACTIVE", 1, List.of(providerSummary))),
+                List.of(new BundleSummary("8", "B-8", "下架牛腩礼包", "INACTIVE", 1, true, List.of(providerSummary))),
                 0,
                 20,
                 1,

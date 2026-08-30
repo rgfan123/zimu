@@ -231,6 +231,12 @@ public class McpToolRegistry {
         Set<String> protocolModules = enableAllModules
                 ? knownModules
                 : parseModules("app.mcp.protocol-modules", protocolModulesProperty, knownModules);
+        Map<String, McpTool> agentIndex = index(tools, agentModules);
+        Map<String, McpTool> protocolIndex = index(tools, protocolModules);
+        long publicReadToolCount = protocolIndex.values().stream()
+                .filter(McpTool::readOnly)
+                .filter(McpTool::externallyDiscoverable)
+                .count();
 
         // 启动期自检（同事 2026-08-28 提议，采纳）：MCP 开着却一个模块都没启用，
         // 是配置事故而非合法状态——运维不会有意「开启 MCP 且不暴露任何工具」。
@@ -244,9 +250,12 @@ public class McpToolRegistry {
         // 注意条件是「任一传输面开着」而不是只看 stdio：生产实测 app.mcp.enabled 未设（=false）、
         // 只开了 app.mcp.http.enabled，若只看前者，这道自检在生产永远不触发，等于没有。
         // 双工具面拆分后本门禁只保护公共协议面；Agent 清单独立，不会再被 MCP 配置连带清空。
-        if ((mcpEnabled || mcpHttpEnabled) && protocolModules.isEmpty()) {
+        if ((mcpEnabled || mcpHttpEnabled) && publicReadToolCount == 0) {
+            String reason = protocolModules.isEmpty()
+                    ? "解析后为空"
+                    : "没有可公开只读工具（只含内部专用或写工具）";
             throw new IllegalStateException(
-                    "app.mcp.protocol-modules（env MCP_PROTOCOL_MODULES / MCP_MODULES）解析后为空，"
+                    "app.mcp.protocol-modules（env MCP_PROTOCOL_MODULES / MCP_MODULES）" + reason + "，"
                             + "但 MCP 传输面是开的"
                             + "（app.mcp.enabled=" + mcpEnabled
                             + ", app.mcp.http.enabled=" + mcpHttpEnabled + "）："
@@ -255,8 +264,8 @@ public class McpToolRegistry {
                             + "确实要整体关闭请把两个传输面开关都设为 false。");
         }
 
-        this.agentByName = index(tools, agentModules);
-        this.protocolByName = index(tools, protocolModules);
+        this.agentByName = agentIndex;
+        this.protocolByName = protocolIndex;
         logSurface("Agent", "app.agent.tool-modules", agentModules, agentByName.size());
         logSurface("MCP 协议", "app.mcp.protocol-modules", protocolModules, protocolByName.size());
     }

@@ -47,7 +47,6 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -201,24 +200,16 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 List<OrderLineDto> partitionLines = order.lines().subList(lineCursor, lineCursor + partitionCount);
                 lineCursor += partitionCount;
                 OrderLineDto primaryLine = partitionLines.getFirst();
-                String errorCode = partitionLines.stream()
-                        .map(OrderLineDto::exceptionCode)
-                        .filter(Objects::nonNull)
-                        .map(this::importErrorCode)
-                        .filter(Objects::nonNull)
-                        .findFirst()
-                        .orElse(null);
+                ImportRowOutcome outcome = importRowOutcome(partitionLines);
                 jdbc.update(
                         """
                         UPDATE app.raw_import_rows
                         SET status=?, error_code=?, error_detail=?::jsonb, order_id=?, order_line_id=?, updated_at=CURRENT_TIMESTAMP
                         WHERE import_batch_id=? AND sheet_index=? AND row_index=?
                         """,
-                        errorCode == null ? "ACCEPTED" : "NEED_REVIEW",
-                        errorCode,
-                        errorCode == null ? null : json(Map.of(
-                                "order_line_exceptions",
-                                partitionLines.stream().map(OrderLineDto::exceptionCode).filter(Objects::nonNull).toList())),
+                        outcome.status(),
+                        outcome.errorCode(),
+                        outcome.errorDetail(),
                         Long.valueOf(order.id()),
                         Long.valueOf(primaryLine.id()),
                         batchId,
@@ -290,11 +281,11 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
      * 管线与文件导入完全复用。
      *
      * <p>语义：每条 StructuredOrderRow 是一个来源订单（canonicalInput 可含多行 items）；
-     * 内部按 items 展开写 raw 行（一行 = 一个来源行 = 一个 order line，与文件导入的
-     * 行语义一致）。重复订单（DUPLICATE_ORDER）整单跳过：不写 raw 行、记审计，
+     * 内部按原始 items 写 raw 行（一行 = 一个来源商品；混合履约礼包可关联多个 partition order line，
+     * 与文件导入的行语义一致）。重复订单（DUPLICATE_ORDER）整单跳过：不写 raw 行、记审计，
      * 不整批回滚——confirm 的 uncovered 检查只统计 ACCEPTED 且有导出/发货关联的行，
-     * 跳过行不落库即不产生阻断。内容哈希幂等——并发相同内容撞
-     * uq_import_content_scope 时重查返回既有批次。</p>
+     * 跳过行不落库即不产生阻断。内容哈希幂等——同渠道同内容先取得事务级 advisory lock，
+     * 后到请求在前一事务提交后重查并返回既有批次。</p>
      */
     @Transactional
     public Map<String, Object> importStructured(
@@ -308,19 +299,12 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         }
         byte[] content = structuredContentBytes(orders);
         String contentSha = sha256(content);
+        lockStructuredContent(channel, contentSha);
         Long existingId = existingStructured(channel, contentSha);
         if (existingId != null) {
             return get(existingId);
         }
-        try {
-            return doImportStructured(channel, orders, batchNo, contentSha, context, started);
-        } catch (DataIntegrityViolationException duplicate) {
-            Long existing = existingStructured(channel, contentSha);
-            if (existing != null) {
-                return get(existing);
-            }
-            throw duplicate;
-        }
+        return doImportStructured(channel, orders, batchNo, contentSha, context, started);
     }
 
     private Map<String, Object> doImportStructured(
@@ -373,7 +357,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                             itemIndex,
                             "NEED_REVIEW",
                             null,
-                            null,
+                            List.of(),
                             review.code(),
                             json(Map.of("message", review.message())));
                 }
@@ -400,7 +384,8 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             // CUSTOM_BUNDLE，否则拉进来的礼包行既进不来也修不了（见 resolveStructuredItems）。
             // 放在复核占位/重复单分支之后：那两条分支都不建订单行，没必要为它们查库，
             // 复核占位的 raw 行数也应保持来源原样。
-            items = resolveStructuredItems(channel, items);
+            ResolvedStructuredItems resolvedItems = resolveStructuredItems(channel, items);
+            items = resolvedItems.items();
             CanonicalOrderInput canonicalInput =
                     withItems(resolveStructuredCustomer(channel, order.canonicalInput()), items);
             OrderDetailDto created = orderCreateService.createImported(
@@ -411,11 +396,15 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                             AuditActorType.SYSTEM)
                     .result();
             List<OrderLineDto> lines = created.lines();
-            for (int itemIndex = 0; itemIndex < lines.size(); itemIndex++) {
+            int lineCursor = 0;
+            for (int itemIndex = 0; itemIndex < resolvedItems.partitionCounts().size(); itemIndex++) {
+                int partitionCount = resolvedItems.partitionCounts().get(itemIndex);
+                List<OrderLineDto> partitionLines = lines.subList(lineCursor, lineCursor + partitionCount);
+                lineCursor += partitionCount;
                 rowIndex++;
-                OrderLineDto line = lines.get(itemIndex);
-                insertStructuredRow(batchId, rowIndex, order, itemIndex, "ACCEPTED",
-                        Long.valueOf(created.id()), Long.valueOf(line.id()), null, null);
+                ImportRowOutcome outcome = importRowOutcome(partitionLines);
+                insertStructuredRow(batchId, rowIndex, order, itemIndex, outcome.status(),
+                        Long.valueOf(created.id()), partitionLines, outcome.errorCode(), outcome.errorDetail());
             }
         }
         // raw 行已与订单行建立血缘后，把 sheet/行号并入 SKU 映射类复核事项并直连 raw_import_row_id。
@@ -493,7 +482,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 sourceRef));
     }
 
-    /** 结构化 raw 行写入（一行 = 一个来源行 = 一个 order line）。 */
+    /** 结构化 raw 行写入：一行固定对应原始 item_index，可通过分片表关联一个或多个订单行。 */
     private void insertStructuredRow(
             long batchId,
             int rowIndex,
@@ -501,9 +490,12 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             int itemIndex,
             String status,
             Long orderId,
-            Long orderLineId,
+            List<OrderLineDto> partitionLines,
             String errorCode,
             String errorDetail) {
+        Long primaryOrderLineId = partitionLines.isEmpty()
+                ? null
+                : Long.valueOf(partitionLines.getFirst().id());
         Long rawId = jdbc.queryForObject(
                 """
                 INSERT INTO app.raw_import_rows
@@ -521,15 +513,16 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 errorCode,
                 errorDetail,
                 orderId,
-                orderLineId);
-        if (orderLineId != null) {
+                primaryOrderLineId);
+        for (int partitionNo = 0; partitionNo < partitionLines.size(); partitionNo++) {
             jdbc.update(
                     """
                     INSERT INTO app.raw_import_row_order_lines(raw_import_row_id, order_line_id, partition_no)
-                    VALUES (?, ?, 1)
+                    VALUES (?, ?, ?)
                     """,
                     rawId,
-                    orderLineId);
+                    Long.valueOf(partitionLines.get(partitionNo).id()),
+                    partitionNo + 1);
         }
     }
 
@@ -547,6 +540,23 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 contentSha,
                 channel.name());
         return ids.isEmpty() ? null : ids.getFirst();
+    }
+
+    /**
+     * 串行化同一唯一键范围内的结构化导入。
+     *
+     * <p>PostgreSQL 唯一约束冲突会把当前事务置为 aborted，不能在 catch 后继续重查。
+     * transaction advisory lock 随事务提交/回滚自动释放；READ COMMITTED 下，等待者取得锁后的
+     * 下一条查询能看到前一事务刚提交的批次。</p>
+     */
+    private void lockStructuredContent(SourceChannel channel, String contentSha) {
+        String lockScope = "source-order-structured:" + channel.name() + ":" + contentSha;
+        jdbc.query(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                statement -> statement.setString(1, lockScope),
+                resultSet -> {
+                    // pg_advisory_xact_lock 返回 void；执行并消费结果行即可。
+                });
     }
 
     /** 内容哈希的确定性序列化：LinkedHashMap 按插入序输出，跨运行稳定。 */
@@ -897,12 +907,15 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
      * 已显式构造的礼包行（带 components / 非 SINGLE）保持原样——那是来源侧的权威结论，
      * 不该被这里的启发式覆盖。
      */
-    private List<OrderItemInput> resolveStructuredItems(SourceChannel channel, List<OrderItemInput> items) {
+    private ResolvedStructuredItems resolveStructuredItems(SourceChannel channel, List<OrderItemInput> items) {
         List<OrderItemInput> resolved = new ArrayList<>(items.size());
+        List<Integer> partitionCounts = new ArrayList<>(items.size());
         for (OrderItemInput item : items) {
-            resolved.addAll(resolveStructuredItem(channel, item));
+            List<OrderItemInput> partitions = resolveStructuredItem(channel, item);
+            resolved.addAll(partitions);
+            partitionCounts.add(partitions.size());
         }
-        return List.copyOf(resolved);
+        return new ResolvedStructuredItems(List.copyOf(resolved), List.copyOf(partitionCounts));
     }
 
     private List<OrderItemInput> resolveStructuredItem(SourceChannel channel, OrderItemInput item) {
@@ -1433,6 +1446,26 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         };
     }
 
+    /** 文件与结构化导入共用的订单行异常 → raw 行处置，避免两条入口的批次闸门语义漂移。 */
+    private ImportRowOutcome importRowOutcome(List<OrderLineDto> partitionLines) {
+        List<String> exceptions = partitionLines.stream()
+                .map(OrderLineDto::exceptionCode)
+                .filter(Objects::nonNull)
+                .toList();
+        String errorCode = exceptions.stream()
+                .map(this::importErrorCode)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+        if (errorCode == null) {
+            return new ImportRowOutcome("ACCEPTED", null, null);
+        }
+        return new ImportRowOutcome(
+                "NEED_REVIEW",
+                errorCode,
+                json(Map.of("order_line_exceptions", exceptions)));
+    }
+
     private List<String> ids(String sql, long id) {
         return jdbc.query(sql, (resultSet, rowNum) -> resultSet.getString(1), id);
     }
@@ -1476,4 +1509,10 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             int revisionNo) {}
     private record RowKey(int sheetIndex, int rowIndex) {}
     private record CanonicalizedGroup(CanonicalOrderInput order, List<Integer> partitionCounts) {}
+
+    /** 结构化来源商品与展开后订单行的稳定血缘：partitionCounts 的下标就是原始 item_index。 */
+    private record ResolvedStructuredItems(List<OrderItemInput> items, List<Integer> partitionCounts) {}
+
+    /** 订单行异常聚合后的 raw 行状态；errorDetail 已序列化，可直接传给 jsonb 参数。 */
+    private record ImportRowOutcome(String status, String errorCode, String errorDetail) {}
 }

@@ -156,7 +156,7 @@ class AgentObservabilityIntegrationTest {
         assertThat(mapper.readTree(first).has("total_elements")).isTrue();
 
         // 敏感参数必须脱敏：负向断言原文不落库
-        invoker.execute(
+        String second = invoker.execute(
                 dev.langchain4j.agent.tool.ToolExecutionRequest.builder()
                         .name("search_skus")
                         .arguments(
@@ -164,6 +164,7 @@ class AgentObservabilityIntegrationTest {
                                         + "\"phone\":\"13800138000\",\"receiver_name\":\"张三\"}")
                         .build(),
                 null);
+        assertThat(mapper.readTree(second).get("code").asText()).isEqualTo("INVALID_PARAMETERS");
 
         List<Map<String, Object>> calls = jdbc.queryForList(
                 "SELECT run_id, sequence_no, tool_name, args_summary, result_summary,"
@@ -173,13 +174,15 @@ class AgentObservabilityIntegrationTest {
         assertThat(calls).hasSize(2);
         assertThat(calls.get(0).get("sequence_no")).isEqualTo(1);
         assertThat(calls.get(1).get("sequence_no")).isEqualTo(2);
+        assertThat(calls.get(0).get("status")).isEqualTo("SUCCESS");
+        assertThat(calls.get(1).get("status")).isEqualTo("FAILED");
         for (Map<String, Object> call : calls) {
             assertThat(call.get("run_id")).isEqualTo(runId);
             assertThat(call.get("tool_name")).isEqualTo("search_skus");
-            assertThat(call.get("status")).isEqualTo("SUCCESS");
             assertThat(((Number) call.get("latency_ms")).intValue()).isGreaterThanOrEqualTo(0);
             assertThat(call.get("result_summary")).isNotNull();
         }
+        assertThat((String) calls.get(1).get("result_summary")).contains("INVALID_PARAMETERS");
         String secondArgs = (String) calls.get(1).get("args_summary");
         assertThat(secondArgs).contains("***");
         assertThat(secondArgs)
@@ -188,7 +191,8 @@ class AgentObservabilityIntegrationTest {
                 .doesNotContain("13800138000")
                 .doesNotContain("张三");
         // 第一行参数无敏感键，保留查询词（脱敏不破坏结构）
-        assertThat((String) calls.get(0).get("args_summary")).contains("羊");    }
+        assertThat((String) calls.get(0).get("args_summary")).contains("羊");
+    }
 
     @Test
     void failedToolCallIsRecordedWithFailedStatus() throws Exception {
