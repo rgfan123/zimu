@@ -15,6 +15,31 @@ class PendingListImageRendererTest {
     private final PendingListImageRenderer renderer = new PendingListImageRenderer();
 
     @Test
+    void 既有整批确认调用的尺寸保持不变() throws IOException {
+        byte[] png = renderer.render(
+                "大者整批待确认 · 1 单",
+                BatchPreShipConfirmCardSource.PendingRow.HEADERS,
+                List.<String[]>of(new String[] {"1", "spr01-1", "张三", "13800000000", "北京市", "羊肉 ×1", "1"}));
+
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(png));
+        assertThat(image.getWidth()).isEqualTo(2252);
+        assertThat(image.getHeight()).isEqualTo(256);
+    }
+
+    @Test
+    void 可按表格形状传入列宽() throws IOException {
+        byte[] png = renderer.render(
+                "原始文件 · 彩食鲜 · orders.xlsx",
+                new String[] {"字段", "值"},
+                List.<String[]>of(new String[] {"商品名称", "子牧羊肉"}),
+                new int[] {220, 620});
+
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(png));
+        assertThat(image.getWidth()).isEqualTo(1744);
+        assertThat(image.getHeight()).isEqualTo(256);
+    }
+
+    @Test
     void 渲染出可解码的PNG_高度随行数增长() throws IOException {
         String[] row = {"1", "spr0126177993", "张小姐", "13800000000",
                 "北京市朝阳区某某街道某某小区 1 号楼 2 单元 303", "子牧精品羊肉礼包 ×1", "1"};

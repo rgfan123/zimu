@@ -7649,3 +7649,20 @@ CREATE TRIGGER trg_products_fill_code
     FOR EACH ROW EXECUTE FUNCTION app.fill_product_code();
 -- END V86__product_code_autogen.sql
 
+-- BEGIN V87__drop_product_price_columns.sql
+-- 跳号说明：票 06 起草时（2026-08-28）生产在 V72，作者按「当时最大号 + 1」写了 V78；
+-- 落地时生产已跑到 V86，而 V78/V81/V82 早被在途交付线占号、V79 永久空置。
+-- Flyway 默认不允许乱序应用，号位低于已应用最高版本的待执行迁移会让 validate 失败，
+-- 因此改取 V87。
+--
+-- 商品价格收敛：唯一系统真源是 app.skus，取数来源是 app.product_archive_sheets 成本核算表。
+-- app.products 的 85 行里只有 2 行填了价格，且与各自对应的 SKU 逐字节相同，是重复副本，
+-- 删除零信息损失。products.margin 此前正是取这三列算的，删列后毛利改由 SKU 两列计算。
+ALTER TABLE app.products
+    DROP CONSTRAINT products_purchase_price_nonnegative,
+    DROP CONSTRAINT products_retail_price_nonnegative,
+    DROP CONSTRAINT products_other_cost_nonnegative,
+    DROP COLUMN purchase_price,
+    DROP COLUMN retail_price,
+    DROP COLUMN other_cost;
+-- END V87__drop_product_price_columns.sql

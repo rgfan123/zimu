@@ -37,6 +37,16 @@
   flex: 1;
 }
 
+.zs-admin-toolbar-note,
+.zs-admin-form-notice__text {
+  color: var(--ant-color-text-secondary);
+  font-size: 13px;
+}
+
+.zs-admin-form-notice {
+  margin-bottom: 12px;
+}
+
 .admin-surface {
   overflow: hidden;
   border: 1px solid var(--ant-color-border-secondary);

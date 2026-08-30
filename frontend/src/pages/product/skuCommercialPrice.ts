@@ -86,6 +86,7 @@ export function buildSkuUpdateBody(values: Record<string, unknown>) {
   return {
     expected_version: Number(values.expected_version),
     specification: typeof values.specification === 'string' ? values.specification : undefined,
+    unit: typeof values.unit === 'string' ? values.unit : undefined,
     barcode: typeof values.barcode === 'string' ? (optionalTrimmedString(values.barcode) ?? null) : undefined,
     purchase_price: patchCommercialPrice(values.purchase_price),
     retail_price: patchCommercialPrice(values.retail_price),

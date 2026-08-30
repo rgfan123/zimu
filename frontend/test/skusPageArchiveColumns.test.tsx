@@ -214,6 +214,28 @@ describe('商品档案页成本表列', () => {
     expect(screen.getByRole('cell', { name: '（AK 列无表头）' })).toBeInTheDocument();
   });
 
+  test('编辑弹窗可修改单位并说明价格来源与商品资料入口', async () => {
+    const user = userEvent.setup();
+    render(
+      <AntApp>
+        <MemoryRouter>
+          <SkusPage />
+        </MemoryRouter>
+      </AntApp>,
+    );
+
+    await screen.findByText('已挂接 SKU');
+    const row = tableRowContaining('已挂接 SKU');
+    await user.click(within(row).getByText('编辑'));
+
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByLabelText('单位')).toHaveValue('袋');
+    expect(dialog.getByPlaceholderText('来自成本核算表 AI 线下供货成本/份，可人工覆盖')).toBeInTheDocument();
+    expect(dialog.getByPlaceholderText('来自成本核算表 AJ 售价，可人工覆盖')).toBeInTheDocument();
+    expect(dialog.getByText(/商品名和品类属于商品资料/)).toBeInTheDocument();
+    expect(dialog.getByRole('link', { name: '管理商品名称' })).toHaveAttribute('href', '/product/products');
+  });
+
   test('导出表格调用共享下载 API，导出中展示 loading，失败后提示且可以重试', async () => {
     const user = userEvent.setup();
     let finishExport: (() => void) | undefined;

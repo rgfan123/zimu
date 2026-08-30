@@ -33,9 +33,7 @@ public record AuthoritativeSkuCatalogImportReport(
             String canonicalName,
             List<Integer> sourceRows,
             String priceMatchName,
-            int priceSourceRow,
-            String purchasePrice,
-            String retailPrice) {}
+            int priceSourceRow) {}
 
     public record UnpricedItem(String jdCode, String canonicalName, List<Integer> sourceRows) {}
 

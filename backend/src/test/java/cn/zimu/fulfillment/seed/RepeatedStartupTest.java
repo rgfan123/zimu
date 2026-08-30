@@ -3,8 +3,8 @@ package cn.zimu.fulfillment.seed;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import cn.zimu.fulfillment.FulfillmentHubApplication;
-import cn.zimu.fulfillment.product.ProductRepository;
 import cn.zimu.fulfillment.sku.FulfillmentProviderRepository;
+import cn.zimu.fulfillment.sku.ProviderSkuRepository;
 import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import org.junit.jupiter.api.Test;
@@ -52,14 +52,18 @@ class RepeatedStartupTest {
     }
 
     private static void addAnotherSpecificationForTheSeededProduct(ConfigurableApplicationContext context) {
-        Long productId = context.getBean(ProductRepository.class)
-                .findByProductCode("PROD-LAMBLEG")
-                .orElseThrow()
-                .getId();
         Long providerId = context.getBean(FulfillmentProviderRepository.class)
                 .findByProviderCode("JD")
                 .orElseThrow()
                 .getId();
+        Long seededSkuId = context.getBean(ProviderSkuRepository.class)
+                .findByFulfillmentProviderIdAndProviderSkuCode(providerId, "JD-SKU-000001")
+                .orElseThrow()
+                .getSkuId();
+        Long productId = context.getBean(SkuRepository.class)
+                .findById(seededSkuId)
+                .orElseThrow()
+                .getProductId();
         Sku additional = new Sku();
         additional.setProductId(productId);
         additional.setFulfillmentProviderId(providerId);

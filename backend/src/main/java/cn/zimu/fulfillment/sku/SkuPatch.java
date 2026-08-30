@@ -14,6 +14,9 @@ public final class SkuPatch {
     @Size(max = 200, message = "规格超长")
     private String specification;
 
+    @Size(min = 1, max = 32, message = "单位不能为空或超长")
+    private String unit;
+
     @Size(max = 64, message = "条码超长")
     private String barcode;
 
@@ -37,6 +40,14 @@ public final class SkuPatch {
 
     public void setSpecification(String specification) {
         this.specification = specification;
+    }
+
+    public String unit() {
+        return unit;
+    }
+
+    public void setUnit(String unit) {
+        this.unit = unit;
     }
 
     public String barcode() {

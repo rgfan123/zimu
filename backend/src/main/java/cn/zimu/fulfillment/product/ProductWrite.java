@@ -8,7 +8,7 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 
-/** 商品创建输入；价格沿用 decimal-string 契约，日期为 YYYY-MM-DD 字符串。 */
+/** 商品创建输入；日期为 YYYY-MM-DD 字符串。 */
 public record ProductWrite(
         /**
          * 商品编码；**留空即由系统发号**（V86 的 {@code app.fill_product_code()} 触发器，
@@ -30,9 +30,6 @@ public record ProductWrite(
         String listedFrom,
         String listedUntil,
         @Min(value = 1, message = "发货时效必须为正整数") Integer leadTimeHours,
-        Object purchasePrice,
-        Object retailPrice,
-        Object otherCost,
         @Size(max = 512, message = "主图引用超长") String mainImageRef,
         Boolean active) {
 }

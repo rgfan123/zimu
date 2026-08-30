@@ -1,5 +1,7 @@
 package cn.zimu.fulfillment.mcp;
 
+import static cn.zimu.fulfillment.mcp.McpProjectionSupport.listNode;
+
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
 import cn.zimu.fulfillment.common.dto.PageResponse;
@@ -205,7 +207,7 @@ public class McpOrdersReadTools {
                     line.providerId() == null ? null : providerNames.get(Long.valueOf(line.providerId())));
         }
 
-        node.set("shipments", objectMapper.valueToTree(shipments));
+        node.set("shipments", listNode(shipments));
 
         ArrayNode openReviewCases = node.putArray("open_review_cases");
         for (ReviewCaseDto reviewCase : detail.reviewCases()) {

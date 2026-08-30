@@ -1,13 +1,7 @@
 /**
- * 商品档案新字段（毛利/标签/原料/上市周期/发货时效/主图）的载荷构建与展示格式化。
- * 契约与后端 openapi ProductWrite/ProductPatch 对齐：价格/日期为字符串，显式清空写 null。
+ * 商品档案字段（标签/原料/上市周期/发货时效/主图）的载荷构建与展示格式化。
+ * 契约与后端 openapi ProductWrite/ProductPatch 对齐：日期为字符串，显式清空写 null。
  */
-
-import {
-  commercialPriceLabel,
-  optionalCommercialPrice,
-  patchCommercialPrice,
-} from './skuCommercialPrice.ts';
 
 /** 发货时效：正整数小时数。 */
 export const LEAD_TIME_HOURS_PATTERN = /^[1-9][0-9]*$/;
@@ -97,9 +91,6 @@ export function buildProductCreateBody(values: Record<string, unknown>) {
     ...(values.lead_time_hours !== undefined && values.lead_time_hours !== '' && values.lead_time_hours !== null
       ? { lead_time_hours: Number(values.lead_time_hours) }
       : {}),
-    purchase_price: optionalCommercialPrice(values.purchase_price),
-    retail_price: optionalCommercialPrice(values.retail_price),
-    other_cost: optionalCommercialPrice(values.other_cost),
     ...(optionalTrimmedString(values.main_image_ref)
       ? { main_image_ref: optionalTrimmedString(values.main_image_ref) }
       : {}),
@@ -117,9 +108,6 @@ export function buildProductUpdateBody(values: Record<string, unknown>) {
     tags: patchTags(values.tags),
     ...period,
     lead_time_hours: patchLeadTimeHours(values.lead_time_hours),
-    purchase_price: patchCommercialPrice(values.purchase_price),
-    retail_price: patchCommercialPrice(values.retail_price),
-    other_cost: patchCommercialPrice(values.other_cost),
     main_image_ref: patchNullable(values.main_image_ref),
     active: typeof values.active === 'boolean' ? values.active : undefined,
   };
@@ -130,11 +118,6 @@ function patchLeadTimeHours(value: unknown): number | null | undefined {
   if (typeof value === 'number') return value >= 1 ? value : null;
   if (typeof value === 'string' && value.trim()) return Number(value);
   return null;
-}
-
-/** 毛利展示：未定价 / ¥金额。 */
-export function marginLabel(value: unknown): string {
-  return commercialPriceLabel(value);
 }
 
 /** 发货时效展示：小时数 → 「X小时内发货」。 */

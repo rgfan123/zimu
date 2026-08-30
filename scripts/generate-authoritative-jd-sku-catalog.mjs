@@ -137,25 +137,8 @@ if (JSON.stringify(jdRows[0]) !== JSON.stringify(expectedJdHeader)
 
 const text = (value) => value == null || String(value).trim() === "" ? null : String(value).trim();
 const canonical = (value) => text(value)?.replaceAll("（", "(").replaceAll("）", ")") ?? null;
-const money = (value) => {
-  const raw = text(value);
-  if (raw == null || !/^\d+(?:\.\d{1,2})?$/.test(raw)) throw new Error(`invalid money: ${raw}`);
-  const [whole, fraction = ""] = raw.split(".");
-  return `${whole}.${fraction.padEnd(2, "0")}`;
-};
 const nonemptyRows = (sheetName) => worksheetRows(jdWorkbook, sheetName)
   .filter((row) => row.some((value) => text(value) != null)).length;
-
-const priceByExactName = new Map();
-for (const [index, row] of priceRows.slice(1).entries()) {
-  const name = text(row[1]);
-  if (!name || priceByExactName.has(name)) throw new Error(`invalid/duplicate price name at row ${index + 2}`);
-  priceByExactName.set(name, {
-    row: index + 2,
-    purchase: money(row[4]),
-    retail: money(row[5]),
-  });
-}
 
 const groups = new Map();
 for (const [index, row] of jdRows.slice(1).entries()) {
@@ -183,13 +166,6 @@ for (const [index, row] of jdRows.slice(1).entries()) {
 }
 
 const items = [...groups].map(([jdCode, sourceRows]) => {
-  // Intentionally strict: only the Sheet1 彩食鲜商品 cell may match a price-row 商品名称 byte-for-byte.
-  const exactNames = [...new Set(sourceRows
-    .map((row) => row.caishixian_name)
-    .filter((name) => priceByExactName.has(name)))];
-  if (exactNames.length > 1) throw new Error(`ambiguous exact price match for ${jdCode}`);
-  const matchedName = exactNames[0] ?? null;
-  const price = matchedName == null ? null : priceByExactName.get(matchedName);
   const canonicalName = canonical(sourceRows[0].jd_name);
   const aliases = [...new Set(sourceRows
     .flatMap((row) => [row.caishixian_name, row.jufubao_name, row.jd_name])
@@ -206,10 +182,10 @@ const items = [...groups].map(([jdCode, sourceRows]) => {
     canonical_name: canonicalName,
     aliases,
     source_rows: sourceRows,
-    price_match_name: matchedName,
-    price_source_row: price?.row ?? null,
-    purchase_price: price?.purchase ?? null,
-    retail_price: price?.retail ?? null,
+    price_match_name: null,
+    price_source_row: null,
+    purchase_price: null,
+    retail_price: null,
     mapping_difference_codes: differences,
   };
 });
@@ -217,7 +193,7 @@ const items = [...groups].map(([jdCode, sourceRows]) => {
 const matchedCount = items.filter((item) => item.purchase_price != null).length;
 const duplicateCount = items.filter((item) => item.source_rows.length > 1).length;
 if (jdRows.length !== 64 || priceRows.length !== 42 || items.length !== 61
-    || duplicateCount !== 2 || matchedCount !== 27 || items.length - matchedCount !== 34) {
+    || duplicateCount !== 2 || matchedCount !== 0 || items.length - matchedCount !== 61) {
   throw new Error("authoritative coverage changed; review before regenerating");
 }
 

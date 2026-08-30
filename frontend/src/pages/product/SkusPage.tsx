@@ -108,14 +108,14 @@ export default function SkusPage() {
     {
       name: 'purchase_price',
       label: '进货价（元）',
-      placeholder: '未填写即未定价',
+      placeholder: '来自成本核算表 AI 线下供货成本/份，可人工覆盖',
       pattern: COMMERCIAL_PRICE_PATTERN,
       patternMessage: '请输入非负金额，最多两位小数',
     },
     {
       name: 'retail_price',
       label: '零售价（元）',
-      placeholder: '未填写即未定价',
+      placeholder: '来自成本核算表 AJ 售价，可人工覆盖',
       pattern: COMMERCIAL_PRICE_PATTERN,
       patternMessage: '请输入非负金额，最多两位小数',
     },
@@ -124,18 +124,19 @@ export default function SkusPage() {
 
   const updateFields: CrudField[] = [
     { name: 'specification', label: '规格', required: true },
+    { name: 'unit', label: '单位', required: true, placeholder: '如 盒 / 袋' },
     { name: 'barcode', label: '条码', placeholder: '可选（清空则删除）' },
     {
       name: 'purchase_price',
       label: '进货价（元）',
-      placeholder: '清空则设为未定价',
+      placeholder: '来自成本核算表 AI 线下供货成本/份，可人工覆盖',
       pattern: COMMERCIAL_PRICE_PATTERN,
       patternMessage: '请输入非负金额，最多两位小数',
     },
     {
       name: 'retail_price',
       label: '零售价（元）',
-      placeholder: '清空则设为未定价',
+      placeholder: '来自成本核算表 AJ 售价，可人工覆盖',
       pattern: COMMERCIAL_PRICE_PATTERN,
       patternMessage: '请输入非负金额，最多两位小数',
     },
@@ -174,7 +175,7 @@ export default function SkusPage() {
           <Space wrap>
           <Input.Search
             style={{ width: 260 }}
-            placeholder="搜索 SKU 编码 / 商品名称"
+            placeholder="搜索 SKU 编码 / 商品名称 / 条码"
             allowClear
             onSearch={(value) => setSearchQuery(value.trim() || undefined)}
           />
@@ -242,6 +243,11 @@ export default function SkusPage() {
         columns={columns}
         createFields={createFields}
         updateFields={updateFields}
+        updateFormNotice={(
+          <span className="zs-admin-form-notice__text">
+            商品名和品类属于商品资料，请前往「<Link to="/product/products">管理商品名称</Link>」修改。
+          </span>
+        )}
         tableScrollX={productArchiveTableScrollX(visibleArchiveColumns)}
       />
       <PlatformUploadModal

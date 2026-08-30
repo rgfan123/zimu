@@ -34,15 +34,28 @@ public class PendingListImageRenderer {
     private static final int MAX_LINES = 3;
 
     /** 逻辑列宽（px）：序号/单号/收件人/电话/地址/明细/件数。 */
-    private static final int[] COLUMN_WIDTHS = {44, 150, 84, 112, 330, 320, 54};
+    private static final int[] DEFAULT_COLUMN_WIDTHS = {44, 150, 84, 112, 330, 320, 54};
 
     public byte[] render(String title, String[] headers, List<String[]> rows) {
+        return render(title, headers, rows, DEFAULT_COLUMN_WIDTHS);
+    }
+
+    /** 按当前表格形状指定逻辑列宽；三参旧入口仍固定使用已上线的 7 列尺寸。 */
+    public byte[] render(String title, String[] headers, List<String[]> rows, int[] columnWidths) {
+        if (columnWidths == null || columnWidths.length == 0) {
+            throw new IllegalArgumentException("列宽不能为空");
+        }
+        for (int width : columnWidths) {
+            if (width <= CELL_PADDING * 2) {
+                throw new IllegalArgumentException("列宽必须大于单元格左右留白");
+            }
+        }
         Font font = new Font(Font.SANS_SERIF, Font.PLAIN, FONT_SIZE * SCALE);
         Font bold = font.deriveFont(Font.BOLD);
         Font titleFont = font.deriveFont(Font.BOLD, (FONT_SIZE + 3f) * SCALE);
 
         int tableWidth = 0;
-        for (int width : COLUMN_WIDTHS) {
+        for (int width : columnWidths) {
             tableWidth += width * SCALE;
         }
         int margin = 16 * SCALE;
@@ -60,9 +73,9 @@ public class PendingListImageRenderer {
             List<List<String>> cells = new ArrayList<>();
             int maxLines = 1;
             String[] row = rows.get(r);
-            for (int c = 0; c < COLUMN_WIDTHS.length; c++) {
+            for (int c = 0; c < columnWidths.length; c++) {
                 String value = c < row.length && row[c] != null ? row[c] : "";
-                List<String> lines = wrap(value, metrics, (COLUMN_WIDTHS[c] - CELL_PADDING * 2) * SCALE);
+                List<String> lines = wrap(value, metrics, (columnWidths[c] - CELL_PADDING * 2) * SCALE);
                 maxLines = Math.max(maxLines, lines.size());
                 cells.add(lines);
             }
@@ -98,12 +111,12 @@ public class PendingListImageRenderer {
             g.setColor(new Color(0x22, 0x22, 0x22));
             g.setFont(bold);
             int x = left;
-            for (int c = 0; c < COLUMN_WIDTHS.length; c++) {
+            for (int c = 0; c < columnWidths.length; c++) {
                 g.drawString(
                         c < headers.length && headers[c] != null ? headers[c] : "",
                         x + CELL_PADDING * SCALE,
                         top + (LINE_HEIGHT + 1) * SCALE);
-                x += COLUMN_WIDTHS[c] * SCALE;
+                x += columnWidths[c] * SCALE;
             }
 
             // 数据行
@@ -116,14 +129,14 @@ public class PendingListImageRenderer {
                 }
                 g.setColor(new Color(0x33, 0x33, 0x33));
                 x = left;
-                for (int c = 0; c < COLUMN_WIDTHS.length; c++) {
+                for (int c = 0; c < columnWidths.length; c++) {
                     List<String> lines = wrapped.get(r).get(c);
                     int lineY = y + (LINE_HEIGHT - 3) * SCALE;
                     for (String line : lines) {
                         g.drawString(line, x + CELL_PADDING * SCALE, lineY);
                         lineY += LINE_HEIGHT * SCALE;
                     }
-                    x += COLUMN_WIDTHS[c] * SCALE;
+                    x += columnWidths[c] * SCALE;
                 }
                 y += rowHeights[r];
             }
@@ -134,8 +147,8 @@ public class PendingListImageRenderer {
             int gridBottom = top + headerHeight + bodyHeight;
             g.drawRect(left, top, tableWidth, headerHeight + bodyHeight);
             x = left;
-            for (int c = 0; c < COLUMN_WIDTHS.length - 1; c++) {
-                x += COLUMN_WIDTHS[c] * SCALE;
+            for (int c = 0; c < columnWidths.length - 1; c++) {
+                x += columnWidths[c] * SCALE;
                 g.drawLine(x, top, x, gridBottom);
             }
             y = top + headerHeight;

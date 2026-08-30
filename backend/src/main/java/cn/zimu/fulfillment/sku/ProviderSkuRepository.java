@@ -26,6 +26,26 @@ public interface ProviderSkuRepository extends JpaRepository<ProviderSku, Long> 
     Optional<ProviderSku> findByFulfillmentProviderIdAndProviderSkuCode(
             Long fulfillmentProviderId, String providerSkuCode);
 
+    /**
+     * 精确外部码映射缺失时，识别同一履约方下已被其他外部码占用的同名同规格 SKU。
+     * 用于权威目录在写入前报告映射码冲突，不把商品内部编号当外部匹配键。
+     */
+    @Query("""
+            SELECT ps FROM ProviderSku ps
+            JOIN Sku s ON s.id = ps.skuId
+            JOIN cn.zimu.fulfillment.product.Product p ON p.id = s.productId
+            WHERE ps.fulfillmentProviderId = :providerId
+              AND p.productName = :productName
+              AND s.specification = :specification
+              AND s.unit = :unit
+            ORDER BY ps.id
+            """)
+    List<ProviderSku> findCatalogIdentityConflicts(
+            @Param("providerId") Long providerId,
+            @Param("productName") String productName,
+            @Param("specification") String specification,
+            @Param("unit") String unit);
+
     List<ProviderSku> findByFulfillmentProviderIdOrderByProviderSkuCodeAsc(Long fulfillmentProviderId);
 
     Page<ProviderSku> findByFulfillmentProviderId(Long fulfillmentProviderId, Pageable pageable);

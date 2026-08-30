@@ -8,7 +8,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +38,13 @@ public class ProductArchiveSheetService {
             FROM app.product_archive_sheets
             """;
 
+    private static final String SEARCH_SELECT =
+            """
+            SELECT pas.product_name, pas.fields, pas.matched_sku_id, sku.sku_code
+            FROM app.product_archive_sheets pas
+            LEFT JOIN app.skus sku ON sku.id = pas.matched_sku_id
+            """;
+
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
 
@@ -59,12 +69,8 @@ public class ProductArchiveSheetService {
     }
 
     /**
-     * 按商品名模糊检索全部成本表档案行（含未挂接商品的行），分页，稳定序
-     * {@code source_file_sha256, row_no}（同 {@link #byProduct}）。
-     *
-     * <p>与 {@link #byProduct} 的区别：{@code byProduct} 只能读到已经人工挂接
-     * （{@code matched_product_id} 已填）的行；本方法不按挂接过滤——「先搜成本表、
-     * 再决定挂不挂」是这个检索存在的理由，挂接状态不该挡在搜索前面。
+     * 内部管理面的全保真列表查询：继续返回 {@link ProductArchiveSheet} 存储快照形状。
+     * MCP 不调用此重载，避免把文件名、指纹、行号和列字母带到对外响应。
      */
     @Transactional(readOnly = true)
     public PageResponse<ProductArchiveSheet> search(String query, int page, int size) {
@@ -94,9 +100,84 @@ public class ProductArchiveSheetService {
                         pattern,
                         size,
                         (long) page * size);
+        int totalPages = size <= 0 ? 1 : (int) Math.ceil((double) total / (double) size);
+        return new PageResponse<>(items, page, size, total, totalPages);
+    }
+
+    /**
+     * 按业务字段组合查询全部成本档案行（含未挂接 SKU 的行），分页，稳定序
+     * {@code source_file_sha256, row_no}（同 {@link #byProduct}）。条码是标识符，必须精确匹配并返回全部命中行。
+     *
+     * <p>与 {@link #byProduct} 的区别：{@code byProduct} 只能读到已经人工挂接
+     * （{@code matched_product_id} 已填）的行；本方法不按挂接过滤——「先搜成本表、
+     * 再决定挂不挂」是这个检索存在的理由，挂接状态不该挡在搜索前面。
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<ProductArchiveSummary> search(
+            String query,
+            String barcode,
+            String brand,
+            String meatType,
+            String status,
+            Boolean linked,
+            int page,
+            int size) {
+        SearchFilter filter = searchFilter(query, barcode, brand, meatType, status, linked);
+        long total = jdbc.queryForObject(
+                "SELECT count(*) FROM app.product_archive_sheets pas" + filter.sql(),
+                Long.class,
+                filter.arguments().toArray());
+        List<Object> pageArguments = new ArrayList<>(filter.arguments());
+        pageArguments.add(size);
+        pageArguments.add((long) page * size);
+        List<ProductArchiveSummary> items = jdbc.query(
+                SEARCH_SELECT + filter.sql() + """
+                ORDER BY pas.source_file_sha256, pas.row_no
+                LIMIT ? OFFSET ?
+                """,
+                this::mapSummary,
+                pageArguments.toArray());
         // 与 Spring Data PageImpl 的口径一致：size<=0 记 1 页，否则按元素数/页大小取上界。
         int totalPages = size <= 0 ? 1 : (int) Math.ceil((double) total / (double) size);
         return new PageResponse<>(items, page, size, total, totalPages);
+    }
+
+    private static SearchFilter searchFilter(
+            String query, String barcode, String brand, String meatType, String status, Boolean linked) {
+        // 每段都以换行结尾：调用方紧接着拼 "ORDER BY ..."，任何一段漏换行都会粘成
+        // "…ORDER BY" 语法错。这里包括基串本身——不带任何过滤条件时它就是最后一段。
+        StringBuilder sql = new StringBuilder(" WHERE 1=1\n");
+        List<Object> arguments = new ArrayList<>();
+        String normalizedQuery = blankToNull(query);
+        if (normalizedQuery != null) {
+            sql.append(" AND pas.product_name ILIKE ?\n");
+            arguments.add("%" + normalizedQuery.strip() + "%");
+        }
+        addFieldFilter(sql, arguments, "D", barcode);
+        addFieldFilter(sql, arguments, "E", brand);
+        addFieldFilter(sql, arguments, "F", meatType);
+        addFieldFilter(sql, arguments, "B", status);
+        if (linked != null) {
+            sql.append(linked ? " AND pas.matched_sku_id IS NOT NULL\n" : " AND pas.matched_sku_id IS NULL\n");
+        }
+        return new SearchFilter(sql.toString(), List.copyOf(arguments));
+    }
+
+    private static void addFieldFilter(
+            StringBuilder sql, List<Object> arguments, String column, String requestedValue) {
+        String normalized = blankToNull(requestedValue);
+        if (normalized == null) {
+            return;
+        }
+        sql.append("""
+                 AND EXISTS (
+                     SELECT 1
+                     FROM jsonb_array_elements(pas.fields) field
+                     WHERE field->>'column' = ? AND field->>'value' = ?
+                 )
+                """);
+        arguments.add(column);
+        arguments.add(normalized.strip());
     }
 
     private static String blankToNull(String value) {
@@ -117,6 +198,39 @@ public class ProductArchiveSheetService {
                 parse(rs.getString("fields"), FIELDS),
                 parse(rs.getString("extra_cells"), EXTRA_CELLS),
                 createdAt == null ? null : createdAt.toInstant());
+    }
+
+    private ProductArchiveSummary mapSummary(ResultSet rs, int row) throws SQLException {
+        List<ProductArchiveSheet.Field> fields = parse(rs.getString("fields"), FIELDS);
+        Map<String, ProductArchiveSheet.Field> byColumn = new LinkedHashMap<>();
+        fields.forEach(field -> byColumn.putIfAbsent(field.column(), field));
+        List<ProductArchiveSummary.CostingField> costing = fields.stream()
+                .filter(field -> !isIdentityColumn(field.column()))
+                .map(field -> new ProductArchiveSummary.CostingField(field.name(), field.value()))
+                .toList();
+        Long matchedSkuId = rs.getObject("matched_sku_id", Long.class);
+        return new ProductArchiveSummary(
+                value(byColumn, "A", rs.getString("product_name")),
+                value(byColumn, "E", null),
+                value(byColumn, "C", null),
+                value(byColumn, "D", null),
+                value(byColumn, "F", null),
+                value(byColumn, "G", null),
+                value(byColumn, "B", null),
+                matchedSkuId != null,
+                matchedSkuId == null ? null : rs.getString("sku_code"),
+                matchedSkuId == null ? null : String.valueOf(matchedSkuId),
+                costing);
+    }
+
+    private static boolean isIdentityColumn(String column) {
+        return column != null && column.length() == 1 && column.charAt(0) >= 'A' && column.charAt(0) <= 'G';
+    }
+
+    private static String value(
+            Map<String, ProductArchiveSheet.Field> fields, String column, String fallback) {
+        ProductArchiveSheet.Field field = fields.get(column);
+        return field == null ? fallback : field.value();
     }
 
     private <T> List<T> parse(String json, TypeReference<List<T>> type) {
@@ -140,4 +254,6 @@ public class ProductArchiveSheetService {
             throw BusinessException.notFound("商品不存在");
         }
     }
+
+    private record SearchFilter(String sql, List<Object> arguments) {}
 }

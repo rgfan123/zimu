@@ -18,7 +18,6 @@ import cn.zimu.fulfillment.sku.FulfillmentProviderRepository;
 import cn.zimu.fulfillment.sku.ProviderSku;
 import cn.zimu.fulfillment.sku.ProviderSkuRepository;
 import cn.zimu.fulfillment.sku.Sku;
-import cn.zimu.fulfillment.sku.SkuCommercialPrice;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -177,11 +176,35 @@ public class AuthoritativeSkuCatalogImportService {
             FulfillmentProvider provider,
             LoadedManifest loaded,
             List<Drift> drift) {
-        String productCode = productCode(item);
         String specification = specification(item);
         CatalogCategory categoryDefinition = categoryFor(item);
         Category category = businessCategories.get(categoryDefinition.code());
-        Product product = products.findByProductCode(productCode).orElse(null);
+        ProviderSku mapping = providerSkus
+                .findByFulfillmentProviderIdAndProviderSkuCode(provider.getId(), item.jdCode())
+                .orElse(null);
+        Sku sku = null;
+        Product product = null;
+        if (mapping != null) {
+            sku = skus.findById(mapping.getSkuId()).orElse(null);
+            compare(drift, item.jdCode(), "provider_sku.active", true, mapping.isActive());
+            if (sku == null) {
+                drift.add(new Drift(item.jdCode(), "provider_sku.sku_id", "existing SKU", mapping.getSkuId()));
+            } else {
+                product = products.findById(sku.getProductId()).orElse(null);
+                if (product == null) {
+                    drift.add(new Drift(item.jdCode(), "sku.product_id", "existing product", sku.getProductId()));
+                }
+            }
+        } else {
+            providerSkus.findCatalogIdentityConflicts(
+                            provider.getId(), item.canonicalName(), specification, UNIT)
+                    .forEach(existing -> drift.add(new Drift(
+                            item.jdCode(),
+                            "provider_sku.provider_sku_code_for_sku",
+                            item.jdCode(),
+                            existing.getProviderSkuCode())));
+        }
+
         boolean updateProductCategory = false;
         if (product != null) {
             compare(drift, item.jdCode(), "product.name", item.canonicalName(), product.getProductName());
@@ -193,30 +216,6 @@ public class AuthoritativeSkuCatalogImportService {
             } else if (category == null || !Objects.equals(category.getId(), product.getCategoryId())) {
                 compare(drift, item.jdCode(), "product.category_code", categoryDefinition.code(),
                         product.getCategoryId());
-            }
-        }
-
-        ProviderSku mapping = providerSkus
-                .findByFulfillmentProviderIdAndProviderSkuCode(provider.getId(), item.jdCode())
-                .orElse(null);
-        Sku sku = null;
-        if (mapping != null) {
-            sku = skus.findById(mapping.getSkuId()).orElse(null);
-            compare(drift, item.jdCode(), "provider_sku.active", true, mapping.isActive());
-            if (sku == null) {
-                drift.add(new Drift(item.jdCode(), "provider_sku.sku_id", "existing SKU", mapping.getSkuId()));
-            }
-        } else if (product != null) {
-            sku = skus.findByProductIdAndFulfillmentProviderIdAndSpecificationAndUnit(
-                            product.getId(), provider.getId(), specification, UNIT)
-                    .orElse(null);
-            if (sku != null) {
-                providerSkus.findByFulfillmentProviderIdAndSkuId(provider.getId(), sku.getId())
-                        .ifPresent(existing -> drift.add(new Drift(
-                                item.jdCode(),
-                                "provider_sku.provider_sku_code_for_sku",
-                                item.jdCode(),
-                                existing.getProviderSkuCode())));
             }
         }
 
@@ -242,32 +241,6 @@ public class AuthoritativeSkuCatalogImportService {
             drift.add(new Drift(item.jdCode(), "provider_sku.sku", "valid SKU", null));
         }
 
-        BigDecimal purchasePrice = SkuCommercialPrice.parse(item.purchasePrice(), "purchase_price");
-        BigDecimal retailPrice = SkuCommercialPrice.parse(item.retailPrice(), "retail_price");
-        boolean updatePrices = false;
-        if (sku != null) {
-            boolean purchaseCompatible = compatiblePrice(purchasePrice, sku.getPurchasePrice());
-            boolean retailCompatible = compatiblePrice(retailPrice, sku.getRetailPrice());
-            if (!purchaseCompatible) {
-                drift.add(new Drift(
-                        item.jdCode(),
-                        "sku.purchase_price",
-                        SkuCommercialPrice.text(purchasePrice),
-                        SkuCommercialPrice.text(sku.getPurchasePrice())));
-            }
-            if (!retailCompatible) {
-                drift.add(new Drift(
-                        item.jdCode(),
-                        "sku.retail_price",
-                        SkuCommercialPrice.text(retailPrice),
-                        SkuCommercialPrice.text(sku.getRetailPrice())));
-            }
-            updatePrices = purchaseCompatible
-                    && retailCompatible
-                    && ((purchasePrice != null && sku.getPurchasePrice() == null)
-                            || (retailPrice != null && sku.getRetailPrice() == null));
-        }
-
         Map<String, Object> mergedMetadata = mapping == null
                 ? metadata(item, loaded, Map.of(), drift)
                 : metadata(item, loaded, mapping.getExternalCodes(), drift);
@@ -277,11 +250,8 @@ public class AuthoritativeSkuCatalogImportService {
                 product,
                 sku,
                 mapping,
-                purchasePrice,
-                retailPrice,
                 categoryDefinition.code(),
                 updateProductCategory,
-                updatePrices,
                 updateSpecification,
                 mergedMetadata,
                 updateMapping);
@@ -303,7 +273,7 @@ public class AuthoritativeSkuCatalogImportService {
             Product product = itemPlan.product();
             if (product == null) {
                 product = new Product();
-                product.setProductCode(productCode(itemPlan.item()));
+                product.setProductCode(products.nextProductCode());
                 product.setProductName(itemPlan.item().canonicalName());
                 product.setCategoryId(category.getId());
                 product.setDescription("来自《京东商品编号.xlsx》Sheet1；外部唯一键为 JD 编码");
@@ -324,20 +294,12 @@ public class AuthoritativeSkuCatalogImportService {
                 sku.setFulfillmentProviderId(plan.provider().getId());
                 sku.setSpecification(specification(itemPlan.item()));
                 sku.setUnit(UNIT);
-                sku.setPurchasePrice(itemPlan.purchasePrice());
-                sku.setRetailPrice(itemPlan.retailPrice());
                 sku = skus.saveAndFlush(sku);
                 counters.createdSkus++;
             } else {
                 counters.reusedSkus++;
-                if (itemPlan.updatePrices() || itemPlan.updateSpecification()) {
-                    if (itemPlan.updatePrices()) {
-                        sku.setPurchasePrice(itemPlan.purchasePrice());
-                        sku.setRetailPrice(itemPlan.retailPrice());
-                    }
-                    if (itemPlan.updateSpecification()) {
-                        sku.setSpecification(specification(itemPlan.item()));
-                    }
+                if (itemPlan.updateSpecification()) {
+                    sku.setSpecification(specification(itemPlan.item()));
                     skus.save(sku);
                     counters.updatedSkus++;
                 }
@@ -387,9 +349,7 @@ public class AuthoritativeSkuCatalogImportService {
                         item.canonicalName(),
                         sourceRows(item),
                         item.priceMatchName(),
-                        item.priceSourceRow(),
-                        item.purchasePrice(),
-                        item.retailPrice()))
+                        item.priceSourceRow()))
                 .toList();
         List<AuthoritativeSkuCatalogImportReport.MappingDifference> mappingDifferences = manifest.items().stream()
                 .filter(item -> !item.mappingDifferenceCodes().isEmpty())
@@ -457,8 +417,6 @@ public class AuthoritativeSkuCatalogImportService {
                 drift, item.jdCode(), result, "price_source_sha256", loaded.manifest().priceSource().sha256());
         requireMetadataValue(drift, item.jdCode(), result, "catalog_manifest_sha256", loaded.contentSha256());
         requireMetadataValue(drift, item.jdCode(), result, "source_rows", sourceRows(item));
-        requireMetadataValue(drift, item.jdCode(), result, "price_match_name", item.priceMatchName());
-        requireMetadataValue(drift, item.jdCode(), result, "price_source_row", item.priceSourceRow());
         requireMetadataValue(
                 drift, item.jdCode(), result, "mapping_difference_codes", item.mappingDifferenceCodes());
 
@@ -480,8 +438,6 @@ public class AuthoritativeSkuCatalogImportService {
         result.put("price_source_sha256", loaded.manifest().priceSource().sha256());
         result.put("catalog_manifest_sha256", loaded.contentSha256());
         result.put("source_rows", sourceRows(item));
-        result.put("price_match_name", item.priceMatchName());
-        result.put("price_source_row", item.priceSourceRow());
         result.put("mapping_difference_codes", item.mappingDifferenceCodes());
         return result;
     }
@@ -498,20 +454,11 @@ public class AuthoritativeSkuCatalogImportService {
         }
     }
 
-    private static boolean compatiblePrice(BigDecimal expected, BigDecimal actual) {
-        if (expected == null) return actual == null;
-        return actual == null || expected.compareTo(actual) == 0;
-    }
-
     private static void compare(
             List<Drift> drift, String jdCode, String field, Object expected, Object actual) {
         if (!Objects.equals(expected, actual)) {
             drift.add(new Drift(jdCode, field, expected, actual));
         }
-    }
-
-    private static String productCode(Item item) {
-        return "PROD-JD-" + item.jdCode();
     }
 
     private static CatalogCategory categoryFor(Item item) {
@@ -597,11 +544,8 @@ public class AuthoritativeSkuCatalogImportService {
             Product product,
             Sku sku,
             ProviderSku mapping,
-            BigDecimal purchasePrice,
-            BigDecimal retailPrice,
             String categoryCode,
             boolean updateProductCategory,
-            boolean updatePrices,
             boolean updateSpecification,
             Map<String, Object> mergedMetadata,
             boolean updateMapping) {}

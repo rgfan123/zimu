@@ -457,9 +457,9 @@ public class DemoSeedDataInitializer implements ApplicationRunner {
         long meatCategory = ensureCategory("CAT-MEAT", "肉类");
         long dairyCategory = ensureCategory("CAT-DAIRY", "乳制品");
         long vegetableCategory = ensureCategory("CAT-VEGETABLE", "蔬菜");
-        long lambProduct = ensureProduct("PROD-LAMBLEG", "子牧羊小腿", meatCategory, "500g/盒");
-        long yogurtProduct = ensureProduct("PROD-YOGURT", "草原酸奶", dairyCategory, "12杯/箱");
-        long vegetableProduct = ensureProduct("PROD-VEGETABLE", "有机时蔬组合", vegetableCategory, "5kg/箱");
+        long lambProduct = ensureProduct("子牧羊小腿", meatCategory, "500g/盒");
+        long yogurtProduct = ensureProduct("草原酸奶", dairyCategory, "12杯/箱");
+        long vegetableProduct = ensureProduct("有机时蔬组合", vegetableCategory, "5kg/箱");
 
         List<SkuSeed> jdSkus = List.of(
                 ensureSku(lambProduct, "子牧羊小腿", jdProviderId, "500g/盒", "盒"),
@@ -478,17 +478,23 @@ public class DemoSeedDataInitializer implements ApplicationRunner {
         return jdbc.queryForObject("SELECT id FROM app.categories WHERE category_code=?", Long.class, code);
     }
 
-    private long ensureProduct(String code, String name, long categoryId, String description) {
-        jdbc.update(
+    private long ensureProduct(String name, long categoryId, String description) {
+        List<Long> existing = jdbc.queryForList(
+                "SELECT id FROM app.products WHERE product_name=? AND category_id=? ORDER BY id LIMIT 1",
+                Long.class,
+                name,
+                categoryId);
+        if (!existing.isEmpty()) return existing.getFirst();
+        return jdbc.queryForObject(
                 """
                 INSERT INTO app.products(product_code, product_name, category_id, description)
-                VALUES (?, ?, ?, ?) ON CONFLICT (product_code) DO NOTHING
+                VALUES ('PROD-' || lpad(nextval('app.product_code_seq')::text, 6, '0'), ?, ?, ?)
+                RETURNING id
                 """,
-                code,
+                Long.class,
                 name,
                 categoryId,
                 description);
-        return jdbc.queryForObject("SELECT id FROM app.products WHERE product_code=?", Long.class, code);
     }
 
     private SkuSeed ensureSku(long productId, String productName, long providerId, String specification, String unit) {

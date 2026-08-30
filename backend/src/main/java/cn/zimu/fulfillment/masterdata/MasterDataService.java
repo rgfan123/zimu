@@ -470,9 +470,6 @@ public class MasterDataService {
 
     @Transactional
     public IdempotentResult<MasterDataRecord> createProduct(ProductWrite input, String key, CommandContext ctx) {
-        BigDecimal purchasePrice = SkuCommercialPrice.parse(input.purchasePrice(), "purchase_price");
-        BigDecimal retailPrice = SkuCommercialPrice.parse(input.retailPrice(), "retail_price");
-        BigDecimal otherCost = SkuCommercialPrice.parse(input.otherCost(), "other_cost");
         LocalDate listedFrom = parseListedDate(input.listedFrom(), "listed_from");
         LocalDate listedUntil = parseListedDate(input.listedUntil(), "listed_until");
         requireListingOrder(listedFrom, listedUntil);
@@ -492,9 +489,6 @@ public class MasterDataService {
             value.setListedFrom(listedFrom);
             value.setListedUntil(listedUntil);
             value.setLeadTimeHours(input.leadTimeHours());
-            value.setPurchasePrice(purchasePrice);
-            value.setRetailPrice(retailPrice);
-            value.setOtherCost(otherCost);
             value.setMainImageRef(blankToNull(input.mainImageRef()));
             value.setActive(!Boolean.FALSE.equals(input.active()));
             return product(refresh(products.saveAndFlush(value)));
@@ -506,9 +500,6 @@ public class MasterDataService {
             ProductWithInitialSkuWrite input, String key, CommandContext ctx) {
         ProductWrite productInput = input.product();
         InitialSkuWrite skuInput = input.sku();
-        BigDecimal productPurchasePrice = SkuCommercialPrice.parse(productInput.purchasePrice(), "purchase_price");
-        BigDecimal productRetailPrice = SkuCommercialPrice.parse(productInput.retailPrice(), "retail_price");
-        BigDecimal otherCost = SkuCommercialPrice.parse(productInput.otherCost(), "other_cost");
         BigDecimal skuPurchasePrice = SkuCommercialPrice.parse(skuInput.purchasePrice(), "purchase_price");
         BigDecimal skuRetailPrice = SkuCommercialPrice.parse(skuInput.retailPrice(), "retail_price");
         LocalDate listedFrom = parseListedDate(productInput.listedFrom(), "listed_from");
@@ -533,9 +524,6 @@ public class MasterDataService {
             product.setListedFrom(listedFrom);
             product.setListedUntil(listedUntil);
             product.setLeadTimeHours(productInput.leadTimeHours());
-            product.setPurchasePrice(productPurchasePrice);
-            product.setRetailPrice(productRetailPrice);
-            product.setOtherCost(otherCost);
             product.setMainImageRef(blankToNull(productInput.mainImageRef()));
             product.setActive(!Boolean.FALSE.equals(productInput.active()));
             product = refresh(products.saveAndFlush(product));
@@ -573,15 +561,6 @@ public class MasterDataService {
             if (input.listedFromPresent()) value.setListedFrom(parseListedDate(input.listedFrom(), "listed_from"));
             if (input.listedUntilPresent()) value.setListedUntil(parseListedDate(input.listedUntil(), "listed_until"));
             if (input.leadTimeHoursPresent()) value.setLeadTimeHours(input.leadTimeHours());
-            if (input.purchasePricePresent()) {
-                value.setPurchasePrice(SkuCommercialPrice.parse(input.purchasePrice(), "purchase_price"));
-            }
-            if (input.retailPricePresent()) {
-                value.setRetailPrice(SkuCommercialPrice.parse(input.retailPrice(), "retail_price"));
-            }
-            if (input.otherCostPresent()) {
-                value.setOtherCost(SkuCommercialPrice.parse(input.otherCost(), "other_cost"));
-            }
             if (input.mainImageRefPresent()) value.setMainImageRef(blankToNull(input.mainImageRef()));
             requireListingOrder(value.getListedFrom(), value.getListedUntil());
             return product(refresh(products.saveAndFlush(value)));
@@ -650,7 +629,7 @@ public class MasterDataService {
     @Transactional
     public IdempotentResult<MasterDataRecord> patchSku(long id, SkuPatch input, String key, CommandContext ctx) {
         if (!input.purchasePricePresent() && !input.retailPricePresent()) {
-            requireAny(input.specification(), input.barcode(), input.active());
+            requireAny(input.specification(), input.unit(), input.barcode(), input.active());
         }
         BigDecimal purchasePrice = input.purchasePricePresent()
                 ? SkuCommercialPrice.parse(input.purchasePrice(), "purchase_price") : null;
@@ -660,6 +639,7 @@ public class MasterDataService {
             Sku value = skus.findById(id).orElseThrow(() -> BusinessException.notFound("SKU 不存在"));
             version(value.getLockVersion(), input.expectedVersion());
             if (input.specification() != null) value.setSpecification(input.specification());
+            if (input.unit() != null) value.setUnit(input.unit());
             if (input.barcode() != null) value.setBarcode(input.barcode());
             if (input.purchasePricePresent()) value.setPurchasePrice(purchasePrice);
             if (input.retailPricePresent()) value.setRetailPrice(retailPrice);
@@ -909,10 +889,6 @@ public class MasterDataService {
         attributes.put("listed_until", value.getListedUntil() == null ? null : value.getListedUntil().toString());
         attributes.put("lead_time_hours", value.getLeadTimeHours());
         attributes.put("main_image_ref", value.getMainImageRef());
-        attributes.put("purchase_price", SkuCommercialPrice.text(value.getPurchasePrice()));
-        attributes.put("retail_price", SkuCommercialPrice.text(value.getRetailPrice()));
-        attributes.put("other_cost", SkuCommercialPrice.text(value.getOtherCost()));
-        attributes.put("margin", marginText(value.getRetailPrice(), value.getPurchasePrice(), value.getOtherCost()));
         return record(value.getId(), value.getProductCode(), value.getProductName(), value.isActive(),
                 value.getLockVersion(), attributes, value);
     }
@@ -932,6 +908,7 @@ public class MasterDataService {
                 "barcode", value.getBarcode());
         attributes.put("purchase_price", SkuCommercialPrice.text(value.getPurchasePrice()));
         attributes.put("retail_price", SkuCommercialPrice.text(value.getRetailPrice()));
+        attributes.put("margin", marginText(value.getRetailPrice(), value.getPurchasePrice()));
         attributes.put("jd_emg_no", jdEmgNo);
         if (product != null) {
             attributes.put("product_version", product.getLockVersion());
@@ -943,10 +920,6 @@ public class MasterDataService {
                     product.getListedUntil() == null ? null : product.getListedUntil().toString());
             attributes.put("product_lead_time_hours", product.getLeadTimeHours());
             attributes.put("product_main_image_ref", product.getMainImageRef());
-            attributes.put("product_purchase_price", SkuCommercialPrice.text(product.getPurchasePrice()));
-            attributes.put("product_retail_price", SkuCommercialPrice.text(product.getRetailPrice()));
-            attributes.put("product_other_cost", SkuCommercialPrice.text(product.getOtherCost()));
-            attributes.put("margin", marginText(product.getRetailPrice(), product.getPurchasePrice(), product.getOtherCost()));
         }
         return record(value.getId(), value.getSkuCode(), product == null ? value.getSkuCode() : product.getProductName(),
                 value.isActive(), value.getLockVersion(), attributes, value);
@@ -1135,10 +1108,10 @@ public class MasterDataService {
         return value == null || value.isBlank() ? null : value;
     }
 
-    /** 毛利 = 零售价 - 进货价 - 其他成本；任一输入缺失则视为未定价（null）。 */
-    private static String marginText(BigDecimal retailPrice, BigDecimal purchasePrice, BigDecimal otherCost) {
-        if (retailPrice == null || purchasePrice == null || otherCost == null) return null;
-        return SkuCommercialPrice.text(retailPrice.subtract(purchasePrice).subtract(otherCost));
+    /** SKU 单位毛利 = 零售价 - 进货价；任一 SKU 价格缺失则视为未定价（null）。 */
+    private static String marginText(BigDecimal retailPrice, BigDecimal purchasePrice) {
+        if (retailPrice == null || purchasePrice == null) return null;
+        return SkuCommercialPrice.text(retailPrice.subtract(purchasePrice));
     }
 
     /** 上市周期日期：YYYY-MM-DD，非法格式报字段错误。 */
@@ -1194,6 +1167,7 @@ public class MasterDataService {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("expected_version", input.expectedVersion());
         putNullable(body, "specification", input.specification());
+        putNullable(body, "unit", input.unit());
         putNullable(body, "barcode", input.barcode());
         putNullable(body, "active", input.active());
         if (input.purchasePricePresent()) body.put("purchase_price", input.purchasePrice());
@@ -1213,9 +1187,6 @@ public class MasterDataService {
         if (input.listedFromPresent()) body.put("listed_from", input.listedFrom());
         if (input.listedUntilPresent()) body.put("listed_until", input.listedUntil());
         if (input.leadTimeHoursPresent()) body.put("lead_time_hours", input.leadTimeHours());
-        if (input.purchasePricePresent()) body.put("purchase_price", input.purchasePrice());
-        if (input.retailPricePresent()) body.put("retail_price", input.retailPrice());
-        if (input.otherCostPresent()) body.put("other_cost", input.otherCost());
         if (input.mainImageRefPresent()) body.put("main_image_ref", input.mainImageRef());
         return Map.of("id", id, "body", body);
     }

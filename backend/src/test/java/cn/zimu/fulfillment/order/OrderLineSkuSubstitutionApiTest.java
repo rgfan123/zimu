@@ -164,7 +164,14 @@ class OrderLineSkuSubstitutionApiTest {
         long providerId = jdbc.queryForObject(
                 "SELECT id FROM app.fulfillment_providers WHERE provider_code='JD'", Long.class);
         long productId = jdbc.queryForObject(
-                "SELECT id FROM app.products WHERE product_code='PROD-LAMBLEG'", Long.class);
+                """
+                SELECT sku.product_id
+                FROM app.provider_skus mapping
+                JOIN app.fulfillment_providers provider ON provider.id = mapping.fulfillment_provider_id
+                JOIN app.skus sku ON sku.id = mapping.sku_id
+                WHERE provider.provider_code='JD' AND mapping.provider_sku_code='JD-SKU-000001'
+                """,
+                Long.class);
         long skuId = jdbc.queryForObject(
                 """
                 INSERT INTO app.skus (product_id, fulfillment_provider_id, specification, unit, active)

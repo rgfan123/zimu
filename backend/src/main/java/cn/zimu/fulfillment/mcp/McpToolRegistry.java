@@ -44,7 +44,9 @@ public class McpToolRegistry {
             McpDomainReadTools domainReadTools,
             McpControlReadTools controlReadTools,
             String modulesProperty) {
-        this(readTools, writeTools, domainReadTools, controlReadTools, null, null, modulesProperty);
+        // 两个传输面开关恒传 false：本构造只服务测试/内嵌场景，不该触发「开着却零模块」
+        // 的启动期自检——那道自检针对的是真实部署漏配 MCP_MODULES。
+        this(readTools, writeTools, domainReadTools, controlReadTools, null, null, modulesProperty, false, false);
     }
 
     @Autowired
@@ -55,7 +57,9 @@ public class McpToolRegistry {
             McpControlReadTools controlReadTools,
             McpOrdersReadTools ordersReadTools,
             KehuzxRemoteReadTools kehuzxReadTools,
-            @Value("${app.mcp.modules:}") String modulesProperty) {
+            @Value("${app.mcp.modules:}") String modulesProperty,
+            @Value("${app.mcp.enabled:false}") boolean mcpEnabled,
+            @Value("${app.mcp.http.enabled:false}") boolean mcpHttpEnabled) {
         List<McpTool> tools = new java.util.ArrayList<>();
         tools.addAll(readTools.tools());
         tools.addAll(writeTools.tools());
@@ -81,6 +85,31 @@ public class McpToolRegistry {
                 .map(McpTool::module)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         Set<String> enabledModules = parseModules(modulesProperty, knownModules);
+
+        // 启动期自检（同事 2026-08-28 提议，采纳）：MCP 开着却一个模块都没启用，
+        // 是配置事故而非合法状态——运维不会有意「开启 MCP 且不暴露任何工具」。
+        //
+        // 为什么是 fail-fast 而不是 WARN：本条纪律此前只活在部署脚本的 grep 里，
+        // 换个部署路径或手改 override 就守不住。空值语义翻成「不开」之后，
+        // 失败模式从「PII 外泄」变成「机器人全哑」——哑是静默的，没人会立刻发现，
+        // 等运营察觉时已过去很久。让它在部署那一刻炸，由部署者当场看见，
+        // 远好过让业务同事第二天问「机器人怎么不说话了」。
+        // 与本类既有的「未知模块名启动期 fail-fast」同源，不是新范式。
+        // 注意条件是「任一传输面开着」而不是只看 stdio：生产实测 app.mcp.enabled 未设（=false）、
+        // 只开了 app.mcp.http.enabled，若只看前者，这道自检在生产永远不触发，等于没有。
+        //
+        // 影响面比「对外 MCP」更宽：本注册表同时是内部 Agent 平台的工具源
+        // （AgentToolInvoker 从 find(name) 取工具），所以 MCP_MODULES 丢失会让
+        // 对外 HTTP 面与企微机器人一起变哑。这正是必须在启动期炸掉的理由。
+        if ((mcpEnabled || mcpHttpEnabled) && enabledModules.isEmpty()) {
+            throw new IllegalStateException(
+                    "app.mcp.modules（env MCP_MODULES）解析后为空，但 MCP 传输面是开的"
+                            + "（app.mcp.enabled=" + mcpEnabled
+                            + ", app.mcp.http.enabled=" + mcpHttpEnabled + "）："
+                            + "空值语义是「不暴露任何模块」，这会让 MCP 面与内部 Agent 平台都拿不到工具。"
+                            + "要暴露请显式列出模块（已知：" + knownModules + "）；"
+                            + "确实要整体关闭请把两个传输面开关都设为 false。");
+        }
 
         Map<String, McpTool> index = new java.util.LinkedHashMap<>();
         for (McpTool tool : tools) {
@@ -154,6 +183,10 @@ public class McpToolRegistry {
 
     public static ObjectNode integerProperty(String description) {
         return JsonNodeFactory.instance.objectNode().put("type", "integer").put("description", description);
+    }
+
+    public static ObjectNode booleanProperty(String description) {
+        return JsonNodeFactory.instance.objectNode().put("type", "boolean").put("description", description);
     }
 
     public static ObjectNode objectProperty(String description) {

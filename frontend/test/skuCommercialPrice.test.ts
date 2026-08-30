@@ -101,6 +101,7 @@ test('SKU 新建和编辑把两个价格投影到公开 API 载荷', () => {
   assert.deepEqual(buildSkuUpdateBody({
     expected_version: 3,
     specification: '400g',
+    unit: '箱',
     barcode: '',
     purchase_price: '13',
     retail_price: '',
@@ -108,6 +109,7 @@ test('SKU 新建和编辑把两个价格投影到公开 API 载荷', () => {
   }), {
     expected_version: 3,
     specification: '400g',
+    unit: '箱',
     barcode: null,
     purchase_price: '13',
     retail_price: null,

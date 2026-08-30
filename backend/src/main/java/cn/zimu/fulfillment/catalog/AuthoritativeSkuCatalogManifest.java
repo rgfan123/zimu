@@ -21,6 +21,7 @@ record AuthoritativeSkuCatalogManifest(
 
     record ExcludedSheet(String sheetName, int nonemptyRows, String reason) {}
 
+    /** 价格相关字段仅为 JSON schema 兼容占位，必须恒为 null。 */
     record Item(
             String jdCode,
             String canonicalName,

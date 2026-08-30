@@ -2321,7 +2321,8 @@ paths:
       description: >-
         Idempotently imports the repository-pinned authoritative JD SKU catalog
         into Product, SKU, and ProviderSku master data. The operation performs a
-        full fail-before-write drift check and never calls a JD write API.
+        full fail-before-write drift check, never writes SKU prices, and never
+        calls a JD write API.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/Operator'
@@ -7428,8 +7429,8 @@ components:
       type: object
       description: >-
         商品档案·成本表全列留存的一行（= 成本表一行）。fields 是**有序数组**，顺序即原表列序，
-        库里也存成 jsonb 数组而非对象（jsonb 对象不保证键序）。列语义：AI 线下供货成本/份 = 成本
-        （按份 500g 口径）；AJ 售价 = 不含运费售价，只留档、不入 retail_price。
+        库里也存成 jsonb 数组而非对象（jsonb 对象不保证键序）。列语义：AI 线下供货成本/份供数给
+        app.skus.purchase_price；AJ 售价（不含运费）供数给 app.skus.retail_price。档案行自身保持不可变。
       required: [id, source_file_name, source_file_sha256, sheet_name, row_no, product_name, matched_product_id, fields]
       properties:
         id: { $ref: '#/components/schemas/Identifier' }
@@ -7474,7 +7475,7 @@ components:
               items: { $ref: '#/components/schemas/ProductArchiveSheet' }
     SkuAttributes:
       type: object
-      required: [product_id, provider_id, specification, unit, purchase_price, retail_price]
+      required: [product_id, provider_id, specification, unit, purchase_price, retail_price, margin]
       properties:
         product_id: { $ref: '#/components/schemas/Identifier' }
         provider_id: { $ref: '#/components/schemas/Identifier' }
@@ -7487,14 +7488,16 @@ components:
         retail_price:
           allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
           description: null means the retail price is not yet known; it never means zero.
+        margin:
+          type: string
+          nullable: true
+          pattern: '^-?(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$'
+          description: SKU retail_price minus purchase_price; null when either price is unknown.
         jd_emg_no:
           type: string
           nullable: true
           description: 当前启用的京东履约方 SKU 映射编码；映射或履约方停用时为 null。
         product_version: { type: integer, format: int64, minimum: 0 }
-        product_purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
-        product_retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
-        product_other_cost: { $ref: '#/components/schemas/NullableCommercialPrice' }
     SkuRecord:
       allOf:
         - $ref: '#/components/schemas/MasterDataRecord'
@@ -7520,15 +7523,13 @@ components:
         jd_names: { type: array, items: { type: string } }
     AuthoritativeSkuCatalogPricedItem:
       type: object
-      required: [jd_code, canonical_name, source_rows, price_match_name, price_source_row, purchase_price, retail_price]
+      required: [jd_code, canonical_name, source_rows, price_match_name, price_source_row]
       properties:
         jd_code: { type: string }
         canonical_name: { type: string }
         source_rows: { type: array, items: { type: integer, minimum: 2 } }
         price_match_name: { type: string }
         price_source_row: { type: integer, minimum: 2 }
-        purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
-        retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
     AuthoritativeSkuCatalogUnpricedItem:
       type: object
       required: [jd_code, canonical_name, source_rows]
@@ -7697,9 +7698,6 @@ components:
         listed_from: { type: string, format: date, example: '2026-09-01' }
         listed_until: { type: string, format: date, example: '2026-11-30' }
         lead_time_hours: { type: integer, minimum: 1, description: 发货时效（小时） }
-        purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
-        retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
-        other_cost: { $ref: '#/components/schemas/NullableCommercialPrice' }
         main_image_ref: { type: string, maxLength: 512, description: 主图上传返回的受控引用 }
         active: { type: boolean, default: true }
     InitialSkuWrite:
@@ -7753,15 +7751,6 @@ components:
           minimum: 1
           nullable: true
           description: 发货时效（小时）；显式 null 清空，缺省不修改。
-        purchase_price:
-          allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
-          description: Explicit null clears the purchase price to unknown; omission leaves it unchanged.
-        retail_price:
-          allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
-          description: Explicit null clears the retail price to unknown; omission leaves it unchanged.
-        other_cost:
-          allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
-          description: Explicit null clears the other cost to unknown; omission leaves it unchanged.
         main_image_ref:
           type: string
           maxLength: 512
@@ -7917,6 +7906,7 @@ components:
       properties:
         expected_version: { type: integer, minimum: 0 }
         specification: { type: string, minLength: 1, maxLength: 200 }
+        unit: { type: string, minLength: 1, maxLength: 32 }
         barcode: { type: string, minLength: 1, maxLength: 64, nullable: true }
         purchase_price:
           allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]

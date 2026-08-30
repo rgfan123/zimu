@@ -1186,7 +1186,14 @@ class ShipmentJdOutboundSubmitTest {
     }
 
     private void seedSecondJdSku() {
-        long productId = jdbc.queryForObject("SELECT id FROM app.products WHERE product_code='PROD-LAMBLEG'",
+        long productId = jdbc.queryForObject(
+                """
+                SELECT sku.product_id
+                FROM app.provider_skus mapping
+                JOIN app.fulfillment_providers provider ON provider.id = mapping.fulfillment_provider_id
+                JOIN app.skus sku ON sku.id = mapping.sku_id
+                WHERE provider.provider_code='JD' AND mapping.provider_sku_code='JD-SKU-000001'
+                """,
                 Long.class);
         long providerId = jdProviderId();
         Long skuId = jdbc.queryForObject(
