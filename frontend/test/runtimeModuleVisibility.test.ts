@@ -125,9 +125,13 @@ test('清单解析对畸形载荷保守取值：读不到就当作没有模块�
 });
 
 test('未知模块标识被忽略，不因为后端多下发了什么就点亮本版本的菜单', () => {
-  assert.deepEqual([...parseOpenBusinessModules({ modules: ['raw-material-inventory', 42, null] })], []);
+  // 票 06 起 raw-material-inventory 已是本版本认识的标识，不能再拿它当「未知」的例子；
+  // 这里改用一个不会成真的标识，断言的性质不变：认不出的模块一律不点亮菜单。
+  const unknownId = 'a-module-this-build-does-not-know';
+
+  assert.deepEqual([...parseOpenBusinessModules({ modules: [unknownId, 42, null] })], []);
   assert.deepEqual(
-    [...parseOpenBusinessModules({ modules: ['raw-material-inventory', 'customer-center'] })],
+    [...parseOpenBusinessModules({ modules: [unknownId, 'customer-center'] })],
     ['customer-center'],
   );
 });

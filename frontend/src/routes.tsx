@@ -22,6 +22,7 @@ import OrderDetailPage from '@/pages/orders/OrderDetailPage';
 import OrdersPage from '@/pages/orders/OrdersPage';
 import InventoryOverviewPage from '@/pages/inventory/InventoryOverviewPage';
 import InventoryDetailsPage from '@/pages/inventory/InventoryDetailsPage';
+import RawMaterialInventoryPage from '@/pages/inventory/RawMaterialInventoryPage';
 import { AuditLogsPage } from '@/pages/system';
 import AnalyticsPage from '@/pages/analytics/AnalyticsPage';
 import DemoOrderPage from '@/pages/demo/DemoOrderPage';
@@ -99,6 +100,8 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/agents/:slug/evals': <AgentDetailPage />,
   '/inventory/overview': <InventoryOverviewPage />,
   '/inventory/details': <InventoryDetailsPage />,
+  // 票 06：原料库存（受运行期清单控制；未接通时菜单里没有它，但 URL 直达照常渲染出未接通态）。
+  '/inventory/raw-materials': <RawMaterialInventoryPage />,
   '/product/products': <ProductsPage />,
   '/product/categories': <CategoriesPage />,
   '/product/skus': <SkusPage />,

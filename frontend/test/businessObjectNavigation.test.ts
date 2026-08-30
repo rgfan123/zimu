@@ -52,7 +52,7 @@ function visibleWorkbenchPaths(open: ReadonlySet<BusinessModuleId>): string[] {
   return findNavigationNode(filtered, '/workbench')?.children?.map(({ path }) => path) ?? [];
 }
 
-test('客户跟进是生产树里唯一的受控入口，接通与否决定它进不进菜单（票 04）', () => {
+test('客户跟进受客户中心接通状态裁定，接通与否决定它进不进菜单（票 04）', () => {
   const followUp = findNavigationNode(appNavigation, '/workbench/business-followups');
   assert.equal(
     followUp?.requiresModule,
@@ -64,7 +64,11 @@ test('客户跟进是生产树里唯一的受控入口，接通与否决定它�
     flattenNavigationLeaves(appNavigation)
       .filter(({ requiresModule }) => requiresModule)
       .map(({ path, requiresModule }) => ({ path, requiresModule })),
-    [{ path: '/workbench/business-followups', requiresModule: 'customer-center' }],
+    [
+      { path: '/workbench/business-followups', requiresModule: 'customer-center' },
+      // 票 06：原料库存是生产树里第二个受控入口，判据同样取后端下发的模块开放清单。
+      { path: '/inventory/raw-materials', requiresModule: 'raw-material-inventory' },
+    ],
     '受控是显式的：这一层只能带走明写了 requiresModule 的入口',
   );
 
@@ -109,6 +113,51 @@ test('客户跟进未接通只是不显示：路由与板块归属两态都不�
   assert.deepEqual(
     navigationTrail(appNavigation, '/workbench/business-followups').map(({ label }) => label),
     ['我的工作台', '客户跟进'],
+  );
+});
+
+/** 商品与主数据在给定清单下的可见叶子，用于票 06 的两态断言。 */
+function visibleMasterDataPaths(open: ReadonlySet<BusinessModuleId>): string[] {
+  const filtered = visibleNavigationTree(moduleVisibleNavigationTree(appNavigation, open));
+  return findNavigationNode(filtered, '/master-data')?.children?.map(({ path }) => path) ?? [];
+}
+
+test('原料库存进「商品与主数据」而不是每日动线板块，且受上游接通状态裁定（票 06）', () => {
+  const rawMaterials = findNavigationNode(appNavigation, '/inventory/raw-materials');
+
+  assert.equal(rawMaterials?.label, '原料库存');
+  assert.equal(
+    rawMaterials?.requiresModule,
+    'raw-material-inventory',
+    '上游（yuanliaokc）未接通时点进去拿不到任何原料事实，入口必须由后端清单裁定',
+  );
+  assert.equal(rawMaterials?.hideInMenu, undefined, '它是可见入口，不是降级的上下文二级入口');
+  assert.deepEqual(navigationContext('/inventory/raw-materials', ''), {
+    section: '商品与主数据',
+    page: '原料库存',
+  }, '归属：原料结存查询属主数据维护侧，不是每日动线的必经环节（spec D4）');
+
+  const open = visibleMasterDataPaths(ALL_MODULES_OPEN);
+  const closed = visibleMasterDataPaths(NO_OPEN_BUSINESS_MODULES);
+
+  assert.deepEqual(
+    open,
+    ['/product/skus', '/product/sku-mappings', '/product/bundles',
+      '/inventory/overview', '/inventory/raw-materials'],
+    '接通后原料库存排在总库存之后，其余入口位置不变',
+  );
+  assert.equal(open.length, 5, '商品与主数据可见叶子：接通 5');
+  assert.ok(open.length <= 6, '商品与主数据可见叶子不得超过准入上限 6');
+  assert.deepEqual(
+    closed,
+    open.filter((path) => path !== '/inventory/raw-materials'),
+    '未接通：菜单里少的恰好只有原料库存这一项',
+  );
+
+  // 降级 ≠ 删除：未接通只是不显示，路由照常注册、直达照常可达。
+  assert.ok(
+    routableNavigationLeaves(appNavigation).some(({ path }) => path === '/inventory/raw-materials'),
+    '未接通时 URL 仍必须可直达（书签与分享链接不失效）',
   );
 });
 
@@ -288,7 +337,15 @@ test('orders stay canonical and inventory has one business-level overview', () =
     ?.filter(({ hideInMenu, path }) => !hideInMenu && path.startsWith('/inventory/'));
   assert.deepEqual(masterDataInventory, [
     { path: '/inventory/overview', label: '总库存' },
+    // 票 06：原料库存**不是**第二个成品库存总览——它是另一个业务对象（上游 yuanliaokc 的原料
+    // 与批次），与子牧的 SKU 之间没有任何连接键（spec D6），两者不可相互推导也不会互相顶替。
+    { path: '/inventory/raw-materials', label: '原料库存', requiresModule: 'raw-material-inventory' },
   ]);
+  assert.equal(
+    masterDataInventory?.filter(({ label }) => label === '总库存').length,
+    1,
+    '业务级成品库存总览仍然只有一个',
+  );
   assert.deepEqual(navigationContext('/inventory/overview', ''), {
     section: '商品与主数据',
     page: '总库存',

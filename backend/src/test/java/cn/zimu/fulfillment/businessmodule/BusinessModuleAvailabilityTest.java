@@ -45,6 +45,23 @@ class BusinessModuleAvailabilityTest {
         assertThat(new BusinessModuleAvailabilityService(properties).openModules()).isEmpty();
     }
 
+    /**
+     * 票 06：原料库存的入口受本清单裁定，而本仓还没有它的只读网关——所以它必须**永远**
+     * 不出现在开放清单里，哪怕客户中心那条链路完全就绪。
+     *
+     * <p>这条断言的价值在票 08：那时有人接上原料库存网关，必须显式改这里，
+     * 而不是让「原料库存好像开了」悄悄发生。
+     */
+    @Test
+    void rawMaterialInventoryStaysClosedWhileThisRepositoryHasNoReadGateway() {
+        assertThat(BusinessModule.RAW_MATERIAL_INVENTORY.id()).isEqualTo("raw-material-inventory");
+
+        assertThat(new BusinessModuleAvailabilityService(new KehuzxMcpProperties()).openModules())
+                .doesNotContain("raw-material-inventory");
+        assertThat(new BusinessModuleAvailabilityService(readyKehuzxProperties()).openModules())
+                .doesNotContain("raw-material-inventory");
+    }
+
     private static KehuzxMcpProperties readyKehuzxProperties() {
         KehuzxMcpProperties properties = new KehuzxMcpProperties();
         properties.setEnabled(true);

@@ -12,6 +12,14 @@
 export const BUSINESS_MODULE_IDS = [
   /** 客户中心（kehuzx）：客户档案与客户跟进的权威来源。 */
   'customer-center',
+  /**
+   * 原料库存（yuanliaokc）：原料、批次与结存事实的权威来源，经远端只读网关接入（票 06）。
+   *
+   * 今天恒为未开放——上游只有 stdio MCP 面、没有 HTTP 接口，后端因此还没有可判定的接通开关
+   * （spec D7，前置是票 07/08）。前端先认识这个标识，是为了让入口从第一天起就由清单裁定，
+   * 而不是先无条件显示、等接通了再回来补一层门。
+   */
+  'raw-material-inventory',
 ] as const;
 
 export type BusinessModuleId = (typeof BUSINESS_MODULE_IDS)[number];

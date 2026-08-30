@@ -95,6 +95,11 @@ export const appNavigation = [
       { path: '/product/sku-mappings', label: 'SKU 映射' },
       { path: '/product/bundles', label: '静态礼包' },
       { path: '/inventory/overview', label: '总库存' },
+      // 票 06：原料库存归本板块而不是我的工作台——原料结存查询不是每日动线的必经环节，
+      // 属主数据维护侧（spec D4）。入口受运行期清单控制：上游（yuanliaokc）未接通时不进菜单，
+      // 但路由照常注册、URL 照常直达（降级 ≠ 删除）。它与「总库存」是两个业务对象：
+      // 那边是 SKU 成品结存，这边是原料与批次，两者之间没有连接键（spec D6）。
+      { path: '/inventory/raw-materials', label: '原料库存', requiresModule: 'raw-material-inventory' },
       { path: '/inventory/details', label: '专业库存明细', hideInMenu: true },
       { path: '/product/products', label: '商品基础信息', hideInMenu: true },
       { path: '/product/categories', label: '品类基础信息', hideInMenu: true },

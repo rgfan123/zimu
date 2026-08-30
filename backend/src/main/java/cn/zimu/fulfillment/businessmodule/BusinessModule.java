@@ -13,7 +13,17 @@ package cn.zimu.fulfillment.businessmodule;
 public enum BusinessModule {
 
     /** 客户中心（kehuzx）：客户档案与客户跟进的权威来源，经远端只读网关接入。 */
-    CUSTOMER_CENTER("customer-center");
+    CUSTOMER_CENTER("customer-center"),
+
+    /**
+     * 原料库存（yuanliaokc）：原料、批次与结存事实的权威来源，同样走远端只读网关（票 06）。
+     *
+     * <p>今天恒为未开放：上游只有 stdio MCP 面、没有 HTTP 接口，本系统够不着，因此本仓
+     * 还不存在原料库存的只读网关，也就没有任何接通开关可取（spec D7，前置是票 07/08）。
+     * 枚举先声明它，是为了让前端入口从第一天起就由本清单裁定——而不是先无条件显示，
+     * 等接通了再回来补一层门。
+     */
+    RAW_MATERIAL_INVENTORY("raw-material-inventory");
 
     private final String id;
 

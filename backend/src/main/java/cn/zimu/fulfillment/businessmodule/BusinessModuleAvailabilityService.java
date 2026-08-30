@@ -12,6 +12,11 @@ import org.springframework.stereotype.Service;
  * 客户中心取 {@link KehuzxMcpProperties#isReady()}——它正是
  * {@code KehuzxMcpReadClient} 抛 {@code KEHUZX_NOT_CONFIGURED} 的同一个判据，
  * 因此「菜单里有」与「点进去能用」不可能分叉。
+ *
+ * <p>{@link BusinessModule#RAW_MATERIAL_INVENTORY} 没有出现在下面：本仓还不存在原料库存的
+ * 只读网关（上游 yuanliaokc 只有 stdio MCP 面，spec D7），因此**没有任何开关可取**，
+ * 它恒为未开放。这不是「先写个 false 占位」——一旦票 08 落下网关，判据必须换成那个网关的
+ * ready 判定（与客户中心同一形状），而不是在这里另立一个可能与真实链路不同步的标志位。
  */
 @Service
 public class BusinessModuleAvailabilityService {
