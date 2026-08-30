@@ -114,7 +114,7 @@ public class SkuFulfillmentReadinessService {
                 reasons.add(SkuReadinessReason.BARCODE_CONFLICT);
             }
             for (SkuDataQualityFlag flag : skuFlags) {
-                if (currentlyBlocks(sku, flag)) {
+                if (currentlyBlocks(sku, mapping, flag)) {
                     SkuReadinessReason reason = SkuReadinessReason.parse(flag.getBlockingReason());
                     reasons.add(reason);
                     explicitIssueByReason.putIfAbsent(reason, flag);
@@ -134,7 +134,7 @@ public class SkuFulfillmentReadinessService {
                     .map(flag -> new SkuFulfillmentReadiness.SkuDataQualityFlagView(
                             flag.getFlagCode(),
                             flag.getBlockingReason(),
-                            currentlyBlocks(sku, flag),
+                            currentlyBlocks(sku, mapping, flag),
                             flag.getMessage(),
                             flag.getAction(),
                             flag.getEvidence()))
@@ -181,15 +181,18 @@ public class SkuFulfillmentReadinessService {
     }
 
     /**
-     * 有明确冲突条码证据的历史标记，在 SKU 已维护不同的非空独立条码后转为非阻断证据；
-     * 其他人工标记必须显式关闭，不能凭文本推断自动消失。
+     * 有明确冲突条码证据的历史标记，只有在 SKU 已维护不同的非空独立条码，且对应
+     * ProviderSku 留有 REAL 京东商品查询凭证后才转为非阻断证据；其他人工标记必须显式关闭。
      */
-    private static boolean currentlyBlocks(Sku sku, SkuDataQualityFlag flag) {
+    private static boolean currentlyBlocks(Sku sku, ProviderSku mapping, SkuDataQualityFlag flag) {
         if (flag.getBlockingReason() == null) return false;
         if (!SkuReadinessReason.BARCODE_CONFLICT.name().equals(flag.getBlockingReason())) return true;
         Object conflicting = flag.getEvidence().get("conflicting_barcode");
         String conflictingBarcode = conflicting instanceof String text ? normalizeBarcode(text) : null;
         String currentBarcode = normalizeBarcode(sku.getBarcode());
-        return conflictingBarcode == null || currentBarcode == null || currentBarcode.equals(conflictingBarcode);
+        if (conflictingBarcode == null || currentBarcode == null || currentBarcode.equals(conflictingBarcode)) {
+            return true;
+        }
+        return !JdGoodsVerificationEvidence.isCurrent(mapping);
     }
 }

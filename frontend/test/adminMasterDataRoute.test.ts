@@ -309,6 +309,8 @@ test('product archive shows JD EMG and opens a new-product form without an exist
   assert.match(bodyText(), /数据质量 \/ 档案证据/);
   assert.match(bodyText(), /商品档案状态：停产（仅作为参考证据）/);
   assert.match(bodyText(), /来源品牌子牧与内部品牌卓宸不一致/);
+  assert.match(bodyText(), /处理：未确认权威关系前不要自动停用 SKU/);
+  assert.match(bodyText(), /处理：核对品牌证据后人工关闭/);
   assert.match(bodyText(), /按阻断原因筛选/);
   assert.equal(requestedUrls.some((url) => url.startsWith('/api/v1/products?')), false);
 

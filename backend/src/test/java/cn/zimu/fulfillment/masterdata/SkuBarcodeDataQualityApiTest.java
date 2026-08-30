@@ -220,7 +220,7 @@ class SkuBarcodeDataQualityApiTest {
                 "BEEF_RIB_750_BARCODE_CONFLICT",
                 "BARCODE_CONFLICT",
                 "牛肋条750g来源档案条码与500g SKU冲突",
-                "取得不同于06977872890135的独立条码后再启用履约",
+                "取得不同于06977872890135的独立条码并通过 REAL 京东 goodsNo 核验后再启用履约",
                 "{\"conflicting_barcode\":\"06977872890135\",\"canonical_sku_code\":\"SKU-JD-000021\"}");
 
         Map<String, Object> initial = http.getForObject("/api/v1/skus/" + sku750Id, Map.class);
@@ -238,10 +238,11 @@ class SkuBarcodeDataQualityApiTest {
                 sku750Id, 0, Map.of("barcode", "06977872890750"), "beef-rib-unique-barcode");
         assertThat(unique.getStatusCode()).isEqualTo(HttpStatus.OK);
         Map<String, Object> uniqueBody = recordBody(unique);
-        assertThat(reasonCodes(uniqueBody)).containsExactly("PROVIDER_MAPPING_REQUIRED");
+        assertThat(reasonCodes(uniqueBody))
+                .containsExactly("PROVIDER_MAPPING_REQUIRED", "BARCODE_CONFLICT");
         assertThat(dataQualityFlags(uniqueBody)).hasSize(1);
         assertThat(dataQualityFlags(uniqueBody).getFirst())
-                .containsEntry("currently_blocking", false);
+                .containsEntry("currently_blocking", true);
 
         Map<String, Object> clearBody = new LinkedHashMap<>();
         clearBody.put("barcode", null);
@@ -255,11 +256,41 @@ class SkuBarcodeDataQualityApiTest {
         ResponseEntity<Map> restored = patchSku(
                 sku750Id, 2, Map.of("barcode", "06977872890750"), "beef-rib-restore-independent-barcode");
         assertThat(restored.getStatusCode()).isEqualTo(HttpStatus.OK);
+        String independentGoodsNo = "JD-GOODS-VERIFIED-BEEF-RIB-750";
         insertProviderMapping(
                 providerId,
                 sku750Id,
-                "EMG-TICKET06-BEEF-RIB-750",
+                independentGoodsNo,
                 "{\"jd_pieces_per_unit\":1}");
+        Map<String, Object> unverified = http.getForObject("/api/v1/skus/" + sku750Id, Map.class);
+        assertThat(reasonCodes(unverified)).containsExactly("BARCODE_CONFLICT");
+        assertThat(dataQualityFlags(unverified).getFirst()).containsEntry("currently_blocking", true);
+
+        jdbc.update(
+                """
+                UPDATE app.provider_skus
+                SET external_codes=external_codes || jsonb_build_object(
+                    'jd_goods_verification', jsonb_build_object(
+                        'goods_no', provider_sku_code,
+                        'source', 'JD_QUERY_GOODS_INFO',
+                        'client_mode', 'MOCK',
+                        'enable_flag', 2,
+                        'verified_at', CURRENT_TIMESTAMP))
+                WHERE sku_id=?
+                """,
+                sku750Id);
+        assertThat(reasonCodes(http.getForObject("/api/v1/skus/" + sku750Id, Map.class)))
+                .as("MOCK 查询结果不能证明真实京东 goodsNo")
+                .containsExactly("BARCODE_CONFLICT");
+
+        jdbc.update(
+                """
+                UPDATE app.provider_skus
+                SET external_codes=jsonb_set(
+                    external_codes, '{jd_goods_verification,client_mode}', '"REAL"'::jsonb, FALSE)
+                WHERE sku_id=?
+                """,
+                sku750Id);
         Map<String, Object> ready = http.getForObject("/api/v1/skus/" + sku750Id, Map.class);
         assertThat(readiness(ready)).containsEntry("ready", true);
         assertThat(reasonCodes(ready)).isEmpty();

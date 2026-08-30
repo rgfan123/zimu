@@ -1,6 +1,13 @@
 -- 有效 SKU 的主条码与 BARCODE 别名共享同一规范化唯一边界。
 -- V71 的 BEFORE STATEMENT 目录锁会串行相关写语句；本迁移的 AFTER STATEMENT
 -- 校验因此既能覆盖跨表所有权，又不会留下并发双写窗口。
+-- 必须在任何索引扫描/审计前置读取之前取得同一事务级锁，避免迁移按陈旧目录快照落证据。
+DO $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(756426269156::BIGINT);
+END;
+$$;
+
 CREATE INDEX idx_skus_active_normalized_barcode
     ON app.skus (lower(btrim(barcode)))
     WHERE active = TRUE AND barcode IS NOT NULL AND btrim(barcode) <> '';
@@ -82,12 +89,34 @@ CREATE TRIGGER trg_sku_aliases_active_barcode_unique
 AFTER INSERT OR UPDATE OR DELETE ON app.sku_aliases
 FOR EACH STATEMENT EXECUTE FUNCTION app.assert_active_sku_effective_barcode_unique();
 
--- 审计已确认但不能自动裁决的事实落为显式质量证据。空库/演示库没有这些
--- 稳定业务键时保持 no-op；存在目标 SKU 时必须同时命中审计过的来源事实。
+-- 审计已确认但不能自动裁决的事实落为显式质量证据。没有任何生产审计稳定键的
+-- 空库/独立测试库保持 no-op；一旦命中生产锚点，必须完整命中 5 项 cohort 及其来源事实。
 DO $$
 DECLARE
     target_sku_id BIGINT;
+    audited_sku_count INTEGER;
+    audit_anchor_count INTEGER;
 BEGIN
+    SELECT count(*) INTO audited_sku_count
+    FROM app.skus
+    WHERE sku_code IN (
+        'SKU-JD-000070', 'SKU-JD-000002', 'SKU-JD-000028',
+        'SKU-JD-000085', 'SKU-TP-000064');
+    SELECT
+        (SELECT count(*) FROM app.skus WHERE sku_code='SKU-JD-000021')
+        + (SELECT count(*) FROM app.source_channel_skus
+           WHERE (source_channel='CAISHIXIAN' AND source_sku_ref='2152074')
+              OR (source_channel='ZHONGHUI' AND source_sku_ref='60043831'))
+    INTO audit_anchor_count;
+    IF audited_sku_count = 0 AND audit_anchor_count = 0 THEN
+        RETURN;
+    END IF;
+    IF audited_sku_count <> 5 THEN
+        RAISE EXCEPTION 'SKU data-quality audit cohort incomplete: expected 5, found %',
+                        audited_sku_count
+            USING ERRCODE='23514';
+    END IF;
+
     SELECT id INTO target_sku_id FROM app.skus WHERE sku_code='SKU-JD-000070';
     IF target_sku_id IS NOT NULL THEN
         IF NOT EXISTS (
@@ -136,8 +165,7 @@ BEGIN
                 'canonical_sku_code', 'SKU-JD-000021',
                 'canonical_provider_sku_code', 'EMG4418861058751',
                 'source_kind', 'AUDITED_SOURCE_ARCHIVE'),
-            TRUE)
-        ON CONFLICT (sku_id, flag_code) DO NOTHING;
+            TRUE);
     END IF;
 
     SELECT id INTO target_sku_id FROM app.skus WHERE sku_code='SKU-JD-000002';
@@ -160,10 +188,12 @@ BEGIN
         ) OR NOT EXISTS (
             SELECT 1 FROM app.source_channel_skus
             WHERE source_channel='WANGQI' AND source_sku_ref='EMG4418691851778'
+              AND source_product_name='羊小腿' AND source_specification IS NULL
               AND sku_id=target_sku_id AND quantity_multiplier=1.000 AND active=TRUE
         ) OR NOT EXISTS (
             SELECT 1 FROM app.source_channel_skus
             WHERE source_channel='DAZHE' AND source_sku_ref='EMG4418691851778'
+              AND source_product_name='羊小腿' AND source_specification IS NULL
               AND sku_id=target_sku_id AND quantity_multiplier=2.000 AND active=TRUE
         ) THEN
             RAISE EXCEPTION '羊小腿来源乘数审计前置条件漂移' USING ERRCODE='23514';
@@ -177,8 +207,7 @@ BEGIN
             jsonb_build_object(
                 'source_sku_ref', 'EMG4418691851778',
                 'WANGQI_multiplier', 1,
-                'DAZHE_multiplier', 2), TRUE)
-        ON CONFLICT (sku_id, flag_code) DO NOTHING;
+                'DAZHE_multiplier', 2), TRUE);
     END IF;
 
     SELECT id INTO target_sku_id FROM app.skus WHERE sku_code='SKU-JD-000028';
@@ -201,10 +230,14 @@ BEGIN
         ) OR NOT EXISTS (
             SELECT 1 FROM app.source_channel_skus
             WHERE source_channel='ZHONGHUI' AND source_sku_ref='60043837'
+              AND source_product_name='子牧原切澳洲谷饲牛蝎子400g*2'
+              AND source_specification IS NULL
               AND sku_id=target_sku_id AND quantity_multiplier=2.000 AND active=TRUE
         ) OR NOT EXISTS (
             SELECT 1 FROM app.source_channel_skus
             WHERE source_channel='JUFUBAO' AND source_sku_ref='65993370'
+              AND source_product_name='【京东配送】子牧澳洲谷饲牛蝎子400g*2袋'
+              AND source_specification IS NULL
               AND sku_id=target_sku_id AND quantity_multiplier=2.000 AND active=TRUE
         ) THEN
             RAISE EXCEPTION '牛蝎子品牌差异审计前置条件漂移' USING ERRCODE='23514';
@@ -218,8 +251,7 @@ BEGIN
             jsonb_build_object(
                 'source_refs', jsonb_build_array('ZHONGHUI/60043837', 'JUFUBAO/65993370'),
                 'source_brand', '子牧',
-                'internal_brand', '卓宸'), TRUE)
-        ON CONFLICT (sku_id, flag_code) DO NOTHING;
+                'internal_brand', '卓宸'), TRUE);
     END IF;
 
     SELECT id INTO target_sku_id FROM app.skus WHERE sku_code='SKU-JD-000085';
@@ -241,6 +273,8 @@ BEGIN
         ) OR NOT EXISTS (
             SELECT 1 FROM app.source_channel_skus
             WHERE source_channel='JUFUBAO' AND source_sku_ref='66487969'
+              AND source_product_name='子牧蒙元驼新鲜鸵鸟蛋1个约1000g-1500g'
+              AND source_specification IS NULL
               AND sku_id=target_sku_id AND quantity_multiplier=1.000 AND active=TRUE
         ) THEN
             RAISE EXCEPTION '鸵鸟蛋变重差异审计前置条件漂移' USING ERRCODE='23514';
@@ -254,8 +288,7 @@ BEGIN
             jsonb_build_object(
                 'source_ref', 'JUFUBAO/66487969',
                 'source_weight_range', '1000g-1500g',
-                'internal_specification', '1.5kg'), TRUE)
-        ON CONFLICT (sku_id, flag_code) DO NOTHING;
+                'internal_specification', '1.5kg'), TRUE);
     END IF;
 
     SELECT id INTO target_sku_id FROM app.skus WHERE sku_code='SKU-TP-000064';
@@ -278,6 +311,8 @@ BEGIN
         ) OR NOT EXISTS (
             SELECT 1 FROM app.source_channel_skus
             WHERE source_channel='JUFUBAO' AND source_sku_ref='66811285'
+              AND source_product_name='【京东/顺丰配送】子牧雷山高海拔农家散养土黑猪仔排450g*2'
+              AND source_specification IS NULL
               AND sku_id=target_sku_id AND quantity_multiplier=1.000 AND active=TRUE
         ) THEN
             RAISE EXCEPTION '仔排/排骨差异审计前置条件漂移' USING ERRCODE='23514';
@@ -291,8 +326,7 @@ BEGIN
             jsonb_build_object(
                 'source_ref', 'JUFUBAO/66811285',
                 'source_form', '仔排',
-                'internal_form', '排骨'), TRUE)
-        ON CONFLICT (sku_id, flag_code) DO NOTHING;
+                'internal_form', '排骨'), TRUE);
     END IF;
 END;
 $$;

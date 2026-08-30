@@ -14,14 +14,17 @@ import cn.zimu.fulfillment.order.dto.OperationalAlertDto;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /**
  * 京东云仓 SKU 映射核对：拉取京东履约方的 provider_skus 映射，逐条调 queryGoodsInfo 核对，
- * 差异按 映射缺失/商品失效/名称不符 三类归类，每类差异写一条 JD_SKU_MAPPING 运营告警。
+ * 差异按 映射缺失/商品失效/名称不符 三类归类，每类差异写一条 JD_SKU_MAPPING 运营告警；
+ * 只有 REAL 客户端返回同一、已启用 goodsNo 时，才在内部映射上固化可复核的核验凭证。
  *
  * <p>映射键语义（M3）：provider_skus.provider_sku_code ↔ 京东 goodsNo（京东商品编码）；
  * provider_skus.merchant_sku_code ↔ 京东 erpGoodsNo（商家 ERP 商品编码）；external_codes 存放其它京东侧编码。
@@ -42,18 +45,21 @@ public class JdSkuMappingCheckService {
     private final AuditLogService audits;
     private final JdGoodsReadOnlyVerifier goodsVerifier;
     private final OperationalAlertService alerts;
+    private final String clientMode;
 
     public JdSkuMappingCheckService(
             JdbcTemplate jdbc,
             IdempotencyService idempotency,
             AuditLogService audits,
             JdGoodsReadOnlyVerifier goodsVerifier,
-            OperationalAlertService alerts) {
+            OperationalAlertService alerts,
+            @Value("${app.jd.client-mode:MOCK}") String clientMode) {
         this.jdbc = jdbc;
         this.idempotency = idempotency;
         this.audits = audits;
         this.goodsVerifier = goodsVerifier;
         this.alerts = alerts;
+        this.clientMode = clientMode == null ? "MOCK" : clientMode.trim().toUpperCase(Locale.ROOT);
     }
 
     /** 手动触发一次核对；同一幂等键重放返回首次结果，不重复写告警。 */
@@ -79,7 +85,9 @@ public class JdSkuMappingCheckService {
         List<DiffItem> statusUnknown = new ArrayList<>();
         List<DiffItem> nameMismatch = new ArrayList<>();
         for (SkuMappingRow mapping : mappings) {
-            classify(mapping, remoteFacts.get(mapping.id()), missing, invalid, statusUnknown, nameMismatch);
+            JdGoodsReadOnlyVerifier.Verification verification = remoteFacts.get(mapping.id());
+            recordVerification(mapping, verification);
+            classify(mapping, verification, missing, invalid, statusUnknown, nameMismatch);
         }
         List<CategoryDiff> categories = new ArrayList<>();
         emit(checkRunNo, DiffCategory.MAPPING_MISSING, missing, context, categories);
@@ -101,6 +109,44 @@ public class JdSkuMappingCheckService {
                 .httpStatus(200)
                 .businessCode(categories.isEmpty() ? "JD_SKU_MAPPING_CONSISTENT" : "JD_SKU_MAPPING_DIFF_FOUND"));
         return result;
+    }
+
+    /** 只有 REAL 客户端返回同一、已启用 goodsNo 时才固化凭证；映射在外调期间漂移则整次核对失败。 */
+    private void recordVerification(
+            SkuMappingRow mapping, JdGoodsReadOnlyVerifier.Verification verification) {
+        if (!JdGoodsVerificationEvidence.canRecord(clientMode, mapping.providerSkuCode(), verification)) {
+            return;
+        }
+        int updated = jdbc.update(
+                """
+                UPDATE app.provider_skus
+                SET external_codes=jsonb_set(
+                        external_codes,
+                        '{jd_goods_verification}',
+                        jsonb_build_object(
+                            'goods_no', ?,
+                            'source', ?,
+                            'client_mode', ?,
+                            'enable_flag', ?,
+                            'verified_at', CURRENT_TIMESTAMP,
+                            'request_id', ?),
+                        TRUE),
+                    lock_version=lock_version+1,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND active=TRUE AND provider_sku_code=?
+                """,
+                verification.goodsNo(),
+                JdGoodsVerificationEvidence.SOURCE,
+                clientMode,
+                verification.enableFlag(),
+                verification.requestId(),
+                mapping.id(),
+                mapping.providerSkuCode());
+        if (updated != 1) {
+            throw BusinessException.conflict(
+                    "JD_SKU_MAPPING_CHANGED_DURING_CHECK",
+                    "京东商品只读核验期间映射已变化，请刷新后重新核验");
+        }
     }
 
     private void classify(

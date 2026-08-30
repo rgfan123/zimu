@@ -7085,7 +7085,7 @@ components:
           nullable: true
         currently_blocking:
           type: boolean
-          description: 是否仍参与当前 readiness；独立条码已确认后，历史冲突证据可保留但不再阻断。
+          description: 是否仍参与当前 readiness；条码冲突证据只有在独立条码与 REAL 京东 goodsNo 核验凭证同时成立后才转为非阻断历史证据。
         message: { type: string, minLength: 1 }
         action: { type: string, minLength: 1 }
         evidence: { type: object, additionalProperties: true }

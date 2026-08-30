@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -36,7 +37,12 @@ class JdSkuMappingCheckServiceTest {
     private final OperationalAlertService alerts = mock(OperationalAlertService.class);
 
     private JdSkuMappingCheckService service() {
-        return new JdSkuMappingCheckService(jdbc, idempotency, audits, goodsVerifier, alerts);
+        return service("REAL");
+    }
+
+    private JdSkuMappingCheckService service(String clientMode) {
+        return new JdSkuMappingCheckService(
+                jdbc, idempotency, audits, goodsVerifier, alerts, clientMode);
     }
 
     @SuppressWarnings("unchecked")
@@ -49,6 +55,7 @@ class JdSkuMappingCheckServiceTest {
                     }
                     return rows;
                 });
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
     }
 
     private void stubRunIdempotency() {
@@ -61,6 +68,12 @@ class JdSkuMappingCheckServiceTest {
 
     private JdSkuMappingCheckResult run(String idempotencyKey) {
         return service().run(idempotencyKey, new CommandContext("req-1", "trace-1", "ops-user")).result();
+    }
+
+    private JdSkuMappingCheckResult run(String clientMode, String idempotencyKey) {
+        return service(clientMode)
+                .run(idempotencyKey, new CommandContext("req-1", "trace-1", "ops-user"))
+                .result();
     }
 
     private JdGoodsReadOnlyVerifier.Verification enabledGoods(String goodsNo, String goodsName) {
@@ -94,6 +107,19 @@ class JdSkuMappingCheckServiceTest {
         assertThat(auditField(captor.getValue(), "operation")).isEqualTo("jd_sku_mapping.check");
         assertThat(auditField(captor.getValue(), "businessCode")).isEqualTo("JD_SKU_MAPPING_CONSISTENT");
         assertThat(auditField(captor.getValue(), "operator")).isEqualTo("ops-user");
+        verify(jdbc).update(contains("jd_goods_verification"), any(Object[].class));
+    }
+
+    @Test
+    void mockClientResultNeverBecomesPersistentRealGoodsEvidence() {
+        stubProviderAndMappings(List.of(row(1, "JD-SKU-000001", "SKU-JD-000001", "500g/盒")));
+        when(goodsVerifier.verify(anyString()))
+                .thenReturn(enabledGoods("JD-SKU-000001", "子牧羊小腿 500g/盒"));
+        stubRunIdempotency();
+
+        assertThat(run("MOCK", "key-mock-evidence").categories()).isEmpty();
+
+        verify(jdbc, never()).update(contains("jd_goods_verification"), any(Object[].class));
     }
 
     /** AuditCommand 的字段读取器是包私有（仅 common.audit 包内可见），测试通过反射断言审计内容。 */

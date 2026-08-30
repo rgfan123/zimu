@@ -8,6 +8,10 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
@@ -21,6 +25,11 @@ class SkuDataQualityFlagMigrationTest {
 
     private static final String EXACT_DB = "sku_quality_exact";
     private static final String DRIFT_DB = "sku_quality_drift";
+    private static final String TEXT_DRIFT_DB = "sku_quality_text_drift";
+    private static final String MISSING_COHORT_DB = "sku_quality_missing_cohort";
+    private static final String NO_COHORT_DB = "sku_quality_no_cohort";
+    private static final String EXISTING_FLAG_DB = "sku_quality_existing_flag";
+    private static final String LOCK_RACE_DB = "sku_quality_lock_race";
 
     @Container
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
@@ -94,6 +103,115 @@ class SkuDataQualityFlagMigrationTest {
                     .as("同一事务内安装的 V73 DDL 也必须回滚")
                     .isZero();
         }
+    }
+
+    @Test
+    void sourceEvidenceTextDriftAndMissingCohortBothFailClosed() throws Exception {
+        createDatabase(TEXT_DRIFT_DB);
+        String textDriftUrl = jdbcUrl(TEXT_DRIFT_DB);
+        flyway(textDriftUrl, MigrationVersion.fromVersion("72")).migrate();
+        seedAuditedSnapshot(textDriftUrl, false);
+        execute(textDriftUrl,
+                "UPDATE app.source_channel_skus SET source_product_name='已漂移的鸵鸟蛋来源名称' "
+                        + "WHERE source_channel='JUFUBAO' AND source_sku_ref='66487969'");
+        assertThatThrownBy(() -> flyway(textDriftUrl, null).migrate())
+                .hasMessageContaining("鸵鸟蛋变重差异审计前置条件漂移");
+        assertV73RolledBack(textDriftUrl);
+
+        createDatabase(MISSING_COHORT_DB);
+        String missingUrl = jdbcUrl(MISSING_COHORT_DB);
+        flyway(missingUrl, MigrationVersion.fromVersion("72")).migrate();
+        seedAuditedSnapshot(missingUrl, false);
+        execute(missingUrl,
+                "DELETE FROM app.source_channel_skus WHERE source_channel='JUFUBAO' "
+                        + "AND source_sku_ref='66487969'");
+        execute(missingUrl, "DELETE FROM app.skus WHERE sku_code='SKU-JD-000085'");
+        assertThatThrownBy(() -> flyway(missingUrl, null).migrate())
+                .hasMessageContaining("audit cohort incomplete: expected 5, found 4");
+        assertV73RolledBack(missingUrl);
+
+        createDatabase(NO_COHORT_DB);
+        String noCohortUrl = jdbcUrl(NO_COHORT_DB);
+        flyway(noCohortUrl, MigrationVersion.fromVersion("72")).migrate();
+        execute(noCohortUrl,
+                "INSERT INTO app.categories(category_code,category_name) VALUES ('OTHER','其他')");
+        execute(noCohortUrl,
+                "INSERT INTO app.fulfillment_providers(provider_code,provider_name,provider_type) "
+                        + "VALUES ('JD','京东','JD_WAREHOUSE')");
+        execute(noCohortUrl,
+                "INSERT INTO app.products(product_code,product_name,category_id) "
+                        + "SELECT 'PROD-JD-EMG4418861058751','牛肋条',id "
+                        + "FROM app.categories WHERE category_code='OTHER'");
+        execute(noCohortUrl,
+                "INSERT INTO app.skus(sku_sequence_no,sku_code,product_id,fulfillment_provider_id,"
+                        + "specification,unit,barcode) "
+                        + "SELECT 21,'SKU-JD-000021',p.id,fp.id,'500g','件','06977872890135' "
+                        + "FROM app.products p "
+                        + "CROSS JOIN app.fulfillment_providers fp "
+                        + "WHERE p.product_code='PROD-JD-EMG4418861058751' AND fp.provider_code='JD'");
+        assertThatThrownBy(() -> flyway(noCohortUrl, null).migrate())
+                .hasMessageContaining("audit cohort incomplete: expected 5, found 0");
+        assertV73RolledBack(noCohortUrl);
+    }
+
+    @Test
+    void preexistingPlaceholderFlagCannotSilentlyReplaceRequiredEvidence() throws Exception {
+        createDatabase(EXISTING_FLAG_DB);
+        String url = jdbcUrl(EXISTING_FLAG_DB);
+        flyway(url, MigrationVersion.fromVersion("72")).migrate();
+        seedAuditedSnapshot(url, false);
+        execute(url,
+                """
+                INSERT INTO app.sku_data_quality_flags(
+                    sku_id,flag_code,blocking_reason,message,action,evidence,active)
+                SELECT id,'BEEF_RIB_750_BARCODE_CONFLICT',NULL,
+                       '占位证据','不得被迁移静默接受','{}'::jsonb,FALSE
+                FROM app.skus WHERE sku_code='SKU-JD-000070'
+                """);
+
+        assertThatThrownBy(() -> flyway(url, null).migrate())
+                .hasStackTraceContaining("duplicate key value violates unique constraint");
+        assertThat(intQuery(url, "SELECT count(*) FROM app.sku_data_quality_flags"))
+                .isEqualTo(1);
+        assertThat(singleQuery(url,
+                        "SELECT active::text || ':' || coalesce(blocking_reason,'NULL') "
+                                + "FROM app.sku_data_quality_flags"))
+                .isEqualTo("false:NULL");
+        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='73'"))
+                .isZero();
+    }
+
+    @Test
+    void migrationWaitsForCatalogWriterBeforeReadingAuditSnapshot() throws Exception {
+        createDatabase(LOCK_RACE_DB);
+        String url = jdbcUrl(LOCK_RACE_DB);
+        flyway(url, MigrationVersion.fromVersion("72")).migrate();
+        seedAuditedSnapshot(url, false);
+
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try (Connection writer = DriverManager.getConnection(
+                url, postgres.getUsername(), postgres.getPassword())) {
+            writer.setAutoCommit(false);
+            try (Statement statement = writer.createStatement()) {
+                statement.executeUpdate(
+                        "UPDATE app.source_channel_skus "
+                                + "SET source_product_name='并发提交后的鸵鸟蛋来源名称' "
+                                + "WHERE source_channel='JUFUBAO' AND source_sku_ref='66487969'");
+            }
+
+            Future<?> migration = pool.submit(() -> flyway(url, null).migrate());
+            awaitAdvisoryLockWaiter(url);
+            assertThat(migration.isDone())
+                    .as("V73 必须先等待目录写事务，不能提前读取审计快照")
+                    .isFalse();
+            writer.commit();
+
+            assertThatThrownBy(() -> migration.get(30, TimeUnit.SECONDS))
+                    .hasStackTraceContaining("鸵鸟蛋变重差异审计前置条件漂移");
+        } finally {
+            pool.shutdownNow();
+        }
+        assertV73RolledBack(url);
     }
 
     private static void seedAuditedSnapshot(String jdbcUrl, boolean driftMultiplier) throws Exception {
@@ -212,6 +330,54 @@ class SkuDataQualityFlagMigrationTest {
             }
         }
         return flags;
+    }
+
+    private static void assertV73RolledBack(String jdbcUrl) throws Exception {
+        assertThat(intQuery(jdbcUrl, "SELECT count(*) FROM app.sku_data_quality_flags"))
+                .isZero();
+        assertThat(intQuery(jdbcUrl, "SELECT count(*) FROM flyway_schema_history WHERE version='73'"))
+                .isZero();
+        assertThat(intQuery(jdbcUrl,
+                        "SELECT count(*) FROM pg_trigger WHERE tgname IN "
+                                + "('trg_skus_active_barcode_unique',"
+                                + "'trg_sku_aliases_active_barcode_unique')"))
+                .isZero();
+    }
+
+    private static void awaitAdvisoryLockWaiter(String jdbcUrl) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            if (intQuery(jdbcUrl,
+                    "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND granted=FALSE") > 0) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("V73 did not wait for the SKU catalog advisory lock");
+    }
+
+    private static void execute(String jdbcUrl, String sql) throws Exception {
+        try (Connection connection = DriverManager.getConnection(
+                        jdbcUrl, postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            statement.executeUpdate(sql);
+        }
+    }
+
+    private static int intQuery(String jdbcUrl, String sql) throws Exception {
+        try (Connection connection = DriverManager.getConnection(
+                        jdbcUrl, postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            return intValue(statement.executeQuery(sql));
+        }
+    }
+
+    private static String singleQuery(String jdbcUrl, String sql) throws Exception {
+        try (Connection connection = DriverManager.getConnection(
+                        jdbcUrl, postgres.getUsername(), postgres.getPassword());
+                Statement statement = connection.createStatement()) {
+            return single(statement.executeQuery(sql));
+        }
     }
 
     private static void createDatabase(String database) throws Exception {

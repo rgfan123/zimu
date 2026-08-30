@@ -67,7 +67,7 @@ erDiagram
 | `sku_data_quality_flags` | SKU 审计与人工复核证据 | 保存显式事实与阻断原因，不保存可漂移的 ready 状态 |
 | `sku_aliases` | 人工检索候选别名 | 只用于建议，不自动建立业务映射 |
 | `source_channel_skus` | 来源平台商品到内部 SKU 的显式映射 | `(source_channel, source_sku_ref)` 唯一；`quantity_multiplier` 缺失时只能进入人工复核，正值时参与来源数量换算 |
-| `provider_skus` | 内部 SKU 到履约方商品编码的映射 | provider 必须与 SKU 归属一致 |
+| `provider_skus` | 内部 SKU 到履约方商品编码的映射 | provider 必须与 SKU 归属一致；REAL 京东 `queryGoodsInfo` 成功核验可在 `external_codes.jd_goods_verification` 留下与当前 goodsNo 绑定的内部凭证，MOCK 结果不记为真实凭证 |
 | `provider_stock_snapshots` | 标准化库存观测快照 | 我方库存允许标准快照；外部京东云仓只允许分类为 `JD_PIECE/JD_ISC_QUERY_STOCK` 的只读观测；只追加，历史单位不明时保持 `UNKNOWN` |
 
 普通第三方自有库存不进入 `provider_stock_snapshots`。京东云仓是受控例外：系统可追加实时只读观测用于出库门禁，但不预占或改写京东库存，也不会因此获得公司自营采购资格。系统维护第三方专属 SKU、生成发货指令并接收实发结果，但不采集、判断、预占或改写其他第三方库存。

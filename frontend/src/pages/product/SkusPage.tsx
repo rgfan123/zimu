@@ -3,7 +3,7 @@
  */
 
 import { useState } from 'react';
-import { Button, Input, Select, Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Input, Select, Space, Tag, Typography } from 'antd';
 import { CloudUploadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
@@ -95,11 +95,14 @@ export default function SkusPage() {
           <Space direction="vertical" size={2}>
             <Tag color="warning">阻断 · {readiness.issues.length} 项</Tag>
             {readiness.issues.map((issue) => (
-              <Tooltip key={issue.code} title={issue.action}>
+              <div key={issue.code}>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   {issue.message}
                 </Typography.Text>
-              </Tooltip>
+                <Typography.Text type="secondary" style={{ display: 'block', fontSize: 11 }}>
+                  处理：{issue.action}
+                </Typography.Text>
+              </div>
             ))}
           </Space>
         );
@@ -113,14 +116,17 @@ export default function SkusPage() {
         return (
           <Space direction="vertical" size={2}>
             {flags.map((flag) => (
-              <Tooltip key={flag.flag_code} title={flag.action}>
+              <div key={flag.flag_code}>
                 <Typography.Text style={{ fontSize: 12 }}>
                   <Tag color={flag.currently_blocking ? 'warning' : 'default'}>
                     {flag.currently_blocking ? '待复核' : '参考'}
                   </Tag>
                   {flag.message}
                 </Typography.Text>
-              </Tooltip>
+                <Typography.Text type="secondary" style={{ display: 'block', fontSize: 11 }}>
+                  处理：{flag.action}
+                </Typography.Text>
+              </div>
             ))}
           </Space>
         );
