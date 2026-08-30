@@ -42,7 +42,6 @@ import cn.zimu.fulfillment.product.BundleItemRepository;
 import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
-import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
@@ -77,7 +76,7 @@ public class OrderCreateService {
     private final ReviewCaseRepository reviewCaseRepository;
     private final CustomerRepository customerRepository;
     private final CustomerSourceRefRepository customerSourceRefRepository;
-    private final SourceChannelSkuRepository sourceChannelSkuRepository;
+    private final SourceBundleResolver sourceBundleResolver;
     private final SkuRepository skuRepository;
     private final BundleItemRepository bundleItemRepository;
     private final OrderEventRepository eventRepository;
@@ -98,7 +97,7 @@ public class OrderCreateService {
             ReviewCaseRepository reviewCaseRepository,
             CustomerRepository customerRepository,
             CustomerSourceRefRepository customerSourceRefRepository,
-            SourceChannelSkuRepository sourceChannelSkuRepository,
+            SourceBundleResolver sourceBundleResolver,
             SkuRepository skuRepository,
             BundleItemRepository bundleItemRepository,
             OrderEventRepository eventRepository,
@@ -117,7 +116,7 @@ public class OrderCreateService {
         this.reviewCaseRepository = reviewCaseRepository;
         this.customerRepository = customerRepository;
         this.customerSourceRefRepository = customerSourceRefRepository;
-        this.sourceChannelSkuRepository = sourceChannelSkuRepository;
+        this.sourceBundleResolver = sourceBundleResolver;
         this.skuRepository = skuRepository;
         this.bundleItemRepository = bundleItemRepository;
         this.eventRepository = eventRepository;
@@ -693,6 +692,10 @@ public class OrderCreateService {
         line.setLineNo(lineNo);
         line.setLineType(item.lineType());
         line.setProductNameSnapshot(item.productName());
+        // 来源商品标识快照：与 SKU 映射同源的那把键。人工 resolve-bundle 事后要用它去查礼包映射，
+        // 而 raw_cells 的列名逐模板不同、结构化拉单的 raw_cells 里根本没有商品ID——键留在行上，
+        // 三条路径才可能真的同源。
+        line.setSourceSkuRef(item.sourceSkuRef());
         line.setSpecificationSnapshot(item.specification());
         line.setUnitSnapshot(item.unit());
         line.setRequestedQuantity(requestedQuantity);
@@ -721,16 +724,14 @@ public class OrderCreateService {
         return new ComponentResolution(true, sku, null, input);
     }
 
+    /**
+     * 「活跃来源 SKU 映射」只有一处定义，在 {@link SourceBundleResolver#activeSkuMapping}。
+     *
+     * <p>礼包判定要用它来决定「有 SKU 映射就别按名字猜礼包」，建单要用它来落 SKU——两处口径
+     * 一旦漂移，就会出现「判定说这是单品、建单却说找不到映射」这种比缺陷本身更难查的不一致。
+     */
     private SourceChannelSku findMapping(SourceChannel channel, String sourceSkuRef) {
-        if (sourceSkuRef == null || sourceSkuRef.isBlank()) {
-            return null;
-        }
-        return sourceChannelSkuRepository
-                .findBySourceChannelAndSourceSkuRef(channel, sourceSkuRef)
-                .filter(SourceChannelSku::isActive)
-                .filter(mapping -> mapping.getQuantityMultiplier() != null)
-                .filter(mapping -> mapping.getQuantityMultiplier().signum() > 0)
-                .orElse(null);
+        return sourceBundleResolver.activeSkuMapping(channel, sourceSkuRef);
     }
 
     private Sku requireSku(SourceChannelSku mapping) {

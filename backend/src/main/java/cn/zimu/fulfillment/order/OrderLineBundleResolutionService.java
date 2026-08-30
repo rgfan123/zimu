@@ -4,6 +4,7 @@ import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.event.OrderEventService;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.fulfillment.FulfillmentRepository;
@@ -43,6 +44,7 @@ public class OrderLineBundleResolutionService {
     private final OrderLineRepository orderLines;
     private final FulfillmentRepository fulfillments;
     private final InitialFulfillmentService initialFulfillments;
+    private final SourceBundleResolver sourceBundleResolver;
 
     public OrderLineBundleResolutionService(
             JdbcTemplate jdbc,
@@ -51,7 +53,8 @@ public class OrderLineBundleResolutionService {
             OrderRepository orders,
             OrderLineRepository orderLines,
             FulfillmentRepository fulfillments,
-            InitialFulfillmentService initialFulfillments) {
+            InitialFulfillmentService initialFulfillments,
+            SourceBundleResolver sourceBundleResolver) {
         this.jdbc = jdbc;
         this.idempotency = idempotency;
         this.events = events;
@@ -59,6 +62,7 @@ public class OrderLineBundleResolutionService {
         this.orderLines = orderLines;
         this.fulfillments = fulfillments;
         this.initialFulfillments = initialFulfillments;
+        this.sourceBundleResolver = sourceBundleResolver;
     }
 
     public IdempotentResult<Map<String, Object>> resolveBundle(
@@ -69,9 +73,10 @@ public class OrderLineBundleResolutionService {
             long orderId = ((Number) line.get("order_id")).longValue();
             String sourceChannel = (String) line.get("source_channel");
             String sourceRef = (String) line.get("source_bundle_ref");
+            String productName = (String) line.get("product_name_snapshot");
             boolean alreadyExpanded = line.get("bundle_id") != null;
 
-            requireConsistentMapping(sourceChannel, sourceRef, bundleId);
+            requireConsistentMapping(sourceChannel, sourceRef, productName, bundleId);
             List<Map<String, Object>> bom = requireActiveBundleBom(bundleId);
 
             if (!alreadyExpanded) {
@@ -202,9 +207,12 @@ public class OrderLineBundleResolutionService {
                 SELECT ol.id, ol.order_id, ol.line_type, ol.processing_stage, ol.exception_code,
                        ol.bundle_id, ol.requested_quantity,
                        o.source_channel, o.order_status,
-                       -- 来源礼包键三级回退：编码快照 → 原始行主商品编码 → 商品名
-                       --（11 列往返表没有编码列，名称就是键；导入器也不总落 sku_code_snapshot）
+                       ol.product_name_snapshot,
+                       -- 来源礼包第一把键 = 与 SKU 映射同源的 source_sku_ref（V88 起随建单落行）。
+                       -- 后三级是存量行的回退链：V88 之前建的行没有这一列，行为必须逐字节不变，
+                       -- 否则运营配好的礼包会突然查不到（编码快照 → 原始行主商品编码 → 商品名）。
                        COALESCE(
+                           NULLIF(ol.source_sku_ref, ''),
                            NULLIF(ol.sku_code_snapshot, ''),
                            (SELECT rir.raw_cells->>'主商品编码' FROM app.raw_import_rows rir
                              WHERE rir.order_line_id = ol.id LIMIT 1),
@@ -221,6 +229,7 @@ public class OrderLineBundleResolutionService {
                     row.put("exception_code", rs.getString("exception_code"));
                     row.put("bundle_id", rs.getObject("bundle_id"));
                     row.put("source_bundle_ref", rs.getString("source_bundle_ref"));
+                    row.put("product_name_snapshot", rs.getString("product_name_snapshot"));
                     row.put("requested_quantity", rs.getBigDecimal("requested_quantity"));
                     row.put("source_channel", rs.getString("source_channel"));
                     row.put("components", rs.getInt("components"));
@@ -254,16 +263,17 @@ public class OrderLineBundleResolutionService {
         return line;
     }
 
-    /** 主数据一致性门禁：映射必须已存在、启用、乘数 1，且指向的就是这个礼包——与 resolveSku 的冲突语义同构。 */
-    private void requireConsistentMapping(String sourceChannel, String sourceRef, long bundleId) {
-        List<Long> mapped = jdbc.query(
-                """
-                SELECT scb.bundle_id FROM app.source_channel_bundles scb
-                WHERE scb.source_channel = ? AND scb.source_bundle_ref = ?
-                  AND scb.active AND scb.quantity_multiplier = 1
-                """,
-                (rs, n) -> rs.getLong(1),
-                sourceChannel, sourceRef);
+    /**
+     * 主数据一致性门禁：映射必须已存在、启用、乘数 1，且指向的就是这个礼包——与 resolveSku 的冲突语义同构。
+     *
+     * <p>查法本身不在这里，而在共用接缝 {@link SourceBundleResolver#mappedBundleIds}：
+     * 人工补救与两条自动链路必须用同一把键，否则又会回到「自动展开按 ID 查、人工补救按名称查」
+     * 的老毛病——同一条映射，一条路命中另一条不命中。
+     */
+    private void requireConsistentMapping(
+            String sourceChannel, String sourceRef, String productName, long bundleId) {
+        List<Long> mapped = sourceBundleResolver.mappedBundleIds(
+                SourceChannel.valueOf(sourceChannel), sourceRef, productName);
         if (mapped.isEmpty()) {
             throw BusinessException.unprocessable(
                     "SOURCE_BUNDLE_MAPPING_MISSING",

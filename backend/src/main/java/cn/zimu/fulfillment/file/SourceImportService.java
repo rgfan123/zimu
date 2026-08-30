@@ -14,6 +14,7 @@ import cn.zimu.fulfillment.customer.ImportedCustomerService;
 import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundCommand;
 import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundService;
 import cn.zimu.fulfillment.order.OrderCreateService;
+import cn.zimu.fulfillment.order.SourceBundleResolver;
 import cn.zimu.fulfillment.order.domain.LineType;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
 import cn.zimu.fulfillment.order.dto.BundleComponentInput;
@@ -68,6 +69,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     private final ImportRowJdCargoProjectionService jdCargoProjectionService;
     private final IdempotencyService idempotency;
     private final SourceBatchConfirmReadiness confirmReadiness;
+    private final SourceBundleResolver sourceBundleResolver;
     private final Path fileRoot;
 
     SourceImportService(
@@ -82,6 +84,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             ImportRowJdCargoProjectionService jdCargoProjectionService,
             IdempotencyService idempotency,
             SourceBatchConfirmReadiness confirmReadiness,
+            SourceBundleResolver sourceBundleResolver,
             @Value("${app.file-store.root:${java.io.tmpdir}/zimu-fulfillment-files}") String fileRoot) {
         this.parser = parser;
         this.orderCreateService = orderCreateService;
@@ -94,6 +97,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         this.jdCargoProjectionService = jdCargoProjectionService;
         this.idempotency = idempotency;
         this.confirmReadiness = confirmReadiness;
+        this.sourceBundleResolver = sourceBundleResolver;
         this.fileRoot = Path.of(fileRoot).toAbsolutePath().normalize();
     }
 
@@ -392,7 +396,13 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                         .httpStatus(200));
                 continue;
             }
-            CanonicalOrderInput canonicalInput = resolveStructuredCustomer(channel, order.canonicalInput());
+            // 礼包判定接缝（与文件导入同一处）：transform 产物恒为 SINGLE，礼包行必须在这里被重判成
+            // CUSTOM_BUNDLE，否则拉进来的礼包行既进不来也修不了（见 resolveStructuredItems）。
+            // 放在复核占位/重复单分支之后：那两条分支都不建订单行，没必要为它们查库，
+            // 复核占位的 raw 行数也应保持来源原样。
+            items = resolveStructuredItems(channel, items);
+            CanonicalOrderInput canonicalInput =
+                    withItems(resolveStructuredCustomer(channel, order.canonicalInput()), items);
             OrderDetailDto created = orderCreateService.createImported(
                             canonicalInput,
                             batchId,
@@ -415,6 +425,21 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         return finalizeBatch(batchId, started, context, AuditActorType.SYSTEM,
                 "source-order-structured-import", "source-orders.importStructured",
                 Map.of("batch_no", batchNo, "content_sha256", contentSha));
+    }
+
+    /** 礼包判定后的商品行回填进 canonical 输入；除 items 外逐字段原样保留。 */
+    private CanonicalOrderInput withItems(CanonicalOrderInput input, List<OrderItemInput> items) {
+        return new CanonicalOrderInput(
+                input.source(),
+                input.sourceRef(),
+                input.sourceVersion(),
+                input.customer(),
+                input.receiver(),
+                items,
+                input.settlement(),
+                input.sourceOrderedAt(),
+                input.remark(),
+                input.evidenceRefs());
     }
 
     /**
@@ -828,117 +853,131 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     }
 
     /**
-     * 大者/万齐显式礼包映射优先于普通来源 SKU 映射；其他渠道和非礼包行保持既有 SINGLE 语义。
+     * 文件行的礼包判定：全部交给共用接缝 {@link SourceBundleResolver}，与 API 拉单、人工
+     * resolve-bundle 用同一把键、同一个判定顺序（礼包映射 → SKU 映射 → 名字启发式）。
      *
      * <p>显式命中权威礼包后，组件按所属履约方稳定分组为多个同质订单行。组件身份使用内部
      * sku_code 快照；EMG 是京东履约编码，不能冒充来源渠道 SKU 映射。
+     *
+     * <p>本方法只负责把判定结果贴回「文件行」这个形状；查库逻辑一处都不许再长在这里，
+     * 否则三条路径又会各自漂移——这正是本次统一要根除的病。
      */
     private List<OrderItemInput> canonicalItems(SourceChannel channel, ParsedSourceRow row) {
-        StaticSourceBundle sourceBundle = activeSourceBundle(channel, row.sourceSkuRef());
-        if (sourceBundle == null) {
-            if (bundleSourceChannel(channel) && looksLikeBundle(row.productName())) {
-                return List.of(unresolvedBundleItem(row));
-            }
-            return List.of(singleItem(row));
-        }
-        List<StaticBundleComponent> components = jdbc.query(
-                """
-                SELECT s.fulfillment_provider_id, s.sku_code, p.product_name, s.specification, s.unit,
-                       bi.quantity_per_bundle
-                FROM app.bundle_items bi
-                JOIN app.skus s ON s.id=bi.sku_id
-                JOIN app.products p ON p.id=s.product_id
-                WHERE bi.bundle_id=?
-                ORDER BY bi.sort_no
-                """,
-                (resultSet, rowNum) -> new StaticBundleComponent(
-                        resultSet.getLong("fulfillment_provider_id"),
-                        new BundleComponentInput(
-                                resultSet.getString("sku_code"),
-                                null,
-                                resultSet.getString("product_name"),
-                                resultSet.getString("specification"),
-                                resultSet.getString("unit"),
-                                resultSet.getBigDecimal("quantity_per_bundle").toPlainString())),
-                sourceBundle.bundleId());
-        Map<Long, List<BundleComponentInput>> byProvider = new LinkedHashMap<>();
-        for (StaticBundleComponent component : components) {
-            byProvider.computeIfAbsent(component.providerId(), ignored -> new ArrayList<>()).add(component.input());
-        }
-        return byProvider.values().stream()
-                .map(providerComponents -> new OrderItemInput(
-                        row.sourceLineRef(),
-                        LineType.CUSTOM_BUNDLE,
-                        null,
-                        row.sourceSkuRef(),
-                        row.productName(),
-                        row.specification(),
-                        row.unit(),
-                        quantity(row),
-                        Long.toString(sourceBundle.bundleId()),
-                        List.copyOf(providerComponents)))
-                .toList();
+        SourceBundleResolver.Decision decision =
+                sourceBundleResolver.decide(channel, row.sourceSkuRef(), row.productName());
+        return switch (decision.kind()) {
+            case STATIC_BUNDLE -> decision.componentGroups().stream()
+                    .map(providerComponents -> new OrderItemInput(
+                            row.sourceLineRef(),
+                            LineType.CUSTOM_BUNDLE,
+                            null,
+                            row.sourceSkuRef(),
+                            row.productName(),
+                            row.specification(),
+                            row.unit(),
+                            quantity(row),
+                            Long.toString(decision.bundleId()),
+                            providerComponents))
+                    .toList();
+            case UNRESOLVED_BUNDLE -> List.of(unresolvedBundleItem(row));
+            case SINGLE -> List.of(singleItem(row));
+        };
     }
 
     /**
-     * 大者/万齐名称明确表示礼包/组合但未命中 ACTIVE 主数据时，构造一个必然未映射的组件候选，
+     * 结构化（API 拉单）商品行的礼包判定：与文件行走同一个接缝，因此同一个商品两条链路同结果。
+     *
+     * <p><b>为什么必须在这里做</b>：改造前拉单是直通的——transform 产物恒为
+     * {@code LineType.SINGLE}（如 {@code JufubaoOrderTransform}），礼包商品找不到 SKU 映射就落
+     * SKU_MAPPING_REQUIRED，而 {@code resolve-bundle} 只受理 CUSTOM_BUNDLE 行，于是拉进来的
+     * 礼包行「进不来也修不了」，是死行。2026-08-28 那次只把文件链路的白名单放开了，
+     * 结构化链路的同一个死锁没修。
+     *
+     * <p>只改写「连接器自己没下结论」的行：仍是 SINGLE、且没带组件清单的行才重判。连接器
+     * 已显式构造的礼包行（带 components / 非 SINGLE）保持原样——那是来源侧的权威结论，
+     * 不该被这里的启发式覆盖。
+     */
+    private List<OrderItemInput> resolveStructuredItems(SourceChannel channel, List<OrderItemInput> items) {
+        List<OrderItemInput> resolved = new ArrayList<>(items.size());
+        for (OrderItemInput item : items) {
+            resolved.addAll(resolveStructuredItem(channel, item));
+        }
+        return List.copyOf(resolved);
+    }
+
+    private List<OrderItemInput> resolveStructuredItem(SourceChannel channel, OrderItemInput item) {
+        boolean connectorAlreadyDecided =
+                item.lineType() != LineType.SINGLE || (item.components() != null && !item.components().isEmpty());
+        if (connectorAlreadyDecided) {
+            return List.of(item);
+        }
+        SourceBundleResolver.Decision decision =
+                sourceBundleResolver.decide(channel, item.sourceSkuRef(), item.productName());
+        return switch (decision.kind()) {
+            case STATIC_BUNDLE -> decision.componentGroups().stream()
+                    .map(providerComponents -> new OrderItemInput(
+                            item.sourceLineRef(),
+                            LineType.CUSTOM_BUNDLE,
+                            null,
+                            item.sourceSkuRef(),
+                            item.productName(),
+                            item.specification(),
+                            item.unit(),
+                            item.quantity(),
+                            Long.toString(decision.bundleId()),
+                            providerComponents))
+                    .toList();
+            case UNRESOLVED_BUNDLE -> List.of(unresolvedBundleItem(item));
+            case SINGLE -> List.of(item);
+        };
+    }
+
+    /**
+     * 名称明确表示礼包/组合但未命中 ACTIVE 主数据时，构造一个必然未映射的组件候选，
      * 复用订单应用层 SKU_MAPPING_REQUIRED 分支进入人工复核；禁止降级 SINGLE 后误命中普通 SKU。
+     *
+     * <p>落成 CUSTOM_BUNDLE 是 {@code resolve-bundle} 唯一受理的形状——这一步就是给运营留门。
      */
     private OrderItemInput unresolvedBundleItem(ParsedSourceRow row) {
-        String ref = "__BUNDLE_MAPPING_REQUIRED__:" + row.sourceSkuRef();
-        BundleComponentInput unresolved = new BundleComponentInput(
-                null, ref, row.productName(), row.specification(), row.unit(), "1");
-        return new OrderItemInput(
+        return unresolvedBundleItem(
                 row.sourceLineRef(),
-                LineType.CUSTOM_BUNDLE,
-                null,
                 row.sourceSkuRef(),
                 row.productName(),
                 row.specification(),
                 row.unit(),
-                quantity(row),
+                quantity(row));
+    }
+
+    private OrderItemInput unresolvedBundleItem(OrderItemInput item) {
+        return unresolvedBundleItem(
+                item.sourceLineRef(),
+                item.sourceSkuRef(),
+                item.productName(),
+                item.specification(),
+                item.unit(),
+                item.quantity());
+    }
+
+    private OrderItemInput unresolvedBundleItem(
+            String sourceLineRef,
+            String sourceSkuRef,
+            String productName,
+            String specification,
+            String unit,
+            String quantity) {
+        String ref = "__BUNDLE_MAPPING_REQUIRED__:" + sourceSkuRef;
+        BundleComponentInput unresolved =
+                new BundleComponentInput(null, ref, productName, specification, unit, "1");
+        return new OrderItemInput(
+                sourceLineRef,
+                LineType.CUSTOM_BUNDLE,
+                null,
+                sourceSkuRef,
+                productName,
+                specification,
+                unit,
+                quantity,
                 List.of(unresolved));
-    }
-
-    private boolean looksLikeBundle(String productName) {
-        return productName != null
-                && (productName.contains("礼包") || productName.contains("礼盒") || productName.contains("组合"));
-    }
-
-    private StaticSourceBundle activeSourceBundle(SourceChannel channel, String sourceSkuRef) {
-        if (!bundleSourceChannel(channel) || sourceSkuRef == null || sourceSkuRef.isBlank()) {
-            return null;
-        }
-        List<StaticSourceBundle> matches = jdbc.query(
-                """
-                SELECT scb.bundle_id
-                FROM app.source_channel_bundles scb
-                JOIN app.product_bundles pb ON pb.id=scb.bundle_id AND pb.status='ACTIVE'
-                WHERE scb.source_channel=? AND scb.source_bundle_ref=?
-                  AND scb.active AND scb.quantity_multiplier=1
-                """,
-                (resultSet, rowNum) -> new StaticSourceBundle(resultSet.getLong("bundle_id")),
-                channel.name(),
-                sourceSkuRef);
-        return matches.isEmpty() ? null : matches.getFirst();
-    }
-
-    /**
-     * 礼包解析对所有来源渠道开放（2026-08-28）。
-     *
-     * <p>此前只对大者/万旗/万齐开放，因为只有它们的导出表被观察到含礼包行。但聚福宝
-     * 与企微同日各来了一张「子牧牛肉惠选礼包1400g」，被判为普通 SKU 行后落
-     * SKU_MAPPING_REQUIRED 卡死，而 {@code resolve-bundle} 只受理 CUSTOM_BUNDLE 行，
-     * 于是既进不来也修不了——白名单本身成了死路。
-     *
-     * <p>放开的代价是：名称命中 {@link #looksLikeBundle}（含礼包/礼盒/组合）且没有礼包
-     * 映射的行，会从「普通 SKU 行」改判为「待解析礼包行」。改前已核实生产
-     * {@code source_channel_skus} 中不存在名称命中这三个词的活跃映射，因此不打断任何
-     * 既有流程；将来若某渠道确有以此命名的单品，应为它建礼包映射或调整命名，
-     * 而不是把渠道重新关掉——关掉会让该渠道的真礼包再次变成无法修复的死行。
-     */
-    private boolean bundleSourceChannel(SourceChannel channel) {
-        return channel != null;
     }
 
     private OrderItemInput singleItem(ParsedSourceRow row) {
@@ -1436,7 +1475,5 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             String effectiveTemplateFingerprint,
             int revisionNo) {}
     private record RowKey(int sheetIndex, int rowIndex) {}
-    private record StaticSourceBundle(long bundleId) {}
-    private record StaticBundleComponent(long providerId, BundleComponentInput input) {}
     private record CanonicalizedGroup(CanonicalOrderInput order, List<Integer> partitionCounts) {}
 }

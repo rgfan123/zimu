@@ -36,7 +36,8 @@
         "unstaged": 8,
         "untracked": 3
       },
-      "disposition": "rescue_uncommitted"
+      "disposition": "rescued_to_convergence",
+      "target_ticket": "08"
     },
     {
       "id": "product-ops-sku-search",

@@ -47,6 +47,15 @@ public class OrderLine extends AuditableEntity {
     @Column(name = "sku_code_snapshot")
     private String skuCodeSnapshot;
 
+    /**
+     * 来源渠道商品标识快照（聚福宝＝商品ID，大者 v2 无编码列时＝商品名）。
+     *
+     * <p>与 {@code source_channel_skus.source_sku_ref} 同源，也是来源礼包映射的第一把键；
+     * 人工 resolve-bundle 事后据此去查 {@code source_channel_bundles}，不必再按模板猜 raw_cells 的列名。
+     */
+    @Column(name = "source_sku_ref")
+    private String sourceSkuRef;
+
     @Column(name = "specification_snapshot", nullable = false)
     private String specificationSnapshot;
 
@@ -137,6 +146,14 @@ public class OrderLine extends AuditableEntity {
 
     public String getSkuCodeSnapshot() {
         return skuCodeSnapshot;
+    }
+
+    public String getSourceSkuRef() {
+        return sourceSkuRef;
+    }
+
+    public void setSourceSkuRef(String sourceSkuRef) {
+        this.sourceSkuRef = sourceSkuRef;
     }
 
     public void setSkuCodeSnapshot(String skuCodeSnapshot) {
