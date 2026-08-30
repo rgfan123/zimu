@@ -235,6 +235,22 @@ public class SourceOrderIntakeService {
     }
 
     @Transactional
+    void markNeedsReview(long id, long importBatchId, String errorCode) {
+        jdbc.update(
+                """
+                UPDATE app.source_order_intake_jobs
+                SET status='NEEDS_REVIEW', import_batch_id=?, error_code=?,
+                    error_detail=jsonb_build_object(
+                        'message', '受信模板批次未通过整批确定性门禁，未自动成单或发货'),
+                    lock_version=lock_version+1
+                WHERE id=?
+                """,
+                importBatchId,
+                errorCode,
+                id);
+    }
+
+    @Transactional
     void markFailed(long id, String errorCode) {
         jdbc.update(
                 """

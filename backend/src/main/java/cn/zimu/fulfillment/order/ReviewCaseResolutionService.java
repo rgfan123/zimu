@@ -210,8 +210,6 @@ public class ReviewCaseResolutionService {
                     "SKU_MAPPING_REQUIRED",
                     "SKU_MAPPING_CONFLICT",
                     "MAPPING_MULTIPLIER");
-            Order order = requireBusinessOrder(reviewCase.getOrderId());
-            OrderLine line = requireSingleLineEvidence(reviewCase, order, command);
             long skuId = WriteCommands.parseIdentifier(command.skuId());
             Sku sku = skus.findById(skuId).orElseThrow(() -> BusinessException.notFound("SKU 不存在"));
             if (!sku.isActive()) {
@@ -220,31 +218,29 @@ public class ReviewCaseResolutionService {
             BigDecimal multiplier = new BigDecimal(command.quantityMultiplier()).setScale(3, RoundingMode.UNNECESSARY);
             SourceSkuRefPolicy.requireReusable(command.sourceSkuRef());
 
-            sourceSkuMappings
-                    .findBySourceChannelAndSourceSkuRef(command.sourceChannel(), command.sourceSkuRef())
-                    .ifPresentOrElse(existing -> {
-                        if (!existing.isActive()
-                                || !Objects.equals(existing.getSkuId(), skuId)
-                                || (existing.getQuantityMultiplier() != null
-                                        && existing.getQuantityMultiplier().compareTo(multiplier) != 0)) {
-                            throw BusinessException.conflict(
-                                    "SOURCE_SKU_MAPPING_CONFLICT", "该来源 SKU 已存在不一致映射，请先处理主数据冲突");
-                        }
-                        if (existing.getQuantityMultiplier() == null) {
-                            existing.setQuantityMultiplier(multiplier);
-                            sourceSkuMappings.saveAndFlush(existing);
-                        }
-                    }, () -> {
-                        SourceChannelSku mapping = new SourceChannelSku();
-                        mapping.setSourceChannel(command.sourceChannel());
-                        mapping.setSourceSkuRef(command.sourceSkuRef());
-                        mapping.setSourceProductName(line.getProductNameSnapshot());
-                        mapping.setSourceSpecification(line.getSpecificationSnapshot());
-                        mapping.setQuantityMultiplier(multiplier);
-                        mapping.setSkuId(skuId);
-                        mapping.setActive(true);
-                        sourceSkuMappings.saveAndFlush(mapping);
-                    });
+            if (reviewCase.getOrderId() == null
+                    && "SOURCE_ORDER_CANDIDATE".equals(reviewCase.getCaseType())) {
+                requireCandidateSkuEvidence(reviewCase, command);
+                upsertSourceSkuMapping(
+                        command,
+                        skuId,
+                        multiplier,
+                        Objects.toString(reviewCase.getDetail().get("source_product_name"), command.sourceSkuRef()),
+                        Objects.toString(reviewCase.getDetail().get("source_specification"), null));
+                Map<String, Object> resolution = skuResolution(command, multiplier);
+                ReviewCaseDto result = resolve(reviewCase, resolution, context.operator());
+                recordAudit("review_case.resolve_candidate_sku", null, payload, result, context);
+                return result;
+            }
+
+            Order order = requireBusinessOrder(reviewCase.getOrderId());
+            OrderLine line = requireSingleLineEvidence(reviewCase, order, command);
+            upsertSourceSkuMapping(
+                    command,
+                    skuId,
+                    multiplier,
+                    line.getProductNameSnapshot(),
+                    line.getSpecificationSnapshot());
 
             BigDecimal sourceQuantity = line.getSourceQuantitySnapshot() == null
                     ? line.getRequestedQuantity()
@@ -259,18 +255,70 @@ public class ReviewCaseResolutionService {
             line.setExceptionReason(null);
             orderLines.save(line);
 
-            Map<String, Object> resolution = new LinkedHashMap<>();
-            resolution.put("resolution_type", "SKU_CONFIRMED");
-            resolution.put("sku_id", command.skuId());
-            resolution.put("source_channel", command.sourceChannel().name());
-            resolution.put("source_sku_ref", command.sourceSkuRef());
-            resolution.put("quantity_multiplier", multiplier.toPlainString());
-            resolution.put("remark", command.remark());
+            Map<String, Object> resolution = skuResolution(command, multiplier);
             ReviewCaseDto result = resolve(reviewCase, resolution, context.operator());
             resumeOrderIfReady(order, context.operator());
             recordAudit("review_case.resolve_sku", order.getId(), payload, result, context);
             return result;
         });
+    }
+
+    private void requireCandidateSkuEvidence(
+            ReviewCase reviewCase, ResolveSkuReviewCommand command) {
+        if (reviewCase.getImportBatchId() == null || reviewCase.getRawImportRowId() == null) {
+            throw BusinessException.conflict("REVIEW_CASE_ORDER_MISSING", "复核事项未关联订单或来源候选");
+        }
+        Map<String, Object> detail = reviewCase.getDetail();
+        if (!command.sourceChannel().name().equals(Objects.toString(detail.get("source_channel"), null))
+                || !command.sourceSkuRef().equals(Objects.toString(detail.get("source_sku_ref"), null))) {
+            throw BusinessException.conflict(
+                    "REVIEW_EVIDENCE_CONFLICT", "请求中的来源渠道或商品编码与候选证据不一致");
+        }
+    }
+
+    private void upsertSourceSkuMapping(
+            ResolveSkuReviewCommand command,
+            long skuId,
+            BigDecimal multiplier,
+            String productName,
+            String specification) {
+        sourceSkuMappings
+                .findBySourceChannelAndSourceSkuRef(command.sourceChannel(), command.sourceSkuRef())
+                .ifPresentOrElse(existing -> {
+                    if (!existing.isActive()
+                            || !Objects.equals(existing.getSkuId(), skuId)
+                            || (existing.getQuantityMultiplier() != null
+                                    && existing.getQuantityMultiplier().compareTo(multiplier) != 0)) {
+                        throw BusinessException.conflict(
+                                "SOURCE_SKU_MAPPING_CONFLICT", "该来源 SKU 已存在不一致映射，请先处理主数据冲突");
+                    }
+                    if (existing.getQuantityMultiplier() == null) {
+                        existing.setQuantityMultiplier(multiplier);
+                        sourceSkuMappings.saveAndFlush(existing);
+                    }
+                }, () -> {
+                    SourceChannelSku mapping = new SourceChannelSku();
+                    mapping.setSourceChannel(command.sourceChannel());
+                    mapping.setSourceSkuRef(command.sourceSkuRef());
+                    mapping.setSourceProductName(productName);
+                    mapping.setSourceSpecification(specification);
+                    mapping.setQuantityMultiplier(multiplier);
+                    mapping.setSkuId(skuId);
+                    mapping.setActive(true);
+                    sourceSkuMappings.saveAndFlush(mapping);
+                });
+    }
+
+    private Map<String, Object> skuResolution(
+            ResolveSkuReviewCommand command, BigDecimal multiplier) {
+        Map<String, Object> resolution = new LinkedHashMap<>();
+        resolution.put("resolution_type", "SKU_CONFIRMED");
+        resolution.put("sku_id", command.skuId());
+        resolution.put("source_channel", command.sourceChannel().name());
+        resolution.put("source_sku_ref", command.sourceSkuRef());
+        resolution.put("quantity_multiplier", multiplier.toPlainString());
+        resolution.put("remark", command.remark());
+        return resolution;
     }
 
     @Transactional
@@ -683,10 +731,13 @@ public class ReviewCaseResolutionService {
     }
 
     private boolean isBusinessCase(ReviewCase reviewCase) {
-        return reviewCase.getOrderId() != null
+        boolean sourceOrderCandidate = reviewCase.getImportBatchId() != null
+                && "SOURCE_ORDER_CANDIDATE".equals(reviewCase.getCaseType());
+        boolean businessOrder = reviewCase.getOrderId() != null
                 && orders.findById(reviewCase.getOrderId())
                         .map(order -> order.getDataScope() == DataScope.BUSINESS)
                         .orElse(false);
+        return sourceOrderCandidate || businessOrder;
     }
 
     private void recordAudit(

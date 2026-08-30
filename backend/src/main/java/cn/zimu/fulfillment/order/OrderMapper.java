@@ -145,6 +145,9 @@ public class OrderMapper {
         } else if (reviewCase.getProviderTrackingDraftId() != null) {
             subjectType = "TRACKING_DRAFT";
             subjectId = String.valueOf(reviewCase.getProviderTrackingDraftId());
+        } else if (reviewCase.getImportBatchId() != null) {
+            subjectType = "IMPORT_BATCH";
+            subjectId = String.valueOf(reviewCase.getImportBatchId());
         } else {
             subjectType = "UNKNOWN";
             subjectId = null;

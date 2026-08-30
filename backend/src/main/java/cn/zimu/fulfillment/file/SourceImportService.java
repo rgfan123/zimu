@@ -13,15 +13,12 @@ import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.customer.ImportedCustomerService;
 import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundCommand;
 import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundService;
-import cn.zimu.fulfillment.order.OrderCreateService;
 import cn.zimu.fulfillment.order.domain.LineType;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
 import cn.zimu.fulfillment.order.dto.BundleComponentInput;
 import cn.zimu.fulfillment.order.dto.CanonicalOrderInput;
 import cn.zimu.fulfillment.order.dto.CustomerInput;
-import cn.zimu.fulfillment.order.dto.OrderDetailDto;
 import cn.zimu.fulfillment.order.dto.OrderItemInput;
-import cn.zimu.fulfillment.order.dto.OrderLineDto;
 import cn.zimu.fulfillment.order.dto.Receiver;
 import cn.zimu.fulfillment.order.dto.Settlement;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -39,6 +36,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -58,7 +56,6 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     private static final Logger log = LoggerFactory.getLogger(SourceImportService.class);
 
     private final SourceFileParser parser;
-    private final OrderCreateService orderCreateService;
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
     private final AuditLogService auditLogService;
@@ -66,12 +63,13 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     private final ImportedCustomerService importedCustomers;
     private final ShipmentJdOutboundService shipmentJdOutboundService;
     private final ImportRowJdCargoProjectionService jdCargoProjectionService;
+    private final SourceBatchSkuReadinessGate sourceBatchSkuReadinessGate;
+    private final SourceOrderCandidateMaterializer candidateMaterializer;
     private final IdempotencyService idempotency;
     private final Path fileRoot;
 
     SourceImportService(
             SourceFileParser parser,
-            OrderCreateService orderCreateService,
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
             AuditLogService auditLogService,
@@ -79,10 +77,11 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             ImportedCustomerService importedCustomers,
             ShipmentJdOutboundService shipmentJdOutboundService,
             ImportRowJdCargoProjectionService jdCargoProjectionService,
+            SourceBatchSkuReadinessGate sourceBatchSkuReadinessGate,
+            SourceOrderCandidateMaterializer candidateMaterializer,
             IdempotencyService idempotency,
             @Value("${app.file-store.root:${java.io.tmpdir}/zimu-fulfillment-files}") String fileRoot) {
         this.parser = parser;
-        this.orderCreateService = orderCreateService;
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.auditLogService = auditLogService;
@@ -90,6 +89,8 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         this.importedCustomers = importedCustomers;
         this.shipmentJdOutboundService = shipmentJdOutboundService;
         this.jdCargoProjectionService = jdCargoProjectionService;
+        this.sourceBatchSkuReadinessGate = sourceBatchSkuReadinessGate;
+        this.candidateMaterializer = candidateMaterializer;
         this.idempotency = idempotency;
         this.fileRoot = Path.of(fileRoot).toAbsolutePath().normalize();
     }
@@ -163,62 +164,54 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             rawIds.put(new RowKey(row.sheetIndex(), row.rowIndex()), rawId);
         }
 
+        // canonicalItems 会读取来源映射/礼包 BOM；从读取开始到成单结束使用同一主数据快照。
+        sourceBatchSkuReadinessGate.acquireCatalogSnapshot();
         Map<String, List<ParsedSourceRow>> groups = group(parsed.rows(), batchNo);
+        List<SourceOrderCandidate> candidates = new ArrayList<>();
+        boolean nonSkuBlocker = parsed.rows().stream().anyMatch(row -> !row.valid());
         for (Map.Entry<String, List<ParsedSourceRow>> entry : groups.entrySet()) {
             List<ParsedSourceRow> group = entry.getValue();
             if (!consistentReceiver(group)) {
                 group.forEach(row -> markReview(batchId, row, "IMPORT_VALIDATION", "同一来源订单的收货人快照不一致"));
+                nonSkuBlocker = true;
                 continue;
             }
             CanonicalizedGroup canonical = canonical(parsed, batchNo, entry.getKey(), group);
-            OrderDetailDto order = orderCreateService.createImported(
-                            canonical.order(),
-                            batchId,
-                            "import-" + batchId + "-" + sha256(entry.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8)),
-                            context)
-                    .result();
-            int lineCursor = 0;
+            List<SourceOrderCandidate.CandidateRow> candidateRows = new ArrayList<>();
             for (int index = 0; index < group.size(); index++) {
                 ParsedSourceRow row = group.get(index);
-                int partitionCount = canonical.partitionCounts().get(index);
-                List<OrderLineDto> partitionLines = order.lines().subList(lineCursor, lineCursor + partitionCount);
-                lineCursor += partitionCount;
-                OrderLineDto primaryLine = partitionLines.getFirst();
-                String errorCode = partitionLines.stream()
-                        .map(OrderLineDto::exceptionCode)
-                        .filter(Objects::nonNull)
-                        .map(this::importErrorCode)
-                        .filter(Objects::nonNull)
-                        .findFirst()
-                        .orElse(null);
-                jdbc.update(
-                        """
-                        UPDATE app.raw_import_rows
-                        SET status=?, error_code=?, error_detail=?::jsonb, order_id=?, order_line_id=?, updated_at=CURRENT_TIMESTAMP
-                        WHERE import_batch_id=? AND sheet_index=? AND row_index=?
-                        """,
-                        errorCode == null ? "ACCEPTED" : "NEED_REVIEW",
-                        errorCode,
-                        errorCode == null ? null : json(Map.of(
-                                "order_line_exceptions",
-                                partitionLines.stream().map(OrderLineDto::exceptionCode).filter(Objects::nonNull).toList())),
-                        Long.valueOf(order.id()),
-                        Long.valueOf(primaryLine.id()),
-                        batchId,
-                        row.sheetIndex(),
-                        row.rowIndex());
-                Long rawId = rawIds.get(new RowKey(row.sheetIndex(), row.rowIndex()));
-                for (int partitionNo = 0; partitionNo < partitionLines.size(); partitionNo++) {
-                    jdbc.update(
-                            """
-                            INSERT INTO app.raw_import_row_order_lines(raw_import_row_id, order_line_id, partition_no)
-                            VALUES (?, ?, ?)
-                            """,
-                            rawId,
-                            Long.valueOf(partitionLines.get(partitionNo).id()),
-                            partitionNo + 1);
-                }
+                candidateRows.add(new SourceOrderCandidate.CandidateRow(
+                        rawIds.get(new RowKey(row.sheetIndex(), row.rowIndex())),
+                        canonical.partitionCounts().get(index)));
             }
+            candidates.add(new SourceOrderCandidate(
+                    entry.getKey(),
+                    canonical.order(),
+                    candidateRows,
+                    "import-" + batchId + "-"
+                            + sha256(entry.getKey().getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                    AuditActorType.AGENT));
+        }
+        if (nonSkuBlocker) {
+            stageCandidates(batchId, candidates, null);
+        } else {
+            try {
+                sourceBatchSkuReadinessGate.requireReady(parsed.sourceChannel(), candidates);
+            } catch (BusinessException exception) {
+                if (!"IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())) {
+                    throw exception;
+                }
+                stageCandidates(batchId, candidates, exception);
+                return finalizeBatch(batchId, started, context, AuditActorType.HUMAN,
+                        "source-file-import", "source-orders.upload",
+                        Map.of(
+                                "idempotency_key", idempotencyKey,
+                                "original_file_name", safeFilename,
+                                "content_sha256", sha256,
+                                "import_mode", mode,
+                                "settlement_missing", parsed.sourceChannel() == SourceChannel.WANQI));
+            }
+            candidateMaterializer.materializePrepared(batchId, candidates, context);
         }
         // raw 行已与订单行建立血缘后，把 sheet/行号并入 SKU 映射类复核事项并直连 raw_import_row_id。
         enrichReviewCasesWithSourceRow(batchId);
@@ -231,6 +224,139 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                         "content_sha256", sha256,
                         "import_mode", mode,
                         "settlement_missing", parsed.sourceChannel() == SourceChannel.WANQI));
+    }
+
+    private void stageCandidates(
+            long batchId,
+            List<SourceOrderCandidate> candidates,
+            BusinessException readinessBlock) {
+        Map<Long, List<Map<String, Object>>> detailsByRawId = new LinkedHashMap<>();
+        if (readinessBlock != null && readinessBlock.getDetails().get("lines") instanceof List<?> lines) {
+            for (Object value : lines) {
+                if (!(value instanceof Map<?, ?> line) || line.get("raw_import_row_id") == null) {
+                    continue;
+                }
+                long rawId = Long.parseLong(line.get("raw_import_row_id").toString());
+                Map<String, Object> copy = new LinkedHashMap<>();
+                line.forEach((key, item) -> copy.put(String.valueOf(key), item));
+                detailsByRawId.computeIfAbsent(rawId, ignored -> new ArrayList<>()).add(Map.copyOf(copy));
+            }
+        }
+        for (SourceOrderCandidate candidate : candidates) {
+            for (SourceOrderCandidate.CandidateRow row : candidate.rows()) {
+                List<Map<String, Object>> blockedLines = detailsByRawId.getOrDefault(
+                        row.rawImportRowId(), List.of());
+                Map<String, Object> detail = blockedLines.isEmpty()
+                        ? Map.of(
+                                "message", "同批次存在阻断项，候选已保留且未创建正式订单",
+                                "candidate_key", candidate.candidateKey())
+                        : blockedRowDetail(blockedLines);
+                jdbc.update(
+                        """
+                        UPDATE app.raw_import_rows
+                        SET status='NEED_REVIEW', error_code=?, error_detail=?::jsonb,
+                            order_id=NULL, order_line_id=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND import_batch_id=? AND status<>'REJECTED'
+                        """,
+                        blockedLines.isEmpty() ? "BATCH_ATOMIC_RELEASE_BLOCKED" : "SKU_READINESS",
+                        json(detail),
+                        row.rawImportRowId(),
+                        batchId);
+                for (Map<String, Object> blocked : blockedLines) {
+                    createCandidateReviewCase(batchId, row.rawImportRowId(), blocked);
+                }
+            }
+        }
+        Map<String, Object> batchDetail = new LinkedHashMap<>();
+        batchDetail.put("candidate_status", "PENDING");
+        batchDetail.put("source_order_candidates", candidates);
+        if (readinessBlock != null) {
+            batchDetail.put("readiness", readinessBlock.getDetails());
+        }
+        jdbc.update(
+                "UPDATE app.import_batches SET error_detail=?::jsonb WHERE id=?",
+                json(batchDetail),
+                batchId);
+    }
+
+    private Map<String, Object> blockedRowDetail(List<Map<String, Object>> blockedLines) {
+        if (blockedLines.size() == 1) {
+            return blockedLines.getFirst();
+        }
+        LinkedHashSet<String> reasons = new LinkedHashSet<>();
+        for (Map<String, Object> blocked : blockedLines) {
+            if (blocked.get("reason_codes") instanceof List<?> values) {
+                values.forEach(value -> reasons.add(String.valueOf(value)));
+            }
+        }
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("ready", false);
+        detail.put("reason_codes", List.copyOf(reasons));
+        detail.put("blocking_lines", List.copyOf(blockedLines));
+        return detail;
+    }
+
+    private void createCandidateReviewCase(
+            long batchId, long rawImportRowId, Map<String, Object> blocked) {
+        List<String> reasons = blocked.get("reason_codes") instanceof List<?> values
+                ? values.stream().map(String::valueOf).toList()
+                : List.of();
+        if (reasons.isEmpty()) {
+            return;
+        }
+        String reason = switch (reasons.getFirst()) {
+            case "SOURCE_SKU_MAPPING_REQUIRED" -> blocked.get("source_sku_ref") == null
+                    ? "SOURCE_SKU_MAPPING_REQUIRED"
+                    : "SKU_MAPPING_REQUIRED";
+            default -> reasons.getFirst();
+        };
+        Map<String, Object> detail = new LinkedHashMap<>(blocked);
+        Map<String, Object> source = jdbc.queryForMap(
+                """
+                SELECT ib.source_channel, rir.sheet_name, rir.row_index, rir.raw_cells::text raw_cells
+                FROM app.raw_import_rows rir
+                JOIN app.import_batches ib ON ib.id=rir.import_batch_id
+                WHERE rir.id=? AND rir.import_batch_id=?
+                """,
+                rawImportRowId,
+                batchId);
+        detail.put("source_channel", blocked.getOrDefault("source_channel", source.get("source_channel")));
+        detail.put("source_sheet_name", source.get("sheet_name"));
+        detail.put("source_row_index", source.get("row_index"));
+        SourceChannel channel = SourceChannel.valueOf(source.get("source_channel").toString());
+        Map<String, String> projection = projectionFor(channel, source.get("raw_cells").toString());
+        copyIfPresent(detail, "source_sku_ref", projection.get("source_sku_ref"));
+        copyIfPresent(detail, "source_product_name", projection.get("product_name"));
+        copyIfPresent(detail, "source_specification", projection.get("specification"));
+        copyIfPresent(detail, "source_quantity", projection.get("quantity"));
+        jdbc.update(
+                """
+                INSERT INTO app.review_cases
+                    (case_no, case_type, status, responsible_team, reason_code,
+                     import_batch_id, raw_import_row_id, detail)
+                VALUES (?, 'SOURCE_ORDER_CANDIDATE', 'OPEN', 'SKU_OPS', ?, ?, ?, ?::jsonb)
+                ON CONFLICT (case_no) DO NOTHING
+                """,
+                candidateReviewCaseNo(rawImportRowId, blocked, reason),
+                reason,
+                batchId,
+                rawImportRowId,
+                json(detail));
+    }
+
+    private String candidateReviewCaseNo(
+            long rawImportRowId, Map<String, Object> blocked, String reason) {
+        String identity = blocked.getOrDefault("line_no", "") + "|"
+                + blocked.getOrDefault("sku_id", "") + "|"
+                + blocked.getOrDefault("source_sku_ref", "") + "|" + reason;
+        String suffix = sha256(identity.getBytes(java.nio.charset.StandardCharsets.UTF_8)).substring(0, 12);
+        return "RC-IMPORT-CANDIDATE-" + rawImportRowId + "-" + suffix;
+    }
+
+    private void copyIfPresent(Map<String, Object> target, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            target.putIfAbsent(key, value);
+        }
     }
 
     /** 批次收尾共享：counts → 状态（NEED_REVIEW 阻断 confirm 语义不变）→ SYSTEM/HUMAN 审计。 */
@@ -338,11 +464,14 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         //    并发跨批同单的极小竞态窗口由调度防重入 + 幂等键兜底（真撞则整批回滚，
         //    与文件导入的批次原子性一致）。
         int rowIndex = 0;
+        boolean nonSkuBlocker = false;
+        List<SourceOrderCandidate> candidates = new ArrayList<>();
         for (int orderIndex = 0; orderIndex < orders.size(); orderIndex++) {
             StructuredOrderRow order = orders.get(orderIndex);
             Objects.requireNonNull(order.canonicalInput(), "结构化订单缺少 canonical 输入: " + order.sourceRef());
             List<OrderItemInput> items = order.canonicalInput().items();
             if (order.reviewRequired() != null) {
+                nonSkuBlocker = true;
                 StructuredOrderRow.ReviewRequired review = order.reviewRequired();
                 // 商品行全部不可用时仍保留一条订单级原始证据；item_index=0 只表示
                 // 复核占位，不代表已生成或猜测出任何商品行。
@@ -379,21 +508,35 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                         .httpStatus(200));
                 continue;
             }
-            CanonicalOrderInput canonicalInput = resolveStructuredCustomer(channel, order.canonicalInput());
-            OrderDetailDto created = orderCreateService.createImported(
-                            canonicalInput,
-                            batchId,
-                            "pull-" + batchNo + "-" + orderIndex,
-                            context,
-                            AuditActorType.SYSTEM)
-                    .result();
-            List<OrderLineDto> lines = created.lines();
-            for (int itemIndex = 0; itemIndex < lines.size(); itemIndex++) {
+            List<SourceOrderCandidate.CandidateRow> candidateRows = new ArrayList<>();
+            for (int itemIndex = 0; itemIndex < items.size(); itemIndex++) {
                 rowIndex++;
-                OrderLineDto line = lines.get(itemIndex);
-                insertStructuredRow(batchId, rowIndex, order, itemIndex, "ACCEPTED",
-                        Long.valueOf(created.id()), Long.valueOf(line.id()), null, null);
+                long rawId = insertStructuredRow(
+                        batchId, rowIndex, order, itemIndex, "RECEIVED", null, null, null, null);
+                candidateRows.add(new SourceOrderCandidate.CandidateRow(rawId, 1));
             }
+            candidates.add(new SourceOrderCandidate(
+                    order.sourceRef(),
+                    order.canonicalInput(),
+                    candidateRows,
+                    "pull-" + batchNo + "-" + orderIndex,
+                    AuditActorType.SYSTEM));
+        }
+        if (nonSkuBlocker) {
+            stageCandidates(batchId, candidates, null);
+        } else {
+            try {
+                sourceBatchSkuReadinessGate.requireReady(channel, candidates);
+            } catch (BusinessException exception) {
+                if (!"IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())) {
+                    throw exception;
+                }
+                stageCandidates(batchId, candidates, exception);
+                return finalizeBatch(batchId, started, context, AuditActorType.SYSTEM,
+                        "source-order-structured-import", "source-orders.importStructured",
+                        Map.of("batch_no", batchNo, "content_sha256", contentSha));
+            }
+            candidateMaterializer.materializePrepared(batchId, candidates, context);
         }
         // raw 行已与订单行建立血缘后，把 sheet/行号并入 SKU 映射类复核事项并直连 raw_import_row_id。
         enrichReviewCasesWithSourceRow(batchId);
@@ -402,42 +545,6 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         return finalizeBatch(batchId, started, context, AuditActorType.SYSTEM,
                 "source-order-structured-import", "source-orders.importStructured",
                 Map.of("batch_no", batchNo, "content_sha256", contentSha));
-    }
-
-    /**
-     * 在线 transform 只计算确定性的 CONTACT-* 候选；真正的 Customer/source-ref 创建必须
-     * 留在导入事务内，保证订单创建时映射已经可见。平台提供的稳定会员编号保持原样。
-     */
-    private CanonicalOrderInput resolveStructuredCustomer(
-            SourceChannel channel,
-            CanonicalOrderInput input) {
-        CustomerInput candidate = input.customer();
-        if (candidate == null
-                || candidate.customerCode() != null
-                || candidate.sourceCustomerRef() == null
-                || !candidate.sourceCustomerRef().startsWith("CONTACT-")) {
-            return input;
-        }
-        Receiver receiver = input.receiver();
-        CustomerInput resolved = importedCustomers.resolve(
-                channel,
-                receiver == null ? null : receiver.name(),
-                receiver == null ? null : receiver.phone());
-        if (!Objects.equals(candidate.sourceCustomerRef(), resolved.sourceCustomerRef())) {
-            throw BusinessException.unprocessable(
-                    "STRUCTURED_CUSTOMER_IDENTITY_MISMATCH",
-                    "结构化订单的客户身份与收货信息不一致，已停止创建订单");
-        }
-        return new CanonicalOrderInput(
-                input.source(),
-                input.sourceRef(),
-                input.sourceVersion(),
-                resolved,
-                input.receiver(),
-                input.items(),
-                input.settlement(),
-                input.remark(),
-                input.evidenceRefs());
     }
 
     /** 预检测：同渠道同来源单号的订单已存在（同事务内可读自身写入）。 */
@@ -455,7 +562,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     }
 
     /** 结构化 raw 行写入（一行 = 一个来源行 = 一个 order line）。 */
-    private void insertStructuredRow(
+    private long insertStructuredRow(
             long batchId,
             int rowIndex,
             StructuredOrderRow order,
@@ -492,6 +599,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     rawId,
                     orderLineId);
         }
+        return rawId;
     }
 
     /** 结构化导入的内容哈希幂等查询；与 uq_import_content_scope（batch_type+sha+channel+provider+export）语义对齐。 */
@@ -533,6 +641,14 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         cells.put("source_ref", order.sourceRef());
         cells.put("source_line_ref", order.sourceLineRef());
         cells.put("item_index", itemIndex);
+        if (order.canonicalInput() != null
+                && itemIndex >= 0
+                && itemIndex < order.canonicalInput().items().size()) {
+            String sourceSkuRef = order.canonicalInput().items().get(itemIndex).sourceSkuRef();
+            if (sourceSkuRef != null && !sourceSkuRef.isBlank()) {
+                cells.put("source_sku_ref", sourceSkuRef);
+            }
+        }
         cells.put("snapshot", sanitizeSnapshot(order.rawSnapshot()));
         return cells;
     }
@@ -596,7 +712,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     value.put("original_file_name", resultSet.getString("original_file_name"));
                     value.put("content_sha256", resultSet.getString("content_sha256"));
                     value.put("status", resultSet.getString("status"));
-                    value.put("error_detail", parseJson(resultSet.getString("error_detail")));
+                    value.put("error_detail", publicBatchErrorDetail(resultSet.getString("error_detail")));
                     value.put("received_at", resultSet.getTimestamp("received_at").toInstant());
                     value.put("processed_at", resultSet.getTimestamp("processed_at") == null
                             ? null : resultSet.getTimestamp("processed_at").toInstant());
@@ -939,6 +1055,13 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             long batchId, String idempotencyKey, CommandContext context) {
         Map<String, Object> payload = Map.of("batch_id", batchId);
         return idempotency.execute("source_import.confirm", idempotencyKey, payload, 200, () -> {
+            // 覆盖候选成单（REQUIRES_NEW）、Provider 校验和最终路由，避免阶段之间穿插主数据写入。
+            sourceBatchSkuReadinessGate.acquireCatalogSnapshot();
+            // readiness 阻断时上传只保存整批候选；重试确认先在独立事务中原子成单，
+            // 这样后续 REQUIRES_NEW Provider 校验能看到完整且已提交的订单集合。
+            candidateMaterializer.materializeStaged(batchId, context);
+            // Provider 校验使用 REQUIRES_NEW 并可能写 ReviewCase（外键需要读取批次行），
+            // 因此必须保留在 import_batch FOR UPDATE 之前，避免持锁后自我等待。
             providerFileService.validateSourceBatchExportability(batchId);
             Map<String, Object> batch = jdbc.queryForMap(
                     "SELECT batch_type, confirmed_at FROM app.import_batches WHERE id=? FOR UPDATE",
@@ -955,6 +1078,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 if (blockers != null && blockers > 0) {
                     throw BusinessException.conflict("IMPORT_BATCH_BLOCKED", "批次仍有待处理的 SKU、文件或数据问题");
                 }
+                sourceBatchSkuReadinessGate.requireReady(batchId);
                 // jd-real-sdk-switch 05：按履约方显式配置路由——京东 SDK 直连或导单文件，第三方始终文件。
                 Map<String, Object> routing = providerFileService.routeForSourceBatch(batchId, context.operator());
                 @SuppressWarnings("unchecked")
@@ -1019,7 +1143,9 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     .requestId(context.requestId())
                     .traceId(context.traceId())
                     .operator(context.operator())
-                    .actorType(AuditActorType.HUMAN)
+                    .actorType(context.operator().startsWith("automatic-release:")
+                            ? AuditActorType.SYSTEM
+                            : AuditActorType.HUMAN)
                     .service("source-file-import")
                     .operation("source-orders.confirm")
                     .requestPayload(payload)
@@ -1332,6 +1458,24 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException(exception);
         }
+    }
+
+    /** 候选 CanonicalOrderInput 含收货快照，只在服务端重放，不通过批次读取 API 暴露。 */
+    private Object publicBatchErrorDetail(String value) {
+        Object parsed = parseJson(value);
+        if (!(parsed instanceof Map<?, ?> source)) {
+            return parsed;
+        }
+        Map<String, Object> safe = new LinkedHashMap<>();
+        source.forEach((key, item) -> {
+            String name = String.valueOf(key);
+            if (!"source_order_candidates".equals(name)
+                    && !"source_order_readiness_candidates".equals(name)
+                    && !"candidate_status".equals(name)) {
+                safe.put(String.valueOf(key), item);
+            }
+        });
+        return safe.isEmpty() ? null : safe;
     }
 
     private String sha256(byte[] value) {

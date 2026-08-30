@@ -121,13 +121,23 @@ class WangqiBundlePipelineApiTest {
         long secondSkuId;
         if (existingSecondSku == null) {
             secondSkuId = jdbc.queryForObject(
-                    "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit) "
-                            + "VALUES (?,?, '250g/袋','袋') RETURNING id",
+                    "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit,"
+                            + "net_content_value,net_content_unit,package_count,package_unit) "
+                            + "VALUES (?,?, '250g/袋','袋',250,'g',1,'袋') RETURNING id",
                     Long.class,
                     secondProductId,
                     jdProviderId);
         } else {
             secondSkuId = existingSecondSku;
+            jdbc.update(
+                    """
+                    UPDATE app.skus
+                    SET specification='250g/袋', unit='袋',
+                        net_content_value=250, net_content_unit='g',
+                        package_count=1, package_unit='袋', active=TRUE
+                    WHERE id=?
+                    """,
+                    secondSkuId);
         }
         jdbc.update(
                 "UPDATE app.provider_skus SET external_codes=jsonb_set(external_codes, "
@@ -201,6 +211,7 @@ class WangqiBundlePipelineApiTest {
         Map<String, Object> batch = uploaded.getBody();
         assertThat(batch).containsEntry("source_channel", "DAZHE");
         assertThat(castMap(batch.get("row_counts")))
+                .withFailMessage("upload body: %s", batch)
                 .containsEntry("accepted", 1)
                 .containsEntry("need_review", 0);
         String batchId = batch.get("id").toString();

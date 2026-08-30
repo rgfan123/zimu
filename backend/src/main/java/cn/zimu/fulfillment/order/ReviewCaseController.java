@@ -184,14 +184,27 @@ public class ReviewCaseController {
             businessOrders.select(order.get("id")).where(sourceChannel == null
                     ? businessScope
                     : cb.and(businessScope, cb.equal(order.get("sourceChannel"), sourceChannel)));
+            var sourceCandidate = cb.and(
+                    root.get("importBatchId").isNotNull(),
+                    cb.equal(root.get("caseType"), "SOURCE_ORDER_CANDIDATE"));
             if (sourceChannel != null) {
-                // 指定来源渠道时只看该渠道业务订单的事项，不混入渠道消息链路事项
-                return root.get("orderId").in(businessOrders);
+                // 来源候选尚无 CanonicalOrder；其确定性来源渠道保存在复核 detail 中。
+                var candidateSource = cb.function(
+                        "jsonb_extract_path_text",
+                        String.class,
+                        root.get("detail"),
+                        cb.literal("source_channel"));
+                return cb.or(
+                        root.get("orderId").in(businessOrders),
+                        cb.and(
+                                sourceCandidate,
+                                cb.equal(candidateSource, sourceChannel.name())));
             }
             return cb.or(
                     root.get("messageSubmissionId").isNotNull(),
                     root.get("orderDraftId").isNotNull(),
                     root.get("providerTrackingDraftId").isNotNull(),
+                    sourceCandidate,
                     root.get("orderId").in(businessOrders));
         };
     }

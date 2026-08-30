@@ -6,7 +6,8 @@ import java.util.Map;
 
 /**
  * 整批确认的最窄端口：给「不在 file 包里、但需要确认一个来源批次」的调用方用
- * （目前是企微「确认发货」卡的执行面）。
+ * （目前是企微「确认发货」卡的执行面；受信模板 AutomaticRelease 也必须复用本端口，
+ * 不得另开绕过来源映射、包装乘数或 SKU readiness 的放行路径）。
  *
  * <p><b>为什么是接口而不是把方法改成 public</b>：{@code SourceImportService.confirm}
  * 是包私有的，那是有意的边界——确认牵动建 shipment、建京东单、写审计，

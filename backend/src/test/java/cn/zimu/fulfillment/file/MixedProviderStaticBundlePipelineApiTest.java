@@ -127,6 +127,7 @@ class MixedProviderStaticBundlePipelineApiTest {
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
         assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+        assertThat(uploaded.getBody()).containsEntry("error_detail", null);
 
         Map<String, Object> orderPage = get("/api/v1/orders?query=" + SOURCE_ORDER_REF + "&page=0&size=20");
         String orderId = castMap(castList(orderPage.get("items")).getFirst()).get("id").toString();
@@ -351,7 +352,55 @@ class MixedProviderStaticBundlePipelineApiTest {
     }
 
     @Test
-    void missingThirdPartyProviderSkuLeavesOnlyThatPartitionInReviewAndStillRoutesJd() throws Exception {
+    void manualConfirmationRechecksEveryBundleComponentAgainstCurrentReadiness() throws Exception {
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-RECHECK-OSTRICH", "鸵鸟复核组件", "TP-RECHECK-OSTRICH-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-RECHECK-001",
+                "羊蝎子鸵鸟复核礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-recheck-001");
+        createSourceBundleMapping(
+                "WQ-MIXED-RECHECK-BUNDLE-001",
+                "羊蝎子鸵鸟复核礼包",
+                bundleId,
+                "mix-source-bundle-recheck-001");
+
+        ResponseEntity<Map> uploaded = upload(
+                workbook(
+                        "WQ-MIXED-RECHECK-ORDER-001",
+                        "WQ-MIXED-RECHECK-BUNDLE-001",
+                        "羊蝎子鸵鸟复核礼包"),
+                "mix-upload-recheck-001");
+        String batchId = uploaded.getBody().get("id").toString();
+        assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+
+        jdbc.update("UPDATE app.skus SET active=FALSE WHERE id=?",
+                Long.parseLong(tpSku.get("id").toString()));
+
+        ResponseEntity<Map> blocked = confirm(batchId, "mix-confirm-recheck-001");
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(blocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_at IS NULL FROM app.import_batches WHERE id=?",
+                        Boolean.class,
+                        Long.parseLong(batchId)))
+                .isTrue();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.fulfillment_export_items fei
+                        JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id
+                        WHERE rir.import_batch_id=?
+                        """,
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isZero();
+    }
+
+    @Test
+    void missingThirdPartyProviderSkuBlocksTheWholeMixedBundleBeforeOrdersAndRouting() throws Exception {
         String orderRef = "WQ-MIXED-HOLD-ORDER-001";
         String bundleRef = "WQ-MIXED-HOLD-BUNDLE-001";
         Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
@@ -366,65 +415,39 @@ class MixedProviderStaticBundlePipelineApiTest {
                 workbook(orderRef, bundleRef, "羊蝎子鸵鸟待映射礼包"), "mix-upload-hold-001");
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
-        assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+        assertThat(castMap(uploaded.getBody().get("row_counts")))
+                .containsEntry("accepted", 0)
+                .containsEntry("need_review", 1);
 
         ResponseEntity<Map> confirmed = confirm(batchId, "mix-confirm-hold-001");
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat((List<?>) confirmed.getBody().get("generated_fulfillment_export_ids")).isEmpty();
-        List<?> jdShipmentIds = (List<?>) castMap(confirmed.getBody().get("outbound_routing"))
-                .get("jd_sdk_shipment_ids");
-        assertThat(jdShipmentIds).hasSize(1);
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(confirmed.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
 
         Map<String, Object> orderPage = get("/api/v1/orders?query=" + orderRef + "&page=0&size=20");
-        String orderId = castMap(castList(orderPage.get("items")).getFirst()).get("id").toString();
-        Map<String, Object> order = get("/api/v1/orders/" + orderId);
-        List<Map<String, Object>> lines = castList(order.get("lines"));
-        assertThat(lines).filteredOn(line -> "NEED_REVIEW".equals(line.get("processing_stage")))
-                .singleElement()
-                .satisfies(line -> assertThat(line)
-                        .containsEntry("exception_code", "PROVIDER_SKU_MAPPING_REQUIRED"));
+        assertThat(orderPage.get("total_elements")).isEqualTo(0);
         assertThat(jdbc.queryForObject(
-                """
-                SELECT count(*) FROM app.shipments s
-                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
-                WHERE s.order_id=? AND fp.provider_type='THIRD_PARTY'
-                """,
-                Integer.class,
-                Long.parseLong(orderId))).isZero();
-        assertThat(jdbc.queryForObject(
-                """
-                SELECT count(*) FROM app.review_cases
-                WHERE order_id=? AND status='OPEN' AND reason_code='PROVIDER_SKU_MAPPING_REQUIRED'
-                """,
-                Integer.class,
-                Long.parseLong(orderId))).isEqualTo(1);
+                        "SELECT count(*) FROM app.shipments s JOIN app.orders o ON o.id=s.order_id "
+                                + "WHERE o.source_import_batch_id=?",
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isZero();
         String reviewDetailJson = jdbc.queryForObject(
                 """
                 SELECT detail::text FROM app.review_cases
-                WHERE order_id=? AND status='OPEN' AND reason_code='PROVIDER_SKU_MAPPING_REQUIRED'
+                WHERE import_batch_id=? AND case_type='SOURCE_ORDER_CANDIDATE'
+                  AND status='OPEN' AND reason_code='PROVIDER_MAPPING_REQUIRED'
                 """,
                 String.class,
-                Long.parseLong(orderId));
+                Long.parseLong(batchId));
         Map<String, Object> reviewDetail = objectMapper.readValue(reviewDetailJson, new TypeReference<>() {});
         assertThat(reviewDetail)
                 .containsEntry("source_channel", "WANQI")
-                .containsEntry("line_no", 2)
-                .containsEntry("source_product_name", "羊蝎子鸵鸟待映射礼包")
-                .containsEntry("source_specification", "规格:1080g;")
-                .containsEntry("source_unit", "件")
-                .containsEntry("source_quantity", "1.000")
+                .containsEntry("sku_id", tpSku.get("id").toString())
                 .containsEntry("source_sheet_name", "订单")
                 .containsEntry("source_row_index", 2);
-        assertThat(reviewDetail.get("missing_source_sku_refs"))
-                .isEqualTo(List.of(bundleRef));
-        assertThat((List<?>) reviewDetail.get("evidence_items")).singleElement().satisfies(item -> {
-            assertThat(castMap(item))
-                    .containsEntry("source_sku_ref", bundleRef)
-                    .containsEntry("product_name", "鸵鸟80g待映射组件")
-                    .containsEntry("specification", "80g/袋")
-                    .containsEntry("unit", "袋")
-                    .containsEntry("quantity", "1.000");
-        });
+        assertThat(reviewDetail.get("sku_code")).as("阻断结果必须标明具体内部 SKU").isNotNull();
+        assertThat(((List<?>) reviewDetail.get("reason_codes")).stream().map(String::valueOf).toList())
+                .contains("PROVIDER_MAPPING_REQUIRED");
         List<?> returns = http.getForObject(
                 "/api/v1/import-batches/" + batchId + "/source-return-exports", List.class);
         assertThat(returns).isEmpty();
@@ -447,8 +470,9 @@ class MixedProviderStaticBundlePipelineApiTest {
                 productCode,
                 productName);
         long skuId = jdbc.queryForObject(
-                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit) "
-                        + "VALUES (?,?,'80g/袋','袋') RETURNING id",
+                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit,"
+                        + "net_content_value,net_content_unit,package_count,package_unit) "
+                        + "VALUES (?,?,'80g/袋','袋',80,'g',1,'袋') RETURNING id",
                 Long.class,
                 productId,
                 providerId);
@@ -470,8 +494,9 @@ class MixedProviderStaticBundlePipelineApiTest {
                         + "VALUES ('PROD-TP-OSTRICH-HOLD','鸵鸟80g待映射组件') RETURNING id",
                 Long.class);
         long skuId = jdbc.queryForObject(
-                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit) "
-                        + "VALUES (?,?,'80g/袋','袋') RETURNING id",
+                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit,"
+                        + "net_content_value,net_content_unit,package_count,package_unit) "
+                        + "VALUES (?,?,'80g/袋','袋',80,'g',1,'袋') RETURNING id",
                 Long.class,
                 productId,
                 providerId);
@@ -487,8 +512,9 @@ class MixedProviderStaticBundlePipelineApiTest {
                         + "VALUES ('PROD-TP-SAUCE-FIXTURE','测试礼包配料') RETURNING id",
                 Long.class);
         long skuId = jdbc.queryForObject(
-                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit) "
-                        + "VALUES (?,?,'1袋','袋') RETURNING id",
+                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit,"
+                        + "net_content_value,net_content_unit,package_count,package_unit) "
+                        + "VALUES (?,?,'1袋','袋',1,'袋',1,'袋') RETURNING id",
                 Long.class,
                 productId,
                 providerId);

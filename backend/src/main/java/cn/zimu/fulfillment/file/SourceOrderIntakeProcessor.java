@@ -14,16 +14,19 @@ public class SourceOrderIntakeProcessor {
     private final SourceOrderIntakeFileStore files;
     private final SourceFileParser parser;
     private final SourceImportService imports;
+    private final SourceBatchAutomaticReleaseService automaticRelease;
 
     SourceOrderIntakeProcessor(
             SourceOrderIntakeService intake,
             SourceOrderIntakeFileStore files,
             SourceFileParser parser,
-            SourceImportService imports) {
+            SourceImportService imports,
+            SourceBatchAutomaticReleaseService automaticRelease) {
         this.intake = intake;
         this.files = files;
         this.parser = parser;
         this.imports = imports;
+        this.automaticRelease = automaticRelease;
     }
 
     public void process(AsyncTaskStore.AsyncTask task) {
@@ -63,7 +66,17 @@ public class SourceOrderIntakeProcessor {
                     job.parentBatchId(),
                     job.idempotencyKey(),
                     context);
-            intake.markSucceeded(jobId, Long.parseLong(batch.get("id").toString()));
+            long batchId = Long.parseLong(batch.get("id").toString());
+            try {
+                automaticRelease.releaseIfTrusted(parsed, batchId);
+            } catch (BusinessException exception) {
+                if ("IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())) {
+                    intake.markNeedsReview(jobId, batchId, exception.getBusinessCode());
+                    return;
+                }
+                throw exception;
+            }
+            intake.markSucceeded(jobId, batchId);
         } catch (BusinessException exception) {
             intake.markFailed(jobId, exception.getBusinessCode());
         }

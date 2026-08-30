@@ -564,13 +564,20 @@ public class OrderCreateService {
         if (confirmedSku != null) {
             return createConfirmedSkuLine(item, quantity, line, skuCodes, confirmedSku);
         }
-        SourceChannelSku mapping = findMapping(channel, item.sourceSkuRef());
+        SourceChannelSku mapping = findActiveMapping(channel, item.sourceSkuRef());
         if (mapping == null) {
             line.setProcessingStage(ProcessingStage.NEED_REVIEW);
             line.setExceptionCode("SKU_MAPPING_REQUIRED");
             line.setExceptionReason("未找到来源 SKU 映射: " + blankToEmpty(item.sourceSkuRef()));
             return new LineResult(
                     line, List.of(), List.of(blankToEmpty(item.sourceSkuRef())), List.of(), "SKU_MAPPING_REQUIRED");
+        }
+        if (mapping.getQuantityMultiplier() == null || mapping.getQuantityMultiplier().signum() <= 0) {
+            line.setProcessingStage(ProcessingStage.NEED_REVIEW);
+            line.setExceptionCode("MAPPING_MULTIPLIER");
+            line.setExceptionReason("来源 SKU 映射缺少有效的包装乘数: " + blankToEmpty(item.sourceSkuRef()));
+            return new LineResult(
+                    line, List.of(), List.of(blankToEmpty(item.sourceSkuRef())), List.of(), "MAPPING_MULTIPLIER");
         }
         Sku sku = requireSku(mapping);
         if (hasConflictingSkuCode(item.skuCode(), sku)) {
@@ -886,14 +893,21 @@ public class OrderCreateService {
     }
 
     private SourceChannelSku findMapping(SourceChannel channel, String sourceSkuRef) {
+        SourceChannelSku mapping = findActiveMapping(channel, sourceSkuRef);
+        return mapping != null
+                        && mapping.getQuantityMultiplier() != null
+                        && mapping.getQuantityMultiplier().signum() > 0
+                ? mapping
+                : null;
+    }
+
+    private SourceChannelSku findActiveMapping(SourceChannel channel, String sourceSkuRef) {
         if (sourceSkuRef == null || sourceSkuRef.isBlank()) {
             return null;
         }
         return sourceChannelSkuRepository
                 .findBySourceChannelAndSourceSkuRef(channel, sourceSkuRef)
                 .filter(SourceChannelSku::isActive)
-                .filter(mapping -> mapping.getQuantityMultiplier() != null)
-                .filter(mapping -> mapping.getQuantityMultiplier().signum() > 0)
                 .orElse(null);
     }
 

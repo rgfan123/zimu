@@ -257,6 +257,46 @@ class StructuredImportApiTest {
     }
 
     @Test
+    void legacyStructuredRowWithoutSourceSkuReferenceFailsClosedAtConfirmation() {
+        String ref = orderRef("CSX-ORDER-LEGACY-SKU-REF");
+        StructuredOrderRow row = new StructuredOrderRow(
+                ref,
+                null,
+                order(ref, ref + "-L1", ref + "-L2"),
+                Map.of("orderCode", ref));
+        Map<String, Object> imported = sourceImportService.importStructured(
+                SourceChannel.CAISHIXIAN, List.of(row), batchNo(), ctx());
+        long batchId = Long.parseLong(imported.get("id").toString());
+        // 模拟 V67 之前已存在的结构化快照：测试夹具临时绕过 raw 证据不可变触发器，
+        // 业务代码本身仍不能改写原始行。
+        jdbc.execute("ALTER TABLE app.raw_import_rows DISABLE TRIGGER trg_raw_import_source_immutable");
+        try {
+            jdbc.update(
+                    "UPDATE app.raw_import_rows SET raw_cells=raw_cells-'source_sku_ref' WHERE import_batch_id=?",
+                    batchId);
+        } finally {
+            jdbc.execute("ALTER TABLE app.raw_import_rows ENABLE TRIGGER trg_raw_import_source_immutable");
+        }
+
+        assertThatThrownBy(() -> sourceImportService.confirm(
+                        batchId, "confirm-legacy-missing-ref-" + ref, ctx()))
+                .isInstanceOfSatisfying(BusinessException.class, error -> {
+                    assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED");
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> lines =
+                            (List<Map<String, Object>>) error.getDetails().get("lines");
+                    assertThat(lines).hasSize(2).allSatisfy(line ->
+                            assertThat(((List<?>) line.get("reason_codes")).stream().map(String::valueOf).toList())
+                                    .contains("SOURCE_SKU_MAPPING_REQUIRED"));
+                });
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_at IS NULL FROM app.import_batches WHERE id=?",
+                        Boolean.class,
+                        batchId))
+                .isTrue();
+    }
+
+    @Test
     void jufubaoStructuredImportCreatesTheDeterministicReceiverCustomerMapping() {
         String ref = orderRef("JFB-ORDER-CUSTOMER");
         String receiverName = "聚福宝收货人";

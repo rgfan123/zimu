@@ -1206,6 +1206,26 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ImportBatch' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/import-batches/{batch_id}/trust-template:
+    parameters:
+      - $ref: '#/components/parameters/BatchId'
+    post:
+      tags: [Imports]
+      operationId: trustSourceImportTemplate
+      summary: 显式信任一个已确认来源批次的精确模板版本
+      description: >-
+        只有已确认批次可建立 standing authorization；来源渠道、模板族、版本或结构指纹
+        任一变化都不会继承此授权。TRUSTED 同时授权后续批次自动确认和既有京东出站步骤。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: 已存在或新建的受信模板档案
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceTemplateProfile' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/import-batches/{batch_id}/jd-outbound-submit:
     parameters:
       - $ref: '#/components/parameters/BatchId'
@@ -1986,7 +2006,7 @@ paths:
           schema: { type: string, maxLength: 128 }
         - name: source_channel
           in: query
-          description: Limits the queue to BUSINESS orders from this source channel.
+          description: Limits the queue to BUSINESS orders or pre-order source candidates from this source channel.
           schema: { $ref: '#/components/schemas/SourceChannel' }
         - name: import_batch_id
           in: query
@@ -4673,6 +4693,19 @@ components:
         lock_version: { type: integer, format: int64, minimum: 0 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    SourceTemplateProfile:
+      type: object
+      additionalProperties: false
+      required: [id, profile_no, source_channel, template_family, template_version, template_fingerprint, status, trusted_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        profile_no: { type: string, maxLength: 64 }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        template_family: { type: string, maxLength: 128 }
+        template_version: { type: string, maxLength: 64 }
+        template_fingerprint: { type: string, maxLength: 128 }
+        status: { type: string, enum: [TRUSTED, REVOKED] }
+        trusted_at: { type: string, format: date-time }
     ImportBatchStatus:
       type: string
       enum: [RECEIVED, PROCESSING, COMPLETED, COMPLETED_WITH_REVIEW, FAILED]
@@ -6702,8 +6735,13 @@ components:
         status: { type: string, enum: [OPEN, RESOLVED, DISMISSED] }
         order_id: { $ref: '#/components/schemas/Identifier' }
         order_line_id: { $ref: '#/components/schemas/Identifier' }
-        subject_type: { type: string }
-        subject_id: { $ref: '#/components/schemas/Identifier' }
+        subject_type:
+          type: string
+          enum: [ORDER_LINE, SHIPMENT, ORDER, MESSAGE_SUBMISSION, ORDER_DRAFT, TRACKING_DRAFT, IMPORT_BATCH, UNKNOWN]
+        subject_id:
+          allOf:
+            - $ref: '#/components/schemas/Identifier'
+          nullable: true
         detail: { type: object, additionalProperties: true }
         suggestions:
           type: array
@@ -6712,7 +6750,7 @@ components:
           type: array
           items:
             type: string
-            enum: [RESOLVE_CUSTOMER, RESOLVE_SKU, RESOLVE_CARRIER, RESOLVE_IMPORT_DATA, COMPLETE_SOURCE_FOLLOWUP, CONFIRM_ORDER_DRAFT, REJECT_ORDER_DRAFT, CONFIRM_TRACKING_DRAFT, OPEN_SKU_MAPPING, RERUN_JD_SKU_MAPPING_CHECK, RERUN_JD_STOCK_CHECK, REINTERPRET, REJECT]
+            enum: [RESOLVE_CUSTOMER, RESOLVE_SKU, RESOLVE_CARRIER, RESOLVE_IMPORT_DATA, RESOLVE_MANUALLY, DISMISS, COMPLETE_SOURCE_FOLLOWUP, RESOLVE_JD_TRACKING_CONFLICT, CONFIRM_ORDER_DRAFT, REJECT_ORDER_DRAFT, CONFIRM_TRACKING_DRAFT, REJECT_TRACKING_DRAFT, OPEN_SKU_MAPPING, RERUN_JD_SKU_MAPPING_CHECK, RERUN_JD_STOCK_CHECK, REINTERPRET, REJECT]
         resolution: { type: object, additionalProperties: true, nullable: true }
         resolved_by: { type: string, nullable: true }
         resolved_at: { type: string, format: date-time, nullable: true }
