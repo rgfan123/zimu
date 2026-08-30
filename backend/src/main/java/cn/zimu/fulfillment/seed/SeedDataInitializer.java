@@ -46,7 +46,6 @@ public class SeedDataInitializer implements ApplicationRunner {
 
     private static final String CUSTOMER_CODE = "CUST-WECOM-0001";
     private static final String CATEGORY_CODE = "CAT-MEAT";
-    private static final String PRODUCT_CODE = "PROD-LAMBLEG";
     private static final String JD_PROVIDER_CODE = "JD";
     private static final String TP_PROVIDER_CODE = "TP";
 
@@ -94,7 +93,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         customerSourceRef(customer);
         if (sampleMasterDataEnabled) {
             Category category = category();
-            Product product = product(category);
+            Product product = product(category, jd);
             Sku jdSku = sku(product, jd, "500g/盒", "盒");
             Sku tpSku = sku(product, tp, "标准箱", "箱");
             sourceChannelSku(jdSku, "WECOM-SKU-JD-001", "子牧羊小腿", BigDecimal.ONE);
@@ -119,13 +118,15 @@ public class SeedDataInitializer implements ApplicationRunner {
         return categoryRepository.save(category);
     }
 
-    private Product product(Category category) {
-        var existing = productRepository.findByProductCode(PRODUCT_CODE);
-        if (existing.isPresent()) {
-            return existing.get();
+    private Product product(Category category, FulfillmentProvider jdProvider) {
+        var existingMapping = providerSkuRepository.findByFulfillmentProviderIdAndProviderSkuCode(
+                jdProvider.getId(), "JD-SKU-000001");
+        if (existingMapping.isPresent()) {
+            Sku existingSku = skuRepository.findById(existingMapping.get().getSkuId()).orElseThrow();
+            return productRepository.findById(existingSku.getProductId()).orElseThrow();
         }
         Product product = new Product();
-        product.setProductCode(PRODUCT_CODE);
+        product.setProductCode(productRepository.nextProductCode());
         product.setProductName("子牧羊小腿");
         product.setCategoryId(category == null ? null : category.getId());
         product.setDescription("子牧羊小腿 500g/盒");

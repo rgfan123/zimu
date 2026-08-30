@@ -176,11 +176,35 @@ public class AuthoritativeSkuCatalogImportService {
             FulfillmentProvider provider,
             LoadedManifest loaded,
             List<Drift> drift) {
-        String productCode = productCode(item);
         String specification = specification(item);
         CatalogCategory categoryDefinition = categoryFor(item);
         Category category = businessCategories.get(categoryDefinition.code());
-        Product product = products.findByProductCode(productCode).orElse(null);
+        ProviderSku mapping = providerSkus
+                .findByFulfillmentProviderIdAndProviderSkuCode(provider.getId(), item.jdCode())
+                .orElse(null);
+        Sku sku = null;
+        Product product = null;
+        if (mapping != null) {
+            sku = skus.findById(mapping.getSkuId()).orElse(null);
+            compare(drift, item.jdCode(), "provider_sku.active", true, mapping.isActive());
+            if (sku == null) {
+                drift.add(new Drift(item.jdCode(), "provider_sku.sku_id", "existing SKU", mapping.getSkuId()));
+            } else {
+                product = products.findById(sku.getProductId()).orElse(null);
+                if (product == null) {
+                    drift.add(new Drift(item.jdCode(), "sku.product_id", "existing product", sku.getProductId()));
+                }
+            }
+        } else {
+            providerSkus.findCatalogIdentityConflicts(
+                            provider.getId(), item.canonicalName(), specification, UNIT)
+                    .forEach(existing -> drift.add(new Drift(
+                            item.jdCode(),
+                            "provider_sku.provider_sku_code_for_sku",
+                            item.jdCode(),
+                            existing.getProviderSkuCode())));
+        }
+
         boolean updateProductCategory = false;
         if (product != null) {
             compare(drift, item.jdCode(), "product.name", item.canonicalName(), product.getProductName());
@@ -192,30 +216,6 @@ public class AuthoritativeSkuCatalogImportService {
             } else if (category == null || !Objects.equals(category.getId(), product.getCategoryId())) {
                 compare(drift, item.jdCode(), "product.category_code", categoryDefinition.code(),
                         product.getCategoryId());
-            }
-        }
-
-        ProviderSku mapping = providerSkus
-                .findByFulfillmentProviderIdAndProviderSkuCode(provider.getId(), item.jdCode())
-                .orElse(null);
-        Sku sku = null;
-        if (mapping != null) {
-            sku = skus.findById(mapping.getSkuId()).orElse(null);
-            compare(drift, item.jdCode(), "provider_sku.active", true, mapping.isActive());
-            if (sku == null) {
-                drift.add(new Drift(item.jdCode(), "provider_sku.sku_id", "existing SKU", mapping.getSkuId()));
-            }
-        } else if (product != null) {
-            sku = skus.findByProductIdAndFulfillmentProviderIdAndSpecificationAndUnit(
-                            product.getId(), provider.getId(), specification, UNIT)
-                    .orElse(null);
-            if (sku != null) {
-                providerSkus.findByFulfillmentProviderIdAndSkuId(provider.getId(), sku.getId())
-                        .ifPresent(existing -> drift.add(new Drift(
-                                item.jdCode(),
-                                "provider_sku.provider_sku_code_for_sku",
-                                item.jdCode(),
-                                existing.getProviderSkuCode())));
             }
         }
 
@@ -273,7 +273,7 @@ public class AuthoritativeSkuCatalogImportService {
             Product product = itemPlan.product();
             if (product == null) {
                 product = new Product();
-                product.setProductCode(productCode(itemPlan.item()));
+                product.setProductCode(products.nextProductCode());
                 product.setProductName(itemPlan.item().canonicalName());
                 product.setCategoryId(category.getId());
                 product.setDescription("来自《京东商品编号.xlsx》Sheet1；外部唯一键为 JD 编码");
@@ -459,10 +459,6 @@ public class AuthoritativeSkuCatalogImportService {
         if (!Objects.equals(expected, actual)) {
             drift.add(new Drift(jdCode, field, expected, actual));
         }
-    }
-
-    private static String productCode(Item item) {
-        return "PROD-JD-" + item.jdCode();
     }
 
     private static CatalogCategory categoryFor(Item item) {

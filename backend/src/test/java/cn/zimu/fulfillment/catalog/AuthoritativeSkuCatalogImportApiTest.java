@@ -196,6 +196,51 @@ class AuthoritativeSkuCatalogImportApiTest {
 
     @Test
     @Order(2)
+    void reusesTheMappedProductWhenItsInternalCodeIsUnrelatedToTheJdCode() {
+        Map<String, Object> mapping = page("/api/v1/provider-sku-mappings", 200).stream()
+                .filter(candidate -> "EMG4418819504770".equals(candidate.get("code")))
+                .findFirst()
+                .orElseThrow();
+        String skuId = attributes(mapping).get("sku_id").toString();
+        Map<String, Object> sku = http.getForObject("/api/v1/skus/" + skuId, Map.class);
+        long productId = Long.parseLong(attributes(sku).get("product_id").toString());
+        String originalProductCode = jdbc.queryForObject(
+                "SELECT product_code FROM app.products WHERE id=?",
+                String.class,
+                productId);
+        long productsBefore = jdbc.queryForObject("SELECT count(*) FROM app.products", Long.class);
+
+        try {
+            jdbc.update(
+                    "UPDATE app.products SET product_code=? WHERE id=?",
+                    "PROD-900000",
+                    productId);
+
+            ResponseEntity<Map> imported = importCatalog(
+                    "authoritative-catalog-mapped-product-code-independent",
+                    "req-authoritative-catalog-mapped-product-code-independent");
+
+            assertThat(imported.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(imported.getBody())
+                    .containsEntry("created_products", 0)
+                    .containsEntry("reused_products", 61);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM app.products", Long.class))
+                    .isEqualTo(productsBefore);
+            assertThat(jdbc.queryForObject(
+                    "SELECT product_code FROM app.products WHERE id=?",
+                    String.class,
+                    productId))
+                    .isEqualTo("PROD-900000");
+        } finally {
+            jdbc.update(
+                    "UPDATE app.products SET product_code=? WHERE id=?",
+                    originalProductCode,
+                    productId);
+        }
+    }
+
+    @Test
+    @Order(3)
     void reportsTheProviderSkuUniqueKeyConflictDuringPreflight() {
         Map<String, Object> mapping = page("/api/v1/provider-sku-mappings", 200).stream()
                 .filter(candidate -> "EMG4418819504770".equals(candidate.get("code")))
@@ -231,7 +276,7 @@ class AuthoritativeSkuCatalogImportApiTest {
     }
 
     @Test
-    @Order(3)
+    @Order(4)
     void serializesTheImportBehindConcurrentCatalogMasterDataWrites() throws Exception {
         Map<String, Object> mapping = page("/api/v1/provider-sku-mappings", 200).stream()
                 .filter(candidate -> "EMG4418861052375".equals(candidate.get("code")))

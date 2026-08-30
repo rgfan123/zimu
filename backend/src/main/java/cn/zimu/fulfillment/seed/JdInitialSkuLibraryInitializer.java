@@ -93,17 +93,14 @@ public class JdInitialSkuLibraryInitializer implements ApplicationRunner {
     }
 
     private Product product(Category category, LibraryRow row) {
-        String productCode = "PROD-JD-" + row.code();
-        return products.findByProductCode(productCode).orElseGet(() -> {
-            Product product = new Product();
-            product.setProductCode(productCode);
-            product.setProductName(row.name());
-            product.setCategoryId(category.getId());
-            product.setDescription(UNKNOWN_NAME_CODE.equals(row.code())
-                    ? "来自《京东商品编号.xlsx》；商品名称待维护"
-                    : "来自《京东商品编号.xlsx》初版 SKU 库");
-            return products.save(product);
-        });
+        Product product = new Product();
+        product.setProductCode(products.nextProductCode());
+        product.setProductName(row.name());
+        product.setCategoryId(category.getId());
+        product.setDescription(UNKNOWN_NAME_CODE.equals(row.code())
+                ? "来自《京东商品编号.xlsx》；商品名称待维护"
+                : "来自《京东商品编号.xlsx》初版 SKU 库");
+        return products.save(product);
     }
 
     private Sku sku(Product product, FulfillmentProvider provider, String providerSkuCode) {

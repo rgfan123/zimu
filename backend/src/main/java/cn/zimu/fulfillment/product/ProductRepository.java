@@ -11,6 +11,10 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
 
     Optional<Product> findByProductCode(String productCode);
 
+    /** 分配并发安全的内部商品编号；外部身份不得参与编号生成。 */
+    @Query(value = "SELECT 'PROD-' || lpad(nextval('app.product_code_seq')::text, 6, '0')", nativeQuery = true)
+    String nextProductCode();
+
     /** 全部已用商品标签去重候选，按字典序。 */
     @Query(value = """
             SELECT DISTINCT tag
