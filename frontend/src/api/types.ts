@@ -474,10 +474,20 @@ export interface SkuReadinessIssue {
   action: string;
 }
 
+export interface SkuDataQualityFlag {
+  flag_code: string;
+  blocking_reason: SkuReadinessReason | null;
+  currently_blocking: boolean;
+  message: string;
+  action: string;
+  evidence: Record<string, unknown>;
+}
+
 export interface SkuFulfillmentReadiness {
   ready: boolean;
   reason_codes: SkuReadinessReason[];
   issues: SkuReadinessIssue[];
+  data_quality_flags: SkuDataQualityFlag[];
 }
 
 /** SKU 响应属性：价格字段始终存在，null 仅表示未定价。 */

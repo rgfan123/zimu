@@ -717,7 +717,7 @@ public class MasterDataService {
             value.setSpecification(input.specification());
             value.setUnit(input.unit());
             if (packagingIdentity != null) packagingIdentity.applyTo(value);
-            value.setBarcode(input.barcode());
+            value.setBarcode(blankToNull(input.barcode()));
             value.setPurchasePrice(purchasePrice);
             value.setRetailPrice(retailPrice);
             value.setActive(!Boolean.FALSE.equals(input.active()));
@@ -727,7 +727,8 @@ public class MasterDataService {
 
     @Transactional
     public IdempotentResult<MasterDataRecord> patchSku(long id, SkuPatch input, String key, CommandContext ctx) {
-        if (!input.purchasePricePresent() && !input.retailPricePresent() && !input.packagingIdentityPresent()) {
+        if (!input.purchasePricePresent() && !input.retailPricePresent()
+                && !input.packagingIdentityPresent() && !input.barcodePresent()) {
             requireAny(input.specification(), input.unit(), input.barcode(), input.active());
         }
         BigDecimal purchasePrice = input.purchasePricePresent()
@@ -759,7 +760,7 @@ public class MasterDataService {
             }
             boolean finalActive = input.active() == null ? value.isActive() : input.active();
             skuReadiness.validateActiveIdentity(finalActive, value.getSpecification(), value.getUnit());
-            if (input.barcode() != null) value.setBarcode(input.barcode());
+            if (input.barcodePresent()) value.setBarcode(blankToNull(input.barcode()));
             if (input.purchasePricePresent()) value.setPurchasePrice(purchasePrice);
             if (input.retailPricePresent()) value.setRetailPrice(retailPrice);
             if (input.active() != null) value.setActive(input.active());
@@ -1335,7 +1336,7 @@ public class MasterDataService {
         if (input.netContentUnitPresent()) body.put("net_content_unit", input.netContentUnit());
         if (input.packageCountPresent()) body.put("package_count", input.packageCount());
         if (input.packageUnitPresent()) body.put("package_unit", input.packageUnit());
-        putNullable(body, "barcode", input.barcode());
+        if (input.barcodePresent()) body.put("barcode", input.barcode());
         putNullable(body, "active", input.active());
         if (input.purchasePricePresent()) body.put("purchase_price", input.purchasePrice());
         if (input.retailPricePresent()) body.put("retail_price", input.retailPrice());

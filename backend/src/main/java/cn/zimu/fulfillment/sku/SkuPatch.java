@@ -5,7 +5,7 @@ import com.fasterxml.jackson.annotation.JsonSetter;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
-/** SKU 更新输入；价格字段区分“未传”与“显式 null 清空”。 */
+/** SKU 更新输入；可清空字段区分“未传”与“显式 null 清空”。 */
 public final class SkuPatch {
 
     @NotNull(message = "期望版本不能为空")
@@ -33,6 +33,7 @@ public final class SkuPatch {
 
     @Size(max = 64, message = "条码超长")
     private String barcode;
+    private boolean barcodePresent;
 
     private Boolean active;
     private Object purchasePrice;
@@ -108,8 +109,10 @@ public final class SkuPatch {
         return barcode;
     }
 
+    @JsonSetter("barcode")
     public void setBarcode(String barcode) {
         this.barcode = barcode;
+        this.barcodePresent = true;
     }
 
     public Boolean active() {
@@ -148,6 +151,11 @@ public final class SkuPatch {
     @JsonIgnore
     public boolean retailPricePresent() {
         return retailPricePresent;
+    }
+
+    @JsonIgnore
+    public boolean barcodePresent() {
+        return barcodePresent;
     }
 
     @JsonIgnore

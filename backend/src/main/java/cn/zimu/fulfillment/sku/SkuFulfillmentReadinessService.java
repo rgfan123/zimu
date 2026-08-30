@@ -88,6 +88,7 @@ public class SkuFulfillmentReadinessService {
             Product product = productById.get(sku.getProductId());
             FulfillmentProvider provider = providerById.get(sku.getFulfillmentProviderId());
             ProviderSku mapping = mappingBySkuId.get(sku.getId());
+            List<SkuDataQualityFlag> skuFlags = flagsBySkuId.getOrDefault(sku.getId(), List.of());
 
             if (product == null || !product.isActive()) reasons.add(SkuReadinessReason.PRODUCT_INACTIVE);
             if (!sku.isActive()) reasons.add(SkuReadinessReason.SKU_INACTIVE);
@@ -112,8 +113,8 @@ public class SkuFulfillmentReadinessService {
             if (barcode != null && duplicateBarcodes.contains(barcode)) {
                 reasons.add(SkuReadinessReason.BARCODE_CONFLICT);
             }
-            for (SkuDataQualityFlag flag : flagsBySkuId.getOrDefault(sku.getId(), List.of())) {
-                if (flag.getBlockingReason() != null) {
+            for (SkuDataQualityFlag flag : skuFlags) {
+                if (currentlyBlocks(sku, flag)) {
                     SkuReadinessReason reason = SkuReadinessReason.parse(flag.getBlockingReason());
                     reasons.add(reason);
                     explicitIssueByReason.putIfAbsent(reason, flag);
@@ -129,7 +130,16 @@ public class SkuFulfillmentReadinessService {
                                 explicit == null ? reason.action() : explicit.getAction());
                     })
                     .toList();
-            result.put(sku.getId(), new SkuFulfillmentReadiness(issues));
+            List<SkuFulfillmentReadiness.SkuDataQualityFlagView> qualityFlags = skuFlags.stream()
+                    .map(flag -> new SkuFulfillmentReadiness.SkuDataQualityFlagView(
+                            flag.getFlagCode(),
+                            flag.getBlockingReason(),
+                            currentlyBlocks(sku, flag),
+                            flag.getMessage(),
+                            flag.getAction(),
+                            flag.getEvidence()))
+                    .toList();
+            result.put(sku.getId(), new SkuFulfillmentReadiness(issues, qualityFlags));
         }
         return Map.copyOf(result);
     }
@@ -168,5 +178,18 @@ public class SkuFulfillmentReadinessService {
 
     private static String normalizeBarcode(String value) {
         return value == null || value.isBlank() ? null : value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 有明确冲突条码证据的历史标记，在 SKU 已维护不同的非空独立条码后转为非阻断证据；
+     * 其他人工标记必须显式关闭，不能凭文本推断自动消失。
+     */
+    private static boolean currentlyBlocks(Sku sku, SkuDataQualityFlag flag) {
+        if (flag.getBlockingReason() == null) return false;
+        if (!SkuReadinessReason.BARCODE_CONFLICT.name().equals(flag.getBlockingReason())) return true;
+        Object conflicting = flag.getEvidence().get("conflicting_barcode");
+        String conflictingBarcode = conflicting instanceof String text ? normalizeBarcode(text) : null;
+        String currentBarcode = normalizeBarcode(sku.getBarcode());
+        return conflictingBarcode == null || currentBarcode == null || currentBarcode.equals(conflictingBarcode);
     }
 }

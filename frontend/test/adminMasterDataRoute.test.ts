@@ -274,6 +274,24 @@ test('product archive shows JD EMG and opens a new-product form without an exist
                 action: '维护该 SKU 对应履约方的有效商品编码',
               },
             ],
+            data_quality_flags: [
+              {
+                flag_code: 'PRODUCT_ARCHIVE_STATUS_REFERENCE',
+                blocking_reason: null,
+                currently_blocking: false,
+                message: '商品档案状态：停产（仅作为参考证据）',
+                action: '未确认权威关系前不要自动停用 SKU',
+                evidence: { archive_status: '停产' },
+              },
+              {
+                flag_code: 'SOURCE_BRAND_MISMATCH',
+                blocking_reason: 'REVIEW_REQUIRED',
+                currently_blocking: true,
+                message: '来源品牌子牧与内部品牌卓宸不一致',
+                action: '核对品牌证据后人工关闭',
+                evidence: {},
+              },
+            ],
           },
         },
       }]));
@@ -288,6 +306,9 @@ test('product archive shows JD EMG and opens a new-product form without an exist
   assert.match(bodyText(), /阻断/);
   assert.match(bodyText(), /所属商品已停用/);
   assert.match(bodyText(), /缺少履约方商品映射/);
+  assert.match(bodyText(), /数据质量 \/ 档案证据/);
+  assert.match(bodyText(), /商品档案状态：停产（仅作为参考证据）/);
+  assert.match(bodyText(), /来源品牌子牧与内部品牌卓宸不一致/);
   assert.match(bodyText(), /按阻断原因筛选/);
   assert.equal(requestedUrls.some((url) => url.startsWith('/api/v1/products?')), false);
 

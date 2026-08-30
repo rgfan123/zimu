@@ -7059,7 +7059,7 @@ components:
         action: { type: string, minLength: 1 }
     SkuFulfillmentReadiness:
       type: object
-      required: [ready, reason_codes, issues]
+      required: [ready, reason_codes, issues, data_quality_flags]
       properties:
         ready:
           type: boolean
@@ -7071,6 +7071,24 @@ components:
         issues:
           type: array
           items: { $ref: '#/components/schemas/SkuReadinessIssue' }
+        data_quality_flags:
+          type: array
+          description: 当前有效的数据质量与档案证据；currently_blocking=false 的参考证据不会改变 active 或 ready。
+          items: { $ref: '#/components/schemas/SkuDataQualityFlag' }
+    SkuDataQualityFlag:
+      type: object
+      required: [flag_code, blocking_reason, currently_blocking, message, action, evidence]
+      properties:
+        flag_code: { type: string, minLength: 1, maxLength: 64 }
+        blocking_reason:
+          allOf: [{ $ref: '#/components/schemas/SkuReadinessReason' }]
+          nullable: true
+        currently_blocking:
+          type: boolean
+          description: 是否仍参与当前 readiness；独立条码已确认后，历史冲突证据可保留但不再阻断。
+        message: { type: string, minLength: 1 }
+        action: { type: string, minLength: 1 }
+        evidence: { type: object, additionalProperties: true }
     SkuRecord:
       allOf:
         - $ref: '#/components/schemas/MasterDataRecord'

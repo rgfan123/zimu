@@ -105,6 +105,27 @@ export default function SkusPage() {
         );
       },
     },
+    {
+      title: '数据质量 / 档案证据', key: 'data_quality', width: 290,
+      render: (_, r) => {
+        const flags = skuReadiness(r)?.data_quality_flags ?? [];
+        if (flags.length === 0) return '—';
+        return (
+          <Space direction="vertical" size={2}>
+            {flags.map((flag) => (
+              <Tooltip key={flag.flag_code} title={flag.action}>
+                <Typography.Text style={{ fontSize: 12 }}>
+                  <Tag color={flag.currently_blocking ? 'warning' : 'default'}>
+                    {flag.currently_blocking ? '待复核' : '参考'}
+                  </Tag>
+                  {flag.message}
+                </Typography.Text>
+              </Tooltip>
+            ))}
+          </Space>
+        );
+      },
+    },
     { title: '履约方', key: 'provider', width: 170, render: (_, r) => providerLabels.get(String(attr(r, 'provider_id'))) ?? '—' },
     {
       title: '毛利', key: 'margin', width: 100, align: 'right',

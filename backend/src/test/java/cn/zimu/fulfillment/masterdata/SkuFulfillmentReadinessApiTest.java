@@ -97,8 +97,15 @@ class SkuFulfillmentReadinessApiTest {
         long providerId = insertProvider("RDYMULTI", "THIRD_PARTY", true);
         long productId = insertProduct("PROD-RDY-MULTI", "就绪多原因样本", false);
         long skuId = insertSku(productId, providerId, "待维护", "未知", "READINESS-DUP-001", true);
-        long otherProductId = insertProduct("PROD-RDY-BARCODE", "条码冲突对照", true);
-        insertSku(otherProductId, providerId, "500g", "件", "READINESS-DUP-001", true);
+        jdbc.update(
+                """
+                INSERT INTO app.sku_data_quality_flags
+                    (sku_id, flag_code, blocking_reason, message, action, active)
+                VALUES (?, 'READINESS_BARCODE_CONFLICT', 'BARCODE_CONFLICT', ?, ?, TRUE)
+                """,
+                skuId,
+                "条码与另一规格的来源档案冲突",
+                "核对并维护独立条码后关闭该数据质量标记");
         jdbc.update(
                 """
                 INSERT INTO app.sku_data_quality_flags

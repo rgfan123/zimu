@@ -7517,3 +7517,58 @@ FOR EACH STATEMENT EXECUTE FUNCTION app.lock_sku_readiness_catalog_write();
 CREATE INDEX idx_source_template_profiles_trusted_from_batch
     ON app.source_template_profiles(trusted_from_batch_id);
 -- END V72__index_trusted_source_template_batch.sql
+
+-- BEGIN V73__enforce_active_sku_barcode_uniqueness.sql (structural snapshot)
+-- V71 的 BEFORE STATEMENT 目录锁先串行相关写事务；两个 AFTER STATEMENT
+-- 触发器再对 SKU 主条码与 BARCODE 别名的规范化并集执行同一所有权校验。
+CREATE INDEX idx_skus_active_normalized_barcode
+    ON app.skus (lower(btrim(barcode)))
+    WHERE active = TRUE AND barcode IS NOT NULL AND btrim(barcode) <> '';
+
+CREATE INDEX idx_sku_aliases_active_normalized_barcode
+    ON app.sku_aliases (lower(btrim(alias_value)))
+    WHERE active = TRUE AND alias_type = 'BARCODE';
+
+CREATE FUNCTION app.assert_active_sku_effective_barcode_unique() RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    conflicting_barcode TEXT;
+    conflicting_skus TEXT[];
+BEGIN
+    SELECT effective.normalized_barcode,
+           array_agg(DISTINCT effective.sku_code ORDER BY effective.sku_code)
+    INTO conflicting_barcode, conflicting_skus
+    FROM (
+        SELECT s.id AS sku_id, s.sku_code, lower(btrim(s.barcode)) AS normalized_barcode
+        FROM app.skus s
+        WHERE s.active = TRUE AND s.barcode IS NOT NULL AND btrim(s.barcode) <> ''
+        UNION ALL
+        SELECT s.id AS sku_id, s.sku_code, lower(btrim(a.alias_value)) AS normalized_barcode
+        FROM app.sku_aliases a
+        JOIN app.skus s ON s.id=a.sku_id
+        WHERE s.active = TRUE AND a.active = TRUE AND a.alias_type='BARCODE'
+    ) effective
+    GROUP BY effective.normalized_barcode
+    HAVING count(DISTINCT effective.sku_id) > 1
+    ORDER BY effective.normalized_barcode
+    LIMIT 1;
+
+    IF conflicting_barcode IS NOT NULL THEN
+        RAISE EXCEPTION 'active SKU effective barcode belongs to multiple SKUs'
+            USING ERRCODE = '23505',
+                  CONSTRAINT = 'uq_active_sku_effective_barcode',
+                  DETAIL = format('normalized barcode %s conflicts across %s',
+                                  conflicting_barcode, conflicting_skus::TEXT);
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER trg_skus_active_barcode_unique
+AFTER INSERT OR UPDATE OR DELETE ON app.skus
+FOR EACH STATEMENT EXECUTE FUNCTION app.assert_active_sku_effective_barcode_unique();
+
+CREATE TRIGGER trg_sku_aliases_active_barcode_unique
+AFTER INSERT OR UPDATE OR DELETE ON app.sku_aliases
+FOR EACH STATEMENT EXECUTE FUNCTION app.assert_active_sku_effective_barcode_unique();
+-- END V73__enforce_active_sku_barcode_uniqueness.sql
