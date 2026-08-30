@@ -6,6 +6,7 @@ import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.web.WriteCommands;
 import cn.zimu.fulfillment.product.BundlePatch;
 import cn.zimu.fulfillment.product.BundleWrite;
+import cn.zimu.fulfillment.product.SourceBundleMappingPatch;
 import cn.zimu.fulfillment.product.SourceBundleMappingWrite;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -90,6 +91,19 @@ public class BundleMasterDataController {
             @RequestHeader("Idempotency-Key") String key,
             @RequestHeader("X-Operator") String operator) {
         return WriteCommands.respond(service.createSourceBundleMapping(
+                body,
+                WriteCommands.requireIdempotencyKey(key),
+                WriteCommands.writeContext(operator)));
+    }
+
+    @PatchMapping("/source-bundle-mappings/{id}")
+    public ResponseEntity<?> patchSourceBundleMapping(
+            @PathVariable String id,
+            @Valid @RequestBody SourceBundleMappingPatch body,
+            @RequestHeader("Idempotency-Key") String key,
+            @RequestHeader("X-Operator") String operator) {
+        return WriteCommands.respond(service.patchSourceBundleMapping(
+                WriteCommands.parseIdentifier(id),
                 body,
                 WriteCommands.requireIdempotencyKey(key),
                 WriteCommands.writeContext(operator)));

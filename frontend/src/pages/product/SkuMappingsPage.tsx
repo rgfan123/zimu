@@ -1,6 +1,11 @@
-/** 主数据 · SKU 映射矩阵：内部 SKU 为行，履约方为动态列。 */
+/**
+ * 主数据 · 来源映射：两个页签。
+ * - 「SKU 映射」：内部 SKU 为行、来源渠道为列的矩阵（原页面全部内容）。
+ * - 「礼包映射」：来源礼包编号到静态礼包的显式映射列表。
+ */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   App as AntApp,
   Alert,
@@ -14,6 +19,7 @@ import {
   Space,
   Switch,
   Table,
+  Tabs,
   Tag,
   Typography,
   Upload,
@@ -42,6 +48,7 @@ import {
   type SourceMappingMatrixChannel,
   type SourceSkuMappingMatrixRow,
 } from './skuMappingMatrix';
+import BundleMappingsPanel from './BundleMappingsPanel';
 import './skuMappings.css';
 
 function ReferencePreviewPanel() {
@@ -611,8 +618,95 @@ function SourceSkuMatrix() {
   );
 }
 
+/** 「SKU 映射」页签：矩阵 + 两个辅助面板 + 口径说明，内容与页签化之前逐字一致。 */
+function SkuMappingTab() {
+  const { token } = theme.useToken();
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <section aria-label="SKU 映射矩阵工作区" className="sku-mappings-page__workspace">
+        <SourceSkuMatrix />
+      </section>
+
+      <section
+        aria-label="SKU 映射资料辅助核对"
+        className="sku-mappings-page__reference"
+        style={{
+          background: token.colorBgContainer,
+          border: `1px solid ${token.colorBorderSecondary}`,
+          borderRadius: token.borderRadiusLG,
+        }}
+      >
+        <Collapse
+          ghost
+          items={[
+            {
+              key: 'reference-preview',
+              label: (
+                <Space size={10}>
+                  <FileSearchOutlined style={{ color: token.colorTextSecondary }} />
+                  <span>
+                    <Typography.Text strong>使用文件辅助核对</Typography.Text>
+                    <Typography.Text type="secondary" className="sku-mappings-page__reference-copy">
+                      上传映射资料和来源样表，预览候选后再逐条确认。
+                    </Typography.Text>
+                  </span>
+                </Space>
+              ),
+              children: <ReferencePreviewPanel />,
+            },
+          ]}
+        />
+      </section>
+
+      <section
+        aria-label="京东件数换算"
+        className="sku-mappings-page__reference"
+        style={{
+          background: token.colorBgContainer,
+          border: `1px solid ${token.colorBorderSecondary}`,
+          borderRadius: token.borderRadiusLG,
+        }}
+      >
+        <Collapse
+          ghost
+          defaultActiveKey={['jd-pieces']}
+          items={[
+            {
+              key: 'jd-pieces',
+              label: (
+                <Space size={10}>
+                  <FileSearchOutlined style={{ color: token.colorTextSecondary }} />
+                  <span>
+                    <Typography.Text strong>京东件数换算</Typography.Text>
+                    <Typography.Text type="secondary" className="sku-mappings-page__reference-copy">
+                      从规格生成候选，人工确认后导入为 planQuantity 换算。
+                    </Typography.Text>
+                  </span>
+                </Space>
+              ),
+              children: <JdPiecesPanel />,
+            },
+          ]}
+        />
+      </section>
+
+      <Typography.Text className="sku-mappings-page__footnote" type="secondary">
+        数量乘数用于把平台商品数量换算为内部 SKU 数量。各渠道均只展示有证据的显式映射，未映射时不会自动猜测。大者没有平台商品编号，来源编号按商品名称填写。
+      </Typography.Text>
+    </Space>
+  );
+}
+
+/** URL 上的页签标识；只认识 bundle，其余（含历史遗留的 ?tab=provider）都落回 SKU 页签。 */
+function activeTabKey(raw: string | null): 'sku' | 'bundle' {
+  return raw === 'bundle' ? 'bundle' : 'sku';
+}
+
 export default function SkuMappingsPage() {
   const { token } = theme.useToken();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeKey = activeTabKey(searchParams.get('tab'));
 
   return (
     <div className="sku-mappings-page">
@@ -628,76 +722,14 @@ export default function SkuMappingsPage() {
           </Tag>
         )}
       >
-        <section aria-label="SKU 映射矩阵工作区" className="sku-mappings-page__workspace">
-          <SourceSkuMatrix />
-        </section>
-
-        <section
-          aria-label="SKU 映射资料辅助核对"
-          className="sku-mappings-page__reference"
-          style={{
-            background: token.colorBgContainer,
-            border: `1px solid ${token.colorBorderSecondary}`,
-            borderRadius: token.borderRadiusLG,
-          }}
-        >
-          <Collapse
-            ghost
-            items={[
-              {
-                key: 'reference-preview',
-                label: (
-                  <Space size={10}>
-                    <FileSearchOutlined style={{ color: token.colorTextSecondary }} />
-                    <span>
-                      <Typography.Text strong>使用文件辅助核对</Typography.Text>
-                      <Typography.Text type="secondary" className="sku-mappings-page__reference-copy">
-                        上传映射资料和来源样表，预览候选后再逐条确认。
-                      </Typography.Text>
-                    </span>
-                  </Space>
-                ),
-                children: <ReferencePreviewPanel />,
-              },
-            ]}
-          />
-        </section>
-
-        <section
-          aria-label="京东件数换算"
-          className="sku-mappings-page__reference"
-          style={{
-            background: token.colorBgContainer,
-            border: `1px solid ${token.colorBorderSecondary}`,
-            borderRadius: token.borderRadiusLG,
-          }}
-        >
-          <Collapse
-            ghost
-            defaultActiveKey={['jd-pieces']}
-            items={[
-              {
-                key: 'jd-pieces',
-                label: (
-                  <Space size={10}>
-                    <FileSearchOutlined style={{ color: token.colorTextSecondary }} />
-                    <span>
-                      <Typography.Text strong>京东件数换算</Typography.Text>
-                      <Typography.Text type="secondary" className="sku-mappings-page__reference-copy">
-                        从规格生成候选，人工确认后导入为 planQuantity 换算。
-                      </Typography.Text>
-                    </span>
-                  </Space>
-                ),
-                children: <JdPiecesPanel />,
-              },
-            ]}
-          />
-        </section>
-
-        <Typography.Text className="sku-mappings-page__footnote" type="secondary">
-          数量乘数用于把平台商品数量换算为内部 SKU 数量。各渠道均只展示有证据的显式映射，未映射时不会自动猜测。大者没有平台商品编号，来源编号按商品名称填写。
-        </Typography.Text>
+        <Tabs
+          activeKey={activeKey}
+          onChange={(key) => setSearchParams(key === 'bundle' ? { tab: 'bundle' } : {}, { replace: true })}
+          items={[
+            { key: 'sku', label: 'SKU 映射', children: <SkuMappingTab /> },
+            { key: 'bundle', label: '礼包映射', children: <BundleMappingsPanel /> },
+          ]}
+        />
       </PageShell>
     </div>
   );

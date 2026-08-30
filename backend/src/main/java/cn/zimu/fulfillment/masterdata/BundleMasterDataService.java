@@ -21,6 +21,7 @@ import cn.zimu.fulfillment.product.CategoryRepository;
 import cn.zimu.fulfillment.product.ProductBundle;
 import cn.zimu.fulfillment.product.ProductBundleRepository;
 import cn.zimu.fulfillment.product.ProductRepository;
+import cn.zimu.fulfillment.product.SourceBundleMappingPatch;
 import cn.zimu.fulfillment.product.SourceBundleMappingWrite;
 import cn.zimu.fulfillment.product.SourceChannelBundle;
 import cn.zimu.fulfillment.product.SourceChannelBundleRepository;
@@ -247,6 +248,37 @@ public class BundleMasterDataService {
             mapping.setQuantityMultiplier(BigDecimal.ONE);
             mapping.setBundleId(bundleId);
             mapping.setActive(!Boolean.FALSE.equals(input.active()));
+            SourceChannelBundle saved = sourceBundleMappings.saveAndFlush(mapping);
+            entityManager.refresh(saved);
+            return sourceBundleMapping(saved);
+        });
+    }
+
+    @Transactional
+    public IdempotentResult<MasterDataRecord> patchSourceBundleMapping(
+            long id, SourceBundleMappingPatch input, String key, CommandContext context) {
+        requireAny(input.bundleId(), input.sourceBundleName(), input.active());
+        return write("source_bundle_mapping.update", key, Map.of("id", id, "body", input), OK, context, () -> {
+            SourceChannelBundle mapping = sourceBundleMappings.findById(id)
+                    .orElseThrow(() -> BusinessException.notFound("来源礼包映射不存在"));
+            requireVersion(mapping.getLockVersion(), input.expectedVersion());
+
+            if (input.bundleId() != null) {
+                long bundleId = WriteCommands.parseIdentifier(input.bundleId());
+                ProductBundle bundle = requireBundle(bundleId);
+                // 与创建口径一致：映射只能指向 ACTIVE 礼包，改绑同样不放行草稿/停用礼包。
+                if (!"ACTIVE".equals(bundle.getStatus())) {
+                    throw BusinessException.unprocessable("BUNDLE_NOT_ACTIVE", "来源礼包映射只能绑定 ACTIVE 礼包");
+                }
+                mapping.setBundleId(bundleId);
+            }
+            if (input.sourceBundleName() != null) {
+                // 传空串表示清掉自定义名称，读取时回落到礼包名（见 sourceBundleMapping 投影）。
+                mapping.setSourceBundleName(blankToNull(input.sourceBundleName()));
+            }
+            if (input.active() != null) {
+                mapping.setActive(input.active());
+            }
             SourceChannelBundle saved = sourceBundleMappings.saveAndFlush(mapping);
             entityManager.refresh(saved);
             return sourceBundleMapping(saved);
