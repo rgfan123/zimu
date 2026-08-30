@@ -463,6 +463,10 @@ export interface SkuAttributes {
   provider_id: string;
   specification: string;
   unit: string;
+  net_content_value?: string | null;
+  net_content_unit?: string | null;
+  package_count?: number | null;
+  package_unit?: string | null;
   barcode?: string | null;
   purchase_price: string | null;
   retail_price: string | null;

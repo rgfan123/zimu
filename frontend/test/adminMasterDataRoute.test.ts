@@ -217,8 +217,10 @@ test('real product route presents the category name and code instead of an inter
   const row = [...document.querySelectorAll<HTMLTableRowElement>('.ant-table-tbody .ant-table-row')]
     .find((candidate) => candidate.textContent?.includes('P-BEEF-001'));
   assert.ok(row, 'the product must be visible through the production route');
-  // 商品之后是品类列；档案字段（主图/标签/毛利）不应破坏品类展示。
-  const categoryCell = row.querySelectorAll<HTMLTableCellElement>('td')[1];
+  // 商品、品牌之后是品类列；档案字段（主图/标签/毛利）不应破坏品类展示。
+  const cells = row.querySelectorAll<HTMLTableCellElement>('td');
+  assert.equal(cells[1]?.textContent?.trim(), '—');
+  const categoryCell = cells[2];
   assert.equal(categoryCell?.textContent?.trim(), '牛肉（MEAT/BEEF）');
   assert.deepEqual(new Set(requestedUrls), new Set([
     '/api/v1/categories?page=0&size=200',
@@ -250,6 +252,11 @@ test('product archive shows JD EMG and opens a new-product form without an exist
           provider_id: '11',
           specification: '500g',
           unit: '袋',
+          product_brand_name: '子牧',
+          net_content_value: '500',
+          net_content_unit: 'g',
+          package_count: 1,
+          package_unit: '袋',
           jd_emg_no: 'EMG4418691852262',
         },
       }]));
@@ -272,6 +279,13 @@ test('product archive shows JD EMG and opens a new-product form without an exist
     .map((label) => label.textContent?.trim());
   assert.ok(labels.includes('商品编码'));
   assert.ok(labels.includes('商品名称'));
+  assert.ok(labels.includes('品牌'));
+  assert.ok(labels.includes('规格展示'));
+  assert.ok(labels.includes('净含量'));
+  assert.ok(labels.includes('净含量单位'));
+  assert.ok(labels.includes('包装件数'));
+  assert.ok(labels.includes('包装单位'));
+  assert.ok(labels.includes('库存计数单位'));
   assert.equal(labels.includes('商品'), false);
 });
 

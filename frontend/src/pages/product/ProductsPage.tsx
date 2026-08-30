@@ -43,6 +43,7 @@ export default function ProductsPage() {
 
   const columns: ColumnsType<MasterDataRecord> = [
     { title: '商品', key: 'identity', render: (_, r) => <ProductIdentity name={r.name} code={r.code} /> },
+    { title: '品牌', key: 'brand', width: 120, render: (_, r) => String(attr(r, 'brand_name') ?? '—') },
     {
       title: '品类',
       key: 'category',
@@ -98,6 +99,7 @@ export default function ProductsPage() {
   const createFields: CrudField[] = [
     { name: 'product_code', label: '商品编码', required: true, placeholder: '如 P-1001' },
     { name: 'product_name', label: '商品名称', required: true },
+    { name: 'brand_name', label: '品牌', placeholder: '无品牌可留空' },
     categoryIdField,
     { name: 'ingredients', label: '原料', type: 'textarea', placeholder: '如 羔羊肉、孜然、食用盐' },
     { name: 'tags', label: '商品标签', type: 'tags', options: tagsOptions, placeholder: '输入后回车，可复用已有标签' },
@@ -136,6 +138,7 @@ export default function ProductsPage() {
 
   const updateFields: CrudField[] = [
     { name: 'product_name', label: '商品名称', required: true },
+    { name: 'brand_name', label: '品牌', placeholder: '清空表示无品牌' },
     categoryIdField,
     { name: 'ingredients', label: '原料', type: 'textarea', placeholder: '清空则删除' },
     { name: 'tags', label: '商品标签', type: 'tags', options: tagsOptions, placeholder: '清空全部标签即删除' },

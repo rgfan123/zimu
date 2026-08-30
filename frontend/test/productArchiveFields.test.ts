@@ -18,6 +18,7 @@ test('product archive create body keeps filled fields and drops empty ones', () 
   const body = compact(buildProductCreateBody({
     product_code: 'P-1001',
     product_name: '子牧羊小腿',
+    brand_name: ' 子牧 ',
     category_id: '3',
     ingredients: '羔羊肉',
     tags: [' 预售 ', '预售', '应季'],
@@ -32,6 +33,7 @@ test('product archive create body keeps filled fields and drops empty ones', () 
   assert.deepEqual(body, {
     product_code: 'P-1001',
     product_name: '子牧羊小腿',
+    brand_name: '子牧',
     category_id: '3',
     ingredients: '羔羊肉',
     tags: ['预售', '应季'],
@@ -50,6 +52,7 @@ test('product archive create body omits all optional fields when absent', () => 
   const body = compact(buildProductCreateBody({
     product_code: 'P-1001',
     product_name: '子牧羊小腿',
+    brand_name: '',
     category_id: '3',
     active: false,
   }));
@@ -65,6 +68,7 @@ test('product archive update body distinguishes untouched, cleared and set field
   const body = compact(buildProductUpdateBody({
     expected_version: 2,
     product_name: '子牧羊小腿',
+    brand_name: '',
     category_id: '3',
     ingredients: '',
     tags: [],
@@ -79,6 +83,7 @@ test('product archive update body distinguishes untouched, cleared and set field
   assert.deepEqual(body, {
     expected_version: 2,
     product_name: '子牧羊小腿',
+    brand_name: null,
     category_id: '3',
     ingredients: null,
     tags: null,

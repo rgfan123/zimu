@@ -12,6 +12,7 @@ import java.util.List;
 public record ProductWrite(
         @NotBlank(message = "商品编码不能为空") @Size(max = 64, message = "商品编码超长") String productCode,
         @NotBlank(message = "商品名称不能为空") @Size(max = 128, message = "商品名称超长") String productName,
+        @Size(max = 128, message = "品牌名称超长") String brandName,
         @NotNull(message = "品类不能为空") @Pattern(regexp = Patterns.IDENTIFIER, message = "品类标识符无效") String categoryId,
         @Size(max = 1000, message = "原料描述超长") String ingredients,
         @Size(max = 10, message = "商品标签最多 10 个")

@@ -4,7 +4,7 @@
 依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
-和 `V2`–`V53` 增量迁移；两条路径必须得到等价的当前结构——
+和 `V2`–`V67` 增量迁移；两条路径必须得到等价的当前结构——
 [`SchemaSnapshotMigrationEquivalenceTest`](../backend/src/test/java/cn/zimu/fulfillment/schema/SchemaSnapshotMigrationEquivalenceTest.java)
 用 Testcontainers 分别以空库快照与 Flyway 全链建库，从 `pg_catalog` 比对表/视图/列
 （类型/可空/默认/identity）/主键/唯一键/check 约束/外键/普通索引/触发器/显式序列/
@@ -61,9 +61,9 @@ erDiagram
 | `customers` | 公司统一客户档案 | `customer_code` 唯一；BUSINESS/DEMO 分域 |
 | `customer_source_refs` | 来源客户身份映射 | `(source_channel, source_customer_ref)` 唯一；不得按电话自动合并 |
 | `categories` | 商品品类树 | code 唯一；禁止自指父级 |
-| `products` | 商品族 | 规格、单位和履约方不放在 Product |
+| `products` | 商品族 | 可保存品牌；规格、单位和履约方不放在 Product |
 | `fulfillment_providers` | 京东云仓或第三方履约方 | `provider_code` 生成后不可变；保存运单 SLA |
-| `skus` | 公司唯一可履约 SKU | `SKU-{provider_code}-{6位全局流水号}`；provider 不可变 |
+| `skus` | 公司唯一可履约 SKU | `SKU-{provider_code}-{6位全局流水号}`；provider 不可变；净含量、计量单位、包装件数和包装单位须成组填写，库存计数单位独立保存 |
 | `sku_aliases` | 人工检索候选别名 | 只用于建议，不自动建立业务映射 |
 | `source_channel_skus` | 来源平台商品到内部 SKU 的显式映射 | `(source_channel, source_sku_ref)` 唯一；`quantity_multiplier` 缺失时只能进入人工复核，正值时参与来源数量换算 |
 | `provider_skus` | 内部 SKU 到履约方商品编码的映射 | provider 必须与 SKU 归属一致 |
@@ -277,7 +277,7 @@ DDL 必须通过以下门槛：
 3. 执行 `docs/schema-smoke.sql`，覆盖：上海业务日出库单号原子流水、运单回传与原 FulfillmentExport/provider 关联、已发货但未提供实际发货时间、非已发货状态的不一致时间拒绝、第三方库存写入拒绝、错误修订链拒绝、跨 provider/非整份礼包拒绝、重复待出库批次拒绝、跨订单导出/回填拒绝、Demo 业务隔离、京东金额非 0 拒绝、Shipment 超发拒绝、Tracking 冲突拒绝、最终回填含等待项拒绝、已导出订单字段冻结、分析视图排除 Demo 和未知实际发货日数据，以及渠道/商品实发量的乘数换算与礼包组件展开。
 4. `git diff --check` 无空白错误。
 5. `SchemaSnapshotMigrationEquivalenceTest`（Testcontainers，`mvn test` 默认阶段运行）：分别用
-   `docs/schema.sql` 与 Flyway 全链（V1..V53）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
+   `docs/schema.sql` 与 Flyway 全链（V1..V67）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
 
 ## 11. 快照与迁移链的更新责任
 

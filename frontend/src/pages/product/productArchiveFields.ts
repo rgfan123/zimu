@@ -89,6 +89,7 @@ export function buildProductCreateBody(values: Record<string, unknown>) {
   return {
     product_code: String(values.product_code),
     product_name: String(values.product_name),
+    ...(optionalTrimmedString(values.brand_name) ? { brand_name: optionalTrimmedString(values.brand_name) } : {}),
     category_id: String(values.category_id),
     ...(optionalTrimmedString(values.ingredients) ? { ingredients: optionalTrimmedString(values.ingredients) } : {}),
     ...(tags ? { tags } : {}),
@@ -112,6 +113,7 @@ export function buildProductUpdateBody(values: Record<string, unknown>) {
   return {
     expected_version: Number(values.expected_version),
     product_name: typeof values.product_name === 'string' ? values.product_name : undefined,
+    brand_name: patchTrimmedString(values.brand_name),
     category_id: typeof values.category_id === 'string' ? values.category_id : undefined,
     ingredients: patchTrimmedString(values.ingredients),
     tags: patchTags(values.tags),

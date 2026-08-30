@@ -29,6 +29,9 @@ public class Product extends AuditableEntity {
     @Column(name = "product_name", nullable = false)
     private String productName;
 
+    @Column(name = "brand_name")
+    private String brandName;
+
     @Column(name = "category_id")
     private Long categoryId;
 
@@ -90,6 +93,14 @@ public class Product extends AuditableEntity {
 
     public void setProductName(String productName) {
         this.productName = productName;
+    }
+
+    public String getBrandName() {
+        return brandName;
+    }
+
+    public void setBrandName(String brandName) {
+        this.brandName = brandName;
     }
 
     public Long getCategoryId() {

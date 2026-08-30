@@ -1,7 +1,8 @@
 package cn.zimu.fulfillment.sku;
 
-import com.fasterxml.jackson.annotation.JsonSetter;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonSetter;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
@@ -13,6 +14,24 @@ public final class SkuPatch {
 
     @Size(max = 200, message = "规格超长")
     private String specification;
+
+    @Size(max = 32, message = "单位超长")
+    private String unit;
+
+    private Object netContentValue;
+    private boolean netContentValuePresent;
+
+    @Size(max = 16, message = "净含量单位超长")
+    private String netContentUnit;
+    private boolean netContentUnitPresent;
+
+    @Min(value = 1, message = "包装件数必须为正整数")
+    private Integer packageCount;
+    private boolean packageCountPresent;
+
+    @Size(max = 32, message = "包装单位超长")
+    private String packageUnit;
+    private boolean packageUnitPresent;
 
     @Size(max = 64, message = "条码超长")
     private String barcode;
@@ -37,6 +56,54 @@ public final class SkuPatch {
 
     public void setSpecification(String specification) {
         this.specification = specification;
+    }
+
+    public String unit() {
+        return unit;
+    }
+
+    public void setUnit(String unit) {
+        this.unit = unit;
+    }
+
+    public Object netContentValue() {
+        return netContentValue;
+    }
+
+    @JsonSetter("net_content_value")
+    public void setNetContentValue(Object netContentValue) {
+        this.netContentValue = netContentValue;
+        this.netContentValuePresent = true;
+    }
+
+    public String netContentUnit() {
+        return netContentUnit;
+    }
+
+    @JsonSetter("net_content_unit")
+    public void setNetContentUnit(String netContentUnit) {
+        this.netContentUnit = netContentUnit;
+        this.netContentUnitPresent = true;
+    }
+
+    public Integer packageCount() {
+        return packageCount;
+    }
+
+    @JsonSetter("package_count")
+    public void setPackageCount(Integer packageCount) {
+        this.packageCount = packageCount;
+        this.packageCountPresent = true;
+    }
+
+    public String packageUnit() {
+        return packageUnit;
+    }
+
+    @JsonSetter("package_unit")
+    public void setPackageUnit(String packageUnit) {
+        this.packageUnit = packageUnit;
+        this.packageUnitPresent = true;
     }
 
     public String barcode() {
@@ -83,5 +150,38 @@ public final class SkuPatch {
     @JsonIgnore
     public boolean retailPricePresent() {
         return retailPricePresent;
+    }
+
+    @JsonIgnore
+    public boolean netContentValuePresent() {
+        return netContentValuePresent;
+    }
+
+    @JsonIgnore
+    public boolean netContentUnitPresent() {
+        return netContentUnitPresent;
+    }
+
+    @JsonIgnore
+    public boolean packageCountPresent() {
+        return packageCountPresent;
+    }
+
+    @JsonIgnore
+    public boolean packageUnitPresent() {
+        return packageUnitPresent;
+    }
+
+    @JsonIgnore
+    public boolean packagingIdentityPresent() {
+        return netContentValuePresent || netContentUnitPresent || packageCountPresent || packageUnitPresent;
+    }
+
+    @JsonIgnore
+    public boolean clearsPackagingIdentity() {
+        return netContentValuePresent && netContentValue == null
+                && netContentUnitPresent && netContentUnit == null
+                && packageCountPresent && packageCount == null
+                && packageUnitPresent && packageUnit == null;
     }
 }

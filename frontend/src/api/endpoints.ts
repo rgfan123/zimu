@@ -266,6 +266,7 @@ export const productsApi = {
   create: (body: {
     product_code: string;
     product_name: string;
+    brand_name?: string;
     category_id: string;
     ingredients?: string;
     tags?: string[];
@@ -282,6 +283,7 @@ export const productsApi = {
   update: (id: string, body: {
     expected_version: number;
     product_name?: string;
+    brand_name?: string | null;
     category_id?: string;
     ingredients?: string | null;
     tags?: string[] | null;
@@ -320,6 +322,10 @@ export const skusApi = {
     product_id: string;
     specification: string;
     unit: string;
+    net_content_value?: string;
+    net_content_unit?: string;
+    package_count?: number;
+    package_unit?: string;
     barcode?: string;
     purchase_price?: string;
     retail_price?: string;
@@ -330,6 +336,7 @@ export const skusApi = {
     product: {
       product_code: string;
       product_name: string;
+      brand_name?: string;
       category_id: string;
       active?: boolean;
     };
@@ -337,6 +344,10 @@ export const skusApi = {
       provider_id: string;
       specification: string;
       unit: string;
+      net_content_value?: string;
+      net_content_unit?: string;
+      package_count?: number;
+      package_unit?: string;
       barcode?: string;
       purchase_price?: string;
       retail_price?: string;
@@ -347,6 +358,11 @@ export const skusApi = {
   update: (id: string, body: {
     expected_version: number;
     specification?: string;
+    unit?: string;
+    net_content_value?: string | null;
+    net_content_unit?: string | null;
+    package_count?: number | null;
+    package_unit?: string | null;
     barcode?: string | null;
     purchase_price?: string | null;
     retail_price?: string | null;

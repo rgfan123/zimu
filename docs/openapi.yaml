@@ -6967,6 +6967,13 @@ components:
         provider_id: { $ref: '#/components/schemas/Identifier' }
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32 }
+        net_content_value:
+          allOf: [{ $ref: '#/components/schemas/PositiveDecimalQuantity' }]
+          nullable: true
+          description: 单个内包装的净含量；与其余包装身份字段同时存在或同时为空。
+        net_content_unit: { type: string, minLength: 1, maxLength: 16, nullable: true }
+        package_count: { type: integer, minimum: 1, nullable: true }
+        package_unit: { type: string, minLength: 1, maxLength: 32, nullable: true }
         barcode: { type: string, minLength: 1, maxLength: 64, nullable: true }
         purchase_price:
           allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
@@ -7175,6 +7182,7 @@ components:
       properties:
         product_code: { type: string, minLength: 1, maxLength: 64 }
         product_name: { type: string, minLength: 1, maxLength: 128 }
+        brand_name: { type: string, minLength: 1, maxLength: 128, description: 规范品牌；无品牌时省略。 }
         category_id: { $ref: '#/components/schemas/Identifier' }
         ingredients: { type: string, minLength: 1, maxLength: 1000 }
         tags:
@@ -7196,6 +7204,10 @@ components:
         provider_id: { $ref: '#/components/schemas/Identifier' }
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
+        net_content_value: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        net_content_unit: { type: string, minLength: 1, maxLength: 16, example: g }
+        package_count: { type: integer, minimum: 1 }
+        package_unit: { type: string, minLength: 1, maxLength: 32, example: 袋 }
         barcode: { type: string, minLength: 1, maxLength: 64 }
         purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
@@ -7212,6 +7224,12 @@ components:
       properties:
         expected_version: { type: integer, minimum: 0 }
         product_name: { type: string, minLength: 1, maxLength: 128 }
+        brand_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          nullable: true
+          description: 显式 null 清空品牌；缺省不修改。
         category_id: { $ref: '#/components/schemas/Identifier' }
         ingredients:
           type: string
@@ -7270,6 +7288,10 @@ components:
         product_id: { $ref: '#/components/schemas/Identifier' }
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
+        net_content_value: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        net_content_unit: { type: string, minLength: 1, maxLength: 16, example: g }
+        package_count: { type: integer, minimum: 1 }
+        package_unit: { type: string, minLength: 1, maxLength: 32, example: 袋 }
         barcode: { type: string, minLength: 1, maxLength: 64 }
         purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
@@ -7359,6 +7381,14 @@ components:
       properties:
         expected_version: { type: integer, minimum: 0 }
         specification: { type: string, minLength: 1, maxLength: 200 }
+        unit: { type: string, minLength: 1, maxLength: 32 }
+        net_content_value:
+          allOf: [{ $ref: '#/components/schemas/PositiveDecimalQuantity' }]
+          nullable: true
+          description: 显式 null 与其余三个包装字段同时传入可清空结构化包装身份。
+        net_content_unit: { type: string, minLength: 1, maxLength: 16, nullable: true }
+        package_count: { type: integer, minimum: 1, nullable: true }
+        package_unit: { type: string, minLength: 1, maxLength: 32, nullable: true }
         barcode: { type: string, minLength: 1, maxLength: 64, nullable: true }
         purchase_price:
           allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]

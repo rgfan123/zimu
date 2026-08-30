@@ -50,7 +50,20 @@ export default function SkusPage() {
       render: (_, r) => <MainImageThumb ref={attr(r, 'product_main_image_ref') as string | null | undefined} />,
     },
     { title: '品类', key: 'category', width: 150, render: (_, r) => categoryLabels.get(String(attr(r, 'category_id'))) ?? '—' },
+    { title: '品牌', key: 'brand', width: 110, render: (_, r) => String(attr(r, 'product_brand_name') ?? '—') },
     { title: '规格', key: 'spec', width: 110, render: (_, r) => displaySkuSpecification(attr(r, 'specification')) },
+    {
+      title: '包装身份', key: 'packaging', width: 170,
+      render: (_, r) => {
+        const value = attr(r, 'net_content_value');
+        const contentUnit = attr(r, 'net_content_unit');
+        const count = attr(r, 'package_count');
+        const packageUnit = attr(r, 'package_unit');
+        return value && contentUnit && count && packageUnit
+          ? `${String(value)}${String(contentUnit)} × ${String(count)}${String(packageUnit)}`
+          : '—';
+      },
+    },
     { title: '单位', key: 'unit', width: 70, render: (_, r) => String(attr(r, 'unit') ?? '—') },
     { title: '履约方', key: 'provider', width: 170, render: (_, r) => providerLabels.get(String(attr(r, 'provider_id'))) ?? '—' },
     {
@@ -103,10 +116,15 @@ export default function SkusPage() {
   const createFields: CrudField[] = [
     { name: 'product_code', label: '商品编码', required: true, placeholder: '如 P-1001' },
     { name: 'product_name', label: '商品名称', required: true },
+    { name: 'brand_name', label: '品牌', placeholder: '无品牌可留空' },
     { name: 'category_id', label: '品类', required: true, type: 'select', options: categoryOptions },
     { name: 'provider_id', label: '履约方', required: true, type: 'select', options: providerOptions },
-    { name: 'specification', label: '规格', required: true, placeholder: '如 500g*2袋' },
-    { name: 'unit', label: '单位', required: true, placeholder: '如 盒 / 袋' },
+    { name: 'specification', label: '规格展示', required: true, placeholder: '如 500g×2袋' },
+    { name: 'net_content_value', label: '净含量', placeholder: '如 500 / 1' },
+    { name: 'net_content_unit', label: '净含量单位', placeholder: '如 g / kg / 件' },
+    { name: 'package_count', label: '包装件数', placeholder: '如 2', pattern: /^[1-9][0-9]*$/, patternMessage: '请输入正整数' },
+    { name: 'package_unit', label: '包装单位', placeholder: '如 袋 / 盒 / 件' },
+    { name: 'unit', label: '库存计数单位', required: true, placeholder: '如 件 / 袋' },
     { name: 'barcode', label: '条码', placeholder: '可选' },
     {
       name: 'purchase_price',
@@ -126,7 +144,12 @@ export default function SkusPage() {
   ];
 
   const updateFields: CrudField[] = [
-    { name: 'specification', label: '规格', required: true },
+    { name: 'specification', label: '规格展示', required: true },
+    { name: 'net_content_value', label: '净含量', placeholder: '清空全部包装字段可移除结构化身份' },
+    { name: 'net_content_unit', label: '净含量单位' },
+    { name: 'package_count', label: '包装件数', pattern: /^[1-9][0-9]*$/, patternMessage: '请输入正整数' },
+    { name: 'package_unit', label: '包装单位' },
+    { name: 'unit', label: '库存计数单位', required: true },
     { name: 'barcode', label: '条码', placeholder: '可选（清空则删除）' },
     {
       name: 'purchase_price',

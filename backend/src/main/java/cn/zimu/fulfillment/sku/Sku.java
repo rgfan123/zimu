@@ -37,6 +37,18 @@ public class Sku extends AuditableEntity {
     @Column(name = "unit", nullable = false)
     private String unit;
 
+    @Column(name = "net_content_value", precision = 18, scale = 3)
+    private BigDecimal netContentValue;
+
+    @Column(name = "net_content_unit")
+    private String netContentUnit;
+
+    @Column(name = "package_count")
+    private Integer packageCount;
+
+    @Column(name = "package_unit")
+    private String packageUnit;
+
     @Column(name = "barcode")
     private String barcode;
 
@@ -95,6 +107,38 @@ public class Sku extends AuditableEntity {
 
     public void setUnit(String unit) {
         this.unit = unit;
+    }
+
+    public BigDecimal getNetContentValue() {
+        return netContentValue;
+    }
+
+    public void setNetContentValue(BigDecimal netContentValue) {
+        this.netContentValue = netContentValue;
+    }
+
+    public String getNetContentUnit() {
+        return netContentUnit;
+    }
+
+    public void setNetContentUnit(String netContentUnit) {
+        this.netContentUnit = netContentUnit;
+    }
+
+    public Integer getPackageCount() {
+        return packageCount;
+    }
+
+    public void setPackageCount(Integer packageCount) {
+        this.packageCount = packageCount;
+    }
+
+    public String getPackageUnit() {
+        return packageUnit;
+    }
+
+    public void setPackageUnit(String packageUnit) {
+        this.packageUnit = packageUnit;
     }
 
     public String getBarcode() {
