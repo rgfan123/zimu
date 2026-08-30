@@ -127,6 +127,12 @@ import {
   type SourceSyncCheck,
   type SourceSyncOutcome,
 } from './sourceSync';
+import {
+  manualTrackingIdempotencyKey,
+  manualTrackingRequest,
+  type CarrierOption,
+  type ManualTrackingOutcome,
+} from './manualTracking';
 
 /** 写操作只由浏览器生成幂等键；操作人由受信网关认证后注入。 */
 export function writeHeaders(options?: TrustedWriteHeaderOptions): Record<string, string> {
@@ -415,6 +421,25 @@ export const sourceSkuMappingsApi = {
     apiRequest<MasterDataRecord>(`/api/v1/source-sku-mappings/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
 
+/**
+ * GET/POST /api/v1/source-bundle-mappings，GET/PATCH /api/v1/source-bundle-mappings/{id}。
+ * 与 sourceSkuMappingsApi 对称；包装乘数一期恒为 1，创建/更新都不由前端传。
+ */
+export const sourceBundleMappingsApi = {
+  list: (query: MasterDataListQuery = {}) =>
+    apiRequest<MasterDataPage>('/api/v1/source-bundle-mappings', { params: query as Record<string, QueryValue> }),
+  create: (body: {
+    source_channel: string;
+    source_bundle_ref: string;
+    source_bundle_name?: string;
+    source_barcode?: string;
+    bundle_id: string;
+    active?: boolean;
+  }) => apiRequest<MasterDataRecord>('/api/v1/source-bundle-mappings', { method: 'POST', body, headers: writeHeaders() }),
+  update: (id: string, body: { expected_version: number; bundle_id?: string; source_bundle_name?: string; active?: boolean }) =>
+    apiRequest<MasterDataRecord>(`/api/v1/source-bundle-mappings/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
+};
+
 /** GET/POST /api/v1/provider-sku-mappings，GET/PATCH /api/v1/provider-sku-mappings/{id}。 */
 export const providerSkuMappingsApi = {
   list: (query: PageQuery = {}) =>
@@ -588,6 +613,15 @@ export const shipmentsApi = {
     }));
     return apiRequest<ShipmentJdOutboundSubmitResult>(request.path, request.options);
   },
+  /** 人工录入运单：手上只有单号、没有回填文件时用。走与文件链路同一个写入内核。 */
+  enterManualTracking: (id: string, carrier: string | undefined, trackingNumber: string) => {
+    const request = manualTrackingRequest(id, carrier, trackingNumber, writeHeaders({
+      idempotencyKey: manualTrackingIdempotencyKey(id),
+    }));
+    return apiRequest<ManualTrackingOutcome>(request.path, request.options);
+  },
+  /** 录入界面的快递公司下拉；只返回启用的承运商。 */
+  carriers: () => apiRequest<CarrierOption[]>('/api/v1/carriers'),
   /** 只读：去来源平台读一次当前事实，返回稳定 check_hash 供 execute 绑定。 */
   checkSourceSync: (id: string) =>
     apiRequest<SourceSyncCheck>(`/api/v1/shipments/${id}/source-sync/check`),
@@ -1087,10 +1121,18 @@ export const agentsApi = {
  * **接口上不存在任何启用路径**——启用必须由人到 Agent 详情页单独做。
  */
 export const metaAgentApi = {
+  /**
+   * 字段名必须是 snake_case 的 `thread_id`。
+   *
+   * <p>后端 record 写的是 `MetaAgentMessage(String message, String threadId)`，但全局
+   * Jackson 用 SNAKE_CASE（common/web/JacksonConfig.java），所以线上字段名是 `thread_id`；
+   * 而 apiRequest 只做 JSON.stringify，不做 camel→snake 转换。之前这里发 `threadId`，
+   * 后端一律收到 null——**多轮对话每轮都在新开线程，上下文全丢**。
+   */
   converse: (message: string, threadId?: string) =>
     apiRequest<MetaAgentOutcome>('/api/v1/agents/meta/conversations', {
       method: 'POST',
-      body: { message, threadId },
+      body: { message, thread_id: threadId },
     }),
 };
 

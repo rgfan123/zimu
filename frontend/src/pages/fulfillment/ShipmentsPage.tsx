@@ -20,6 +20,7 @@ import { CHANNEL_LABELS, SHIPMENT_STATUS_COLORS, SHIPMENT_STATUS_LABELS } from '
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
 import SourceSyncPanel from '@/pages/fulfillment/SourceSyncPanel';
+import ManualTrackingPanel from '@/pages/fulfillment/ManualTrackingPanel';
 import { shipmentTimeLabel } from '@/presentation/shipment';
 import {
   jdReceiverAddressBatchIdempotencyKey,
@@ -294,6 +295,13 @@ export default function ShipmentsPage() {
    * <p>刻意<b>不</b>在这里判渠道支不支持在线回传——那是服务端 check 的结论（会连同
    * 平台当前事实一起给出），前端另写一份判断迟早会和后端漂移。
    */
+  /**
+   * 录入运单入口：**还没有运单号**的批次才需要它。
+   *
+   * <p>不看 shipment_status——CREATED（已导给第三方等回单）和别的中间态都可能需要人工补号；
+   * 真正的判据只有一个：这批还没有运单。已经有号的走「回传给客户平台」那张卡。
+   */
+  const needsTracking = Boolean(detail.data && !detail.data.tracking?.tracking_number);
   const canSyncToSource = Boolean(
     detail.data
       && detail.data.shipment_status === 'SHIPPED'
@@ -579,6 +587,15 @@ export default function ShipmentsPage() {
                   </Popconfirm>
                 </Space>
               </Card>
+            ) : null}
+            {needsTracking ? (
+              <ManualTrackingPanel
+                shipmentId={detail.data.id}
+                onEntered={() => {
+                  detail.reload();
+                  list.reload();
+                }}
+              />
             ) : null}
             {canSyncToSource ? (
               <SourceSyncPanel

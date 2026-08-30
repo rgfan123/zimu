@@ -1530,6 +1530,58 @@ paths:
                   express_code: { type: string }
                   request: { type: object }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/carriers:
+    get:
+      tags: [Shipments]
+      operationId: listCarriers
+      summary: 启用中的承运商字典
+      description: >-
+        人工录入运单时的快递公司下拉。只返回启用的，避免人选到已停用的承运商——
+        承运商代码会进回填文件、进来源平台回传，选错的后果是客户拿着错的快递公司
+        查一个查不到的单号。
+      responses:
+        '200':
+          description: 承运商列表。
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CarrierOption' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/shipments/{shipment_id}/manual-tracking:
+    parameters:
+      - $ref: '#/components/parameters/ShipmentId'
+    post:
+      tags: [Shipments]
+      operationId: enterManualTracking
+      summary: 人工录入一张发货批次的运单
+      description: >-
+        手上只有运单号、没有回填文件时的入口（在此之前唯一入口是上传回填后的导出文件）。
+        不另起写入逻辑：补齐命令后交给与文件链路同一个内核，锁 Shipment、同承运商同单号
+        判重放、已有不同运单号返回冲突、并对承运商+运单号取 advisory lock 防跨批次占用。
+        carrier 留空表示按运单号前缀推断；推不出来返回 422 要求明确指定，不默认承运商。
+        只支持整批全发——人手上只有一个运单号即意味着这批是一个包裹发出的。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManualTrackingEntry' }
+      responses:
+        '200':
+          description: >-
+            录入结果。status=ACCEPTED 为本次写入；REPLAYED 为同批次同单号重复提交，
+            未重复写入；CONFLICT 为该批次已有不同运单号，需人工核对（不是错误）。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManualTrackingOutcome' }
+        '404':
+          description: 发货批次不存在。
+        '422':
+          description: 运单号为空、认不出快递公司、前缀推断不出承运商，或该批次没有明细。
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/shipments/{shipment_id}/source-sync/execute:
     parameters:
       - $ref: '#/components/parameters/ShipmentId'
@@ -4092,6 +4144,43 @@ paths:
             "*/*":
               schema:
                 "$ref": "#/components/schemas/MasterDataRecord"
+    patch:
+      tags:
+      - bundle-master-data-controller
+      operationId: patchSourceBundleMapping
+      description: >-
+        改来源礼包映射：可改目标礼包、来源礼包名称与启用状态，走 expected_version 乐观锁。
+        一期一个来源单位恒等于一份礼包，包装乘数不开放修改。改动只影响后续订单，
+        已落库的订单快照不动。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: X-Operator
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              "$ref": "#/components/schemas/SourceBundleMappingPatch"
+        required: true
+      responses:
+        '200':
+          description: Source bundle mapping updated
+          content:
+            "*/*":
+              schema:
+                type: object
   "/api/v1/product-bundles/{id}":
     get:
       tags:
@@ -4964,6 +5053,36 @@ components:
         reconciliation_intent:
           allOf: [{ $ref: '#/components/schemas/SourceSyncReconciliationIntent' }]
           nullable: true
+    CarrierOption:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, description: 承运商代码 }
+        name: { type: string, description: 承运商名称 }
+    ManualTrackingEntry:
+      type: object
+      required: [tracking_number]
+      properties:
+        carrier:
+          type: string
+          maxLength: 64
+          description: >-
+            快递公司；名称或承运商代码均可。留空表示按运单号前缀推断，
+            推不出来服务端返回 422 要求明确指定，绝不默认一个。
+        tracking_number:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 运单号。
+    ManualTrackingOutcome:
+      type: object
+      required: [status, tracking_number, message]
+      properties:
+        status:
+          type: string
+          enum: [ACCEPTED, REPLAYED, CONFLICT]
+        tracking_number: { type: string }
+        message: { type: string, description: 面向操作员的中文说明。 }
     SourceSyncExecuteCommand:
       type: object
       additionalProperties: false
@@ -7673,6 +7792,29 @@ components:
           description: 礼包来源包装乘数；一期必须为 1。
         bundle_id: { $ref: '#/components/schemas/Identifier' }
         active: { type: boolean, nullable: true }
+    SourceBundleMappingPatch:
+      type: object
+      description: >-
+        渠道礼包映射更新输入；至少改一个业务字段。刻意不放开 quantity_multiplier——
+        一期它恒为 1，列成可改字段只会得到一个改了等于没改的假开关（详见
+        SourceBundleMappingPatch 的类注释）。
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 0 }
+        source_bundle_name:
+          type: string
+          maxLength: 255
+          nullable: true
+          description: 空字符串清空（读取时回落到礼包名）；null 或缺省均表示不修改。
+        bundle_id:
+          allOf: [{ $ref: '#/components/schemas/Identifier' }]
+          nullable: true
+          description: 改绑目标礼包，同样只接受 ACTIVE 礼包；null 或缺省均表示不修改。
+        active:
+          type: boolean
+          nullable: true
+          description: 停用/启用该映射；null 或缺省均表示不修改。
+      minProperties: 2
     BundleWrite:
       type: object
       additionalProperties: false
