@@ -73,10 +73,16 @@ class AutoShipService implements SourceBatchAutoShipper {
     }
 
     @Override
-    public Outcome shipReadyBatches(LocalDate runDate) {
+    public Outcome shipReadyBatches(LocalDate runDate, String sourceChannel) {
         List<AutoShipReadiness.Candidate> candidates;
         try {
-            candidates = readiness.candidates(batchLimit);
+            // 先按 batchLimit 取候选再按渠道过滤：爆炸半径上界仍然成立，而且 SQL 里那条
+            // 「就绪的排前面」排序是全局的，改成按渠道下推会让上界与排序的关系变得难验证。
+            // 代价是三渠道各自看到的候选可能少于 batchLimit，剩余的下一个时段继续——
+            // 这与原本「单次运行不把积压全发出去」的意图一致。
+            candidates = readiness.candidates(batchLimit).stream()
+                    .filter(candidate -> sourceChannel.equals(candidate.sourceChannel()))
+                    .toList();
         } catch (RuntimeException exception) {
             // 连候选都取不到时不能假装「今天没货要发」——那会让一次静默的数据库故障
             // 表现成一个平静的空运行。如实记成问题，人会看到。

@@ -70,7 +70,7 @@ class AutoShipServiceTest {
         when(readiness.candidates(anyInt()))
                 .thenReturn(List.of(blocked(7L, "B-7", List.of("PROVIDER_SKU_MAPPING_REQUIRED"))));
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         // 一行阻断就整批交给人：部分确认是给人用的能力，定时任务用它等于悄悄少发货。
         verify(confirmer, never()).confirmSourceBatch(anyLong(), anyString(), any());
@@ -88,13 +88,29 @@ class AutoShipServiceTest {
         when(readiness.candidates(anyInt())).thenReturn(List.of(ready(9L, "B-9")));
         when(confirmer.confirmSourceBatch(eq(9L), anyString(), any())).thenReturn(confirmed());
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         verify(confirmer).submitJdOutboundsForSourceBatch(eq(9L), any());
         assertThat(outcome.shippedBatches()).isEqualTo(1);
         assertThat(outcome.problemCount()).isZero();
         assertThat(outcome.entries()).singleElement().extracting(entry -> entry.get("outcome"))
                 .isEqualTo("SHIPPED");
+    }
+
+    @Test
+    void candidatesFromOtherChannelsAreNotThisRunsBusiness() {
+        // V85 起一次运行只负责一个渠道。不按渠道收窄的话，同一个早上三次运行会把同一批
+        // 阻断批次各报一遍，企微群里就是三张一模一样的卡。
+        when(readiness.candidates(anyInt())).thenReturn(List.of(
+                new AutoShipReadiness.Candidate(11L, "B-11", "CAISHIXIAN", 3, 1, List.of("X")),
+                blocked(12L, "B-12", List.of("PROVIDER_SKU_MAPPING_REQUIRED"))));
+
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
+
+        assertThat(outcome.entries()).singleElement()
+                .extracting(entry -> entry.get("batch_no"))
+                .isEqualTo("B-12");
+        assertThat(outcome.problemCount()).isEqualTo(1);
     }
 
     // ------------------------------------------------------------------
@@ -106,7 +122,7 @@ class AutoShipServiceTest {
         when(readiness.candidates(anyInt())).thenReturn(List.of(ready(42L, "B-42")));
         when(confirmer.confirmSourceBatch(anyLong(), anyString(), any())).thenReturn(confirmed());
 
-        service().shipReadyBatches(RUN_DATE);
+        service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
         verify(confirmer).confirmSourceBatch(eq(42L), key.capture(), any());
@@ -119,8 +135,8 @@ class AutoShipServiceTest {
         when(confirmer.confirmSourceBatch(anyLong(), anyString(), any())).thenReturn(confirmed());
 
         // 早班与晚班是两次运行，但对同一批次必须是同一个键——否则同一批货会被确认两次。
-        service().shipReadyBatches(RUN_DATE);
-        service().shipReadyBatches(RUN_DATE);
+        service().shipReadyBatches(RUN_DATE, "FEIXIANG");
+        service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
         verify(confirmer, org.mockito.Mockito.times(2)).confirmSourceBatch(eq(42L), keys.capture(), any());
@@ -134,7 +150,7 @@ class AutoShipServiceTest {
         when(confirmer.confirmSourceBatch(anyLong(), anyString(), any()))
                 .thenReturn(IdempotentResult.replayed(200, null));
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         // 重放返回的是首次结果；再调一次建单等于对同一批货发起第二次外部写。
         verify(confirmer, never()).submitJdOutboundsForSourceBatch(anyLong(), any());
@@ -153,7 +169,7 @@ class AutoShipServiceTest {
         when(readiness.candidates(anyInt())).thenReturn(List.of(ready(5L, "B-5")));
         when(confirmer.confirmSourceBatch(anyLong(), anyString(), any())).thenReturn(confirmed());
 
-        service().shipReadyBatches(RUN_DATE);
+        service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         ArgumentCaptor<CommandContext> context = ArgumentCaptor.forClass(CommandContext.class);
         verify(confirmer).confirmSourceBatch(anyLong(), anyString(), context.capture());
@@ -177,7 +193,7 @@ class AutoShipServiceTest {
                 .thenThrow(BusinessException.conflict("IMPORT_BATCH_BLOCKED", "批次仍有待处理问题"));
         when(confirmer.confirmSourceBatch(eq(3L), anyString(), any())).thenReturn(confirmed());
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         assertThat(outcome.shippedBatches()).isEqualTo(2);
         assertThat(outcome.problemCount()).isEqualTo(1);
@@ -194,7 +210,7 @@ class AutoShipServiceTest {
                 .thenThrow(new IllegalStateException("连接断了"));
         when(confirmer.confirmSourceBatch(eq(2L), anyString(), any())).thenReturn(confirmed());
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         assertThat(outcome.entries()).extracting(entry -> entry.get("outcome"))
                 .containsExactly("CONFIRM_EXCEPTION", "SHIPPED");
@@ -211,7 +227,7 @@ class AutoShipServiceTest {
                 .thenThrow(new BusinessException(409, null, "说不清为什么"));
         when(confirmer.confirmSourceBatch(eq(2L), anyString(), any())).thenReturn(confirmed());
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         assertThat(outcome.entries()).extracting(entry -> entry.get("outcome"))
                 .containsExactly("CONFIRM_REJECTED", "SHIPPED");
@@ -227,7 +243,7 @@ class AutoShipServiceTest {
     void batchLimitBoundsHowMuchOneRunCanShip() {
         when(readiness.candidates(anyInt())).thenReturn(List.of());
 
-        new AutoShipService(readiness, confirmer, blockers, 3).shipReadyBatches(RUN_DATE);
+        new AutoShipService(readiness, confirmer, blockers, 3).shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         verify(readiness).candidates(3);
     }
@@ -236,7 +252,7 @@ class AutoShipServiceTest {
     void aNonPositiveLimitIsClampedRatherThanDisablingTheScan() {
         when(readiness.candidates(anyInt())).thenReturn(List.of());
 
-        new AutoShipService(readiness, confirmer, blockers, 0).shipReadyBatches(RUN_DATE);
+        new AutoShipService(readiness, confirmer, blockers, 0).shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         verify(readiness).candidates(1);
     }
@@ -244,7 +260,7 @@ class AutoShipServiceTest {
     @Test
     void disabledShipperIsStructurallyIncapableOfShipping() {
         // 关掉开关时本 bean 不存在，编排拿到的是这个实现——没有任何路径能把货发出去。
-        assertThat(SourceBatchAutoShipper.disabled().shipReadyBatches(RUN_DATE))
+        assertThat(SourceBatchAutoShipper.disabled().shipReadyBatches(RUN_DATE, "FEIXIANG"))
                 .isEqualTo(SourceBatchAutoShipper.Outcome.none());
     }
 
@@ -264,7 +280,7 @@ class AutoShipServiceTest {
                         Map.of("code", "JD_SKU_MAPPING_GATE_BLOCKED", "mapping_issue_code", "MAPPING_MISSING")),
                 List.of()));
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         Map<String, Object> entry = outcome.entries().getFirst();
         assertThat(entry.get("outcome")).isEqualTo("SHIPPED_WITH_JD_FAILURES");
@@ -283,7 +299,7 @@ class AutoShipServiceTest {
         when(blockers.of(8L)).thenReturn(new AutoShipBlockerReader.Failures(
                 1, 0, List.of(), List.of("JD_SHIPMENT_OUTBOUND_OPERATOR_UNAUTHORIZED")));
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         // 未授权是最容易被「反正就是失败了」掩盖掉的一类，必须原样带出来。
         assertThat(outcome.entries().getFirst().get("reason_codes"))
@@ -299,7 +315,7 @@ class AutoShipServiceTest {
         // 只看失败表的话，这与「一切正常」长得一模一样——绝不能播报成 SHIPPED。
         when(blockers.of(3L)).thenReturn(new AutoShipBlockerReader.Failures(0, 2, List.of(), List.of()));
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         Map<String, Object> entry = outcome.entries().getFirst();
         assertThat(entry.get("outcome")).isEqualTo("SHIPPED_WITH_JD_FAILURES");
@@ -315,7 +331,7 @@ class AutoShipServiceTest {
         when(blockers.of(3L)).thenReturn(new AutoShipBlockerReader.Failures(
                 1, 1, List.of(Map.of("code", "JD_STOCK_INSUFFICIENT")), List.of()));
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         // 「货根本没发出去」比「缺货」更需要人立刻动手，卡面字数有限，顺序即优先级。
         assertThat(outcome.entries().getFirst().get("reason_codes")).isEqualTo(List.of(
@@ -334,7 +350,7 @@ class AutoShipServiceTest {
                                 "reason", "收件人 张三 的行缺映射"))),
                         200));
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         Map<String, Object> entry = outcome.entries().getFirst();
         assertThat(entry.get("outcome")).isEqualTo("READINESS_DIVERGED");
@@ -348,7 +364,7 @@ class AutoShipServiceTest {
     void aFailingReadinessQueryIsReportedRatherThanLookingLikeAQuietDay() {
         when(readiness.candidates(anyInt())).thenThrow(new IllegalStateException("数据库炸了"));
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         assertThat(outcome.problemCount()).isEqualTo(1);
         assertThat(outcome.shippedBatches()).isZero();
@@ -362,7 +378,7 @@ class AutoShipServiceTest {
         when(confirmer.confirmSourceBatch(anyLong(), anyString(), any())).thenReturn(confirmed());
         when(blockers.of(4L)).thenThrow(new IllegalStateException("读不到"));
 
-        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE);
+        SourceBatchAutoShipper.Outcome outcome = service().shipReadyBatches(RUN_DATE, "FEIXIANG");
 
         assertThat(outcome.shippedBatches()).isEqualTo(1);
         assertThat(outcome.problemCount()).isEqualTo(1);

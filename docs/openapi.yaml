@@ -8521,7 +8521,36 @@ components:
         username: { type: string, nullable: true, description: Non-secret account identifier; echoed as-is. }
         credential_configured: { type: boolean }
         password_configured: { type: boolean, description: Same projection as credential_configured; the password value itself is never returned. }
+        pull_schedule: { $ref: '#/components/schemas/ConnectorPullScheduleView' }
         version: { type: integer, minimum: 0 }
+    ConnectorPullScheduleView:
+      type: object
+      description: >-
+        Per-channel scheduled pull times. Always present and always populated: an unconfigured
+        channel echoes the globally effective defaults (09:00 / 18:00, both on, WeCom push on),
+        never null and never an empty slot. Absent or unreadable config falls back to those
+        defaults and keeps pulling - "no value" must never be read as "do not pull"; disabling a
+        slot requires an explicit false.
+      required: [schedulable, configured, morning, evening, notify_wecom]
+      properties:
+        schedulable:
+          type: boolean
+          description: Whether this channel takes part in scheduled pulls at all (CAISHIXIAN / JUFUBAO / FEIXIANG today).
+        configured:
+          type: boolean
+          description: False means the echoed values are the global defaults rather than an operator's choice. Display only; never a behavioural switch.
+        morning: { $ref: '#/components/schemas/ConnectorPullScheduleSlot' }
+        evening: { $ref: '#/components/schemas/ConnectorPullScheduleSlot' }
+        notify_wecom: { type: boolean, description: Whether a finished pull for this channel may raise the WeCom report card. }
+    ConnectorPullScheduleSlot:
+      type: object
+      required: [enabled, at]
+      properties:
+        enabled: { type: boolean }
+        at:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: Local time of day in Asia/Shanghai, HH:mm. No cron, no seconds.
     ConnectorPatch:
       type: object
       required: [expected_version]
@@ -8534,7 +8563,21 @@ components:
         credential_secret_ref: { type: string, description: Secret manager reference; never return its value. }
         username: { type: string, description: Non-secret account identifier; omit to leave the stored value unchanged. }
         password: { type: string, description: Plaintext account password, stored server-side only; omit (do not send an empty string) to keep the existing value, never returned by any read endpoint. }
+        pull_schedule: { $ref: '#/components/schemas/ConnectorPullSchedulePatch' }
       minProperties: 2
+    ConnectorPullSchedulePatch:
+      type: object
+      description: >-
+        Whole-object replacement, not a partial patch. "Turn the morning slot off" and "did not
+        mention the morning slot" would otherwise be indistinguishable on the wire, and since a
+        missing value falls back to the default (which is enabled), one dropped field would
+        silently re-enable a slot the operator had just switched off. 422
+        PULL_SCHEDULE_NOT_SCHEDULABLE when the channel does not take part in scheduled pulls.
+      required: [morning, evening, notify_wecom]
+      properties:
+        morning: { $ref: '#/components/schemas/ConnectorPullScheduleSlot' }
+        evening: { $ref: '#/components/schemas/ConnectorPullScheduleSlot' }
+        notify_wecom: { type: boolean }
     ConnectionTestResult:
       type: object
       required: [success, checked_at]

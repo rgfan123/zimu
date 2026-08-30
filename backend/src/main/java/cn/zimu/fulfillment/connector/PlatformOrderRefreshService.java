@@ -53,7 +53,13 @@ public class PlatformOrderRefreshService {
     private static final Logger log = LoggerFactory.getLogger(PlatformOrderRefreshService.class);
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
-    private static final List<String> DEFAULT_CHANNELS = List.of("CAISHIXIAN", "JUFUBAO", "FEIXIANG");
+    /**
+     * 「不带选项」时拉哪些渠道，同时也是定时拉取覆盖的渠道集合。
+     *
+     * <p>公开出去是为了让定时侧（{@code connector.schedule}）与本类共用同一份名单：
+     * 两处各写一份的话，新接一个平台时必然只改一处，表现是「界面上能配时间，但它从来不跑」。
+     */
+    public static final List<String> DEFAULT_CHANNELS = List.of("CAISHIXIAN", "JUFUBAO", "FEIXIANG");
     /** Connector 能力缺失业务码：命中时回退脚本通道（F1）。 */
     private static final String CAPABILITY_UNAVAILABLE = "CONNECTOR_CAPABILITY_UNAVAILABLE";
     private static final String CLEANUP_FAILED = "PLATFORM_PULL_CLEANUP_FAILED";
@@ -112,6 +118,18 @@ public class PlatformOrderRefreshService {
         this.workDir = Path.of(workDir);
         this.scriptTimeout = scriptTimeout;
         this.defaultDays = defaultDays;
+    }
+
+    /**
+     * 只拉指定渠道，日期窗口仍按 {@code app.platform-pull.default-days}。
+     *
+     * <p>给定时侧（{@code connector.schedule}）用：请求体 record 嵌在包私有的控制器里，跨包
+     * 构造不出来；而定时任务**必须**走同一个 {@link #refresh} 方法——能力门禁、单渠道单飞、
+     * 脚本回退、last_error 落库、审计全都长在那条路径上，另造一条等于同一件事有两套判据。
+     */
+    public Map<String, Object> refreshChannels(List<String> channels, CommandContext context) {
+        return refresh(
+                new PlatformOrderRefreshController.RefreshRequest(channels, null, null), context);
     }
 
     public Map<String, Object> refresh(PlatformOrderRefreshController.RefreshRequest body, CommandContext context) {

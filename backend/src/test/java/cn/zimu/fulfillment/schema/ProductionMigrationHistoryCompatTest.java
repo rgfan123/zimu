@@ -108,17 +108,17 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V73 + V77 + V83 + V84 + V86）升级——
+        // 阶段二：完整当前 migration set（V1..V73 + V77 + V83 + V84 + V85 + V86）升级——
         // V73 为卡片/回传线实占；V74–V76 为在途交付线预留后未用而跳号；V77 为换货事件类型；
         // V78/V81/V82 被在途票占用、V79 永久空置、V83 已被 scheduled_pull_runs 占用，
         // 因此飞象在线回传取 V84。Flyway validate 默认开启，V40–V47 校验通过后只追加
-        // V48–V73、V77 与 V84，任何 repair/改写历史都会在此失败。
+        // V48–V73、V77、V83、V84、V85 与 V86，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 77 条历史（V1–V73 + 跳号的 V77、V83、V84、V86）")
-                .hasSize(77);
+                .as("完整升级后应恰有 78 条历史（V1–V73 + 跳号的 V77、V83、V84、V85、V86）")
+                .hasSize(78);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
@@ -127,8 +127,8 @@ class ProductionMigrationHistoryCompatTest {
         // 两条并行开发线在 2026-08-27 合流：V59–V64 为已上线的企微/档案/订单线
         //（生产已执行，号位不可动），客户跟进线原 V59–V66 八个迁移整体顺延为 V65–V72
         //（其中 V71 冻结结构化执行意图、V72 新增来源订单附件任务）。
-        assertThat(historyAfter.subList(47, 77))
-                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）、V54（#113 撞号顺延）、V55（通用业务卡投递）、V56（履约单据 Agent）、V57（来源回填企微投递）、V58（复核认领）、V59（导出人读文件名）、V60（会话回复策略）、V61（会话档案）、V62（企微机器人台账）、V63（商品档案全列留存）、V64（来源订单创建时间）、V65–V70（客户跟进：主档/草稿/审批/指派/客户溯源/建客指派，撞号顺延）、V71（结构化执行意图）、V72（来源订单附件任务）、V73（自动回传资格终态及退避）、V77（换货事件类型注册；V74–V76 为在途交付线预留后未用而跳号）、V83（定时拉取运行记录）与 V84（飞象在线回传：platform_intent_key 约束扩到 FEIXIANG + carrier_api_codes 平级键；V78/V81/V82 被在途票占用、V79 永久空置、V83 已被 scheduled_pull_runs 占用而跳号）与 V86（商品编码自动发号；V85 由分平台拉取规则并行占用而跳号）")
+        assertThat(historyAfter.subList(47, 78))
+                .as("升级只追加 V48（#89）、V49（#84）、V50（#116）、V51（#90）、V52（#87/#88）、V53（礼包组件删除保护）、V54（#113 撞号顺延）、V55（通用业务卡投递）、V56（履约单据 Agent）、V57（来源回填企微投递）、V58（复核认领）、V59（导出人读文件名）、V60（会话回复策略）、V61（会话档案）、V62（企微机器人台账）、V63（商品档案全列留存）、V64（来源订单创建时间）、V65–V70（客户跟进：主档/草稿/审批/指派/客户溯源/建客指派，撞号顺延）、V71（结构化执行意图）、V72（来源订单附件任务）、V73（自动回传资格终态及退避）、V77（换货事件类型注册；V74–V76 为在途交付线预留后未用而跳号）、V83（定时拉取运行记录）与 V84（飞象在线回传：platform_intent_key 约束扩到 FEIXIANG + carrier_api_codes 平级键；V78/V81/V82 被在途票占用、V79 永久空置、V83 已被 scheduled_pull_runs 占用而跳号）与 V85（定时拉取下沉到渠道：scheduled_pull_runs 加 source_channel + notify_wecom，run_key 补渠道段）、V86（商品编码自动发号）")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -217,6 +217,9 @@ class ProductionMigrationHistoryCompatTest {
                         new HistoryRow("84", "V84__feixiang_online_shipment_push.sql",
                                 "feixiang online shipment push",
                                 crc32Of("V84__feixiang_online_shipment_push.sql")),
+                        new HistoryRow("85", "V85__scheduled_pull_per_channel.sql",
+                                "scheduled pull per channel",
+                                crc32Of("V85__scheduled_pull_per_channel.sql")),
                         new HistoryRow("86", "V86__product_code_autogen.sql",
                                 "product code autogen",
                                 crc32Of("V86__product_code_autogen.sql")));

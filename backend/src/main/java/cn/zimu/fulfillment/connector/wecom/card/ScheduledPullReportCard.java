@@ -37,8 +37,9 @@ public final class ScheduledPullReportCard {
     /**
      * @param runId          scheduled_pull_runs.id
      * @param lockVersion    乐观锁版本，进 task_id 作版本断言；收口时 +1，故一次运行只发一张卡
-     * @param runKey         {@code yyyy-MM-dd:SLOT}，稳定业务号
-     * @param slotLabel      时段中文（早上 09:00 / 下午 18:00 / 手动）
+     * @param runKey         {@code yyyy-MM-dd:SLOT:CHANNEL}，稳定业务号；渠道就在里面
+     * @param slotLabel      时段中文（早班 / 晚班 / 手动触发）。不写具体时刻：V85 起每个渠道
+     *                       各自设时间，写死「早上 09:00」对配了别的时间的渠道就是假话
      * @param pullChannels   本次拉取的渠道数
      * @param pullFailed     拉取失败的渠道数
      * @param shippedBatches 自动确认发货的批次数
