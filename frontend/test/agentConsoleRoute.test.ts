@@ -3,6 +3,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { JSDOM } from 'jsdom';
+import {
+  SHELL_BASELINE_REQUEST_URLS,
+  isShellBaselineRequest,
+  shellBaselineResponse,
+  withShellRequests,
+  withoutShellRequests,
+} from './routeHarness.ts';
 
 /**
  * Agent 中心路由与页面结构断言（真实路由 + 空态 + 错误态 + LIVE/PREVIEW 切换）。
@@ -273,16 +280,21 @@ test('Agent 中心注册为顶级板块：菜单分组 + 可见叶子 + 隐藏�
 
 // ---------- P1：空态与错误态 ----------
 
-test('P1 /agents：加载后空列表渲染统一空态，请求只发 GET /api/v1/agents', async () => {
+test('P1 /agents：加载后空列表渲染统一空态，页面请求只发 GET /api/v1/agents', async () => {
   const requestedUrls: string[] = [];
   globalThis.fetch = (input) => {
-    requestedUrls.push(String(input));
+    const url = String(input);
+    requestedUrls.push(url);
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return Promise.resolve(shellBaselineResponse());
     return Promise.resolve(jsonResponse(agentsResponse([])));
   };
   await mountRoute(['/agents']);
 
   await waitFor(() => assert.match(bodyText(), /暂无 Agent/));
-  assert.deepEqual(requestedUrls, ['/api/v1/agents']);
+  // 页面只取 Agent 列表；外壳另有一次基线请求——AppLayout 每次挂载都要读业务模块开放清单
+  // 来过滤导航树（票 03），与停在哪一页无关，排在页面挂载期请求之后。
+  assert.deepEqual(requestedUrls, withShellRequests('/api/v1/agents'));
 });
 
 test('P1 /agents：错误态渲染「Agent 列表加载失败」+ 重试可恢复', async () => {
@@ -357,15 +369,20 @@ test('P3 /agents/runs：默认不传 run_mode（只取 LIVE）；切 PREVIEW 后
         }),
       );
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return Promise.resolve(shellBaselineResponse());
     return Promise.resolve(jsonResponse({ items: [runListItem('run_33333333333333333333333333333333')], total: 1 }));
   };
   await mountRoute(['/agents/runs']);
 
   // 默认 LIVE：列表与汇总都不带 run_mode 参数
   await waitFor(() => assert.match(bodyText(), /run_33333333333333333333333333333333/));
-  await waitFor(() => assert.equal(requestedUrls.length, 2));
-  const initialList = requestedUrls.find((url) => !url.includes('/token-usage'));
-  const initialSummary = requestedUrls.find((url) => url.includes('/token-usage'));
+  // 挂载期共 2 次页面请求（列表 + Token 汇总）外加外壳读业务模块开放清单那一次；
+  // 「不传 run_mode」这条约束只针对页面自己发的请求，故下面按页面请求取值。
+  await waitFor(() => assert.equal(requestedUrls.length, 2 + SHELL_BASELINE_REQUEST_URLS.length));
+  const initialPageRequests = withoutShellRequests(requestedUrls);
+  const initialList = initialPageRequests.find((url) => !url.includes('/token-usage'));
+  const initialSummary = initialPageRequests.find((url) => url.includes('/token-usage'));
   assert.ok(initialList, '必须请求运行列表');
   assert.ok(initialSummary, '必须请求 Token 汇总');
   assert.doesNotMatch(initialList, /run_mode/, '默认列表请求不得携带 run_mode');
@@ -406,6 +423,8 @@ test('P3 /agents/runs：Token 列结构化，汇总与列表同源携带 outcome
         model_calls: 7,
       })));
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return Promise.resolve(shellBaselineResponse());
     return Promise.resolve(jsonResponse({
       items: [
         runListItem('run_44444444444444444444444444444444', {
@@ -443,8 +462,11 @@ test('P3 /agents/runs：Token 列结构化，汇总与列表同源携带 outcome
   assert.ok(invalidRow, '异常 token_usage 的运行行必须存在');
   assert.match(invalidRow.textContent ?? '', /—/);
 
-  await waitFor(() => assert.equal(requestedUrls.length, 2));
-  for (const url of requestedUrls) {
+  // 总数精确：页面 2 次（列表 + Token 汇总）+ 外壳基线 1 次，不多不少。
+  await waitFor(() => assert.equal(requestedUrls.length, 2 + SHELL_BASELINE_REQUEST_URLS.length));
+  // 「同源」这条约束只针对页面自己发的请求：外壳读的是业务模块开放清单（部署事实），
+  // 本来就不带页面筛选，把它算进来会把断言变成一句错话。
+  for (const url of withoutShellRequests(requestedUrls)) {
     assert.match(url, /outcome=FAILED/);
     assert.match(url, /business_entity_id=ORDER-42/);
   }

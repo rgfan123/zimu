@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { JSDOM } from 'jsdom';
+import { isShellBaselineRequest, shellBaselineResponse, withShellRequests } from './routeHarness.ts';
 
 const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -188,6 +189,8 @@ test('real SKU mapping route renders the page heading, matrix rows and auxiliary
     if (url === '/api/v1/provider-sku-mappings/jd-pieces-candidates') {
       return jsonResponse([]);
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -212,11 +215,13 @@ test('real SKU mapping route renders the page heading, matrix rows and auxiliary
     /数量乘数用于把平台商品数量换算为内部 SKU 数量。各渠道均只展示有证据的显式映射，未映射时不会自动猜测。/,
   );
   // 只请求矩阵与件数候选数据；预览面板在用户上传前不发请求。
-  assert.deepEqual(requestedUrls, [
+  // 末尾那次是外壳基线请求：AppLayout 每次挂载都要读业务模块开放清单来过滤导航树（票 03），
+  // 与本页无关，按 React 先子后父的 effect 顺序排在页面挂载期请求之后。
+  assert.deepEqual(requestedUrls, withShellRequests(
     '/api/v1/skus?page=0&size=200',
     '/api/v1/source-sku-mappings?page=0&size=200',
     '/api/v1/provider-sku-mappings/jd-pieces-candidates',
-  ]);
+  ));
 });
 
 test('SKU mapping route renders the empty matrix state without claiming implicit mappings', async () => {
@@ -225,6 +230,8 @@ test('SKU mapping route renders the empty matrix state without claiming implicit
     if (url === '/api/v1/skus?page=0&size=200') return jsonResponse(page([]));
     if (url === '/api/v1/source-sku-mappings?page=0&size=200') return jsonResponse(page([]));
     if (url === '/api/v1/provider-sku-mappings/jd-pieces-candidates') return jsonResponse([]);
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 

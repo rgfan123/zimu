@@ -102,6 +102,59 @@ export function page(items: unknown[], size = 20) {
   };
 }
 
+/**
+ * 外壳级基线请求（票 03）：AppLayout 每次挂载都会读一次「当前已开放的业务模块清单」
+ * （`GET /api/v1/business-modules`）来过滤导航树。模块开没开放是导航过滤的前提，
+ * 与当前停在哪一页无关——所以**任何一次 mount 都会有这一条**，它不属于任何一个页面。
+ *
+ * 路由测试断言「本页只发出这几个请求」时，用 `withShellRequests()` 把它拼进期望，
+ * 不要把断言放宽成「包含」：「只发这几个」这条精确性正是这类断言的价值所在
+ * （票 03 多出来的这次外壳请求，就是被它抓出来的）。
+ *
+ * 将来外壳再增/减一条基线请求，改这一个常量即可，不必再逐个改路由测试文件。
+ */
+export const SHELL_BASELINE_REQUEST_URLS = ['/api/v1/business-modules'] as const;
+
+/**
+ * 一次 mount 的完整期望请求序列 = 首屏页面挂载期请求 + 外壳基线请求。
+ *
+ * 顺序有依据而不是巧合：React 先跑子组件的 effect 再跑父组件的 effect，AppLayout 是所有
+ * 页面的父，所以外壳请求排在**首屏页面自身挂载期请求之后**；此后由用户交互触发的请求
+ * 再往后接（写作 `[...withShellRequests(挂载期请求), 交互触发的请求]`）。
+ * 用 Set / 排序比较的断言直接包住即可，顺序对它们无所谓。
+ */
+export function withShellRequests(...mountRequestUrls: string[]): string[] {
+  return [...mountRequestUrls, ...SHELL_BASELINE_REQUEST_URLS];
+}
+
+/** 判定某个 URL 是否外壳基线请求；fetch 桩用它把外壳请求与被测页面请求分流。 */
+export function isShellBaselineRequest(url: string): boolean {
+  return SHELL_BASELINE_REQUEST_URLS.some((baseline) => url.startsWith(baseline));
+}
+
+/**
+ * 外壳基线请求的默认应答：空开放集。
+ *
+ * 与生产的保守策略一致（读不到/读不懂一律按「没有模块开放」处理），因此路由测试不必
+ * 为了外壳而准备模块夹具。**受控 fetch 桩（把 resolve 攥在手里测 loading 态的那种）
+ * 必须先用 `isShellBaselineRequest()` 把外壳请求分流到这里**，否则外壳那次请求会覆盖掉
+ * 受控 resolve，被测页面永远停在加载态。
+ */
+export function shellBaselineResponse(): Response {
+  return jsonResponse({ modules: [] });
+}
+
+/**
+ * 只保留页面自己发出的请求，去掉外壳基线请求。
+ *
+ * 用于「这些请求必须同源携带同一组筛选条件」这类**只约束页面**的断言——外壳读模块清单
+ * 本来就不带页面筛选。请求总数的精确性另行断言（配合 `SHELL_BASELINE_REQUEST_URLS.length`），
+ * 不要用它把「只发这几个」悄悄降级成「包含这几个」。
+ */
+export function withoutShellRequests(urls: readonly string[]): string[] {
+  return urls.filter((url) => !isShellBaselineRequest(url));
+}
+
 /** 复核事项 DTO 测试夹具：工作台/复核队列等 route 测试共用同一形状，避免逐文件复制。 */
 export function reviewCaseFixture(
   id: string,

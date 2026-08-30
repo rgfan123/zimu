@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { JSDOM } from 'jsdom';
+import { SHELL_BASELINE_REQUEST_URLS, isShellBaselineRequest, shellBaselineResponse } from './routeHarness.ts';
 
 const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -205,7 +206,10 @@ after(async () => {
 test('price compare page renders two groups: comparable and excluded with visible reasons', async () => {
   const requested: Array<{ url: string; body?: string }> = [];
   globalThis.fetch = async (input, init) => {
-    requested.push({ url: String(input), body: typeof init?.body === 'string' ? init.body : undefined });
+    const url = String(input);
+    requested.push({ url, body: typeof init?.body === 'string' ? init.body : undefined });
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse(runResult());
   };
 
@@ -233,11 +237,16 @@ test('price compare page renders two groups: comparable and excluded with visibl
   assert.match(bodyText(), /价格缺失/);
   assert.match(bodyText(), /与同组候选中位数偏离超过 2.0 倍/);
 
-  // 请求体正确：POST /api/v1/procurement-price-agent/compare，body 含 sku_id
-  assert.deepEqual(requested, [{
-    url: '/api/v1/procurement-price-agent/compare',
-    body: JSON.stringify({ sku_id: 'SKU-1001', procurement_ticket_id: undefined, quantity: undefined }),
-  }]);
+  // 请求体正确：POST /api/v1/procurement-price-agent/compare，body 含 sku_id。
+  // 排在它前面的是外壳基线请求（GET 无 body）：AppLayout 每次挂载都要读业务模块开放清单来
+  // 过滤导航树（票 03）；比价页自己在用户点「开始比价」之前一个请求都不发，这一点仍被断死。
+  assert.deepEqual(requested, [
+    ...SHELL_BASELINE_REQUEST_URLS.map((url) => ({ url, body: undefined })),
+    {
+      url: '/api/v1/procurement-price-agent/compare',
+      body: JSON.stringify({ sku_id: 'SKU-1001', procurement_ticket_id: undefined, quantity: undefined }),
+    },
+  ]);
   // 被剔除候选与理由可见（P003 离群 / P004 缺价）
   assert.match(bodyText(), /P003/);
   assert.match(bodyText(), /45\.67/);

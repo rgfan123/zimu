@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { after, afterEach, before, test } from 'node:test';
 import {
   createRouteHarness,
+  isShellBaselineRequest,
   jsonResponse,
+  shellBaselineResponse,
   type RouteHarness,
 } from './routeHarness.ts';
 
@@ -45,6 +47,8 @@ function ticketsFetch(requests: string[], items: unknown[] = [], detailOverrides
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     requests.push(`${init?.method ?? 'GET'} ${url}`);
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     if (url.startsWith('/api/v1/procurement-tickets')) {
       if (url.includes('/retry') || url.includes('/cancel-remaining')) {
         return jsonResponse(ticket('1', detailOverrides));
@@ -88,14 +92,21 @@ test('采购协同 exposes the contextual entry to 采购比价 (demoted tool st
 });
 
 test('采购工单 loading state keeps the view-level loading copy', async () => {
-  let finishRequest: ((response: Response) => void) | undefined;
-  globalThis.fetch = () => new Promise<Response>((resolve) => { finishRequest = resolve; });
+  let finishTicketsRequest: ((response: Response) => void) | undefined;
+  // 只把「采购工单列表」这一路请求攥在手里，外壳基线请求（业务模块开放清单，票 03）照常应答。
+  // 外壳请求排在页面挂载期请求之后：桩若不分流，它会把 finishTicketsRequest 覆盖成外壳那次的
+  // resolve，随后 resolve 的就不是列表请求，页面永远停在「正在加载采购工单…」。
+  globalThis.fetch = (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (isShellBaselineRequest(url)) return Promise.resolve(shellBaselineResponse());
+    return new Promise<Response>((resolve) => { finishTicketsRequest = resolve; });
+  };
 
   await harness.mount(['/procurement/tickets']);
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /正在加载采购工单…/));
-  assert.ok(finishRequest, 'route request must be pending');
-  finishRequest?.(jsonResponse(ticketsPage([])));
+  assert.ok(finishTicketsRequest, 'route request must be pending');
+  finishTicketsRequest?.(jsonResponse(ticketsPage([])));
   await harness.waitFor(() => assert.match(harness.bodyText(), /暂无采购工单/));
 });
 

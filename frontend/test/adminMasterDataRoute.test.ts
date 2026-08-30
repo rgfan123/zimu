@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { JSDOM } from 'jsdom';
+import { isShellBaselineRequest, shellBaselineResponse, withShellRequests } from './routeHarness.ts';
 
 const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -208,6 +209,8 @@ test('real product route presents the category name and code instead of an inter
     if (url === '/api/v1/products/tags') {
       return jsonResponse(['fresh']);
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -220,11 +223,13 @@ test('real product route presents the category name and code instead of an inter
   // 商品之后是品类列；档案字段（主图/标签/毛利）不应破坏品类展示。
   const categoryCell = row.querySelectorAll<HTMLTableCellElement>('td')[1];
   assert.equal(categoryCell?.textContent?.trim(), '牛肉（MEAT/BEEF）');
-  assert.deepEqual(new Set(requestedUrls), new Set([
+  // 页面自己只取品类/商品/标签三份数据；外壳另有一次基线请求——AppLayout 每次挂载都要读
+  // 业务模块开放清单来过滤导航树（票 03），与停在哪一页无关，故一并计入期望。
+  assert.deepEqual(new Set(requestedUrls), new Set(withShellRequests(
     '/api/v1/categories?page=0&size=200',
     '/api/v1/products?page=0&size=10',
     '/api/v1/products/tags',
-  ]));
+  )));
 });
 
 test('product archive shows JD EMG and opens a new-product form without an existing-product selector', async () => {
@@ -254,6 +259,8 @@ test('product archive shows JD EMG and opens a new-product form without an exist
         },
       }]));
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -303,6 +310,8 @@ test('static bundle route lists static bundles and expands the component list in
         total_pages: 1,
       });
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -329,7 +338,9 @@ test('static bundle route lists static bundles and expands the component list in
   assert.match(bodyText(), /SKU-BEEF/);
   assert.match(bodyText(), /× 2 袋/);
   assert.match(bodyText(), /羊蝎子/);
-  assert.deepEqual(requestedUrls, ['/api/v1/product-bundles?page=0&size=20']);
+  // 展开组件清单不额外取数：页面只发礼包列表这一次；外壳基线请求（业务模块开放清单）
+  // 是 AppLayout 挂载时读的导航过滤前提，与展开动作无关，排在页面挂载期请求之后。
+  assert.deepEqual(requestedUrls, withShellRequests('/api/v1/product-bundles?page=0&size=20'));
 
   // 再次点击收起：rc-table 保留展开行节点、以 display:none 隐藏（避免重挂载明细），
   // 而不是移出 DOM；全程不应发起任何新请求（明细已随列表一并取回）。
@@ -338,7 +349,7 @@ test('static bundle route lists static bundles and expands the component list in
     document.querySelector<HTMLElement>('.ant-table-expanded-row')?.style.display,
     'none',
   ));
-  assert.deepEqual(requestedUrls, ['/api/v1/product-bundles?page=0&size=20']);
+  assert.deepEqual(requestedUrls, withShellRequests('/api/v1/product-bundles?page=0&size=20'));
 });
 
 test('static bundle list sorts rows by name for a stable order regardless of backend id order', async () => {
@@ -372,6 +383,8 @@ test('static bundle list sorts rows by name for a stable order regardless of bac
         total_pages: 1,
       });
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -407,6 +420,8 @@ test('static bundle status tags visually distinguish draft, active, and inactive
         total_pages: 1,
       });
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -512,6 +527,8 @@ test('static bundle create form loads every internal SKU page so later component
         attributes: { product_id: '1', provider_id: '2', specification: '500g', unit: '袋', purchase_price: null, retail_price: null },
       }]));
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -529,8 +546,9 @@ test('static bundle create form loads every internal SKU page so later component
   assert.ok(document.querySelector('input[placeholder="单份用量"]'));
   assert.match(bodyText(), /添加组件/);
   // 回归：组件 SKU 选择跨页取全，必须请求第 1 页之后的内部 SKU。
+  // 序列 = 挂载期（礼包列表 + 外壳读业务模块开放清单）→ 点开新建表单后才取的两页内部 SKU。
   assert.deepEqual(requestedUrls, [
-    '/api/v1/product-bundles?page=0&size=20',
+    ...withShellRequests('/api/v1/product-bundles?page=0&size=20'),
     '/api/v1/skus?page=0&size=200',
     '/api/v1/skus?page=1&size=200',
   ]);

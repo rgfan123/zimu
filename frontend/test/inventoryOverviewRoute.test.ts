@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { JSDOM } from 'jsdom';
+import { isShellBaselineRequest, shellBaselineResponse, withShellRequests } from './routeHarness.ts';
 
 const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -125,11 +126,16 @@ const OPTION_SKUS = [
   { id: '34', code: 'SKU-34', name: '子牧商品', active: true, version: 1, attributes: { product_id: '1', provider_id: '12', specification: '500g/盒', unit: '盒' } },
 ];
 
-/** 带选项接口路由的库存页 fetch：履约方/SKU 立即返回，总库存请求交给 handler。 */
+/** 带选项接口路由的库存页 fetch：履约方/SKU/外壳基线请求立即返回，总库存请求交给 handler。 */
 function inventoryFetch(handleOverview: (url: URL, rawUrl: string) => Response | Promise<Response>) {
   return (input: RequestInfo | URL) => {
     const rawUrl = String(input);
     const url = new URL(rawUrl, 'http://localhost');
+    // 外壳基线请求（业务模块开放清单）必须先分流：它不是总库存请求，落进 handleOverview
+    // 会被计成一次多余的概览调用（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url.pathname)) {
+      return Promise.resolve(shellBaselineResponse());
+    }
     if (url.pathname === '/api/v1/fulfillment-providers') {
       return Promise.resolve(jsonResponse(OPTION_PROVIDERS));
     }
@@ -240,17 +246,22 @@ test('real inventory route requests data, renders loading, then renders the empt
     requestedUrls.push(url);
     if (url === '/api/v1/fulfillment-providers') return Promise.resolve(jsonResponse(OPTION_PROVIDERS));
     if (url.startsWith('/api/v1/skus?')) return Promise.resolve(jsonResponse({ items: OPTION_SKUS, page: 0, size: 500, total_elements: OPTION_SKUS.length, total_pages: 1 }));
+    // 外壳基线请求必须在受控 resolve 之前分流：它排在页面挂载期请求之后，若也落进下面这个
+    // 挂起分支，finishRequest 会被它覆盖，后面 resolve 的就不是概览请求，页面永远停在加载态。
+    if (isShellBaselineRequest(url)) return Promise.resolve(shellBaselineResponse());
     return new Promise<Response>((resolve) => { finishRequest = resolve; });
   };
 
   await mountRoute();
 
   assert.match(bodyText(), /正在加载库存观测/);
-  assert.deepEqual(requestedUrls, [
+  // 页面挂载期三次取数（概览 + 履约方选项 + SKU 选项），外壳另有一次基线请求——AppLayout
+  // 每次挂载都要读业务模块开放清单来过滤导航树（票 03），排在页面挂载期请求之后。
+  assert.deepEqual(requestedUrls, withShellRequests(
     '/api/v1/inventory/overview?page=0&size=20',
     '/api/v1/fulfillment-providers',
     '/api/v1/skus?size=500',
-  ]);
+  ));
 
   assert.ok(finishRequest, 'route request must be pending');
   await act(async () => {

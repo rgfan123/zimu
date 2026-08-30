@@ -5,7 +5,15 @@
 
 import assert from 'node:assert/strict';
 import { after, afterEach, before, test } from 'node:test';
-import { createRouteHarness, jsonResponse, page, type RouteHarness } from './routeHarness.ts';
+import {
+  createRouteHarness,
+  isShellBaselineRequest,
+  jsonResponse,
+  page,
+  shellBaselineResponse,
+  withShellRequests,
+  type RouteHarness,
+} from './routeHarness.ts';
 
 let harness: RouteHarness;
 
@@ -64,6 +72,8 @@ test('礼包映射页签列出来源礼包与目标礼包，且不连带拉取 S
     requestedUrls.push(url);
     if (url.startsWith('/api/v1/source-bundle-mappings?')) return jsonResponse(page(bundleMappings, 10));
     if (url.startsWith('/api/v1/product-bundles?')) return jsonResponse(page(productBundles, 200));
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -84,10 +94,12 @@ test('礼包映射页签列出来源礼包与目标礼包，且不连带拉取 S
   assert.match(harness.bodyText(), /一个来源礼包单位恒等于一份目标礼包，暂不支持包装乘数。/);
 
   // 只发礼包映射列表与礼包清单；SKU 矩阵在未激活的页签里，一个请求都不发。
-  assert.deepEqual([...requestedUrls].sort(), [
+  // 另有一次外壳基线请求：AppLayout 每次挂载都要读业务模块开放清单来过滤导航树（票 03），
+  // 与当前页签无关；这里按 URL 排序比较，位置由字典序决定。
+  assert.deepEqual([...requestedUrls].sort(), withShellRequests(
     '/api/v1/product-bundles?page=0&size=200',
     '/api/v1/source-bundle-mappings?page=0&size=10',
-  ]);
+  ).sort());
 });
 
 test('默认进 SKU 映射页签，历史遗留的 ?tab=provider 也落回 SKU 映射', async () => {

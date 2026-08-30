@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { JSDOM } from 'jsdom';
 import type { InventoryDetailsResponse } from '../src/api/types.ts';
+import { isShellBaselineRequest, shellBaselineResponse, withShellRequests } from './routeHarness.ts';
 
 const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -250,6 +251,8 @@ test('real details route presents stale cached JD capabilities without confusing
         },
       });
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse(detailsResponse());
   };
   const returnTo = '/inventory/overview?page=2&size=50&provider_id=12&sku_id=34&warehouse_code=WH-A';
@@ -262,9 +265,11 @@ test('real details route presents stale cached JD capabilities without confusing
   await mountRoute(`/inventory/details?${entryParams}`);
 
   await waitFor(() => assert.match(bodyText(), /专业库存明细/));
-  assert.deepEqual(requestedUrls, [
+  // 明细页只取明细这一份数据（不连带拉概览/履约方/SKU 选项）；外壳另有一次基线请求——
+  // AppLayout 每次挂载都要读业务模块开放清单来过滤导航树（票 03），与停在哪一页无关。
+  assert.deepEqual(requestedUrls, withShellRequests(
     '/api/v1/inventory/details?provider_id=12&sku_id=34&warehouse_code=WH-A',
-  ]);
+  ));
   assert.match(bodyText(), /SKU-34/);
   assert.match(bodyText(), /京东云仓/);
   assert.match(bodyText(), /WH-A/);

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, afterEach, before, beforeEach, test } from 'node:test';
 import { JSDOM } from 'jsdom';
+import { isShellBaselineRequest, shellBaselineResponse, withShellRequests } from './routeHarness.ts';
 
 const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -279,6 +280,8 @@ test('real order detail route renders Shipment-level JD facts without raw suppli
         review_cases: [],
       });
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -296,12 +299,14 @@ test('real order detail route renders Shipment-level JD facts without raw suppli
   assert.match(text, /已回传/);
   assert.match(text, /顺丰 · SF501/);
   assert.doesNotMatch(text, /raw supplier|13800000000|raw address/);
-  assert.deepEqual(new Set(requestedUrls), new Set([
+  // 订单详情页取四份数据；外壳另有一次基线请求——AppLayout 每次挂载都要读业务模块开放
+  // 清单来过滤导航树（票 03），与停在哪一页无关，故一并计入期望。
+  assert.deepEqual(new Set(requestedUrls), new Set(withShellRequests(
     '/api/v1/orders/101',
     '/api/v1/orders/101/timeline',
     '/api/v1/orders/101/shipments',
     '/api/v1/fulfillment-providers',
-  ]));
+  )));
 });
 
 test('real total-orders route submits a fulfillment-provider filter without changing the order identity', async () => {
@@ -344,6 +349,8 @@ test('real total-orders route submits a fulfillment-provider filter without chan
         total_pages: 1,
       });
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -376,7 +383,12 @@ test('real total-orders route submits a fulfillment-provider filter without chan
 });
 
 test('legacy JD order-query URL is explicitly identified as a channel tool outside total orders', async () => {
-  globalThis.fetch = async (input) => jsonResponse({ message: `unexpected request ${String(input)}` }, 500);
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
+    return jsonResponse({ message: `unexpected request ${url}` }, 500);
+  };
 
   await mountRoute('/fulfillment/jd-order');
 
@@ -414,6 +426,8 @@ test('order detail keeps JD facts visible and exposes a retry when the provider 
         settlement: { method: 'MONTHLY' }, lines: [], review_cases: [],
       });
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
@@ -436,6 +450,8 @@ test('total orders exposes a retry instead of silently emptying a failed provide
     if (url.startsWith('/api/v1/orders?')) {
       return jsonResponse({ items: [], page: 0, size: 20, total_elements: 0, total_pages: 0 });
     }
+    // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
+    if (isShellBaselineRequest(url)) return shellBaselineResponse();
     return jsonResponse({ message: `unexpected request ${url}` }, 500);
   };
 
