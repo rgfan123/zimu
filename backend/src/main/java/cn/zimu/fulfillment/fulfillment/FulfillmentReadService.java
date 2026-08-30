@@ -198,14 +198,30 @@ public class FulfillmentReadService {
         return value;
     }
 
+    /**
+     * 履约任务下的发货批次。
+     *
+     * <p><b>这条 SQL 必须和 {@link #SHIPMENT_SELECT} 选一样的列</b>——它和列表/详情共用
+     * {@link #shipment(ResultSet)} 行映射。2026-08-30 生产事故：往行映射里加了
+     * {@code source_channel} / {@code source_sync_status} 两列（工作台「待回传」段要用），
+     * 只改了走 SHIPMENT_SELECT 的三处，漏了这一处独立硬编码的 SQL，
+     * 结果 {@code GET /api/v1/fulfillments/{id}} 全部 500，线上挂了一整天。
+     *
+     * <p>这里不能直接套用 SHIPMENT_SELECT + SHIPMENT_FROM：本查询要额外 JOIN
+     * {@code shipment_items} 才能按 fulfillment 过滤，且需要 DISTINCT。所以列清单
+     * 逐字对齐、JOIN 自己写；{@code shipment_syncs} 那个 LEFT JOIN 也得跟着带上，
+     * 否则 {@code source_sync_status} 又会缺列。
+     */
     private List<Map<String, Object>> shipmentsForFulfillment(long fulfillmentId) {
         List<Map<String, Object>> result = jdbc.query(
                 """
-                SELECT DISTINCT s.*, o.order_no, o.receiver_name, c.customer_name
+                SELECT DISTINCT s.*, o.order_no, o.receiver_name, o.source_channel, c.customer_name,
+                       ss.sync_status source_sync_status
                 FROM app.shipments s
                 JOIN app.shipment_items si ON si.shipment_id=s.id
                 JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
                 LEFT JOIN app.customers c ON c.id=o.customer_id
+                LEFT JOIN app.shipment_syncs ss ON ss.shipment_id=s.id
                 WHERE si.fulfillment_id=? ORDER BY s.shipment_sequence, s.id
                 """,
                 (rs, row) -> shipment(rs), fulfillmentId);
