@@ -96,7 +96,7 @@ export default function ProductsPage() {
   const tagsOptions = tagCandidates.map((tag) => ({ value: tag, label: tag }));
 
   const createFields: CrudField[] = [
-    { name: 'product_code', label: '商品编码', required: true, placeholder: '如 P-1001' },
+    { name: 'product_code', label: '商品编码', required: false, placeholder: '留空自动生成' },
     { name: 'product_name', label: '商品名称', required: true },
     categoryIdField,
     { name: 'ingredients', label: '原料', type: 'textarea', placeholder: '如 羔羊肉、孜然、食用盐' },

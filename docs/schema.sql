@@ -7557,3 +7557,34 @@ ALTER TABLE app.connector_configs
         OR jsonb_typeof(config -> 'carrier_api_codes') = 'object'
     );
 -- END V84__feixiang_online_shipment_push.sql
+
+-- BEGIN V86__product_code_autogen.sql
+-- 跳号说明：V85 由「分平台拉取规则」占用（scheduled_pull_runs 加 source_channel），
+-- 两条线并行开发，本迁移取 V86 避让。
+CREATE SEQUENCE IF NOT EXISTS app.product_code_seq AS BIGINT START WITH 1 INCREMENT BY 1;
+
+SELECT setval(
+        'app.product_code_seq',
+        GREATEST(
+                COALESCE(
+                        (SELECT MAX(substring(product_code FROM '^PROD-([0-9]{6})$')::BIGINT)
+                         FROM app.products
+                         WHERE product_code ~ '^PROD-[0-9]{6}$'),
+                        0),
+                1));
+
+CREATE OR REPLACE FUNCTION app.fill_product_code() RETURNS TRIGGER AS $$
+BEGIN
+    -- 只在没给值时发号。给了值就用给的——历史数据与外部约定的编码都必须能存活。
+    IF NEW.product_code IS NULL OR btrim(NEW.product_code) = '' THEN
+        NEW.product_code := 'PROD-' || lpad(nextval('app.product_code_seq')::TEXT, 6, '0');
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_products_fill_code ON app.products;
+CREATE TRIGGER trg_products_fill_code
+    BEFORE INSERT ON app.products
+    FOR EACH ROW EXECUTE FUNCTION app.fill_product_code();
+-- END V86__product_code_autogen.sql

@@ -98,7 +98,7 @@ export default function SkusPage() {
   ];
 
   const createFields: CrudField[] = [
-    { name: 'product_code', label: '商品编码', required: true, placeholder: '如 P-1001' },
+    { name: 'product_code', label: '商品编码', required: false, placeholder: '留空自动生成' },
     { name: 'product_name', label: '商品名称', required: true },
     { name: 'category_id', label: '品类', required: true, type: 'select', options: categoryOptions },
     { name: 'provider_id', label: '履约方', required: true, type: 'select', options: providerOptions },
