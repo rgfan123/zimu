@@ -68,3 +68,27 @@ nginx 层无变更，由 real-fdf94f5 打 tag 对齐。
 
 - 前端产物 grep：「当前筛选历史 Token 汇总」「批次快照」类字符串
 - GET /api/v1/agent-runs/token-usage?outcome=FAILED 不再 400（新参数生效）
+
+---
+
+## 第三次部署 · real-a6375b70(2026-08-28 13:43)
+
+- **内容**:集成发布 jry/integration-20260828——四路(卡片换 button_interaction+ADR-0014 / 聚福宝登录形状+界面凭据+AES-GCM / 彩食鲜 orderList JSON 直连+对账 / 飞象 JSON 拉取)+ 四红修复(V77 换货词表 + v2 回传统计读模型)+ 邻会话 ae98el/daba519(商品档案导出+数值格式化)
+- **迁移**:V73(source_sync_auto_states)+ V77(换货事件类型,ON CONFLICT 幂等);V74–V76 预留未用跳号
+- **新增环境变量**:CONNECTOR_CREDENTIAL_KEY(backend,值不入库不入账本)
+- **回滚**:三层统一改回 `real-beeb441` 一把梭;V73 新表/ V77 插词表对旧代码无害,免迁移回滚
+- **验收**:三容器 healthy / v77 到位 / 企微重订阅 1 / 公网 401 / 密钥+模块注入各 1 / 前端含「导出表格」
+
+---
+
+## 第四次部署 · real-07b8a548(2026-08-28 23:34)
+
+- **内容**:分支收敛发布。在 real-0e1c2a41 基础上并入
+  - `jry/store-lease-exception-sweep`(4 提交)—— @Repository 持久化异常翻译把租约/并发冲突改写成误导类型;新增 `ConcurrencyConflictException` + ADR
+  - `jry/scheduled-pull-and-ship`(1 提交)—— 每日 09:00/18:00 定时拉取三平台(自动发货部分未完,续做中)
+- **迁移**:V83(scheduled_pull_runs);V78–V82 为在途交付线预留后未用而跳号
+- **ADR 改号**:store 并发异常 ADR 由 0015 改为 **0016**,避让隔壁会话先认领的 0015(MCP 模块 fail-safe)
+- **回滚**:三层统一改回 `real-0e1c2a41` 一把梭;V83 是新建表,对旧代码无害,免迁移回滚
+- **验收**:三容器 healthy / v83 到位 / 企微重订阅 1 / 公网 401 / 守门三项(认证+MCP模块+凭据密钥)各 1
+- **过程记录**:合并后两个 schema 守卫如期变红(历史条数 74→75、快照缺 V83 段共 28 类结构差异),
+  补齐后转绿。守卫按预期拦下了「新增迁移未同步快照」这类静默分叉。
