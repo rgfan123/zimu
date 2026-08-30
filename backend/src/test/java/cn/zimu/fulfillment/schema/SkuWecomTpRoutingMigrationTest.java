@@ -40,7 +40,7 @@ class SkuWecomTpRoutingMigrationTest {
         seedSnapshot(url);
 
         String protectedFactsBefore = protectedFacts(url);
-        flyway(url, null).migrate();
+        flyway(url, MigrationVersion.fromVersion("74")).migrate();
 
         assertThat(intQuery(url, pseudoMappingCountSql("TRUE"))).isZero();
         assertThat(intQuery(url, pseudoMappingCountSql("FALSE"))).isEqualTo(7);
@@ -105,7 +105,7 @@ class SkuWecomTpRoutingMigrationTest {
                 "UPDATE app.source_channel_skus SET quantity_multiplier=2 "
                         + "WHERE source_channel='WECOM' AND source_sku_ref='WECOM-DRAFT-5-L1'");
 
-        assertThatThrownBy(() -> flyway(url, null).migrate())
+        assertThatThrownBy(() -> flyway(url, MigrationVersion.fromVersion("74")).migrate())
                 .hasMessageContaining("WECOM pseudo mapping audit precondition drifted");
         assertThat(intQuery(url, pseudoMappingCountSql("TRUE"))).isEqualTo(7);
         assertThat(intQuery(url,
@@ -128,7 +128,7 @@ class SkuWecomTpRoutingMigrationTest {
         seedSnapshot(url);
         seedOpenDraftDependency(url);
 
-        assertThatThrownBy(() -> flyway(url, null).migrate())
+        assertThatThrownBy(() -> flyway(url, MigrationVersion.fromVersion("74")).migrate())
                 .hasMessageContaining("OPEN OrderDraft depends on WECOM pseudo mapping");
         assertThat(intQuery(url, pseudoMappingCountSql("TRUE"))).isEqualTo(7);
         assertThat(intQuery(url,
@@ -153,7 +153,8 @@ class SkuWecomTpRoutingMigrationTest {
             try (Statement statement = draftReader.createStatement()) {
                 statement.execute("SELECT pg_advisory_xact_lock_shared(756426269157)");
             }
-            Future<?> migration = pool.submit(() -> flyway(url, null).migrate());
+            Future<?> migration = pool.submit(
+                    () -> flyway(url, MigrationVersion.fromVersion("74")).migrate());
             assertThatThrownBy(() -> migration.get(30, TimeUnit.SECONDS))
                     .hasStackTraceContaining("requires quiescent WECOM draft candidate creation");
             draftReader.commit();
@@ -175,7 +176,7 @@ class SkuWecomTpRoutingMigrationTest {
                 "UPDATE app.skus SET net_content_value=80,net_content_unit='g',"
                         + "package_count=1,package_unit='件' WHERE sku_code='SKU-TP-000062'");
 
-        assertThatThrownBy(() -> flyway(url, null).migrate())
+        assertThatThrownBy(() -> flyway(url, MigrationVersion.fromVersion("74")).migrate())
                 .hasMessageContaining("WECOM/TP target SKU audit precondition drifted");
         assertThat(intQuery(url, pseudoMappingCountSql("TRUE"))).isEqualTo(7);
         assertThat(intQuery(url,

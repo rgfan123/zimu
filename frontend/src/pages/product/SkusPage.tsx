@@ -242,7 +242,7 @@ export default function SkusPage() {
         <Space wrap>
           <Input.Search
             style={{ width: 260 }}
-            placeholder="搜索 SKU 编码 / 商品名称"
+            placeholder="搜索 SKU 编码 / 商品名称 / 历史别名"
             allowClear
             onSearch={(value) => setSearchQuery(value.trim() || undefined)}
           />

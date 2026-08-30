@@ -244,6 +244,8 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | ConnectorConfig | `GET /api/v1/connectors`，`GET/PATCH /api/v1/connectors/{source_channel}` |
 | Connector 连通性 | `POST /api/v1/connectors/{source_channel}/test-connection` |
 
+SKU 列表与候选搜索的 `query` 同时匹配商品名称、active SKU 别名、规格和内部 SKU 编码；规范名称变更后，历史 NAME 别名仍可定位 canonical SKU，但不会恢复或改写已停用的重复 SKU。
+
 主数据不提供硬删除端点。已被订单快照引用的 Product/SKU/provider 不能改写历史。来源 SKU 映射的 `quantity_multiplier` 必须为正数；空值只能作为待复核主数据，不能进入自动履约。
 
 Connector 配置分成两条互不替代的轴：`client_mode=MOCK|REAL` 控制在线接口是否调用真实外部 Client，`transport_mode=EXCEL|API` 控制文件接入或在线接口接入。当前三平台使用 `transport_mode=EXCEL`，因此 `client_mode` 不参与业务文件处理并默认 `MOCK`；隔离 Demo 也只用 Mock Adapter。后续拿到平台文档/凭据后，才允许切换为 `REAL + API`。

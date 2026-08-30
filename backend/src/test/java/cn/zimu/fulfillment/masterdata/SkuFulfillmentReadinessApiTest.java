@@ -167,6 +167,26 @@ class SkuFulfillmentReadinessApiTest {
     }
 
     @Test
+    void readinessReasonFilterAlsoSearchesActiveSkuAliases() {
+        long providerId = insertProvider("RDYALIAS", "THIRD_PARTY", true);
+        long productId = insertProduct("PROD-RDY-ALIAS", "规范新名称", true);
+        long skuId = insertSku(productId, providerId, "300g", "件", null, true);
+        completePackagingIdentity(skuId, "300", "g", 1, "件");
+        jdbc.update(
+                "INSERT INTO app.sku_aliases(sku_id,alias_type,alias_value,active) "
+                        + "VALUES (?,'NAME','历史旧名称',TRUE)",
+                skuId);
+
+        Map<String, Object> page = page(
+                "/api/v1/skus?query=历史旧名称&readiness_reason=PROVIDER_MAPPING_REQUIRED&page=0&size=20");
+
+        assertThat(items(page)).singleElement().satisfies(item -> {
+            assertThat(item).containsEntry("code", skuCode(skuId));
+            assertThat(reasonCodes(item)).containsExactly("PROVIDER_MAPPING_REQUIRED");
+        });
+    }
+
+    @Test
     void jdReadinessRequiresAnActiveMappingAndTheExistingPieceConversionRule() {
         long providerId = insertProvider("RDYJD", "JD_WAREHOUSE", true);
         long productId = insertProduct("PROD-RDY-JD", "京东就绪规则样本", true);

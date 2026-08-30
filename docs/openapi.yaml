@@ -2611,7 +2611,7 @@ paths:
           schema: { $ref: '#/components/schemas/Identifier' }
         - name: query
           in: query
-          description: 按商品名称 / 规格 / SKU 编码大小写不敏感模糊搜索
+          description: 按商品名称 / SKU 别名 / 规格 / SKU 编码大小写不敏感模糊搜索
           schema: { type: string }
         - name: readiness_reason
           in: query

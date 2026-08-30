@@ -24,7 +24,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.MountableFile;
 
 /**
- * 空库权威快照（docs/schema.sql）与 Flyway 全链（V1..V74）必须产生等价的数据库结构。
+ * 空库权威快照（docs/schema.sql）与 Flyway 全链（V1..V75）必须产生等价的数据库结构。
  *
  * <p>两条路径分别建库，再从 pg_catalog / information_schema 提取可比对的结构事实做集合比对：
  * 表、视图、列（类型/可空/默认/identity）、主键、唯一键（约束与唯一索引合并按内容比）、check
@@ -60,7 +60,7 @@ class SchemaSnapshotMigrationEquivalenceTest {
                 .as("docs/schema.sql 应在空库上执行成功：%s", psql.getStderr())
                 .isZero();
 
-        // 路径 B：Flyway 全链 V1..V74（V74 仅修数据，不新增结构）。
+        // 路径 B：Flyway 全链 V1..V75（V74/V75 仅修数据，不新增结构）。
         Flyway.configure()
                 .dataSource(jdbcUrl(FLYWAY_DB), postgres.getUsername(), postgres.getPassword())
                 .load()

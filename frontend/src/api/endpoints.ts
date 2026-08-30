@@ -135,7 +135,7 @@ export interface MasterDataListQuery {
   size?: number;
   provider_id?: string;
   source_channel?: string;
-  /** SKU 档案列表：按 SKU 编码 / 商品名称模糊搜索。 */
+  /** SKU 档案列表：按 SKU 编码 / 商品名称 / 历史别名模糊搜索。 */
   query?: string;
   /** SKU 档案列表：按实时履约阻断原因筛选。 */
   readiness_reason?: string;

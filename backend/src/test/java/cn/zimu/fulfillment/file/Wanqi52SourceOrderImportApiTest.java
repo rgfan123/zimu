@@ -96,12 +96,14 @@ class Wanqi52SourceOrderImportApiTest {
             assertThat(row)
                     .containsEntry("source_order_ref", "1248941457073590272")
                     .containsEntry("status", "NEED_REVIEW")
-                    .containsEntry("error_code", "SKU_MATCH")
-                    .doesNotContainEntry("order_id", null)
-                    .doesNotContainEntry("order_line_id", null);
+                    .containsEntry("error_code", "SKU_READINESS")
+                    .containsEntry("order_id", null)
+                    .containsEntry("order_line_id", null);
+            assertThat((Map<String, Object>) row.get("error_detail"))
+                    .satisfies(detail -> assertThat((List<?>) detail.get("reason_codes"))
+                            .extracting(String::valueOf)
+                            .contains("SOURCE_SKU_MAPPING_REQUIRED"));
         });
-        assertThat(rows).extracting(row -> row.get("order_id")).containsOnly(rows.getFirst().get("order_id"));
-        assertThat(rows).extracting(row -> row.get("order_line_id")).doesNotHaveDuplicates();
 
         assertThat((Map<String, Object>) rows.getFirst().get("parsed")).containsAllEntriesOf(Map.of(
                 "source_line_ref", "1248941457073590273",
@@ -116,15 +118,12 @@ class Wanqi52SourceOrderImportApiTest {
                 "source_line_ref", "1248941457073590274",
                 "source_sku_ref", "1120591554394853376"));
 
-        ResponseEntity<Map> orderResponse = http.exchange(
-                "/api/v1/orders/" + rows.getFirst().get("order_id"),
-                HttpMethod.GET,
-                new HttpEntity<>(operatorHeaders()),
-                Map.class);
-        assertThat(orderResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat((Map<String, Object>) orderResponse.getBody().get("settlement"))
-                .containsEntry("method", null)
-                .containsEntry("settlement_time", null);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_channel='WANQI' "
+                                + "AND source_ref='1248941457073590272'",
+                        Integer.class))
+                .as("来源礼包未建立长期映射时不得先创建部分订单")
+                .isZero();
     }
 
     @Test
@@ -186,10 +185,38 @@ class Wanqi52SourceOrderImportApiTest {
                 "万齐测试礼包", "规格:1套;"))));
 
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        Map<String, Object> batch = uploaded.getBody();
-        assertThat(batch)
+        Map<String, Object> staged = uploaded.getBody();
+        assertThat(staged)
                 .containsEntry("status", "COMPLETED")
                 .containsEntry("settlement_missing", true);
+        assertThat((Map<String, Object>) staged.get("row_counts")).containsAllEntriesOf(Map.of(
+                "total", 1, "accepted", 0, "need_review", 0, "rejected", 0));
+
+        long jdProviderId = jdbc.queryForObject(
+                "SELECT fulfillment_provider_id FROM app.skus WHERE id=?",
+                Long.class,
+                skuId);
+        String originalProviderConfig = jdbc.queryForObject(
+                "SELECT config::text FROM app.fulfillment_providers WHERE id=?",
+                String.class,
+                jdProviderId);
+        ResponseEntity<Map> confirmed;
+        try {
+            jdbc.update(
+                    "UPDATE app.fulfillment_providers SET config=jsonb_set(COALESCE(config,'{}'::jsonb),"
+                            + "'{outboundMode}', '\"SDK\"'::jsonb, true) WHERE id=?",
+                    jdProviderId);
+            confirmed = confirm(staged.get("id").toString());
+        } finally {
+            jdbc.update(
+                    "UPDATE app.fulfillment_providers SET config=?::jsonb WHERE id=?",
+                    originalProviderConfig,
+                    jdProviderId);
+        }
+        assertThat(confirmed.getStatusCode())
+                .withFailMessage("confirm body: %s", confirmed.getBody())
+                .isEqualTo(HttpStatus.OK);
+        Map<String, Object> batch = confirmed.getBody();
         assertThat((Map<String, Object>) batch.get("row_counts")).containsAllEntriesOf(Map.of(
                 "total", 1, "accepted", 1, "need_review", 0, "rejected", 0));
 
@@ -399,11 +426,24 @@ class Wanqi52SourceOrderImportApiTest {
         body.add("import_mode", "NEW");
         HttpHeaders headers = operatorHeaders();
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        headers.set("Idempotency-Key", "wanqi-52-source-upload-001");
+        headers.set(
+                "Idempotency-Key",
+                "wanqi-52-source-upload-" + java.util.UUID.nameUUIDFromBytes(bytes));
         return http.exchange(
                 "/api/v1/import-batches/source-orders",
                 HttpMethod.POST,
                 new HttpEntity<>(body, headers),
+                Map.class);
+    }
+
+    private ResponseEntity<Map> confirm(String batchId) {
+        HttpHeaders headers = operatorHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", "wanqi-52-source-confirm-" + batchId);
+        return http.exchange(
+                "/api/v1/import-batches/" + batchId + "/confirm",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), headers),
                 Map.class);
     }
 
