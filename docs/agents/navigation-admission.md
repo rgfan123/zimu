@@ -159,7 +159,8 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
 可见结果与引入前逐叶相同（`businessObjectNavigation.test.ts` 有回归断言）。
 
 **票 04 客户跟进入口受控（2026-08-30）**：`/workbench/business-followups` 声明
-`requiresModule: 'customer-center'`，成为生产树里第一个（也是目前唯一一个）受控入口。
+`requiresModule: 'customer-center'`，成为生产树里第一个受控入口（票 06 又加了原料库存，
+现已有两个——受控叶子的当前全集以 `businessObjectNavigation.test.ts` 的断言为准）。
 可见入口与「我的工作台」可见叶子因此变成条件计数（见上表两态口径）；一级板块数、可路由
 叶子数两态相同，既有 URL 零删改。未接通时该 URL 仍可直达，页面按外壳读到的同一份清单
 给出「只能查看已有档案 / 发起整理会以 `KEHUZX_NOT_CONFIGURED` 失败」的提示——菜单与页面
@@ -226,9 +227,12 @@ SKU 与原料之间没有连接键）。
     未开放任何模块时消失的恰好是声明了 `requiresModule` 的叶子；过滤不改写 `appNavigation`
     本身（可路由叶子一个不少）。
   - **客户跟进受控（票 04）**：`/workbench/business-followups` 声明
-    `requiresModule: 'customer-center'` 且它是生产树里唯一的受控叶子；接通时出现在原有位置
+    `requiresModule: 'customer-center'`；接通时出现在原有位置
     （复核收件箱之后、采购之前）且 label 不变，未接通时菜单里少的恰好只有它（我的工作台
     可见叶子 5 → 4，仍 ≤ 6）；两态下路由注册与「我的工作台 / 客户跟进」归属都不变。
+  - **受控叶子全集**：`businessObjectNavigation.test.ts` 对声明了 `requiresModule` 的叶子做
+    **精确 deepEqual**，是受控叶子清单的单一事实源。新增受控入口必须同步该断言；
+    本文正文不再逐处复述「有几个」，以免文档与代码各说各话。
   - **原料库存受控（票 06）**：`/inventory/raw-materials` 声明
     `requiresModule: 'raw-material-inventory'`、是可见叶子（不是降级入口）、归属解析为
     「商品与主数据 / 原料库存」；接通时排在总库存之后且该板块可见叶子 5 ≤ 6，未接通时菜单里
