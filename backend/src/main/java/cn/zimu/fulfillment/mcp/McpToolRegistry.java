@@ -12,38 +12,44 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import cn.zimu.fulfillment.followup.KehuzxRemoteReadTools;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * MCP 工具注册表：聚合所有允许的工具，供 tools/list 发现与 tools/call 分发。
+ * MCP 工具注册表：聚合一次工具定义，分别建立 Agent 进程内工具面与外部 MCP 协议工具面。
  *
- * <p>分模块暴露（用户诉求：「有些 mcp 我不想提供给公共 agent」）：{@code app.mcp.modules}
- * （env {@code MCP_MODULES}，逗号分隔）**未配置时一个工具都不注册**；非空时只把列出模块的
- * 工具收进 {@link #byName}——被排除的工具在 {@link #find} 上直接查不到，{@code tools/call}
- * 因此天然按「工具不存在」拒绝，不会出现「列表里藏起来但还能调用」的假隔离。未知模块名
- * （相对全部工具实际声明的模块集合）在构造期 fail-fast，防止拼错模块名静默少开模块。
+ * <p>{@code app.agent.tool-modules} 只决定 {@link #agentTools()} 与
+ * {@link #findAgentTool(String)}；{@code app.mcp.protocol-modules} 只决定
+ * {@link #protocolTools()} 与 {@link #findProtocolTool(String)}。任一配置解析为空都表示该工具面
+ * 不提供工具，未知模块名在构造期 fail-fast。外部协议面即使误配写模块，仍由
+ * {@link McpServer} 的只读门禁拒绝发现与调用。
  *
- * <p>空值语义已从「全部模块」反转为「零模块」：原先漏配 {@code MCP_MODULES} 的环境会把含客户
- * 姓名/电话/地址的 followup 模块连同写工具一并暴露，安全全靠运维「记得配置」。现在漏配的失败
- * 模式是「MCP 全哑」——启动即可见、补一行配置就恢复，而不是安静地把 PII 摆到公网。
+ * <p>空值语义为 fail-safe（零模块，不是全部模块）：漏配的失败模式是「该工具面全哑」——
+ * 启动即可见、补一行配置就恢复，而不是安静地把含客户姓名/电话/地址的 followup 模块
+ * 连同写工具一并摆到公网。
  *
- * <p>本类同时是「当前开放了什么」的权威来源：{@link #all()} 是已注册（= 已开放）工具的全集，
- * {@link #knownModules()} 是全部工具声明过的模块全集（过滤之前）。两者相减即「已知但未开放」，
- * 管理员核对视图（票 05）据此呈现，不另建一份会与注册表漂移的硬编码清单。
+ * <p>本类同时是「当前开放了什么」的权威来源：{@link #protocolTools()} 是外部协议面已注册
+ * （= 已开放）工具的全集，{@link #knownModules()} 是全部工具声明过的模块全集（任何过滤之前，
+ * 两个工具面共用同一全集）。两者相减即「已知但未开放」，管理员核对视图（票 05）据此呈现，
+ * 不另建一份会与注册表漂移的硬编码清单。
  */
 @Component
 public class McpToolRegistry {
 
-    private final Map<String, McpTool> byName;
+    private static final Logger log = LoggerFactory.getLogger(McpToolRegistry.class);
+
+    private final Map<String, McpTool> agentByName;
+    private final Map<String, McpTool> protocolByName;
 
     /** 全部工具声明过的模块，按工具聚合顺序去重；**过滤之前**的全集，不随 MCP_MODULES 变化。 */
     private final Set<String> knownModules;
 
     /**
-     * 便捷构造（不带 orders-read / kehuzx provider）：模块清单必须显式传入。
-     * 这里刻意不提供「省略即全开」的重载——那正是本类要消灭的 fail-open 语义。
+     * 兼容既有测试的便捷构造：显式清单同时用于两个工具面，不带可选 provider，且不触发真实
+     * 传输面启动门禁。生产装配始终走双清单构造。
      */
     public McpToolRegistry(
             McpReadTools readTools,
@@ -51,9 +57,40 @@ public class McpToolRegistry {
             McpDomainReadTools domainReadTools,
             McpControlReadTools controlReadTools,
             String modulesProperty) {
-        // 两个传输面开关恒传 false：本构造只服务测试/内嵌场景，不该触发「开着却零模块」
-        // 的启动期自检——那道自检针对的是真实部署漏配 MCP_MODULES。
-        this(readTools, writeTools, domainReadTools, controlReadTools, null, null, modulesProperty, false, false);
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                null,
+                null,
+                null,
+                modulesProperty,
+                modulesProperty,
+                false,
+                false,
+                false);
+    }
+
+    /** 测试便捷构造：两个工具面都启用传入 provider 实际声明的全部模块。 */
+    public McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools) {
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                false,
+                true);
     }
 
     @Autowired
@@ -64,9 +101,116 @@ public class McpToolRegistry {
             McpControlReadTools controlReadTools,
             McpOrdersReadTools ordersReadTools,
             KehuzxRemoteReadTools kehuzxReadTools,
-            @Value("${app.mcp.modules:}") String modulesProperty,
+            McpBundleReadTools bundleReadTools,
+            @Value("${app.agent.tool-modules:}") String agentModulesProperty,
+            @Value("${app.mcp.protocol-modules:}") String protocolModulesProperty,
             @Value("${app.mcp.enabled:false}") boolean mcpEnabled,
             @Value("${app.mcp.http.enabled:false}") boolean mcpHttpEnabled) {
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                ordersReadTools,
+                kehuzxReadTools,
+                bundleReadTools,
+                agentModulesProperty,
+                protocolModulesProperty,
+                mcpEnabled,
+                mcpHttpEnabled,
+                false);
+    }
+
+    public McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools,
+            McpOrdersReadTools ordersReadTools,
+            KehuzxRemoteReadTools kehuzxReadTools,
+            String agentModulesProperty,
+            String protocolModulesProperty) {
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                ordersReadTools,
+                kehuzxReadTools,
+                null,
+                agentModulesProperty,
+                protocolModulesProperty,
+                false,
+                false,
+                false);
+    }
+
+    /** 兼容测试装配：未注入礼包 provider，但保留传输面启动门禁参数。 */
+    public McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools,
+            McpOrdersReadTools ordersReadTools,
+            KehuzxRemoteReadTools kehuzxReadTools,
+            String agentModulesProperty,
+            String protocolModulesProperty,
+            boolean mcpEnabled,
+            boolean mcpHttpEnabled) {
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                ordersReadTools,
+                kehuzxReadTools,
+                null,
+                agentModulesProperty,
+                protocolModulesProperty,
+                mcpEnabled,
+                mcpHttpEnabled,
+                false);
+    }
+
+    /** 测试/组合装配入口：可显式注入礼包读取 provider 并分别配置两个工具面。 */
+    public McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools,
+            McpOrdersReadTools ordersReadTools,
+            KehuzxRemoteReadTools kehuzxReadTools,
+            McpBundleReadTools bundleReadTools,
+            String agentModulesProperty,
+            String protocolModulesProperty) {
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                ordersReadTools,
+                kehuzxReadTools,
+                bundleReadTools,
+                agentModulesProperty,
+                protocolModulesProperty,
+                false,
+                false,
+                false);
+    }
+
+    private McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools,
+            McpOrdersReadTools ordersReadTools,
+            KehuzxRemoteReadTools kehuzxReadTools,
+            McpBundleReadTools bundleReadTools,
+            String agentModulesProperty,
+            String protocolModulesProperty,
+            boolean mcpEnabled,
+            boolean mcpHttpEnabled,
+            boolean enableAllModules) {
         List<McpTool> tools = new java.util.ArrayList<>();
         tools.addAll(readTools.tools());
         tools.addAll(writeTools.tools());
@@ -78,9 +222,11 @@ public class McpToolRegistry {
         if (kehuzxReadTools != null) {
             tools.addAll(kehuzxReadTools.tools());
         }
+        if (bundleReadTools != null) {
+            tools.addAll(bundleReadTools.tools());
+        }
 
-        // 重名检测在过滤模块之前进行：注册冲突是与「当前启用哪些模块」无关的不变式，
-        // 不能等运维改了 MCP_MODULES 才炸出来。
+        // 重名检测在两个工具面过滤之前进行：注册冲突与当前启用哪些模块无关，不能因配置隐藏。
         Set<String> seenNames = new java.util.HashSet<>();
         for (McpTool tool : tools) {
             if (!seenNames.add(tool.name())) {
@@ -91,7 +237,18 @@ public class McpToolRegistry {
         Set<String> knownModules = tools.stream()
                 .map(McpTool::module)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-        Set<String> enabledModules = parseModules(modulesProperty, knownModules);
+        Set<String> agentModules = enableAllModules
+                ? knownModules
+                : parseModules("app.agent.tool-modules", agentModulesProperty, knownModules);
+        Set<String> protocolModules = enableAllModules
+                ? knownModules
+                : parseModules("app.mcp.protocol-modules", protocolModulesProperty, knownModules);
+        Map<String, McpTool> agentIndex = index(tools, agentModules);
+        Map<String, McpTool> protocolIndex = index(tools, protocolModules);
+        long publicReadToolCount = protocolIndex.values().stream()
+                .filter(McpTool::readOnly)
+                .filter(McpTool::externallyDiscoverable)
+                .count();
 
         // 启动期自检（同事 2026-08-28 提议，采纳）：MCP 开着却一个模块都没启用，
         // 是配置事故而非合法状态——运维不会有意「开启 MCP 且不暴露任何工具」。
@@ -104,39 +261,46 @@ public class McpToolRegistry {
         // 与本类既有的「未知模块名启动期 fail-fast」同源，不是新范式。
         // 注意条件是「任一传输面开着」而不是只看 stdio：生产实测 app.mcp.enabled 未设（=false）、
         // 只开了 app.mcp.http.enabled，若只看前者，这道自检在生产永远不触发，等于没有。
-        //
-        // 影响面比「对外 MCP」更宽：本注册表同时是内部 Agent 平台的工具源
-        // （AgentToolInvoker 从 find(name) 取工具），所以 MCP_MODULES 丢失会让
-        // 对外 HTTP 面与企微机器人一起变哑。这正是必须在启动期炸掉的理由。
-        if ((mcpEnabled || mcpHttpEnabled) && enabledModules.isEmpty()) {
+        // 双工具面拆分后本门禁只保护公共协议面；Agent 清单独立，不会再被 MCP 配置连带清空。
+        if ((mcpEnabled || mcpHttpEnabled) && publicReadToolCount == 0) {
+            String reason = protocolModules.isEmpty()
+                    ? "解析后为空"
+                    : "没有可公开只读工具（只含内部专用或写工具）";
             throw new IllegalStateException(
-                    "app.mcp.modules（env MCP_MODULES）解析后为空，但 MCP 传输面是开的"
+                    "app.mcp.protocol-modules（env MCP_PROTOCOL_MODULES / MCP_MODULES）" + reason + "，"
+                            + "但 MCP 传输面是开的"
                             + "（app.mcp.enabled=" + mcpEnabled
                             + ", app.mcp.http.enabled=" + mcpHttpEnabled + "）："
-                            + "空值语义是「不暴露任何模块」，这会让 MCP 面与内部 Agent 平台都拿不到工具。"
+                            + "空值语义是「公共协议面不暴露任何模块」。"
                             + "要暴露请显式列出模块（已知：" + knownModules + "）；"
                             + "确实要整体关闭请把两个传输面开关都设为 false。");
         }
 
+        this.agentByName = agentIndex;
+        this.protocolByName = protocolIndex;
+        // 已知模块全集要保留到运行期：模块被排除后它的工具根本不进任何工具面索引，事后无从
+        // 反推「本可以开放哪些模块」。管理员核对视图（票 05）用它区分「已知但未开放」与「已开放」。
+        this.knownModules = java.util.Collections.unmodifiableSet(new LinkedHashSet<>(knownModules));
+        logSurface("Agent", "app.agent.tool-modules", agentModules, agentByName.size());
+        logSurface("MCP 协议", "app.mcp.protocol-modules", protocolModules, protocolByName.size());
+    }
+
+    private static Map<String, McpTool> index(List<McpTool> tools, Set<String> enabledModules) {
         Map<String, McpTool> index = new java.util.LinkedHashMap<>();
         for (McpTool tool : tools) {
             if (enabledModules.contains(tool.module())) {
                 index.put(tool.name(), tool);
             }
         }
-        this.byName = Map.copyOf(index);
-        // 已知模块全集要保留到运行期：模块被排除后它的工具根本不进 byName，事后无从反推
-        // 「本可以开放哪些模块」。管理员核对视图（票 05）用它区分「已知但未开放」与「已开放」。
-        this.knownModules = java.util.Collections.unmodifiableSet(new LinkedHashSet<>(knownModules));
+        return Map.copyOf(index);
     }
 
     /**
-     * 解析 {@code app.mcp.modules}。**空值（未配置、纯空白、只有逗号）= 零模块**：想用 MCP 的
-     * 环境必须显式列出模块名，忘配的代价是「什么都不开放」而不是「什么都开放」。非空则只启用
-     * 列出的模块，列出的模块名必须都在 {@code knownModules} 中出现过，否则 fail-fast——拼错
-     * 模块名要么整段部署起不来，绝不能静默按「少开一个模块」了事。
+     * 解析单个工具面配置。空值或仅含分隔符都表示零模块；非空模块名必须存在，否则
+     * fail-fast。配置名进入错误信息，使启动失败可以直接定位到具体工具面。
      */
-    private static Set<String> parseModules(String modulesProperty, Set<String> knownModules) {
+    private static Set<String> parseModules(
+            String propertyName, String modulesProperty, Set<String> knownModules) {
         if (modulesProperty == null || modulesProperty.isBlank()) {
             return Set.of();
         }
@@ -152,39 +316,53 @@ public class McpToolRegistry {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         if (!unknown.isEmpty()) {
             throw new IllegalStateException(
-                    "app.mcp.modules 配置了未知模块名: " + unknown + "；已知模块: " + knownModules);
+                    propertyName + " 配置了未知模块名: " + unknown + "；已知模块: " + knownModules);
         }
-        return requested;
+        return Set.copyOf(requested);
     }
 
-    public List<McpTool> all() {
-        return List.copyOf(byName.values());
+    private static void logSurface(
+            String surfaceName, String propertyName, Set<String> modules, int toolCount) {
+        if (modules.isEmpty()) {
+            log.warn("{}工具面未启用任何模块（{} 为空），该工具面将不提供工具", surfaceName, propertyName);
+            return;
+        }
+        log.info("{}工具面启用模块 {}，共 {} 个工具", surfaceName, modules, toolCount);
     }
 
-    public Optional<McpTool> find(String name) {
-        return Optional.ofNullable(byName.get(name));
+    public List<McpTool> agentTools() {
+        return List.copyOf(agentByName.values());
+    }
+
+    public Optional<McpTool> findAgentTool(String name) {
+        return Optional.ofNullable(agentByName.get(name));
     }
 
     /**
-     * 全部工具声明过的模块（模块过滤**之前**的全集），按工具聚合顺序。
+     * 全部工具声明过的模块（任何工具面过滤**之前**的全集），按工具聚合顺序。
      *
      * <p>这是「已知模块」的唯一来源——它由工具自己声明的 {@link McpTool#module()} 推出，
-     * 不是手抄清单，新增模块的工具自动出现在这里。与 {@link #all()} 的模块集合相减
-     * 即「已知但未开放」；注意不要反过来用它推导开放面，开放面只以注册结果为准。
+     * 不是手抄清单，新增模块的工具自动出现在这里。与 {@link #protocolTools()} 的模块集合相减
+     * 即「已知但未开放」（管理员核对视图，票 05）；注意不要反过来用它推导开放面，
+     * 开放面只以注册结果为准。
      */
     public Set<String> knownModules() {
         return knownModules;
     }
 
-    /**
-     * 全部写工具名（readOnly=false，08 决策的「默认禁写」元数据）。不变式测试以此查询
-     * 替代手抄常量清单，写工具集合增长不会静默漏检。
-     */
-    public Set<String> writeToolNames() {
-        return byName.values().stream()
+    public Set<String> agentWriteToolNames() {
+        return agentByName.values().stream()
                 .filter(tool -> !tool.readOnly())
                 .map(McpTool::name)
                 .collect(Collectors.toUnmodifiableSet());
+    }
+
+    public List<McpTool> protocolTools() {
+        return List.copyOf(protocolByName.values());
+    }
+
+    public Optional<McpTool> findProtocolTool(String name) {
+        return Optional.ofNullable(protocolByName.get(name));
     }
 
     /** 工具输入 JSON Schema 构建助手。 */

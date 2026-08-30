@@ -67,7 +67,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
             "app.message-worker.enabled=false",
-            "app.mcp.enabled=false"
+            "app.mcp.enabled=false",
+            "app.mcp.protocol-modules=messages,orders,masterdata,inventory,procurement,orders-read,control,write"
         })
 class McpProtocolAcceptanceTest {
 
@@ -173,8 +174,6 @@ class McpProtocolAcceptanceTest {
         List<String> names = new ArrayList<>();
         response.get("result").get("tools").forEach(tool -> names.add(tool.get("name").asText()));
         assertThat(names).containsExactlyInAnyOrder(
-                // 控制面只读：工具发现（T10）
-                "list_agent_tools",
                 // 查询：消息提交/媒体元数据/解释历史
                 "list_channel_messages",
                 "get_channel_message",
@@ -210,12 +209,22 @@ class McpProtocolAcceptanceTest {
                 "search_orders",
                 "get_order");
 
-        assertThat(registry.find("check_shipment_source_sync")).get()
+        JsonNode internalMetadata = rpc(
+                AGENT,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                        + "\"params\":{\"name\":\"list_agent_tools\",\"arguments\":{}}}");
+        assertThat(internalMetadata.path("error").path("message").asText())
+                .contains("Unknown tool");
+
+        assertThat(registry.findProtocolTool("check_shipment_source_sync")).get()
                 .extracting(McpTool::readOnly)
                 .isEqualTo(true);
 
         // 08 决策：stdio 面一期只读——写工具集合按 readOnly 元数据向注册表查询（不手抄清单）
-        Set<String> writeTools = registry.writeToolNames();
+        Set<String> writeTools = registry.protocolTools().stream()
+                .filter(tool -> !tool.readOnly())
+                .map(McpTool::name)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         assertThat(writeTools)
                 .as("注册表必须能判定写工具集合（默认禁写不变式）")
                 .isNotEmpty();
@@ -246,9 +255,16 @@ class McpProtocolAcceptanceTest {
     void writeToolCallIsRejectedOnReadOnlyStdioWithoutSideEffects() throws Exception {
         JsonNode response = rpc(AGENT, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
                 + "\"params\":{\"name\":\"reinterpret_submission\",\"arguments\":{}}}");
+        JsonNode unknown = rpc(AGENT, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                + "\"params\":{\"name\":\"not_a_real_tool\",\"arguments\":{}}}");
         assertThat(response.has("error")).as("写工具调用必须以 JSON-RPC 错误拒绝: %s", response).isTrue();
         assertThat(response.get("error").get("code").asInt()).isEqualTo(-32602);
-        assertThat(response.get("error").get("message").asText()).contains("read-only");
+        assertThat(response.get("error").get("message").asText())
+                .isEqualTo("Unknown tool: reinterpret_submission")
+                .doesNotContain("read-only", "write", "restricted");
+        assertThat(unknown.get("error").get("code").asInt()).isEqualTo(-32602);
+        assertThat(unknown.get("error").get("message").asText())
+                .isEqualTo("Unknown tool: not_a_real_tool");
         // 拒绝发生在工具执行之前：不得留下任何写审计/副作用
         assertThat(audits.findAll().stream()
                         .filter(audit -> "mcp.reinterpret_submission".equals(audit.getOperation()))
@@ -268,7 +284,7 @@ class McpProtocolAcceptanceTest {
                 .doesNotContain("TOKEN")
                 .doesNotContain("PASSWORD");
         // 工具描述与输入 Schema 同样不得携带配置/凭据
-        for (McpTool tool : registry.all()) {
+        for (McpTool tool : registry.protocolTools()) {
             assertThat(tool.description() + " " + tool.inputSchema())
                     .doesNotContain("MCP_AGENT_IDENTITY")
                     .doesNotContain("MCP_ENABLED")

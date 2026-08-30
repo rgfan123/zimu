@@ -1,0 +1,262 @@
+{
+  "schema_version": 2,
+  "baseline_commit": "af0b58c0691b84120f99e03fe4fd7a73f3963d9b",
+  "sources": [
+    {
+      "id": "remaining-wecom-tail",
+      "branch": "jry/wecom-card-closed-loop",
+      "expected_path": "/Users/jerry/zimu-work/main",
+      "expected_head": "46ea5e1c98c19d654938187943165ecd5f7ce166",
+      "expected_snapshot": {
+        "status": {
+          "staged": 0,
+          "unstaged": 0,
+          "untracked": 1
+        },
+        "paths": {
+          "staged": [],
+          "unstaged": [],
+          "untracked": [
+            ".claude/launch.json"
+          ]
+        },
+        "fingerprints": {
+          "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "unstaged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "untracked_paths_sha256": "80190a6ea44188555e3cf1420cb4306d27b92053bbd252955f2e4093dbe163e3",
+          "untracked_content_sha256": "80e95ad69f5ff4d9b1d2180932aac7a7ce326947135c6cd372735b852361891a"
+        }
+      },
+      "disposition": "evaluated_not_merged",
+      "evaluated_commits": [
+        {
+          "commit": "70ffc9d6cdf0628b5904d110a9a6e5b591afb466",
+          "decision": "exclude_superseded_by_baseline"
+        },
+        {
+          "commit": "ba2e6d8a397abdb4b8f7ef7117f25be0cb071744",
+          "decision": "exclude_conflicting_production_decision"
+        },
+        {
+          "commit": "46ea5e1c98c19d654938187943165ecd5f7ce166",
+          "decision": "defer_incomplete_active_issue"
+        }
+      ]
+    },
+    {
+      "id": "source-bundle-resolution",
+      "branch": "worktree-agent-aa4c1e4557940246d",
+      "expected_path": "/Users/jerry/Documents/子牧/.claude/worktrees/agent-aa4c1e4557940246d",
+      "expected_head": "1014ece4fac73f94c1880c7bf199a941ac0203da",
+      "expected_snapshot": {
+        "status": {
+          "staged": 0,
+          "unstaged": 8,
+          "untracked": 3
+        },
+        "paths": {
+          "staged": [],
+          "unstaged": [
+            "backend/src/main/java/cn/zimu/fulfillment/file/SourceImportService.java",
+            "backend/src/main/java/cn/zimu/fulfillment/order/OrderCreateService.java",
+            "backend/src/main/java/cn/zimu/fulfillment/order/OrderLineBundleResolutionService.java",
+            "backend/src/main/java/cn/zimu/fulfillment/order/domain/OrderLine.java",
+            "backend/src/test/java/cn/zimu/fulfillment/file/WangqiSourceOrderImportApiTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/schema/ProductionMigrationHistoryCompatTest.java",
+            "docs/schema.md",
+            "docs/schema.sql"
+          ],
+          "untracked": [
+            "backend/src/main/java/cn/zimu/fulfillment/order/SourceBundleResolver.java",
+            "backend/src/main/resources/db/migration/V85__order_line_source_sku_ref.sql",
+            "backend/src/test/java/cn/zimu/fulfillment/file/SourceBundleKeyUnificationApiTest.java"
+          ]
+        },
+        "fingerprints": {
+          "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "unstaged_diff_sha256": "8d3994bbdd844e0fca3e103fb404087fcdc21e3280f3f1e4b0011246079caddf",
+          "untracked_paths_sha256": "96be3bd6d26d6be8660d76b61eca29a38bb9f0ab0163bddf67fac98e576184de",
+          "untracked_content_sha256": "80ca85913614d8dda4cf69f9e0a9ec554a5ed4b6f0e1be1d72c03413b164afc3"
+        }
+      },
+      "disposition": "rescued_to_convergence",
+      "target_ticket": "08"
+    },
+    {
+      "id": "product-ops-sku-search",
+      "branch": "jry/product-ops-mcp",
+      "expected_path": "/Users/jerry/zimu-work/product-ops-mcp",
+      "expected_head": "8e2ca85c6b294acf8d5ca7ca77bc20d476106969",
+      "expected_snapshot": {
+        "status": {
+          "staged": 0,
+          "unstaged": 6,
+          "untracked": 1
+        },
+        "paths": {
+          "staged": [],
+          "unstaged": [
+            "backend/src/main/java/cn/zimu/fulfillment/masterdata/MasterDataService.java",
+            "backend/src/main/java/cn/zimu/fulfillment/mcp/McpDomainReadTools.java",
+            "backend/src/main/java/cn/zimu/fulfillment/mcp/McpToolRegistry.java",
+            "backend/src/main/java/cn/zimu/fulfillment/sku/SkuRepository.java",
+            "backend/src/test/java/cn/zimu/fulfillment/mcp/McpDomainReadToolsTest.java",
+            "docs/api-contract.md"
+          ],
+          "untracked": [
+            "backend/src/main/java/cn/zimu/fulfillment/sku/SkuSearchFilter.java"
+          ]
+        },
+        "fingerprints": {
+          "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "unstaged_diff_sha256": "589d4bcd72706acd8d298b55b902a769efcec0585ae19a4137872a3da32c9946",
+          "untracked_paths_sha256": "c5b5a7df587f5a1190f70d934de7848333115fe8232dc676adbbc3c1678dfc32",
+          "untracked_content_sha256": "24cf40bdb9d656378369047f3ab8244aeac9877bf6e4687d4c7315589c9e4733"
+        }
+      },
+      "disposition": "rescued_to_convergence",
+      "target_ticket": "07"
+    },
+    {
+      "id": "bundle-read-tools",
+      "branch": "jry/bundle-mcp-read",
+      "expected_path": "/Users/jerry/zimu-work/tk185",
+      "expected_head": "0e1c2a417c33085de6c831878cc6e97b948727cc",
+      "expected_snapshot": {
+        "status": {
+          "staged": 0,
+          "unstaged": 3,
+          "untracked": 4
+        },
+        "paths": {
+          "staged": [],
+          "unstaged": [
+            "backend/src/main/java/cn/zimu/fulfillment/mcp/McpToolRegistry.java",
+            "backend/src/test/java/cn/zimu/fulfillment/mcp/McpProtocolAcceptanceTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/mcp/McpToolRegistryModuleFilterTest.java"
+          ],
+          "untracked": [
+            "backend/src/main/java/cn/zimu/fulfillment/mcp/McpBundleReadTools.java",
+            "backend/src/main/java/cn/zimu/fulfillment/product/BundleReadService.java",
+            "backend/src/test/java/cn/zimu/fulfillment/mcp/McpBundleReadToolsTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/mcp/McpBundleReadToolsUnitTest.java"
+          ]
+        },
+        "fingerprints": {
+          "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "unstaged_diff_sha256": "243bc77903225f5d9210995de37d5bfc2d482f396545158b2cfb0d2c40d5a905",
+          "untracked_paths_sha256": "8bb45702af0dba48ee7efbe3dd0128239d572ce7c5a61a0ff40a6cd2d012c786",
+          "untracked_content_sha256": "84171b05f540c33c001af17e0b5826c2e0df030f371359a4b761ce9ea57a15b6"
+        }
+      },
+      "disposition": "rescued_to_convergence",
+      "target_ticket": "06"
+    },
+    {
+      "id": "agent-public-mcp-split",
+      "branch": "jry/mcp-surface-split",
+      "expected_path": "/Users/jerry/zimu-work/tk198",
+      "expected_head": "2b817fdbe7fc4daba24515a94a50785370fca582",
+      "expected_snapshot": {
+        "status": {
+          "staged": 0,
+          "unstaged": 21,
+          "untracked": 0
+        },
+        "paths": {
+          "staged": [],
+          "unstaged": [
+            "backend/src/main/java/cn/zimu/fulfillment/agent/AgentInvariantEval.java",
+            "backend/src/main/java/cn/zimu/fulfillment/agent/AgentReadService.java",
+            "backend/src/main/java/cn/zimu/fulfillment/agent/AgentToolBindingFactory.java",
+            "backend/src/main/java/cn/zimu/fulfillment/agent/AgentToolInvoker.java",
+            "backend/src/main/java/cn/zimu/fulfillment/agent/DefaultAgentGateEngine.java",
+            "backend/src/main/java/cn/zimu/fulfillment/mcp/McpControlReadTools.java",
+            "backend/src/main/java/cn/zimu/fulfillment/mcp/McpServer.java",
+            "backend/src/main/java/cn/zimu/fulfillment/mcp/McpTool.java",
+            "backend/src/main/java/cn/zimu/fulfillment/mcp/McpToolRegistry.java",
+            "backend/src/main/resources/application.yml",
+            "backend/src/test/java/cn/zimu/fulfillment/agent/AgentMcpToolBindingAcceptanceTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/agent/AgentToolBindingFactoryTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/agent/DataQueryAgentDefinitionTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/agent/MetaAgentDraftIntegrationTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/agent/meta/MetaAgentConversationServiceTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/agent/procurement/ProcurementPriceAgentInvariantTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/mcp/McpDomainReadToolsTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/mcp/McpProtocolAcceptanceTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/mcp/McpToolRegistryModuleFilterTest.java",
+            "backend/src/test/java/cn/zimu/fulfillment/mcp/http/McpHttpTransportAcceptanceTest.java",
+            "docs/ops/deploy-runbook.md"
+          ],
+          "untracked": []
+        },
+        "fingerprints": {
+          "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "unstaged_diff_sha256": "2cdc04adb64881123cb59a7de08cd64fe99c320a2c9f4c9e398616c0b1811807",
+          "untracked_paths_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "untracked_content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "disposition": "rescued_to_convergence",
+      "target_ticket": "05"
+    }
+  ],
+  "deferred_sources": [
+    {
+      "id": "active-sku-masterdata-repair",
+      "branch": "codex/sku-masterdata-repair",
+      "expected_path": "/Users/jerry/Documents/Codex/2026-08-30/referenced-chatgpt-conversation-this-is-an-2/zimu-sku-masterdata-repair",
+      "reason": "active_development_migrated_by_maintainer_after_convergence",
+      "observed_at": "2026-08-31T00:16:34+0800",
+      "observed_head": "1fb4f5350c5d3e83f7df565efdf760289df094cc",
+      "observed_status": {
+        "staged": 0,
+        "unstaged": 0,
+        "untracked": 0
+      },
+      "observed_fingerprints": {
+        "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "unstaged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "untracked_paths_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "untracked_content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "id": "active-integration-increments",
+      "branch": "jry/integration-20260828",
+      "expected_path": "/Users/jerry/zimu-work/integration",
+      "reason": "moving_source_after_frozen_baseline",
+      "observed_at": "2026-08-31T00:16:34+0800",
+      "observed_head": "6994cf2f6235f47d3ca96cb79a7891984d07b084",
+      "observed_status": {
+        "staged": 0,
+        "unstaged": 3,
+        "untracked": 30
+      },
+      "observed_fingerprints": {
+        "staged_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "unstaged_diff_sha256": "86a1c102b92f8b10fb579a0533c8bb2a4e01c3a420612dad439baa55d8464386",
+        "untracked_paths_sha256": "b8f0500b4ab58166bc0ecfd622b4e7a1375a14735ec609ec2940e24c8b426795",
+        "untracked_content_sha256": "b7b830d6384df0e56ad36544ace77b11d82c8a186e2c7e72531e6301147f9559"
+      }
+    }
+  ],
+  "excluded_sources": [
+    {
+      "id": "legacy-feixiang-v33-v35",
+      "reason": "superseded_architecture"
+    },
+    {
+      "id": "legacy-jufubao-partial",
+      "reason": "superseded_partial_implementation"
+    },
+    {
+      "id": "mixed-ui-prototypes",
+      "reason": "multi_topic_or_throwaway_prototype"
+    },
+    {
+      "id": "orphan-and-dataless-worktrees",
+      "reason": "requires_separate_data_rescue"
+    }
+  ]
+}

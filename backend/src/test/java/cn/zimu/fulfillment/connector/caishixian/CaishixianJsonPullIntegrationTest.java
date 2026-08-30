@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -63,6 +64,19 @@ class CaishixianJsonPullIntegrationTest {
     @Autowired TrackingFileService trackingFileService;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean CaishixianPullClient pullClient;
+
+    @BeforeEach
+    void mapFixtureSkus() {
+        Long skuId = jdbc.queryForObject(
+                "SELECT sku_id FROM app.provider_skus WHERE provider_sku_code='JD-SKU-000001'", Long.class);
+        for (int sequence = 1; sequence <= 12; sequence++) {
+            jdbc.update(
+                    "INSERT INTO app.source_channel_skus(source_channel,source_sku_ref,source_product_name,"
+                            + "quantity_multiplier,sku_id,active) VALUES ('CAISHIXIAN',?,'羊小腿',1,?,true) "
+                            + "ON CONFLICT DO NOTHING",
+                    "G-" + sequence, skuId);
+        }
+    }
 
     private static JsonNode listItem(String prefix, int sequence) {
         return json("""
@@ -240,40 +254,34 @@ class CaishixianJsonPullIntegrationTest {
         long orderLineId = jdbc.queryForObject(
                 "SELECT id FROM app.order_lines WHERE order_id=? ORDER BY line_no LIMIT 1",
                 Long.class, orderId);
-        long providerId = jdbc.queryForObject(
+        // 结构化导入已按来源 SKU 映射冻结换算快照、履约方并创建初始 Fulfillment；
+        // 直接复用该真实分配，禁止在履约创建后篡改订单行分配字段（V89）。
+        Map<String, Object> allocation = jdbc.queryForMap(
                 """
-                INSERT INTO app.fulfillment_providers(provider_code, provider_name, provider_type)
-                VALUES (?, '彩食鲜集成履约方', 'THIRD_PARTY') RETURNING id
+                SELECT f.id fulfillment_id, f.fulfillment_provider_id provider_id,
+                       f.requested_quantity, ol.source_quantity_snapshot,
+                       ol.mapping_multiplier_snapshot
+                FROM app.fulfillments f
+                JOIN app.order_lines ol ON ol.id=f.order_line_id
+                WHERE f.order_line_id=?
                 """,
-                Long.class, "CSX" + (System.nanoTime() % 100000));
-        // 来源数量换算快照与履约方（正常由 SKU 映射/履约路由流程写入；此处按 1:1 直连补齐，
-        // validate_fulfillment 触发器要求 fulfillments 与 order_lines 的履约方一致）
-        jdbc.update(
-                """
-                UPDATE app.order_lines
-                SET mapping_multiplier_snapshot=1, source_quantity_snapshot=2, fulfillment_provider_id=?
-                WHERE id=?
-                """,
-                providerId, orderLineId);
-        // 与 SourceShipmentSyncServiceIntegrationTest 同配方：先建 NOT_SHIPPED 再置 SHIPPED，
-        // 避免与 fulfillments 的状态检查约束冲突
-        long fulfillmentId = jdbc.queryForObject(
-                """
-                INSERT INTO app.fulfillments
-                    (fulfillment_no, order_line_id, fulfillment_provider_id, requested_quantity,
-                     cumulative_shipped_quantity, cancelled_quantity, shipping_progress, outcome)
-                VALUES (?, ?, ?, 2, 0, 0, 'NOT_SHIPPED', 'IN_PROGRESS')
-                RETURNING id
-                """,
-                Long.class, "FUL-" + prefix, orderLineId, providerId);
+                orderLineId);
+        long fulfillmentId = ((Number) allocation.get("fulfillment_id")).longValue();
+        long providerId = ((Number) allocation.get("provider_id")).longValue();
+        assertThat((BigDecimal) allocation.get("requested_quantity")).isEqualByComparingTo("2");
+        assertThat((BigDecimal) allocation.get("source_quantity_snapshot")).isEqualByComparingTo("2");
+        assertThat((BigDecimal) allocation.get("mapping_multiplier_snapshot")).isEqualByComparingTo("1");
+
+        // 初始 Fulfillment 为 NOT_SHIPPED；从 CREATED Shipment 开始，让数据库按实发明细
+        // 重算累计量/进度，最后再把履约结果与 Shipment 状态收口。
         long shipmentId = jdbc.queryForObject(
                 """
                 INSERT INTO app.shipments
                     (shipment_no, order_id, fulfillment_provider_id, shipment_sequence,
                      receiver_name_snapshot, receiver_phone_snapshot, receiver_address_snapshot,
-                     shipment_status, shipped_at)
+                     shipment_status)
                 VALUES (?, ?, ?, 1, '收货人1', '13800000001', '河南省郑州市金水区测试路 1 号',
-                        'SHIPPED', CURRENT_TIMESTAMP)
+                        'CREATED')
                 RETURNING id
                 """,
                 Long.class, "SHP-" + prefix, orderId, providerId);
@@ -286,11 +294,17 @@ class CaishixianJsonPullIntegrationTest {
         jdbc.update(
                 """
                 UPDATE app.fulfillments
-                SET cumulative_shipped_quantity=2, shipping_progress='SHIPPED',
-                    outcome='FULLY_FULFILLED', updated_at=CURRENT_TIMESTAMP
+                SET outcome='FULLY_FULFILLED', updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
                 fulfillmentId);
+        jdbc.update(
+                """
+                UPDATE app.shipments
+                SET shipment_status='SHIPPED', shipped_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                shipmentId);
 
         SourceSyncFacts facts = new SourceSyncFacts(
                 shipmentId,

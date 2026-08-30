@@ -71,7 +71,7 @@ class ProcurementPriceAgentInvariantTest {
     @Test
     void whitelistNeverReferencesAnyRealWriteTool() {
         // 08 决策：写工具集合按 readOnly 元数据向注册表查询，不再手抄清单
-        Set<String> writeToolNames = toolRegistry.writeToolNames();
+        Set<String> writeToolNames = toolRegistry.agentWriteToolNames();
         assertThat(writeToolNames)
                 .as("写工具集合必须非空（默认禁写不变式可判定）")
                 .isNotEmpty();
@@ -85,7 +85,7 @@ class ProcurementPriceAgentInvariantTest {
         AgentDefinition definition = holder.current().bySlug(ProcurementPriceAgent.AGENT_SLUG);
         // 白名单引用的工具必须在唯一工具源全部可解析（配置漂移 fail-fast）
         for (String name : definition.toolNames()) {
-            assertThat(toolRegistry.find(name)).as("白名单工具必须已注册: %s", name).isPresent();
+            assertThat(toolRegistry.findAgentTool(name)).as("白名单工具必须已注册: %s", name).isPresent();
         }
 
         AgentToolBinding binding = new AgentToolBindingFactory(toolRegistry, identity, mapper)
@@ -94,7 +94,7 @@ class ProcurementPriceAgentInvariantTest {
         assertThat(binding.specifications())
                 .extracting(spec -> spec.name())
                 .containsExactlyInAnyOrderElementsOf(definition.toolNames());
-        Set<String> writeToolNames = toolRegistry.writeToolNames();
+        Set<String> writeToolNames = toolRegistry.agentWriteToolNames();
         assertThat(binding.specifications())
                 .extracting(spec -> spec.name())
                 .doesNotContainAnyElementsOf(writeToolNames);

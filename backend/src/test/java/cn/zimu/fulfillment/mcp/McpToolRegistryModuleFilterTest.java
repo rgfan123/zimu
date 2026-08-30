@@ -5,214 +5,264 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import cn.zimu.fulfillment.agent.AgentToolBinding;
+import cn.zimu.fulfillment.agent.AgentToolBindingFactory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.Test;
 
-/**
- * MCP 分模块暴露（用户诉求：「有些 mcp 我不想提供给公共 agent」）的注册表行为验收。
- *
- * <p>不经 Spring/Testcontainers：{@link McpToolRegistry} 的模块过滤是纯构造期逻辑，
- * 用 Mockito 桩出 provider 的 {@code tools()} 即可覆盖——未配置 = 零模块（fail-safe）、
- * 显式模块只留列出的工具、被过滤的工具在 {@code find}/{@code tools/call} 上一致地
- * 「查不到」（不是列表里藏起来但还能调用的假隔离）、未知模块名启动期 fail-fast。
- */
+/** Agent 进程内工具面与外部 MCP 协议工具面的独立模块配置验收。 */
 class McpToolRegistryModuleFilterTest {
 
-    /**
-     * 语义反转（票 01）：本用例过去断言「空值 = 注册全部已知模块」，那是 fail-open——
-     * 忘配 {@code MCP_MODULES} 的环境会连含客户姓名电话地址的 followup 模块一起暴露。
-     * 现在空值 = 空集：漏配的失败模式是「MCP 全哑」（可诊断、可补配），而不是「PII 外泄」。
-     */
     @Test
-    void unconfiguredModulesRegisterNoToolAtAll() {
-        McpToolRegistry registry = registry("",
-                tool("read_a", "masterdata"),
-                tool("read_b", "inventory"),
-                tool("get_order_draft", "messages"),
-                writeTool("write_c", "write"));
+    void agentAndProtocolModulesAreIndependent() {
+        McpToolRegistry registry = registry(
+                "control,write",
+                "masterdata,inventory",
+                tool("list_agent_tools", "control"),
+                writeTool("create_agent_draft", "write"),
+                tool("search_skus", "masterdata"),
+                tool("get_inventory_overview", "inventory"));
 
-        assertThat(registry.all()).isEmpty();
-        assertThat(registry.find("read_a")).isEmpty();
-        assertThat(registry.find("read_b")).isEmpty();
-        assertThat(registry.find("get_order_draft"))
-                .as("messages 模块在默认配置下必须不注册")
-                .isEmpty();
-        assertThat(registry.find("write_c")).isEmpty();
-        assertThat(registry.writeToolNames()).isEmpty();
-    }
-
-    /**
-     * 生产回归：显式三模块（{@code masterdata,inventory,orders-read}）的行为不因空值语义反转而改变，
-     * 列出的照常注册、未列出的（含 followup 这类带客户个人信息的模块与全部写工具）照常查不到。
-     */
-    @Test
-    void productionModuleListKeepsExactlyThoseThreeModules() {
-        McpToolRegistry registry = registry("masterdata,inventory,orders-read",
-                tool("search_provider_skus", "masterdata"),
-                tool("list_inventory", "inventory"),
-                tool("search_orders", "orders-read"),
-                tool("search_customers", "followup"),
-                tool("search_messages", "messages"),
-                writeTool("submit_jd_outbound", "write"));
-
-        assertThat(registry.all()).extracting(McpTool::name)
-                .containsExactlyInAnyOrder("search_provider_skus", "list_inventory", "search_orders");
-        assertThat(registry.find("search_customers")).isEmpty();
-        assertThat(registry.find("search_messages")).isEmpty();
-        assertThat(registry.find("submit_jd_outbound")).isEmpty();
-        assertThat(registry.writeToolNames()).isEmpty();
+        assertThat(registry.agentTools()).extracting(McpTool::name)
+                .containsExactlyInAnyOrder("list_agent_tools", "create_agent_draft");
+        assertThat(registry.protocolTools()).extracting(McpTool::name)
+                .containsExactlyInAnyOrder("search_skus", "get_inventory_overview");
+        assertThat(registry.findAgentTool("create_agent_draft")).isPresent();
+        assertThat(registry.findProtocolTool("create_agent_draft")).isEmpty();
+        assertThat(registry.findAgentTool("search_skus")).isEmpty();
+        assertThat(registry.findProtocolTool("search_skus")).isPresent();
     }
 
     @Test
-    void explicitModulesOnlyRegisterListedModulesAndOthersAreUnfindable() {
-        McpToolRegistry registry = registry("masterdata,inventory",
-                tool("read_a", "masterdata"),
-                tool("read_b", "inventory"),
-                tool("read_c", "procurement"),
-                writeTool("write_d", "write"));
+    void changingOneSurfaceDoesNotChangeTheOther() {
+        McpTool[] tools = {
+            tool("list_agent_tools", "control"),
+            writeTool("create_agent_draft", "write"),
+            tool("search_skus", "masterdata")
+        };
+        McpToolRegistry before = registry("control", "masterdata", tools);
+        McpToolRegistry agentChanged = registry("control,write", "masterdata", tools);
+        McpToolRegistry protocolChanged = registry("control", "masterdata,write", tools);
 
-        assertThat(registry.all()).extracting(McpTool::name)
-                .containsExactlyInAnyOrder("read_a", "read_b");
-        assertThat(registry.find("read_a")).isPresent();
-        assertThat(registry.find("read_b")).isPresent();
-        // 被过滤的模块在 find 上直接查不到——不是「列表里藏起来但还能调用」的假隔离
-        assertThat(registry.find("read_c")).isEmpty();
-        assertThat(registry.find("write_d")).isEmpty();
-        assertThat(registry.writeToolNames()).isEmpty();
+        assertThat(agentChanged.protocolTools()).extracting(McpTool::name)
+                .containsExactlyElementsOf(before.protocolTools().stream().map(McpTool::name).toList());
+        assertThat(protocolChanged.agentTools()).extracting(McpTool::name)
+                .containsExactlyElementsOf(before.agentTools().stream().map(McpTool::name).toList());
+        assertThat(agentChanged.findAgentTool("create_agent_draft")).isPresent();
+        assertThat(protocolChanged.findProtocolTool("create_agent_draft")).isPresent();
     }
 
     @Test
-    void toolsListAndToolsCallAgreeOnFilteredModules() throws Exception {
-        McpToolRegistry registry = registry("masterdata",
-                tool("read_a", "masterdata"),
-                tool("read_c", "procurement"));
-        ObjectMapper mapper = new ObjectMapper();
+    void emptyOrDelimiterOnlyConfigurationDisablesEachSurface() {
+        McpToolRegistry empty = registry("", "   ", tool("read_a", "masterdata"));
+        McpToolRegistry delimiters = registry(" , ", ",", tool("read_a", "masterdata"));
 
-        JsonNode listResult = rpc(registry, mapper,
+        assertThat(empty.agentTools()).isEmpty();
+        assertThat(empty.protocolTools()).isEmpty();
+        assertThat(delimiters.agentTools()).isEmpty();
+        assertThat(delimiters.protocolTools()).isEmpty();
+    }
+
+    @Test
+    void unknownAgentOrProtocolModuleFailsFastWithConfigurationName() {
+        assertThatThrownBy(() -> registry("mastrdata", "masterdata", tool("read_a", "masterdata")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("app.agent.tool-modules")
+                .hasMessageContaining("mastrdata");
+
+        assertThatThrownBy(() -> registry("masterdata", "inventry", tool("read_a", "masterdata")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("app.mcp.protocol-modules")
+                .hasMessageContaining("inventry");
+    }
+
+    @Test
+    void protocolListAndCallUseOnlyProtocolModules() {
+        McpToolRegistry registry = registry(
+                "control,write",
+                "masterdata",
+                tool("list_agent_tools", "control"),
+                writeTool("create_agent_draft", "write"),
+                tool("search_skus", "masterdata"));
+        McpServer server = new McpServer(registry, new McpAgentIdentity("protocol-test"), new ObjectMapper());
+
+        JsonNode list = server.handleRequest(
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}");
         List<String> names = new ArrayList<>();
-        listResult.get("result").get("tools").forEach(node -> names.add(node.get("name").asText()));
-        assertThat(names).containsExactly("read_a");
+        list.path("result").path("tools").forEach(node -> names.add(node.path("name").asText()));
+        assertThat(names).containsExactly("search_skus");
 
-        JsonNode callFiltered = rpc(registry, mapper,
+        JsonNode hiddenAgentTool = server.handleRequest(
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
-                        + "\"params\":{\"name\":\"read_c\",\"arguments\":{}}}");
-        assertThat(callFiltered.has("error"))
-                .as("被过滤模块的工具必须按「工具不存在」拒绝，不能仍可调用: %s", callFiltered)
-                .isTrue();
-        assertThat(callFiltered.get("error").get("message").asText()).contains("Unknown tool");
-
-        JsonNode callEnabled = rpc(registry, mapper,
-                "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
-                        + "\"params\":{\"name\":\"read_a\",\"arguments\":{}}}");
-        assertThat(callEnabled.has("error")).isFalse();
+                        + "\"params\":{\"name\":\"list_agent_tools\",\"arguments\":{}}}");
+        assertThat(hiddenAgentTool.path("error").path("message").asText()).contains("Unknown tool");
     }
 
     @Test
-    void ordersReadModuleCanBeEnabledOrFilteredLikeAnyOtherModule() {
-        McpToolRegistry registry = registry("orders-read",
-                tool("search_orders", "orders-read"),
-                tool("get_order", "orders-read"),
-                tool("read_a", "masterdata"));
+    void metaAgentDraftWhitelistBindsWhenProtocolSurfaceExcludesControlAndWrite() {
+        McpToolRegistry registry = registry(
+                "masterdata,inventory,orders-read,control,write",
+                "masterdata,inventory,orders-read",
+                tool("list_agent_tools", "control"),
+                writeTool("create_agent_draft", "write"),
+                writeTool("update_agent_draft", "write"),
+                tool("search_skus", "masterdata"),
+                tool("get_inventory_overview", "inventory"),
+                tool("search_orders", "orders-read"));
 
-        assertThat(registry.all()).extracting(McpTool::name)
-                .containsExactlyInAnyOrder("search_orders", "get_order");
-        assertThat(registry.find("search_orders")).isPresent();
-        assertThat(registry.find("get_order")).isPresent();
-        // masterdata 未列出，orders-read 工具不会被顺带放行别的模块
-        assertThat(registry.find("read_a")).isEmpty();
+        AgentToolBinding binding = new AgentToolBindingFactory(
+                        registry, new McpAgentIdentity("meta-agent-test"), new ObjectMapper())
+                .bind(
+                        "run_" + "0".repeat(32),
+                        List.of("list_agent_tools", "create_agent_draft", "update_agent_draft"),
+                        true);
+
+        assertThat(binding.specifications())
+                .extracting(spec -> spec.name())
+                .containsExactlyInAnyOrder("list_agent_tools", "create_agent_draft", "update_agent_draft");
+        assertThat(registry.findProtocolTool("list_agent_tools")).isEmpty();
+        assertThat(registry.findProtocolTool("create_agent_draft")).isEmpty();
+        assertThat(registry.findProtocolTool("update_agent_draft")).isEmpty();
     }
 
-    /** 未知模块名保持既有 fail-fast，且错误信息要同时给出拼错的名字与已知模块全集，运维照着就能改。 */
     @Test
-    void unknownModuleNameFailsFastAtConstruction() {
-        assertThatThrownBy(() -> registry("mastrdata", tool("read_a", "masterdata"), tool("read_b", "inventory")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("mastrdata")
-                .hasMessageContaining("masterdata")
-                .hasMessageContaining("inventory");
-    }
+    void protocolRejectsWritesEvenWhenItsModuleConfigurationIncludesWrite() {
+        McpToolRegistry registry = registry(
+                "write",
+                "masterdata,write",
+                tool("search_skus", "masterdata"),
+                writeTool("submit_jd_outbound", "write"));
+        McpServer server = new McpServer(registry, new McpAgentIdentity("protocol-test"), new ObjectMapper());
 
-    /** 空白与「只有逗号」同样落到零模块：任何解析不出模块名的配置都不得退化成放行。 */
-    @Test
-    void blankAndCommaOnlyModulesPropertyRegisterNoTool() {
-        McpToolRegistry viaBlank = registry("   ", tool("read_a", "masterdata"));
-        assertThat(viaBlank.all()).isEmpty();
-        assertThat(viaBlank.find("read_a")).isEmpty();
-
-        // 逗号分隔后全是空片段（如单独一个逗号）同样是「零模块」。
-        McpToolRegistry viaCommaOnly = registry(" , ", tool("read_a", "masterdata"));
-        assertThat(viaCommaOnly.all()).isEmpty();
-        assertThat(viaCommaOnly.find("read_a")).isEmpty();
-    }
-
-    /**
-     * 未配置时协议面同样一致：{@code tools/list} 为空列表，{@code tools/call} 按「工具不存在」拒绝。
-     * 排除发生在注册期，所以不可能出现「列表藏起来但还能调用」。
-     */
-    @Test
-    void unconfiguredModulesRejectToolsCallExactlyLikeToolsList() throws Exception {
-        McpToolRegistry registry = registry("", tool("read_a", "masterdata"));
-        ObjectMapper mapper = new ObjectMapper();
-
-        JsonNode listResult = rpc(registry, mapper,
+        JsonNode list = server.handleRequest(
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}");
-        assertThat(listResult.get("result").get("tools")).isEmpty();
+        assertThat(list.path("result").path("tools").toString())
+                .contains("search_skus")
+                .doesNotContain("submit_jd_outbound");
 
-        JsonNode callResult = rpc(registry, mapper,
+        JsonNode call = server.handleRequest(
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
-                        + "\"params\":{\"name\":\"read_a\",\"arguments\":{}}}");
-        assertThat(callResult.has("error"))
-                .as("未配置模块时工具调用必须一律拒绝: %s", callResult)
-                .isTrue();
-        assertThat(callResult.get("error").get("message").asText()).contains("Unknown tool");
+                        + "\"params\":{\"name\":\"submit_jd_outbound\",\"arguments\":{}}}");
+        JsonNode unknown = server.handleRequest(
+                "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
+                        + "\"params\":{\"name\":\"not_a_real_tool\",\"arguments\":{}}}");
+        assertThat(call.path("error").path("code").asInt()).isEqualTo(-32602);
+        assertThat(call.path("error").path("message").asText())
+                .isEqualTo("Unknown tool: submit_jd_outbound")
+                .doesNotContain("read-only", "write", "restricted");
+        assertThat(unknown.path("error").path("message").asText())
+                .isEqualTo("Unknown tool: not_a_real_tool");
     }
 
-    /**
-     * MCP 开着却一个模块都没启用 = 配置事故，启动期就该炸。
-     *
-     * <p>由来：空值语义从「全开」翻成「不开」之后，配置丢失的失败模式从「PII 外泄」
-     * 变成「机器人全哑」。哑是静默的——没人会立刻发现，等运营察觉已过去很久。
-     * 让它在部署那一刻由部署者当场看见，远好过第二天业务同事问「机器人怎么不说话」。
-     */
     @Test
-    void enabledMcpWithZeroResolvedModulesFailsFastAtStartup() {
-        assertThatThrownBy(() -> registry("", true, tool("read_a", "masterdata")))
+    void protocolRejectsNonObjectArgumentsWithoutTerminatingSubsequentRequests() {
+        McpToolRegistry registry = registry("masterdata", "masterdata", tool("search_skus", "masterdata"));
+        McpServer server = new McpServer(registry, new McpAgentIdentity("protocol-test"), new ObjectMapper());
+
+        for (String invalid : List.of("[]", "\"text\"", "42", "true")) {
+            JsonNode response = server.handleRequest(
+                    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\","
+                            + "\"params\":{\"name\":\"search_skus\",\"arguments\":" + invalid + "}}");
+            assertThat(response.path("error").path("code").asInt()).isEqualTo(-32602);
+            assertThat(response.path("error").path("message").asText())
+                    .isEqualTo("Invalid params: tools/call arguments must be an object");
+
+            JsonNode ping = server.handleRequest(
+                    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\",\"params\":{}}");
+            assertThat(ping.has("result")).isTrue();
+        }
+    }
+
+    @Test
+    void enabledTransportWithNoProtocolModuleFailsFastButDisabledTransportMayStayEmpty() {
+        McpTool tool = tool("search_skus", "masterdata");
+
+        assertThatThrownBy(() -> registry("masterdata", "", true, false, tool))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("app.mcp.enabled=true")
-                .hasMessageContaining("masterdata");
+                .hasMessageContaining("app.mcp.protocol-modules")
+                .hasMessageContaining("app.mcp.enabled=true");
 
-        // 只有空白/逗号的配置同样算「解析后为空」，不能因为字符串非空就放过
-        assertThatThrownBy(() -> registry(" , ", true, tool("read_a", "masterdata")))
-                .isInstanceOf(IllegalStateException.class);
+        assertThat(registry("masterdata", "", false, false, tool).protocolTools()).isEmpty();
+
+        assertThatThrownBy(() -> registry("masterdata", "", false, true, tool))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("app.mcp.http.enabled=true");
     }
 
-    /** MCP 未开启时，空模块是合法状态（整体关闭），不该炸。 */
     @Test
-    void disabledMcpWithZeroModulesIsLegal() {
-        McpToolRegistry registry = registry("", false, tool("read_a", "masterdata"));
-        assertThat(registry.find("read_a")).isEmpty();
+    void enabledTransportFailsFastWhenConfiguredModulesContainNoPublicReadTool() {
+        assertThatThrownBy(() -> registry(
+                        "write",
+                        "write",
+                        true,
+                        false,
+                        writeTool("submit_jd_outbound", "write")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("可公开只读工具")
+                .hasMessageContaining("app.mcp.protocol-modules");
     }
 
-    /** MCP 开着且显式列了模块——正常态，不炸。 */
     @Test
-    void enabledMcpWithExplicitModulesStartsNormally() {
-        McpToolRegistry registry = registry("masterdata", true, tool("read_a", "masterdata"));
-        assertThat(registry.find("read_a")).isPresent();
+    void productionProtocolModulesExposeExactlyTheThreeReviewedReadModules() {
+        McpToolRegistry registry = registry(
+                "control,write",
+                "masterdata,inventory,orders-read",
+                tool("search_skus", "masterdata"),
+                tool("get_inventory_overview", "inventory"),
+                tool("search_orders", "orders-read"),
+                tool("list_agent_tools", "control"),
+                writeTool("submit_jd_outbound", "write"));
+
+        assertThat(registry.protocolTools()).extracting(McpTool::name)
+                .containsExactlyInAnyOrder("search_skus", "get_inventory_overview", "search_orders");
     }
 
-    private static McpToolRegistry registry(String modulesProperty, McpTool... tools) {
-        return registry(modulesProperty, false, tools);
+    @Test
+    void listAgentToolsIsAgentInternalEvenIfControlIsAddedToProtocolConfiguration() {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<McpToolRegistry> provider = mock(ObjectProvider.class);
+        McpTool listAgentTools = new McpControlReadTools(provider, new ObjectMapper()).tools().getFirst();
+
+        assertThat(listAgentTools.name()).isEqualTo("list_agent_tools");
+        assertThat(listAgentTools.externallyDiscoverable()).isFalse();
     }
 
-    private static McpToolRegistry registry(String modulesProperty, boolean mcpEnabled, McpTool... tools) {
+    @Test
+    void bundleReadToolsRequireIndependentOptInOnEachSurface() {
+        McpTool bundle = tool("list_bundles", McpBundleReadTools.MODULE);
+        McpTool masterdata = tool("search_skus", "masterdata");
+
+        McpToolRegistry agentOnly = registryWithBundle(
+                "masterdata,bundles-read", "masterdata", bundle, masterdata);
+        assertThat(agentOnly.findAgentTool("list_bundles")).isPresent();
+        assertThat(agentOnly.findProtocolTool("list_bundles")).isEmpty();
+
+        McpToolRegistry protocolOnly = registryWithBundle(
+                "masterdata", "masterdata,bundles-read", bundle, masterdata);
+        assertThat(protocolOnly.findAgentTool("list_bundles")).isEmpty();
+        assertThat(protocolOnly.findProtocolTool("list_bundles")).isPresent();
+
+        McpToolRegistry disabled = registryWithBundle("masterdata", "masterdata", bundle, masterdata);
+        assertThat(disabled.findAgentTool("list_bundles")).isEmpty();
+        assertThat(disabled.findProtocolTool("list_bundles")).isEmpty();
+    }
+
+    private static McpToolRegistry registry(
+            String agentModulesProperty, String protocolModulesProperty, McpTool... tools) {
+        return registry(agentModulesProperty, protocolModulesProperty, false, false, tools);
+    }
+
+    private static McpToolRegistry registry(
+            String agentModulesProperty,
+            String protocolModulesProperty,
+            boolean mcpEnabled,
+            boolean mcpHttpEnabled,
+            McpTool... tools) {
         List<McpTool> readTools = new ArrayList<>();
         List<McpTool> writeTools = new ArrayList<>();
         for (McpTool tool : tools) {
@@ -226,7 +276,44 @@ class McpToolRegistryModuleFilterTest {
         when(domains.tools()).thenReturn(List.of());
         McpControlReadTools control = mock(McpControlReadTools.class);
         when(control.tools()).thenReturn(List.of());
-        return new McpToolRegistry(reads, writes, domains, control, null, null, modulesProperty, mcpEnabled, false);
+        return new McpToolRegistry(
+                reads,
+                writes,
+                domains,
+                control,
+                null,
+                null,
+                agentModulesProperty,
+                protocolModulesProperty,
+                mcpEnabled,
+                mcpHttpEnabled);
+    }
+
+    private static McpToolRegistry registryWithBundle(
+            String agentModulesProperty,
+            String protocolModulesProperty,
+            McpTool bundleTool,
+            McpTool masterdataTool) {
+        McpReadTools reads = mock(McpReadTools.class);
+        when(reads.tools()).thenReturn(List.of(masterdataTool));
+        McpWriteTools writes = mock(McpWriteTools.class);
+        when(writes.tools()).thenReturn(List.of());
+        McpDomainReadTools domains = mock(McpDomainReadTools.class);
+        when(domains.tools()).thenReturn(List.of());
+        McpControlReadTools control = mock(McpControlReadTools.class);
+        when(control.tools()).thenReturn(List.of());
+        McpBundleReadTools bundles = mock(McpBundleReadTools.class);
+        when(bundles.tools()).thenReturn(List.of(bundleTool));
+        return new McpToolRegistry(
+                reads,
+                writes,
+                domains,
+                control,
+                null,
+                null,
+                bundles,
+                agentModulesProperty,
+                protocolModulesProperty);
     }
 
     private static McpTool tool(String name, String module) {
@@ -234,7 +321,7 @@ class McpToolRegistryModuleFilterTest {
                 name,
                 "测试工具 " + name,
                 McpToolRegistry.schema(Map.of(), List.of()),
-                (context, args) -> null,
+                (context, args) -> com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode(),
                 module);
     }
 
@@ -243,23 +330,8 @@ class McpToolRegistryModuleFilterTest {
                 name,
                 "测试写工具 " + name,
                 McpToolRegistry.schema(Map.of(), List.of()),
-                (context, args) -> null,
+                (context, args) -> com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode(),
                 false,
                 module);
-    }
-
-    private static JsonNode rpc(McpToolRegistry registry, ObjectMapper mapper, String requestLine) throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        McpServer server = new McpServer(
-                new ByteArrayInputStream((requestLine + "\n").getBytes(StandardCharsets.UTF_8)),
-                out,
-                registry,
-                new McpAgentIdentity("module-filter-test"),
-                mapper);
-        server.run();
-        String output = out.toString(StandardCharsets.UTF_8);
-        List<String> lines = output.lines().filter(line -> !line.isBlank()).toList();
-        assertThat(lines).hasSize(1);
-        return mapper.readTree(lines.getFirst());
     }
 }

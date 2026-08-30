@@ -6,7 +6,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import cn.zimu.fulfillment.common.audit.AuditActorType;
@@ -22,9 +24,15 @@ import cn.zimu.fulfillment.order.dto.CustomerInput;
 import cn.zimu.fulfillment.order.dto.OrderItemInput;
 import cn.zimu.fulfillment.order.dto.Receiver;
 import cn.zimu.fulfillment.order.dto.Settlement;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -407,5 +415,141 @@ class StructuredImportApiTest {
                 "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
                 Integer.class, ref);
         assertThat(orders).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentSameContentReturnsTheOneCommittedBatchToBothCallers() throws Exception {
+        String ref = orderRef("CSX-ORDER-CONCURRENT");
+        StructuredOrderRow row = new StructuredOrderRow(ref, null,
+                order(ref, ref + "-L1", ref + "-L2"), Map.of());
+        CountDownLatch firstCreateEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirstCreate = new CountDownLatch(1);
+
+        doAnswer(invocation -> {
+                    firstCreateEntered.countDown();
+                    if (!releaseFirstCreate.await(10, TimeUnit.SECONDS)) {
+                        throw new AssertionError("timed out waiting to release the first structured import");
+                    }
+                    return invocation.callRealMethod();
+                })
+                .when(orderCreateService)
+                .createImported(any(), anyLong(), anyString(), any(), any(AuditActorType.class));
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<Map<String, Object>> first = pool.submit(() -> sourceImportService.importStructured(
+                    SourceChannel.CAISHIXIAN, List.of(row), batchNo(), ctx()));
+            assertThat(firstCreateEntered.await(10, TimeUnit.SECONDS))
+                    .as("the first import reaches order creation while its batch is uncommitted")
+                    .isTrue();
+
+            Future<Map<String, Object>> second = pool.submit(() -> sourceImportService.importStructured(
+                    SourceChannel.CAISHIXIAN, List.of(row), batchNo(), ctx()));
+            org.awaitility.Awaitility.await()
+                    .atMost(Duration.ofSeconds(10))
+                    .until(() -> Boolean.TRUE.equals(jdbc.queryForObject(
+                            """
+                            SELECT EXISTS(
+                                SELECT 1
+                                FROM pg_locks locks
+                                JOIN pg_stat_activity activity ON activity.pid=locks.pid
+                                WHERE NOT locks.granted AND activity.datname=current_database()
+                            )
+                            """,
+                            Boolean.class)));
+
+            releaseFirstCreate.countDown();
+            Map<String, Object> firstResult = first.get(15, TimeUnit.SECONDS);
+            Map<String, Object> secondResult = second.get(15, TimeUnit.SECONDS);
+
+            assertThat(secondResult.get("id")).isEqualTo(firstResult.get("id"));
+            assertThat(jdbc.queryForObject(
+                    """
+                    SELECT count(*) FROM app.import_batches
+                    WHERE batch_type='SOURCE_ORDER' AND source_channel='CAISHIXIAN'
+                      AND content_sha256=?
+                    """,
+                    Integer.class,
+                    firstResult.get("content_sha256"))).isEqualTo(1);
+            assertThat(jdbc.queryForObject(
+                    "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
+                    Integer.class,
+                    ref)).isEqualTo(1);
+            verify(orderCreateService, times(1)).createImported(
+                    any(), anyLong(), anyString(), any(), any(AuditActorType.class));
+        } finally {
+            releaseFirstCreate.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void unmappedStructuredItemIsReviewBlockingAtRawBatchAndReadinessLevels() {
+        String ref = orderRef("CSX-ORDER-UNMAPPED");
+        String missingSourceSkuRef = "CSX-MISSING-" + SEQ.incrementAndGet();
+        CanonicalOrderInput input = new CanonicalOrderInput(
+                SourceChannel.CAISHIXIAN,
+                ref,
+                "v1",
+                new CustomerInput(null, "CSX-MEMBER-001", "测试客户"),
+                new Receiver("测试收货人", "13800000001", "北京", "北京市", "朝阳区", null, "测试路 1 号"),
+                List.of(new OrderItemInput(
+                        ref + "-L1",
+                        LineType.SINGLE,
+                        null,
+                        missingSourceSkuRef,
+                        "待配置来源商品",
+                        "标准箱",
+                        "箱",
+                        "1",
+                        null)),
+                new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                null,
+                "structured-review-parity-test",
+                List.of());
+
+        Map<String, Object> result = sourceImportService.importStructured(
+                SourceChannel.CAISHIXIAN,
+                List.of(new StructuredOrderRow(ref, ref + "-L1", input, Map.of("source_ref", ref))),
+                batchNo(),
+                ctx());
+        long batchId = Long.parseLong((String) result.get("id"));
+
+        assertThat(result.get("status")).isEqualTo("COMPLETED_WITH_REVIEW");
+        assertThat((Map<String, Object>) result.get("row_counts")).containsAllEntriesOf(Map.of(
+                "total", 1, "accepted", 0, "need_review", 1, "rejected", 0));
+        assertThat((Map<String, Object>) result.get("confirm_readiness")).containsAllEntriesOf(Map.of(
+                "ready_rows", 0,
+                "pending_rows", 0,
+                "blocked_rows", 1,
+                "confirmable", false));
+
+        Map<String, Object> raw = jdbc.queryForMap(
+                """
+                SELECT status, error_code, error_detail::text error_detail,
+                       order_id, order_line_id
+                FROM app.raw_import_rows
+                WHERE import_batch_id=?
+                """,
+                batchId);
+        assertThat(raw)
+                .containsEntry("status", "NEED_REVIEW")
+                .containsEntry("error_code", "SKU_MATCH");
+        assertThat(raw.get("order_id")).isNotNull();
+        assertThat(raw.get("order_line_id")).isNotNull();
+        assertThat((String) raw.get("error_detail")).contains("SKU_MAPPING_REQUIRED");
+        assertThat(jdbc.queryForMap(
+                "SELECT processing_stage, exception_code FROM app.order_lines WHERE id=?",
+                raw.get("order_line_id")))
+                .containsEntry("processing_stage", "NEED_REVIEW")
+                .containsEntry("exception_code", "SKU_MAPPING_REQUIRED");
+
+        assertThatThrownBy(() -> sourceImportService.confirm(batchId, "confirm-" + ref, ctx()))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED"));
+        assertThat(jdbc.queryForObject(
+                "SELECT confirmed_at IS NULL FROM app.import_batches WHERE id=?",
+                Boolean.class,
+                batchId)).isTrue();
     }
 }

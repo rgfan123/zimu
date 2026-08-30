@@ -290,6 +290,7 @@ public class OrderMapper {
         snapshot.put("bundle_id", line.getBundleId());
         snapshot.put("sku_id", line.getSkuId());
         snapshot.put("sku_code", skuCodes.get(line.getSkuId()));
+        snapshot.put("source_sku_ref", line.getSourceSkuRef());
         snapshot.put("provider_id", line.getFulfillmentProviderId());
         snapshot.put("product_name", line.getProductNameSnapshot());
         snapshot.put("specification", line.getSpecificationSnapshot());

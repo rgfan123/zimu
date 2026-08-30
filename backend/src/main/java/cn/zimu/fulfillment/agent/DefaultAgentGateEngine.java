@@ -67,7 +67,7 @@ public class DefaultAgentGateEngine implements AgentGateEngine {
                 blockers.add("tool_names 含空白项");
                 continue;
             }
-            McpTool tool = registry.find(name).orElse(null);
+            McpTool tool = registry.findAgentTool(name).orElse(null);
             if (tool == null) {
                 blockers.add("白名单工具未注册: " + name);
                 continue;

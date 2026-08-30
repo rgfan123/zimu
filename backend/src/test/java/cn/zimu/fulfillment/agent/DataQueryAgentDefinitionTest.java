@@ -95,7 +95,7 @@ class DataQueryAgentDefinitionTest {
     void whitelistNeverReferencesAnyWriteTool() {
         // 08 决策：写工具集合向真实注册表按读写元数据（readOnly）查询，不再手抄清单，
         // 写工具集合增长时不会静默漏检
-        Set<String> writeToolNames = toolRegistry.writeToolNames();
+        Set<String> writeToolNames = toolRegistry.agentWriteToolNames();
         assertThat(writeToolNames)
                 .as("注册表必须能判定写工具集合（默认禁写不变式）")
                 .isNotEmpty();

@@ -37,6 +37,7 @@ import cn.zimu.fulfillment.masterdata.ProductArchiveSheetService;
 import cn.zimu.fulfillment.sku.ProviderSkuDetail;
 import cn.zimu.fulfillment.sku.SkuDetail;
 import cn.zimu.fulfillment.sku.FulfillmentProviderDto;
+import cn.zimu.fulfillment.sku.SkuSearchFilter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -47,6 +48,7 @@ import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import org.springframework.stereotype.Component;
 
 /**
@@ -65,6 +67,8 @@ public class McpDomainReadTools {
     private static final Set<String> TICKET_STATUSES =
             Set.of("PENDING", "SUCCESS", "PARTIAL", "FAILED", "CANCELLED");
     private static final Set<String> ARCHIVE_STATUSES = Set.of("在产", "停产", "研发", "新品");
+    private static final Set<String> SKU_SEARCH_ARGUMENTS = Set.of(
+            "query", "provider_id", "barcode", "sku_code", "category_id", "tag", "active", "page", "size");
 
     private final FulfillmentReadService reads;
     private final InventoryOverviewService inventoryOverview;
@@ -120,11 +124,20 @@ public class McpDomainReadTools {
                         "procurement"),
                 new McpToolRegistry.SimpleTool(
                         "search_skus",
-                        "按商品名/规格/SKU 编号/条码（69 码）模糊检索 SKU 主数据（含进货价与零售价、履约方归属），可分页。",
+                        "多条件检索 SKU 主数据（含进货价与零售价、履约方归属），可分页。"
+                                + "query 对商品名/规格/SKU 编码/条码做模糊检索；barcode 与 sku_code 精确匹配；"
+                                + "tag 按商品标签精确匹配单个元素；category_id 按品类收窄。"
+                                + "多个条件之间是‘与’。active 不传时返回全部、含停用 SKU；"
+                                + "只有显式传 JSON true/false 才按启用位筛选。",
                         schema(
                                 Map.of(
-                                        "query", stringProperty("模糊查询词（商品名/规格/SKU 编号/条码 69 码）"),
+                                        "query", stringProperty("模糊查询词（商品名/规格/SKU 编码/条码）"),
                                         "provider_id", stringProperty("按履约方过滤"),
+                                        "barcode", stringProperty("条码，精确匹配"),
+                                        "sku_code", stringProperty("SKU 编码，精确匹配"),
+                                        "category_id", stringProperty("按商品品类过滤"),
+                                        "tag", stringProperty("商品标签，精确匹配单个标签"),
+                                        "active", booleanProperty("按启用位过滤；不传则启用与停用一并返回"),
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
@@ -327,10 +340,17 @@ public class McpDomainReadTools {
     // ------------------------------------------------------------------
 
     private JsonNode searchSkus(McpRequestContext context, Map<String, Object> args) {
-        String query = optionalQuery(args, "query");
-        Long providerId = optionalIdentifier(args, "provider_id");
+        rejectUnsupportedArguments(args, SKU_SEARCH_ARGUMENTS);
+        SkuSearchFilter filter = new SkuSearchFilter(
+                optionalQuery(args, "query"),
+                optionalIdentifier(args, "provider_id"),
+                optionalQuery(args, "barcode"),
+                optionalQuery(args, "sku_code"),
+                optionalIdentifier(args, "category_id"),
+                optionalQuery(args, "tag"),
+                optionalBoolean(args, "active"));
         PageResponse<SkuDetail> result =
-                masterData.searchSkus(page(args, 0), pageSize(args, 20), query, providerId);
+                masterData.searchSkus(page(args, 0), pageSize(args, 20), filter);
         return pageNode(result, McpDomainReadTools::skuNode);
     }
 
@@ -891,6 +911,14 @@ public class McpDomainReadTools {
             return flag;
         }
         throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 " + key + " 必须是布尔值");
+    }
+
+    private static void rejectUnsupportedArguments(Map<String, Object> args, Set<String> allowed) {
+        Set<String> unsupported = new TreeSet<>(args.keySet());
+        unsupported.removeAll(allowed);
+        if (!unsupported.isEmpty()) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", "不支持的参数: " + unsupported);
+        }
     }
 
     private static Instant optionalDate(Map<String, Object> args, String key) {

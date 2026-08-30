@@ -22,8 +22,25 @@
 # 症状长得像「工作区乱」，其实是一个确定的、可检测的状态。开工前跑一次即可。
 #
 # 用法：bash scripts/check-baseline.sh   （在错的线上退出码非 0）
+#
+# 防重复开工门禁（只读，不 fetch、不写 refs/index/工作树）：
+#   bash scripts/check-baseline.sh --pre-work --target WORKTREE --baseline COMMIT \
+#     --work-item STABLE_ID --intent normalized-intent \
+#     [--candidate REF_OR_PATCH_OR_WORKTREE] [--registry FILE] --json
+# 只有 START_ALLOWED 返回 0；其余稳定裁决返回 1；参数或记录非法返回 2。
 
 set -euo pipefail
+
+if [ "${1:-}" = "--ledger" ] || [ "${1:-}" = "--pre-work" ]; then
+    script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+    exec python3 "$script_dir/workspace_convergence.py" "$@"
+fi
+
+if [ "$#" -ne 0 ]; then
+    echo "用法：bash scripts/check-baseline.sh [--ledger FILE --target WORKTREE [--json]]" >&2
+    echo "   或：bash scripts/check-baseline.sh --pre-work --target WORKTREE --baseline COMMIT --work-item ID --intent NORMALIZED_INTENT [--candidate REF_OR_PATH] [--registry FILE] [--json]" >&2
+    exit 2
+fi
 
 root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$root" ]; then

@@ -121,20 +121,20 @@ class McpExposureViewTest {
 
         for (McpExposureModule module : exposure.openModules()) {
             for (McpExposureTool viewTool : module.tools()) {
-                assertThat(registry.find(viewTool.name()))
+                assertThat(registry.findProtocolTool(viewTool.name()))
                         .as("视图声称已开放的工具 %s 必须真的在注册表里", viewTool.name())
                         .isPresent();
-                assertThat(registry.find(viewTool.name()).orElseThrow().module()).isEqualTo(module.module());
+                assertThat(registry.findProtocolTool(viewTool.name()).orElseThrow().module()).isEqualTo(module.module());
             }
         }
         for (String unopened : exposure.unopenedModules()) {
-            assertThat(registry.all()).extracting(McpTool::module)
+            assertThat(registry.protocolTools()).extracting(McpTool::module)
                     .as("视图声称未开放的模块 %s 不得有任何已注册工具", unopened)
                     .doesNotContain(unopened);
         }
         assertThat(exposure.openModules()).extracting(McpExposureModule::module)
                 .containsExactlyInAnyOrderElementsOf(
-                        registry.all().stream().map(McpTool::module).distinct().toList());
+                        registry.protocolTools().stream().map(McpTool::module).distinct().toList());
     }
 
     /**
@@ -177,7 +177,8 @@ class McpExposureViewTest {
         when(domains.tools()).thenReturn(List.of());
         McpControlReadTools control = mock(McpControlReadTools.class);
         when(control.tools()).thenReturn(List.of());
-        return new McpToolRegistry(reads, writes, domains, control, null, null, modulesProperty, false, false);
+        // 兼容便捷构造：同一份清单进 Agent / 协议两个工具面；本视图只读协议面，语义与拆分前一致。
+        return new McpToolRegistry(reads, writes, domains, control, modulesProperty);
     }
 
     private static McpTool tool(String name, String module, String description) {

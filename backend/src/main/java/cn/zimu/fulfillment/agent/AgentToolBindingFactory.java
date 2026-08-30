@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Agent ↔ MCP 工具绑定工厂（agent-decision-layer 03）：从唯一工具源
- * {@link McpToolRegistry#all()} 按 {@code AgentDefinition.tool_names} 白名单生成
+ * {@link McpToolRegistry#agentTools()} 按 {@code AgentDefinition.tool_names} 白名单生成
  * LangChain4j {@link ToolSpecification} 与执行器。
  *
  * <p>每个 Agent run 绑定一次（run_id 即 {@link AgentToolInvoker} 的上下文关联键）；
@@ -89,7 +89,7 @@ public class AgentToolBindingFactory {
                 runId, registry, identity, mapper, observability, whitelist);
         if (toolNames != null) {
             for (String name : toolNames) {
-                McpTool tool = registry.find(name).orElseThrow(() -> new IllegalArgumentException(
+                McpTool tool = registry.findAgentTool(name).orElseThrow(() -> new IllegalArgumentException(
                         "Agent 工具白名单引用未知 MCP 工具: " + name
                                 + "；请同步 AgentDefinition.tool_names 或注册该工具"));
                 if (!tool.readOnly() && !allowWrite) {
@@ -106,7 +106,7 @@ public class AgentToolBindingFactory {
     /**
      * 会话 Agent 的最小权限绑定：只暴露指定模块内且 {@code readOnly=true} 的工具。
      *
-     * <p>与普通定义绑定不同，定义中属于其他模块、写工具或被全局 MCP_MODULES 隐藏的名称
+     * <p>与普通定义绑定不同，定义中属于其他模块、写工具或被 Agent 工具面配置隐藏的名称
      * 都按策略拒绝而不是配置漂移抛错。运行时绑定白名单只含有效工具；即使底层运行时尝试
      * 旁路调用已注册写工具，{@link AgentToolInvoker} 仍会返回 TOOL_NOT_AUTHORIZED 并留观测。
      */
@@ -119,7 +119,7 @@ public class AgentToolBindingFactory {
         List<String> exposed = new java.util.ArrayList<>();
         List<String> denied = new java.util.ArrayList<>();
         for (String name : requested) {
-            McpTool tool = registry.find(name).orElse(null);
+            McpTool tool = registry.findAgentTool(name).orElse(null);
             if (tool != null && tool.readOnly() && modules.contains(tool.module())) {
                 exposed.add(name);
             } else {
@@ -136,7 +136,7 @@ public class AgentToolBindingFactory {
                 Set.copyOf(exposed),
                 Set.copyOf(denied));
         for (String name : exposed) {
-            McpTool tool = registry.find(name).orElseThrow();
+            McpTool tool = registry.findAgentTool(name).orElseThrow();
             tools.put(toSpecification(tool), rejectionAwareInvoker);
         }
         return new RestrictedBinding(

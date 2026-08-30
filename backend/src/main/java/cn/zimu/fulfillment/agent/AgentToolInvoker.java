@@ -98,9 +98,9 @@ public class AgentToolInvoker implements ToolExecutor {
         long startedNanos = System.nanoTime();
         String outcome;
         boolean success;
-        McpTool tool = registry.find(toolName).orElse(null);
+        McpTool tool = registry.findAgentTool(toolName).orElse(null);
         if (tool == null && policyDeniedNames.contains(toolName)) {
-            // 全局 MCP_MODULES 可能已把该工具移出注册表；会话策略仍知道它来自定义白名单且
+            // Agent 工具面配置可能已隐藏该工具；会话策略仍知道它来自定义白名单且
             // 被模块/读写上限拒绝，因此保持权限错误语义并留观测，而不是伪装成未知工具。
             outcome = McpToolErrorEnvelope.notAuthorized();
             success = false;

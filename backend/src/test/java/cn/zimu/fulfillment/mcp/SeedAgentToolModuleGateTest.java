@@ -25,7 +25,11 @@ import org.mockito.Mockito;
 
 /**
  * 门禁：迁移里种子 Agent 白名单引用的工具，其所属模块必须都在 {@code .env.example} 的
- * {@code MCP_MODULES} 里开放。
+ * {@code AGENT_TOOL_MODULES} 里开放。
+ *
+ * <p>双工具面拆分后，Agent 绑定走的是 {@code app.agent.tool-modules}（Agent 进程内工具面），
+ * 与外部 MCP 协议面 {@code MCP_MODULES} 无关——本门禁对账的对象因此是 AGENT_TOOL_MODULES；
+ * 协议面尽可以窄到只读三模块，不影响种子 Agent。
  *
  * <p>为什么需要这条用例：{@link cn.zimu.fulfillment.agent.AgentToolBindingFactory#bind}
  * 对白名单里在注册表中找不到的工具是**直接抛 IllegalArgumentException**，不是跳过。而
@@ -34,7 +38,7 @@ import org.mockito.Mockito;
  * 编译期、启动期都看不出来——只有等谁真的按样例拉起环境、真的跑那个 Agent 才会暴露。
  *
  * <p>所以这里在构建期就把两边对上：一边是迁移里种子 Agent 的 {@code tool_whitelist}，
- * 一边是 {@code .env.example} 的 {@code MCP_MODULES}。将来有人加 Agent（引入新模块的工具）
+ * 一边是 {@code .env.example} 的 {@code AGENT_TOOL_MODULES}。将来有人加 Agent（引入新模块的工具）
  * 或收紧样例值，两边失配立刻红，而不是留给下一个拉环境的人去撞。
  *
  * <p>三个输入都取真源，不抄常量：模块归属来自真实工具 provider 实例（{@code tools()} 返回的
@@ -58,6 +62,7 @@ class SeedAgentToolModuleGateTest {
             McpOrdersReadTools.class,
             McpControlReadTools.class,
             McpWriteTools.class,
+            McpBundleReadTools.class,
             KehuzxRemoteReadTools.class);
 
     @Test
@@ -89,7 +94,7 @@ class SeedAgentToolModuleGateTest {
         });
 
         assertThat(missingByAgent)
-                .as(".env.example 的 MCP_MODULES=%s 未覆盖种子 Agent 白名单所属模块。"
+                .as(".env.example 的 AGENT_TOOL_MODULES=%s 未覆盖种子 Agent 白名单所属模块。"
                         + "照样例拉起的环境里，这些 Agent 会在 AgentToolBindingFactory.bind 处"
                         + "抛 IllegalArgumentException 而整个不可用——要么把模块加进样例值，"
                         + "要么改掉这些 Agent 的白名单", enabledModules)
@@ -113,7 +118,7 @@ class SeedAgentToolModuleGateTest {
 
         assertThat(unknownByAgent)
                 .as("种子 Agent 白名单引用了并不存在的 MCP 工具；这与模块开放无关，"
-                        + "无论 MCP_MODULES 怎么配都会在绑定期抛错")
+                        + "无论 AGENT_TOOL_MODULES 怎么配都会在绑定期抛错")
                 .isEmpty();
     }
 
@@ -147,19 +152,19 @@ class SeedAgentToolModuleGateTest {
         return type == ObjectMapper.class ? new ObjectMapper() : Mockito.mock(type);
     }
 
-    /** {@code .env.example} 里 MCP_MODULES 实际开放的模块集合。 */
+    /** {@code .env.example} 里 AGENT_TOOL_MODULES 实际开放的模块集合（Agent 进程内工具面）。 */
     private static Set<String> envExampleModules(Path root) throws IOException {
         for (String line : Files.readAllLines(root.resolve(".env.example"), StandardCharsets.UTF_8)) {
             String stripped = line.stripLeading();
-            if (!stripped.startsWith("MCP_MODULES=")) {
+            if (!stripped.startsWith("AGENT_TOOL_MODULES=")) {
                 continue;
             }
-            return Arrays.stream(stripped.substring("MCP_MODULES=".length()).split(","))
+            return Arrays.stream(stripped.substring("AGENT_TOOL_MODULES=".length()).split(","))
                     .map(String::strip)
                     .filter(value -> !value.isEmpty())
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         }
-        throw new IllegalStateException(".env.example 缺少 MCP_MODULES");
+        throw new IllegalStateException(".env.example 缺少 AGENT_TOOL_MODULES");
     }
 
     /**

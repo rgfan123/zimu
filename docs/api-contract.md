@@ -461,13 +461,20 @@ Agent 可以提建议，但上述终局动作必须由管理后台人员确认�
 | `get_order_timeline` | `order_id` | OrderEvent 列表 | 否 |
 | `get_shipment` | `shipment_id` | Shipment/Tracking 详情 | 否 |
 | `check_shipment_source_sync` | `shipment_id` | PII 安全的 receiver/数量比较、状态、`blocker_codes`、`outcome_category` 与 `next_action`；只作建议且 `write_allowed=false` | 否 |
-| `search_skus` | `query`, `provider_id?`, `page`, `size` | SKU 候选页 | 否 |
+| `search_skus` | `query?`, `provider_id?`, `barcode?`, `sku_code?`, `category_id?`, `tag?`, `active?`, `page`, `size` | SKU 候选页；`query` 含条码模糊检索，`barcode`/`sku_code`/`tag` 为精确匹配，条件之间为“与”；`active` 不传时含停用 SKU | 否 |
+| `list_bundles` | `status?`, `provider_id?`, `query?`, `page`, `size` | 静态礼包摘要页，含组件数、履约方及拆单事实 | 否 |
+| `get_bundle` | `bundle_id` | 礼包状态与组件业务投影；跨履约方时明确发货单元数 | 否 |
+| `find_bundle_candidates` | `query?`, `provider_id?`, `mapping_status?`, `page`, `size` | 启用 SKU 候选、进货价状态、履约映射及各仓最新库存观测 | 否 |
 | `create_internal_order` | `idempotency_key` + OpenAPI `InternalOrderInput` | OrderDetail；可能同时产生 ReviewCase | 是，创建订单 |
 | `suggest_customer_match` | `idempotency_key`, `review_case_id`, `expected_version`, `customer_id?`, `create_customer_suggestion?`, `reason` | 追加建议后的 ReviewCase | 只追加建议，不确认映射 |
 | `suggest_sku_match` | `idempotency_key`, `review_case_id`, `expected_version`, `sku_id?`, `quantity_multiplier?`, `reason` | 追加建议后的 ReviewCase | 只追加建议，不确认映射 |
 | `submit_business_material` | `idempotency_key`, `review_case_id`, `expected_version`, `evidence_refs`, `note` | 追加材料后的 ReviewCase | 只追加证据，不关闭复核 |
 
 MCP 标识符和数量沿用 OpenAPI 的字符串规则。`operator`/Agent 身份来自 MCP 认证上下文，不能由工具参数冒充；写工具使用与 REST 相同的幂等注册表、乐观版本和审计切面。服务端不得注册 `resolve_*`、`cancel_remaining`、`retry_procurement` 或 `complete_source_followup` 一类 Agent 工具；未来若改变该权限边界，必须新开业务决策票。
+
+静态礼包读取工具属于独立 `bundles-read` 模块：进程内 Agent 与公共 MCP 协议面分别配置，
+公共面只有显式加入该模块才可发现。投影不返回履约方连接配置、库存原始载荷或任何写操作；
+没有库存观测时返回 `NOT_OBSERVED`，不得伪造为零库存。
 
 ## 9. 自动生成与副作用
 

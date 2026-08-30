@@ -18,7 +18,6 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -40,20 +39,23 @@ class WangqiSourceOrderImportApiTest {
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Autowired TestRestTemplate http;
-    @Autowired JdbcTemplate jdbc;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     cn.zimu.fulfillment.connector.wecom.WecomConnectionManager ignoredWecomConnectionManager;
 
     @Test
     @SuppressWarnings("unchecked")
     void exactFifteenColumnWorkbookImportsTwoOrdersAndSkipsPurchasePriceSummary() throws Exception {
-        // 即使错误维护了普通 SKU 映射，名称明确的礼包也必须等待 bundle mapping，禁止降级 SINGLE 误发。
-        long skuId = jdbc.queryForObject(
-                "SELECT sku_id FROM app.provider_skus WHERE provider_sku_code='JD-SKU-000001'", Long.class);
-        jdbc.update(
-                "INSERT INTO app.source_channel_skus(source_channel,source_sku_ref,source_product_name,"
-                        + "quantity_multiplier,sku_id,active) VALUES ('DAZHE','P26011900044','错误普通映射',1,?,true)",
-                skuId);
+        // 两行都没有任何来源映射：名称明确是礼包 → 落待解析礼包行等人工，禁止降级 SINGLE 误发。
+        //
+        // 这里原先还会先插一条「错误的普通 SKU 映射」（DAZHE/P26011900044），断言它抢不走礼包判定。
+        // 该断言随「统一来源礼包查找键」一票作废：判定顺序已改为「礼包映射 → SKU 映射 → 名字启发式」，
+        // 活跃 SKU 映射排在名字启发式之前。取舍写在这里，别再当成回归：
+        //   * 收益——名字带「礼包/礼盒/组合」的<b>单品</b>不再被文件链路劫持。改前它在文件链路被判成
+        //     待解析礼包行（而 resolve-sku 只受理 SINGLE 行，等于救不回来），在 API 拉单链路却正常走
+        //     SKU 映射，同一个商品两条链路结果不一致。
+        //   * 代价——真礼包若被错配成普通 SKU 且<b>没有</b>礼包映射，会按那条错映射发货。挡这种错的
+        //     正确位置是礼包映射本身（它排在最前面，配了就赢），而不是拿商品名去猜。
+        // 新契约由 SourceBundleKeyUnificationApiTest#名字含组合但有活跃SKU映射的单品_两条链路都判为单品 钉死。
         ResponseEntity<Map> uploaded = upload(wangqiWorkbook());
 
         assertThat(uploaded.getStatusCode())

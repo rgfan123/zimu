@@ -78,7 +78,7 @@ erDiagram
 | `import_batches` | SOURCE_ORDER 或 PROVIDER_TRACKING 文件批次 | 一个批次只能属于一个来源渠道或履约方；运单回传必须显式关联原 `fulfillment_export`；文件 hash 按该范围幂等；REVISION 与父批次同类型、同渠道/履约方/原导出、同模板族且版本号连续 |
 | `raw_import_rows` | 原 Sheet/行号/单元格快照 | 原始坐标和 `raw_cells` 不可修改；状态可以推进 |
 | `orders` | 长期 CanonicalOrder 头 | 三平台 BUSINESS 订单必须关联 SOURCE_ORDER 导入批次；WECOM 内部接口与隔离 Demo 不伪造文件血缘；Receiver 与结账信息快照；乐观锁 `lock_version` |
-| `order_lines` | CanonicalOrder 商品行 | SINGLE/CUSTOM_BUNDLE；权威 `processing_stage` 在行级；普通行保存来源数量与映射乘数快照，约束其乘积等于 Canonical 请求量 |
+| `order_lines` | CanonicalOrder 商品行 | SINGLE/CUSTOM_BUNDLE；权威 `processing_stage` 在行级；普通行保存来源数量与映射乘数快照，约束其乘积等于 Canonical 请求量；`source_sku_ref`（V88 起）留存来源渠道商品标识，与 `source_channel_skus.source_sku_ref` 同源，也是来源礼包映射的第一把键（V88 之前建的行为 NULL，人工 resolve-bundle 对它们仍走既有回退链） |
 | `order_line_components` | 当单礼包组件快照 | 同一礼包只允许一个 provider；组件总量必须等于礼包份数×单礼包用量 |
 | `order_versions` | 每次已提交领域变化的完整 JSONB 快照 | `(order_id, version_no)` 唯一；只追加，不用于覆盖式回滚 |
 

@@ -40,7 +40,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         properties = {
             "app.message-worker.enabled=false",
             "app.mcp.enabled=false",
-            "app.mcp.agent-identity=acceptance-agent"
+            "app.mcp.agent-identity=acceptance-agent",
+            "app.mcp.protocol-modules=messages,orders,masterdata,inventory,procurement,orders-read,control,write"
         })
 class AgentMcpToolBindingAcceptanceTest {
 
@@ -85,7 +86,7 @@ class AgentMcpToolBindingAcceptanceTest {
 
     @Test
     void agentVisibleToolsCorrespondOneToOneToRealRegistry() {
-        List<String> allNames = registry.all().stream().map(McpTool::name).toList();
+        List<String> allNames = registry.agentTools().stream().map(McpTool::name).toList();
         assertThat(allNames).hasSizeGreaterThan(20);
 
         // 全量注册表（含写工具）显式 allow_write=true 绑定（08 决策）
@@ -95,7 +96,7 @@ class AgentMcpToolBindingAcceptanceTest {
         assertThat(binding.specifications())
                 .extracting(spec -> spec.name())
                 .containsExactlyInAnyOrderElementsOf(allNames);
-        for (McpTool tool : registry.all()) {
+        for (McpTool tool : registry.agentTools()) {
             var match = binding.specifications().stream()
                     .filter(s -> tool.name().equals(s.name()))
                     .findFirst();

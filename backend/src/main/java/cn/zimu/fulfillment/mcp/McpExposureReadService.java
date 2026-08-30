@@ -10,11 +10,16 @@ import org.springframework.stereotype.Service;
 /**
  * 把 {@link McpToolRegistry} 投影成管理员核对视图（票 05）。
  *
+ * <p>视图口径是**外部 MCP 协议面**：双工具面拆分后，管理员核对的对象是「外面的调用方能看到
+ * 什么」，即协议面；Agent 进程内工具面独立于此（由 AGENT_TOOL_MODULES 与每个 Agent 的
+ * tool_whitelist 约束），不在本视图呈现。
+ *
  * <p>权威来源只有注册表一处：
  * <ul>
- *   <li>「已开放」不读 {@code app.mcp.modules}，而是看 {@link McpToolRegistry#all()} 里
- *       **真的注册了工具**的模块——配置解析、启动期自检与注册过滤已经在注册表里发生过一次，
- *       这里再解析一遍就等于第二个真源，界面可能显示「开着」而调用方拿不到工具。</li>
+ *   <li>「已开放」不读 {@code app.mcp.protocol-modules}，而是看
+ *       {@link McpToolRegistry#protocolTools()} 里**真的注册了工具**的模块——配置解析、
+ *       启动期自检与注册过滤已经在注册表里发生过一次，这里再解析一遍就等于第二个真源，
+ *       界面可能显示「开着」而调用方拿不到工具。</li>
  *   <li>「已知但未开放」= {@link McpToolRegistry#knownModules()} 减去上面那批。已知模块由工具
  *       自己声明的 {@link McpTool#module()} 推出，新增模块无需改这里。</li>
  * </ul>
@@ -33,7 +38,7 @@ public class McpExposureReadService {
 
     public McpExposure exposure() {
         Map<String, List<McpExposureTool>> registeredByModule = new LinkedHashMap<>();
-        for (McpTool tool : registry.all()) {
+        for (McpTool tool : registry.protocolTools()) {
             registeredByModule
                     .computeIfAbsent(tool.module(), module -> new ArrayList<>())
                     .add(new McpExposureTool(tool.name(), tool.description(), tool.readOnly()));
