@@ -134,6 +134,46 @@ test('未发送的导出不展示假的到期时间并显示待发送状态与�
   assert.match(harness.bodyText(), /—/);
 });
 
+test('第三方内部自映射在明细页明确标成内部路由码', async () => {
+  await mountPage(async (input, init) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/fulfillment-providers')) {
+      return jsonResponse([providerFixture]);
+    }
+    if (url.startsWith('/api/v1/fulfillment-exports?') && init?.method !== 'POST') {
+      return jsonResponse({
+        items: [exportFixture()],
+        page: 0,
+        size: 10,
+        total_elements: 1,
+        total_pages: 1,
+      });
+    }
+    if (url === '/api/v1/fulfillment-exports/e1' && init?.method === 'GET') {
+      return jsonResponse(exportFixture({
+        lines: [{
+          export_line_no: 1,
+          provider_sku_code: 'SKU-TP-000062',
+          provider_sku_code_scope: 'INTERNAL_ROUTING',
+          instructed_quantity: '1',
+          unit: '袋',
+          item_amount: null,
+        }],
+      }));
+    }
+    throw new Error(`unexpected request: ${init?.method ?? 'GET'} ${url}`);
+  });
+
+  const detailLink = [...document.querySelectorAll<HTMLAnchorElement>('a')]
+    .find((link) => link.textContent?.trim() === '明细');
+  assert.ok(detailLink);
+  await harness.dispatchEvent(detailLink, new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /SKU-TP-000062/));
+  assert.match(harness.bodyText(), /履约路由编码/);
+  assert.match(harness.bodyText(), /内部路由码/);
+  assert.doesNotMatch(harness.bodyText(), /外部已验证/);
+});
+
 test('人工停止弹窗提交 reason 载荷并展示停止原因与提醒次数', async () => {
   const requests: Array<{ method: string; url: string; body?: string }> = [];
   await mountPage(async (input, init) => {

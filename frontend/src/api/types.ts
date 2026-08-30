@@ -765,6 +765,7 @@ export interface FulfillmentExportLine {
   raw_import_row_id?: string;
   outbound_order_no?: string;
   provider_sku_code: string;
+  provider_sku_code_scope?: 'INTERNAL_ROUTING' | 'PROVIDER_EXTERNAL';
   instructed_quantity: string;
   unit: string;
   item_amount: string;

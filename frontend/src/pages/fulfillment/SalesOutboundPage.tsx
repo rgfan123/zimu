@@ -15,7 +15,7 @@ import PageShell from '@/components/PageShell';
 import { formatDateTime } from '@/format/dateTime';
 import { ApiError, errorMessage } from '@/api/client';
 import { fileOperationsApi, fulfillmentExportsApi, providersApi } from '@/api/endpoints';
-import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportWecomState, ImportBatch, SourceChannel, SourceOrderIntakeJob, TrackingImportBatch } from '@/api/types';
+import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, FulfillmentExportLine, FulfillmentExportWecomState, ImportBatch, SourceChannel, SourceOrderIntakeJob, TrackingImportBatch } from '@/api/types';
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS, SOURCE_ORDER_INTAKE_STATUS_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
@@ -1079,7 +1079,19 @@ export default function SalesOutboundPage() {
               columns={[
                 { title: '行号', dataIndex: 'export_line_no', width: 70, align: 'right' },
                 { title: '出库单号', dataIndex: 'outbound_order_no', width: 130, render: (v?: string) => v ?? '—' },
-                { title: '履约方 SKU', dataIndex: 'provider_sku_code', width: 170, render: (v: string) => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span> },
+                {
+                  title: '履约路由编码',
+                  dataIndex: 'provider_sku_code',
+                  width: 230,
+                  render: (v: string, row: FulfillmentExportLine) => (
+                    <Space size={4} wrap>
+                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span>
+                      {row.provider_sku_code_scope === 'INTERNAL_ROUTING'
+                        ? <Tag color="blue">内部路由码</Tag>
+                        : null}
+                    </Space>
+                  ),
+                },
                 { title: '指令数量', dataIndex: 'instructed_quantity', width: 90, align: 'right', render: num },
                 { title: '单位', dataIndex: 'unit', width: 70 },
                 { title: '金额', dataIndex: 'item_amount', width: 100, align: 'right', render: num },
