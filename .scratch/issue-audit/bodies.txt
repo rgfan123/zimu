@@ -1,0 +1,1125 @@
+
+
+########## ISSUE #120: procurement-price: spec — 采购比价：价格情报层 + 工单最小商业化
+创建: 2026-08-23T10:36:35Z  标签: ready-for-agent
+----------
+# Spec — 采购比价：价格情报层 + 工单最小商业化
+
+**Effort slug**: `procurement-price`
+**决策依据**: ADR 0007（范围）/ 0008（建议规则与盯盘清单）/ 0009（采集运行时）/ 0010（建议与工单的关系），位于 issue-103 worktree `docs/adr/`。同事 Demo（牛羊肉采购比价 Agent，FastAPI+Playwright）为移植素材来源。
+**基线事实（2026-08-23 库内核实）**: `procurement_tickets` 无供应商/价格字段、`procurement_receipts` 无附件字段、工单总数 0；全库无价格表；`procurement-price-agent` V2 active 但 0 次运行；企微收件链路完整、业务级主动推送不存在（仅 sendFrame 原语）。
+
+---
+
+## Problem Statement
+
+采购员每天要决定"缺的品今天向谁买"。价格情报散在两个需要登录的行情网站（牧集、肉交所）里，靠人每天手动翻页、心算剔除虚标价，看完就忘——没有落盘、没有历史、没有和缺货工单的对照。系统里的采购工单只记"缺什么"，不记"最终向谁、按什么价买了"，到货也不留凭证——买贵了没人知道，货到了手续齐不齐没人管。
+
+## Solution
+
+每天早上系统自动扒两平台白名单厂的报盘，统一换算落盘；按"剔极值、荐中间"规则对盯盘品生成建议（被剔除的也展示并给理由）；建议在采购工作台与缺货工单相遇——有缺货的品一键跳工单，处理工单时参考价在旁、成交价手填；确认到货必传凭证。价格建议与实际成交从此都在系统里，可复盘。
+
+## User Stories
+
+### 盯盘与采集
+
+1. 作为采购员，我想在系统里维护"每天要盯哪些品"的清单，这样不用改配置文件找工程师。
+2. 作为采购员，我想每天早上打开采购工作台就看到当天扒好的价格，这样不用自己登两个网站翻页。
+3. 作为采购员，我想在盘面陈旧时看到"数据是 X 月 X 日的"，这样我不会把昨天的价当今天的用。
+4. 作为采购员，我想在采集失败时看到失败原因（会话失效/页面改版）和上次成功时间，而不是空白或旧数装新，这样我知道要找人重新登录还是等一等。
+5. 作为采购员，我想随时手动点"立即更新价格"再扒一次，这样盘中波动大时能看到最新价。
+6. 作为运营，我想采集失败自动进告警中心，这样不用每天有人专门检查爬虫活没活着。
+
+### 建议与剔除
+
+7. 作为采购员，我想每个盯盘品的建议告诉我"推荐哪家厂、什么价、比昨天涨跌多少"，这样电话询价有个锚。
+8. 作为采购员，我想看到被剔除的最高/最低报盘和剔除原因，这样我知道 AI 没有藏牌，极端价我自己能核。
+9. 作为采购员，我想在报盘不足 5 个时看到"样本不足，未剔除极值"的标注，这样我知道这天的建议参考性有限。
+10. 作为采购员，我想对建议点"已知情"或"驳回"，这样处理过的建议不再干扰我，且系统记得我的判断。
+11. 作为采购员，我想看到每条建议的运行留痕（哪次运行、什么时候），这样出问题能追溯到那一次采集。
+
+### 建议 × 缺货工单
+
+12. 作为采购员，我想建议卡上直接显示"该品有 N 张待处理缺货工单"并能跳过去，这样情报和任务对上。
+13. 作为采购员，我想在处理缺货工单时旁边看到该品当日建议参考价（只读），这样电话核价不用切页面。
+14. 作为采购员，我想在工单上填写最终选定的供应商和电话确认后的实际成交价，这样系统记得这单向谁按什么价买的。
+15. 作为采购员，我不想系统把建议价自动填进成交价字段，这样虚标价永远进不了成交记录（比价价≠订单价）。
+
+### 到货凭证
+
+16. 作为采购员，我想确认到货时必须上传海关手续/检疫凭证图，这样"货到了但手续没到"的单进不了账。
+17. 作为财务，我想在回执上看到凭证图，这样对账时能核验每一单的手续完整性。
+
+### 留痕与边界
+
+18. 作为管理者，我想 Agent 的每次采集与建议生成都出现在 Agent 运行记录里（含手动触发），这样自动与人工同标准留痕。
+19. 作为管理者，我想价格建议永远不能自动创建工单或修改任何业务事实，这样确定性业务结果始终由人产生。
+20. 作为采购员，我想"建议参考价"和"实际成交价"分开保存，这样将来能复盘采纳率和省了多少钱。
+
+## Implementation Decisions
+
+- **D1 数据层（新增三表 + 两处扩列）**：报盘表（append-only：平台/厂号归一化值/品名/原始价格文本/换算后元每千克/采集批次/采集时间；换算失败保留原文标"待核"）；建议表（每品每日一条：推荐与次选、对昨日涨跌、剔除明细及理由、样本量、处置状态 待处理/已知情/已驳回、agent_run 引用）；盯盘品表（品名、启用态、维护留痕）。`procurement_tickets` 增列 供应商、实际成交价；`procurement_receipts` 增列 凭证附件引用（复用 ContentAddressedFileStore）。
+- **D2 采集通道**：两爬虫移植为 `scripts/` 下 Python 脚本（Playwright），凭据与会话材料在 `data-local/`（0600），按 `PlatformScriptRunner` 既有模式由后端执行；每日 08:00 调度 + 手动触发端点（不限频，用户拍板）。会话失效不自动重登（防风控），人工跑交互式登录脚本恢复。
+- **D3 建议引擎纯规则、零 LLM**（沿用 Demo ADR-008 的"规则锁死"）：报盘 ≥5 各剔最高最低 1 个、<5 不剔标注；推荐中间带最低价厂+次选+对昨日中间价涨跌。数值计算不经过任何模型。
+- **D4 Agent 留痕挂既有设施**：每次采集+建议生成记为 `procurement-price-agent` 的一次 agent_run（含手动触发），复用 AgentRuntimeFacade/JdbcAgentObservability，不新建留痕机制。
+- **D5 建议不产生任何写副作用**（ADR 0010）：不创建工单、不预填价格；工单唯一来源仍是缺货。建议卡动作 = 已知情/驳回/跳该品缺货工单。
+- **D6 回执凭证为必传校验**：确认到货缺凭证附件即拒绝（对齐 Demo ADR-005"所有单必传"）。
+- **D7 失败呈现**：采集失败 → 运营告警 + 工作台价格区诚实态（原因+上次成功时间），页面继续显示最近成功数据并标日期。
+- **D8 企微推送本期不做**：待 #90"业务事件主动通知"机制落地后，将"每日价格建议"注册为事件类型接入；不另造推送通道。
+- **D9 前后端契约先行**：建议/报盘/盯盘品查询端点的响应形状在后端票落地时评论钉死，前端只消费；施工分界按 PLAN（后端 Agent 不碰 frontend/）。
+
+## Testing Decisions
+
+- **后端接缝 = API 集成测试**（既有 Spring 测试设施）：剔除规则全分支（≥5/=5/<5/并列极值）、单位换算移植正确性（元每吨→元每千克、无单位拒算标待核、防 1000 倍）、厂号归一化（SIF4333/4333厂/纯数字）、建议处置状态流转、回执缺凭证被拒、工单商业字段写入。
+- **爬虫用离线夹具测**：录制两平台页面 HTML 作 fixture，解析器对夹具断言；真实登录采集属人工验收，不进 CI。
+- **前端接缝 = routeHarness 路由级测试**（沿用 #103 单一接缝）：建议卡渲染（含剔除展示/样本不足标注/涨跌）、已知情/驳回动作、缺货工单联动跳转 URL、参考价只读展示、陈旧数据日期标注、采集失败诚实态。
+- 契约：建议卡上"N 张待处理缺货工单"计数与跳转后列表同接口同筛选（ADR 0006 同款原则）。
+
+## Out of Scope
+
+- Demo 的下单/入账/库存/LLM 对话入口（子牧已有或违红线）；金额汇总与对账（Phase 3）；自动下单/自动改任何业务事实；企微推送（依赖 #90，见 D8）；建议采纳率/节省额复盘报表（数据从本期开始积累，报表另立票）。
+
+
+
+########## ISSUE #119: zimu-workbench-backend: 01 — 发货台聚合计数端点（口径与列表接口契约锁死）
+创建: 2026-08-23T10:07:11Z  标签: ready-for-agent
+----------
+## What to build
+
+`GET /api/v1/workbench/shipping/summary` —— 发货台骨架的聚合计数端点（七指标 + 八段链路）。
+
+**口径契约（本票的核心，不是实现细节）**：每个计数必须严格等于对应列表端点在相同筛选下的
+`total_elements`。前端第一阶段就是用这些列表接口 `size=1` 拼数上线的（ADR 0006），本端点
+落地后前端只换数据源；两边数字必须永远一致。
+
+| 计数 | 等价列表查询 |
+|---|---|
+| 待人工复核 | `/api/v1/review-cases?status=OPEN` |
+| 各处理阶段订单数（待发货/发货中/已回填…） | `/api/v1/orders?processing_stage=X` |
+| 运营告警 | `/api/v1/operational-alerts?status=OPEN` |
+| 回填失败 | 当前无全局清单端点——本票一并补（可作为 summary 内字段或独立筛选） |
+
+- [ ] summary 端点（单次 SQL 聚合，不逐个调列表）
+- [ ] **契约测试**：对每个计数，断言 summary 值 == 对应列表端点同筛选 total_elements（种子数据下）
+- [ ] 回填失败计数的数据来源补齐（source_return_exports push_status=FAILED 全局口径）
+- [ ] 不含拉取配额（那是 #115-B 的字段，勿重复）
+
+## Blocked by
+
+无。前端不阻塞在本票上（已按 size=1 模式先行）；落地后在本票评论 @ 前端会话换数据源。
+
+## 施工分界
+
+纯后端。不要改 frontend/ 下任何文件。
+
+
+
+########## ISSUE #118: procurement-price: 03 — 建议引擎与每日调度（重写自原使能票）
+创建: 2026-08-23T09:48:37Z  标签: ready-for-agent
+----------
+Parent spec: #120（D3/D4）。本票由原「比价建议后端使能」重写而来——spec #120 落地后按 ADR 0007-0010 细化，原票面（触发端点+持久化+调度的粗粒度描述）作废，以下为准。
+
+## What to build（纯后端，勿碰 frontend/）
+
+- [ ] **建议引擎（纯规则、零 LLM）**：对每个启用的盯盘品，取当日报盘（#121 表）→ 报盘 ≥5 各剔最高最低 1 个、<5 不剔标"样本不足" → 推荐中间带最低价厂 + 次选 + 对昨日中间价涨跌 → 写建议表（含剔除明细与理由）
+- [ ] **调度**：每日 08:00（配置可调）触发采集（#122 脚本）+ 建议生成；手动触发端点（不限频，用户拍板）。⚠️ 前置：先配 ThreadPoolTaskScheduler（现单线程共用，见 scan-hardening 05-backlog 第 1 条），否则会顶掉 InterpretationWorker
+- [ ] **留痕**：每次采集+建议生成记一次 `procurement-price-agent` agent_run（含手动触发），复用 AgentRuntimeFacade/JdbcAgentObservability
+- [ ] 建议不产生任何业务写副作用（不建工单、不填价格，ADR 0010）
+- [ ] 规则全分支测试：≥5/=5/<5/并列极值/仅 1 个报盘/换算待核项不参与计算
+
+## Blocked by
+
+- #121（数据层）、#122（爬虫）
+
+
+
+########## ISSUE #112: zimu-workbench: 09 — 对账结果下钻到完整证据链
+创建: 2026-08-22T08:24:45Z  标签: ready-for-agent
+----------
+Parent: #103
+
+Prototype baseline: `/private/tmp/zimu-scan/zimu-frontend-prototype.html`（SHA-256 `adca4a894826d8a57c07a10e2fb827ebfa84f5ebdff4a0eff60d972160c97c2e`）
+
+## Outcome
+从对账结果逐层进入现有订单、订单行、Shipment、运单、来源导入与审计证据，保持可分享上下文。
+
+## Scope
+- 在 08 结果上增加真实对象链接与证据入口。
+- 复用既有对象页与三件套，不新增第二套详情页。
+- 查询条件、单号和来源上下文进入 URL。
+- 缺少可读关系时明确标注“当前未暴露”，不得生成静态九跳证据。
+- 等 #61/#62/#63 提供对象详情/URL 契约后补齐。
+
+## Click-through fidelity
+还原“点击结果行打开追溯”的整体交互，但使用真实路由/抽屉。结果行整行可点击，内部按钮不得双触发；支持 hover/focus/Enter/Space；返回后保持查询和滚动上下文。
+
+## Dependencies
+08、#61、#62、#63。
+
+## Acceptance
+routeHarness 覆盖每个已存在证据层的最终 URL、返回上下文、不可用说明和键盘操作；旧深链无回归；通过前端全门禁。
+
+
+########## ISSUE #111: zimu-workbench: 08 — 对账台查询并解释七种内外事实状态
+创建: 2026-08-22T08:24:42Z  标签: ready-for-agent
+----------
+Parent: #103
+
+Prototype baseline: `/private/tmp/zimu-scan/zimu-frontend-prototype.html`（SHA-256 `adca4a894826d8a57c07a10e2fb827ebfa84f5ebdff4a0eff60d972160c97c2e`）
+
+## Outcome
+新增 /workbench/recon，按三种单号查询内外事实并解释七种状态。
+
+## Scope
+- 支持系统出库单号、京东单号、订单号。
+- query_type/query_value 写入 URL。
+- 复用 MATCH、MISMATCH、INTERNAL_ONLY、JD_ONLY、EMPTY、JD_UNAVAILABLE、JD_NOT_FOUND。
+- 区分京东无记录与查询失败；查无此单保留输入。
+- 显示 ¥ ——、金额未纳入本期、当前为数量口径。
+
+## Contract boundary
+API 不支持月度汇总、账期、53 条差异、退货归责或底稿导出，不得制造。
+
+## Click-through fidelity
+还原内外事实并排与高密度状态行。每个有真实对象的行整行可点击进入现有对象页，保留查询条件，支持键盘。
+
+## Dependencies
+无；旧 /fulfillment/outbound-recon 继续可用，先 hideInMenu，01 再露出。
+
+## Acceptance
+routeHarness 覆盖三种单号、七态、JD 不可达/不存在、404、金额文案及 URL；通过前端全门禁。
+
+
+########## ISSUE #110: zimu-workbench: 07 — 采购台从 Agent 建议进入人工采购
+创建: 2026-08-22T08:24:30Z  标签: ready-for-agent
+----------
+Parent: #103
+
+Prototype baseline: `/private/tmp/zimu-scan/zimu-frontend-prototype.html`（SHA-256 `adca4a894826d8a57c07a10e2fb827ebfa84f5ebdff4a0eff60d972160c97c2e`）
+
+## Outcome
+新增 /workbench/procurement，以“建议 + 人决定”消费既有采购比价 Agent 与采购工单。
+
+## Scope
+- 首屏展示建议结论。
+- 每条显示为什么、建议、provider/model/prompt_version、运行标识、requires_human。
+- 展示 excluded_candidates 与排除理由。
+- 区分 HTTP 200 稳定 Agent error 与 INVALID_PARAMETERS。
+- 展示待处理工单数、最久未动和空态。
+- 业务动作只跳 /procurement/tickets 或既有详情，不新增写操作。
+
+## Contract boundary
+不支持扫描全部 SKU、建议持久化、已知情/驳回/创建询价；不得照抄原型 1,284、9 项建议或假按钮。
+
+## Click-through fidelity
+还原“为什么/建议/来源”卡片结构。工单整行可点击；建议动作只有真实落点才显示，并保留 ticket/sku 上下文。
+
+## Dependencies
+无；先 hideInMenu，01 再露出。
+
+## Acceptance
+routeHarness 覆盖建议、剔除、requires_human、模型未配置、非法输入、空态及 URL；通过前端全门禁。
+
+
+########## ISSUE #109: zimu-workbench: 06 — 发货台完成整批确认与京东失败重试
+创建: 2026-08-22T08:24:28Z  标签: ready-for-agent
+----------
+Parent: #103
+
+Prototype baseline: `/private/tmp/zimu-scan/zimu-frontend-prototype.html`（SHA-256 `adca4a894826d8a57c07a10e2fb827ebfa84f5ebdff4a0eff60d972160c97c2e`）
+
+## Outcome
+复核清零后显式确认批次，就地显示京东结果并安全重试失败项。
+
+## Scope
+- need_review=0 且 rejected=0 才允许确认；否则解释阻断原因。
+- 调用既有 confirmSourceBatch，显示京东 SDK 路由与导出结果。
+- 调用既有 jd-outbound-submit 重试失败项，保留稳定幂等键。
+- confirm DTO 无 replayed：调用前 confirmed_at 已存在则显示“本批次已确认过”，否则显示首次成功。
+- 复核未清零只提供真实收件箱链接，不复制处理表单。
+
+## Click-through fidelity
+阻断卡、失败结果及进入复核入口整块可点击；保留 import_batch，返回后保持批次上下文；不做假自动继续或假轮询。
+
+## Dependencies
+03、05。
+
+## Acceptance
+routeHarness 覆盖不可确认、首次/已确认、京东部分失败、重试与返回上下文；identityBoundary 与前端全门禁通过。
+
+
+########## ISSUE #108: zimu-workbench: 05 — 发货台展示履约链路并直达卡点
+创建: 2026-08-22T08:24:25Z  标签: ready-for-agent
+----------
+Parent: #103
+
+Prototype baseline: `/private/tmp/zimu-scan/zimu-frontend-prototype.html`（SHA-256 `adca4a894826d8a57c07a10e2fb827ebfa84f5ebdff4a0eff60d972160c97c2e`）
+
+## Outcome
+呈现可证明的履约阶段与阻断点，让每个阶段直达对应对象页。
+
+## Scope
+- 只用 dashboard summary、refresh 与当前 import batch row_counts 组成链路。
+- 已导入、待复核、待确认、京东提交、运单、来源回填；无聚合 API 的阶段标“暂无汇总”，不得造数。
+- 待复核跳 /workbench/reviews 并保留 import_batch/team/reason。
+- 其他阶段跳既有批次、发货、运单、来源回填页并附筛选参数。
+- 聚福宝降级显式标注。
+- 自动回填运行值不可读：只显示配置项名与“当前接口无法读取运行状态”，不伪造开关。
+
+## Click-through fidelity
+还原横向分段链路、语义状态和卡点层级。每个有真实落点的阶段整段可点击，具备 hover/focus/pressed 和键盘操作；测试断言最终 location。
+
+## Dependencies
+04。
+
+## Acceptance
+覆盖有/无批次、复核阻断、聚福宝、区块错误和全部真实跳转；通过前端全门禁。
+
+
+########## ISSUE #107: zimu-workbench: 04 — 发货台启动订单同步并诚实呈现渠道结果
+创建: 2026-08-22T08:24:23Z  标签: ready-for-agent
+----------
+Parent: #103
+
+Prototype baseline: `/private/tmp/zimu-scan/zimu-frontend-prototype.html`（SHA-256 `adca4a894826d8a57c07a10e2fb827ebfa84f5ebdff4a0eff60d972160c97c2e`）
+
+## Outcome
+新增 /workbench/shipping，让发货员从一次订单同步开始今天的工作，并如实显示各渠道结果。
+
+## Scope
+- “开始今日订单同步”调用 POST /api/v1/platform-orders/refresh；同步中禁用。
+- 显示新增批次、订单/行数；零结果显示“没有新订单”。
+- 渠道独立呈现 OK/FAILED/SKIPPED 与服务端 message。当前真实 DTO 不提供稳定渠道错误码，前端不得从自由文本推断或伪造；错误码扩展另需后端契约票。
+- 聚福宝“仅报告未入库”作为一等状态。
+- 手动导入跳既有文件作业页。
+- 区块独立 loading/empty/error。
+
+## Contract boundary
+DTO 不暴露 last_pull_at 或剩余次数。不得显示“今日剩 1 次”等假配额；明确说明当前接口未暴露剩余额度，只展示本次结果。
+
+## Click-through fidelity
+还原原型页头、lede、Hero、低饱和状态卡和密度。有真实落点的渠道/KPI 卡整卡可点击并跳带筛选参数的路由；无落点不制造点击暗示。
+
+## Dependencies
+无；先 hideInMenu 注册，01 再露出。
+
+## Acceptance
+routeHarness 覆盖成功、部分失败、全零、聚福宝、独立错误和真实 URL；通过前端全门禁。
+
+
+########## ISSUE #106: zimu-workbench: 03 — 复核收件箱按岗位进入并原位处理
+创建: 2026-08-22T08:24:21Z  标签: ready-for-agent
+----------
+Parent: #103
+
+Prototype baseline: `/private/tmp/zimu-scan/zimu-frontend-prototype.html`（SHA-256 `adca4a894826d8a57c07a10e2fb827ebfa84f5ebdff4a0eff60d972160c97c2e`）
+
+## Outcome
+升级 /workbench/reviews 为按岗位预筛、按原因分组、可连续处理的复核收件箱。
+
+## Scope
+- URL 无 responsible_team 时使用岗位默认团队；URL 有值时 URL 优先。
+- 显示团队筛选提示与“看全部”。
+- reason_code 分组，复用 REASON_LABELS；未知码进入“其他”并保留原值。
+- 组标题显示数量，支持 session 内折叠。
+- 复用 ReviewCaseDrawer；动作只由 allowed_actions 决定。
+- 版本冲突刷新该行；团队空态提供“看全部”。
+
+## Click-through fidelity
+- 事项卡/表格行整块可点击打开抽屉，关闭后保持筛选、分页、分组和滚动位置。
+- import_batch、responsible_team、reason_code 深链参数不得丢失。
+- 支持 hover/focus/Enter/Space。
+
+## Dependencies
+01。
+
+## Acceptance
+routeHarness 覆盖 URL 优先、岗位默认、看全部、未知码、折叠、抽屉和版本冲突；identityBoundary 仍绿；通过前端全门禁。
+
+
+########## ISSUE #105: zimu-workbench: 02 — 调度台直接消费后端 severity
+创建: 2026-08-22T08:24:19Z  标签: ready-for-agent
+----------
+Parent: #103
+
+## Outcome
+删除 Dashboard 对 attention 原因码的前端严重度推断，直接使用后端 severity。
+
+## Scope
+- 删除 DashboardPage 中 CRITICAL_REASONS。
+- attention 卡颜色、状态与跳转只消费服务端 severity 和既有 reviewQueueUrl。
+- 复核列表 API 没有 severity，收件箱不得补造严重度。
+
+## Acceptance
+- 同一 reason_code 返回不同 severity 时按返回值呈现；未知 reason_code 不丢弃。
+- attention 卡整卡可点击，跳真实预筛 URL，支持键盘操作。
+- dashboardDispatchRoute 断言 severity 与最终 location。
+- 通过 typecheck、全测、build、git diff --check。
+
+## Dependencies
+无。
+
+
+########## ISSUE #104: zimu-workbench: 01 — 工作台导航与岗位视图
+创建: 2026-08-22T08:22:07Z  标签: ready-for-agent
+----------
+Parent: #103
+
+Prototype baseline: `/private/tmp/zimu-scan/zimu-frontend-prototype.html`（SHA-256 `adca4a894826d8a57c07a10e2fb827ebfa84f5ebdff4a0eff60d972160c97c2e`）
+
+## Outcome
+
+把现有技术分类导航收成“我的工作台”入口，并在品牌下方提供岗位视图选择器。岗位只改变默认落地页与复核默认团队，不代表身份、权限或数据隔离。
+
+## Scope
+
+- 桌面侧栏按原型密度落地：品牌下岗位下拉、无顶栏、一级“我的工作台”。
+- 岗位偏好存入 localStorage；首次进入必须显示“请选择岗位”，不得默认发货员。
+- 支持 FULFILLMENT_OPS、SKU_OPS、CUSTOMER_OPS、ORDER_OPS 与“财务”落地别名；未知团队原样显示。
+- 新入口：发货台、复核收件箱、采购台、对账台。
+- 既有 URL 全部保留；Demo 页面不再出现在日常菜单。
+- 全站菜单不得按岗位隐藏或锁定。
+- 移除 NAVIGATION_GROUP_SUFFIX 分组 hack，并实时重算导航准入数字。
+
+## Prototype fidelity
+
+- 还原品牌下 34px 岗位控件、低饱和品牌底、清晰选中态、权限边界说明。
+- 桌面侧栏宽度与内容密度对齐原型；响应式行为仍归 #65。
+- 菜单项整行可点击并使用真实 React Router 路由；支持键盘焦点和 Enter/Space。
+- 不照抄假人名、管理员锁、全局搜索、深色齿轮和“原型”Toast。
+
+## Dependencies
+
+等待 04、07、08 的新页面路由可用后露出最终菜单。
+
+## Acceptance
+
+- 刷新后保留岗位；分享 URL 不携带岗位。
+- URL 中 responsible_team 始终优先于岗位默认值。
+- 浏览器仍不发送 X-Operator。
+- 旧书签和深链无 404。
+- 更新 navigation admission 文档与实时计数。
+- 通过 navigation、businessObjectNavigation、identityBoundary、typecheck、全测和 build。
+
+
+########## ISSUE #103: zimu-workbench: spec — 岗位工作台（四个作业面，零后端改动）
+创建: 2026-08-22T01:23:49Z  标签: ready-for-agent
+----------
+# Spec — 岗位工作台：把「报告台」收成四个可交付的作业面
+
+**Effort slug**: `zimu-workbench`
+**基线**: `codex/issue-89-operator-map-v2` @ `69f259f`（含 master 全部内容，63 提交待并入 trunk）
+**范围决定**: 四个工作台写全；对象页只写「用哪三个共享组件拼 / 筛什么 / 从哪跳进来」；未被重构碰到的页面不写
+
+---
+
+## Problem Statement
+
+系统的后端履约闭环是完整的：平台拉取 → 导入批次 → 整批确认 → 自动提交京东出库 → 运单回填 → 来源回填表 → 在线推送或离线 Excel。前端却没有任何一个页面对应「一个人一天要做完的事」。
+
+具体表现，全部有代码依据：
+
+1. **默认落地页没有主动作**。`DashboardPage.tsx` 现在（`69f259f`，319 行）已经是调度台——KPI、原因卡、关注行都带 `status/reason_code/responsible_team` 跳到预筛的复核队列（#96 `e3e6b87`）。但它仍然没有一个「开始今天的活」的按钮：`POST /api/v1/platform-orders/refresh` 存在，前端没有任何高频入口调用它。人得先知道该去哪，才能开始工作。
+
+2. **一天的工作被切在三个板块里**。发货员要走 `/fulfillment/sales-outbound`（标签「文件作业」）→ `/workbench/reviews` → `/fulfillment/shipments` → `/fulfillment/outbound-recon`（`hideInMenu`）。这四步是**一条**动线，却分属两个一级板块，其中一个还是隐藏页。导航按技术归类，不按人归类。
+
+3. **岗位词汇存在，但前端不消费**。`app.internal_operators`（V48）已经有 `responsible_team`，`OperatorResolver` 能按团队解析到人；`ReviewCase.responsible_team` 已经是复核队列的一等筛选维度（`REVIEWS_TEAM_PARAM`），`queuePresentation.ts` 已经定义了权威的四个团队（`CUSTOMER_OPS` 客户运营 / `SKU_OPS` 商品运营 / `ORDER_OPS` 订单运营 / `FULFILLMENT_OPS` 履约运营）。**前端从不按团队预筛任何东西**——每个人都看到所有人的待办。
+
+4. **采购能力已接线但没有作业面**。`POST /api/v1/procurement-price-agent/compare` 存在，`/procurement/price-compare` 页面存在——但 `hideInMenu: true`（#98 降级），且 Agent 输出不是任何页面的第一屏。`ProcurementPricePolicy.enforce` 强制 `requires_human=true`，所以它天生是「建议 + 人决定」的形态，正好适合做工作台首屏，却被藏起来了。
+
+5. **对账能力已接线但没有作业面**。`GET /api/v1/outbound-recon`（#74）已经返回内外事实并排 + 逐字段差异判定（`Comparison.state` 七态）。前端 `/fulfillment/outbound-recon` 也是 `hideInMenu`。财务每天要问的「今天发出去的和平台记的对不上的有哪些」，得先知道单号才能查——**只有点查，没有批量列表**。
+
+6. **前端自造了一张 severity 派生表**。`DashboardPage.tsx` 里 `CRITICAL_REASONS` 硬编码 7 个原因码。而 `DashboardController.attention()` 的 SQL 已经返回 severity（复核事项恒 `'RED'`，运营提醒用真实的 `YELLOW`/`RED`）。前端在重算一个已经从后端拿到的字段。
+
+结果：后端能力完整，人却在页面之间找活干。这次要解决的**只是这个**——不是补后端能力。
+
+---
+
+## Solution
+
+新增一个一级板块「我的工作台」，含四个入口，每个入口是一条完整动线的作业面。**既有 URL 一个都不改、一个都不删**；`/workbench/reviews` 与 `/workbench/alerts` 从「作业中心」移入「我的工作台」——这是导航归属变更，不是 URL 变更，`docs/agents/navigation-admission.md` 的「降级 ≠ 删除、任何 URL 不得 404」因此仍然满足。
+
+| 入口 | URL | 主要 responsible_team | 后端依赖 |
+|---|---|---|---|
+| 发货工作台 | `/workbench/shipping`（新） | `FULFILLMENT_OPS` | 全部已存在 |
+| 复核收件箱 | `/workbench/reviews`（既有，移动） | 按岗位预筛 | 全部已存在 |
+| 采购工作台 | `/workbench/procurement`（新） | `SKU_OPS` | `/procurement-price-agent/compare` 已存在 |
+| 对账工作台 | `/workbench/recon`（新） | 财务（无既有 team 值，见决定 D4） | `/outbound-recon` 已存在；金额缺口见 Out of Scope |
+
+侧边栏顶部（品牌下方）放岗位下拉。它**只做两件事**：决定四个入口里哪个是默认落地页；给复核收件箱一个默认的 `responsible_team` 预筛。它不隔离数据、不改变审计归属——切到任何岗位都能看到全部数据，只是默认视图不同。
+
+新增三个页面 + 一个导航板块 + 一个岗位下拉，**零新增 API、零新增数据表、零后端改动**。
+
+---
+
+## User Stories
+
+### 岗位选择器
+
+1. 作为任何一个使用者，我想在侧边栏顶部看到当前岗位，这样我知道现在这些默认视图是按谁的活筛的。
+2. 作为一个使用者，我想切换岗位后立刻跳到那个岗位的工作台，这样切换本身就是「换一份活干」而不是「换一个筛选条件」。
+3. 作为一个使用者，我想刷新页面后岗位还在，这样我不用每天早上重选一次。
+4. 作为一个使用者，我想把当前页面的链接发给同事时，他打开看到的和我看到的一样，即使我们岗位不同，这样链接不会因为对方的岗位设置而说谎。
+5. 作为一个使用者，我想在第一次进入、还没选过岗位时，看到一个明确的「请选择岗位」而不是一个空白的默认值，这样我不会误以为某个岗位是系统给我指派的。
+6. 作为一个使用者，我想知道岗位选择不代表权限，这样我不会以为切到财务就看不到发货数据。
+
+### 发货工作台 `/workbench/shipping`
+
+7. 作为发货员，我想在第一屏看到一个「开始今日订单同步」按钮，这样我不用先想今天该从哪开始。
+8. 作为发货员，我想在那个按钮旁边看到每个平台今天还剩几次可拉取额度，这样我不会浪费掉每天 ≤2 次的合规配额。
+9. 作为发货员，我想在配额已用尽时看到按钮变成不可点并说明下次可拉取时间，这样我不会反复点击并怀疑系统坏了。
+10. 作为发货员，我想在拉取过程中看到进行中状态、结束后看到「本次新增 N 个批次 / M 条订单」，这样我知道刚才那一下有没有生效。
+11. 作为发货员，我想在拉取到零条时看到「没有新订单」而不是空白，这样我知道是真的没有，而不是页面没加载。
+12. 作为发货员，我想在拉取失败时看到是哪个平台失败、失败原因码，以及其他平台是否成功，这样我知道要不要重试、重试哪一个。
+13. 作为发货员，我想看到一条从「已自动导入」到「回填失败」的分段链路，每段带条数，这样我一眼知道今天的活卡在哪一段。
+14. 作为发货员，我想点击任意一段直接跳到那一段对应的既有列表页（带筛选参数），这样我不用自己去菜单里找对应页面。
+15. 作为发货员，我想在链路里看到聚福宝只报告拉取数量、不入库这件事被显式标出来，这样我不会以为聚福宝的订单丢了。
+16. 作为发货员，我想看到当前批次的「待人工复核」条数，以及「整批确认」按钮只在该数清零时可点，这样我不会在还有阻断时提交。
+17. 作为发货员，我想在「整批确认」不可点时看到还差什么（复核未清零 / 有被拒绝行 / 导出未完整），这样我知道要去处理什么才能继续。
+18. 作为发货员，我想在整批确认成功后，就地看到京东出库提交的结果条数与失败条数，这样我不用切页面确认自动提交有没有跑。
+19. 作为发货员，我想在有京东出库提交失败时看到一个重试按钮，这样失败不需要找人。
+20. 作为发货员，我想在重放同一个确认（幂等命中）时看到「本批次已确认过」而不是又一次成功提示，这样我不会以为自己重复提交了业务事实。
+21. 作为发货员，我想看到运单自动回填这件事当前是开还是关，这样我知道等运单是在等系统还是在等我。
+22. 作为发货员，我想在自动回填关闭时看到一句明确的说明和它的配置项名，这样我知道该找谁开。
+23. 作为发货员，我想在没有任何进行中批次时看到「今天还没有导入批次，先做一次同步」并直接给出那个按钮，这样空态本身是可操作的。
+24. 作为发货员，我想在任一区块的数据加载失败时只看到那个区块报错、其余区块照常显示，这样一个接口挂掉不会让我整天没法干活。
+
+### 复核收件箱 `/workbench/reviews`（既有页，加岗位预筛）
+
+25. 作为一个有岗位的复核人，我想进入收件箱时默认只看到我这个团队的待办，这样我不用每次手动筛。
+26. 作为一个复核人，我想清楚看到「当前已按我的团队筛选」以及一个「看全部」的切换，这样我不会漏掉别人没认领的活。
+27. 作为一个复核人，我想在 URL 里带了 `responsible_team` 时以 URL 为准、忽略我的岗位默认值，这样别人分享给我的链接不会被我的岗位悄悄改写。
+28. 作为一个复核人，我想按「为什么需要人」看到分组折叠的队列，这样同一类判断可以连着做完。
+29. 作为一个复核人，我想每组标题上有条数、组可以折叠，且折叠状态在本次会话内保持，这样我处理长队列时不用反复卷动。
+30. 作为一个复核人，我想点开一条后在抽屉里完成处理、关闭后列表原位刷新，这样我不会每处理一条就丢失滚动位置。
+31. 作为一个复核人，我想只看到这条事项**实际允许**的动作按钮，这样我不会点一个注定被后端拒绝的按钮。
+32. 作为一个复核人，我想在一条事项被别人先处理掉（版本冲突）时看到「该事项已被处理」并自动刷新该行，这样我不会覆盖别人的决定。
+33. 作为一个复核人，我想在我这个团队今天没有待办时看到「你这个团队没有待办」并附一个「看全部」，这样空态不会让我以为系统坏了。
+
+### 采购工作台 `/workbench/procurement`
+
+34. 作为采购，我想第一屏就是 Agent 的比价结论，而不是一张要我先填条件的查询表单，这样我从「看结论」开始而不是从「构造查询」开始。
+35. 作为采购，我想每条结论都带「为什么值得关注 / 建议 / 数据来源 / 更新时间 / 运行标识」，这样我能判断这条建议可不可信。
+36. 作为采购，我想看到被剔除的候选和剔除理由，这样我知道 Agent 没有偷偷少看了什么。
+37. 作为采购，我想每条建议都明确标着「需要人确认」，这样我不会以为它已经生效了。
+38. 作为采购，我想 Agent 的任何输出都不能直接改采购工单，只能作为我做决定的依据，这样确定性业务结果始终由人产生。
+39. 作为采购，我想在模型未配置 / 未注册 / 未启用时看到那个稳定错误码和一句人话解释，而不是一个空列表，这样我不会以为「没有可优化的」。
+40. 作为采购，我想在输入非法时看到具体是哪个字段不合法，这样我能自己改对。
+41. 作为采购，我想从一条建议一键跳到对应的采购工单页，这样我能立刻去执行。
+42. 作为采购，我想看到当前待处理的采购工单条数与最久未动的那条等了多久，这样我知道有没有活压着。
+43. 作为采购，我想在没有任何待比价对象时看到「当前没有需要比价的采购工单」，这样空态是结论不是故障。
+44. 作为采购，我想 Agent 每一次运行都留下记录，即使是我手动点的，这样自动与人工留痕一致。
+
+### 对账工作台 `/workbench/recon`
+
+45. 作为财务，我想按单号查一笔出库的内外事实并排结果，这样我不用在两个系统之间来回抄。
+46. 作为财务，我想三种单号（系统出库单号 / 京东单号 / 订单号）都能查，这样我拿到哪个号都能开始。
+47. 作为财务，我想查询条件进入 URL，这样我能把一笔存疑的对账直接甩给同事。
+48. 作为财务，我想看到逐字段的一致 / 不一致判定和匹配、不匹配计数，这样我不用自己逐行比。
+49. 作为财务，我想在京东侧不可达时看到明确的「京东侧未取到」，绝不显示成字段为空，这样我不会把「没查到」记成「对方是零」。
+50. 作为财务，我想区分「京东没有这笔出库」和「京东查询失败」，这样前者是业务问题、后者是技术问题，我知道找谁。
+51. 作为财务，我想看到只在内部存在 / 只在京东存在 的字段被单独标出，这样单边事实不会被当成不一致混在一起。
+52. 作为财务，我想从并排视图一路下钻到订单、商品行、Shipment、运单、原始导入行和审计日志，这样每个数字我都能追到源头。
+53. 作为财务，我想在查不到这个单号时看到「未找到这笔出库」并保留我输入的条件，这样我能改一个字符再试。
+54. 作为财务，我想看到金额列显示为 `¥ ——` 并附一句「金额对账未纳入本期」，这样我知道这是有意的决定而不是数据丢了。
+55. 作为财务，我想知道当前的对账是数量口径，这样我不会拿它去做金额结算。
+
+### 导航与外观
+
+56. 作为任何使用者，我想旧的书签和带 `?query=` 的深链在这次改动后照旧可用，这样我攒的链接不会全废。
+57. 作为任何使用者，我想不再看到那条几乎没有内容的顶栏，这样纵向空间给内容。
+58. 作为任何使用者，我想全站配色只来自一处主题定义，这样不同页面的同一种状态是同一个颜色。
+59. 作为任何使用者，我想「演示订单」不出现在日常导航里，这样我不会在生产菜单里点进演示数据。
+
+---
+
+## Implementation Decisions
+
+**D1 — 岗位是视图，不是身份。** 岗位下拉只影响两件事：默认落地的工作台、复核收件箱的默认 `responsible_team`。它不发任何请求、不进任何写操作的请求头、不改变任何返回数据。浏览器不得提供 `X-Operator`（受信网关覆盖身份，`RequestContextFilter` 在 `HIGHEST_PRECEDENCE` 复验），所以岗位在物理上不可能影响审计归属——这不是「我们选择不做」，是「链路上做不到」。这一条要在岗位下拉旁以一句话呈现给使用者。
+
+**D2 — 岗位词汇沿用 `responsible_team`，不新造一套。** 权威取值来自 `queuePresentation.ts` 的 `TEAM_OPTIONS`：`CUSTOMER_OPS` / `SKU_OPS` / `ORDER_OPS` / `FULFILLMENT_OPS`。扫描方案里的「发货员 / 采购 / 财务」是人话别名，只作为工作台标题，不进任何契约字段。`internal_operators.responsible_team` 是 `VARCHAR(32)` + 大写归一（`OperatorRules.normalizeTeam`），不是枚举，所以前端遇到未知团队值必须原样显示而不是崩溃或丢弃。
+
+**D3 — 岗位存 `localStorage`，且第一次进入不预设默认值。** 存 `localStorage`（不进 URL、不进后端）。理由：进 URL 会让分享链接携带发送方的岗位，直接违反故事 4 与 27；进后端要先有身份，而身份不存在。首次进入无值时显示未选择态，不猜。Phase 2 有真身份后，这个键作为一次性迁移来源读取后即弃——`localStorage` 里没有任何业务事实，丢了只损失一次重选。
+
+**D4 — 财务没有对应的 `responsible_team` 值，因此对账工作台不做团队预筛。** 现有四个团队里没有财务。不为此新增团队值（那需要改 `internal_operators` 的数据，属于后端改动，越界）。对账工作台按单号查询，不按团队筛。岗位下拉里的「财务」只决定默认落地页。
+
+**D5 — URL 一个不改。** 新增三个 URL（`/workbench/shipping`、`/workbench/procurement`、`/workbench/recon`）；既有 URL 全部保留，含 `hideInMenu` 的那些。`/fulfillment/outbound-recon` 与 `/procurement/price-compare` 继续存在并继续可直达，新工作台是它们的高频父入口而不是替代品——这正是 `navigation-admission.md` 里「上下文二级入口」的固定三件套写法。
+
+**D6 — 一级板块 10 → 11，各板块可见子项均 ≤ 6。** 新增「我的工作台」（4 个可见入口，排在最前）。`/workbench/reviews` 与 `/workbench/alerts` 从「作业中心」移入，作业中心可见叶子 6 → 4，仍在上限内。可见入口总数 30 → 32（新增 3，移动 2 不计）。这些数字以实现时重算为准，不以本文为准——`navigation-admission.md` 已经确立「一律以实时重算为准」。
+
+**D7 — severity 从后端取，删掉前端的派生表。** `DashboardController.attention()` 已经返回 severity。删掉 `DashboardPage.tsx` 里的 `CRITICAL_REASONS`，改为消费返回值。**但复核列表 API（`/api/v1/review-cases`）确实没有 severity**，所以复核收件箱不显示严重度——不为此改后端契约。这是两件不同的事，只做前一件。
+
+**D8 — 「今日」有两个口径，因为后端本来就有两个，且复核计数没有口径。** 代码事实（`DashboardController` SQL）：下单口径 = `(orders.created_at AT TIME ZONE 'Asia/Shanghai')::date`；发货口径 = `(shipments.shipped_at AT TIME ZONE 'Asia/Shanghai')::date`；**复核事项的计数与聚合完全不带时间边界**（`WHERE rc.status = 'OPEN'`，全部 OPEN）。因此：发货工作台的链路分段用发货/下单口径并逐段标注用的是哪个；复核收件箱**不显示任何时间范围控件**，因为后端过滤不了——`reviewQueueUrl.ts` 已经写明「绝不伪造 `business_date`／`date` 参数，那类参数在复核列表 API 上没有过滤效果，只会让分享链接说谎」。切换岗位不改变任何时间口径：岗位与时间是两个正交维度，岗位只筛团队。
+
+**D9 — 复核清零后不自动继续，必须人点「整批确认」。** `POST /api/v1/import-batches/{id}/confirm` 是显式端点，没有任何调度器或触发器在复核清零时调用它。保持这个形态：确认是一次人的决定，符合 `ImportBatchConfirmation` 的定义（「操作员对一个来源订单导入批次作出的一次整体确认」）。工作台的责任是让「现在可以确认了」这件事显眼，不是替人点。
+
+**D10 — 京东出库提交的重试用既有端点，不新建。** `POST /api/v1/import-batches/{id}/jd-outbound-submit`「已提交的跳过，失败项可安全重试（幂等键稳定）」。故事 19 的重试按钮直接调它。
+
+**D11 — 幂等重放要显式呈现。** `confirm` 在 `confirmed.replayed()` 为真时不会再触发 `submitJdOutboundsForBatch`。前端必须区分「首次确认成功」与「重放命中」两种成功响应并给不同文案（故事 20），否则人会以为自己重复提交了业务事实。
+
+**D12 — 采购工作台是只读 + 建议，写操作一律跳走。** `ProcurementPricePolicy.enforce` 强制 `requires_human=true`；`CONTEXT.md` 边界写明一期 Agent 只做只读分析与建议。工作台展示 `candidates` 与 `excluded_candidates` + 剔除理由，每条带「需要人确认」标记，动作按钮全部是跳转到既有采购工单页，工作台自身不提交任何业务写操作。
+
+**D13 — Agent 的错误是结果不是异常。** `compare` 对模型未配置 / 未注册 / 未启用返回结果内的稳定 `error` 码（fail-closed，不抛异常）；只有输入非法才抛 `INVALID_PARAMETERS`。前端因此有两条不同的错误路径（故事 39 与 40），不能合并成一个「请求失败」。
+
+**D14 — 对账的七个比对态全部显式呈现，不做二值化。** `Comparison.state ∈ MATCH / MISMATCH / INTERNAL_ONLY / JD_ONLY / EMPTY / JD_UNAVAILABLE / JD_NOT_FOUND`，`JdSide.status ∈ OK / NOT_FOUND / UNAVAILABLE`。后端注释已经明确要求「调用方必须明确标注『京东侧未取到』，不得显示为空值」。前端不得把这七态压成「一致/不一致」——那正好会制造故事 49、50、51 要避免的误读。
+
+**D15 — 金额列显示 `¥ ——` 是设计决定，写在页面上。** 全库唯一的金额字段是 `skus.purchase_price` / `retail_price` 与 `fulfillment_export_items.item_amount`（京东云仓被触发器强制为 0）；`orders` 有 `settlement_method` / `settlement_time` 但无金额；`analytics.v_channel_daily` 是数量口径。所以金额对账在数据层就不成立。页面显式说明它是数量口径对账（故事 54、55），并另立一张 Phase 3 的票，不在本 spec 内偷偷留空列。
+
+**D16 — 自动回填开关只呈现状态，不在前端提供开关。** `app.jd.tracking-backfill.enabled` 默认 `false`，`ShipmentJdTrackingPoller` 只有 `@Scheduled` 入口、没有手动触发端点。工作台显示它当前是开还是关（故事 21、22），并给出配置项名，但不提供打开它的按钮——那需要新增后端端点。**打开它本身是一张独立的运维票（用户已拍板要开），不是前端工作。**
+
+**D17 — 每个区块独立取数、独立降级。** 工作台是多来源聚合页，一个接口失败不得让整页白屏（故事 24）。每个区块自己的加载态、空态、错误态互不影响。
+
+**D18 — 不新建共享组件。** 三个新页面用既有的 `PageShell` / `FilterBar` / `DataTable`（#97 已在 38 个路由上落地：PageShell 34/38、DataTable 25/38、FilterBar 17/38）+ `KpiCard` / `Chart`。颜色只从 `frontend/src/theme/saasTheme.ts` 与 `pages/shared/semanticStatus.ts` 取，不新增页面级调色板；`semanticStatus.ts` 已经禁止 antd 具名预设色，沿用该约束。
+
+**D19 — 复核抽屉复用，不重做。** `ReviewCaseDrawer.tsx` 已存在并已被 `manualReviewQueueRoute.test.ts` 覆盖。故事 30、31、32 全部在它上面做，不新建第二种处理形态。**这一条同时取消了原计划中「复核单条处理形态需要再开 `/prototype` 验证」——形态已经落地并有测试。**
+
+**D20 — 动作按钮由 `allowed_actions` 驱动，不由前端推断。** `ReviewCaseDto.allowed_actions` 的取值域：`RESOLVE_CUSTOMER` / `RESOLVE_SKU` / `COMPLETE_SOURCE_FOLLOWUP` / `RESOLVE_MANUALLY` / `DISMISS` / `CONFIRM_ORDER_DRAFT` / `CONFIRM_TRACKING_DRAFT` / `RESOLVE_CHAT` / `RESOLVE_JD_TRACKING_CONFLICT`，分别对应 `/api/v1/review-cases/{id}` 下的 `resolve-customer` / `resolve-sku` / `complete-source-followup` / `resolve` / `dismiss` 等端点。前端只渲染返回值里出现的动作（故事 31），不按 `reason_code` 猜测。
+
+**D21 — 分组按 `reason_code` 分，标签取既有映射。** `queuePresentation.ts` 的 `REASON_LABELS` 已经是 24 个原因码的权威中文映射；`REVIEW_STATUS_LABELS`、`ALERT_STATUS_LABELS`、`TEAM_OPTIONS` 同理。分组折叠形态保持不变（已拍板）。未知 `reason_code` 原样显示码值并归入「其他」组，不丢弃。
+
+**D22 — 提醒专用原因码直达提醒页。** `ALERT_ONLY_ATTENTION_CODES`（`PROCUREMENT_REQUIRED` / `JD_SHIPMENT_OUTBOUND_SUBMIT_FAILED` / `JD_SKU_MAPPING` / `OUT_OF_STOCK`）在复核队列里按 `reason_code` 过滤会得到空列表，所以这些卡跳 `/workbench/alerts`。这个契约已经实现，新工作台的所有跳转一律走 `reviewQueueUrl.ts`，不另写第二套 URL 拼装逻辑。
+
+**D23 — 拉取配额来自既有节流字段，不新建计数器。** 三平台共享 `connector_configs.last_pull_at`，`app.platform-pull.min-interval` 默认 `PT12H`（= 每平台每天 ≤2 次的合规红线）。剩余额度与下次可拉取时间由 `last_pull_at` + `min-interval` 推导（故事 8、9），不新增字段。`DEFAULT_CHANNELS = CAISHIXIAN, JUFUBAO, FEIXIANG`；`app.platform-pull.auto-confirm` 恒为 false，因此拉取永不自动确认——工作台不得暗示它会。
+
+**D24 — 聚福宝降级要在界面上说出来。** 聚福宝 JSON 直连缺收货人字段，只报告拉取数量、不入库。这件事目前只写在一个后端 Javadoc 里。工作台把它做成一等状态（故事 15），否则发货员会以为订单丢了。
+
+**D25 — 对象页只写怎么拼，不做设计。** 订单、发货批次、运单、库存这些对象页一律 `PageShell` + `FilterBar` + `DataTable` 三件套。筛选维度以既有 URL 参数为准并全部进 query string；入口来自工作台的分段跳转与复核抽屉的下钻。本 spec 不为它们规定新的视觉或交互。
+
+**D26 — 删顶栏、岗位下拉进侧边栏顶部（品牌下方）。** 已拍板。`NAVIGATION_GROUP_SUFFIX = '~'` 这个分组 hack 一并去掉——新增板块会让它更难读。
+
+---
+
+## Testing Decisions
+
+**单一接缝：`frontend/test/routeHarness.ts` 上的路由级点击动线测试。**
+
+它已经是 #95 / #96 / #98 / #64 的验收接缝，装配好了 JSDOM + Vite SSR + MemoryRouter + `ConfigProvider(zh_CN + saasTheme)` + antd `App`，并提供 `mount(initialEntries)`、`bodyText()`、`location()`（断言 URL）、`waitFor()`、`control(text)`、`dispatchEvent()`、`jsonResponse()` / `apiErrorResponse()` / `page()` / `reviewCaseFixture()`。四个工作台的每个分支、空态、错误态都在这一层写，用 `globalThis.fetch` 打桩后端响应。
+
+- **不新增接缝。** 上面 59 条故事没有一条需要比路由更低的接缝：状态推导（配额剩余、可确认判定、七态比对呈现）都可以在挂载后的可见文本上断言。
+- **不加后端测试。** 本 spec 零后端改动，没有可测的后端行为变更。
+- **错误态用 `apiErrorResponse(status, businessCode, message)` 打桩**，逐个覆盖：拉取失败（故事 12）、区块级降级（24）、版本冲突（32）、Agent 稳定错误码（39）、输入非法（40）、`JD_UNAVAILABLE` / `JD_NOT_FOUND`（49、50）、查不到单号（53）。
+- **URL 契约用 `location()` 断言**：分段跳转带对的筛选参数（14）、URL 的 `responsible_team` 覆盖岗位默认值（27）、对账查询条件进 URL（47）、旧 `view=alerts` 链接重定向仍然有效（56）。
+- **回归门禁沿用既有的**：`businessObjectNavigation.test.ts`、`navigation.test.ts`、`dashboardDispatchRoute.test.ts`、`importBatchReviewRoute.test.ts`、`manualReviewQueueRoute.test.ts`、`alertsQueueRoute.test.ts`、`procurementPriceCompare.test.ts`、`outboundRecon.test.ts`、`saasTheme.test.ts`、`presentationPrimitives.test.ts`、`identityBoundary.test.ts`。全量门禁：`cd frontend && npm run typecheck && npm test && npm run build` + `git diff --check`。
+- **`identityBoundary.test.ts` 是 D1 的守门人**：岗位下拉落地后它必须仍然绿——即浏览器仍然不发 `X-Operator`。
+
+---
+
+## Out of Scope
+
+- **登录、真实身份、权限、数据隔离。** 已拍板 Phase 1 不做。因此财务的「归集退货责任」这类动作在审计里无法归属到具体人。**判断：可接受，因为本 spec 不新增任何写操作**——四个工作台的所有写动作都是既有端点（`confirm`、`jd-outbound-submit`、复核的五个 resolve/dismiss），它们的归属现状与本次改动无关，不因为界面重组而变差。需要新归属的动作一个都不引入。
+- **金额对账。** 数据层不成立（D15）。另立 Phase 3 票。
+- **打开 `app.jd.tracking-backfill.enabled`。** 已拍板要开，但那是配置/运维动作，另立票（D16）。
+- **给 `ReviewCase` 契约加 severity。** 后端改动，另立票（D7 只做前端那一半）。
+- **采购建议持久化表 + 每日调度。** `compare` 端点已存在，持久化与调度是后端新增，另立票。
+- **`/orders` 四个 URL 渲染同一组件的收敛。** 属 #61 / #62 / #63，前置但不在本 spec。
+- **万齐。** 用户说是另一个平台。#91–#94 不动。
+- **`/analytics` 改名与响应式外壳。** 分别是独立小票与 #65。
+- **原型。** §6 的两件事都不再需要：复核单条形态已由 `ReviewCaseDrawer.tsx` 落地（D19）；岗位 × 时间口径的组合行为由 D8 定死（正交，不组合）。
+
+---
+
+## Further Notes
+
+**票面对齐（本 spec 的前置，已按代码事实校正）**
+
+| 票 | 关系 | 说明 |
+|---|---|---|
+| #95 导入到复核闭环 | 无关（已完成） | CLOSED COMPLETED `ea9fe90`。批次参数契约收在 `reviewQueueUrl.ts`，本 spec 直接消费 |
+| #96 工作台变调度台 | **前置** | CLOSED COMPLETED `e3e6b87`。本 spec 在其上加岗位维度与主动作，不推翻 |
+| #97 页面迁移共享组件 | 无关（已完成） | CLOSED COMPLETED `16b4a3e`→`b4bcfda`。三件套已在 38 路由落地，D25 因此不需要设计 |
+| #98 菜单收敛与准入 | **前置，且是约束** | CLOSED COMPLETED `46d6404`。`navigation-admission.md` 的 ≤6 / 降级≠删除 约束了 D5、D6 |
+| #64 拆分复核页为两路由 | 前置（已实现，票面滞后） | 分支上已完成，`manualReviewQueueRoute.test.ts` + `alertsQueueRoute.test.ts` |
+| #72 复核家族补齐明细 | 前置（已实现，票面滞后） | 分支上已完成，是分组队列每一组的内容来源 |
+| #89 运营人员登记 | **前置（必须先并）** | V48 `internal_operators` + `operator` 包，D2 的团队词汇底座 |
+| #61 / #62 / #63 | 前置（未实现） | 对象页的 URL 层级、真实详情路由、筛选进 URL |
+| #65 响应式外壳 | 无关 | 375px 限制留在该票 |
+| #66–#69 | 无关 | 面包屑 / 危险动作确认 / 表单校验 / 加载态基线 |
+| #73 采购比价剔除不可比候选 | 前置（已完成） | `excluded_candidates` 就是它的产物，故事 36 直接消费 |
+| #74 出库内外事实并排 | **前置（已完成）** | `OutboundReconController` + 七态比对，对账工作台整个建在它上面 |
+| #75–#80 agent-console | 无关 | |
+| #82–#90 wecom-outbound | 无关（#89 除外） | |
+| #91–#94 wanqi | 无关 | |
+| #99–#102 jufubao-shipment-p0 | 无关，但 D24 与之相邻 | 聚福宝降级呈现不等于修它 |
+
+**交接文档的三处已失效判断**，记录在此以免下一个会话重新踩：
+1. 「#95–#98 合并重排、旧票关掉并注明被哪张新票取代」——四张票是**已实现并关闭**（`2026-08-21T15:25Z`，交接写完约 30 分钟后），不是被取代。
+2. 「身份层完全不存在」「`ProcurementPriceAgent` 零调用方」「Agent 管理无前端页面」——三条在 `69f259f` 上均已不成立。照它们规划会重新实现已有功能。
+3. 「9 个一级板块 / 34 可见入口」——实时重算是 10 / 30，作业中心恰好 6。
+
+**一个术语观察，但不改 `CONTEXT.md`。** 岗位（前端视图概念）与 `responsible_team`（复核事项的责任归属）在本 spec 里被有意等同（D2）。这不构成术语冲突：`responsible_team` 的定义没变，只是多了一个消费者。`CONTEXT.md` 无需新增词条——「岗位」不是领域概念，是界面上的一个筛选默认值，Phase 2 有真身份后它才可能升格为领域概念。
+
+
+
+########## ISSUE #102: jufubao-shipment-p0: 04 — 真实账号与测试订单外部验收
+创建: 2026-08-21T04:08:11Z  标签: priority:p0
+----------
+## Parent
+
+- #26
+
+## What to build
+
+使用授权的聚福宝真实账号、可控测试订单和真实京东运单，验证从平台查询、必要时接单、地址门禁、提交物流到订单离开待发货列表的完整闭环；同时验证平台拒绝和结果未知时不会盲目重提。保留现有文件回填作为人工降级路径，并确认在线与文件路径不会对同一订单重复写入。
+
+这是外部门禁票。Mock、单元测试、受控 HTTP Stub、脚本退出码或一次 HTTP 200 都不能替代真实平台最终状态证据。
+
+## Acceptance criteria
+
+- [ ] 已准备经授权的真实账号、可控测试订单、有效京东运单及明确的人工执行时间窗。
+- [ ] 真实订单从查询开始，必要时由 `NO_RECEIPT` 转为 `NO_DELIVERY`，地址门禁通过后提交物流。
+- [ ] 提交后重新查询真实平台，确认目标订单已经离开 `NO_DELIVERY`，并将脱敏证据关联到本票。
+- [ ] 至少验证一次明确拒绝或安全构造的失败路径，确认系统不会误报成功。
+- [ ] 验证结果未知时系统停止自动重试，并给操作员提供平台核对入口与订单引用。
+- [ ] 在线路径成功后，文件回填路径对同一拆单和运单被幂等门禁阻止；文件降级能力本身仍可用。
+- [ ] 验收材料不包含账号密码、Cookie、Token、完整手机号、完整地址或可复用的 HAR 会话秘密。
+
+## Blocked by
+
+- #101
+- External gate: authorized account, controllable test order, valid JD tracking number, and a human-approved execution window.
+
+## Status
+
+blocked-external — do not mark complete from local or mocked evidence.
+
+
+
+########## ISSUE #94: wanqi-api-integration: 04 — 真实 API 全链路验收与 Excel 降级
+创建: 2026-08-20T12:15:39Z  标签: 
+----------
+## What to build
+
+使用授权的真实万齐账号和可控测试订单，验收“短信登录或有效会话 → API 拉单 → 人工确认 → 京东出库 → 获取运单 → 万齐 API 回填 → 万齐进入待收货”的完整业务链路，并证明 API 不可用时仍可回到现有 Excel 导入/回填流程。
+
+在真实外部探测完成前，本票保持 blocked-external；Mock、受控客户端和本地数据库只能证明内部契约，不能替代真实万齐或真实京东验收。
+
+## Acceptance criteria
+
+- [ ] 真实账号身份、权限范围、接口基址和会话方式分别核验，证据中不包含凭据或 PII
+- [ ] 至少一笔授权测试订单完整走通 API 拉取、内部确认、京东履约、运单回填和待收货确认
+- [ ] 验证 Token 过期后的失败关闭与人工续期恢复
+- [ ] 验证重复拉取、重复回填、多包裹以及提交后状态延迟更新
+- [ ] 记录真实响应形态、限流或调用节奏、失败分类和人工介入入口
+- [ ] API 失效或会话不可恢复时，可切回现有 Excel 导入与回填，不覆盖历史订单和同步事实
+- [ ] 最终报告严格区分本地测试、万齐真实接口证据、京东真实接口证据和生产运行状态
+
+## Blocked by
+
+- #93
+
+
+########## ISSUE #93: wanqi-api-integration: 03 — 京东运单 API 回填与最终状态确认
+创建: 2026-08-20T12:14:23Z  标签: ready-for-agent
+----------
+## What to build
+
+京东履约取得正式运单后，按万齐来源订单和子订单标识把发货结果直接回填万齐 API。支持单包裹和同一子订单多包裹；万齐受理提交后采用延迟查询确认最终状态，而不是把紧接提交的短暂旧状态误判为失败。
+
+## Acceptance criteria
+
+- [ ] 使用万齐字典或已验证配置把内部承运商映射为万齐 deliveryCompany，京东物流值经过真实响应核对
+- [ ] 单包裹按来源子订单提交商品、承运商和运单号，多包裹使用 deliveryList 完整提交
+- [ ] 同一来源子订单和同一组运单的重试不会造成可避免的重复回填
+- [ ] 明确区分平台接受、平台拒绝和网络超时导致的结果未知；结果未知时禁止盲目自动重提
+- [ ] 平台接受后延迟轮询订单详情，确认订单和子订单进入待收货状态
+- [ ] 最终成功写入既有来源同步成功语义；明确失败可重试，持续失败或结果未知转人工处理
+- [ ] 日志和审计只保留必要标识、状态和次数，不记录收货人 PII、Token 或完整第三方响应
+
+## Blocked by
+
+- #92
+
+
+########## ISSUE #92: wanqi-api-integration: 02 — API 拉取待发货订单进入标准订单闭环
+创建: 2026-08-20T12:13:40Z  标签: ready-for-agent
+----------
+## What to build
+
+通过万齐订单列表与订单详情 API 拉取明确处于待发货状态的订单，保留万齐主订单与子订单来源标识，并接入现有的内部标准订单、SKU/礼包识别、人工确认和京东履约闭环。该路径直接消费 API 响应，不再经过 52 列 Excel；现有 Excel 导入继续作为降级通道。
+
+## Acceptance criteria
+
+- [ ] 分页拉取待发货订单并补齐订单详情，生成可供操作员确认的来源订单批次
+- [ ] 万齐 orderId、subOrderId 和商品身份作为来源证据完整保留，内部订单号与来源标识不混用
+- [ ] 非实体销售、非待发货、已有物流、退款或售后订单失败关闭或进入明确复核，不自动履约
+- [ ] 重复拉取相同订单不会生成重复内部订单或重复履约承诺
+- [ ] API 超时、鉴权失效、分页不完整或响应结构变化不会产生空批次或部分静默成功
+- [ ] 既有万齐 SKU、静态礼包、人工确认和京东履约行为与 Excel 导入路径保持一致
+
+## Blocked by
+
+- #91
+
+
+########## ISSUE #91: wanqi-api-integration: 01 — 短信登录与会话有效性门禁
+创建: 2026-08-20T12:13:17Z  标签: ready-for-agent
+----------
+## What to build
+
+让操作员可以通过万齐手机号和短信验证码建立 API 会话，并由系统使用只读用户查询确认会话身份与权限。实测并记录 Token 有效期、失效响应，以及是否存在密码登录、续期或长期会话机制；第一版允许“人工续期、其余自动运行”。
+
+Web 私有接口不视为官方开放 API。手机号、验证码和 Token 只进入受控凭据配置，不进入业务字段、日志、审计载荷或代码仓库。
+
+## Acceptance criteria
+
+- [ ] 发送验证码、验证码登录、读取当前用户形成一条可重复执行的完整链路
+- [ ] 明确记录 Token 的传递方式、有效期观测、失效响应和重新登录条件
+- [ ] 验证是否存在密码登录、refresh token 或其他长期会话能力；不存在时明确采用人工短信续期
+- [ ] 凭据、Token、手机号和验证码不会出现在代码仓库、普通日志或审计载荷中
+- [ ] 无有效会话时失败关闭，不继续拉单或回填发货
+
+## Blocked by
+
+- None — can start immediately.
+
+
+########## ISSUE #80: agent-console: 06 — 对话式创建 Agent（后置）
+创建: 2026-08-19T14:32:58Z  标签: jry
+----------
+# 06 — 对话式创建 Agent（后置）
+
+**What to build:** 不会写提示词的人也能建 Agent：用自然语言描述需求，Meta-Agent 选好工具、写好提示词、产出草稿定义与建议评测用例，落库为草稿等人确认。
+
+**Blocked by:** 03、后端 Meta-Agent 工具面（票 10，GitHub #11）、Meta-Agent REST 端点（票 13，GitHub #14）
+
+**Status:** deferred（用户裁定后置；P1–P5 先行）
+
+## 设计源
+
+`.scratch/agent-console/design.md` §3 P6、§7（组件选型）。
+
+## 关键约束
+
+- **Meta-Agent 只能写草稿，启用永远是人工在详情页做的。** 本页不得出现任何「创建并启用」按钮——这是平台红线的界面表达。
+- 三种结局都要有对应呈现：SUCCESS（草稿预览 + 去确认）、NEEDS_INPUT（澄清问题逐条列出）、REJECTED（明确拒绝理由：slug 冲突、要求写工具、企图改 meta-agent 自身等）。
+- 对话组件用 `@ant-design/x` 锁 1.6.x（MIT，peerDeps `antd ^5.20.3`，与项目 antd 5.21 零摩擦；2.x 需 antd 6，不升）。
+
+## 验收标准
+
+- [ ] `/agents/new` 左侧对话流、右侧实时草稿预览
+- [ ] 三种 outcome 各有对应呈现，拒绝理由可操作（告诉用户下一步该做什么）
+- [ ] 产出的草稿落库为 draft 且未启用，可跳详情页确认
+- [ ] 建议评测用例随草稿一并落为 PENDING
+- [ ] 页面内不存在任何直接启用路径
+
+
+
+########## ISSUE #79: agent-console: 05 — 评测用例页与人工纠正回流
+创建: 2026-08-19T14:32:55Z  标签: jry,ready-for-agent
+----------
+# 05 — 评测用例页与人工纠正回流
+
+**What to build:** 能看到某个 Agent 某一版冻结了哪些评测用例、分别属于确定性门禁还是质量评测、确认了没有。并且能把人工复核的纠正结果一键变成待确认的评测用例——这是「agent 决策有记忆」的落点。
+
+**Blocked by:** 02、后端读端点（`meta-agent-platform-impl` 票 12，GitHub #13）
+
+**Status:** ready-for-agent
+
+## 设计源
+
+`.scratch/agent-console/design.md` §3 P5。需求背景见 `.scratch/new-requirements-intake/backlog.md`「agent 决策记忆」。
+
+## 关键约束
+
+- **INVARIANT 与 QUALITY 分两组展示**。前者是 stub 跑分器 + CI 基线门禁（确定性），后者是真实模型 + promptfoo（有波动、不进基线）。混在一起会让人误读基线数字。
+- **active 版本的用例只读**（07 决策：active 不可追加/修改，要加 = 新版本草稿）。界面要在 active 版本上禁用「新增用例」并给出去处（「新增用例需先创建草稿版本」），而不是让按钮可点然后吃一个 422。
+- **人工纠正落在评测表，不新开记忆表**。人工纠正天然就是「输入 + 期望输出」，与评测用例同构；新开记忆表会与「审计只做流水、不能当真源」的红线冲突。
+
+## 验收标准
+
+- [ ] `/agents/:slug/evals` 按版本分组展示用例，INVARIANT 与 QUALITY 分两组
+- [ ] 每条展示：case_key、metric_kind、输入、期望、状态（PENDING / CONFIRMED）
+- [ ] active 版本上「新增用例」禁用并给出明确去处，不靠后端 422 兜底
+- [ ] 从复核结果生成 PENDING 评测用例的入口可用，生成的用例带来源追溯（来自哪条复核）
+- [ ] 生成的用例进入该 slug 的草稿版本，随草稿确认一并确认
+
+
+
+########## ISSUE #78: agent-console: 04 — 运行记录页与运行详情
+创建: 2026-08-19T14:32:53Z  标签: jry,ready-for-agent
+----------
+# 04 — 运行记录页与运行详情
+
+**What to build:** 排障动线：先在全局运行记录里找到跑挂的那一条（此时还不知道是哪个 Agent），点进去看清它当时调了哪些工具、每步耗时多久、在哪一步失败的。
+
+**Blocked by:** 01、后端读端点（`meta-agent-platform-impl` 票 12，GitHub #13）
+
+**Status:** ready-for-agent
+
+## 设计源
+
+`.scratch/agent-console/design.md` §3 P3/P4、§9 第 2 条（独立页做真源的裁定与理由）。
+
+## 关键约束
+
+- **LIVE 与 PREVIEW 必须视觉隔离**，默认只看 LIVE。`run_mode` 这个字段存在的全部理由就是防止草稿试跑污染对线上行为的判断；混在一列这个设计就白做了。
+- **输入只有 SHA-256 摘要没有原文**，这是隐私设计不是缺数据。界面要如实说明「输入原文不留存，仅存摘要用于比对」，不要渲染成空白让人以为丢了数据。
+
+## 验收标准
+
+- [ ] `/agents/runs` 列表展示：run_id、Agent、状态、outcome、耗时、token、关联业务实体、开始时间
+- [ ] 筛选（Agent、状态、outcome、run_mode、时间范围、业务实体）与分页进 query string；`?agent=<slug>` 可从详情页跳入并生效
+- [ ] 默认只展示 LIVE，切到 PREVIEW 有明显视觉标识
+- [ ] `/agents/runs/:runId` 展示工具调用序列 Timeline：工具名、序号、耗时、状态、已脱敏的参数与结果摘要
+- [ ] 失败运行把稳定错误码放在最显眼处
+- [ ] 输入摘要区有明确说明，不显示为空
+- [ ] 可跳到同 run_id 的审计日志，双向可追溯
+
+
+
+########## ISSUE #77: agent-console: 03 — 草稿确认闭环与启停
+创建: 2026-08-19T14:32:50Z  标签: jry,ready-for-agent
+----------
+# 03 — 草稿确认闭环与启停
+
+**What to build:** 人能在界面上完成 Agent 定义的生命周期操作：确认草稿让它生效、拒绝草稿、启停一个 Agent、以某个历史版本为蓝本创建新草稿（回滚路径）。每个动作在按下去之前都说清将发生什么、影响多少、是否可逆。
+
+**Blocked by:** 02、后端写端点（`meta-agent-platform-impl` 票 11，GitHub #12）
+
+**Status:** ready-for-agent
+
+## 设计源
+
+`.scratch/agent-console/design.md` §3 P2 写动作、§5（危险动作的统一确认）。
+
+## 关键约束
+
+- **回滚不是回边**：版本状态机 `draft → active → retired` 无回边，回滚 = 以旧版本为蓝本创建新草稿再确认。按钮文案必须是「以此版本创建草稿」，**不得**写成「回滚到此版本」——那会让用户以为点一下就回去了。
+- **确认草稿要连带确认该版本的待确认评测用例**（07 决策的联动），确认前必须告知会一并确认几条用例。
+- 启停改的是 `enabled`，**不改变版本状态**，重新启用回到原版本。文案要让这点无歧义。
+
+## 验收标准
+
+- [ ] 确认草稿、拒绝草稿、启用/停用、以此版本创建草稿四个动作可用
+- [ ] 每个动作走统一确认组件，确认前说清：将发生什么、影响范围（含连带确认的评测用例条数）、是否可逆
+- [ ] 写动作是 202 异步，界面有进行中状态与结果反馈，不是点完无响应
+- [ ] 并发冲突（两人同时确认不同草稿）有明确提示并引导刷新，不静默覆盖
+- [ ] 界面上不存在任何「创建并启用」的一步到位路径——启用永远是独立的人工动作
+- [ ] 失败时给出可操作的下一步，不是一句泛化错误
+
+
+
+########## ISSUE #76: agent-console: 02 — Agent 详情：当前生效定义与版本链
+创建: 2026-08-19T14:32:47Z  标签: jry,ready-for-agent
+----------
+# 02 — Agent 详情：当前生效定义与版本链
+
+**What to build:** 点开一个 Agent，能看到它当前生效的那一版的全部事实（提示词、工具白名单、输出 schema、守卫豁免、谁在什么时候确认的），以及这个 slug 的完整版本历史。只读，不含写动作。
+
+**Blocked by:** 01
+
+**Status:** ready-for-agent
+
+## 设计源
+
+`.scratch/agent-console/design.md` §3 P2（当前生效 / 版本链两个 tab）、§4。
+
+## 验收标准
+
+- [ ] 路由 `/agents/:slug`，可直接粘贴访问，刷新与后退正常
+- [ ] 「当前生效」展示：名称、描述、系统提示词（长文本可折叠、等宽）、提示词版本、模型引用、工具白名单（逐个列出并标注读/写属性）、输出 schema（JSON 折叠视图）、守卫豁免、确认人与确认时间
+- [ ] 守卫豁免为空数组时显示「默认守卫全部生效」，不是空白
+- [ ] 「版本链」是时间线，每个版本标注 draft / active / retired 与确认信息
+- [ ] 页面内含「最近 5 次运行」摘要卡 + 「查看全部」跳 `/agents/runs?agent=<slug>`，**不在本页重复实现运行表格**
+- [ ] 无生效版本（只有草稿或全部 retired）时页面可用且说明清楚，不是空白或报错
+
+
+
+########## ISSUE #75: agent-console: 01 — Agent 中心导航与 Agent 列表页
+创建: 2026-08-19T14:32:45Z  标签: jry,ready-for-agent
+----------
+# 01 — Agent 中心导航与 Agent 列表页
+
+**What to build:** 顶级菜单出现「Agent 中心」，进去能一眼看清平台上有哪些 Agent、各自在不在跑、当前是哪一版、有没有待确认的草稿等着人处理。这是整个板块的落地页，也是后续所有下钻的入口。
+
+**Blocked by:** 后端读端点（`meta-agent-platform-impl` 票 12，GitHub #13）
+
+**Status:** ready-for-agent
+
+## 设计源
+
+`.scratch/agent-console/design.md` §2（信息架构与路由）、§3 P1、§4（状态呈现）。**开工前必读 §4**——`status` 与 `enabled` 正交是本板块最容易做错的地方。
+
+## 验收标准
+
+- [ ] 顶级菜单「Agent 中心」出现，路由 `/agents`，菜单层级与路由一致
+- [ ] 一行一个 slug（不是一行一个版本），展示：名称+slug、运行状态、当前版本、待确认草稿徽标、工具数、写权限标记、近 7 日运行趋势与失败数
+- [ ] 运行状态按 §4 的四种组合显示（运行中 / 已停用 / 无生效版本 / 草稿不单独占行），**不把 `status` 与 `enabled` 合并成一个状态**
+- [ ] `allow_write=true` 的 Agent 有醒目且不可在界面修改的标记（一期只有 meta-agent）
+- [ ] 筛选（运行状态、有无待确认草稿、有无写权限）与分页进 query string，刷新与分享链接可复现同一视图
+- [ ] 列表数据一次请求拿全，不出现每行再请求一次的 N+1
+- [ ] 模型元数据被 allowlist 投影为不公开时，显示「未公开」而非空白，且与「未配置」文案可区分
+
+
+
+########## ISSUE #72: review-actionable-detail: 02 — 其余复核事项家族按同一模式补齐明细
+创建: 2026-08-19T14:23:28Z  标签: jry,ready-for-agent
+----------
+# 02 — 其余复核事项家族按同一模式补齐明细
+
+**What to build:** 把 01 号确立的模式推广到其他复核事项：每一类事项在抽屉里都能看到「做这个决定所需要的事实」，而不是只有编号与状态。运营处理任何一条复核都不需要离开界面去翻原始文件或数据库。
+
+**Blocked by:** 01
+
+**Status:** ready-for-agent
+
+## 覆盖的事项家族与各自「所需事实」
+
+- 客户映射（`CUSTOMER_MATCH_REQUIRED`）：来源客户名称原文、来源客户编号、收货人与地址的可展示部分、候选客户档案
+- 承运商映射（`CARRIER_MAPPING`）：运单号原文、识别出的前缀、来源渠道给的物流公司名称、候选标准承运商
+- 数量换算与精度（`MAPPING_MULTIPLIER` / `QUANTITY_SCALE`）：来源数量原文、单位、当前乘数、换算后结果、被拒绝的原因
+- 导入数据修正（`IMPORT_DATA`）：出问题的原始单元格及其列名与行号
+- 导出后改单（`REVISION_AFTER_EXPORT`）：改了哪些字段、改前改后的值、已导出文件的版本
+
+## 验收标准
+
+- [ ] 上述每个家族在抽屉里展示其「所需事实」，字段清单在票的 Resolution 里逐类列出
+- [ ] 沿用 01 的白名单机制，不为省事绕过 PII 防护
+- [ ] 展示逻辑不为每个家族各写一套，抽出可复用的呈现结构
+- [ ] 每类事项至少一条测试，断言关键事实出现在渲染结果里
+- [ ] 全站不再存在「字段不在白名单就整行消失且无任何提示」的路径
+
+
+
+########## ISSUE #69: repo-design-hardening: 26 — 加载态统一与可访问性基线
+创建: 2026-08-19T14:23:20Z  标签: jry,ready-for-agent
+----------
+# 26 — 加载态统一与可访问性基线
+
+**What to build:** 全站等待观感一致，抽屉与弹窗的键盘焦点行为正确。今天骨架屏、转圈、表格内建加载三种写法并存；全站只有 16 个可访问名称与 3 个语义角色，28 个抽屉没有系统性的焦点管理。
+
+**Blocked by:** 17
+
+**Status:** ready-for-agent
+
+- [ ] 骨架屏、转圈、表格加载各自的适用规则写清并落地
+- [ ] 抽屉与弹窗有焦点陷阱，关闭后焦点归还触发元素
+- [ ] 交互元素有可访问名称，键盘可完成主要业务流程
+- [ ] 有测试覆盖焦点管理
+
+
+
+########## ISSUE #68: repo-design-hardening: 25 — 表单校验补齐与字段级错误透出
+创建: 2026-08-19T14:23:17Z  标签: jry,ready-for-agent
+----------
+# 25 — 表单校验补齐与字段级错误透出
+
+**What to build:** 必填与格式问题在提交前就被拦下；后端返回的字段级错误能落到对应表单项。今天 64 处表单项只有 15 处声明校验规则，而客户端又把后端文案统一替换成一句泛化提示，用户拿不到『到底哪个字段错了』。
+
+**Blocked by:** 17
+
+**Status:** ready-for-agent
+
+- [ ] 必填与格式校验在提交前完成
+- [ ] 后端字段级错误映射到对应表单项，不被统一文案吞掉
+- [ ] 错误文案由业务码查表 + 状态码兜底，替代当前的长条件链
+- [ ] 新增业务码只需改文案表，不改传输层代码
+
+
+
+########## ISSUE #67: repo-design-hardening: 24 — 危险动作统一确认组件
+创建: 2026-08-19T14:23:14Z  标签: jry,ready-for-agent
+----------
+# 24 — 危险动作统一确认组件
+
+**What to build:** 不可逆动作走同一个确认组件：确认前说清将影响哪些行、影响多少、是否可逆，确认后给出逐行结果。今天全站只有 14 处二次确认，上一轮 UX 审计修的三处是逐案补丁而非机制，下一个新功能大概率重犯。
+
+**Blocked by:** 17
+
+**Status:** ready-for-agent
+
+- [ ] 一个确认组件承载影响范围、数量、不可逆说明与逐行结果
+- [ ] 现有不可逆动作全部接入（导入确认、回传接收、出库、启停等）
+- [ ] 有检查或约定防止新写的危险动作绕开它
+- [ ] 上一轮 UX 审计已修的三处行为不倒退
+
+
+
+########## ISSUE #66: repo-design-hardening: 23 — 面包屑与隐藏页归属
+创建: 2026-08-19T14:23:11Z  标签: jry,ready-for-agent
+----------
+# 23 — 面包屑与隐藏页归属
+
+**What to build:** 每页都能看出『板块 → 页面 →（详情）』，从下钻页面有明确的返回路径。今天全站零面包屑，四个菜单里看不到的页面进去之后既无高亮也无退路。
+
+**Blocked by:** 18
+
+**Status:** ready-for-agent
+
+- [ ] 每页有从路由派生的面包屑，不需要手工维护
+- [ ] 下钻页与隐藏页在菜单中有正确高亮
+- [ ] 从详情返回上级的路径明确可点
+- [ ] 面包屑文案与菜单文案同源
+
+
+
+########## ISSUE #65: repo-design-hardening: 22 — 响应式外壳与布局设计令牌化
+创建: 2026-08-19T14:23:09Z  标签: jry,ready-for-agent
+----------
+# 22 — 响应式外壳与布局设计令牌化
+
+**What to build:** 窄屏下侧栏自动让位、内容区不被挤压；外壳与页面不再出现写死的尺寸字号圆角。今天侧栏宽度写死、无断点、无移动形态，全站 CSS 媒体查询只有三条；主题令牌已经建好 167 行却用不上，改主题改不动布局。
+
+**Blocked by:** 17
+
+**Status:** ready-for-agent
+
+- [ ] 侧栏在窄屏自动收起或转为抽屉，内容区不被挤压
+- [ ] 外壳与页面的尺寸、字号、圆角统一取自主题令牌
+- [ ] 侧栏底部品牌块不再与长菜单重叠，品牌名不重复出现
+- [ ] 常见断点下页面无横向滚动，宽表格在自身容器内滚动
+
+
+
+########## ISSUE #63: repo-design-hardening: 20 — 列表筛选与分页进入 URL
+创建: 2026-08-19T14:23:03Z  标签: jry,ready-for-agent
+----------
+# 20 — 列表筛选与分页进入 URL
+
+**What to build:** 刷新与前进后退保持筛选条件，分享链接能复现同一视图。今天只有五个页面用了查询参数，其余页面刷新即丢条件。
+
+**Blocked by:** 18
+
+**Status:** ready-for-agent
+
+- [ ] 列表页的筛选、分页、视图切换全部反映在 URL
+- [ ] 刷新与浏览器前进后退保持条件
+- [ ] 分享 URL 可复现同一视图
+- [ ] 默认值不写进 URL，链接保持干净
+
+
+
+########## ISSUE #62: repo-design-hardening: 19 — 详情改为可分享的真实路由
+创建: 2026-08-19T14:23:01Z  标签: jry,ready-for-agent
+----------
+# 19 — 详情改为可分享的真实路由
+
+**What to build:** 复核事项、运营提醒、履约任务、采购工单、发货批次、渠道消息都有自己的 URL，能发给同事直接打开。今天全站只有订单详情一个动态路由，其余全是列表页加本地状态驱动的抽屉——后退键会退出页面，刷新丢失当前对象，『把这条异常发我』做不到。
+
+**Blocked by:** 18
+
+**Status:** ready-for-agent
+
+- [ ] 上述六类对象各有可分享的详情 URL
+- [ ] 抽屉由路由驱动开合，后退键关闭抽屉而不是退出页面
+- [ ] 刷新保持当前查看对象
+- [ ] 直接粘贴详情 URL 可直达，包含从未访问过列表页的情况
+
+
+
+########## ISSUE #61: repo-design-hardening: 18 — URL 层级对齐菜单层级并保留旧链接
+创建: 2026-08-19T14:22:58Z  标签: jry,ready-for-agent
+----------
+# 18 — URL 层级对齐菜单层级并保留旧链接
+
+**What to build:** 打开一个 URL 就能看出它属于哪个板块，旧链接仍然可用。今天菜单分组与路径完全对不上——『京东工具』六个子页全部在履约前缀下，代价是路由层要靠打分函数反查菜单归属、还要用后缀区分既是分组又是叶子的节点。
+
+**Blocked by:** 17
+
+**Status:** ready-for-agent
+
+- [ ] 路由路径与菜单分组一致
+- [ ] 旧路径重定向到新路径，粘贴旧链接仍可到达
+- [ ] 反查打分与分组后缀两处绕行代码删除
+- [ ] 导航相关既有测试更新并全绿
+
