@@ -430,6 +430,29 @@ class ReviewCaseResolutionApiTest {
         assertThat(jdbc.queryForObject(
                 "SELECT status FROM app.review_cases WHERE id=?", String.class, draftCaseId))
                 .isEqualTo("OPEN");
+
+        // 履约就绪阻断不能通过“忽略”关闭；否则订单行仍停在 NEED_REVIEW，且再无 OPEN case 可恢复。
+        long readinessCaseId = insertBusinessReviewCase(
+                orderId, "RC-DISMISS-READINESS-001", "PROVIDER_MAPPING_REQUIRED");
+        ResponseEntity<Map> readinessDetail = http.getForEntity(
+                "/api/v1/review-cases/" + readinessCaseId, Map.class);
+        assertThat(readinessDetail.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat((List<?>) readinessDetail.getBody().get("allowed_actions"))
+                .extracting(String::valueOf)
+                .containsExactly("RESOLVE_MANUALLY");
+
+        ResponseEntity<Map> readinessDismiss = http.exchange(
+                "/api/v1/review-cases/" + readinessCaseId + "/dismiss",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        Map.of("expected_version", 0, "note", "错误地尝试忽略履约门禁"),
+                        writeHeaders("dismiss-readiness-001", "req-dismiss-readiness-001")),
+                Map.class);
+        assertThat(readinessDismiss.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(readinessDismiss.getBody()).containsEntry("business_code", "REVIEW_DISMISS_NOT_ALLOWED");
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM app.review_cases WHERE id=?", String.class, readinessCaseId))
+                .isEqualTo("OPEN");
     }
 
     @Test

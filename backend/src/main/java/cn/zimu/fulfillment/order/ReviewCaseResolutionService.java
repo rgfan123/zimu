@@ -37,6 +37,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +58,7 @@ public class ReviewCaseResolutionService {
             "PROVIDER_INACTIVE",
             "SPECIFICATION_REQUIRED",
             "UNIT_REQUIRED",
+            "PROVIDER_SKU_MAPPING_REQUIRED",
             "PROVIDER_MAPPING_REQUIRED",
             "PROVIDER_MAPPING_INACTIVE",
             "UNIT_CONVERSION_REQUIRED",
@@ -98,15 +100,21 @@ public class ReviewCaseResolutionService {
             WecomTrackingFileFailureCode.REVIEW_REASON);
 
     /**
-     * 消息链路事项由各自生命周期（草稿确认/驳回、消息重新识别）管理，
-     * 不允许在复核工作台直接关闭，避免草稿或提交被孤立。
+     * 消息链路事项由各自生命周期管理；履约就绪事项必须修复主数据并重新通过门禁。
+     * 两类事项都不能直接忽略，避免留下没有 OPEN case 的孤立状态。
      */
-    private static final List<String> NON_DISMISSABLE_REASONS = List.of(
-            "WECOM_ORDER_DRAFT",
-            "WECOM_TRACKING_DRAFT",
-            "WECOM_NEED_REVIEW",
-            "WECOM_ORDER_CHANGE",
-            "WECOM_ORDER_CANCEL");
+    private static final Set<String> NON_DISMISSABLE_REASONS = nonDismissableReasons();
+
+    private static Set<String> nonDismissableReasons() {
+        Set<String> reasons = new HashSet<>(PROVIDER_EXPORT_READINESS_REASONS);
+        reasons.addAll(List.of(
+                "WECOM_ORDER_DRAFT",
+                "WECOM_TRACKING_DRAFT",
+                "WECOM_NEED_REVIEW",
+                "WECOM_ORDER_CHANGE",
+                "WECOM_ORDER_CANCEL"));
+        return Set.copyOf(reasons);
+    }
 
     private final ReviewCaseRepository reviewCases;
     private final OrderRepository orders;
@@ -456,7 +464,7 @@ public class ReviewCaseResolutionService {
             ReviewCase reviewCase = requireOpenVisibleCase(caseId, command.expectedVersion());
             if (NON_DISMISSABLE_REASONS.contains(reviewCase.getReasonCode())) {
                 throw BusinessException.conflict(
-                        "REVIEW_DISMISS_NOT_ALLOWED", "消息链路复核事项请通过草稿处理或重新识别关闭");
+                        "REVIEW_DISMISS_NOT_ALLOWED", "该复核事项必须通过对应修复或生命周期动作关闭，不能直接忽略");
             }
             Map<String, Object> resolution = new LinkedHashMap<>();
             resolution.put("resolution_type", "DISMISSED");

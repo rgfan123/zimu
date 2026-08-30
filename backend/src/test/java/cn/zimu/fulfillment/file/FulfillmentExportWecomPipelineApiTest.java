@@ -165,7 +165,7 @@ class FulfillmentExportWecomPipelineApiTest {
                 SET config=('{' ||
                     '"sourceNo":"ISV-FX-JD-001","warehouseNo":"WH-FX-JD-001",' ||
                     '"erpShopNo":"SHOP-FX-JD-001","shopNo":"SHOP-FX-JD-001",' ||
-                    '"ownerNo":"OWNER-FX-JD-001",' ||
+                    '"ownerNo":"OWNER-FX-JD-001","customerCode":"CUST-FX-JD-001",' ||
                     '"pin":"PIN-FX-JD-001","carrierNo":"JD","salesPlatformSource":"6",' ||
                     '"townRequired":false}')::jsonb
                 WHERE provider_code='JD'
@@ -883,19 +883,11 @@ class FulfillmentExportWecomPipelineApiTest {
                 feixiangSingleCsv(orderRef, "FX-PRODUCT-JD-001", "1"),
                 "source-import-" + orderRef.toLowerCase());
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        // 导入会为新收货人创建客户档案（profile 可能为 NULL），确认前补齐京东客户编码（02 门禁）
-        jdbc.update(
-                """
-                UPDATE app.customers
-                SET profile = jsonb_set(COALESCE(profile, '{}'::jsonb), '{jd_customer_code}',
-                                        '"CUST-FX-JD-001"'::jsonb, true)
-                WHERE id IN (
-                    SELECT customer_id FROM app.orders WHERE source_import_batch_id=?
-                )
-                """,
-                Long.parseLong(uploaded.getBody().get("id").toString()));
         var confirmResult = confirmBatch(
                 uploaded.getBody().get("id").toString(), "confirm-" + orderRef.toLowerCase());
+        assertThat(confirmResult.getStatusCode())
+                .as("JD 批次确认响应：%s", confirmResult.getBody())
+                .isEqualTo(HttpStatus.OK);
         return confirmResult.getBody();
     }
 

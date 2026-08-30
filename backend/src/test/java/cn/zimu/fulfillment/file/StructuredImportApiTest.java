@@ -664,6 +664,10 @@ class StructuredImportApiTest {
                 """,
                 batchId);
         Map<String, Object> firstCase = cases.getFirst();
+        // 生产历史中仍存在旧原因码；它必须走与新 PROVIDER_MAPPING_REQUIRED 相同的重检和恢复路径。
+        jdbc.update(
+                "UPDATE app.review_cases SET reason_code='PROVIDER_SKU_MAPPING_REQUIRED' WHERE id=?",
+                firstCase.get("id"));
         jdbc.update("UPDATE app.provider_skus SET active=FALSE WHERE id=?", providerMappingId);
         try {
             assertThatThrownBy(() -> reviewCaseResolutionService.resolveManually(
