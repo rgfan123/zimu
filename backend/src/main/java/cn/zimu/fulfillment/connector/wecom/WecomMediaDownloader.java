@@ -30,6 +30,9 @@ public class WecomMediaDownloader {
 
     private static final int MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 
+    /** 成因链遍历上限；只为防成环，正常链路远不到这个深度。 */
+    private static final int MAX_CAUSE_DEPTH = 16;
+
     private final HttpClient client;
     private final Duration timeout;
     private final URI testOrigin;
@@ -107,16 +110,7 @@ public class WecomMediaDownloader {
             pending.cancel(true);
             throw new MediaDownloadException("媒体下载超时", exception);
         } catch (ExecutionException exception) {
-            Throwable cause = exception.getCause();
-            if (cause instanceof MediaDownloadException mediaDownloadException) {
-                throw mediaDownloadException;
-            }
-            if (cause instanceof java.net.http.HttpTimeoutException) {
-                throw new MediaDownloadException("媒体下载超时", cause);
-            }
-            throw new MediaDownloadException(
-                    "媒体下载网络错误: " + (cause == null ? "unknown" : cause.getClass().getSimpleName()),
-                    cause == null ? exception : cause);
+            throw classifyExecutionFailure(exception);
         }
         String contentType = response
                 .headers()
@@ -125,6 +119,43 @@ public class WecomMediaDownloader {
                 .filter(value -> !value.isBlank())
                 .orElse(null);
         return new DownloadedMedia(response.body(), contentType);
+    }
+
+    /**
+     * 把 {@code sendAsync} 的执行失败翻译成本类的失败原因。
+     *
+     * <p>为什么遍历整条成因链而不是只看第一层：{@code HttpClient::sendAsync} 的规范要求返回的
+     * future 只以 {@link java.io.IOException} 异常完成。JDK 26 起
+     * {@code HttpClientImpl#translateSendAsyncExecFailure} 真的开始照做，会把我们在
+     * {@code BodySubscriber} 里抛出的 {@link MediaDownloadException}（一个 RuntimeException）
+     * 包进一层 IOException。只认第一层成因，「媒体下载失败 HTTP 302 / 404」和
+     * 「媒体下载超过大小上限」这些精确判据就会被降级成笼统的「媒体下载网络错误」，
+     * 上游 {@code WecomTrackingFileProcessor} 靠消息文本分流出的
+     * {@code WECOM_TRACKING_FILE_TOO_LARGE} 也会跟着退化成
+     * {@code WECOM_TRACKING_FILE_DOWNLOAD_FAILED}，运营看到的中文文案随之从
+     * 「超过 20MB 上限，请拆分」变成没有行动指引的「下载或解密失败」。
+     *
+     * <p>遍历限深并防自环：成因链成环时绝不能把下载线程转死。
+     */
+    static MediaDownloadException classifyExecutionFailure(ExecutionException exception) {
+        Throwable cause = exception.getCause();
+        if (cause == null) {
+            return new MediaDownloadException("媒体下载网络错误: unknown", exception);
+        }
+        Throwable current = cause;
+        for (int depth = 0; current != null && depth < MAX_CAUSE_DEPTH; depth++) {
+            if (current instanceof MediaDownloadException mediaDownloadException) {
+                return mediaDownloadException;
+            }
+            if (current instanceof java.net.http.HttpTimeoutException) {
+                return new MediaDownloadException("媒体下载超时", cause);
+            }
+            Throwable next = current.getCause();
+            current = next == current ? null : next;
+        }
+        // 认不出来的传输故障：只报异常类名，绝不把签名 URL 或响应内容带进消息。
+        return new MediaDownloadException(
+                "媒体下载网络错误: " + cause.getClass().getSimpleName(), cause);
     }
 
     /** 媒体下载失败；URL 或响应内容可能已过期/缺失。 */
