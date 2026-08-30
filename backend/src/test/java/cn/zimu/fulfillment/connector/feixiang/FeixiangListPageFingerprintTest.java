@@ -63,4 +63,22 @@ class FeixiangListPageFingerprintTest {
 
         assertThat(FeixiangListPageFingerprint.of(huge).length()).isLessThanOrEqualTo(1300);
     }
+
+    @Test
+    void 抓得到平台的AJAX接口路径() {
+        // 2026-08-30 实测：这个列表页是 Vue 壳子，订单行根本不在 HTML 里，
+        // 唯一能定位真实数据接口的线索就是页面 JS 里的 ajax 路径。
+        String html = """
+                <script>
+                  $.post('/order/ajaxOrderNum', p, function(r){});
+                  axios.post('/esOrder/ajaxOrderList', {page: 1});
+                </script>
+                """;
+
+        String fingerprint = FeixiangListPageFingerprint.of(html);
+
+        assertThat(fingerprint).contains("AJAX接口=");
+        assertThat(fingerprint).contains("/esOrder/ajaxOrderList");
+        assertThat(fingerprint).contains("/order/ajaxOrderNum");
+    }
 }

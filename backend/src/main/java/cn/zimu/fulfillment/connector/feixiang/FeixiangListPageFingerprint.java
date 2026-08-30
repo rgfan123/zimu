@@ -44,6 +44,21 @@ public final class FeixiangListPageFingerprint {
     /** 属性名清单：看得出平台用的是 data-xxx 还是别的承载方式。 */
     private static final Pattern ATTRIBUTE_NAME = Pattern.compile("\\b([a-z][a-z0-9_-]{2,30})\\s*=\\s*[\"']");
 
+    /**
+     * 平台自己的 AJAX 接口路径。
+     *
+     * <p>2026-08-30 实测：这个列表页是 Vue 壳子（属性名里有 el-pagination 的
+     * {@code current-change / page-size / layout / total}），{@code <div id="order_list">} 是空容器，
+     * HTML 里<b>根本没有订单行</b> —— 所以 {@link FeixiangOrderListParser} 换什么正则都捞不到，
+     * 订单数据走的是另一个 JSON 接口。
+     *
+     * <p>平台的接口命名有固定法（已知 {@code /order/ajaxOrderNum}、
+     * {@code /order/ajaxGetSendBeforePro}），列表那个大概率同名法。把页面里所有
+     * {@code /xxx/ajaxYyy} 捞出来，就能定位它，不必再让人手工抓一次包。
+     */
+    private static final Pattern AJAX_PATH = Pattern.compile(
+            "(/[A-Za-z][A-Za-z0-9_]{0,20}/ajax[A-Za-z0-9_]{1,40})");
+
     /** CJK 与全角标点：姓名、地址、商品名都在这些区里，整段剥掉。 */
     private static final Pattern CJK = Pattern.compile("[\\u2E80-\\u9FFF\\u3000-\\u303F\\uFF00-\\uFFEF]+");
 
@@ -67,6 +82,11 @@ public final class FeixiangListPageFingerprint {
         StringBuilder out = new StringBuilder();
         out.append("[len=").append(html.length()).append(']');
 
+        // AJAX 路径放最前：列表页是 Vue 壳子时，这是唯一能定位真实数据接口的线索。
+        Set<String> ajaxPaths = collect(AJAX_PATH, safe, 20);
+        if (!ajaxPaths.isEmpty()) {
+            out.append(" AJAX接口=").append(ajaxPaths);
+        }
         Set<String> handlers = collect(EVENT_HANDLER, safe, 12);
         if (!handlers.isEmpty()) {
             out.append(" 事件处理器=").append(handlers);
