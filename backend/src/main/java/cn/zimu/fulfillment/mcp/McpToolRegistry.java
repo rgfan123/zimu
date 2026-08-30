@@ -20,22 +20,31 @@ import org.springframework.stereotype.Component;
  * MCP 工具注册表：聚合所有允许的工具，供 tools/list 发现与 tools/call 分发。
  *
  * <p>分模块暴露（用户诉求：「有些 mcp 我不想提供给公共 agent」）：{@code app.mcp.modules}
- * （env {@code MCP_MODULES}，逗号分隔）为空时注册全部模块（向后兼容）；非空时只把列出模块的
+ * （env {@code MCP_MODULES}，逗号分隔）**未配置时一个工具都不注册**；非空时只把列出模块的
  * 工具收进 {@link #byName}——被排除的工具在 {@link #find} 上直接查不到，{@code tools/call}
  * 因此天然按「工具不存在」拒绝，不会出现「列表里藏起来但还能调用」的假隔离。未知模块名
- * （相对全部工具实际声明的模块集合）在构造期 fail-fast，防止拼错模块名静默放行全部工具。
+ * （相对全部工具实际声明的模块集合）在构造期 fail-fast，防止拼错模块名静默少开模块。
+ *
+ * <p>空值语义已从「全部模块」反转为「零模块」：原先漏配 {@code MCP_MODULES} 的环境会把含客户
+ * 姓名/电话/地址的 followup 模块连同写工具一并暴露，安全全靠运维「记得配置」。现在漏配的失败
+ * 模式是「MCP 全哑」——启动即可见、补一行配置就恢复，而不是安静地把 PII 摆到公网。
  */
 @Component
 public class McpToolRegistry {
 
     private final Map<String, McpTool> byName;
 
+    /**
+     * 便捷构造（不带 orders-read / kehuzx provider）：模块清单必须显式传入。
+     * 这里刻意不提供「省略即全开」的重载——那正是本类要消灭的 fail-open 语义。
+     */
     public McpToolRegistry(
             McpReadTools readTools,
             McpWriteTools writeTools,
             McpDomainReadTools domainReadTools,
-            McpControlReadTools controlReadTools) {
-        this(readTools, writeTools, domainReadTools, controlReadTools, null, null, "");
+            McpControlReadTools controlReadTools,
+            String modulesProperty) {
+        this(readTools, writeTools, domainReadTools, controlReadTools, null, null, modulesProperty);
     }
 
     @Autowired
@@ -83,20 +92,21 @@ public class McpToolRegistry {
     }
 
     /**
-     * 解析 {@code app.mcp.modules}。空值（未配置）= 全部已知模块，向后兼容一期「注册即暴露」；
-     * 非空则只启用列出的模块，列出的模块名必须都在 {@code knownModules} 中出现过，否则
-     * fail-fast——拼错模块名要么整段部署起不来，绝不能静默放行全部工具当无事发生。
+     * 解析 {@code app.mcp.modules}。**空值（未配置、纯空白、只有逗号）= 零模块**：想用 MCP 的
+     * 环境必须显式列出模块名，忘配的代价是「什么都不开放」而不是「什么都开放」。非空则只启用
+     * 列出的模块，列出的模块名必须都在 {@code knownModules} 中出现过，否则 fail-fast——拼错
+     * 模块名要么整段部署起不来，绝不能静默按「少开一个模块」了事。
      */
     private static Set<String> parseModules(String modulesProperty, Set<String> knownModules) {
         if (modulesProperty == null || modulesProperty.isBlank()) {
-            return knownModules;
+            return Set.of();
         }
         Set<String> requested = Arrays.stream(modulesProperty.split(","))
                 .map(String::strip)
                 .filter(value -> !value.isEmpty())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         if (requested.isEmpty()) {
-            return knownModules;
+            return Set.of();
         }
         Set<String> unknown = requested.stream()
                 .filter(module -> !knownModules.contains(module))

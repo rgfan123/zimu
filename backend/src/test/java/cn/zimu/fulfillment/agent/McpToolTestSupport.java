@@ -15,10 +15,12 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.service.tool.ToolExecutor;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /** 测试助手：由任意 {@link McpTool} 集合构造迷你注册表（唯一工具源语义与生产一致）。 */
 public final class McpToolTestSupport {
@@ -34,7 +36,18 @@ public final class McpToolTestSupport {
         when(domains.tools()).thenReturn(List.of());
         McpControlReadTools control = mock(McpControlReadTools.class);
         when(control.tools()).thenReturn(List.of());
-        return new McpToolRegistry(reads, writes, domains, control);
+        // 注册表未配置模块 = 零模块（fail-safe），迷你注册表必须显式列出传入工具声明的模块。
+        // 这不是「测试特权全开」：走的是与生产同一条过滤路径，只是清单由用例的工具集合推出，
+        // 用例新增别的模块的工具时不用同步改这里。
+        return new McpToolRegistry(reads, writes, domains, control, modulesOf(tools));
+    }
+
+    /** 把传入工具声明的模块去重拼成 {@code app.mcp.modules} 形态的清单。 */
+    private static String modulesOf(McpTool... tools) {
+        return Arrays.stream(tools)
+                .map(McpTool::module)
+                .distinct()
+                .collect(Collectors.joining(","));
     }
 
     /** 空控制面工具组（仅测试：注册表构造占位，list_agent_tools 由真实类覆盖）。 */

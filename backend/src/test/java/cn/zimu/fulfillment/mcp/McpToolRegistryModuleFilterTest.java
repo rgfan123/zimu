@@ -19,24 +19,51 @@ import org.junit.jupiter.api.Test;
  * MCP 分模块暴露（用户诉求：「有些 mcp 我不想提供给公共 agent」）的注册表行为验收。
  *
  * <p>不经 Spring/Testcontainers：{@link McpToolRegistry} 的模块过滤是纯构造期逻辑，
- * 用 Mockito 桩出 provider 的 {@code tools()} 即可覆盖——空配置 = 全部模块、
+ * 用 Mockito 桩出 provider 的 {@code tools()} 即可覆盖——未配置 = 零模块（fail-safe）、
  * 显式模块只留列出的工具、被过滤的工具在 {@code find}/{@code tools/call} 上一致地
  * 「查不到」（不是列表里藏起来但还能调用的假隔离）、未知模块名启动期 fail-fast。
  */
 class McpToolRegistryModuleFilterTest {
 
+    /**
+     * 语义反转（票 01）：本用例过去断言「空值 = 注册全部已知模块」，那是 fail-open——
+     * 忘配 {@code MCP_MODULES} 的环境会连含客户姓名电话地址的 followup 模块一起暴露。
+     * 现在空值 = 空集：漏配的失败模式是「MCP 全哑」（可诊断、可补配），而不是「PII 外泄」。
+     */
     @Test
-    void emptyModulesPropertyRegistersAllModules() {
+    void unconfiguredModulesRegisterNoToolAtAll() {
         McpToolRegistry registry = registry("",
                 tool("read_a", "masterdata"),
                 tool("read_b", "inventory"),
                 writeTool("write_c", "write"));
 
+        assertThat(registry.all()).isEmpty();
+        assertThat(registry.find("read_a")).isEmpty();
+        assertThat(registry.find("read_b")).isEmpty();
+        assertThat(registry.find("write_c")).isEmpty();
+        assertThat(registry.writeToolNames()).isEmpty();
+    }
+
+    /**
+     * 生产回归：显式三模块（{@code masterdata,inventory,orders-read}）的行为不因空值语义反转而改变，
+     * 列出的照常注册、未列出的（含 followup 这类带客户个人信息的模块与全部写工具）照常查不到。
+     */
+    @Test
+    void productionModuleListKeepsExactlyThoseThreeModules() {
+        McpToolRegistry registry = registry("masterdata,inventory,orders-read",
+                tool("search_provider_skus", "masterdata"),
+                tool("list_inventory", "inventory"),
+                tool("search_orders", "orders-read"),
+                tool("search_customers", "followup"),
+                tool("search_messages", "messages"),
+                writeTool("submit_jd_outbound", "write"));
+
         assertThat(registry.all()).extracting(McpTool::name)
-                .containsExactlyInAnyOrder("read_a", "read_b", "write_c");
-        assertThat(registry.find("read_a")).isPresent();
-        assertThat(registry.find("write_c")).isPresent();
-        assertThat(registry.writeToolNames()).containsExactly("write_c");
+                .containsExactlyInAnyOrder("search_provider_skus", "list_inventory", "search_orders");
+        assertThat(registry.find("search_customers")).isEmpty();
+        assertThat(registry.find("search_messages")).isEmpty();
+        assertThat(registry.find("submit_jd_outbound")).isEmpty();
+        assertThat(registry.writeToolNames()).isEmpty();
     }
 
     @Test
@@ -99,21 +126,48 @@ class McpToolRegistryModuleFilterTest {
         assertThat(registry.find("read_a")).isEmpty();
     }
 
+    /** 未知模块名保持既有 fail-fast，且错误信息要同时给出拼错的名字与已知模块全集，运维照着就能改。 */
     @Test
     void unknownModuleNameFailsFastAtConstruction() {
-        assertThatThrownBy(() -> registry("mastrdata", tool("read_a", "masterdata")))
+        assertThatThrownBy(() -> registry("mastrdata", tool("read_a", "masterdata"), tool("read_b", "inventory")))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("mastrdata");
+                .hasMessageContaining("mastrdata")
+                .hasMessageContaining("masterdata")
+                .hasMessageContaining("inventory");
     }
 
+    /** 空白与「只有逗号」同样落到零模块：任何解析不出模块名的配置都不得退化成放行。 */
     @Test
-    void blankAndWhitespaceOnlyModulesPropertyBehavesAsAllModules() {
+    void blankAndCommaOnlyModulesPropertyRegisterNoTool() {
         McpToolRegistry viaBlank = registry("   ", tool("read_a", "masterdata"));
-        assertThat(viaBlank.find("read_a")).isPresent();
+        assertThat(viaBlank.all()).isEmpty();
+        assertThat(viaBlank.find("read_a")).isEmpty();
 
-        // 逗号分隔后全是空片段（如单独一个逗号）同样退化为「全部模块」，不是「零模块」
         McpToolRegistry viaCommaOnly = registry(" , ", tool("read_a", "masterdata"));
-        assertThat(viaCommaOnly.find("read_a")).isPresent();
+        assertThat(viaCommaOnly.all()).isEmpty();
+        assertThat(viaCommaOnly.find("read_a")).isEmpty();
+    }
+
+    /**
+     * 未配置时协议面同样一致：{@code tools/list} 为空列表，{@code tools/call} 按「工具不存在」拒绝。
+     * 排除发生在注册期，所以不可能出现「列表藏起来但还能调用」。
+     */
+    @Test
+    void unconfiguredModulesRejectToolsCallExactlyLikeToolsList() throws Exception {
+        McpToolRegistry registry = registry("", tool("read_a", "masterdata"));
+        ObjectMapper mapper = new ObjectMapper();
+
+        JsonNode listResult = rpc(registry, mapper,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}");
+        assertThat(listResult.get("result").get("tools")).isEmpty();
+
+        JsonNode callResult = rpc(registry, mapper,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                        + "\"params\":{\"name\":\"read_a\",\"arguments\":{}}}");
+        assertThat(callResult.has("error"))
+                .as("未配置模块时工具调用必须一律拒绝: %s", callResult)
+                .isTrue();
+        assertThat(callResult.get("error").get("message").asText()).contains("Unknown tool");
     }
 
     private static McpToolRegistry registry(String modulesProperty, McpTool... tools) {

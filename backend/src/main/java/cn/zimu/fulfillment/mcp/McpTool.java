@@ -45,9 +45,10 @@ public interface McpTool {
      * 与写工具的每个真实工具都显式声明模块（见各 provider 构造函数）。
      *
      * <p>{@link McpToolRegistry} 按 {@code app.mcp.modules}（env {@code MCP_MODULES}）配置的
-     * 模块名过滤：空值 = 全部模块（向后兼容）；非空则只注册列出的模块，未列出模块的工具在
-     * 注册表构造期就被排除——{@code tools/list} 和 {@code tools/call} 因此天然一致，不存在
-     * 「列表里藏起来但还能调用」的假隔离。
+     * 模块名过滤：空值 = 零模块（未配置即不开放任何工具）；非空则只注册列出的模块，未列出模块
+     * 的工具在注册表构造期就被排除——{@code tools/list} 和 {@code tools/call} 因此天然一致，
+     * 不存在「列表里藏起来但还能调用」的假隔离。同理，声明 {@code "default"} 的工具只有在
+     * 配置里显式写上 {@code default} 时才会注册。
      */
     default String module() {
         return "default";
