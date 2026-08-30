@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.connector.sync;
 
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.fulfillment.ShipmentStatus;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.ResultSet;
@@ -61,7 +62,7 @@ public final class SourceSyncFactsReader {
                     "来源回传在线闭环仅支持聚福宝、彩食鲜和飞象");
         }
         if (header.confirmedAt() == null) block(blockers, "SOURCE_BATCH_NOT_CONFIRMED", "import_batch", "来源导入批次尚未确认");
-        if (!("SHIPPED".equals(header.shipmentStatus()) || "DELIVERED".equals(header.shipmentStatus()))) {
+        if (!ShipmentStatus.isShipped(header.shipmentStatus())) {
             block(blockers, "SHIPMENT_NOT_SHIPPED", "shipment_status", "Shipment 尚未形成已发货事实");
         }
         if (blank(header.trackingNumber()) || blank(header.carrierCode())) {

@@ -748,7 +748,7 @@ public class ShipmentJdTrackingBackfillService {
             throw BusinessException.conflict(
                     "JD_TRACKING_PIN_CONFIG_MISSING", "当前京东履约方缺少可用 pin 配置，禁止自动回填");
         }
-        if (!"CREATED".equals(prepared.shipmentStatus()) && !"SHIPPED".equals(prepared.shipmentStatus())) {
+        if (!ShipmentStatus.acceptsTrackingBackfill(prepared.shipmentStatus())) {
             throw BusinessException.conflict(
                     "JD_TRACKING_SHIPMENT_STATUS_INVALID", "当前 Shipment 状态不允许回填运单");
         }

@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.recon;
 
+import cn.zimu.fulfillment.fulfillment.ShipmentStatus;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
@@ -970,10 +971,10 @@ public class OutboundReconService {
     }
 
     private static JdOutboundStatus.Semantic internalStatusSemantic(String status) {
-        if ("SHIPPED".equals(status) || "DELIVERED".equals(status)) {
+        if (ShipmentStatus.isShipped(status)) {
             return JdOutboundStatus.Semantic.SHIPPED;
         }
-        if ("FAILED".equals(status)) {
+        if (ShipmentStatus.isFailed(status)) {
             return JdOutboundStatus.Semantic.EXCEPTION;
         }
         return JdOutboundStatus.Semantic.PENDING;
