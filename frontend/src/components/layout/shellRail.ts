@@ -2,9 +2,19 @@
  * 侧栏轨道视图模型（Issue #104 · ADR 0004）。
  * 数据单一事实源仍是 navigation.ts 的 appNavigation；本模块只做展示层：
  * 分组拍平、字形、岗位重排与徽标声明。岗位只重排顺序，绝不隐藏任何分组（D1）。
+ * 票 03 追加运行期模块过滤：未接通的业务模块对应的节点不进轨道（同样只过滤，不新增不改写）。
  */
 
-import { appNavigation, visibleNavigationTree, type NavigationNode } from '@/navigation';
+// 相对路径而非 `@/` 别名：本模块承载运行期模块过滤的接线，必须能被 node:test 直接加载
+// （node 的类型擦除不认 Vite 别名，值导入会 ERR_MODULE_NOT_FOUND）。改回别名，
+// runtimeModuleVisibility.test.ts 就失去了对「过滤有没有真的接上」的覆盖。
+import type { BusinessModuleId } from '../../businessModules.ts';
+import {
+  appNavigation,
+  moduleVisibleNavigationTree,
+  visibleNavigationTree,
+  type NavigationNode,
+} from '../../navigation.ts';
 
 export interface RailItem {
   path: string;
@@ -74,9 +84,14 @@ function toItem(node: NavigationNode): RailItem {
  * - 调度台并入「我的工作台」分组（它就是调度工作台，#105）
  * - 经营分析 + 管理驾驶舱 两个顶级单项合为「经营分析」分组（对应原型的经营分析组）
  * - 嵌套板块（京东工具）在父分组之后平铺为并列分组
+ *
+ * `openModules` 为后端下发的已开放业务模块（票 03）；传空集即保守态——未接通的模块不进轨道。
  */
-export function buildRailGroups(): RailGroup[] {
-  const tree = visibleNavigationTree(appNavigation as readonly NavigationNode[]);
+export function buildRailGroups(
+  openModules: ReadonlySet<BusinessModuleId>,
+  navigation: readonly NavigationNode[] = appNavigation,
+): RailGroup[] {
+  const tree = moduleVisibleNavigationTree(visibleNavigationTree(navigation), openModules);
   const groups: RailGroup[] = [];
   const analyticsItems: RailItem[] = [];
 
@@ -119,8 +134,19 @@ const ROLE_SECTION_PRIORITY: Record<string, readonly string[]> = {
   FINANCE: ['/workbench', 'analytics', '/orders', '/operations'],
 };
 
-export function railGroupsForRole(role: string | null): RailGroup[] {
-  const groups = buildRailGroups();
+/**
+ * 岗位重排后的轨道分组。
+ *
+ * `navigation` 默认即生产导航树；参数化只为让「运行期清单 → 轨道」这条接线可被端到端验证——
+ * 生产树本票尚无受控节点（受控入口是票 04），没有这个缝就只能分别测两个纯函数，
+ * 测不到它们有没有真的接上。
+ */
+export function railGroupsForRole(
+  role: string | null,
+  openModules: ReadonlySet<BusinessModuleId>,
+  navigation: readonly NavigationNode[] = appNavigation,
+): RailGroup[] {
+  const groups = buildRailGroups(openModules, navigation);
   const priority = role ? ROLE_SECTION_PRIORITY[role] : undefined;
   if (!priority) return groups;
   const rank = (group: RailGroup) => {

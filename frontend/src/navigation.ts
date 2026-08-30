@@ -1,3 +1,5 @@
+import type { BusinessModuleId } from './businessModules.ts';
+
 export interface NavigationContext {
   section: string;
   page: string;
@@ -9,6 +11,11 @@ export interface NavigationNode {
   label: string;
   external?: string;
   hideInMenu?: boolean;
+  /**
+   * 该节点依赖的业务模块（票 03）。声明后，只有后端下发的开放清单包含该模块时它才进菜单；
+   * 未声明的节点永远可见。运行期过滤只作用于菜单，路由注册与归属解析仍取完整导航树。
+   */
+  requiresModule?: BusinessModuleId;
   children?: readonly NavigationNode[];
 }
 
@@ -180,6 +187,35 @@ export function visibleNavigationTree<T extends NavigationNode>(routes: readonly
     if (route.hideInMenu) continue;
     if (route.children?.length) {
       const children = visibleNavigationTree(route.children);
+      if (!children.length) continue;
+      visible.push({ ...route, children } as T);
+    } else {
+      visible.push(route);
+    }
+  }
+  return visible;
+}
+
+/**
+ * 运行期模块过滤（票 03）：按后端下发的**已开放**模块清单裁掉声明了 `requiresModule`
+ * 且模块未开放的节点整支。
+ *
+ * 性质（本票的硬约束，改动此函数时必须保持）：
+ * - **只做过滤**——不新增节点、不改写路径，因此 `routableNavigationLeaves`（路由注册）、
+ *   `navigationTrail` / `navigationContext`（侧边栏展开与顶栏归属）全部照旧取完整导航树，
+ *   既有 URL 直达与隐藏页面包屑不受影响；
+ * - **保守**——清单读不到时传空集即可，未接通的模块一律不出现（不是反过来全放行）；
+ * - **全开即恒等**——所有模块开放时结果与输入结构一致，未声明 `requiresModule` 的节点零影响。
+ */
+export function moduleVisibleNavigationTree<T extends NavigationNode>(
+  routes: readonly T[],
+  openModules: ReadonlySet<BusinessModuleId>,
+): T[] {
+  const visible: T[] = [];
+  for (const route of routes) {
+    if (route.requiresModule && !openModules.has(route.requiresModule)) continue;
+    if (route.children?.length) {
+      const children = moduleVisibleNavigationTree(route.children, openModules);
       if (!children.length) continue;
       visible.push({ ...route, children } as T);
     } else {

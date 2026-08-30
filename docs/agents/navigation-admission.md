@@ -36,6 +36,23 @@
   错误的业务对象；旧书签、分享链接与 `?query=` 直达 URL 必须原样可达。降级只改菜单可见性
   （`visibleNavigationTree` 过滤 `hideInMenu`），`navigationTrail`/`navigationOpenKeys`/
   `navigationContext` 仍从完整导航树解析，直达隐藏页时侧边栏展开与顶栏归属照常工作。
+- **运行期模块可见性（票 03，spec `unified-business-frontend` D3）**：菜单可见性现在是两层
+  过滤的复合——`visibleNavigationTree`（编译期 `hideInMenu`）∘ `moduleVisibleNavigationTree`
+  （运行期已开放业务模块清单，取自 `GET /api/v1/business-modules`）。第二层用于让入口可见性
+  与后端接通开关联动，不再出现「菜单承诺了系统给不出的能力」。约束：
+  1. **只做过滤**：运行期清单不新增节点、不改写路径。导航树仍是唯一事实源，
+     `routes.tsx` 的 `routeConfig` 与归属解析一律取完整 `appNavigation`，因此未接通模块的
+     既有 URL 仍可直达、仍解析出正确板块归属（与降级入口同一口径）；
+  2. **保守**：清单尚未返回或读取失败时按空集处理——宁可少显示，不因读不到清单而放出
+     未接通的模块；
+  3. **受控是显式的**：只有在节点上写 `requiresModule` 才受清单控制，未声明的节点永远可见。
+     全部模块开放时可见结果必须与未引入该层时完全一致（第 5 节有回归断言）；
+  4. **与 `MCP_MODULES` 是两件事**：那个控制 MCP 工具对外暴露面，本层控制功能可用性。
+     两者不共用配置、不互相推导，导航可见性不得直接读 `MCP_MODULES`。
+
+  本层不改变第 3 节计数：截至票 03 生产导航树没有任何节点声明 `requiresModule`（把「客户跟进」
+  改为受控是票 04）。将来某个入口受控后，第 3 节计数按「全部模块开放」口径记，并在
+  第 2 节收敛清单里标注它依赖哪个模块。
 - **访问数据触发（前瞻条款）**：当前没有访问埋点，本规则以动线证据裁定，不机械按「最近 N 周
   无访问」隐藏。若后续接入访问统计，可将「连续 8 周零访问」作为**补充触发条件**（仍需按本节
   流程评审降级，数据只作证据之一）。
@@ -118,9 +135,15 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
   （数据树不变，本文件计数不受影响）；复核收件箱徽标只显示真实 OPEN 计数（取不到不显示）；
   全局搜索以「诚实入口」形态露出（说明未接入跨对象搜索，回车直通订单查询）。
 
+**票 03 运行期模块可见性（2026-08-30）**：菜单可见性增加第二层过滤
+（`moduleVisibleNavigationTree`，按 `GET /api/v1/business-modules` 下发的已开放模块清单）。
+本表计数**不变**——本票只建机制，生产导航树尚无节点声明 `requiresModule`，全部模块开放时
+可见结果与引入前逐叶相同（`businessObjectNavigation.test.ts` 有回归断言）。
+
 > Issue 记录的「9 个一级板块 / 34 可见入口」是记录时点口径，与当前代码不一致（此后新增了
 > 静态礼包等入口），一律以本表实时重算为准。复核命令（frontend 目录下）：
 > `node --experimental-strip-types -e "import { appNavigation, visibleNavigationTree, flattenNavigationLeaves, routableNavigationLeaves } from './src/navigation.ts'; const v = flattenNavigationLeaves(visibleNavigationTree(appNavigation)); console.log('一级板块', appNavigation.length, '可见入口', v.length, '可路由叶子', routableNavigationLeaves(appNavigation).length);"`
+> 该命令按「全部模块开放」口径重算（未声明 `requiresModule` 的节点不受运行期清单影响）。
 
 ## 4. 后续新增菜单的检查步骤（Checklist）
 
@@ -132,8 +155,11 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
 3. [ ] 降级入口三件套：`navigation.ts` 加 `hideInMenu: true`；`routes.tsx` 的 routeElements
       保留；高频父页面加上下文 Link/Button（`href` 指向原路径）。
 4. [ ] 引用 CONTEXT.md 术语说明业务对象归属，不引入新边界、不与既有业务对象冲突。
-5. [ ] 更新本文件第 2 节收敛清单与第 3 节计数。
-6. [ ] 测试门禁全绿（第 5 节）。
+5. [ ] 若入口依赖某个外部业务能力：在节点上声明 `requiresModule`，并确认后端
+      `BusinessModuleAvailabilityService` 里该模块的判据就是「点进去能不能用」的同一个开关
+      （不得新造一份可能与真实链路不同步的开关）。
+6. [ ] 更新本文件第 2 节收敛清单与第 3 节计数（计数按「全部模块开放」口径）。
+7. [ ] 测试门禁全绿（第 5 节）。
 
 ## 5. 测试门禁（导航相关）
 
@@ -141,7 +167,15 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
   - 作业中心高频可见叶子固定为 6 个设计名单并断言 ≤ 6 上限；
   - 被降级入口 `hideInMenu === true`、不出现在可见菜单、**仍在 routable 叶子中**（旧路径不 404）、
     `navigationContext` 仍解析出作业中心归属（含 Issue #64 的 `/workbench/alerts`）；
-  - 无重复叶子路径。
+  - 无重复叶子路径；
+  - **运行期模块过滤的零行为变化回归（票 03）**：全部模块开放时可见叶子集合与过滤前逐项相同；
+    未开放任何模块时消失的恰好是声明了 `requiresModule` 的叶子；过滤不改写 `appNavigation`
+    本身（可路由叶子一个不少）。
+- `frontend/test/runtimeModuleVisibility.test.ts`（票 03 机制门禁）：受控节点整支过滤、
+  整组受控与「只有受控子项」的空组收敛、URL 直达与归属仍取完整导航树、侧栏轨道确实按清单过滤、
+  清单载荷畸形或含未知模块标识时保守取空集。
+- `frontend/test/appShellRoute.test.ts`：外壳启动读取 `GET /api/v1/business-modules`；
+  该端点故障时外壳照常可用且不放出未接通的模块。
 - `frontend/test/procurementTicketsRoute.test.ts`：采购协同页上下文入口存在、`href` 正确，
   点击可达采购比价页。
 - `frontend/test/fulfillmentPagesRoute.test.ts`：发货记录页上下文入口存在、`href` 正确，

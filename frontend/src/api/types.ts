@@ -1835,6 +1835,15 @@ export interface BusinessFollowUpPage extends PageMeta {
   items: BusinessFollowUpSummary[];
 }
 
+/**
+ * GET /api/v1/business-modules —— 当前已开放的业务模块标识清单（票 03）。
+ * 标识空间见 src/businessModules.ts；此处不收窄为联合类型：后端可能下发本版本还不认识的模块，
+ * 由 parseOpenBusinessModules 负责忽略。
+ */
+export interface BusinessModuleAvailability {
+  modules: string[];
+}
+
 interface BusinessFollowUpCreateBase {
   message_submission_id: string;
   employee_draft: string;

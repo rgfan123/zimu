@@ -4477,6 +4477,25 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BusinessFollowUpDto' }
+  /api/v1/business-modules:
+    get:
+      tags: [Operations]
+      summary: Read the business modules that are currently connected
+      description: >-
+        只读部署事实：当前**已开放**的业务模块标识清单。前端外壳启动时读取它并据此过滤侧边栏
+        导航树（票 03 / spec unified-business-frontend D3），避免菜单承诺系统给不出的能力。
+        判据取自各模块自己的接通开关（客户中心 = kehuzx 只读网关就绪），
+        与 MCP 工具暴露面 MCP_MODULES 是两件不同的事，不互相推导。
+        清单只列已开放的模块；未开放模块及其未接通的原因不对浏览器暴露。
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: 已开放的业务模块标识清单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BusinessModuleAvailability' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
 
 components:
   securitySchemes:
@@ -4611,6 +4630,16 @@ components:
         decision: { type: string, enum: [CONFIRM, REDO, NEEDS_INPUT, PAUSE] }
         reason: { type: string, minLength: 1, maxLength: 2000 }
         capability: { type: string, pattern: '^[0-9a-f]{32}$' }
+    BusinessModuleAvailability:
+      type: object
+      description: >-
+        已开放的业务模块标识清单。标识是稳定契约（前端导航树的 requiresModule 直接引用），
+        改名等同于破坏契约；已知标识：customer-center（客户中心 kehuzx）。
+      required: [modules]
+      properties:
+        modules:
+          type: array
+          items: { type: string, minLength: 1, maxLength: 64 }
     BusinessFollowUpSummaryDto:
       type: object
       required:

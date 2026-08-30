@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { BUSINESS_MODULE_IDS, NO_OPEN_BUSINESS_MODULES } from '../src/businessModules.ts';
 import {
   appNavigation,
   flattenNavigationLeaves,
+  moduleVisibleNavigationTree,
   navigationContext,
   navigationTrail,
   routableNavigationLeaves,
@@ -226,4 +228,41 @@ test('order presets collapse into one visible entry while direct URLs stay routa
 test('production navigation has no duplicate leaf paths', () => {
   const paths = flattenNavigationLeaves(appNavigation).map(({ path }) => path);
   assert.equal(new Set(paths).size, paths.length);
+});
+
+test('运行期模块过滤只做过滤：全部模块开放时可见结果与过滤前完全一致（票 03 回归证明）', () => {
+  // 门禁语义扩展：菜单可见性 = hideInMenu（编译期）∘ 已开放业务模块清单（运行期）。
+  // 运行期那一层只允许**减少**节点，且减少的必须恰好是显式声明了 requiresModule 的那些——
+  // 它不得新增节点、不得改写路径，否则「导航树是唯一事实源」就不再成立。
+  const visibleBefore = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
+  const routableBefore = routableNavigationLeaves(appNavigation).map(({ path }) => path);
+  const allOpen = new Set(BUSINESS_MODULE_IDS);
+
+  assert.deepEqual(
+    flattenNavigationLeaves(visibleNavigationTree(moduleVisibleNavigationTree(appNavigation, allOpen))).map(
+      ({ path }) => path,
+    ),
+    visibleBefore,
+    '全部模块开放 = 零行为变化',
+  );
+
+  // 清单读不到时的保守态：只有受控节点消失，其余一个不少。
+  const gatedPaths = flattenNavigationLeaves(appNavigation)
+    .filter(({ requiresModule }) => requiresModule)
+    .map(({ path }) => path);
+  assert.deepEqual(
+    flattenNavigationLeaves(
+      visibleNavigationTree(moduleVisibleNavigationTree(appNavigation, NO_OPEN_BUSINESS_MODULES)),
+    ).map(({ path }) => path),
+    visibleBefore.filter((path) => !gatedPaths.includes(path)),
+    '未开放任何模块时，消失的必须恰好是声明了 requiresModule 的叶子',
+  );
+
+  // 过滤是纯函数，不得就地改写导航树本身——routes.tsx 的 routeConfig 与 navigationContext
+  // 都直接读 appNavigation，源树一旦被改，既有 URL 直达与顶栏归属就会跟着塌。
+  assert.deepEqual(
+    routableNavigationLeaves(appNavigation).map(({ path }) => path),
+    routableBefore,
+    '模块过滤后 appNavigation 的可路由叶子必须一个不少（降级 ≠ 删除，隐藏 ≠ 删路由）',
+  );
 });

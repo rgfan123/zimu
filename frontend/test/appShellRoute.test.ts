@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test, { after, afterEach, before } from 'node:test';
-import { control, createRouteHarness, jsonResponse, page, type RouteHarness } from './routeHarness.ts';
+import {
+  apiErrorResponse,
+  control,
+  createRouteHarness,
+  jsonResponse,
+  page,
+  type RouteHarness,
+} from './routeHarness.ts';
 
 /**
  * Issue #104：应用外壳（原型形态契约 ADR 0001/0002）。
@@ -146,4 +153,26 @@ test('刷新后岗位保留；复核徽标显示岗位团队的真实 OPEN 计�
   window.localStorage.setItem('zimu.workbench-role', 'MYSTERY_TEAM');
   await harness.mount(['/workbench/reviews']);
   assert.match(harness.bodyText(), /MYSTERY_TEAM/, '未知团队按 D2 原样显示');
+});
+
+test('外壳启动读取已开放业务模块清单；读不到时外壳照常可用（票 03）', async () => {
+  window.localStorage.clear();
+  const moduleRequests: string[] = [];
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/business-modules')) {
+      moduleRequests.push(url);
+      // 清单端点故障：外壳不得因此崩掉，也不得转而放出未接通的模块（保守策略）。
+      return apiErrorResponse(503, 'UPSTREAM_UNAVAILABLE', '模块清单暂不可用');
+    }
+    return jsonResponse(page([]));
+  };
+  await harness.mount(['/workbench/reviews']);
+
+  await harness.waitFor(() =>
+    assert.equal(moduleRequests.length >= 1, true, '外壳启动必须读取一次已开放业务模块清单'),
+  );
+  const body = harness.bodyText();
+  assert.match(body, /我的工作台/, '清单读取失败时外壳仍然可用');
+  assert.match(body, /今日发货工作台/, '未声明模块依赖的入口不受清单影响');
 });

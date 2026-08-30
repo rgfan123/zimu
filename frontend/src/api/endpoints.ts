@@ -29,6 +29,7 @@ import type {
   BusinessFollowUpOrganizeInput,
   BusinessFollowUpPage,
   BusinessFollowUpSummary,
+  BusinessModuleAvailability,
   ChannelMessageDetail,
   ChannelMessagePage,
   MessageSubmissionDetail,
@@ -1066,6 +1067,15 @@ export const businessFollowUpsApi = {
       body,
       headers: writeHeaders(),
     }),
+};
+
+/**
+ * GET /api/v1/business-modules —— 只读的部署事实：当前已开放的业务模块（票 03）。
+ * 外壳启动时读一次，用于过滤导航树；与 MCP_MODULES（MCP 工具暴露面）无关。
+ */
+export const businessModulesApi = {
+  open: (options?: { signal?: AbortSignal }) =>
+    apiRequest<BusinessModuleAvailability>('/api/v1/business-modules', { signal: options?.signal }),
 };
 
 // ---------- 数据中台（Analytics） ----------

@@ -244,6 +244,7 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | 企微主动通知投递记录（Issue #90） | `GET /api/v1/admin/wecom-notifications/deliveries`；按 `source_type/source_id/status` 过滤，逐源事实 × 收件人返回 SENT/BLOCKED/UNKNOWN/FAILED、尝试次数、req_id、稳定原因及 durable alert id/key/severity；要求 `X-Operator`，不暴露源 payload 或客户 PII |
 | ConnectorConfig | `GET /api/v1/connectors`，`GET/PATCH /api/v1/connectors/{source_channel}` |
 | Connector 连通性 | `POST /api/v1/connectors/{source_channel}/test-connection` |
+| 业务模块开放清单（票 03） | `GET /api/v1/business-modules`；只读部署事实，返回 `{ "modules": [...] }` 即当前**已开放**的业务模块标识（现有标识：`customer-center` = 客户中心 kehuzx，判据取其只读网关是否就绪，与抛 `KEHUZX_NOT_CONFIGURED` 的是同一个开关）。前端外壳启动时读取并据此过滤导航树，使入口可见性与接通开关联动；清单只列已开放的模块，不暴露未开放模块及其未接通原因。**与 MCP 的 `MCP_MODULES`（§8 工具暴露面）是两件不同的事，不互相推导** |
 
 主数据不提供硬删除端点。已被订单快照引用的 Product/SKU/provider 不能改写历史。来源 SKU 映射的 `quantity_multiplier` 必须为正数；空值只能作为待复核主数据，不能进入自动履约。
 
