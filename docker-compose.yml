@@ -35,8 +35,13 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     env_file:
-      - ./backend/.env.jd.uat.local
-      - ./backend/.env.wecom.local
+      # 两个本地密钥文件都是可选（required: false）：部署机存在则注入（0600、git-ignored），
+      # 全新检出没有它们也必须能 config/up——第 110 行注释一直承诺「缺文件时不建连、应用正常
+      # 启动」，旧的纯列表语法却把缺文件变成 compose 硬错误，连 `docker compose config` 都过不了。
+      - path: ./backend/.env.jd.uat.local
+        required: false
+      - path: ./backend/.env.wecom.local
+        required: false
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/fulfillment_hub
       DB_USERNAME: ${POSTGRES_USER:?set POSTGRES_USER in the deployment environment}
