@@ -53,6 +53,8 @@ class StructuredImportApiTest {
 
     @Autowired SourceImportService sourceImportService;
     @Autowired JdbcTemplate jdbc;
+    @Autowired SourceOrderCandidateMaterializer candidateMaterializer;
+    @Autowired ProviderFileService providerFileService;
     @MockitoSpyBean OrderCreateService orderCreateService;
 
     private static final java.util.concurrent.atomic.AtomicInteger SEQ =
@@ -577,6 +579,147 @@ class StructuredImportApiTest {
                         assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED"));
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                batchId)).isZero();
+    }
+
+    @Test
+    void inactiveProviderMappingBlocksNormalThirdPartyRowsWithSharedReadinessReason() {
+        String ref = orderRef("CSX-TP-INACTIVE-PROVIDER-MAPPING");
+        Map<String, Object> imported = sourceImportService.importStructured(
+                SourceChannel.CAISHIXIAN,
+                List.of(new StructuredOrderRow(
+                        ref,
+                        null,
+                        order(ref, ref + "-L1", ref + "-L2"),
+                        Map.of("source_ref", ref))),
+                batchNo(),
+                ctx());
+        long batchId = Long.parseLong(imported.get("id").toString());
+        candidateMaterializer.materializeStaged(batchId, ctx());
+
+        long providerMappingId = jdbc.queryForObject(
+                """
+                SELECT ps.id
+                FROM app.provider_skus ps
+                JOIN app.source_channel_skus scs ON scs.sku_id=ps.sku_id
+                WHERE scs.source_channel='CAISHIXIAN'
+                  AND scs.source_sku_ref='CSX-PRODUCT-001'
+                  AND ps.active
+                """,
+                Long.class);
+        Map<String, Object> routing;
+        jdbc.update("UPDATE app.provider_skus SET active=FALSE WHERE id=?", providerMappingId);
+        try {
+            routing = providerFileService.routeForSourceBatch(batchId, "ticket05-provider-ops");
+        } finally {
+            jdbc.update("UPDATE app.provider_skus SET active=TRUE WHERE id=?", providerMappingId);
+        }
+
+        assertThat((List<?>) routing.get("file_export_ids")).isEmpty();
+        assertThat((List<?>) routing.get("jd_sdk_shipment_ids")).isEmpty();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> blocked = (List<Map<String, Object>>) routing.get("blocked_partitions");
+        assertThat(blocked).hasSize(2).allSatisfy(partition ->
+                assertThat(((List<?>) partition.get("reason_codes")).stream().map(String::valueOf).toList())
+                        .contains("PROVIDER_MAPPING_INACTIVE"));
+        assertThat(jdbc.queryForList(
+                """
+                SELECT processing_stage, exception_code
+                FROM app.order_lines
+                WHERE order_id=(SELECT id FROM app.orders WHERE source_import_batch_id=? LIMIT 1)
+                ORDER BY line_no
+                """,
+                batchId)).hasSize(2).allSatisfy(line -> assertThat(line)
+                        .containsEntry("processing_stage", "NEED_REVIEW")
+                        .containsEntry("exception_code", "PROVIDER_MAPPING_INACTIVE"));
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.review_cases
+                WHERE import_batch_id=? AND case_type='FULFILLMENT_EXPORT'
+                  AND status='OPEN' AND reason_code='PROVIDER_MAPPING_INACTIVE'
+                """,
+                Integer.class,
+                batchId)).isEqualTo(2);
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.fulfillment_export_items fei
+                JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id
+                WHERE rir.import_batch_id=?
+                """,
+                Integer.class,
+                batchId)).isZero();
+    }
+
+    @Test
+    void missingProviderMappingBlocksNormalThirdPartyRowsWithSharedReadinessReason() {
+        String ref = orderRef("CSX-TP-MISSING-PROVIDER-MAPPING");
+        Map<String, Object> imported = sourceImportService.importStructured(
+                SourceChannel.CAISHIXIAN,
+                List.of(new StructuredOrderRow(
+                        ref,
+                        null,
+                        order(ref, ref + "-L1", ref + "-L2"),
+                        Map.of("source_ref", ref))),
+                batchNo(),
+                ctx());
+        long batchId = Long.parseLong(imported.get("id").toString());
+        candidateMaterializer.materializeStaged(batchId, ctx());
+
+        Map<String, Object> mapping = jdbc.queryForMap(
+                """
+                SELECT ps.id, ps.fulfillment_provider_id, ps.sku_id, ps.provider_sku_code,
+                       ps.merchant_sku_code, ps.external_codes::text external_codes,
+                       ps.active, ps.lock_version, ps.created_at, ps.updated_at
+                FROM app.provider_skus ps
+                JOIN app.source_channel_skus scs ON scs.sku_id=ps.sku_id
+                WHERE scs.source_channel='CAISHIXIAN'
+                  AND scs.source_sku_ref='CSX-PRODUCT-001'
+                """);
+        Map<String, Object> routing;
+        jdbc.update("DELETE FROM app.provider_skus WHERE id=?", mapping.get("id"));
+        try {
+            routing = providerFileService.routeForSourceBatch(batchId, "ticket05-provider-ops");
+        } finally {
+            jdbc.update(
+                    """
+                    INSERT INTO app.provider_skus(
+                        id, fulfillment_provider_id, sku_id, provider_sku_code, merchant_sku_code,
+                        external_codes, active, lock_version, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?)
+                    """,
+                    mapping.get("id"),
+                    mapping.get("fulfillment_provider_id"),
+                    mapping.get("sku_id"),
+                    mapping.get("provider_sku_code"),
+                    mapping.get("merchant_sku_code"),
+                    mapping.get("external_codes"),
+                    mapping.get("active"),
+                    mapping.get("lock_version"),
+                    mapping.get("created_at"),
+                    mapping.get("updated_at"));
+        }
+
+        assertThat((List<?>) routing.get("file_export_ids")).isEmpty();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> blocked = (List<Map<String, Object>>) routing.get("blocked_partitions");
+        assertThat(blocked).hasSize(2).allSatisfy(partition ->
+                assertThat(((List<?>) partition.get("reason_codes")).stream().map(String::valueOf).toList())
+                        .contains("PROVIDER_MAPPING_REQUIRED"));
+        assertThat(jdbc.queryForList(
+                """
+                SELECT processing_stage, exception_code
+                FROM app.order_lines
+                WHERE order_id=(SELECT id FROM app.orders WHERE source_import_batch_id=? LIMIT 1)
+                ORDER BY line_no
+                """,
+                batchId)).hasSize(2).allSatisfy(line -> assertThat(line)
+                        .containsEntry("processing_stage", "NEED_REVIEW")
+                        .containsEntry("exception_code", "PROVIDER_MAPPING_REQUIRED"));
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.fulfillment_export_items fei "
+                        + "JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id "
+                        + "WHERE rir.import_batch_id=?",
                 Integer.class,
                 batchId)).isZero();
     }
