@@ -60,6 +60,7 @@ import type {
   JdReceiverAddressCandidate,
   MasterDataPage,
   MasterDataRecord,
+  McpExposure,
   OutboundReconQueryType,
   OutboundReconView,
   ProductArchiveSheet,
@@ -1073,6 +1074,17 @@ export const businessFollowUpsApi = {
 export const businessModulesApi = {
   open: (options?: { signal?: AbortSignal }) =>
     apiRequest<BusinessModuleAvailability>('/api/v1/business-modules', { signal: options?.signal }),
+};
+
+/**
+ * GET /api/v1/mcp-exposure —— 只读的部署事实：当前 MCP 开放面（票 05）。
+ *
+ * 只有 read：开放面在部署期由 MCP_MODULES 决定、启动期一次性生效，界面不提供修改能力
+ * （契约里也没有写端点）。与 businessModulesApi 无关，两者不互相推导。
+ */
+export const mcpExposureApi = {
+  read: (options?: { signal?: AbortSignal }) =>
+    apiRequest<McpExposure>('/api/v1/mcp-exposure', { signal: options?.signal }),
 };
 
 // ---------- 数据中台（Analytics） ----------

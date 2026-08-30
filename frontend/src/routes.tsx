@@ -39,7 +39,14 @@ import { ReviewQueueCompatRoute, AlertsQueuePage, ShippingWorkbenchPage, ReconWo
 import ChannelMessagesPage from '@/pages/workbench/ChannelMessagesPage';
 import BusinessFollowUpsPage from '@/pages/workbench/BusinessFollowUpsPage';
 import ZhonghuiChannelPage from '@/pages/upload/ZhonghuiChannelPage';
-import { ConnectorsPage, FulfillmentProvidersPage, OperatorsPage, SystemConfigPage, WecomBotsPage } from '@/pages/system';
+import {
+  ConnectorsPage,
+  FulfillmentProvidersPage,
+  McpExposurePage,
+  OperatorsPage,
+  SystemConfigPage,
+  WecomBotsPage,
+} from '@/pages/system';
 import {
   AgentCostPage,
   AgentCreatePage,
@@ -103,6 +110,8 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/system/connectors': <ConnectorsPage />,
   '/system/audit-logs': <AuditLogsPage />,
   '/system/config': <SystemConfigPage />,
+  // 票 05：MCP 开放面只读核对（菜单隐藏，入口在 Agent 列表页；URL 直达照常可用）。
+  '/system/mcp-exposure': <McpExposurePage />,
   '/system/fulfillment-providers': <FulfillmentProvidersPage />,
   '/system/operators': <OperatorsPage />,
   '/system/wecom-bots': <WecomBotsPage />,

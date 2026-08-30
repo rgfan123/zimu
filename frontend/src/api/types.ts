@@ -1845,6 +1845,32 @@ export interface BusinessModuleAvailability {
   modules: string[];
 }
 
+/**
+ * GET /api/v1/mcp-exposure —— 当前 MCP 开放面（票 05）。
+ *
+ * 与上面的业务模块开放清单是两件事：这里答「哪些 MCP 工具此刻对外开放着」，
+ * 那里答「哪块业务能力今天接通了」；不共用配置，也不互相推导。
+ */
+export interface McpExposureTool {
+  name: string;
+  /** 工具自己声明的用途摘要，不是界面另写的文案。 */
+  description: string;
+  /** false = 写工具（开放面核对最需要看清的一项）。 */
+  read_only: boolean;
+}
+
+export interface McpExposureModule {
+  module: string;
+  /** 该模块当前**已注册**的工具，按名称升序。 */
+  tools: McpExposureTool[];
+}
+
+export interface McpExposure {
+  open_modules: McpExposureModule[];
+  /** 已知但未开放的模块标识：只有名字——未注册的工具没有明细可给。 */
+  unopened_modules: string[];
+}
+
 interface BusinessFollowUpCreateBase {
   message_submission_id: string;
   employee_draft: string;

@@ -138,7 +138,7 @@ test('demoted query tools stay routable and keep their section context', () => {
   const visiblePaths = flattenNavigationLeaves(visibleNavigationTree(appNavigation)).map(({ path }) => path);
   const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
 
-  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts', '/demo/order', '/procurement/tickets', '/agents/cost', '/agents/fulfillment-file', '/agents/new']) {
+  for (const path of ['/procurement/price-compare', '/fulfillment/outbound-recon', '/workbench/alerts', '/demo/order', '/procurement/tickets', '/agents/cost', '/agents/fulfillment-file', '/agents/new', '/system/mcp-exposure']) {
     const node = findNavigationNode(appNavigation, path);
     assert.equal(node?.hideInMenu, true, `${path} 必须降级为隐藏入口`);
     assert.equal(visiblePaths.includes(path), false, `${path} 不得出现在可见菜单`);
@@ -168,6 +168,12 @@ test('demoted query tools stay routable and keep their section context', () => {
   assert.deepEqual(navigationContext('/workbench/shipping', ''), {
     section: '我的工作台',
     page: '今日发货工作台',
+  });
+  // 票 05：MCP 开放面核对页归入系统与接入，但该板块可见叶子已满 6，按准入 1.1 降级为上下文
+  // 二级入口（发现路径在 Agent 列表页），归属仍从完整导航树解析。
+  assert.deepEqual(navigationContext('/system/mcp-exposure', ''), {
+    section: '系统与接入',
+    page: 'MCP 开放面',
   });
 });
 
@@ -225,6 +231,15 @@ test('system menu exposes each connector and provider configuration capability o
     assert.equal(visible.filter((item) => item === path).length, 1, `${path} 必须在系统与接入组恰好出现一次`);
   }
   assert.equal(findNavigationNode(appNavigation, '/system/config')?.hideInMenu, true);
+  // 票 05：本板块可见叶子已到准入上限 6，新增的 MCP 开放面核对页只能降级为上下文二级入口——
+  // 这条断言同时挡住「再加一个可见叶子」和「为腾位置把别人降级」两种越界。
+  assert.deepEqual(
+    visible,
+    ['/system/connectors', '/system/fulfillment-providers', '/system/operators',
+      '/system/wecom-bots', '/system/jd-tools', '/system/audit-logs'],
+    '系统与接入可见叶子必须恰好是这 6 个（已满上限，增删都要走准入评审）',
+  );
+  assert.equal(findNavigationNode(appNavigation, '/system/mcp-exposure')?.hideInMenu, true);
 });
 
 test('product operations expose product archive, SKU mappings, and static bundle management', () => {

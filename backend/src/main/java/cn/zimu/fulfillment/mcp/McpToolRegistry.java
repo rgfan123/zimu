@@ -28,11 +28,18 @@ import org.springframework.stereotype.Component;
  * <p>空值语义已从「全部模块」反转为「零模块」：原先漏配 {@code MCP_MODULES} 的环境会把含客户
  * 姓名/电话/地址的 followup 模块连同写工具一并暴露，安全全靠运维「记得配置」。现在漏配的失败
  * 模式是「MCP 全哑」——启动即可见、补一行配置就恢复，而不是安静地把 PII 摆到公网。
+ *
+ * <p>本类同时是「当前开放了什么」的权威来源：{@link #all()} 是已注册（= 已开放）工具的全集，
+ * {@link #knownModules()} 是全部工具声明过的模块全集（过滤之前）。两者相减即「已知但未开放」，
+ * 管理员核对视图（票 05）据此呈现，不另建一份会与注册表漂移的硬编码清单。
  */
 @Component
 public class McpToolRegistry {
 
     private final Map<String, McpTool> byName;
+
+    /** 全部工具声明过的模块，按工具聚合顺序去重；**过滤之前**的全集，不随 MCP_MODULES 变化。 */
+    private final Set<String> knownModules;
 
     /**
      * 便捷构造（不带 orders-read / kehuzx provider）：模块清单必须显式传入。
@@ -118,6 +125,9 @@ public class McpToolRegistry {
             }
         }
         this.byName = Map.copyOf(index);
+        // 已知模块全集要保留到运行期：模块被排除后它的工具根本不进 byName，事后无从反推
+        // 「本可以开放哪些模块」。管理员核对视图（票 05）用它区分「已知但未开放」与「已开放」。
+        this.knownModules = java.util.Collections.unmodifiableSet(new LinkedHashSet<>(knownModules));
     }
 
     /**
@@ -153,6 +163,17 @@ public class McpToolRegistry {
 
     public Optional<McpTool> find(String name) {
         return Optional.ofNullable(byName.get(name));
+    }
+
+    /**
+     * 全部工具声明过的模块（模块过滤**之前**的全集），按工具聚合顺序。
+     *
+     * <p>这是「已知模块」的唯一来源——它由工具自己声明的 {@link McpTool#module()} 推出，
+     * 不是手抄清单，新增模块的工具自动出现在这里。与 {@link #all()} 的模块集合相减
+     * 即「已知但未开放」；注意不要反过来用它推导开放面，开放面只以注册结果为准。
+     */
+    public Set<String> knownModules() {
+        return knownModules;
     }
 
     /**

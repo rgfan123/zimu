@@ -245,6 +245,7 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | ConnectorConfig | `GET /api/v1/connectors`，`GET/PATCH /api/v1/connectors/{source_channel}` |
 | Connector 连通性 | `POST /api/v1/connectors/{source_channel}/test-connection` |
 | 业务模块开放清单（票 03） | `GET /api/v1/business-modules`；只读部署事实，返回 `{ "modules": [...] }` 即当前**已开放**的业务模块标识（现有标识：`customer-center` = 客户中心 kehuzx，判据取其只读网关是否就绪，与抛 `KEHUZX_NOT_CONFIGURED` 的是同一个开关）。前端外壳启动时读取并据此过滤导航树，使入口可见性与接通开关联动；清单只列已开放的模块，不暴露未开放模块及其未接通原因。**与 MCP 的 `MCP_MODULES`（§8 工具暴露面）是两件不同的事，不互相推导** |
+| MCP 开放面核对（票 05） | `GET /api/v1/mcp-exposure`；只读部署事实，返回 `{ "open_modules": [{ "module", "tools": [{ "name", "description", "read_only" }] }], "unopened_modules": [...] }`。**已开放** = 该模块的工具真的进了注册表（`McpToolRegistry` 是唯一真源，不重新解析 `MCP_MODULES`）；**已知但未开放** = 有工具声明该模块但当前未列出，只给模块名不给工具明细（未注册的工具凭空列出就得另建一份必然漂移的清单）。两个清单都可能为空且空是合法状态（未配置 → `open_modules` 空，全开 → `unopened_modules` 空）。纯只读，不提供修改开放面的能力——开放面在部署期由 `MCP_MODULES` 决定、启动期一次性生效（§8 / ADR 0015）。前端 `/system/mcp-exposure` 消费 |
 
 主数据不提供硬删除端点。已被订单快照引用的 Product/SKU/provider 不能改写历史。来源 SKU 映射的 `quantity_multiplier` 必须为正数；空值只能作为待复核主数据，不能进入自动履约。
 

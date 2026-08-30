@@ -204,9 +204,18 @@ export default function AgentsListPage() {
       title="Agent 列表"
       description="平台上的 Agent 与运行状态一览：谁在跑、跑得怎么样、哪些草稿待确认。"
       actions={
-        <Link to="/agents/new">
-          <Button type="primary">新建 Agent</Button>
-        </Link>
+        <Space size={12}>
+          {/*
+            低频专用查询的上下文入口（票 05，准入规则 1.1）：MCP 开放面核对页在菜单里隐藏
+            （「系统与接入」可见叶子已满 6），由本页承载发现路径——Agent 的工具白名单与
+            「未注册」标注正是它要回答的问题：注册表是 MCP 面与 Agent 平台共用的唯一工具源，
+            工具能不能绑、机器人会不会哑，都取决于当前开放了哪些模块。URL 直达照常可用。
+          */}
+          <Link to="/system/mcp-exposure">MCP 开放面</Link>
+          <Link to="/agents/new">
+            <Button type="primary">新建 Agent</Button>
+          </Link>
+        </Space>
       }
     >
       {attention.hasAnything ? (

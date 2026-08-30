@@ -4497,6 +4497,29 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/BusinessModuleAvailability' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/mcp-exposure:
+    get:
+      tags: [Operations]
+      summary: Read the MCP tool exposure surface that is currently registered
+      description: >-
+        只读部署事实：当前 MCP 开放面（票 05）。`open_modules` 是**已开放**模块及其已注册工具
+        （工具名、用途摘要、读写属性，全部取自工具自己声明的元数据）；`unopened_modules` 是
+        **已知但未开放**的模块——系统里有声明该模块的工具，但当前 MCP_MODULES 没列出它，
+        因此一个工具都没注册，故只给模块名、不给工具明细。
+        管理员改完 MCP_MODULES 后据此核对结果，不必进容器翻环境变量。
+        两个清单都可能为空且空是合法状态：未配置时 open_modules 为空（fail-safe，ADR 0015），
+        全部模块开放时 unopened_modules 为空。
+        **纯只读**：开放面在部署期由 MCP_MODULES 决定、启动期一次性生效，本端点不提供修改能力。
+        与 GET /api/v1/business-modules（业务模块接通清单）是两件不同的事，不互相推导。
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: 当前已开放模块与其已注册工具，以及已知但未开放的模块
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/McpExposure' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
 
 components:
   securitySchemes:
@@ -4641,6 +4664,42 @@ components:
         modules:
           type: array
           items: { type: string, minLength: 1, maxLength: 64 }
+    McpExposure:
+      type: object
+      description: >-
+        当前 MCP 开放面。模块标识由工具自己声明（McpTool#module），不是手写清单；
+        已知模块全集 = open_modules ∪ unopened_modules。
+      required: [open_modules, unopened_modules]
+      properties:
+        open_modules:
+          type: array
+          description: 已开放模块（其工具真的进了注册表），按已知模块声明顺序。
+          items: { $ref: '#/components/schemas/McpExposureModule' }
+        unopened_modules:
+          type: array
+          description: >-
+            已知但未开放的模块标识。只给名字：这些模块的工具没有注册，列出「开了会有什么」
+            就需要另一份必然漂移的清单。
+          items: { type: string, minLength: 1, maxLength: 64 }
+    McpExposureModule:
+      type: object
+      required: [module, tools]
+      properties:
+        module: { type: string, minLength: 1, maxLength: 64 }
+        tools:
+          type: array
+          description: 该模块当前已注册的工具，按名称升序。
+          items: { $ref: '#/components/schemas/McpExposureTool' }
+    McpExposureTool:
+      type: object
+      description: 工具在核对视图里的投影，三项均取自工具自己声明的元数据；不含 inputSchema。
+      required: [name, description, read_only]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        description: { type: string }
+        read_only:
+          type: boolean
+          description: 08 决策的读写元数据；false = 写工具（开放面评审最需要看清的一项）。
     BusinessFollowUpSummaryDto:
       type: object
       required:

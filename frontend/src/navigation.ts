@@ -120,6 +120,10 @@ export const appNavigation = [
       { path: '/fulfillment/jd-return', label: '退货退供查询', hideInMenu: true },
       { path: '/system/audit-logs', label: '操作审计' },
       { path: '/system/config', label: '系统配置', hideInMenu: true },
+      // 票 05：MCP 开放面只读核对。低频专用查询（改完 MCP_MODULES 才看一次），且本板块可见叶子
+      // 已满 6——按准入 1.1 降级为上下文二级入口：路由照常注册，发现路径由 Agent 列表页承载
+      // （工具白名单的「未注册」标注就是它要回答的问题）。见 docs/agents/navigation-admission.md。
+      { path: '/system/mcp-exposure', label: 'MCP 开放面', hideInMenu: true },
     ],
   },
   { path: '/analytics', label: '经营分析' },
