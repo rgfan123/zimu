@@ -7510,3 +7510,10 @@ CREATE TRIGGER trg_source_channel_bundles_sku_readiness_catalog_lock
 BEFORE INSERT OR UPDATE OR DELETE ON app.source_channel_bundles
 FOR EACH STATEMENT EXECUTE FUNCTION app.lock_sku_readiness_catalog_write();
 -- END V71__serialize_sku_catalog_writes_before_rows.sql
+
+-- BEGIN V72__index_trusted_source_template_batch.sql
+-- PostgreSQL 不会自动为外键引用列建索引；按来源批次删除/核对时需要该前导列。
+-- V70 已属于历史迁移，必须通过追加迁移补齐，不能改写 V70。
+CREATE INDEX idx_source_template_profiles_trusted_from_batch
+    ON app.source_template_profiles(trusted_from_batch_id);
+-- END V72__index_trusted_source_template_batch.sql

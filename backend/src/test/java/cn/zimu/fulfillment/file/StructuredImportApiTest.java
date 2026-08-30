@@ -343,6 +343,166 @@ class StructuredImportApiTest {
     }
 
     @Test
+    void jdQuantityOutsidePlanQuantityRangeIsBlockedBeforeCreatingAnOrder() {
+        Map<String, Object> jdSku = jdbc.queryForMap(
+                """
+                SELECT s.id, p.product_name, s.specification, s.unit,
+                       ps.id provider_sku_id,
+                       ps.external_codes->>'jd_pieces_per_unit' original_factor
+                FROM app.skus s
+                JOIN app.products p ON p.id=s.product_id
+                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
+                JOIN app.provider_skus ps ON ps.sku_id=s.id
+                    AND ps.fulfillment_provider_id=fp.id AND ps.active
+                WHERE fp.provider_type='JD_WAREHOUSE' AND fp.active AND s.active
+                  AND ps.external_codes ? 'jd_pieces_per_unit'
+                ORDER BY s.id
+                LIMIT 1
+                """);
+        String ref = orderRef("CSX-JD-QUANTITY-OUT-OF-RANGE");
+        String sourceSkuRef = "CSX-JD-QUANTITY-OUT-OF-RANGE-SKU-" + SEQ.get();
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                VALUES ('CAISHIXIAN', ?, ?, ?, 1, ?, true)
+                """,
+                sourceSkuRef,
+                jdSku.get("product_name"),
+                jdSku.get("specification"),
+                ((Number) jdSku.get("id")).longValue());
+        OrderItemInput item = new OrderItemInput(
+                ref + "-L1",
+                LineType.SINGLE,
+                null,
+                sourceSkuRef,
+                jdSku.get("product_name").toString(),
+                jdSku.get("specification").toString(),
+                jdSku.get("unit").toString(),
+                "2000000000",
+                null);
+        CanonicalOrderInput input = new CanonicalOrderInput(
+                SourceChannel.CAISHIXIAN,
+                ref,
+                "v1",
+                new CustomerInput(null, "CSX-MEMBER-001", "测试客户"),
+                new Receiver("测试收货人", "13800000001", "北京", "北京市", "朝阳区", null, "测试路 1 号"),
+                List.of(item),
+                new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                "ticket04-jd-quantity-range",
+                List.of());
+
+        Map<String, Object> imported;
+        jdbc.update(
+                "UPDATE app.provider_skus SET external_codes=jsonb_set("
+                        + "external_codes, '{jd_pieces_per_unit}', '2'::jsonb, true) WHERE id=?",
+                ((Number) jdSku.get("provider_sku_id")).longValue());
+        try {
+            imported = sourceImportService.importStructured(
+                    SourceChannel.CAISHIXIAN,
+                    List.of(new StructuredOrderRow(ref, null, input, Map.of("source_ref", ref))),
+                    batchNo(),
+                    ctx());
+        } finally {
+            jdbc.update(
+                    "UPDATE app.provider_skus SET external_codes=jsonb_set("
+                            + "external_codes, '{jd_pieces_per_unit}', to_jsonb(CAST(? AS numeric)), true) "
+                            + "WHERE id=?",
+                    jdSku.get("original_factor").toString(),
+                    ((Number) jdSku.get("provider_sku_id")).longValue());
+        }
+        long batchId = Long.parseLong(imported.get("id").toString());
+
+        assertThat(imported.get("status")).isEqualTo("COMPLETED_WITH_REVIEW");
+        assertThat(jdbc.queryForObject(
+                "SELECT (error_detail->'reason_codes') @> '[\"QUANTITY_SCALE\"]'::jsonb "
+                        + "FROM app.raw_import_rows WHERE import_batch_id=?",
+                Boolean.class,
+                batchId)).isTrue();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                batchId)).isZero();
+    }
+
+    @Test
+    void customBundleComponentSourceReferenceCannotOverrideConflictingExplicitSkuCode() {
+        List<Map<String, Object>> readySkus = jdbc.queryForList(
+                """
+                SELECT s.id, s.sku_code, p.product_name, s.specification, s.unit
+                FROM app.skus s
+                JOIN app.products p ON p.id=s.product_id AND p.active
+                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id AND fp.active
+                JOIN app.provider_skus ps ON ps.sku_id=s.id
+                    AND ps.fulfillment_provider_id=fp.id AND ps.active
+                WHERE s.active
+                ORDER BY fp.provider_type, s.id
+                LIMIT 2
+                """);
+        assertThat(readySkus).hasSize(2);
+        Map<String, Object> mapped = readySkus.get(0);
+        Map<String, Object> declared = readySkus.get(1);
+        String ref = orderRef("CSX-BUNDLE-DECLARED-SKU-CONFLICT");
+        String componentRef = "CSX-BUNDLE-DECLARED-SKU-CONFLICT-COMPONENT-" + SEQ.get();
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                VALUES ('CAISHIXIAN', ?, ?, ?, 1, ?, true)
+                """,
+                componentRef,
+                mapped.get("product_name"),
+                mapped.get("specification"),
+                ((Number) mapped.get("id")).longValue());
+        OrderItemInput bundle = new OrderItemInput(
+                ref + "-L1",
+                LineType.CUSTOM_BUNDLE,
+                null,
+                null,
+                "来源映射与显式 SKU 冲突当单礼包",
+                "1份",
+                "份",
+                "1",
+                List.of(new BundleComponentInput(
+                        declared.get("sku_code").toString(),
+                        componentRef,
+                        mapped.get("product_name").toString(),
+                        mapped.get("specification").toString(),
+                        mapped.get("unit").toString(),
+                        "1")));
+        CanonicalOrderInput input = new CanonicalOrderInput(
+                SourceChannel.CAISHIXIAN,
+                ref,
+                "v1",
+                new CustomerInput(null, "CSX-MEMBER-001", "测试客户"),
+                new Receiver("测试收货人", "13800000001", "北京", "北京市", "朝阳区", null, "测试路 1 号"),
+                List.of(bundle),
+                new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                "ticket04-component-declared-sku-conflict",
+                List.of());
+
+        Map<String, Object> imported = sourceImportService.importStructured(
+                SourceChannel.CAISHIXIAN,
+                List.of(new StructuredOrderRow(ref, null, input, Map.of("source_ref", ref))),
+                batchNo(),
+                ctx());
+        long batchId = Long.parseLong(imported.get("id").toString());
+
+        assertThat(imported.get("status")).isEqualTo("COMPLETED_WITH_REVIEW");
+        assertThat(jdbc.queryForObject(
+                "SELECT (error_detail->'reason_codes') @> '[\"SKU_MAPPING_CONFLICT\"]'::jsonb "
+                        + "FROM app.raw_import_rows WHERE import_batch_id=?",
+                Boolean.class,
+                batchId)).isTrue();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                batchId)).isZero();
+    }
+
+    @Test
     void customBundleComponentCannotBeReinterpretedAfterItsSourceMappingChanges() {
         List<Map<String, Object>> readySkus = jdbc.queryForList(
                 """

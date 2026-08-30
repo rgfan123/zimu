@@ -2,6 +2,11 @@ package cn.zimu.fulfillment.file;
 
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.fulfillment.JdCargoPlanner;
+import cn.zimu.fulfillment.order.domain.LineType;
+import cn.zimu.fulfillment.order.dto.OrderItemInput;
+import cn.zimu.fulfillment.sku.ProviderSku;
+import cn.zimu.fulfillment.sku.ProviderSkuRepository;
 import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuFulfillmentReadiness;
 import cn.zimu.fulfillment.sku.SkuFulfillmentReadinessService;
@@ -9,8 +14,6 @@ import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SkuReadinessCatalogLock;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
 import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
-import cn.zimu.fulfillment.order.domain.LineType;
-import cn.zimu.fulfillment.order.dto.OrderItemInput;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -32,6 +35,7 @@ class SourceBatchSkuReadinessGate {
     private final JdbcTemplate jdbc;
     private final SkuRepository skus;
     private final SourceChannelSkuRepository sourceMappings;
+    private final ProviderSkuRepository providerSkus;
     private final SkuFulfillmentReadinessService readiness;
     private final SkuReadinessCatalogLock catalogLock;
     private final SourceFileParser parser;
@@ -41,6 +45,7 @@ class SourceBatchSkuReadinessGate {
             JdbcTemplate jdbc,
             SkuRepository skus,
             SourceChannelSkuRepository sourceMappings,
+            ProviderSkuRepository providerSkus,
             SkuFulfillmentReadinessService readiness,
             SkuReadinessCatalogLock catalogLock,
             SourceFileParser parser,
@@ -48,6 +53,7 @@ class SourceBatchSkuReadinessGate {
         this.jdbc = jdbc;
         this.skus = skus;
         this.sourceMappings = sourceMappings;
+        this.providerSkus = providerSkus;
         this.readiness = readiness;
         this.catalogLock = catalogLock;
         this.parser = parser;
@@ -529,7 +535,8 @@ class SourceBatchSkuReadinessGate {
                     .forEach(mapping -> mappingByRef.put(mapping.getSourceSkuRef(), mapping));
         }
         List<String> directSkuCodes = lines.stream()
-                .map(CandidateLine::skuCode)
+                .filter(CandidateLine::directInternalSku)
+                .map(CandidateLine::declaredSkuCode)
                 .filter(Objects::nonNull)
                 .filter(code -> !code.isBlank())
                 .distinct()
@@ -547,6 +554,9 @@ class SourceBatchSkuReadinessGate {
         Map<Long, Sku> skuById = new LinkedHashMap<>();
         skus.findAllById(skuIds).forEach(sku -> skuById.put(sku.getId(), sku));
         Map<Long, SkuFulfillmentReadiness> readinessBySku = readiness.evaluateAll(skuById.values());
+        Map<Long, ProviderSku> providerMappingBySkuId = new LinkedHashMap<>();
+        providerSkus.findBySkuIdIn(skuIds)
+                .forEach(mapping -> providerMappingBySkuId.put(mapping.getSkuId(), mapping));
         Set<Long> jdProviderIds = new LinkedHashSet<>(jdbc.queryForList(
                 "SELECT id FROM app.fulfillment_providers WHERE provider_type='JD_WAREHOUSE'",
                 Long.class));
@@ -557,19 +567,16 @@ class SourceBatchSkuReadinessGate {
                     ? null
                     : mappingByRef.get(line.sourceSkuRef());
             Sku sku = line.directInternalSku()
-                    ? skuByCode.get(line.skuCode())
+                    ? skuByCode.get(line.declaredSkuCode())
                     : mapping == null ? null : skuById.get(mapping.getSkuId());
             List<Map<String, String>> issues = candidateMappingIssues(line, mapping, sku);
             BigDecimal convertedQuantity = candidateRequestedQuantity(line, mapping);
-            if (sku != null
-                    && jdProviderIds.contains(sku.getFulfillmentProviderId())
-                    && (convertedQuantity == null
-                        || convertedQuantity.signum() <= 0
-                        || convertedQuantity.stripTrailingZeros().scale() > 0)) {
-                issues.add(issue(
-                        "QUANTITY_SCALE",
-                        "京东出库数量必须为正整数",
-                        "核对来源数量和包装乘数后重新导入批次"));
+            if (sku != null && jdProviderIds.contains(sku.getFulfillmentProviderId())) {
+                Map<String, String> quantityIssue = candidateJdQuantityIssue(
+                        line, sku, providerMappingBySkuId.get(sku.getId()), convertedQuantity);
+                if (quantityIssue != null) {
+                    issues.add(quantityIssue);
+                }
             }
             SkuFulfillmentReadiness result = sku == null ? null : readinessBySku.get(sku.getId());
             if (issues.isEmpty() && result != null && result.ready()) {
@@ -586,16 +593,28 @@ class SourceBatchSkuReadinessGate {
             Long expectedSkuId = line.frozenSkuId() == null
                     ? sku == null ? null : sku.getId()
                     : line.frozenSkuId();
-            String expectedSkuCode = line.skuCode() == null
-                    ? sku == null ? null : sku.getSkuCode()
-                    : line.skuCode();
+            String expectedSkuCode = line.frozenSkuCode() != null
+                    ? line.frozenSkuCode()
+                    : line.declaredSkuCode() != null
+                            ? line.declaredSkuCode()
+                            : sku == null ? null : sku.getSkuCode();
             if (expectedSkuId != null) {
                 detail.put("sku_id", Long.toString(expectedSkuId));
             }
             if (expectedSkuCode != null) {
                 detail.put("sku_code", expectedSkuCode);
             }
-            if (sku != null && line.frozenSkuId() != null && !line.frozenSkuId().equals(sku.getId())) {
+            if (line.declaredSkuCode() != null) {
+                detail.put("declared_sku_code", line.declaredSkuCode());
+            }
+            if (line.frozenSkuCode() != null) {
+                detail.put("frozen_sku_code", line.frozenSkuCode());
+            }
+            if (sku != null
+                    && ((line.frozenSkuId() != null && !line.frozenSkuId().equals(sku.getId()))
+                        || (line.frozenSkuCode() != null && !line.frozenSkuCode().equals(sku.getSkuCode()))
+                        || (line.declaredSkuCode() != null
+                            && !line.declaredSkuCode().equals(sku.getSkuCode())))) {
                 detail.put("current_sku_id", Long.toString(sku.getId()));
                 detail.put("current_sku_code", sku.getSkuCode());
             }
@@ -653,14 +672,15 @@ class SourceBatchSkuReadinessGate {
                                 lineNo,
                                 item.sourceSkuRef(),
                                 mapping == null ? null : mapping.skuId(),
-                                mapping == null ? item.skuCode() : mapping.skuCode(),
+                                item.skuCode(),
+                                mapping == null ? null : mapping.skuCode(),
                                 mapping == null ? null : mapping.quantityMultiplier(),
                                 decimal(item.quantity()),
                                 true));
                     } else if (item.components() == null || item.components().isEmpty()) {
                         lines.add(new CandidateLine(
                                 row.rawImportRowId(), candidate.candidateKey(), lineNo,
-                                null, null, null, null, decimal(item.quantity()), false));
+                                null, null, null, null, null, decimal(item.quantity()), false));
                     } else {
                         int candidateLineNo = lineNo;
                         for (int componentIndex = 0; componentIndex < item.components().size(); componentIndex++) {
@@ -673,7 +693,8 @@ class SourceBatchSkuReadinessGate {
                                     candidateLineNo,
                                     component.sourceSkuRef(),
                                     mapping == null ? null : mapping.skuId(),
-                                    mapping == null ? component.skuCode() : mapping.skuCode(),
+                                    component.skuCode(),
+                                    mapping == null ? null : mapping.skuCode(),
                                     mapping == null ? null : mapping.quantityMultiplier(),
                                     product(item.quantity(), component.quantityPerBundle()),
                                     false));
@@ -707,6 +728,35 @@ class SourceBatchSkuReadinessGate {
             multiplier = mapping == null ? null : mapping.getQuantityMultiplier();
         }
         return multiplier == null ? null : line.sourceQuantity().multiply(multiplier);
+    }
+
+    private Map<String, String> candidateJdQuantityIssue(
+            CandidateLine line, Sku sku, ProviderSku providerMapping, BigDecimal convertedQuantity) {
+        JdCargoPlanner.Goods goods = providerMapping == null
+                ? null
+                : new JdCargoPlanner.Goods(
+                        providerMapping.getProviderSkuCode(),
+                        providerMapping.getMerchantSkuCode(),
+                        providerMapping.getExternalCodes(),
+                        providerMapping.isActive());
+        JdCargoPlanner.Result result = JdCargoPlanner.plan(
+                sku.getId(),
+                Integer.toString(line.lineNo()),
+                sku.getSkuCode(),
+                sku.getUnit(),
+                convertedQuantity,
+                "来源数量 × 来源包装乘数 × 京东件数换算",
+                null,
+                goods);
+        if (!(result instanceof JdCargoPlanner.Failure failure)
+                || !("JD_SHIPMENT_OUTBOUND_NON_INTEGRAL_QUANTITY".equals(failure.code())
+                    || "JD_SHIPMENT_OUTBOUND_QUANTITY_OUT_OF_RANGE".equals(failure.code()))) {
+            return null;
+        }
+        return issue(
+                "QUANTITY_SCALE",
+                failure.message(),
+                "核对来源数量、礼包组件用量、包装乘数和京东件数换算后重新导入批次");
     }
 
     private BigDecimal product(Object left, Object right) {
@@ -764,13 +814,24 @@ class SourceBatchSkuReadinessGate {
                     "SKU_MAPPING_CONFLICT",
                     "来源商品映射指向不存在的内部 SKU",
                     "修复来源映射目标后重新确认批次"));
-        } else if (line.skuCode() != null
-                && !line.skuCode().isBlank()
-                && !line.skuCode().equals(sku.getSkuCode())) {
-            issues.add(issue(
-                    "SKU_MAPPING_CONFLICT",
-                    "来源商品映射与候选中的内部 SKU 编码不一致",
-                    "核对映射目标，禁止用候选值覆盖主数据"));
+        } else {
+            if ((line.frozenSkuId() != null && !line.frozenSkuId().equals(sku.getId()))
+                    || (line.frozenSkuCode() != null
+                        && !line.frozenSkuCode().isBlank()
+                        && !line.frozenSkuCode().equals(sku.getSkuCode()))) {
+                issues.add(issue(
+                        "SKU_MAPPING_CONFLICT",
+                        "当前来源商品映射与上传时冻结的目标 SKU 不一致",
+                        "核对映射变更后重新导入批次，禁止覆盖上传时证据"));
+            }
+            if (line.declaredSkuCode() != null
+                    && !line.declaredSkuCode().isBlank()
+                    && !line.declaredSkuCode().equals(sku.getSkuCode())) {
+                issues.add(issue(
+                        "SKU_MAPPING_CONFLICT",
+                        "来源商品映射与候选显式声明的内部 SKU 编码不一致",
+                        "核对来源编码和显式 SKU，禁止用来源映射覆盖候选声明"));
+            }
         }
         return issues;
     }
@@ -975,15 +1036,16 @@ class SourceBatchSkuReadinessGate {
             int lineNo,
             String sourceSkuRef,
             Long frozenSkuId,
-            String skuCode,
+            String declaredSkuCode,
+            String frozenSkuCode,
             BigDecimal mappingMultiplier,
             BigDecimal sourceQuantity,
             boolean applySourceMultiplier) {
 
         boolean directInternalSku() {
             return (sourceSkuRef == null || sourceSkuRef.isBlank())
-                    && skuCode != null
-                    && !skuCode.isBlank();
+                    && declaredSkuCode != null
+                    && !declaredSkuCode.isBlank();
         }
     }
 
