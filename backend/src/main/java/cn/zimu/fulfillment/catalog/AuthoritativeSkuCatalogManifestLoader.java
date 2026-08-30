@@ -1,7 +1,6 @@
 package cn.zimu.fulfillment.catalog;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
-import cn.zimu.fulfillment.sku.SkuCommercialPrice;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.security.MessageDigest;
@@ -26,7 +25,7 @@ final class AuthoritativeSkuCatalogManifestLoader {
     static final String PRICE_SOURCE_SHA256 =
             "7fc1d34e2217207abe108b97e3d02c21c4263558448c8352626f087656e45160";
     static final String MANIFEST_SHA256 =
-            "882e6bb6f9d822e9b9f21305ded02e581ce6cdcbcc2cb0508910bb4896eea68a";
+            "f9d47bf4ee5b1766e7539762bb79593f44820de9a8e56c4679d3ae4551cc1a4b";
 
     private static final Set<String> DIFFERENCE_CODES = Set.of(
             "DUPLICATE_JD_CODE",
@@ -66,7 +65,7 @@ final class AuthoritativeSkuCatalogManifestLoader {
         }
     }
 
-    private void validate(AuthoritativeSkuCatalogManifest manifest) {
+    void validate(AuthoritativeSkuCatalogManifest manifest) {
         if (manifest == null
                 || manifest.schemaVersion() != 1
                 || manifest.jdSource() == null
@@ -86,26 +85,25 @@ final class AuthoritativeSkuCatalogManifestLoader {
         if (manifest.items().size() != 61
                 || manifest.expected().uniqueJdCodes() != 61
                 || manifest.expected().duplicateCodeCount() != 2
-                || manifest.expected().priceMatchedCount() != 27
-                || manifest.expected().unpricedCount() != 34) {
+                || manifest.expected().priceMatchedCount() != 0
+                || manifest.expected().unpricedCount() != 61) {
             throw invalid("权威京东商品 manifest 汇总数量无效");
         }
 
         Set<String> codes = new HashSet<>();
         Set<Integer> sourceRows = new HashSet<>();
-        Set<String> matchedNames = new HashSet<>();
         int duplicateCodes = 0;
         int priced = 0;
         for (AuthoritativeSkuCatalogManifest.Item item : manifest.items()) {
-            requireItem(item, codes, sourceRows, matchedNames);
+            requireItem(item, codes, sourceRows);
             if (item.sourceRows().size() > 1) duplicateCodes++;
             if (item.purchasePrice() != null) priced++;
         }
         Set<Integer> expectedRows = IntStream.rangeClosed(2, 64).boxed().collect(Collectors.toSet());
         if (!sourceRows.equals(expectedRows)
                 || duplicateCodes != 2
-                || priced != 27
-                || manifest.items().size() - priced != 34) {
+                || priced != 0
+                || manifest.items().size() - priced != 61) {
             throw invalid("权威京东商品 manifest 明细与汇总不一致");
         }
 
@@ -125,8 +123,7 @@ final class AuthoritativeSkuCatalogManifestLoader {
     private void requireItem(
             AuthoritativeSkuCatalogManifest.Item item,
             Set<String> codes,
-            Set<Integer> allSourceRows,
-            Set<String> matchedNames) {
+            Set<Integer> allSourceRows) {
         if (item == null
                 || item.jdCode() == null
                 || !item.jdCode().matches("EMG\\d+")
@@ -164,23 +161,11 @@ final class AuthoritativeSkuCatalogManifestLoader {
             }
         }
 
-        boolean priced = item.purchasePrice() != null || item.retailPrice() != null;
-        if (priced) {
-            if (item.purchasePrice() == null
-                    || item.retailPrice() == null
-                    || blank(item.priceMatchName())
-                    || item.priceSourceRow() == null
-                    || item.priceSourceRow() < 2
-                    || item.priceSourceRow() > 42
-                    || item.sourceRows().stream()
-                            .noneMatch(row -> item.priceMatchName().equals(row.caishixianName()))
-                    || !matchedNames.add(item.priceMatchName())) {
-                throw invalid("权威京东商品 manifest 的精确价格匹配无效");
-            }
-            SkuCommercialPrice.parse(item.purchasePrice(), "purchase_price");
-            SkuCommercialPrice.parse(item.retailPrice(), "retail_price");
-        } else if (item.priceMatchName() != null || item.priceSourceRow() != null) {
-            throw invalid("未定价商品不得携带价格匹配来源");
+        if (item.purchasePrice() != null
+                || item.retailPrice() != null
+                || item.priceMatchName() != null
+                || item.priceSourceRow() != null) {
+            throw invalid("权威京东商品 manifest 不得携带价格");
         }
     }
 

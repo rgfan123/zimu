@@ -15,8 +15,8 @@
   "expected": {
     "unique_jd_codes": 61,
     "duplicate_code_count": 2,
-    "price_matched_count": 27,
-    "unpriced_count": 34
+    "price_matched_count": 0,
+    "unpriced_count": 61
   },
   "excluded_sheets": [
     {
@@ -53,10 +53,10 @@
           "jd_name": "上脑肉片"
         }
       ],
-      "price_match_name": "子牧澳洲谷饲上脑牛肉片1KG*1",
-      "price_source_row": 2,
-      "purchase_price": "106.50",
-      "retail_price": "158.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -76,10 +76,10 @@
           "jd_name": "羊小腿"
         }
       ],
-      "price_match_name": "子牧羊小腿（羊腱子）500g*2",
-      "price_source_row": 14,
-      "purchase_price": "68.00",
-      "retail_price": "99.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -99,10 +99,10 @@
           "jd_name": "带骨羊肉块"
         }
       ],
-      "price_match_name": "子牧带骨羊肉块500g*2",
-      "price_source_row": 36,
-      "purchase_price": "95.00",
-      "retail_price": "149.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -122,10 +122,10 @@
           "jd_name": "羊排块（羊寸排）"
         }
       ],
-      "price_match_name": "子牧羊排块（羊寸排）500g*2",
-      "price_source_row": 15,
-      "purchase_price": "86.00",
-      "retail_price": "126.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -145,10 +145,10 @@
           "jd_name": "羊蝎子"
         }
       ],
-      "price_match_name": "子牧羊蝎子500g*2",
-      "price_source_row": 29,
-      "purchase_price": "68.00",
-      "retail_price": "78.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -168,10 +168,10 @@
           "jd_name": "带骨羊后腿块"
         }
       ],
-      "price_match_name": "子牧带骨羊后腿块500g*2",
-      "price_source_row": 12,
-      "purchase_price": "94.00",
-      "retail_price": "136.50",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -191,10 +191,10 @@
           "jd_name": "羊腿小切"
         }
       ],
-      "price_match_name": "子牧羊腿小切500g*2",
-      "price_source_row": 28,
-      "purchase_price": "106.00",
-      "retail_price": "139.50",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -214,10 +214,10 @@
           "jd_name": "羊肉块"
         }
       ],
-      "price_match_name": "子牧羊肉块500g*2",
-      "price_source_row": 10,
-      "purchase_price": "116.00",
-      "retail_price": "158.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -237,10 +237,10 @@
           "jd_name": "羊腿肉"
         }
       ],
-      "price_match_name": "子牧羊腿肉500g*2",
-      "price_source_row": 38,
-      "purchase_price": "118.00",
-      "retail_price": "168.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -283,10 +283,10 @@
           "jd_name": "新西兰羔羊羊颈排"
         }
       ],
-      "price_match_name": "子牧新西兰羔羊羊颈排1KG*1",
-      "price_source_row": 30,
-      "purchase_price": "98.00",
-      "retail_price": "116.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -305,10 +305,10 @@
           "jd_name": "新西兰羔羊肉卷"
         }
       ],
-      "price_match_name": "子牧新西兰羔羊肉卷200g*4",
-      "price_source_row": 5,
-      "purchase_price": "101.00",
-      "retail_price": "145.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": [
         "JUFUBAO_MAPPING_MISSING"
       ]
@@ -330,10 +330,10 @@
           "jd_name": "羊肉馅"
         }
       ],
-      "price_match_name": "子牧羊肉馅500g*2",
-      "price_source_row": 9,
-      "purchase_price": "78.00",
-      "retail_price": "99.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -362,10 +362,10 @@
           "jd_name": "小龙坎肉类6拼1200g"
         }
       ],
-      "price_match_name": "小龙坎火锅拼盘（肉类6拼）1.2KG",
-      "price_source_row": 25,
-      "purchase_price": "99.00",
-      "retail_price": "152.25",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": [
         "DUPLICATE_JD_CODE",
         "CAISHIXIAN_MAPPING_MISSING",
@@ -389,10 +389,10 @@
           "jd_name": "羊棒骨"
         }
       ],
-      "price_match_name": "子牧羊棒骨500g*2",
-      "price_source_row": 11,
-      "purchase_price": "74.00",
-      "retail_price": "79.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": [
         "CHANNEL_QUANTITY_DIFFERS"
       ]
@@ -508,10 +508,10 @@
           "jd_name": "上脑牛排"
         }
       ],
-      "price_match_name": "子牧澳洲原切谷饲上脑牛排150g*4",
-      "price_source_row": 35,
-      "purchase_price": "84.00",
-      "retail_price": "128.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -531,10 +531,10 @@
           "jd_name": "牛肋条"
         }
       ],
-      "price_match_name": "子牧牛肋条500g*2",
-      "price_source_row": 41,
-      "purchase_price": "126.00",
-      "retail_price": "128.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -554,10 +554,10 @@
           "jd_name": "牛腩块（500g）"
         }
       ],
-      "price_match_name": "子牧牛腩块500g*2",
-      "price_source_row": 37,
-      "purchase_price": "96.00",
-      "retail_price": "108.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -600,10 +600,10 @@
           "jd_name": "牛肉饼（1.2kg)"
         }
       ],
-      "price_match_name": "子牧进口谷饲牛肉饼1.2KG*1",
-      "price_source_row": 3,
-      "purchase_price": "109.50",
-      "retail_price": "158.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -623,10 +623,10 @@
           "jd_name": "牛肋排"
         }
       ],
-      "price_match_name": "子牧澳洲谷饲牛肋排400g*2",
-      "price_source_row": 27,
-      "purchase_price": "102.00",
-      "retail_price": "109.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -646,10 +646,10 @@
           "jd_name": "筋头巴脑（500g)"
         }
       ],
-      "price_match_name": "子牧筋头巴脑（牛肉筋）500g*2",
-      "price_source_row": 8,
-      "purchase_price": "94.00",
-      "retail_price": "138.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -739,10 +739,10 @@
           "jd_name": "牛肉馅"
         }
       ],
-      "price_match_name": "子牧牛肉馅500g*2",
-      "price_source_row": 32,
-      "purchase_price": "88.00",
-      "retail_price": "108.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -761,10 +761,10 @@
           "jd_name": "原切西冷牛排"
         }
       ],
-      "price_match_name": "子牧原切西冷牛排150g*4",
-      "price_source_row": 7,
-      "purchase_price": "88.00",
-      "retail_price": "118.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": [
         "JUFUBAO_MAPPING_MISSING"
       ]
@@ -786,10 +786,10 @@
           "jd_name": "原切眼肉牛排"
         }
       ],
-      "price_match_name": "子牧原切眼肉牛排150g*4",
-      "price_source_row": 40,
-      "purchase_price": "92.00",
-      "retail_price": "118.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -834,10 +834,10 @@
           "jd_name": "M8-9和牛上脑片"
         }
       ],
-      "price_match_name": "子牧M8-9和牛上脑烤肉片150*2",
-      "price_source_row": 4,
-      "purchase_price": "96.00",
-      "retail_price": "138.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": [
         "CHANNEL_QUANTITY_DIFFERS"
       ]
@@ -859,10 +859,10 @@
           "jd_name": "牛后腿肉"
         }
       ],
-      "price_match_name": "子牧牛腿肉500g*2",
-      "price_source_row": 39,
-      "purchase_price": "112.00",
-      "retail_price": "128.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {
@@ -891,10 +891,10 @@
           "jd_name": "小龙坎毛肚4拼800g"
         }
       ],
-      "price_match_name": "小龙坎火锅拼盘（毛肚4拼）800g",
-      "price_source_row": 26,
-      "purchase_price": "58.00",
-      "retail_price": "108.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": [
         "DUPLICATE_JD_CODE",
         "CAISHIXIAN_MAPPING_MISSING",
@@ -918,10 +918,10 @@
           "jd_name": "牛腱子（谷饲牛腱子）"
         }
       ],
-      "price_match_name": "子牧牛腱子(谷饲牛腱子)500g*2",
-      "price_source_row": 33,
-      "purchase_price": "118.00",
-      "retail_price": "138.00",
+      "price_match_name": null,
+      "price_source_row": null,
+      "purchase_price": null,
+      "retail_price": null,
       "mapping_difference_codes": []
     },
     {

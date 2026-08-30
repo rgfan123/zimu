@@ -2208,7 +2208,8 @@ paths:
       description: >-
         Idempotently imports the repository-pinned authoritative JD SKU catalog
         into Product, SKU, and ProviderSku master data. The operation performs a
-        full fail-before-write drift check and never calls a JD write API.
+        full fail-before-write drift check, never writes SKU prices, and never
+        calls a JD write API.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/Operator'
@@ -7246,15 +7247,13 @@ components:
         jd_names: { type: array, items: { type: string } }
     AuthoritativeSkuCatalogPricedItem:
       type: object
-      required: [jd_code, canonical_name, source_rows, price_match_name, price_source_row, purchase_price, retail_price]
+      required: [jd_code, canonical_name, source_rows, price_match_name, price_source_row]
       properties:
         jd_code: { type: string }
         canonical_name: { type: string }
         source_rows: { type: array, items: { type: integer, minimum: 2 } }
         price_match_name: { type: string }
         price_source_row: { type: integer, minimum: 2 }
-        purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
-        retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
     AuthoritativeSkuCatalogUnpricedItem:
       type: object
       required: [jd_code, canonical_name, source_rows]

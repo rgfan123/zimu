@@ -11,7 +11,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
-import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -76,18 +75,12 @@ class AuthoritativeSkuCatalogImportApiTest {
                 .containsEntry("reused_skus", 0)
                 .containsEntry("reused_provider_skus", 0);
         assertThat((List<?>) first.getBody().get("duplicate_codes")).hasSize(2);
-        assertThat((List<?>) first.getBody().get("priced_items")).hasSize(27);
-        assertThat((List<?>) first.getBody().get("unpriced_items")).hasSize(34);
+        assertThat((List<?>) first.getBody().get("priced_items")).isEmpty();
+        assertThat((List<?>) first.getBody().get("unpriced_items")).hasSize(61);
         assertThat((List<?>) first.getBody().get("excluded_sheets")).hasSize(3);
         assertThat(((List<Map<String, Object>>) first.getBody().get("unpriced_items")).stream()
                         .map(item -> item.get("jd_code")))
                 .contains("EMG4418819504770", "EMG4418767478832");
-        assertThat((List<Map<String, Object>>) first.getBody().get("priced_items"))
-                .anySatisfy(item -> assertThat(item)
-                        .containsEntry("jd_code", "EMG4418727174451")
-                        .containsEntry("price_match_name", "子牧澳洲谷饲上脑牛肉片1KG*1")
-                        .containsEntry("purchase_price", "106.50")
-                        .containsEntry("retail_price", "158.00"));
 
         ResponseEntity<Map> replay = importCatalog(
                 "authoritative-catalog-import-001", "req-authoritative-catalog-import-001");
@@ -151,21 +144,22 @@ class AuthoritativeSkuCatalogImportApiTest {
         assertSkuCategory(importedSkus, "A5", categoryIds.get("CAT-BEEF"));
         assertSkuCategory(importedSkus, "板健", categoryIds.get("CAT-BEEF"));
         assertSkuCategory(importedSkus, "黄金六两120g", categoryIds.get("CAT-PORK"));
-        assertThat(importedSkus.stream().filter(hasPrice()).toList()).hasSize(27);
-        assertThat(importedSkus.stream().filter(hasPrice().negate()).toList()).hasSize(34);
-        String pricedExampleSkuId = attributes(importedMappings.stream()
+        assertThat(importedSkus).allSatisfy(sku -> assertThat(attributes(sku))
+                .containsEntry("purchase_price", null)
+                .containsEntry("retail_price", null));
+        String catalogExampleSkuId = attributes(importedMappings.stream()
                 .filter(mapping -> "EMG4418727174451".equals(mapping.get("code")))
                 .findFirst()
                 .orElseThrow()).get("sku_id").toString();
-        Map<String, Object> pricedExample = importedSkus.stream()
-                .filter(sku -> pricedExampleSkuId.equals(sku.get("id").toString()))
+        Map<String, Object> catalogExample = importedSkus.stream()
+                .filter(sku -> catalogExampleSkuId.equals(sku.get("id").toString()))
                 .findFirst()
                 .orElseThrow();
-        assertThat(pricedExample.get("name")).isEqualTo("上脑肉片");
-        assertThat(attributes(pricedExample))
+        assertThat(catalogExample.get("name")).isEqualTo("上脑肉片");
+        assertThat(attributes(catalogExample))
                 .containsEntry("specification", "1kg")
-                .containsEntry("purchase_price", "106.50")
-                .containsEntry("retail_price", "158.00");
+                .containsEntry("purchase_price", null)
+                .containsEntry("retail_price", null);
         assertThat(importedSkus).allSatisfy(sku -> assertThat(attributes(sku).get("specification").toString())
                 .doesNotStartWith("京东商品编号 "));
 
@@ -179,8 +173,8 @@ class AuthoritativeSkuCatalogImportApiTest {
         assertThat(auditedReport)
                 .containsEntry("manifest_sha256", first.getBody().get("manifest_sha256"))
                 .containsEntry("unique_jd_code_count", 61)
-                .containsEntry("price_matched_count", 27)
-                .containsEntry("unpriced_count", 34)
+                .containsEntry("price_matched_count", 0)
+                .containsEntry("unpriced_count", 61)
                 .containsEntry("created_products", 61)
                 .containsEntry("created_skus", 61)
                 .containsEntry("created_provider_skus", 61)
@@ -278,20 +272,27 @@ class AuthoritativeSkuCatalogImportApiTest {
         assertThat(patch.get(5, TimeUnit.SECONDS).getStatusCode()).isEqualTo(HttpStatus.OK);
         ResponseEntity<Map> importResult = importAttempt.get(5, TimeUnit.SECONDS);
         rowLock.get(5, TimeUnit.SECONDS);
+        assertThat(importWaitedForCatalogWrite).isTrue();
+        assertThat(importResult.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Map<String, Object> unchanged = http.getForObject("/api/v1/skus/" + skuId, Map.class);
+        assertThat(attributes(unchanged))
+                .containsEntry("purchase_price", "777.00")
+                .containsEntry("retail_price", "777.00");
+
+        Map<String, Object> restorePatch = new LinkedHashMap<>();
+        restorePatch.put("expected_version", 1);
+        restorePatch.put("purchase_price", null);
+        restorePatch.put("retail_price", null);
         ResponseEntity<Map> restored = patchSku(
                 skuId,
-                Map.of("expected_version", 1, "purchase_price", "95.00", "retail_price", "149.00"),
+                restorePatch,
                 "authoritative-catalog-concurrent-restore",
                 "req-authoritative-catalog-concurrent-restore");
         assertThat(restored.getStatusCode()).isEqualTo(HttpStatus.OK);
-
-        assertThat(importWaitedForCatalogWrite).isTrue();
-        assertThat(importResult.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(importResult.getBody()).containsEntry("business_code", "AUTHORITATIVE_CATALOG_DRIFT");
     }
 
     @Test
-    @Order(4)
+    @Order(5)
     void rejectsExistingCatalogDriftBeforeApplyingAnyRepairCandidate() {
         ResponseEntity<Map> imported = importCatalog(
                 "authoritative-catalog-drift-base", "req-authoritative-catalog-drift-base");
@@ -303,22 +304,17 @@ class AuthoritativeSkuCatalogImportApiTest {
         String repairCandidateSku = attributes(mappingsByCode.get("EMG4418727174451")).get("sku_id").toString();
         String conflictingSku = attributes(mappingsByCode.get("EMG4418691851778")).get("sku_id").toString();
 
-        Map<String, Object> clearPatch = new LinkedHashMap<>();
-        clearPatch.put("expected_version", 0);
-        clearPatch.put("purchase_price", null);
-        clearPatch.put("retail_price", null);
-        ResponseEntity<Map> cleared = patchSku(
+        ResponseEntity<Map> repairable = patchSku(
                 repairCandidateSku,
-                clearPatch,
-                "authoritative-catalog-clear-price", "req-authoritative-catalog-clear-price");
-        assertThat(cleared.getStatusCode()).isEqualTo(HttpStatus.OK);
-        Map<String, Object> conflictPatch = new LinkedHashMap<>();
-        conflictPatch.put("expected_version", 0);
-        conflictPatch.put("purchase_price", "999.00");
-        conflictPatch.put("retail_price", "999.00");
+                Map.of("expected_version", 0, "specification", "京东商品编号 EMG4418727174451"),
+                "authoritative-catalog-legacy-specification",
+                "req-authoritative-catalog-legacy-specification");
+        assertThat(repairable.getStatusCode()).isEqualTo(HttpStatus.OK);
         ResponseEntity<Map> drifted = patchSku(
-                conflictingSku, conflictPatch,
-                "authoritative-catalog-conflicting-price", "req-authoritative-catalog-conflicting-price");
+                conflictingSku,
+                Map.of("expected_version", 0, "specification", "冲突规格"),
+                "authoritative-catalog-conflicting-specification",
+                "req-authoritative-catalog-conflicting-specification");
         assertThat(drifted.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         ResponseEntity<Map> rejected = importCatalog(
@@ -329,8 +325,7 @@ class AuthoritativeSkuCatalogImportApiTest {
         Map<String, Object> unchangedCandidate = http.getForObject(
                 "/api/v1/skus/" + repairCandidateSku, Map.class);
         assertThat(attributes(unchangedCandidate))
-                .containsEntry("purchase_price", null)
-                .containsEntry("retail_price", null);
+                .containsEntry("specification", "京东商品编号 EMG4418727174451");
     }
 
     private void assertCoverage(Map body) {
@@ -340,8 +335,8 @@ class AuthoritativeSkuCatalogImportApiTest {
                 .containsEntry("catalog_row_count", 63)
                 .containsEntry("unique_jd_code_count", 61)
                 .containsEntry("duplicate_code_count", 2)
-                .containsEntry("price_matched_count", 27)
-                .containsEntry("unpriced_count", 34);
+                .containsEntry("price_matched_count", 0)
+                .containsEntry("unpriced_count", 61);
     }
 
     private ResponseEntity<Map> importCatalog(String idempotencyKey, String requestId) {
@@ -384,11 +379,6 @@ class AuthoritativeSkuCatalogImportApiTest {
                 path + separator + "page=0&size=" + size, Map.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         return (List<Map<String, Object>>) response.getBody().get("items");
-    }
-
-    private static Predicate<Map<String, Object>> hasPrice() {
-        return sku -> attributes(sku).get("purchase_price") != null
-                && attributes(sku).get("retail_price") != null;
     }
 
     private static Map<String, Object> attributes(Map<String, Object> value) {

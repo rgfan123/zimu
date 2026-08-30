@@ -18,7 +18,6 @@ import cn.zimu.fulfillment.sku.FulfillmentProviderRepository;
 import cn.zimu.fulfillment.sku.ProviderSku;
 import cn.zimu.fulfillment.sku.ProviderSkuRepository;
 import cn.zimu.fulfillment.sku.Sku;
-import cn.zimu.fulfillment.sku.SkuCommercialPrice;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -242,32 +241,6 @@ public class AuthoritativeSkuCatalogImportService {
             drift.add(new Drift(item.jdCode(), "provider_sku.sku", "valid SKU", null));
         }
 
-        BigDecimal purchasePrice = SkuCommercialPrice.parse(item.purchasePrice(), "purchase_price");
-        BigDecimal retailPrice = SkuCommercialPrice.parse(item.retailPrice(), "retail_price");
-        boolean updatePrices = false;
-        if (sku != null) {
-            boolean purchaseCompatible = compatiblePrice(purchasePrice, sku.getPurchasePrice());
-            boolean retailCompatible = compatiblePrice(retailPrice, sku.getRetailPrice());
-            if (!purchaseCompatible) {
-                drift.add(new Drift(
-                        item.jdCode(),
-                        "sku.purchase_price",
-                        SkuCommercialPrice.text(purchasePrice),
-                        SkuCommercialPrice.text(sku.getPurchasePrice())));
-            }
-            if (!retailCompatible) {
-                drift.add(new Drift(
-                        item.jdCode(),
-                        "sku.retail_price",
-                        SkuCommercialPrice.text(retailPrice),
-                        SkuCommercialPrice.text(sku.getRetailPrice())));
-            }
-            updatePrices = purchaseCompatible
-                    && retailCompatible
-                    && ((purchasePrice != null && sku.getPurchasePrice() == null)
-                            || (retailPrice != null && sku.getRetailPrice() == null));
-        }
-
         Map<String, Object> mergedMetadata = mapping == null
                 ? metadata(item, loaded, Map.of(), drift)
                 : metadata(item, loaded, mapping.getExternalCodes(), drift);
@@ -277,11 +250,8 @@ public class AuthoritativeSkuCatalogImportService {
                 product,
                 sku,
                 mapping,
-                purchasePrice,
-                retailPrice,
                 categoryDefinition.code(),
                 updateProductCategory,
-                updatePrices,
                 updateSpecification,
                 mergedMetadata,
                 updateMapping);
@@ -324,20 +294,12 @@ public class AuthoritativeSkuCatalogImportService {
                 sku.setFulfillmentProviderId(plan.provider().getId());
                 sku.setSpecification(specification(itemPlan.item()));
                 sku.setUnit(UNIT);
-                sku.setPurchasePrice(itemPlan.purchasePrice());
-                sku.setRetailPrice(itemPlan.retailPrice());
                 sku = skus.saveAndFlush(sku);
                 counters.createdSkus++;
             } else {
                 counters.reusedSkus++;
-                if (itemPlan.updatePrices() || itemPlan.updateSpecification()) {
-                    if (itemPlan.updatePrices()) {
-                        sku.setPurchasePrice(itemPlan.purchasePrice());
-                        sku.setRetailPrice(itemPlan.retailPrice());
-                    }
-                    if (itemPlan.updateSpecification()) {
-                        sku.setSpecification(specification(itemPlan.item()));
-                    }
+                if (itemPlan.updateSpecification()) {
+                    sku.setSpecification(specification(itemPlan.item()));
                     skus.save(sku);
                     counters.updatedSkus++;
                 }
@@ -387,9 +349,7 @@ public class AuthoritativeSkuCatalogImportService {
                         item.canonicalName(),
                         sourceRows(item),
                         item.priceMatchName(),
-                        item.priceSourceRow(),
-                        item.purchasePrice(),
-                        item.retailPrice()))
+                        item.priceSourceRow()))
                 .toList();
         List<AuthoritativeSkuCatalogImportReport.MappingDifference> mappingDifferences = manifest.items().stream()
                 .filter(item -> !item.mappingDifferenceCodes().isEmpty())
@@ -457,8 +417,6 @@ public class AuthoritativeSkuCatalogImportService {
                 drift, item.jdCode(), result, "price_source_sha256", loaded.manifest().priceSource().sha256());
         requireMetadataValue(drift, item.jdCode(), result, "catalog_manifest_sha256", loaded.contentSha256());
         requireMetadataValue(drift, item.jdCode(), result, "source_rows", sourceRows(item));
-        requireMetadataValue(drift, item.jdCode(), result, "price_match_name", item.priceMatchName());
-        requireMetadataValue(drift, item.jdCode(), result, "price_source_row", item.priceSourceRow());
         requireMetadataValue(
                 drift, item.jdCode(), result, "mapping_difference_codes", item.mappingDifferenceCodes());
 
@@ -480,8 +438,6 @@ public class AuthoritativeSkuCatalogImportService {
         result.put("price_source_sha256", loaded.manifest().priceSource().sha256());
         result.put("catalog_manifest_sha256", loaded.contentSha256());
         result.put("source_rows", sourceRows(item));
-        result.put("price_match_name", item.priceMatchName());
-        result.put("price_source_row", item.priceSourceRow());
         result.put("mapping_difference_codes", item.mappingDifferenceCodes());
         return result;
     }
@@ -496,11 +452,6 @@ public class AuthoritativeSkuCatalogImportService {
             drift.add(new Drift(
                     jdCode, "provider_sku.external_codes." + field, expected, existing.get(field)));
         }
-    }
-
-    private static boolean compatiblePrice(BigDecimal expected, BigDecimal actual) {
-        if (expected == null) return actual == null;
-        return actual == null || expected.compareTo(actual) == 0;
     }
 
     private static void compare(
@@ -597,11 +548,8 @@ public class AuthoritativeSkuCatalogImportService {
             Product product,
             Sku sku,
             ProviderSku mapping,
-            BigDecimal purchasePrice,
-            BigDecimal retailPrice,
             String categoryCode,
             boolean updateProductCategory,
-            boolean updatePrices,
             boolean updateSpecification,
             Map<String, Object> mergedMetadata,
             boolean updateMapping) {}
