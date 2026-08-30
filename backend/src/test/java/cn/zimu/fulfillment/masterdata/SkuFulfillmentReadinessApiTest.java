@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.masterdata;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import cn.zimu.fulfillment.seed.SeedDataInitializer;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -10,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -34,6 +36,61 @@ class SkuFulfillmentReadinessApiTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private SeedDataInitializer seedDataInitializer;
+
+    @Test
+    void legacySampleSeedIsIdempotentlyUpgradedWithoutOverwritingReusableIdentity() {
+        long skuId = jdbc.queryForObject(
+                """
+                SELECT s.id
+                FROM app.skus s
+                JOIN app.products p ON p.id=s.product_id
+                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
+                WHERE p.product_code='PROD-LAMBLEG' AND fp.provider_code='JD'
+                """,
+                Long.class);
+        jdbc.update(
+                """
+                UPDATE app.skus
+                SET net_content_value=NULL, net_content_unit=NULL,
+                    package_count=NULL, package_unit=NULL
+                WHERE id=?
+                """,
+                skuId);
+        jdbc.update(
+                """
+                UPDATE app.provider_skus
+                SET external_codes=external_codes-'jd_pieces_per_unit'
+                WHERE sku_id=?
+                """,
+                skuId);
+
+        seedDataInitializer.run(new DefaultApplicationArguments(new String[0]));
+
+        assertThat(jdbc.queryForMap(
+                        """
+                        SELECT net_content_value::text AS net_content_value,
+                               net_content_unit, package_count, package_unit
+                        FROM app.skus WHERE id=?
+                        """,
+                        skuId))
+                .containsEntry("net_content_value", "500.000")
+                .containsEntry("net_content_unit", "g")
+                .containsEntry("package_count", 1)
+                .containsEntry("package_unit", "盒");
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT external_codes->>'jd_pieces_per_unit'
+                        FROM app.provider_skus WHERE sku_id=?
+                        """,
+                        String.class,
+                        skuId))
+                .isEqualTo("1");
+        Map<String, Object> detail = http.getForObject("/api/v1/skus/" + skuId, Map.class);
+        assertThat(readiness(detail)).containsEntry("ready", true);
+    }
 
     @Test
     void listAndDetailExposeTheSameStableMultiReasonReadinessWithoutChangingActive() {

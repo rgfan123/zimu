@@ -29,6 +29,7 @@ import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
 import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
+import cn.zimu.fulfillment.sku.SourceSkuRefPolicy;
 import jakarta.persistence.EntityManager;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -217,6 +218,7 @@ public class ReviewCaseResolutionService {
                 throw BusinessException.unprocessable("SKU_INACTIVE", "只能引用已启用的 SKU 主数据");
             }
             BigDecimal multiplier = new BigDecimal(command.quantityMultiplier()).setScale(3, RoundingMode.UNNECESSARY);
+            SourceSkuRefPolicy.requireReusable(command.sourceSkuRef());
 
             sourceSkuMappings
                     .findBySourceChannelAndSourceSkuRef(command.sourceChannel(), command.sourceSkuRef())

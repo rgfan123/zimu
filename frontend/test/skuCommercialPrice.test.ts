@@ -86,6 +86,15 @@ test('OpenAPI 公开统一 SKU 履约就绪结果与原因筛选', () => {
   assert.match(skuListPath, /^        - name: readiness_reason$/m);
 });
 
+test('共享 CanonicalOrder JSON 不暴露草稿确认专用 sku_id 能力', () => {
+  const openApi = readFileSync(
+    fileURLToPath(new URL('../../docs/openapi.yaml', import.meta.url)),
+    'utf8',
+  );
+  const orderItem = openApiSchemaBlock(openApi, 'OrderItemInput');
+  assert.doesNotMatch(orderItem, /^        sku_id:/m);
+});
+
 test('商业价格只接受非负且最多两位小数的 decimal string', () => {
   for (const value of ['0', '0.00', '12', '12.3', '12.30', '999999999999.99']) {
     assert.equal(COMMERCIAL_PRICE_PATTERN.test(value), true, value);

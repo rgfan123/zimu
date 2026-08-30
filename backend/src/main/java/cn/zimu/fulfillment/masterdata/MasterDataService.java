@@ -56,6 +56,7 @@ import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SkuWrite;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
 import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
+import cn.zimu.fulfillment.sku.SourceSkuRefPolicy;
 import cn.zimu.fulfillment.sku.SourceSkuMappingPatch;
 import cn.zimu.fulfillment.sku.SourceSkuMappingWrite;
 import java.math.BigDecimal;
@@ -784,6 +785,7 @@ public class MasterDataService {
     public IdempotentResult<MasterDataRecord> createSourceMapping(
             SourceSkuMappingWrite input, String key, CommandContext ctx) {
         return write("source_sku_mapping.create", key, input, CREATED, ctx, () -> {
+            SourceSkuRefPolicy.requireReusable(input.sourceSkuRef());
             if (sourceMappings.existsBySourceChannelAndSourceSkuRef(input.sourceChannel(), input.sourceSkuRef())) {
                 throw BusinessException.conflict("SOURCE_SKU_MAPPING_EXISTS", "来源 SKU 映射已存在");
             }
@@ -808,6 +810,12 @@ public class MasterDataService {
             SourceChannelSku value = sourceMappings.findById(id)
                     .orElseThrow(() -> BusinessException.notFound("来源 SKU 映射不存在"));
             version(value.getLockVersion(), input.expectedVersion());
+            boolean deactivationOnly = input.skuId() == null
+                    && input.quantityMultiplier() == null
+                    && Boolean.FALSE.equals(input.active());
+            if (!deactivationOnly) {
+                SourceSkuRefPolicy.requireReusable(value.getSourceSkuRef());
+            }
             if (input.skuId() != null) {
                 long skuId = WriteCommands.parseIdentifier(input.skuId());
                 requireSku(skuId);
