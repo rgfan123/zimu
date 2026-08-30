@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "af0b58c0691b84120f99e03fe4fd7a73f3963d9b",
+  "sources": [
+    {
+      "id": "remaining-wecom-tail",
+      "branch": "jry/wecom-card-closed-loop",
+      "expected_head": "46ea5e1c98c19d654938187943165ecd5f7ce166",
+      "expected_status": {
+        "staged": 0,
+        "unstaged": 0,
+        "untracked": 1
+      },
+      "disposition": "include_committed"
+    },
+    {
+      "id": "source-bundle-resolution",
+      "branch": "worktree-agent-aa4c1e4557940246d",
+      "expected_head": "1014ece4fac73f94c1880c7bf199a941ac0203da",
+      "expected_status": {
+        "staged": 0,
+        "unstaged": 8,
+        "untracked": 3
+      },
+      "disposition": "rescue_uncommitted"
+    },
+    {
+      "id": "product-ops-sku-search",
+      "branch": "jry/product-ops-mcp",
+      "expected_head": "8e2ca85c6b294acf8d5ca7ca77bc20d476106969",
+      "expected_status": {
+        "staged": 0,
+        "unstaged": 6,
+        "untracked": 1
+      },
+      "disposition": "rescue_uncommitted"
+    },
+    {
+      "id": "bundle-read-tools",
+      "branch": "jry/bundle-mcp-read",
+      "expected_head": "0e1c2a417c33085de6c831878cc6e97b948727cc",
+      "expected_status": {
+        "staged": 0,
+        "unstaged": 3,
+        "untracked": 4
+      },
+      "disposition": "rescue_uncommitted"
+    },
+    {
+      "id": "agent-public-mcp-split",
+      "branch": "jry/mcp-surface-split",
+      "expected_head": "2b817fdbe7fc4daba24515a94a50785370fca582",
+      "expected_status": {
+        "staged": 0,
+        "unstaged": 21,
+        "untracked": 0
+      },
+      "disposition": "rescue_uncommitted"
+    }
+  ],
+  "deferred_sources": [
+    {
+      "id": "active-sku-masterdata-repair",
+      "branch": "codex/sku-masterdata-repair",
+      "reason": "active_development_migrated_by_maintainer_after_convergence"
+    },
+    {
+      "id": "active-integration-increments",
+      "branch": "jry/integration-20260828",
+      "reason": "moving_source_after_frozen_baseline"
+    }
+  ],
+  "excluded_sources": [
+    {
+      "id": "legacy-feixiang-v33-v35",
+      "reason": "superseded_architecture"
+    },
+    {
+      "id": "legacy-jufubao-partial",
+      "reason": "superseded_partial_implementation"
+    },
+    {
+      "id": "mixed-ui-prototypes",
+      "reason": "multi_topic_or_throwaway_prototype"
+    },
+    {
+      "id": "orphan-and-dataless-worktrees",
+      "reason": "requires_separate_data_rescue"
+    }
+  ]
+}

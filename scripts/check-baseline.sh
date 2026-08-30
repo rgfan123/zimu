@@ -25,6 +25,16 @@
 
 set -euo pipefail
 
+if [ "${1:-}" = "--ledger" ]; then
+    script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+    exec python3 "$script_dir/workspace_convergence.py" "$@"
+fi
+
+if [ "$#" -ne 0 ]; then
+    echo "用法：bash scripts/check-baseline.sh [--ledger FILE --target WORKTREE [--json]]" >&2
+    exit 2
+fi
+
 root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$root" ]; then
     echo "❌ 当前目录不在 git 仓库里" >&2

@@ -4,11 +4,10 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] 门禁能拒绝与开发历史无共同祖先的镜像线，并接受冻结基线所在的开发线。
-- [ ] 来源账本记录本轮包含、适配、排除和待维护者迁移的来源身份，不保存凭据或原始 diff。
-- [ ] staged、unstaged、相关 untracked、进行中 Git 操作和状态未知分别报告。
-- [ ] 扫描前后来源 HEAD 或状态身份变化时返回受保护/未知，不输出伪稳定结论。
-- [ ] 临时真实 Git 仓库测试证明门禁不会修改 refs、index 或工作树内容。
-
+- [x] 门禁能拒绝与开发历史无共同祖先的镜像线，并接受冻结基线所在的开发线。
+- [x] 来源账本记录本轮包含、适配、排除和待维护者迁移的来源身份，不保存凭据或原始 diff。
+- [x] staged、unstaged、相关 untracked、进行中 Git 操作和状态未知分别报告。
+- [x] 扫描前后来源 HEAD 或状态身份变化时返回受保护/未知，不输出伪稳定结论。
+- [x] 临时真实 Git 仓库测试证明门禁不会修改 refs、index 或工作树内容。
