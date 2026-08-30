@@ -5,7 +5,6 @@ import {
   buildProductUpdateBody,
   leadTimeLabel,
   listingPeriodLabel,
-  marginLabel,
   normalizeTags,
 } from '../src/pages/product/productArchiveFields.ts';
 
@@ -38,9 +37,6 @@ test('product archive create body keeps filled fields and drops empty ones', () 
     listed_from: '2026-09-01',
     listed_until: '2026-11-30',
     lead_time_hours: 48,
-    purchase_price: '12.30',
-    retail_price: '19.90',
-    other_cost: '1.00',
     main_image_ref: 'product-images/abc.png',
     active: true,
   });
@@ -85,8 +81,6 @@ test('product archive update body distinguishes untouched, cleared and set field
     listed_from: null,
     listed_until: null,
     lead_time_hours: null,
-    purchase_price: null,
-    retail_price: '25.00',
     main_image_ref: null,
   });
 });
@@ -103,10 +97,7 @@ test('product archive update body only fills start of the listing period', () =>
   });
 });
 
-test('product archive display formatters cover unpriced margin and hours', () => {
-  assert.equal(marginLabel('6.60'), '¥6.60');
-  assert.equal(marginLabel(undefined), '未定价');
-  assert.equal(marginLabel(null), '未定价');
+test('product archive display formatters cover hours and listing periods', () => {
   assert.equal(leadTimeLabel(48), '48小时内发货');
   assert.equal(leadTimeLabel(undefined), '—');
   assert.equal(listingPeriodLabel('2026-09-01', '2026-11-30'), '2026-09-01 ~ 2026-11-30');

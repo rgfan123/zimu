@@ -43,15 +43,6 @@ public final class ProductPatch {
     private Integer leadTimeHours;
     private boolean leadTimeHoursPresent;
 
-    private Object purchasePrice;
-    private boolean purchasePricePresent;
-
-    private Object retailPrice;
-    private boolean retailPricePresent;
-
-    private Object otherCost;
-    private boolean otherCostPresent;
-
     @Size(max = 512, message = "主图引用超长")
     private String mainImageRef;
     private boolean mainImageRefPresent;
@@ -138,36 +129,6 @@ public final class ProductPatch {
         this.leadTimeHoursPresent = true;
     }
 
-    public Object purchasePrice() {
-        return purchasePrice;
-    }
-
-    @JsonSetter("purchase_price")
-    public void setPurchasePrice(Object purchasePrice) {
-        this.purchasePrice = purchasePrice;
-        this.purchasePricePresent = true;
-    }
-
-    public Object retailPrice() {
-        return retailPrice;
-    }
-
-    @JsonSetter("retail_price")
-    public void setRetailPrice(Object retailPrice) {
-        this.retailPrice = retailPrice;
-        this.retailPricePresent = true;
-    }
-
-    public Object otherCost() {
-        return otherCost;
-    }
-
-    @JsonSetter("other_cost")
-    public void setOtherCost(Object otherCost) {
-        this.otherCost = otherCost;
-        this.otherCostPresent = true;
-    }
-
     public String mainImageRef() {
         return mainImageRef;
     }
@@ -204,21 +165,6 @@ public final class ProductPatch {
     }
 
     @JsonIgnore
-    public boolean purchasePricePresent() {
-        return purchasePricePresent;
-    }
-
-    @JsonIgnore
-    public boolean retailPricePresent() {
-        return retailPricePresent;
-    }
-
-    @JsonIgnore
-    public boolean otherCostPresent() {
-        return otherCostPresent;
-    }
-
-    @JsonIgnore
     public boolean mainImageRefPresent() {
         return mainImageRefPresent;
     }
@@ -227,7 +173,6 @@ public final class ProductPatch {
     @JsonIgnore
     public boolean anyArchiveFieldPresent() {
         return ingredientsPresent || tagsPresent || listedFromPresent || listedUntilPresent
-                || leadTimeHoursPresent || purchasePricePresent || retailPricePresent || otherCostPresent
-                || mainImageRefPresent;
+                || leadTimeHoursPresent || mainImageRefPresent;
     }
 }

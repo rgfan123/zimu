@@ -25,7 +25,7 @@
 | **来源订单创建时间 SourceOrderedAt** | 渠道平台上的真实下单时刻（`orders.source_ordered_at`），与 `settlement_time`（结账/导出口径，历史上曾被导出 SQL 直接当下单时间用）分开。仅在来源明确提供下单时间的渠道（中汇/飞象/聚福宝）才有值；彩食鲜、大者 11 列往返表、万齐 52 列导出等模板源数据本就没有下单时间列，如实为空，不借用结算时间或导入时刻顶替；企业微信是人工创建渠道，同样没有这个概念。导出/卡片仍读 `COALESCE(source_ordered_at, settlement_time)`，兼容未回填的存量订单。 |
 | **商品 Product** | 对一组可履约规格的业务归类，例如“子牧羊小腿”；商品本身不承载包装规格、单位或履约方归属。 |
 | **商品品类 ProductCategory** | 商品按主要肉类或用途形成的业务分类，与来源平台、履约方和包装规格分离。当前权威目录使用牛肉、羊肉、猪肉、禽肉、其他肉类、混合组合、设备物料与待分类；只有商品名称或已确认别名提供明确证据时才归入具体肉类，否则保持待分类。 |
-| **商品毛利 ProductMargin** | 商品层零售价减去进货价与其他成本后的单位毛利额；只读派生值（零售价 − 进货价 − 其他成本），任一输入未填即视为未定价，不落库。 |
+| **SKU 毛利 SkuMargin** | SKU 层零售价减去进货价后的单位毛利额；只读派生值（`skus.retail_price − skus.purchase_price`），任一价格未填即视为未定价，不落库。 |
 | **门禁 AgentGate / 运行期守卫 AgentGuard** | 平台对 Agent 定义与输入的两类行为约束：门禁（`AgentGateEngine`）在草稿不可确认时给出六项阻断（结构完整性 / 工具白名单合法性 / 只读不变式 / output_schema 可解析 / 凭据扫描 / 越权指令扫描）+ PII 警告（仅高亮）；运行期守卫（`AgentGuard`）默认链 [PII 拒绝] 在模型调用前对输入判定，命中 → outcome=REJECTED 转人工、不进模型，`guard_exemptions` 可豁免（默认空 = 生效）。守卫是行为约束，与 MCP 权限（访问控制，07）互不替代。 |
 | **Agent 草稿 AgentDraft** | 受管 Agent 定义（`agent_definitions`）的 `draft` 状态行：由元 Agent（`meta-agent`）经 `create_agent_draft`/`update_agent_draft` 写工具创建/更新，全量快照 + 服务端校验 + 08 门禁，未经人工确认不可启用。与订单草稿（OrderDraft，客户订单语义）是不同概念；启用 = 确认（T11）。 |
 | **商品标签 ProductTag** | 商品档案上的自由多选文本标签，去重存储；已用标签可作为候选复用。 |

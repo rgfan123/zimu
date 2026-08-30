@@ -8,7 +8,6 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import org.hibernate.annotations.JdbcTypeCode;
@@ -51,16 +50,6 @@ public class Product extends AuditableEntity {
 
     @Column(name = "lead_time_hours")
     private Integer leadTimeHours;
-
-    /** 毛利 = 零售价 - 进货价 - 其他成本，读时计算，不落库。 */
-    @Column(name = "purchase_price", precision = 14, scale = 2)
-    private BigDecimal purchasePrice;
-
-    @Column(name = "retail_price", precision = 14, scale = 2)
-    private BigDecimal retailPrice;
-
-    @Column(name = "other_cost", precision = 14, scale = 2)
-    private BigDecimal otherCost;
 
     @Column(name = "main_image_ref")
     private String mainImageRef;
@@ -146,30 +135,6 @@ public class Product extends AuditableEntity {
 
     public void setLeadTimeHours(Integer leadTimeHours) {
         this.leadTimeHours = leadTimeHours;
-    }
-
-    public BigDecimal getPurchasePrice() {
-        return purchasePrice;
-    }
-
-    public void setPurchasePrice(BigDecimal purchasePrice) {
-        this.purchasePrice = purchasePrice;
-    }
-
-    public BigDecimal getRetailPrice() {
-        return retailPrice;
-    }
-
-    public void setRetailPrice(BigDecimal retailPrice) {
-        this.retailPrice = retailPrice;
-    }
-
-    public BigDecimal getOtherCost() {
-        return otherCost;
-    }
-
-    public void setOtherCost(BigDecimal otherCost) {
-        this.otherCost = otherCost;
     }
 
     public String getMainImageRef() {

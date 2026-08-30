@@ -20,7 +20,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** 商品档案新字段（票 01）：毛利计算、标签候选与字段校验。 */
+/** 商品档案字段（票 01）：标签候选与字段校验。 */
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class ProductArchiveFieldsApiTest {
@@ -33,16 +33,13 @@ class ProductArchiveFieldsApiTest {
     private TestRestTemplate http;
 
     @Test
-    void productArchiveFieldsRoundTripWithComputedMarginAndTagCandidates() {
+    void productArchiveFieldsRoundTripWithTagCandidates() {
         Map<String, Object> request = productRequest("P-ARCHIVE-01", "档案测试商品一");
         request.put("ingredients", "羔羊肉");
         request.put("tags", List.of("fresh", "preorder"));
         request.put("listed_from", "2026-09-01");
         request.put("listed_until", "2026-11-30");
         request.put("lead_time_hours", 48);
-        request.put("purchase_price", "12.30");
-        request.put("retail_price", "19.90");
-        request.put("other_cost", "1.00");
 
         ResponseEntity<Map> created = postProduct(request, "product-archive-create-001", "req-product-archive-create-001");
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -53,10 +50,7 @@ class ProductArchiveFieldsApiTest {
                 .containsEntry("listed_from", "2026-09-01")
                 .containsEntry("listed_until", "2026-11-30")
                 .containsEntry("lead_time_hours", 48)
-                .containsEntry("purchase_price", "12.30")
-                .containsEntry("retail_price", "19.90")
-                .containsEntry("other_cost", "1.00")
-                .containsEntry("margin", "6.60");
+                .doesNotContainKeys("purchase_price", "retail_price", "other_cost", "margin");
 
         String productId = created.getBody().get("id").toString();
         assertThat(http.getForEntity("/api/v1/products/" + productId, Map.class).getBody()).isEqualTo(created.getBody());
@@ -70,17 +64,8 @@ class ProductArchiveFieldsApiTest {
         assertThat(tags.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(tags.getBody()).containsExactly("fresh", "halal", "preorder");
 
-        Map<String, Object> patch = new LinkedHashMap<>();
-        patch.put("expected_version", 0);
-        patch.put("retail_price", "25.00");
-        ResponseEntity<Map> updated = patchProduct(
-                productId, patch, "product-archive-patch-001", "req-product-archive-patch-001");
-        assertThat(updated.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(updated.getBody().get("version")).isEqualTo(1);
-        assertThat(attributes(updated)).containsEntry("margin", "11.70");
-
         Map<String, Object> clear = new LinkedHashMap<>();
-        clear.put("expected_version", 1);
+        clear.put("expected_version", 0);
         clear.put("ingredients", null);
         clear.put("tags", null);
         clear.put("listed_until", null);
@@ -88,50 +73,39 @@ class ProductArchiveFieldsApiTest {
         ResponseEntity<Map> cleared = patchProduct(
                 productId, clear, "product-archive-clear-001", "req-product-archive-clear-001");
         assertThat(cleared.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(cleared.getBody().get("version")).isEqualTo(2);
+        assertThat(cleared.getBody().get("version")).isEqualTo(1);
         assertThat(attributes(cleared))
                 .containsEntry("ingredients", null)
                 .containsEntry("tags", null)
                 .containsEntry("listed_until", null)
                 .containsEntry("lead_time_hours", null)
                 .containsEntry("listed_from", "2026-09-01")
-                .containsEntry("margin", "11.70");
+                .doesNotContainKeys("purchase_price", "retail_price", "other_cost", "margin");
 
         Map<String, Object> clearOnlyTags = new LinkedHashMap<>();
-        clearOnlyTags.put("expected_version", 2);
+        clearOnlyTags.put("expected_version", 1);
         clearOnlyTags.put("tags", null);
         ResponseEntity<Map> clearedOnlyTags = patchProduct(
                 productId, clearOnlyTags, "product-archive-clear-002", "req-product-archive-clear-002");
         assertThat(clearedOnlyTags.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(clearedOnlyTags.getBody().get("version")).isEqualTo(1);
 
         ResponseEntity<Map> stale = patchProduct(
                 productId,
-                Map.of("expected_version", 1, "retail_price", "30.00"),
+                Map.of("expected_version", 0, "product_name", "过期版本商品名"),
                 "product-archive-stale-001",
                 "req-product-archive-stale-001");
         assertThat(stale.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(stale.getBody()).containsEntry("business_code", "VERSION_CONFLICT");
 
         ResponseEntity<Map> emptyPatch = patchProduct(
-                productId, Map.of("expected_version", 3), "product-archive-empty-001", "req-product-archive-empty-001");
+                productId, Map.of("expected_version", 1), "product-archive-empty-001", "req-product-archive-empty-001");
         assertThat(emptyPatch.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(emptyPatch.getBody()).containsEntry("business_code", "PATCH_EMPTY");
     }
 
     @Test
     void productArchiveFieldsRejectInvalidValuesWithFieldDiagnostics() {
-        int sequence = 0;
-        for (Object invalidPrice : List.of(-0.01, "-0.01", "1.234")) {
-            Map<String, Object> request = productRequest("P-INVALID-PRICE-" + sequence, "价格非法商品");
-            request.put("purchase_price", invalidPrice);
-            ResponseEntity<Map> rejected = postProduct(
-                    request, "product-archive-price-invalid-" + sequence, "req-product-archive-price-invalid-" + sequence);
-            assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-            assertThat(rejected.getBody()).containsEntry("business_code", "INVALID_COMMERCIAL_PRICE");
-            assertThat(fieldErrors(rejected)).anySatisfy(error -> assertThat(error.get("field")).isEqualTo("purchase_price"));
-            sequence++;
-        }
-
         Map<String, Object> reversed = productRequest("P-INVALID-ORDER", "上市周期倒置商品");
         reversed.put("listed_from", "2026-12-01");
         reversed.put("listed_until", "2026-09-01");
@@ -172,22 +146,6 @@ class ProductArchiveFieldsApiTest {
         assertThat(rejectedLongTag.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(rejectedLongTag.getBody()).containsEntry("business_code", "VALIDATION_ERROR");
         assertThat(fieldErrors(rejectedLongTag)).anySatisfy(error -> assertThat(error.get("field")).isEqualTo("tags[0]"));
-    }
-
-    @Test
-    void productMarginIsUnpricedUntilAllInputsArePresentAndSkuProjectionExposesProductArchiveAttributes() {
-        Map<String, Object> unpriced = productRequest("P-UNPRICED", "未定价商品");
-        unpriced.put("retail_price", "19.90");
-        ResponseEntity<Map> created = postProduct(unpriced, "product-archive-unpriced-001", "req-product-archive-unpriced-001");
-        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(attributes(created))
-                .containsEntry("retail_price", "19.90")
-                .containsEntry("purchase_price", null)
-                .containsEntry("margin", null);
-
-        Map<String, Object> skuPage = page("/api/v1/skus", 200);
-        assertThat((List<Map<String, Object>>) skuPage.get("items"))
-                .anySatisfy(item -> assertThat(attributes(item)).containsEntry("margin", null));
     }
 
     private Map<String, Object> productRequest(String productCode, String productName) {

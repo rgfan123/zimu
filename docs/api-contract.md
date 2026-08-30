@@ -247,6 +247,8 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 
 主数据不提供硬删除端点。已被订单快照引用的 Product/SKU/provider 不能改写历史。来源 SKU 映射的 `quantity_multiplier` 必须为正数；空值只能作为待复核主数据，不能进入自动履约。
 
+商品价格的唯一系统真源是 `app.skus.purchase_price / retail_price`，分别由成本核算表 AI「线下供货成本/份」与 AJ「售价」供数并允许人工覆盖；`app.product_archive_sheets` 只保留不可变导入快照。Product 的写入与读取投影不再包含 `purchase_price / retail_price / other_cost / margin`，因此 MCP `list_products` 同步少这四项。SKU 投影保留两价并返回 `margin = retail_price - purchase_price`，缺任一价格时 `margin=null`；SKU PATCH 可更新 `unit`，`expected_version` 乐观锁语义不变。
+
 Connector 配置分成两条互不替代的轴：`client_mode=MOCK|REAL` 控制在线接口是否调用真实外部 Client，`transport_mode=EXCEL|API` 控制文件接入或在线接口接入。当前三平台使用 `transport_mode=EXCEL`，因此 `client_mode` 不参与业务文件处理并默认 `MOCK`；隔离 Demo 也只用 Mock Adapter。后续拿到平台文档/凭据后，才允许切换为 `REAL + API`。
 
 ### 4.7 审计与数据中台

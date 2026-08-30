@@ -397,15 +397,13 @@ public class ZhonghuiPmsBatchUploadService {
 
     private GoodsCreateCommand buildCommand(Sku sku, Product product, String mainImageUrl, Overrides overrides) {
         ZhonghuiPmsProperties.Defaults defaults = properties.getDefaults();
-        BigDecimal goodsPrice = firstNonNull(
-                overrides.goodsPrice(), sku.getRetailPrice(), product.getRetailPrice());
-        BigDecimal supplyPrice = firstNonNull(
-                overrides.supplyPrice(), sku.getPurchasePrice(), product.getPurchasePrice());
+        BigDecimal goodsPrice = firstNonNull(overrides.goodsPrice(), sku.getRetailPrice());
+        BigDecimal supplyPrice = firstNonNull(overrides.supplyPrice(), sku.getPurchasePrice());
         if (goodsPrice == null) {
-            throw BusinessException.unprocessable("PRICE_MISSING", "商品缺少售价（SKU/商品档案零售价均未填写）");
+            throw BusinessException.unprocessable("PRICE_MISSING", "商品缺少售价（SKU 零售价未填写）");
         }
         if (supplyPrice == null) {
-            throw BusinessException.unprocessable("PRICE_MISSING", "商品缺少供货价（SKU/商品档案进货价均未填写）");
+            throw BusinessException.unprocessable("PRICE_MISSING", "商品缺少供货价（SKU 进货价未填写）");
         }
         String specification = sku.getSpecification() == null ? "" : sku.getSpecification().strip();
         String goodsName = goodsName(sku, product);

@@ -584,8 +584,6 @@ class ZhonghuiPmsBatchUploadServiceTest {
         when(product.getMainImageRef()).thenReturn(mainImageRef);
         when(product.getDescription()).thenReturn(description);
         when(product.getIngredients()).thenReturn(null);
-        when(product.getRetailPrice()).thenReturn(null);
-        when(product.getPurchasePrice()).thenReturn(null);
         return product;
     }
 }

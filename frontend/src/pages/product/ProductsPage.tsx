@@ -1,24 +1,23 @@
 /**
  * 主数据 · 商品（GET/POST /api/v1/products，PATCH /api/v1/products/{id}）。
  * 品类 ID 落在 MasterDataRecord.attributes.category_id（openapi 附加属性）；
- * 商品档案字段（毛利/标签/原料/上市周期/发货时效/主图）见 productArchiveFields.ts。
+ * 商品档案字段（标签/原料/上市周期/发货时效/主图）见 productArchiveFields.ts。
  */
 
 import { useEffect, useState } from 'react';
 import type { ColumnsType } from 'antd/es/table';
 import { Tag } from 'antd';
+import { Link } from 'react-router-dom';
 import MasterDataCrud, { attr, type CrudField } from '@/pages/shared/MasterDataCrud';
 import { MainImageThumb } from '@/pages/shared/MainImage';
 import { productsApi } from '@/api/endpoints';
 import type { MasterDataRecord } from '@/api/types';
 import { useCategoryOptions } from './masterOptions';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
-import { COMMERCIAL_PRICE_PATTERN } from './skuCommercialPrice';
 import {
   LEAD_TIME_HOURS_PATTERN,
   buildProductCreateBody,
   buildProductUpdateBody,
-  marginLabel,
 } from './productArchiveFields';
 
 export default function ProductsPage() {
@@ -77,13 +76,6 @@ export default function ProductsPage() {
         );
       },
     },
-    {
-      title: '毛利',
-      key: 'margin',
-      width: 100,
-      align: 'right',
-      render: (_, r) => marginLabel(attr(r, 'margin')),
-    },
     { title: '版本', dataIndex: 'version', width: 70, align: 'right' },
   ];
   const categoryIdField: CrudField = {
@@ -108,27 +100,6 @@ export default function ProductsPage() {
       placeholder: '如 24 / 48',
       pattern: LEAD_TIME_HOURS_PATTERN,
       patternMessage: '请输入正整数小时数',
-    },
-    {
-      name: 'purchase_price',
-      label: '进货价（元）',
-      placeholder: '未填写即未定价',
-      pattern: COMMERCIAL_PRICE_PATTERN,
-      patternMessage: '请输入非负金额，最多两位小数',
-    },
-    {
-      name: 'retail_price',
-      label: '零售价（元）',
-      placeholder: '未填写即未定价',
-      pattern: COMMERCIAL_PRICE_PATTERN,
-      patternMessage: '请输入非负金额，最多两位小数',
-    },
-    {
-      name: 'other_cost',
-      label: '其他成本（元）',
-      placeholder: '未填写即未定价',
-      pattern: COMMERCIAL_PRICE_PATTERN,
-      patternMessage: '请输入非负金额，最多两位小数',
     },
     { name: 'main_image_ref', label: '主图', type: 'upload' },
     { name: 'active', label: '启用', type: 'switch' },
@@ -157,33 +128,17 @@ export default function ProductsPage() {
       pattern: LEAD_TIME_HOURS_PATTERN,
       patternMessage: '请输入正整数小时数',
     },
-    {
-      name: 'purchase_price',
-      label: '进货价（元）',
-      placeholder: '清空则设为未定价',
-      pattern: COMMERCIAL_PRICE_PATTERN,
-      patternMessage: '请输入非负金额，最多两位小数',
-    },
-    {
-      name: 'retail_price',
-      label: '零售价（元）',
-      placeholder: '清空则设为未定价',
-      pattern: COMMERCIAL_PRICE_PATTERN,
-      patternMessage: '请输入非负金额，最多两位小数',
-    },
-    {
-      name: 'other_cost',
-      label: '其他成本（元）',
-      placeholder: '清空则设为未定价',
-      pattern: COMMERCIAL_PRICE_PATTERN,
-      patternMessage: '请输入非负金额，最多两位小数',
-    },
     { name: 'main_image_ref', label: '主图', type: 'upload' },
     { name: 'active', label: '启用', type: 'switch' },
   ];
 
   return (
     <MasterDataCrud
+      filters={(
+        <span className="zs-admin-toolbar-note">
+          商品价格在「<Link to="/product/skus">商品档案（SKU）</Link>」维护，来源为成本核算表。
+        </span>
+      )}
       fetchPage={(q) => productsApi.list(q)}
       create={(v) => productsApi.create(buildProductCreateBody(v))}
       update={(id, v) => productsApi.update(id, buildProductUpdateBody(v))}

@@ -281,9 +281,6 @@ export const productsApi = {
     listed_from?: string;
     listed_until?: string;
     lead_time_hours?: number;
-    purchase_price?: string;
-    retail_price?: string;
-    other_cost?: string;
     main_image_ref?: string;
     active?: boolean;
   }) =>
@@ -297,9 +294,6 @@ export const productsApi = {
     listed_from?: string | null;
     listed_until?: string | null;
     lead_time_hours?: number | null;
-    purchase_price?: string | null;
-    retail_price?: string | null;
-    other_cost?: string | null;
     main_image_ref?: string | null;
     active?: boolean;
   }) =>
@@ -368,6 +362,7 @@ export const skusApi = {
   update: (id: string, body: {
     expected_version: number;
     specification?: string;
+    unit?: string;
     barcode?: string | null;
     purchase_price?: string | null;
     retail_price?: string | null;

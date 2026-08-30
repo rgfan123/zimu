@@ -480,6 +480,7 @@ export interface SkuAttributes {
   barcode?: string | null;
   purchase_price: string | null;
   retail_price: string | null;
+  margin: string | null;
 }
 
 export interface SkuRecord extends Omit<MasterDataRecord, 'attributes'> {

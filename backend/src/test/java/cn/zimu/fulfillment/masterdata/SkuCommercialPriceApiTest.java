@@ -41,7 +41,8 @@ class SkuCommercialPriceApiTest {
         assertThat(unpriced.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(attributes(unpriced))
                 .containsEntry("purchase_price", null)
-                .containsEntry("retail_price", null);
+                .containsEntry("retail_price", null)
+                .containsEntry("margin", null);
 
         Map<String, Object> pricedRequest = skuRequest(references);
         pricedRequest.put("purchase_price", "12.30");
@@ -53,7 +54,8 @@ class SkuCommercialPriceApiTest {
         assertThat(created.getBody().get("version")).isEqualTo(0);
         assertThat(attributes(created))
                 .containsEntry("purchase_price", "12.30")
-                .containsEntry("retail_price", "19.90");
+                .containsEntry("retail_price", "19.90")
+                .containsEntry("margin", "7.60");
 
         String skuId = created.getBody().get("id").toString();
         assertThat(http.getForEntity("/api/v1/skus/" + skuId, Map.class).getBody()).isEqualTo(created.getBody());
@@ -62,6 +64,7 @@ class SkuCommercialPriceApiTest {
 
         Map<String, Object> patch = new LinkedHashMap<>();
         patch.put("expected_version", 0);
+        patch.put("unit", "箱");
         patch.put("purchase_price", "13");
         patch.put("retail_price", "0");
         ResponseEntity<Map> updated = patchSku(
@@ -70,8 +73,10 @@ class SkuCommercialPriceApiTest {
         assertThat(updated.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(updated.getBody().get("version")).isEqualTo(1);
         assertThat(attributes(updated))
+                .containsEntry("unit", "箱")
                 .containsEntry("purchase_price", "13.00")
-                .containsEntry("retail_price", "0.00");
+                .containsEntry("retail_price", "0.00")
+                .containsEntry("margin", "-13.00");
 
         Map<String, Object> clearRetailPrice = new LinkedHashMap<>();
         clearRetailPrice.put("expected_version", 1);
@@ -86,7 +91,8 @@ class SkuCommercialPriceApiTest {
         assertThat(cleared.getBody().get("version")).isEqualTo(2);
         assertThat(attributes(cleared))
                 .containsEntry("purchase_price", "13.00")
-                .containsEntry("retail_price", null);
+                .containsEntry("retail_price", null)
+                .containsEntry("margin", null);
 
         ResponseEntity<Map> stale = patchSku(
                 skuId,

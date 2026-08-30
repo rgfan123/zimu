@@ -104,9 +104,8 @@ class SkuSearchApiTest {
         assertThat(attributes(tpProjected)).containsEntry("jd_emg_no", null);
         for (Map<String, Object> item : List.of(jdProjected, tpProjected)) {
             assertThat(attributes(item).get("product_version")).isInstanceOf(Number.class);
-            assertThat(attributes(item)).containsEntry("product_purchase_price", null);
-            assertThat(attributes(item)).containsEntry("product_retail_price", null);
-            assertThat(attributes(item)).containsEntry("product_other_cost", null);
+            assertThat(attributes(item)).doesNotContainKeys(
+                    "product_purchase_price", "product_retail_price", "product_other_cost");
         }
 
         ResponseEntity<Map> inactiveMapping = http.exchange(

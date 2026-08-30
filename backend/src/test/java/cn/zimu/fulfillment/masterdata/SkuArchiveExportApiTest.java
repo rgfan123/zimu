@@ -143,8 +143,8 @@ class SkuArchiveExportApiTest {
         Long productId = jdbc.queryForObject(
                 """
                 INSERT INTO app.products (
-                    product_code, product_name, category_id, purchase_price, retail_price, other_cost)
-                VALUES (?, ?, ?, 99999.11, 88888.22, 77777.33)
+                    product_code, product_name, category_id)
+                VALUES (?, ?, ?)
                 RETURNING id
                 """,
                 Long.class,

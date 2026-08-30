@@ -41,6 +41,8 @@ export interface MasterDataCrudProps {
   columns: ColumnsType<MasterDataRecord>;
   createFields?: CrudField[];
   updateFields?: CrudField[];
+  /** 仅编辑弹窗展示的字段归属说明或操作指路。 */
+  updateFormNotice?: ReactNode;
   pageSizeOptions?: number[];
   tableScrollX?: number;
 }
@@ -89,6 +91,7 @@ export default function MasterDataCrud({
   columns,
   createFields = [],
   updateFields = [],
+  updateFormNotice,
   pageSizeOptions = [10, 20, 50],
   tableScrollX = 860,
 }: MasterDataCrudProps) {
@@ -294,6 +297,9 @@ export default function MasterDataCrud({
             forceRender
           >
             <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
+              {editing && updateFormNotice ? (
+                <div className="zs-admin-form-notice">{updateFormNotice}</div>
+              ) : null}
               {renderFields(editing ? updateFields : createFields)}
             </Form>
           </Modal>
