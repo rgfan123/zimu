@@ -119,16 +119,21 @@ class SourceBatchSkuReadinessGate {
 
     /** 在任何 CanonicalOrder/Fulfillment 写入前，对整批来源候选执行同一 readiness 判定。 */
     void requireReady(SourceChannel mappingChannel, List<SourceOrderCandidate> candidates) {
-        requireCandidateLinesReady(mappingChannel, candidateLines(candidates));
+        List<SourceOrderReadinessCandidate> snapshots = candidates.stream()
+                .map(SourceOrderReadinessCandidate::from)
+                .toList();
+        requireCandidateBundlesReady(mappingChannel, snapshots);
+        requireCandidateLinesReady(mappingChannel, readinessCandidateLines(snapshots));
     }
 
     /** 已成单但尚未确认的批次按最小、无 PII 的候选快照重新执行相同门禁。 */
     void requireReadySnapshot(
             SourceChannel mappingChannel, List<SourceOrderReadinessCandidate> candidates) {
+        requireCandidateBundlesReady(mappingChannel, candidates);
         requireCandidateLinesReady(mappingChannel, readinessCandidateLines(candidates));
     }
 
-    /** 在 catalog 共享锁仍由导入事务持有时，冻结当前存在的来源映射目标与包装乘数。 */
+    /** 在 catalog 共享锁仍由导入事务持有时，冻结来源单品映射及静态礼包映射/BOM。 */
     List<SourceOrderCandidate> snapshotCurrentMappings(
             SourceChannel mappingChannel, List<SourceOrderCandidate> candidates) {
         catalogLock.acquireShared();
@@ -139,15 +144,24 @@ class SourceBatchSkuReadinessGate {
                 .filter(Objects::nonNull)
                 .filter(ref -> !ref.isBlank())
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        if (refs.isEmpty()) {
-            return candidates;
-        }
         Map<String, SourceChannelSku> mappingByRef = new LinkedHashMap<>();
-        sourceMappings.findAllBySourceChannelAndSourceSkuRefIn(mappingChannel, refs)
-                .forEach(mapping -> mappingByRef.put(mapping.getSourceSkuRef(), mapping));
+        if (!refs.isEmpty()) {
+            sourceMappings.findAllBySourceChannelAndSourceSkuRefIn(mappingChannel, refs)
+                    .forEach(mapping -> mappingByRef.put(mapping.getSourceSkuRef(), mapping));
+        }
         Map<Long, Sku> skuById = new LinkedHashMap<>();
         skus.findAllById(mappingByRef.values().stream().map(SourceChannelSku::getSkuId).distinct().toList())
                 .forEach(sku -> skuById.put(sku.getId(), sku));
+        Set<String> bundleRefs = candidates.stream()
+                .flatMap(candidate -> candidate.order().items().stream())
+                .filter(item -> item.lineType() == LineType.CUSTOM_BUNDLE && item.bundleId() != null)
+                .map(OrderItemInput::sourceSkuRef)
+                .filter(Objects::nonNull)
+                .filter(ref -> !ref.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        Map<String, SourceBundleFact> bundleByRef = sourceBundleFacts(mappingChannel, bundleRefs);
+        Map<Long, List<SourceOrderCandidate.BundleComponentSnapshot>> bomByBundle = bundleComponents(
+                bundleByRef.values().stream().map(SourceBundleFact::bundleId).collect(java.util.stream.Collectors.toSet()));
         List<SourceOrderCandidate> frozen = new ArrayList<>();
         for (SourceOrderCandidate candidate : candidates) {
             List<SourceOrderCandidate.SourceMappingSnapshot> snapshots = new ArrayList<>();
@@ -166,15 +180,315 @@ class SourceBatchSkuReadinessGate {
                             mapping.getQuantityMultiplier()));
                 }
             }
+            List<SourceOrderCandidate.SourceBundleMappingSnapshot> bundleSnapshots = new ArrayList<>();
+            int itemCursor = 0;
+            for (SourceOrderCandidate.CandidateRow row : candidate.rows()) {
+                int firstItemIndex = itemCursor;
+                List<OrderItemInput> rowItems = candidate.order().items()
+                        .subList(itemCursor, itemCursor + row.partitionCount());
+                itemCursor += row.partitionCount();
+                OrderItemInput bundleItem = rowItems.stream()
+                        .filter(item -> item.lineType() == LineType.CUSTOM_BUNDLE && item.bundleId() != null)
+                        .findFirst()
+                        .orElse(null);
+                if (bundleItem == null) {
+                    continue;
+                }
+                SourceBundleFact fact = bundleByRef.get(bundleItem.sourceSkuRef());
+                if (fact != null) {
+                    bundleSnapshots.add(new SourceOrderCandidate.SourceBundleMappingSnapshot(
+                            row.rawImportRowId(),
+                            firstItemIndex,
+                            row.partitionCount(),
+                            bundleItem.sourceSkuRef(),
+                            fact.bundleId(),
+                            fact.quantityMultiplier(),
+                            bomByBundle.getOrDefault(fact.bundleId(), List.of())));
+                }
+            }
             frozen.add(new SourceOrderCandidate(
                     candidate.candidateKey(),
                     candidate.order(),
                     candidate.rows(),
                     candidate.createIdempotencyKey(),
                     candidate.actor(),
-                    snapshots));
+                    snapshots,
+                    bundleSnapshots));
         }
         return List.copyOf(frozen);
+    }
+
+    /** 静态礼包候选必须继续命中上传时同一来源映射、ACTIVE 礼包和同一完整 BOM。 */
+    private void requireCandidateBundlesReady(
+            SourceChannel mappingChannel, List<SourceOrderReadinessCandidate> candidates) {
+        catalogLock.acquireShared();
+        List<CandidateBundle> bundles = candidateBundles(candidates);
+        if (bundles.isEmpty()) {
+            return;
+        }
+        Set<String> refs = bundles.stream()
+                .map(CandidateBundle::sourceBundleRef)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        Map<String, SourceBundleFact> currentByRef = sourceBundleFacts(mappingChannel, refs);
+        Set<Long> bundleIds = new LinkedHashSet<>();
+        bundles.stream()
+                .map(CandidateBundle::snapshot)
+                .filter(Objects::nonNull)
+                .map(SourceOrderCandidate.SourceBundleMappingSnapshot::bundleId)
+                .forEach(bundleIds::add);
+        currentByRef.values().stream().map(SourceBundleFact::bundleId).forEach(bundleIds::add);
+        Map<Long, List<SourceOrderCandidate.BundleComponentSnapshot>> currentBom = bundleComponents(bundleIds);
+        Map<Long, String> currentStatuses = bundleStatuses(bundleIds);
+
+        List<Map<String, Object>> blocked = new ArrayList<>();
+        for (CandidateBundle candidate : bundles) {
+            List<Map<String, String>> issues = new ArrayList<>();
+            SourceOrderCandidate.SourceBundleMappingSnapshot snapshot = candidate.snapshot();
+            if (snapshot == null) {
+                issues.add(issue(
+                        "SOURCE_BUNDLE_SNAPSHOT_REQUIRED",
+                        "来源礼包候选缺少上传时映射与 BOM 快照",
+                        "重新导入该批次，禁止按当前主数据重新解释历史候选"));
+            } else {
+                if (snapshot.rawImportRowId() != candidate.rawImportRowId()
+                        || snapshot.itemIndex() != candidate.itemIndex()
+                        || snapshot.partitionCount() != candidate.partitionCount()
+                        || !snapshot.sourceBundleRef().equals(candidate.sourceBundleRef())
+                        || !snapshot.bundleId().equals(candidate.bundleId())
+                        || !candidate.identityValid()
+                        || !candidate.components().valid()
+                        || !snapshotComponents(snapshot.components()).equals(candidate.components())) {
+                    issues.add(issue(
+                            "SOURCE_BUNDLE_SNAPSHOT_CONFLICT",
+                            "来源礼包候选与上传时冻结的映射/BOM 身份不一致",
+                            "重新导入该批次，禁止覆盖或重解释已冻结候选"));
+                }
+                SourceBundleFact current = currentByRef.get(snapshot.sourceBundleRef());
+                if (current == null || !current.active()) {
+                    issues.add(issue(
+                            "SOURCE_BUNDLE_MAPPING_REQUIRED",
+                            "来源礼包映射不存在或已停用",
+                            "恢复正确的长期来源礼包映射后重新确认"));
+                } else if (!snapshot.bundleId().equals(current.bundleId())) {
+                    issues.add(issue(
+                            "SOURCE_BUNDLE_MAPPING_CONFLICT",
+                            "当前来源礼包映射已改指其他礼包",
+                            "核对映射变更后重新导入，禁止覆盖历史候选"));
+                }
+                BigDecimal currentMultiplier = current == null ? null : current.quantityMultiplier();
+                if (snapshot.quantityMultiplier() == null
+                        || snapshot.quantityMultiplier().signum() <= 0
+                        || currentMultiplier == null
+                        || currentMultiplier.signum() <= 0
+                        || currentMultiplier.compareTo(snapshot.quantityMultiplier()) != 0) {
+                    issues.add(issue(
+                            "MAPPING_MULTIPLIER",
+                            "来源礼包包装乘数缺失、无效或与上传快照冲突",
+                            "核对一个来源销售单位包含的礼包数量后重新导入"));
+                }
+                if (!"ACTIVE".equals(currentStatuses.get(snapshot.bundleId()))) {
+                    issues.add(issue(
+                            "BUNDLE_INACTIVE",
+                            "上传时命中的静态礼包当前已停用或不存在",
+                            "恢复正确礼包状态，或重新导入使用新的礼包版本"));
+                }
+                ComponentIdentity currentComponents = snapshotComponents(
+                        currentBom.getOrDefault(snapshot.bundleId(), List.of()));
+                ComponentIdentity frozenComponents = snapshotComponents(snapshot.components());
+                if (!currentComponents.valid()
+                        || frozenComponents.values().isEmpty()
+                        || !currentComponents.equals(frozenComponents)) {
+                    issues.add(issue(
+                            "BUNDLE_BOM_CONFLICT",
+                            "静态礼包当前 BOM 与上传时冻结内容不一致",
+                            "核对礼包组件和每礼包数量后重新导入"));
+                }
+            }
+            if (issues.isEmpty()) {
+                continue;
+            }
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("raw_import_row_id", Long.toString(candidate.rawImportRowId()));
+            detail.put("candidate_key", candidate.candidateKey());
+            detail.put("source_channel", mappingChannel.name());
+            detail.put("source_bundle_ref", candidate.sourceBundleRef());
+            if (candidate.bundleId() != null) {
+                detail.put("bundle_id", Long.toString(candidate.bundleId()));
+            }
+            SourceBundleFact current = currentByRef.get(candidate.sourceBundleRef());
+            if (current != null) {
+                detail.put("current_bundle_id", Long.toString(current.bundleId()));
+            }
+            List<String> reasons = issues.stream().map(issue -> issue.get("code")).distinct().toList();
+            detail.put("ready", false);
+            detail.put("reason_codes", reasons);
+            detail.put("issues", List.copyOf(issues));
+            blocked.add(Map.copyOf(detail));
+        }
+        throwIfBlocked(blocked);
+    }
+
+    private List<CandidateBundle> candidateBundles(List<SourceOrderReadinessCandidate> candidates) {
+        List<CandidateBundle> result = new ArrayList<>();
+        for (SourceOrderReadinessCandidate candidate : candidates) {
+            Map<Long, List<SourceOrderCandidate.SourceBundleMappingSnapshot>> snapshotsByRaw =
+                    new LinkedHashMap<>();
+            candidate.sourceBundleMappings().forEach(snapshot -> snapshotsByRaw
+                    .computeIfAbsent(snapshot.rawImportRowId(), ignored -> new ArrayList<>())
+                    .add(snapshot));
+            int itemCursor = 0;
+            for (SourceOrderReadinessCandidate.CandidateRow row : candidate.rows()) {
+                int firstItemIndex = itemCursor;
+                List<OrderItemInput> rowItems = candidate.items()
+                        .subList(itemCursor, itemCursor + row.partitionCount());
+                itemCursor += row.partitionCount();
+                List<OrderItemInput> bundleItems = rowItems.stream()
+                        .filter(item -> item.lineType() == LineType.CUSTOM_BUNDLE && item.bundleId() != null)
+                        .toList();
+                if (bundleItems.isEmpty()) {
+                    continue;
+                }
+                OrderItemInput first = bundleItems.getFirst();
+                boolean identityValid = bundleItems.size() == rowItems.size()
+                        && bundleItems.stream().allMatch(item ->
+                                Objects.equals(item.sourceSkuRef(), first.sourceSkuRef())
+                                        && Objects.equals(item.bundleId(), first.bundleId()));
+                Long bundleId;
+                try {
+                    bundleId = Long.valueOf(first.bundleId());
+                } catch (NumberFormatException exception) {
+                    bundleId = null;
+                }
+                List<SourceOrderCandidate.SourceBundleMappingSnapshot> matchingSnapshots =
+                        snapshotsByRaw.getOrDefault(row.rawImportRowId(), List.of());
+                SourceOrderCandidate.SourceBundleMappingSnapshot snapshot = matchingSnapshots.size() == 1
+                        ? matchingSnapshots.getFirst()
+                        : null;
+                result.add(new CandidateBundle(
+                        row.rawImportRowId(),
+                        candidate.candidateKey(),
+                        firstItemIndex,
+                        row.partitionCount(),
+                        first.sourceSkuRef(),
+                        bundleId,
+                        identityValid,
+                        candidateComponents(bundleItems),
+                        snapshot));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private ComponentIdentity candidateComponents(List<OrderItemInput> items) {
+        Map<String, String> values = new LinkedHashMap<>();
+        boolean valid = true;
+        for (OrderItemInput item : items) {
+            if (item.components() == null) {
+                valid = false;
+                continue;
+            }
+            for (var component : item.components()) {
+                String code = component.skuCode();
+                String quantity = quantityIdentity(component.quantityPerBundle());
+                if (code == null || code.isBlank() || quantity == null || values.putIfAbsent(code, quantity) != null) {
+                    valid = false;
+                }
+            }
+        }
+        return new ComponentIdentity(Map.copyOf(values), valid);
+    }
+
+    private ComponentIdentity snapshotComponents(
+            List<SourceOrderCandidate.BundleComponentSnapshot> components) {
+        Map<String, String> values = new LinkedHashMap<>();
+        boolean valid = true;
+        for (SourceOrderCandidate.BundleComponentSnapshot component : components) {
+            String quantity = quantityIdentity(component.quantityPerBundle());
+            if (component.skuCode() == null
+                    || component.skuCode().isBlank()
+                    || quantity == null
+                    || values.putIfAbsent(component.skuCode(), quantity) != null) {
+                valid = false;
+            }
+        }
+        return new ComponentIdentity(Map.copyOf(values), valid);
+    }
+
+    private String quantityIdentity(Object raw) {
+        if (raw == null) {
+            return null;
+        }
+        try {
+            return new BigDecimal(raw.toString()).stripTrailingZeros().toPlainString();
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private Map<String, SourceBundleFact> sourceBundleFacts(
+            SourceChannel channel, Set<String> refs) {
+        if (refs.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(refs.size(), "?"));
+        List<Object> arguments = new ArrayList<>();
+        arguments.add(channel.name());
+        arguments.addAll(refs);
+        Map<String, SourceBundleFact> result = new LinkedHashMap<>();
+        jdbc.query(
+                """
+                SELECT scb.source_bundle_ref, scb.bundle_id, scb.quantity_multiplier, scb.active
+                FROM app.source_channel_bundles scb
+                WHERE scb.source_channel=? AND scb.source_bundle_ref IN ("""
+                        + placeholders + ")",
+                (org.springframework.jdbc.core.RowCallbackHandler) resultSet -> result.put(
+                        resultSet.getString("source_bundle_ref"),
+                        new SourceBundleFact(
+                                resultSet.getString("source_bundle_ref"),
+                                resultSet.getLong("bundle_id"),
+                                resultSet.getBigDecimal("quantity_multiplier"),
+                                resultSet.getBoolean("active"))),
+                arguments.toArray());
+        return Map.copyOf(result);
+    }
+
+    private Map<Long, List<SourceOrderCandidate.BundleComponentSnapshot>> bundleComponents(Set<Long> bundleIds) {
+        if (bundleIds.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(bundleIds.size(), "?"));
+        Map<Long, List<SourceOrderCandidate.BundleComponentSnapshot>> result = new LinkedHashMap<>();
+        jdbc.query(
+                """
+                SELECT bi.bundle_id, bi.sku_id, s.sku_code, bi.quantity_per_bundle
+                FROM app.bundle_items bi
+                JOIN app.skus s ON s.id=bi.sku_id
+                WHERE bi.bundle_id IN (""" + placeholders + ") ORDER BY bi.bundle_id, bi.sort_no",
+                (org.springframework.jdbc.core.RowCallbackHandler) resultSet -> result
+                        .computeIfAbsent(resultSet.getLong("bundle_id"), ignored -> new ArrayList<>())
+                        .add(new SourceOrderCandidate.BundleComponentSnapshot(
+                                resultSet.getLong("sku_id"),
+                                resultSet.getString("sku_code"),
+                                resultSet.getBigDecimal("quantity_per_bundle"))),
+                bundleIds.toArray());
+        Map<Long, List<SourceOrderCandidate.BundleComponentSnapshot>> immutable = new LinkedHashMap<>();
+        result.forEach((id, components) -> immutable.put(id, List.copyOf(components)));
+        return Map.copyOf(immutable);
+    }
+
+    private Map<Long, String> bundleStatuses(Set<Long> bundleIds) {
+        if (bundleIds.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(bundleIds.size(), "?"));
+        Map<Long, String> result = new LinkedHashMap<>();
+        jdbc.query(
+                "SELECT id, status FROM app.product_bundles WHERE id IN (" + placeholders + ")",
+                (org.springframework.jdbc.core.RowCallbackHandler) resultSet ->
+                        result.put(resultSet.getLong("id"), resultSet.getString("status")),
+                bundleIds.toArray());
+        return Map.copyOf(result);
     }
 
     private void requireCandidateLinesReady(
@@ -211,6 +525,9 @@ class SourceBatchSkuReadinessGate {
         Map<Long, Sku> skuById = new LinkedHashMap<>();
         skus.findAllById(skuIds).forEach(sku -> skuById.put(sku.getId(), sku));
         Map<Long, SkuFulfillmentReadiness> readinessBySku = readiness.evaluateAll(skuById.values());
+        Set<Long> jdProviderIds = new LinkedHashSet<>(jdbc.queryForList(
+                "SELECT id FROM app.fulfillment_providers WHERE provider_type='JD_WAREHOUSE'",
+                Long.class));
 
         List<Map<String, Object>> blockedLines = new ArrayList<>();
         for (CandidateLine line : lines) {
@@ -221,6 +538,17 @@ class SourceBatchSkuReadinessGate {
                     ? skuByCode.get(line.skuCode())
                     : mapping == null ? null : skuById.get(mapping.getSkuId());
             List<Map<String, String>> issues = candidateMappingIssues(line, mapping, sku);
+            BigDecimal convertedQuantity = candidateRequestedQuantity(line, mapping);
+            if (sku != null
+                    && jdProviderIds.contains(sku.getFulfillmentProviderId())
+                    && (convertedQuantity == null
+                        || convertedQuantity.signum() <= 0
+                        || convertedQuantity.stripTrailingZeros().scale() > 0)) {
+                issues.add(issue(
+                        "QUANTITY_SCALE",
+                        "京东出库数量必须为正整数",
+                        "核对来源数量和包装乘数后重新导入批次"));
+            }
             SkuFulfillmentReadiness result = sku == null ? null : readinessBySku.get(sku.getId());
             if (issues.isEmpty() && result != null && result.ready()) {
                 continue;
@@ -249,6 +577,12 @@ class SourceBatchSkuReadinessGate {
                 detail.put("current_sku_id", Long.toString(sku.getId()));
                 detail.put("current_sku_code", sku.getSkuCode());
             }
+            if (line.sourceQuantity() != null) {
+                detail.put("source_quantity", line.sourceQuantity().toPlainString());
+            }
+            if (convertedQuantity != null) {
+                detail.put("converted_quantity", convertedQuantity.toPlainString());
+            }
             List<String> reasons = new ArrayList<>();
             List<Map<String, String>> actionable = new ArrayList<>();
             appendIssues(issues, reasons, actionable);
@@ -269,12 +603,6 @@ class SourceBatchSkuReadinessGate {
             blockedLines.add(Map.copyOf(detail));
         }
         throwIfBlocked(blockedLines);
-    }
-
-    private List<CandidateLine> candidateLines(List<SourceOrderCandidate> candidates) {
-        return readinessCandidateLines(candidates.stream()
-                .map(SourceOrderReadinessCandidate::from)
-                .toList());
     }
 
     private List<CandidateLine> readinessCandidateLines(
@@ -301,10 +629,12 @@ class SourceBatchSkuReadinessGate {
                                 item.sourceSkuRef(),
                                 mapping == null ? null : mapping.skuId(),
                                 mapping == null ? item.skuCode() : mapping.skuCode(),
-                                mapping == null ? null : mapping.quantityMultiplier()));
+                                mapping == null ? null : mapping.quantityMultiplier(),
+                                decimal(item.quantity())));
                     } else if (item.components() == null || item.components().isEmpty()) {
                         lines.add(new CandidateLine(
-                                row.rawImportRowId(), candidate.candidateKey(), lineNo, null, null, null, null));
+                                row.rawImportRowId(), candidate.candidateKey(), lineNo,
+                                null, null, null, null, decimal(item.quantity())));
                     } else {
                         int candidateLineNo = lineNo;
                         item.components().forEach(component -> lines.add(new CandidateLine(
@@ -314,7 +644,8 @@ class SourceBatchSkuReadinessGate {
                                 component.sourceSkuRef(),
                                 null,
                                 component.skuCode(),
-                                null)));
+                                null,
+                                decimal(item.quantity()))));
                     }
                     lineNo++;
                 }
@@ -324,6 +655,32 @@ class SourceBatchSkuReadinessGate {
             }
         }
         return List.copyOf(lines);
+    }
+
+    private BigDecimal candidateRequestedQuantity(CandidateLine line, SourceChannelSku mapping) {
+        if (line.sourceQuantity() == null) {
+            return null;
+        }
+        BigDecimal multiplier;
+        if (line.directInternalSku()) {
+            multiplier = BigDecimal.ONE;
+        } else if (line.mappingMultiplier() != null) {
+            multiplier = line.mappingMultiplier();
+        } else {
+            multiplier = mapping == null ? null : mapping.getQuantityMultiplier();
+        }
+        return multiplier == null ? null : line.sourceQuantity().multiply(multiplier);
+    }
+
+    private BigDecimal decimal(Object raw) {
+        if (raw == null) {
+            return null;
+        }
+        try {
+            return new BigDecimal(raw.toString());
+        } catch (NumberFormatException exception) {
+            return null;
+        }
     }
 
     private List<Map<String, String>> candidateMappingIssues(
@@ -576,7 +933,8 @@ class SourceBatchSkuReadinessGate {
             String sourceSkuRef,
             Long frozenSkuId,
             String skuCode,
-            BigDecimal mappingMultiplier) {
+            BigDecimal mappingMultiplier,
+            BigDecimal sourceQuantity) {
 
         boolean directInternalSku() {
             return (sourceSkuRef == null || sourceSkuRef.isBlank())
@@ -584,4 +942,23 @@ class SourceBatchSkuReadinessGate {
                     && !skuCode.isBlank();
         }
     }
+
+    private record CandidateBundle(
+            long rawImportRowId,
+            String candidateKey,
+            int itemIndex,
+            int partitionCount,
+            String sourceBundleRef,
+            Long bundleId,
+            boolean identityValid,
+            ComponentIdentity components,
+            SourceOrderCandidate.SourceBundleMappingSnapshot snapshot) {}
+
+    private record ComponentIdentity(Map<String, String> values, boolean valid) {}
+
+    private record SourceBundleFact(
+            String sourceBundleRef,
+            long bundleId,
+            BigDecimal quantityMultiplier,
+            boolean active) {}
 }

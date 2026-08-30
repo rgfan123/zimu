@@ -8,12 +8,15 @@ import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.CommandContext;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -26,12 +29,17 @@ class SourceTemplateProfileService {
     private final JdbcTemplate jdbc;
     private final IdempotencyService idempotency;
     private final AuditLogService audit;
+    private final ObjectMapper objectMapper;
 
     SourceTemplateProfileService(
-            JdbcTemplate jdbc, IdempotencyService idempotency, AuditLogService audit) {
+            JdbcTemplate jdbc,
+            IdempotencyService idempotency,
+            AuditLogService audit,
+            ObjectMapper objectMapper) {
         this.jdbc = jdbc;
         this.idempotency = idempotency;
         this.audit = audit;
+        this.objectMapper = objectMapper;
     }
 
     IdempotentResult<Map<String, Object>> trust(
@@ -80,7 +88,7 @@ class SourceTemplateProfileService {
                         ON CONFLICT (source_channel, template_family, template_version, template_fingerprint)
                         DO NOTHING
                         RETURNING id, profile_no, source_channel, template_family, template_version,
-                                  template_fingerprint, status, trusted_at
+                                  template_fingerprint, status, trusted_from_batch_id, trusted_at
                         """,
                         (resultSet, rowNumber) -> template(resultSet),
                         profileNo,
@@ -144,7 +152,8 @@ class SourceTemplateProfileService {
                         """
                         SELECT profile.id, profile.profile_no, profile.source_channel,
                                profile.template_family, profile.template_version,
-                               profile.template_fingerprint, profile.status, profile.trusted_at
+                               profile.template_fingerprint, profile.status,
+                               profile.trusted_from_batch_id, profile.trusted_at
                         FROM app.import_batches ib
                         JOIN app.v_import_batch_effective_source source ON source.import_batch_id=ib.id
                         JOIN app.source_template_profiles profile
@@ -153,6 +162,15 @@ class SourceTemplateProfileService {
                          AND profile.template_version=ib.template_version
                          AND profile.template_fingerprint=source.effective_template_fingerprint
                          AND profile.status='TRUSTED'
+                        JOIN app.import_batches authority_batch
+                          ON authority_batch.id=profile.trusted_from_batch_id
+                         AND authority_batch.confirmed_at IS NOT NULL
+                        JOIN app.v_import_batch_effective_source authority_source
+                          ON authority_source.import_batch_id=authority_batch.id
+                         AND authority_source.effective_source_channel=profile.source_channel
+                         AND authority_source.effective_template_family=profile.template_family
+                         AND authority_batch.template_version=profile.template_version
+                         AND authority_source.effective_template_fingerprint=profile.template_fingerprint
                         WHERE ib.id=? AND ib.batch_type='SOURCE_ORDER'
                         """,
                         (resultSet, rowNumber) -> template(resultSet),
@@ -165,7 +183,7 @@ class SourceTemplateProfileService {
      * AutomaticRelease 最终授权检查。先锁批次再用新语句读取有效归因，随后锁 profile 再读取状态，
      * 避免等待并发 correction/revocation 后继续使用语句开始时的旧快照。
      */
-    void requireTrustedBatchMatchForRelease(long profileId, long batchId) {
+    TrustedTemplate requireTrustedBatchMatchForRelease(long profileId, long batchId) {
         List<Long> batchLocks = jdbc.query(
                 "SELECT id FROM app.import_batches WHERE id=? AND batch_type='SOURCE_ORDER' FOR UPDATE",
                 (resultSet, rowNumber) -> resultSet.getLong(1),
@@ -195,13 +213,31 @@ class SourceTemplateProfileService {
             throw BusinessException.conflict(
                     "TEMPLATE_PROFILE_MISMATCH", "来源批次结构与受信模板版本不一致，已停止自动放行");
         }
+        List<Long> authorityLocks = jdbc.query(
+                "SELECT id FROM app.import_batches WHERE id=? AND batch_type='SOURCE_ORDER' FOR SHARE",
+                (resultSet, rowNumber) -> resultSet.getLong(1),
+                profile.trustedFromBatchId());
+        if (authorityLocks.isEmpty()) {
+            throw BusinessException.conflict(
+                    "TEMPLATE_PROFILE_MISMATCH", "受信模板的授权依据批次不存在，已停止自动放行");
+        }
+        BatchTemplate authority = batchTemplate(profile.trustedFromBatchId());
+        if (authority.confirmedAt() == null
+                || authority.channel() != profile.sourceChannel()
+                || !authority.family().equals(profile.templateFamily())
+                || !authority.version().equals(profile.templateVersion())
+                || !authority.fingerprint().equals(profile.templateFingerprint())) {
+            throw BusinessException.conflict(
+                    "TEMPLATE_PROFILE_MISMATCH", "受信模板的授权依据已被纠正或失效，已停止自动放行");
+        }
+        return profile;
     }
 
     private Optional<TrustedTemplate> findById(long profileId) {
         return jdbc.query(
                         """
                         SELECT id, profile_no, source_channel, template_family, template_version,
-                               template_fingerprint, status, trusted_at
+                               template_fingerprint, status, trusted_from_batch_id, trusted_at
                         FROM app.source_template_profiles WHERE id=?
                         """,
                         (resultSet, rowNumber) -> template(resultSet),
@@ -215,7 +251,7 @@ class SourceTemplateProfileService {
         List<TrustedTemplate> matches = jdbc.query(
                 """
                 SELECT id, profile_no, source_channel, template_family, template_version,
-                       template_fingerprint, status, trusted_at
+                       template_fingerprint, status, trusted_from_batch_id, trusted_at
                 FROM app.source_template_profiles
                 WHERE source_channel=? AND template_family=? AND template_version=?
                   AND template_fingerprint=?
@@ -237,7 +273,99 @@ class SourceTemplateProfileService {
                 resultSet.getString("template_version"),
                 resultSet.getString("template_fingerprint"),
                 resultSet.getString("status"),
+                resultSet.getLong("trusted_from_batch_id"),
                 resultSet.getObject("trusted_at", OffsetDateTime.class));
+    }
+
+    /** 与批次确认同事务记录“该批次已经消费哪个 standing authorization”。 */
+    void recordConsumedAuthorization(long batchId, TrustedTemplate profile) {
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("profile_id", profile.id());
+        state.put("profile_no", profile.profileNo());
+        state.put("stage", "CONFIRMED_PENDING_OUTBOUND");
+        jdbc.update(
+                """
+                UPDATE app.import_batches
+                SET error_detail=jsonb_set(
+                    COALESCE(error_detail, '{}'::jsonb),
+                    '{automatic_release}',
+                    ?::jsonb,
+                    true)
+                WHERE id=?
+                """,
+                json(state),
+                batchId);
+    }
+
+    Optional<ConsumedRelease> consumedRelease(long batchId) {
+        return jdbc.query(
+                        """
+                        SELECT confirmed_at,
+                               error_detail#>>'{automatic_release,profile_id}' profile_id,
+                               error_detail#>>'{automatic_release,profile_no}' profile_no,
+                               error_detail#>>'{automatic_release,stage}' stage
+                        FROM app.import_batches
+                        WHERE id=? AND batch_type='SOURCE_ORDER'
+                        """,
+                        (resultSet, rowNumber) -> {
+                            String profileId = resultSet.getString("profile_id");
+                            if (resultSet.getObject("confirmed_at") == null || profileId == null) {
+                                return null;
+                            }
+                            try {
+                                return new ConsumedRelease(
+                                        Long.parseLong(profileId),
+                                        resultSet.getString("profile_no"),
+                                        resultSet.getString("stage"));
+                            } catch (NumberFormatException exception) {
+                                throw BusinessException.conflict(
+                                        "AUTOMATIC_RELEASE_STATE_INVALID",
+                                        "来源批次的自动放行授权快照损坏，禁止继续出站");
+                            }
+                        },
+                        batchId)
+                .stream()
+                .filter(Objects::nonNull)
+                .findFirst();
+    }
+
+    void recordAutomaticReleaseStage(
+            long batchId,
+            long profileId,
+            String stage,
+            String errorCode,
+            List<String> failedShipmentIds) {
+        Map<String, Object> patch = new LinkedHashMap<>();
+        patch.put("stage", stage);
+        patch.put("error_code", errorCode);
+        patch.put("failed_shipment_ids", failedShipmentIds == null ? List.of() : List.copyOf(failedShipmentIds));
+        int updated = jdbc.update(
+                """
+                UPDATE app.import_batches
+                SET error_detail=jsonb_set(
+                    error_detail,
+                    '{automatic_release}',
+                    (error_detail->'automatic_release') || ?::jsonb,
+                    true)
+                WHERE id=?
+                  AND error_detail#>>'{automatic_release,profile_id}'=?
+                """,
+                json(patch),
+                batchId,
+                Long.toString(profileId));
+        if (updated != 1) {
+            throw BusinessException.conflict(
+                    "AUTOMATIC_RELEASE_STATE_INVALID",
+                    "来源批次缺少已消费的自动放行授权，禁止更新出站阶段");
+        }
+    }
+
+    private String json(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     private Map<String, Object> response(TrustedTemplate profile) {
@@ -261,7 +389,10 @@ class SourceTemplateProfileService {
             String templateVersion,
             String templateFingerprint,
             String status,
+            long trustedFromBatchId,
             OffsetDateTime trustedAt) {}
+
+    record ConsumedRelease(long profileId, String profileNo, String stage) {}
 
     private record BatchTemplate(
             SourceChannel channel,

@@ -251,6 +251,22 @@ public class SourceOrderIntakeService {
     }
 
     @Transactional
+    void markReconciliationRequired(long id, long importBatchId) {
+        jdbc.update(
+                """
+                UPDATE app.source_order_intake_jobs
+                SET status='RECONCILIATION_REQUIRED', import_batch_id=?,
+                    error_code='RECONCILIATION_REQUIRED',
+                    error_detail=jsonb_build_object(
+                        'message', '京东外部调用结果未知，必须逐 Shipment 对账，禁止自动重试'),
+                    lock_version=lock_version+1
+                WHERE id=?
+                """,
+                importBatchId,
+                id);
+    }
+
+    @Transactional
     void markFailed(long id, String errorCode) {
         jdbc.update(
                 """

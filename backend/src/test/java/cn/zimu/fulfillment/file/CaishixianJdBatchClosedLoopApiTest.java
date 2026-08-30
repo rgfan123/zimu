@@ -448,6 +448,39 @@ class CaishixianJdBatchClosedLoopApiTest {
                 Long.parseLong(batchId))).isZero();
     }
 
+    @Test
+    void providerFailureRollsBackOrdersAndAllowsImmediateRetryAfterRepair() throws Exception {
+        ResponseEntity<Map> uploaded = uploadSource(
+                caishixianWorkbook("CSX-ATOMIC-RETRY-001", "CSX-ATOMIC-RETRY-LINE-001"),
+                "csx-source-upload-atomic-retry-001");
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String batchId = uploaded.getBody().get("id").toString();
+        jdbc.update(
+                "UPDATE app.fulfillment_providers SET config=config-'warehouseNo' WHERE provider_code='JD'");
+
+        ResponseEntity<Map> blocked = confirm(batchId, "csx-confirm-atomic-retry-blocked-001");
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(blocked.getBody()).containsEntry("business_code", "JD_EXPORT_PROVIDER_CONFIG_MISSING");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                Long.parseLong(batchId))).isZero();
+
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config=jsonb_set(config, '{warehouseNo}', '"WH-CSX-001"'::jsonb, true)
+                WHERE provider_code='JD'
+                """);
+        ResponseEntity<Map> recovered = confirm(batchId, "csx-confirm-atomic-retry-recovered-001");
+
+        assertThat(recovered.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                Long.parseLong(batchId))).isEqualTo(1);
+    }
+
     private ResponseEntity<Map> uploadSource(byte[] bytes) {
         return uploadSource(bytes, "csx-source-upload-001");
     }

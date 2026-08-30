@@ -59,6 +59,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -207,6 +208,27 @@ public class OrderCreateService {
                 () -> doCreate(
                         input, sourceImportBatchId, null, List.of(), context,
                         "order.import", "ORDER_IMPORTED", actor));
+    }
+
+    /**
+     * 来源批次原子确认专用接缝。调用方必须已经持有批次级事务和父幂等 claim；这里不再创建
+     * 独立 claim，避免后续 Provider/路由门禁回滚时遗留 IN_PROGRESS 子 claim。
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public OrderDetailDto createImportedWithinBatch(
+            CanonicalOrderInput input,
+            long sourceImportBatchId,
+            CommandContext context,
+            AuditActorType actor) {
+        return doCreate(
+                input,
+                sourceImportBatchId,
+                null,
+                List.of(),
+                context,
+                "order.import",
+                "ORDER_IMPORTED",
+                actor);
     }
 
     @Transactional

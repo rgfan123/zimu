@@ -70,10 +70,15 @@ public class SourceOrderIntakeProcessor {
             try {
                 automaticRelease.releaseIfTrusted(batchId);
             } catch (BusinessException exception) {
+                if ("RECONCILIATION_REQUIRED".equals(exception.getBusinessCode())) {
+                    intake.markReconciliationRequired(jobId, batchId);
+                    return;
+                }
                 if ("IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())
                         || "AUTOMATIC_RELEASE_OUTBOUND_BLOCKED".equals(exception.getBusinessCode())
                         || "TEMPLATE_PROFILE_REVOKED".equals(exception.getBusinessCode())
-                        || "TEMPLATE_PROFILE_MISMATCH".equals(exception.getBusinessCode())) {
+                        || "TEMPLATE_PROFILE_MISMATCH".equals(exception.getBusinessCode())
+                        || "AUTOMATIC_RELEASE_STATE_INVALID".equals(exception.getBusinessCode())) {
                     intake.markNeedsReview(jobId, batchId, exception.getBusinessCode());
                     return;
                 }

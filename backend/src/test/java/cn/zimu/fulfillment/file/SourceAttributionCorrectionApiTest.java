@@ -222,7 +222,8 @@ class SourceAttributionCorrectionApiTest {
                 VALUES (?, 'SOURCE_ORDER','REVISION',?,2,'DAZHE',
                         'DAZHE_SOURCE_ORDER','v1',?,
                         '历史来源修订.xlsx',?,?,'COMPLETED',
-                        '{"candidate_status":"PENDING","source_order_candidates":[]}'::jsonb,
+                        '{"candidate_status":"PENDING","candidate_snapshot_version":2,
+                          "source_order_candidates":[]}'::jsonb,
                         'source-attribution-test',CURRENT_TIMESTAMP)
                 RETURNING id
                 """,

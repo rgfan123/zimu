@@ -133,6 +133,36 @@ class SourceTemplateProfileAuthorizationIntegrationTest {
         assertUnconfirmedWithoutOrders(pendingBatchId);
     }
 
+    @Test
+    void correctingTheTrustedOriginBatchInvalidatesItsStandingAuthorization() {
+        String suffix = suffix();
+        String fingerprint = "WANGQI-v1-origin-" + suffix;
+        long seedBatchId = insertBatch(
+                "WANGQI", "WANGQI_SOURCE_ORDER", "v1", fingerprint, true, suffix + "e");
+        profiles.trust(
+                seedBatchId,
+                "trust-origin-" + suffix,
+                new CommandContext("trust-origin-" + suffix, "trust-origin-" + suffix, "source-ops"));
+        jdbc.update(
+                """
+                INSERT INTO app.source_attribution_corrections
+                    (import_batch_id, correction_no, attributed_source_channel,
+                     attributed_template_family, attributed_template_fingerprint,
+                     reason, evidence, corrected_by)
+                VALUES (?, 1, 'DAZHE', 'DAZHE_SOURCE_ORDER', ?,
+                        '受信依据归因纠正回归测试', '{}'::jsonb, 'source-ops')
+                """,
+                seedBatchId,
+                "DAZHE-v1-origin-" + suffix);
+        long pendingBatchId = insertBatch(
+                "WANGQI", "WANGQI_SOURCE_ORDER", "v1", fingerprint, false, suffix + "f");
+
+        assertThat(automaticRelease.releaseIfTrusted(pendingBatchId))
+                .as("授权依据批次被纠正后，旧 standing authorization 必须立即失效")
+                .isFalse();
+        assertUnconfirmedWithoutOrders(pendingBatchId);
+    }
+
     private BusinessException releaseFailure(long batchId) {
         try {
             automaticRelease.releaseIfTrusted(batchId);

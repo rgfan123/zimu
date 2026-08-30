@@ -17,11 +17,15 @@ record SourceOrderCandidate(
         List<CandidateRow> rows,
         String createIdempotencyKey,
         AuditActorType actor,
-        List<SourceMappingSnapshot> sourceMappings) {
+        List<SourceMappingSnapshot> sourceMappings,
+        List<SourceBundleMappingSnapshot> sourceBundleMappings) {
+
+    static final int SNAPSHOT_VERSION = 2;
 
     SourceOrderCandidate {
         rows = List.copyOf(rows);
         sourceMappings = sourceMappings == null ? List.of() : List.copyOf(sourceMappings);
+        sourceBundleMappings = sourceBundleMappings == null ? List.of() : List.copyOf(sourceBundleMappings);
     }
 
     SourceOrderCandidate(
@@ -30,7 +34,17 @@ record SourceOrderCandidate(
             List<CandidateRow> rows,
             String createIdempotencyKey,
             AuditActorType actor) {
-        this(candidateKey, order, rows, createIdempotencyKey, actor, List.of());
+        this(candidateKey, order, rows, createIdempotencyKey, actor, List.of(), List.of());
+    }
+
+    SourceOrderCandidate(
+            String candidateKey,
+            CanonicalOrderInput order,
+            List<CandidateRow> rows,
+            String createIdempotencyKey,
+            AuditActorType actor,
+            List<SourceMappingSnapshot> sourceMappings) {
+        this(candidateKey, order, rows, createIdempotencyKey, actor, sourceMappings, List.of());
     }
 
     record CandidateRow(long rawImportRowId, int partitionCount) {
@@ -51,6 +65,37 @@ record SourceOrderCandidate(
         SourceMappingSnapshot {
             if (itemIndex < 0 || sourceSkuRef == null || sourceSkuRef.isBlank()) {
                 throw new IllegalArgumentException("来源映射快照缺少商品行位置或来源编码");
+            }
+        }
+    }
+
+    /** 一个来源原始行命中的静态礼包映射及完整 BOM 快照。 */
+    record SourceBundleMappingSnapshot(
+            long rawImportRowId,
+            int itemIndex,
+            int partitionCount,
+            String sourceBundleRef,
+            Long bundleId,
+            BigDecimal quantityMultiplier,
+            List<BundleComponentSnapshot> components) {
+        SourceBundleMappingSnapshot {
+            if (rawImportRowId <= 0
+                    || itemIndex < 0
+                    || partitionCount <= 0
+                    || sourceBundleRef == null
+                    || sourceBundleRef.isBlank()
+                    || bundleId == null) {
+                throw new IllegalArgumentException("来源礼包映射快照缺少原始行、商品位置或礼包身份");
+            }
+            components = components == null ? List.of() : List.copyOf(components);
+        }
+    }
+
+    /** 静态礼包 BOM 的内部 SKU 身份与每礼包数量。 */
+    record BundleComponentSnapshot(Long skuId, String skuCode, BigDecimal quantityPerBundle) {
+        BundleComponentSnapshot {
+            if (skuId == null || skuCode == null || skuCode.isBlank() || quantityPerBundle == null) {
+                throw new IllegalArgumentException("礼包组件快照不完整");
             }
         }
     }

@@ -133,13 +133,8 @@ class SourceOrderCandidateMaterializer {
             long batchId, List<SourceOrderCandidate> candidates, CommandContext context) {
         for (SourceOrderCandidate candidate : candidates) {
             CanonicalOrderInput input = resolveStructuredCustomer(candidate.order());
-            OrderDetailDto created = orders.createImported(
-                            input,
-                            batchId,
-                            candidate.createIdempotencyKey(),
-                            context,
-                            candidate.actor())
-                    .result();
+            OrderDetailDto created = orders.createImportedWithinBatch(
+                    input, batchId, context, candidate.actor());
             linkRows(batchId, candidate, created);
         }
     }
@@ -238,10 +233,22 @@ class SourceOrderCandidateMaterializer {
                 return null;
             }
             String status = root.path("candidate_status").asText();
+            int snapshotVersion = root.path("candidate_snapshot_version").asInt(0);
             boolean hasMaterializationCandidates = root.path("source_order_candidates").isArray();
             boolean hasReadinessCandidates = root.path("source_order_readiness_candidates").isArray();
             if ("PENDING".equals(status) && !hasMaterializationCandidates) {
                 throw new IllegalStateException("待成单来源批次缺少候选快照");
+            }
+            if ("PENDING".equals(status) && snapshotVersion != SourceOrderCandidate.SNAPSHOT_VERSION) {
+                throw new BusinessException(
+                        409,
+                        "IMPORT_BATCH_BLOCKED",
+                        "来源订单候选缺少可验证的主数据快照版本，请重新导入批次",
+                        List.of(),
+                        Map.of(
+                                "blocking_type", "CANDIDATE_SNAPSHOT_VERSION",
+                                "snapshot_version", snapshotVersion,
+                                "required_version", SourceOrderCandidate.SNAPSHOT_VERSION));
             }
             if ("MATERIALIZED".equals(status) && !hasReadinessCandidates) {
                 throw new IllegalStateException("已成单来源批次缺少 SKU 门禁快照");

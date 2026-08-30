@@ -452,6 +452,95 @@ class MixedProviderStaticBundlePipelineApiTest {
     }
 
     @Test
+    void sourceBundleMappingAndBomDriftBlockBeforeCreatingOrders() throws Exception {
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-BUNDLE-DRIFT", "鸵鸟礼包漂移组件", "TP-BUNDLE-DRIFT-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-DRIFT-001",
+                "羊蝎子鸵鸟漂移礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-drift-001");
+        String bundleRef = "WQ-MIXED-DRIFT-BUNDLE-001";
+        createSourceBundleMapping(
+                bundleRef, "羊蝎子鸵鸟漂移礼包", bundleId, "mix-source-bundle-drift-001");
+
+        ResponseEntity<Map> mappingCandidate = upload(
+                workbook("WQ-MIXED-DRIFT-MAPPING-001", bundleRef, "羊蝎子鸵鸟漂移礼包"),
+                "mix-upload-drift-mapping-001");
+        long mappingBatchId = Long.parseLong(mappingCandidate.getBody().get("id").toString());
+        jdbc.update(
+                "UPDATE app.source_channel_bundles SET active=FALSE "
+                        + "WHERE source_channel='WANQI' AND source_bundle_ref=?",
+                bundleRef);
+
+        ResponseEntity<Map> mappingBlocked = confirm(
+                Long.toString(mappingBatchId), "mix-confirm-drift-mapping-001");
+        assertThat(mappingBlocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(mappingBlocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                mappingBatchId)).isZero();
+
+        jdbc.update(
+                "UPDATE app.source_channel_bundles SET active=TRUE "
+                        + "WHERE source_channel='WANQI' AND source_bundle_ref=?",
+                bundleRef);
+        ResponseEntity<Map> bomCandidate = upload(
+                workbook("WQ-MIXED-DRIFT-BOM-001", bundleRef, "羊蝎子鸵鸟漂移礼包"),
+                "mix-upload-drift-bom-001");
+        long bomBatchId = Long.parseLong(bomCandidate.getBody().get("id").toString());
+        jdbc.update(
+                "UPDATE app.bundle_items SET quantity_per_bundle=quantity_per_bundle+1 "
+                        + "WHERE bundle_id=? AND sku_id=?",
+                Long.parseLong(bundleId),
+                Long.parseLong(tpSku.get("id").toString()));
+
+        ResponseEntity<Map> bomBlocked = confirm(
+                Long.toString(bomBatchId), "mix-confirm-drift-bom-001");
+        assertThat(bomBlocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(bomBlocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                bomBatchId)).isZero();
+    }
+
+    @Test
+    void unversionedPendingCandidateFailsClosedInsteadOfReinterpretingCurrentMappings() throws Exception {
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-UNVERSIONED", "鸵鸟旧候选组件", "TP-UNVERSIONED-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-UNVERSIONED-001",
+                "羊蝎子鸵鸟旧候选礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-unversioned-001");
+        String bundleRef = "WQ-MIXED-UNVERSIONED-BUNDLE-001";
+        createSourceBundleMapping(
+                bundleRef, "羊蝎子鸵鸟旧候选礼包", bundleId, "mix-source-bundle-unversioned-001");
+        ResponseEntity<Map> uploaded = upload(
+                workbook("WQ-MIXED-UNVERSIONED-ORDER-001", bundleRef, "羊蝎子鸵鸟旧候选礼包"),
+                "mix-upload-unversioned-001");
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+        jdbc.update(
+                "UPDATE app.import_batches SET error_detail=error_detail-'candidate_snapshot_version' WHERE id=?",
+                batchId);
+
+        ResponseEntity<Map> blocked = confirm(Long.toString(batchId), "mix-confirm-unversioned-001");
+
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(blocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                batchId)).isZero();
+    }
+
+    @Test
     void legacyMaterializedBundleWithoutCandidateSnapshotStillRechecksEveryComponent() throws Exception {
         Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
         Map<String, Object> tpSku = createThirdPartySkuFixture(

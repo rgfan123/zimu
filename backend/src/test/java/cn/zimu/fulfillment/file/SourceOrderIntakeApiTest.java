@@ -2,10 +2,15 @@ package cn.zimu.fulfillment.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.common.web.AuthenticationKind;
+import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.message.AsyncTaskStore;
 import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
@@ -61,6 +66,7 @@ class SourceOrderIntakeApiTest {
     @Autowired AsyncTaskStore tasks;
     @Autowired SourceOrderIntakeProcessor processor;
     @Autowired SourceOrderIntakeService intake;
+    @MockitoSpyBean SourceBatchAutomaticReleaseService automaticRelease;
     @MockitoSpyBean SourceImportService imports;
 
     @BeforeEach
@@ -368,6 +374,16 @@ class SourceOrderIntakeApiTest {
                         String.class,
                         batchId))
                 .isEqualTo("source-order-automatic-release");
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT actor_type FROM app.audit_logs
+                        WHERE operation='source-orders.confirm'
+                          AND request_id=?
+                        """,
+                        String.class,
+                        "automatic-release-batch-" + batchId))
+                .as("AutomaticRelease 的确认审计必须忠实记录为系统动作")
+                .isEqualTo("SYSTEM");
         verify(imports).submitJdOutboundsForSourceBatch(org.mockito.ArgumentMatchers.eq(batchId), any());
 
         // 模拟“确认已提交、出站步骤或任务收尾前进程中断”后的同任务重入；
@@ -376,6 +392,81 @@ class SourceOrderIntakeApiTest {
         processor.process(task);
         verify(imports, times(2))
                 .submitJdOutboundsForSourceBatch(org.mockito.ArgumentMatchers.eq(batchId), any());
+    }
+
+    @Test
+    void consumedAutomaticAuthorizationRecoversPairedOutboundAfterProfileRevocation() throws Exception {
+        upsertReadyDazheJdMapping("DZ-SKU-AUTO-RECOVERY");
+        String suffix = java.util.UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        ResponseEntity<Map> seed = uploadSource(
+                "dazhe-recovery-seed.xlsx",
+                workbook(
+                        dazheHeaders(),
+                        dazheRow(
+                                "DAZHE-RECOVERY-SEED-" + suffix,
+                                "DZ-SKU-AUTO-RECOVERY",
+                                "牛腱子自动恢复测试")),
+                "ticket-04-recovery-seed-" + suffix);
+        long seedBatchId = Long.parseLong(seed.getBody().get("id").toString());
+        assertThat(confirmSourceBatch(seedBatchId, "ticket-04-recovery-confirm-" + suffix).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+        ResponseEntity<Map> trusted = trustTemplate(
+                seedBatchId, "ticket-04-recovery-trust-" + suffix);
+        long profileId = Long.parseLong(trusted.getBody().get("id").toString());
+
+        ResponseEntity<Map> pending = uploadSource(
+                "dazhe-recovery-pending.xlsx",
+                workbook(
+                        dazheHeaders(),
+                        dazheRow(
+                                "DAZHE-RECOVERY-PENDING-" + suffix,
+                                "DZ-SKU-AUTO-RECOVERY",
+                                "牛腱子自动恢复测试")),
+                "ticket-04-recovery-pending-" + suffix);
+        long batchId = Long.parseLong(pending.getBody().get("id").toString());
+        String automaticKey = "automatic-release-template-" + profileId + "-batch-" + batchId;
+        CommandContext system = new CommandContext(
+                "automatic-release-batch-" + batchId,
+                automaticKey,
+                "source-order-automatic-release",
+                "source-order-automatic-release",
+                AuthenticationKind.INTERNAL_SERVICE);
+
+        // 模拟确认事务已提交、但调用京东前进程中断。
+        imports.confirmTrustedSourceBatch(batchId, profileId, automaticKey, system);
+        assertThat(jdbc.queryForObject(
+                "SELECT confirmed_at IS NOT NULL FROM app.import_batches WHERE id=?",
+                Boolean.class,
+                batchId)).isTrue();
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.shipment_jd_outbounds outbound
+                JOIN app.shipments shipment ON shipment.id=outbound.shipment_id
+                JOIN app.orders orders ON orders.id=shipment.order_id
+                WHERE orders.source_import_batch_id=? AND outbound.sync_status='SUBMITTED'
+                """,
+                Integer.class,
+                batchId)).isZero();
+        jdbc.update(
+                """
+                UPDATE app.source_template_profiles
+                SET status='REVOKED', revoked_by='security-ops', revoked_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                profileId);
+
+        assertThat(automaticRelease.releaseIfTrusted(batchId))
+                .as("确认时已消费的授权必须驱动配对出站恢复，不能重新解释为从未受信")
+                .isTrue();
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.shipment_jd_outbounds outbound
+                JOIN app.shipments shipment ON shipment.id=outbound.shipment_id
+                JOIN app.orders orders ON orders.id=shipment.order_id
+                WHERE orders.source_import_batch_id=? AND outbound.sync_status='SUBMITTED'
+                """,
+                Integer.class,
+                batchId)).isEqualTo(1);
     }
 
     @Test
@@ -432,6 +523,32 @@ class SourceOrderIntakeApiTest {
                         Integer.class,
                         ((Number) job.get("import_batch_id")).longValue()))
                 .isZero();
+    }
+
+    @Test
+    void reconciliationRequiredRemainsMonotonicOnTheIntakeJob() throws Exception {
+        byte[] workbook = workbook(
+                dazheHeaders(),
+                dazheRow("DAZHE-RECON-001", "DZ-SKU-RECON-001", "京东对账状态测试"));
+        ResponseEntity<Map> submitted = submit(
+                "dazhe-reconciliation.xlsx", workbook, "DAZHE", "ticket-04-reconciliation-001");
+        long jobId = Long.parseLong(submitted.getBody().get("id").toString());
+        AsyncTaskStore.AsyncTask task = tasks.claim(
+                        SourceOrderIntakeService.TASK_TYPE, "reconciliation-owner", Duration.ofSeconds(30))
+                .orElseThrow();
+        doThrow(BusinessException.conflict(
+                        "RECONCILIATION_REQUIRED", "京东结果未知，必须先对账"))
+                .when(automaticRelease).releaseIfTrusted(anyLong());
+
+        processor.process(task);
+
+        Map<String, Object> job = jdbc.queryForMap(
+                "SELECT status, error_code, import_batch_id FROM app.source_order_intake_jobs WHERE id=?",
+                jobId);
+        assertThat(job)
+                .containsEntry("status", "RECONCILIATION_REQUIRED")
+                .containsEntry("error_code", "RECONCILIATION_REQUIRED");
+        assertThat(job.get("import_batch_id")).isNotNull();
     }
 
     @Test

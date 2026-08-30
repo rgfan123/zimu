@@ -1479,7 +1479,11 @@ class ExcelClosedLoopApiTest {
         ResponseEntity<Map> confirmation = confirmBatch(
                 batchId, "confirm-after-source-import-jd-decimal-001");
         assertThat(confirmation.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(confirmation.getBody()).containsEntry("business_code", "IMPORT_BATCH_EXPORT_INCOMPLETE");
+        assertThat(confirmation.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        Map<?, ?> details = (Map<?, ?>) confirmation.getBody().get("details");
+        Map<?, ?> blockedLine = (Map<?, ?>) ((List<?>) details.get("lines")).getFirst();
+        assertThat(((List<?>) blockedLine.get("reason_codes")).stream().map(String::valueOf).toList())
+                .contains("QUANTITY_SCALE");
 
         Map<String, Object> imported = get("/api/v1/import-batches/" + batchId);
 

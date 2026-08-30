@@ -8,12 +8,14 @@ record SourceOrderReadinessCandidate(
         String candidateKey,
         List<CandidateRow> rows,
         List<OrderItemInput> items,
-        List<SourceOrderCandidate.SourceMappingSnapshot> sourceMappings) {
+        List<SourceOrderCandidate.SourceMappingSnapshot> sourceMappings,
+        List<SourceOrderCandidate.SourceBundleMappingSnapshot> sourceBundleMappings) {
 
     SourceOrderReadinessCandidate {
         rows = List.copyOf(rows);
         items = List.copyOf(items);
         sourceMappings = sourceMappings == null ? List.of() : List.copyOf(sourceMappings);
+        sourceBundleMappings = sourceBundleMappings == null ? List.of() : List.copyOf(sourceBundleMappings);
     }
 
     static SourceOrderReadinessCandidate from(SourceOrderCandidate candidate) {
@@ -23,7 +25,8 @@ record SourceOrderReadinessCandidate(
                         .map(row -> new CandidateRow(row.rawImportRowId(), row.partitionCount()))
                         .toList(),
                 candidate.order().items(),
-                candidate.sourceMappings());
+                candidate.sourceMappings(),
+                candidate.sourceBundleMappings());
     }
 
     record CandidateRow(long rawImportRowId, int partitionCount) {

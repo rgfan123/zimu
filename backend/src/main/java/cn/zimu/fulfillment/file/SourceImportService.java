@@ -7,6 +7,7 @@ import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
+import cn.zimu.fulfillment.common.web.AuthenticationKind;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
@@ -217,7 +218,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             }
             stageReadyCandidates(batchId, candidates);
         }
-        // raw 行已与订单行建立血缘后，把 sheet/行号并入 SKU 映射类复核事项并直连 raw_import_row_id。
+        // 兼容已成单/重放路径：若 raw 行已有订单血缘，则补齐 SKU 映射复核事项的 sheet/行号与 raw_import_row_id。
         enrichReviewCasesWithSourceRow(batchId);
 
         return finalizeBatch(batchId, started, context, AuditActorType.HUMAN,
@@ -273,6 +274,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         }
         Map<String, Object> batchDetail = new LinkedHashMap<>();
         batchDetail.put("candidate_status", "PENDING");
+        batchDetail.put("candidate_snapshot_version", SourceOrderCandidate.SNAPSHOT_VERSION);
         batchDetail.put("source_order_candidates", candidates);
         if (readinessBlock != null) {
             batchDetail.put("readiness", readinessBlock.getDetails());
@@ -306,6 +308,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 "UPDATE app.import_batches SET error_detail=?::jsonb WHERE id=?",
                 json(Map.of(
                         "candidate_status", "PENDING",
+                        "candidate_snapshot_version", SourceOrderCandidate.SNAPSHOT_VERSION,
                         "source_order_candidates", candidates)),
                 batchId);
     }
@@ -570,7 +573,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             }
             stageReadyCandidates(batchId, candidates);
         }
-        // raw 行已与订单行建立血缘后，把 sheet/行号并入 SKU 映射类复核事项并直连 raw_import_row_id。
+        // 兼容已成单/重放路径：若 raw 行已有订单血缘，则补齐 SKU 映射复核事项的 sheet/行号与 raw_import_row_id。
         enrichReviewCasesWithSourceRow(batchId);
 
         // 3) 批次收尾：状态与审计口径与文件导入一致
@@ -1106,9 +1109,9 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             payload.put("template_profile_id", templateProfileId);
         }
         return idempotency.execute("source_import.confirm", idempotencyKey, payload, 200, () -> {
-            if (templateProfileId != null) {
-                templateProfiles.requireTrustedBatchMatchForRelease(templateProfileId, batchId);
-            }
+            SourceTemplateProfileService.TrustedTemplate automaticProfile = templateProfileId == null
+                    ? null
+                    : templateProfiles.requireTrustedBatchMatchForRelease(templateProfileId, batchId);
             // 覆盖候选成单、Provider 校验和最终路由，避免阶段之间穿插主数据写入。
             sourceBatchSkuReadinessGate.acquireCatalogSnapshot();
             // 所有上传都只保存整批候选；确认事务内先复核再成单，后续任一门禁失败时
@@ -1176,6 +1179,9 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                             "IMPORT_BATCH_EXPORT_INCOMPLETE",
                             "批次仍有已接收行未进入发货批次或履约导出，请完成订单复核后重试");
                 }
+                if (automaticProfile != null) {
+                    templateProfiles.recordConsumedAuthorization(batchId, automaticProfile);
+                }
                 jdbc.update(
                         "UPDATE app.import_batches SET confirmed_at=CURRENT_TIMESTAMP, confirmed_by=? WHERE id=?",
                         context.operator(),
@@ -1195,7 +1201,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     .requestId(context.requestId())
                     .traceId(context.traceId())
                     .operator(context.operator())
-                    .actorType(context.operator().startsWith("automatic-release:")
+                    .actorType(context.authenticationKind() == AuthenticationKind.INTERNAL_SERVICE
                             ? AuditActorType.SYSTEM
                             : AuditActorType.HUMAN)
                     .service("source-file-import")
@@ -1524,7 +1530,9 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             String name = String.valueOf(key);
             if (!"source_order_candidates".equals(name)
                     && !"source_order_readiness_candidates".equals(name)
-                    && !"candidate_status".equals(name)) {
+                    && !"candidate_status".equals(name)
+                    && !"candidate_snapshot_version".equals(name)
+                    && !"automatic_release".equals(name)) {
                 safe.put(String.valueOf(key), item);
             }
         });
