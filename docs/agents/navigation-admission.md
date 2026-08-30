@@ -50,9 +50,13 @@
   4. **与 `MCP_MODULES` 是两件事**：那个控制 MCP 工具对外暴露面，本层控制功能可用性。
      两者不共用配置、不互相推导，导航可见性不得直接读 `MCP_MODULES`。
 
-  本层不改变第 3 节计数：截至票 03 生产导航树没有任何节点声明 `requiresModule`（把「客户跟进」
-  改为受控是票 04）。将来某个入口受控后，第 3 节计数按「全部模块开放」口径记，并在
-  第 2 节收敛清单里标注它依赖哪个模块。
+  受控入口的计数口径（票 04 起生效）：**第 3 节计数一律按「全部模块开放」口径记**，同时把
+  受控入口关闭时的计数写在同一格里（如「5（客户中心已接通）/ 4（未接通）」），并在第 2 节
+  收敛清单标注它依赖哪个模块。上限 ≤ 6 按「全部模块开放」口径判定——受控只会让可见子项变少，
+  不可能因为某个模块关闭而突破上限。
+
+  截至票 04，生产导航树里受控的只有「客户跟进」（`/workbench/business-followups` →
+  `customer-center`）。
 - **访问数据触发（前瞻条款）**：当前没有访问埋点，本规则以动线证据裁定，不机械按「最近 N 周
   无访问」隐藏。若后续接入访问统计，可将「连续 8 周零访问」作为**补充触发条件**（仍需按本节
   流程评审降级，数据只作证据之一）。
@@ -76,6 +80,7 @@
 | 出库信息对账 | `/workbench/recon`（旧 `/fulfillment/outbound-recon` 保留直达） | 同上 | 低频专用查询：按出库单号/京东单号/订单号核对单笔出库的系统内部事实与京东侧事实，属专项核对工具，不是每日动线；查询主键（系统出库单号）由发货记录的行/抽屉承载 → 上下文入口放在发货记录页（页头 actions，与既有刷新按钮同排，href 指向 `/workbench/recon`）。Issue #111 新增作业中心隐藏入口 `/workbench/recon`（复用出库对账展示并注入「金额对账未纳入本期」口径横幅），旧 `/fulfillment/outbound-recon` 继续可用、不注入金额口径横幅。文件作业（销售出库）页的导出明细虽含出库单号，但属履约指令文件侧，不重复放置，避免同一入口散落多处。 |
 | 今日发货工作台 | `/workbench/shipping` | 降级为上下文二级入口（`hideInMenu: true`，路由与 routeElements 保留） | Issue #107：发货员从一次订单同步开始今天的工作，如实呈现三平台订单刷新结果（OK/FAILED/SKIPPED、聚福宝「仅报告未入库」）。属每日动线起点，但按 Issue #103 分期交付——本步先隐藏注册并诚实呈现渠道结果，后续 01 再露出为可见入口；生产入口放在文件作业（销售出库）页 PageShell actions（href 指向原路径），不占作业中心可见菜单位。 |
 | 待处理 / 异常订单 / 订单追踪 | `/orders/pending` `/orders/exceptions` `/orders/tracking` | UIUX-02：预设视图并入「全部订单」页内 Segmented 切换（`hideInMenu: true`；三个页面文件删除，routeElements 全部映射到 `<OrdersPage />`，由 `orderPresetFromPathname` 按 pathname 解析预设） | 三个入口本就是同一列表组件的不同默认筛选（defaultFilters），合并后仍各自保持原筛选口径与提示；旧直达 URL 原样可达、书签不失效，页内 Segmented 即上下文切换入口（比独立 Link/Button 更强的动线承载）。订单中心可见叶子 4 → 1，不新增业务对象、不改写任何 URL。 |
+| 客户跟进 | `/workbench/business-followups` | **票 04：受运行期模块清单控制**（`requiresModule: 'customer-center'`；路由与 routeElements 保留，未接通时只是不显示） | 它是每日动线页面（渠道消息证据 → 建档 → +1 发起整理 → 确认），**接通时按 1.1 高频口径正常可见，位置/label/path 全不变**；但整理与客户归属全程要读客户中心（kehuzx）的客户档案——未接通时点进去必然拿到 `KEHUZX_NOT_CONFIGURED`，菜单等于在承诺系统给不出的能力。判据取后端 `BusinessModuleAvailabilityService`（客户中心 = `KehuzxMcpProperties.isReady()`，正是 `KehuzxMcpReadClient` 抛 `KEHUZX_NOT_CONFIGURED` 的同一个开关），不在前端另立标准，也与 `MCP_MODULES` 无关。未接通时 URL 仍可直达，页面如实说明「只能查看已有档案、发起整理会以 `KEHUZX_NOT_CONFIGURED` 失败」，判据同样取那份清单——菜单与页面不会各说各话。 |
 
 **不动的一级入口及其符合准入的依据**：作业中心 6 个高频入口（人工复核/渠道消息/履约任务/
 采购协同/文件作业/发货记录）均为每日动线主线页面；订单中心（UIUX-02 合并后 1 个可见叶子）
@@ -97,14 +102,23 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
 计数规则：一级板块 = `appNavigation` 顶级项数（含 `/demo/order` 演示页与 `/bi` 外链）；
 可见入口 = `flattenNavigationLeaves(visibleNavigationTree(appNavigation))`（含外链）；
 可路由叶子 = `routableNavigationLeaves(appNavigation)`（不含 external）。
+**受控入口（票 04 起）按「全部模块开放」口径计入，关闭态的数字写在同一格里**——降级 ≠ 删除，
+可路由叶子在两态下完全相同。
 
-| 指标 | 收敛前 | #98 收敛后 | **Issue #104 换壳后** | **UIUX-02 合并后** | **UIUX-10 收敛后（当前）** |
-|---|---|---|---|---|---|
-| 一级板块（顶级菜单项） | 10 | 10 | **11**（新增「我的工作台」排最前，spec #103 D6） | **11**（不变） | **11**（不变） |
-| 可见入口（可见叶子，含外链） | 31 | 30 | **32**（shipping/recon 升为可见 +2；`/demo/order` 隐藏 −1；#110 新增 `/workbench/procurement` +1） | **28**（订单中心三预设并入「全部订单」−3；采购协同仍可见） | **23**（UIUX-10：采购去重 −1、Agent 中心 −3、京东工具 6→1 −5） |
-| 可路由叶子（不含外链，全部生产路由） | 38 | 42 | **43**（#110 新增采购工作台路由；既有 URL 零删改） | **46**（自 #104 后新增 agents/上传等路由） | **47**（+`/system/jd-tools` 新入口；既有 URL 零删改） |
-| 作业中心可见叶子 | 8 | 6 | **5**（复核收件箱移入我的工作台） | **5**（不变） | **4**（采购协同降级，采购唯一入口在我的工作台） |
-| 我的工作台可见叶子 | — | — | **4**（今日发货/复核收件箱/采购工作台/对账工作台） | **4**（不变） | **4**（采购工作台更名「采购」） |
+| 指标 | 收敛前 | #98 收敛后 | **Issue #104 换壳后** | **UIUX-02 合并后** | **UIUX-10 收敛后** | **票 04 后（当前实测）** |
+|---|---|---|---|---|---|---|
+| 一级板块（顶级菜单项） | 10 | 10 | **11**（新增「我的工作台」排最前，spec #103 D6） | **11**（不变） | **11**（不变） | **10** |
+| 可见入口（可见叶子，含外链） | 31 | 30 | **32**（shipping/recon 升为可见 +2；`/demo/order` 隐藏 −1；#110 新增 `/workbench/procurement` +1） | **28**（订单中心三预设并入「全部订单」−3；采购协同仍可见） | **23**（UIUX-10：采购去重 −1、Agent 中心 −3、京东工具 6→1 −5） | **26（全部模块开放）/ 25（客户中心未接通）** |
+| 可路由叶子（不含外链，全部生产路由） | 38 | 42 | **43**（#110 新增采购工作台路由；既有 URL 零删改） | **46**（自 #104 后新增 agents/上传等路由） | **47**（+`/system/jd-tools` 新入口；既有 URL 零删改） | **50**（两态相同；票 04 零删改） |
+| 作业中心可见叶子 | 8 | 6 | **5**（复核收件箱移入我的工作台） | **5**（不变） | **4**（采购协同降级，采购唯一入口在我的工作台） | **2**（渠道与文件：渠道消息 / 文件作业） |
+| 我的工作台可见叶子 | — | — | **4**（今日发货/复核收件箱/采购工作台/对账工作台） | **4**（不变） | **4**（采购工作台更名「采购」） | **5（客户中心已接通）/ 4（未接通）** |
+
+各一级板块可见子项（票 04 后实测，均 ≤ 6）：我的工作台 5/4（客户跟进受控）、订单与发货 3、
+渠道与文件 2、Agent 中心 3、商品与主数据 4、系统与接入 6（**已满，不能再加可见叶子**）。
+
+> 计数勘误（票 04 一并修正）：UIUX-10 那一列的「11 / 23 / 47 / 4」是记录时点口径，此后
+> 「客户跟进」「会话管理」「机器人管理」「履约任务」等入口陆续加入而没有回来改表，与代码
+> 早已不一致。本列按下方复核命令实时重算，一律以实测为准。
 
 **UIUX-02 变更记录（2026-08-25）**：订单中心四个菜单入口合并为「全部订单」一个，待处理 /
 异常订单 / 订单追踪降级为页内 Segmented 预设（`hideInMenu: true`，路径与 routeElements 保留并
@@ -140,10 +154,18 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
 本表计数**不变**——本票只建机制，生产导航树尚无节点声明 `requiresModule`，全部模块开放时
 可见结果与引入前逐叶相同（`businessObjectNavigation.test.ts` 有回归断言）。
 
+**票 04 客户跟进入口受控（2026-08-30）**：`/workbench/business-followups` 声明
+`requiresModule: 'customer-center'`，成为生产树里第一个（也是目前唯一一个）受控入口。
+可见入口与「我的工作台」可见叶子因此变成条件计数（见上表两态口径）；一级板块数、可路由
+叶子数两态相同，既有 URL 零删改。未接通时该 URL 仍可直达，页面按外壳读到的同一份清单
+给出「只能查看已有档案 / 发起整理会以 `KEHUZX_NOT_CONFIGURED` 失败」的提示——菜单与页面
+同源，不会一个说有一个说没有。
+
 > Issue 记录的「9 个一级板块 / 34 可见入口」是记录时点口径，与当前代码不一致（此后新增了
 > 静态礼包等入口），一律以本表实时重算为准。复核命令（frontend 目录下）：
 > `node --experimental-strip-types -e "import { appNavigation, visibleNavigationTree, flattenNavigationLeaves, routableNavigationLeaves } from './src/navigation.ts'; const v = flattenNavigationLeaves(visibleNavigationTree(appNavigation)); console.log('一级板块', appNavigation.length, '可见入口', v.length, '可路由叶子', routableNavigationLeaves(appNavigation).length);"`
-> 该命令按「全部模块开放」口径重算（未声明 `requiresModule` 的节点不受运行期清单影响）。
+> 该命令按「全部模块开放」口径重算。受控入口关闭态的计数（票 04 起需要）另跑：
+> `node --experimental-strip-types -e "import { appNavigation, visibleNavigationTree, flattenNavigationLeaves, moduleVisibleNavigationTree } from './src/navigation.ts'; import { NO_OPEN_BUSINESS_MODULES } from './src/businessModules.ts'; console.log('可见入口(无模块开放)', flattenNavigationLeaves(visibleNavigationTree(moduleVisibleNavigationTree(appNavigation, NO_OPEN_BUSINESS_MODULES))).length);"`
 
 ## 4. 后续新增菜单的检查步骤（Checklist）
 
@@ -158,7 +180,11 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
 5. [ ] 若入口依赖某个外部业务能力：在节点上声明 `requiresModule`，并确认后端
       `BusinessModuleAvailabilityService` 里该模块的判据就是「点进去能不能用」的同一个开关
       （不得新造一份可能与真实链路不同步的开关）。
-6. [ ] 更新本文件第 2 节收敛清单与第 3 节计数（计数按「全部模块开放」口径）。
+5b.[ ] 受控入口还要管**直达态**：未接通时 URL 仍必须可达且页面正常渲染，并给出与状态相符
+      的提示；提示的判据取外壳下发的同一份清单（`useBusinessModuleStatus`），不在页面里
+      另立判据，也不要在清单未落定时就断言「未接通」。
+6. [ ] 更新本文件第 2 节收敛清单与第 3 节计数（按「全部模块开放」口径，受控入口把关闭态
+      的数字写在同一格）。
 7. [ ] 测试门禁全绿（第 5 节）。
 
 ## 5. 测试门禁（导航相关）
@@ -171,6 +197,14 @@ Issue #111 的 `/workbench/recon` 是隐藏叶子，不改变可见计数（作�
   - **运行期模块过滤的零行为变化回归（票 03）**：全部模块开放时可见叶子集合与过滤前逐项相同；
     未开放任何模块时消失的恰好是声明了 `requiresModule` 的叶子；过滤不改写 `appNavigation`
     本身（可路由叶子一个不少）。
+  - **客户跟进受控（票 04）**：`/workbench/business-followups` 声明
+    `requiresModule: 'customer-center'` 且它是生产树里唯一的受控叶子；接通时出现在原有位置
+    （复核收件箱之后、采购之前）且 label 不变，未接通时菜单里少的恰好只有它（我的工作台
+    可见叶子 5 → 4，仍 ≤ 6）；两态下路由注册与「我的工作台 / 客户跟进」归属都不变。
+- `frontend/test/businessFollowUpModuleGate.test.ts`（票 04 接线门禁）：外壳按清单渲染侧栏
+  （未接通没有该链接 / 接通回到原位置且 label 不变）；两态下 `/workbench/business-followups`
+  直达都正常渲染出列表；未接通与「清单读不到」两种情况下页面给出同一句状态提示，
+  与菜单口径一致。
 - `frontend/test/runtimeModuleVisibility.test.ts`（票 03 机制门禁）：受控节点整支过滤、
   整组受控与「只有受控子项」的空组收敛、URL 直达与归属仍取完整导航树、侧栏轨道确实按清单过滤、
   清单载荷畸形或含未知模块标识时保守取空集。

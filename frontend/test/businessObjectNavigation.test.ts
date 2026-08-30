@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BUSINESS_MODULE_IDS, NO_OPEN_BUSINESS_MODULES } from '../src/businessModules.ts';
+import {
+  BUSINESS_MODULE_IDS,
+  NO_OPEN_BUSINESS_MODULES,
+  type BusinessModuleId,
+} from '../src/businessModules.ts';
 import {
   appNavigation,
   flattenNavigationLeaves,
@@ -37,6 +41,74 @@ test('my-workbench section leads the navigation with the role workbenches (Issue
       { path: '/workbench/procurement', label: '采购', hideInMenu: false },
       { path: '/workbench/recon', label: '对账工作台', hideInMenu: false },
     ],
+  );
+});
+
+const ALL_MODULES_OPEN: ReadonlySet<BusinessModuleId> = new Set(BUSINESS_MODULE_IDS);
+
+/** 我的工作台在给定清单下的可见叶子，用于票 04 的两态断言。 */
+function visibleWorkbenchPaths(open: ReadonlySet<BusinessModuleId>): string[] {
+  const filtered = visibleNavigationTree(moduleVisibleNavigationTree(appNavigation, open));
+  return findNavigationNode(filtered, '/workbench')?.children?.map(({ path }) => path) ?? [];
+}
+
+test('客户跟进是生产树里唯一的受控入口，接通与否决定它进不进菜单（票 04）', () => {
+  const followUp = findNavigationNode(appNavigation, '/workbench/business-followups');
+  assert.equal(
+    followUp?.requiresModule,
+    'customer-center',
+    '客户跟进依赖客户中心（kehuzx）：未接通时整理与客户归属必然拿 KEHUZX_NOT_CONFIGURED，'
+      + '入口必须由后端清单裁定，不得在前端另立判据',
+  );
+  assert.deepEqual(
+    flattenNavigationLeaves(appNavigation)
+      .filter(({ requiresModule }) => requiresModule)
+      .map(({ path, requiresModule }) => ({ path, requiresModule })),
+    [{ path: '/workbench/business-followups', requiresModule: 'customer-center' }],
+    '受控是显式的：这一层只能带走明写了 requiresModule 的入口',
+  );
+
+  const open = visibleWorkbenchPaths(ALL_MODULES_OPEN);
+  const closed = visibleWorkbenchPaths(NO_OPEN_BUSINESS_MODULES);
+
+  assert.deepEqual(
+    open,
+    ['/workbench/shipping', '/workbench/reviews', '/workbench/business-followups',
+      '/workbench/procurement', '/workbench/recon'],
+    '客户中心已接通：客户跟进出现在原有位置（复核收件箱之后、采购之前）',
+  );
+  assert.equal(
+    findNavigationNode(
+      visibleNavigationTree(moduleVisibleNavigationTree(appNavigation, ALL_MODULES_OPEN)),
+      '/workbench/business-followups',
+    )?.label,
+    '客户跟进',
+    '接通态的 label 不得被过滤层改写',
+  );
+  assert.deepEqual(
+    closed,
+    open.filter((path) => path !== '/workbench/business-followups'),
+    '客户中心未接通：菜单里少的恰好只有客户跟进这一项',
+  );
+  assert.equal(open.length, 5, '我的工作台可见叶子：接通 5');
+  assert.equal(closed.length, 4, '我的工作台可见叶子：未接通 4');
+  assert.ok(open.length <= 6, '我的工作台可见叶子不得超过准入上限 6');
+});
+
+test('客户跟进未接通只是不显示：路由与板块归属两态都不变（票 04，降级 ≠ 删除）', () => {
+  // 过滤只作用于菜单：routes.tsx 的 routeConfig 与归属解析都直接读完整 appNavigation，
+  // 与运行期清单无关——所以这里断言的是「与清单无关地成立」，不需要按两态各跑一遍。
+  assert.ok(
+    routableNavigationLeaves(appNavigation).some(({ path }) => path === '/workbench/business-followups'),
+    '未接通时路由仍注册，既有 URL、书签与企微卡片里的直达链接都不得失效',
+  );
+  assert.deepEqual(navigationContext('/workbench/business-followups', ''), {
+    section: '我的工作台',
+    page: '客户跟进',
+  });
+  assert.deepEqual(
+    navigationTrail(appNavigation, '/workbench/business-followups').map(({ label }) => label),
+    ['我的工作台', '客户跟进'],
   );
 });
 

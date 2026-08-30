@@ -19,6 +19,7 @@ import type {
 import DataTable from '@/components/DataTable';
 import PageShell from '@/components/PageShell';
 import { BUSINESS_FOLLOWUP_KIND_LABELS } from '@/constants/labels';
+import { useBusinessModuleStatus } from '@/components/layout/useBusinessModules';
 import { useAsync } from '@/hooks/useAsync';
 import {
   buildBusinessFollowUpCreateInput,
@@ -141,6 +142,10 @@ const positiveIntegerRules = (label: string): Rule[] => [
 
 export default function BusinessFollowUpsPage() {
   const { message } = App.useApp();
+  // 票 04：本页入口受客户中心接通状态控制，未接通时侧边栏没有它、只能直达。直达是允许的
+  // （降级 ≠ 删除），但要如实说明现在能做什么、不能做什么——判据取外壳读到的那份后端清单，
+  // 不在前端另立标准；清单尚未落定（pending）时不作断言，避免闪一句拿不出证据的话。
+  const customerCenter = useBusinessModuleStatus('customer-center');
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -379,6 +384,18 @@ export default function BusinessFollowUpsPage() {
         </Space>
       )}
     >
+      {customerCenter === 'closed' ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="客户中心未接通，本页只能查看已有档案"
+          description={'已建档的跟进材料、草稿与决定记录照常查看。'
+            + '「发起整理」要读客户中心（kehuzx）的客户档案：现在发起，整理任务会以 '
+            + 'KEHUZX_NOT_CONFIGURED 失败，客户归属也无法执行。'
+            + '接通后侧边栏「我的工作台」会重新出现「客户跟进」入口。'}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
       <DataTable<BusinessFollowUpSummary>
         rowKey="id"
         columns={columns}

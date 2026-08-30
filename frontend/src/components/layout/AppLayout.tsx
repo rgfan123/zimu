@@ -12,7 +12,7 @@ import { useCurrentRoute } from '@/routes';
 import { saasTheme, saasVisualTokens } from '@/theme/saasTheme';
 import { railGroupsForRole } from '@/components/layout/shellRail';
 import { useReviewsBadge } from '@/components/layout/useRailBadges';
-import { useOpenBusinessModules } from '@/components/layout/useBusinessModules';
+import { OpenBusinessModulesProvider, useOpenBusinessModules } from '@/components/layout/useBusinessModules';
 import WorkbenchRoleSwitcher from '@/components/layout/WorkbenchRoleSwitcher';
 import GlobalSearchOverlay from '@/components/layout/GlobalSearchOverlay';
 import {
@@ -77,9 +77,13 @@ export default function AppLayout() {
   const reviewsBadge = useReviewsBadge(role);
   // 票 03：导航可见性与后端接通开关联动。清单未到/读不到时是空集（保守），
   // 未接通的模块不进菜单；导航树本身仍是唯一事实源，清单只做过滤。
-  const openModules = useOpenBusinessModules();
+  // 票 04：同一份清单经 context 下发给页面——受控入口直达时，页面要给出与菜单一致的状态提示。
+  const businessModules = useOpenBusinessModules();
 
-  const groups = useMemo(() => railGroupsForRole(role, openModules), [role, openModules]);
+  const groups = useMemo(
+    () => railGroupsForRole(role, businessModules.modules),
+    [role, businessModules],
+  );
   // UIUX-11：低频组默认折叠（商品与主数据、系统与接入）。用户的手动开合记在 localStorage；
   // 含当前路由的组永远展开——把人正在用的入口折起来比平铺更糟。
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
@@ -199,7 +203,10 @@ export default function AppLayout() {
       </aside>
 
       <main className="zs-main">
-        <Outlet />
+        {/* 票 04：页面与侧栏读同一份清单——「菜单里没有」和页面上「未接通」不可能分叉。 */}
+        <OpenBusinessModulesProvider value={businessModules}>
+          <Outlet />
+        </OpenBusinessModulesProvider>
       </main>
 
       <GlobalSearchOverlay open={searchOpen} onClose={closeSearch} returnFocusRef={searchButtonRef} />

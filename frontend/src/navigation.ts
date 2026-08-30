@@ -28,7 +28,10 @@ export const appNavigation = [
     children: [
       { path: '/workbench/shipping', label: '今日发货工作台' },
       { path: '/workbench/reviews', label: '复核收件箱' },
-      { path: '/workbench/business-followups', label: '客户跟进' },
+      // 票 04：客户跟进的整理与客户归属全程要读客户中心（kehuzx）的客户档案——未接通时点进去
+      // 必然拿到 KEHUZX_NOT_CONFIGURED。因此入口受运行期清单控制：接通才进菜单，位置、label 与
+      // path 都不变；未接通只是不显示，路由照常注册、URL 照常直达（降级 ≠ 删除）。
+      { path: '/workbench/business-followups', label: '客户跟进', requiresModule: 'customer-center' },
       // Issue #64 运营提醒独立路由：上下文二级入口（复核页 ↔ 提醒页互为切换），随复核收件箱移入本板块。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       // Issue #110：采购工作台（建议区等 #121/#118 供数，工单区今天即真数）。UIUX-10 #144：采购入口去重后唯一入口。
