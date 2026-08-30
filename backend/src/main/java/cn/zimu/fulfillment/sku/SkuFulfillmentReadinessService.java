@@ -71,7 +71,14 @@ public class SkuFulfillmentReadinessService {
                         SkuDataQualityFlag::getSkuId,
                         HashMap::new,
                         Collectors.toList()));
-        Set<String> duplicateBarcodes = new HashSet<>(skus.findDuplicateActiveBarcodes());
+        Set<String> candidateBarcodes = values.stream()
+                .map(Sku::getBarcode)
+                .map(SkuFulfillmentReadinessService::normalizeBarcode)
+                .filter(value -> value != null)
+                .collect(Collectors.toSet());
+        Set<String> duplicateBarcodes = candidateBarcodes.isEmpty()
+                ? Set.of()
+                : new HashSet<>(skus.findDuplicateActiveBarcodesIn(candidateBarcodes));
 
         Map<Long, SkuFulfillmentReadiness> result = new HashMap<>();
         for (Sku sku : values) {
@@ -85,7 +92,9 @@ public class SkuFulfillmentReadinessService {
             if (product == null || !product.isActive()) reasons.add(SkuReadinessReason.PRODUCT_INACTIVE);
             if (!sku.isActive()) reasons.add(SkuReadinessReason.SKU_INACTIVE);
             if (provider == null || !provider.isActive()) reasons.add(SkuReadinessReason.PROVIDER_INACTIVE);
-            if (missingIdentityText(sku.getSpecification())) reasons.add(SkuReadinessReason.SPECIFICATION_REQUIRED);
+            if (missingIdentityText(sku.getSpecification()) || missingPackagingIdentity(sku)) {
+                reasons.add(SkuReadinessReason.SPECIFICATION_REQUIRED);
+            }
             if (missingIdentityText(sku.getUnit())) reasons.add(SkuReadinessReason.UNIT_REQUIRED);
 
             if (mapping == null) {
@@ -93,8 +102,9 @@ public class SkuFulfillmentReadinessService {
             } else if (!mapping.isActive()) {
                 reasons.add(SkuReadinessReason.PROVIDER_MAPPING_INACTIVE);
             } else if (provider != null && provider.getProviderType() == ProviderType.JD_WAREHOUSE
-                    && !JdStockUnitConverter.PIECES_UNIT.equals(sku.getUnit())
-                    && JdStockUnitConverter.explicitFactorOrNull(mapping.getExternalCodes()) == null) {
+                    && !JdStockUnitConverter.validateOutboundFactor(
+                                    sku.getUnit(), mapping.getExternalCodes())
+                            .valid()) {
                 reasons.add(SkuReadinessReason.UNIT_CONVERSION_REQUIRED);
             }
 
@@ -147,6 +157,13 @@ public class SkuFulfillmentReadinessService {
 
     private static boolean missingIdentityText(String value) {
         return value == null || value.isBlank() || PLACEHOLDERS.contains(value.trim());
+    }
+
+    private static boolean missingPackagingIdentity(Sku sku) {
+        return sku.getNetContentValue() == null
+                || missingIdentityText(sku.getNetContentUnit())
+                || sku.getPackageCount() == null
+                || missingIdentityText(sku.getPackageUnit());
     }
 
     private static String normalizeBarcode(String value) {

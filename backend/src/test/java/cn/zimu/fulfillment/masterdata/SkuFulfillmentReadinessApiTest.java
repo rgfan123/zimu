@@ -80,6 +80,15 @@ class SkuFulfillmentReadinessApiTest {
         insertMapping(providerId, readySkuId, readySkuCode, true, "{}");
         long blockedSkuId = insertSku(productId, providerId, "1kg", "件", null, true);
 
+        Map<String, Object> missingStructuredIdentity =
+                http.getForObject("/api/v1/skus/" + readySkuId, Map.class);
+        assertThat(reasonCodes(missingStructuredIdentity)).containsExactly("SPECIFICATION_REQUIRED");
+        assertThat(issue(missingStructuredIdentity, "SPECIFICATION_REQUIRED").get("action").toString())
+                .contains("净含量", "包装件数");
+
+        completePackagingIdentity(readySkuId, "500", "g", 1, "件");
+        completePackagingIdentity(blockedSkuId, "1", "kg", 1, "件");
+
         Map<String, Object> readyDetail = http.getForObject("/api/v1/skus/" + readySkuId, Map.class);
         assertThat(readiness(readyDetail)).containsEntry("ready", true);
         assertThat(reasonCodes(readyDetail)).isEmpty();
@@ -98,6 +107,7 @@ class SkuFulfillmentReadinessApiTest {
         long providerId = insertProvider("RDYJD", "JD_WAREHOUSE", true);
         long productId = insertProduct("PROD-RDY-JD", "京东就绪规则样本", true);
         long skuId = insertSku(productId, providerId, "500g/袋", "袋", null, true);
+        completePackagingIdentity(skuId, "500", "g", 1, "袋");
         long mappingId = insertMapping(providerId, skuId, "JD-GOODS-RDY-001", false, "{}");
 
         Map<String, Object> inactiveMapping = http.getForObject("/api/v1/skus/" + skuId, Map.class);
@@ -109,11 +119,72 @@ class SkuFulfillmentReadinessApiTest {
 
         jdbc.update(
                 "UPDATE app.provider_skus SET external_codes=?::jsonb WHERE id=?",
+                "{\"jd_pieces_per_unit\":0.5}",
+                mappingId);
+        Map<String, Object> fractionalConversion = http.getForObject("/api/v1/skus/" + skuId, Map.class);
+        assertThat(reasonCodes(fractionalConversion)).containsExactly("UNIT_CONVERSION_REQUIRED");
+        assertThat(issue(fractionalConversion, "UNIT_CONVERSION_REQUIRED").get("action").toString())
+                .contains("正整数");
+
+        jdbc.update("UPDATE app.skus SET unit='件' WHERE id=?", skuId);
+        jdbc.update(
+                "UPDATE app.provider_skus SET external_codes=?::jsonb WHERE id=?",
+                "{\"jd_pieces_per_unit\":0}",
+                mappingId);
+        Map<String, Object> invalidExplicitConversion = http.getForObject("/api/v1/skus/" + skuId, Map.class);
+        assertThat(reasonCodes(invalidExplicitConversion)).containsExactly("UNIT_CONVERSION_REQUIRED");
+
+        jdbc.update(
+                "UPDATE app.provider_skus SET external_codes=?::jsonb WHERE id=?",
                 "{\"jd_pieces_per_unit\":2}",
                 mappingId);
         Map<String, Object> ready = http.getForObject("/api/v1/skus/" + skuId, Map.class);
         assertThat(readiness(ready)).containsEntry("ready", true);
         assertThat(reasonCodes(ready)).isEmpty();
+    }
+
+    @Test
+    void readinessReasonFilterKeepsStableTotalsAndOrderAcrossScanChunksAndLaterPages() {
+        long providerId = insertProvider("RDYCHUNK", "THIRD_PARTY", true);
+        long productId = insertProduct("PROD-RDY-CHUNK", "跨块就绪筛选样本", true);
+        jdbc.update(
+                """
+                INSERT INTO app.skus
+                    (product_id, fulfillment_provider_id, specification, unit,
+                     net_content_value, net_content_unit, package_count, package_unit, active)
+                SELECT ?, ?, '跨块规格-' || value, '件', 1, '件', 1, '件', TRUE
+                FROM generate_series(1, 205) AS value
+                """,
+                productId,
+                providerId);
+        List<Long> skuIds = jdbc.queryForList(
+                "SELECT id FROM app.skus WHERE product_id=? ORDER BY id", Long.class, productId);
+        long firstBlockedId = skuIds.getFirst();
+        long secondBlockedId = skuIds.getLast();
+        jdbc.update(
+                """
+                INSERT INTO app.provider_skus
+                    (fulfillment_provider_id, sku_id, provider_sku_code, external_codes, active)
+                SELECT ?, id, sku_code, '{}'::jsonb, TRUE
+                FROM app.skus
+                WHERE product_id=? AND id NOT IN (?, ?)
+                """,
+                providerId,
+                productId,
+                firstBlockedId,
+                secondBlockedId);
+
+        Map<String, Object> firstPage = page(
+                "/api/v1/skus?query=跨块就绪筛选样本&readiness_reason=PROVIDER_MAPPING_REQUIRED&page=0&size=1");
+        Map<String, Object> secondPage = page(
+                "/api/v1/skus?query=跨块就绪筛选样本&readiness_reason=PROVIDER_MAPPING_REQUIRED&page=1&size=1");
+
+        assertThat(firstPage).containsEntry("total_elements", 2).containsEntry("total_pages", 2);
+        assertThat(items(firstPage)).extracting(item -> item.get("id"))
+                .containsExactly(String.valueOf(firstBlockedId));
+        assertThat(secondPage).containsEntry("total_elements", 2).containsEntry("total_pages", 2);
+        assertThat(items(secondPage)).extracting(item -> item.get("id"))
+                .containsExactly(String.valueOf(secondBlockedId));
     }
 
     @Test
@@ -234,6 +305,28 @@ class SkuFulfillmentReadinessApiTest {
                 active);
     }
 
+    private void completePackagingIdentity(
+            long skuId,
+            String netContentValue,
+            String netContentUnit,
+            int packageCount,
+            String packageUnit) {
+        jdbc.update(
+                """
+                UPDATE app.skus
+                SET net_content_value=?::numeric,
+                    net_content_unit=?,
+                    package_count=?,
+                    package_unit=?
+                WHERE id=?
+                """,
+                netContentValue,
+                netContentUnit,
+                packageCount,
+                packageUnit,
+                skuId);
+    }
+
     private String skuCode(long skuId) {
         return jdbc.queryForObject("SELECT sku_code FROM app.skus WHERE id=?", String.class, skuId);
     }
@@ -272,6 +365,13 @@ class SkuFulfillmentReadinessApiTest {
     @SuppressWarnings("unchecked")
     private static List<Map<String, Object>> issues(Map<String, Object> record) {
         return (List<Map<String, Object>>) readiness(record).get("issues");
+    }
+
+    private static Map<String, Object> issue(Map<String, Object> record, String code) {
+        return issues(record).stream()
+                .filter(value -> code.equals(value.get("code")))
+                .findFirst()
+                .orElseThrow();
     }
 
     @SuppressWarnings("unchecked")

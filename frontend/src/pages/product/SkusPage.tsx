@@ -31,7 +31,7 @@ const READINESS_REASON_OPTIONS: { value: SkuReadinessReason; label: string }[] =
   { value: 'UNIT_REQUIRED', label: '库存单位缺失' },
   { value: 'PROVIDER_MAPPING_REQUIRED', label: '缺少履约方商品映射' },
   { value: 'PROVIDER_MAPPING_INACTIVE', label: '履约方映射已停用' },
-  { value: 'UNIT_CONVERSION_REQUIRED', label: '京东件数换算缺失' },
+  { value: 'UNIT_CONVERSION_REQUIRED', label: '京东件数换算缺失或无效' },
   { value: 'BARCODE_CONFLICT', label: '条码冲突' },
   { value: 'REVIEW_REQUIRED', label: '需要人工复核' },
 ];
@@ -86,22 +86,21 @@ export default function SkusPage() {
     },
     { title: '单位', key: 'unit', width: 70, render: (_, r) => String(attr(r, 'unit') ?? '—') },
     {
-      title: '履约就绪', key: 'readiness', width: 190,
+      title: '履约就绪', key: 'readiness', width: 260,
       render: (_, r) => {
         const readiness = skuReadiness(r);
         if (!readiness) return '未评估';
         if (readiness.ready) return <Tag color="success">可履约</Tag>;
-        const firstIssue = readiness.issues[0];
         return (
-          <Space direction="vertical" size={0}>
-            <Tag color="warning">阻断</Tag>
-            {firstIssue ? (
-              <Tooltip title={firstIssue.action}>
+          <Space direction="vertical" size={2}>
+            <Tag color="warning">阻断 · {readiness.issues.length} 项</Tag>
+            {readiness.issues.map((issue) => (
+              <Tooltip key={issue.code} title={issue.action}>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {firstIssue.message}
+                  {issue.message}
                 </Typography.Text>
               </Tooltip>
-            ) : null}
+            ))}
           </Space>
         );
       },

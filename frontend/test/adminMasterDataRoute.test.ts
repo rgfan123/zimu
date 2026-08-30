@@ -261,12 +261,19 @@ test('product archive shows JD EMG and opens a new-product form without an exist
           jd_emg_no: 'EMG4418691852262',
           readiness: {
             ready: false,
-            reason_codes: ['PROVIDER_MAPPING_REQUIRED'],
-            issues: [{
-              code: 'PROVIDER_MAPPING_REQUIRED',
-              message: '缺少履约方商品映射',
-              action: '维护该 SKU 对应履约方的有效商品编码',
-            }],
+            reason_codes: ['PRODUCT_INACTIVE', 'PROVIDER_MAPPING_REQUIRED'],
+            issues: [
+              {
+                code: 'PRODUCT_INACTIVE',
+                message: '所属商品已停用',
+                action: '确认商品状态后恢复商品，或继续保持不可履约',
+              },
+              {
+                code: 'PROVIDER_MAPPING_REQUIRED',
+                message: '缺少履约方商品映射',
+                action: '维护该 SKU 对应履约方的有效商品编码',
+              },
+            ],
           },
         },
       }]));
@@ -279,6 +286,7 @@ test('product archive shows JD EMG and opens a new-product form without an exist
   assert.match(bodyText(), /京东EMG编号/);
   assert.match(bodyText(), /履约就绪/);
   assert.match(bodyText(), /阻断/);
+  assert.match(bodyText(), /所属商品已停用/);
   assert.match(bodyText(), /缺少履约方商品映射/);
   assert.match(bodyText(), /按阻断原因筛选/);
   assert.equal(requestedUrls.some((url) => url.startsWith('/api/v1/products?')), false);
@@ -290,6 +298,8 @@ test('product archive shows JD EMG and opens a new-product form without an exist
   const missingMappingOption = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option-content')]
     .find((option) => option.textContent?.includes('缺少履约方商品映射'));
   assert.ok(missingMappingOption);
+  assert.ok([...document.querySelectorAll<HTMLElement>('.ant-select-item-option-content')]
+    .some((option) => option.textContent?.includes('京东件数换算缺失或无效')));
   await act(async () => missingMappingOption.dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(() => assert.ok(
     requestedUrls.some((url) => url.includes('readiness_reason=PROVIDER_MAPPING_REQUIRED')),

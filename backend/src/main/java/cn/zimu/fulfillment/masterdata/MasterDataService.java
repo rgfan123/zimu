@@ -73,7 +73,7 @@ import java.util.function.Supplier;
 import jakarta.persistence.EntityManager;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -84,6 +84,7 @@ public class MasterDataService {
 
     private static final int CREATED = 201;
     private static final int OK = 200;
+    private static final int READINESS_SCAN_CHUNK_SIZE = 200;
     private static final Sort ID_ASC = Sort.by("id").ascending();
 
     private final IdempotencyService idempotency;
@@ -613,20 +614,41 @@ public class MasterDataService {
             int page, int size, String providerId, String query, String readinessReason) {
         SkuReadinessReason reason = readinessReason == null ? null : SkuReadinessReason.parse(readinessReason);
         if (reason != null) {
-            List<Sku> candidates = matchingSkus(providerId, query);
-            Map<Long, SkuFulfillmentReadiness> readinessBySku = skuReadiness.evaluateAll(candidates);
-            List<Sku> filtered = candidates.stream()
-                    .filter(sku -> readinessBySku.get(sku.getId()).hasReason(reason))
-                    .toList();
-            int from = (int) Math.min((long) page * size, filtered.size());
-            int to = Math.min(from + size, filtered.size());
-            List<Sku> pageItems = filtered.subList(from, to);
+            long requestedFrom = (long) page * size;
+            long matchedCount = 0;
+            long lastSeenId = 0;
+            Long normalizedProviderId = providerId == null ? null : WriteCommands.parseIdentifier(providerId);
+            String pattern = query == null || query.isBlank() ? null : "%" + query.trim() + "%";
+            List<Sku> pageItems = new ArrayList<>(size);
+            Map<Long, SkuFulfillmentReadiness> selectedReadiness = new LinkedHashMap<>();
+            Slice<Sku> candidates;
+            do {
+                candidates = skus.scanForReadiness(
+                        pattern,
+                        normalizedProviderId,
+                        lastSeenId,
+                        PageRequest.of(0, READINESS_SCAN_CHUNK_SIZE));
+                Map<Long, SkuFulfillmentReadiness> chunkReadiness =
+                        skuReadiness.evaluateAll(candidates.getContent());
+                for (Sku sku : candidates.getContent()) {
+                    SkuFulfillmentReadiness readiness = chunkReadiness.get(sku.getId());
+                    if (!readiness.hasReason(reason)) continue;
+                    if (matchedCount >= requestedFrom && pageItems.size() < size) {
+                        pageItems.add(sku);
+                        selectedReadiness.put(sku.getId(), readiness);
+                    }
+                    matchedCount++;
+                }
+                if (!candidates.isEmpty()) {
+                    lastSeenId = candidates.getContent().getLast().getId();
+                }
+            } while (candidates.hasNext());
             Map<Long, String> jdEmgCodes = jdEmgCodes(pageItems.stream().map(Sku::getId).toList());
             List<MasterDataRecord> items = pageItems.stream()
-                    .map(sku -> sku(sku, jdEmgCodes.get(sku.getId()), readinessBySku.get(sku.getId())))
+                    .map(sku -> sku(sku, jdEmgCodes.get(sku.getId()), selectedReadiness.get(sku.getId())))
                     .toList();
-            int totalPages = filtered.isEmpty() ? 0 : (filtered.size() + size - 1) / size;
-            return new PageResponse<>(items, page, size, filtered.size(), totalPages);
+            int totalPages = matchedCount == 0 ? 0 : Math.toIntExact((matchedCount + size - 1) / size);
+            return new PageResponse<>(items, page, size, matchedCount, totalPages);
         }
         Page<Sku> result;
         if (query != null && !query.isBlank()) {
@@ -1113,18 +1135,6 @@ public class MasterDataService {
                 readiness,
                 value.getCreatedAt(),
                 value.getUpdatedAt());
-    }
-
-    private List<Sku> matchingSkus(String providerId, String query) {
-        Long normalizedProviderId = providerId == null ? null : WriteCommands.parseIdentifier(providerId);
-        String pattern = query == null || query.isBlank() ? null : "%" + query.trim() + "%";
-        if (pattern != null) {
-            return skus.search(pattern, normalizedProviderId, Pageable.unpaged(ID_ASC)).getContent();
-        }
-        if (normalizedProviderId != null) {
-            return skus.findByFulfillmentProviderId(normalizedProviderId, Pageable.unpaged(ID_ASC)).getContent();
-        }
-        return skus.findAll(ID_ASC);
     }
 
     private ProviderSkuDetail providerSkuDetail(ProviderSku value) {

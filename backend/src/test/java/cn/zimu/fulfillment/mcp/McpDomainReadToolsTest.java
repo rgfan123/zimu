@@ -212,8 +212,10 @@ class McpDomainReadToolsTest {
         long providerId = createProvider("MCPSKU", "SKU 履约方");
         long categoryId = createCategory();
         long productId = createProduct(categoryId, "MCP-PROD-SKU", "子牧羊小腿");
-        long skuId = createSkuWithPrices(providerId, productId, "500g/盒", "盒", "12.5", "25.00");
-        long otherSkuId = createSkuWithPrices(providerId, productId, "1kg/袋", "袋", "99", "188");
+        long skuId = createSkuWithPrices(
+                providerId, productId, "500g/盒", "盒", "500", "g", 1, "盒", "12.5", "25.00");
+        long otherSkuId = createSkuWithPrices(
+                providerId, productId, "1kg/袋", "袋", "1", "kg", 1, "袋", "99", "188");
         createProviderSku(providerId, skuId, "JD-SKU-900001", "M-900001", "子牧羊小腿 500g", "1");
         createProviderSku(providerId, otherSkuId, "JD-SKU-900002", "M-900002", "子牧羊小腿 1kg", "2");
 
@@ -474,19 +476,33 @@ class McpDomainReadToolsTest {
                 specification);
     }
 
-    private long createSkuWithPrices(long providerId, long productId, String specification, String unit,
-            String purchasePrice, String retailPrice) {
+    private long createSkuWithPrices(
+            long providerId,
+            long productId,
+            String specification,
+            String unit,
+            String netContentValue,
+            String netContentUnit,
+            int packageCount,
+            String packageUnit,
+            String purchasePrice,
+            String retailPrice) {
         return jdbc.queryForObject(
                 """
                 INSERT INTO app.skus (product_id, fulfillment_provider_id, specification, unit,
+                                      net_content_value, net_content_unit, package_count, package_unit,
                                       purchase_price, retail_price)
-                VALUES (?, ?, ?, ?, ?::numeric, ?::numeric) RETURNING id
+                VALUES (?, ?, ?, ?, ?::numeric, ?, ?, ?, ?::numeric, ?::numeric) RETURNING id
                 """,
                 Long.class,
                 productId,
                 providerId,
                 specification,
                 unit,
+                netContentValue,
+                netContentUnit,
+                packageCount,
+                packageUnit,
                 purchasePrice,
                 retailPrice);
     }

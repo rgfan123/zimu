@@ -77,6 +77,32 @@ function CrudHarness({ fetchPage }: { fetchPage: MasterDataCrudProps['fetchPage'
 type MasterDataCrudProps = Parameters<typeof MasterDataCrud>[0];
 
 describe('MasterDataCrud 筛选区常驻', () => {
+  test('翻到后页后切换筛选条件，首个新请求必须回到第一页', async () => {
+    const user = userEvent.setup();
+    const fetchPage = vi.fn<MasterDataCrudProps['fetchPage']>(async ({ page, size }) => ({
+      items: [beefRecord],
+      page,
+      size,
+      total_elements: 25,
+      total_pages: 3,
+    }));
+
+    render(<CrudHarness fetchPage={fetchPage} />);
+
+    await screen.findByText('子牧牛腱');
+    const secondPage = document.querySelector<HTMLElement>('.ant-pagination-item-2');
+    expect(secondPage).not.toBeNull();
+    await user.click(secondPage!);
+    await waitFor(() => expect(fetchPage).toHaveBeenLastCalledWith({ page: 1, size: 10 }));
+
+    await user.click(screen.getByRole('button', { name: '切换履约方' }));
+    await waitFor(() => expect(fetchPage).toHaveBeenLastCalledWith({
+      provider_id: 'provider-2',
+      page: 0,
+      size: 10,
+    }));
+  });
+
   test('筛选变化进入加载态时，筛选区不被 unmount 且保留用户已输入内容', async () => {
     const user = userEvent.setup();
     const firstLoad = deferred<MasterDataPage>();
