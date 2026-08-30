@@ -22,6 +22,16 @@ This repository uses a single-context domain layout rooted at `CONTEXT.md`. See 
 > `export JAVA_HOME=$(/usr/libexec/java_home -v 24)`，或用 `mvn -version` 确认实际使用的版本。
 > CI 用 Temurin 21，不受此影响。
 >
+> 已知机制之一：JDK 26 的 `HttpClientImpl#translateSendAsyncExecFailure` 按 `sendAsync`
+> 规范把异常多包一层 IOException，只认第一层 `getCause()` 的代码会认不出精确失败类型
+> （wecom 媒体下载一族 3 个红曾全是这个成因，已在 `WecomMediaDownloader` 改为遍历成因链）。
+> **判据：本地红而 CI 绿时，先 `export JAVA_HOME=$(/usr/libexec/java_home -v 24)` 复跑再下结论。**
+>
+> **前端组件测试（`npx vitest run`）的超时红先当假红查**：单个用例渲染整页 antd 组件，
+> 空载 1.5~4.5s，机器负载高（如并行 `mvn test`）时会稳定越过预算报
+> `Test timed out`，而断言从未失败。**判据：先 `npx vitest run --testTimeout=60000`
+> 复跑一遍；仍红才是真 bug。**（默认预算已放宽到 30s，见 `frontend/vitest.config.ts`。）
+>
 > **再确认 JD 客户端模式**：`application.yml` 把 `app.jd.client-mode` 映射到环境变量
 > `JD_LOP_CLIENT_MODE`（默认 MOCK）。本地 shell 若导出 `JD_LOP_CLIENT_MODE=REAL`
 > （如为了连真实京东沙箱），会让 `OutboundReconApiTest` 断言 `client_mode=MOCK` 假失败——
