@@ -5,6 +5,7 @@ backend/target/
 # Node / Vite
 frontend/node_modules/
 frontend/dist/
+frontend/vite.config.*.timestamp-*
 scripts/node_modules/
 
 # IDE
