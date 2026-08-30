@@ -47,7 +47,8 @@
         "unstaged": 6,
         "untracked": 1
       },
-      "disposition": "rescue_uncommitted"
+      "disposition": "rescued_to_convergence",
+      "target_ticket": "07"
     },
     {
       "id": "bundle-read-tools",

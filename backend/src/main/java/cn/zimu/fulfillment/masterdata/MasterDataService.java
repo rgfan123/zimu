@@ -49,6 +49,7 @@ import cn.zimu.fulfillment.sku.SkuCommercialPrice;
 import cn.zimu.fulfillment.sku.SkuDetail;
 import cn.zimu.fulfillment.sku.SkuPatch;
 import cn.zimu.fulfillment.sku.SkuRepository;
+import cn.zimu.fulfillment.sku.SkuSearchFilter;
 import cn.zimu.fulfillment.sku.SkuWrite;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
 import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
@@ -593,9 +594,17 @@ public class MasterDataService {
     }
 
     @Transactional(readOnly = true)
-    public PageResponse<SkuDetail> searchSkus(int page, int size, String query, Long providerId) {
-        String pattern = query == null ? null : "%" + query + "%";
-        Page<Sku> result = skus.search(pattern, providerId, PageRequest.of(page, size));
+    public PageResponse<SkuDetail> searchSkus(int page, int size, SkuSearchFilter filter) {
+        String pattern = filter.query() == null ? null : "%" + filter.query() + "%";
+        Page<Sku> result = skus.searchFiltered(
+                pattern,
+                filter.providerId(),
+                filter.barcode(),
+                filter.skuCode(),
+                filter.categoryId(),
+                filter.tag(),
+                filter.active(),
+                PageRequest.of(page, size));
         return PageResponse.of(result.stream().map(this::skuDetail).toList(), result);
     }
 

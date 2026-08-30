@@ -460,7 +460,7 @@ Agent 可以提建议，但上述终局动作必须由管理后台人员确认�
 | `get_order_timeline` | `order_id` | OrderEvent 列表 | 否 |
 | `get_shipment` | `shipment_id` | Shipment/Tracking 详情 | 否 |
 | `check_shipment_source_sync` | `shipment_id` | PII 安全的 receiver/数量比较、状态、`blocker_codes`、`outcome_category` 与 `next_action`；只作建议且 `write_allowed=false` | 否 |
-| `search_skus` | `query`, `provider_id?`, `page`, `size` | SKU 候选页 | 否 |
+| `search_skus` | `query?`, `provider_id?`, `barcode?`, `sku_code?`, `category_id?`, `tag?`, `active?`, `page`, `size` | SKU 候选页；`query` 含条码模糊检索，`barcode`/`sku_code`/`tag` 为精确匹配，条件之间为“与”；`active` 不传时含停用 SKU | 否 |
 | `list_bundles` | `status?`, `provider_id?`, `query?`, `page`, `size` | 静态礼包摘要页，含组件数、履约方及拆单事实 | 否 |
 | `get_bundle` | `bundle_id` | 礼包状态与组件业务投影；跨履约方时明确发货单元数 | 否 |
 | `find_bundle_candidates` | `query?`, `provider_id?`, `mapping_status?`, `page`, `size` | 启用 SKU 候选、进货价状态、履约映射及各仓最新库存观测 | 否 |

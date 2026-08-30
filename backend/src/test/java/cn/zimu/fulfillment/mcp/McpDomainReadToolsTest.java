@@ -50,6 +50,9 @@ class McpDomainReadToolsTest {
     private McpToolRegistry registry;
 
     @Autowired
+    private McpDomainReadTools domainReadTools;
+
+    @Autowired
     private JdbcTemplate jdbc;
 
     @BeforeEach
@@ -99,6 +102,43 @@ class McpDomainReadToolsTest {
                     .doesNotContain("TOKEN")
                     .doesNotContain("PASSWORD");
         }
+    }
+
+    @Test
+    void domainReadToolSetStaysClosedWhileSearchSkusGainsFilters() {
+        assertThat(domainReadTools.tools().stream().map(McpTool::name).toList())
+                .containsExactlyInAnyOrder(
+                        "list_procurement_tickets",
+                        "get_procurement_ticket",
+                        "list_procurement_receipts",
+                        "search_skus",
+                        "get_sku",
+                        "list_provider_skus",
+                        "search_product_archive",
+                        "get_inventory_overview",
+                        "get_inventory_detail",
+                        "list_products",
+                        "list_categories",
+                        "list_fulfillment_providers",
+                        "check_shipment_source_sync",
+                        "get_import_batch_progress");
+
+        McpTool searchSkus = registry.findAgentTool("search_skus").orElseThrow();
+        List<String> properties = new ArrayList<>();
+        searchSkus.inputSchema().get("properties").fieldNames().forEachRemaining(properties::add);
+        assertThat(properties)
+                .containsExactlyInAnyOrder(
+                        "query",
+                        "provider_id",
+                        "barcode",
+                        "sku_code",
+                        "category_id",
+                        "tag",
+                        "active",
+                        "page",
+                        "size");
+        assertThat(searchSkus.description()).contains("含停用");
+        assertThat(registry.findProtocolTool("search_skus")).isPresent();
     }
 
     // ------------------------------------------------------------------
@@ -265,6 +305,14 @@ class McpDomainReadToolsTest {
                 new Case("search_skus", Map.of("size", 201), "INVALID_PARAMETERS"),
                 new Case("search_skus", Map.of("query", "x".repeat(101)), "INVALID_PARAMETERS"),
                 new Case("search_skus", Map.of("provider_id", "abc"), "INVALID_PARAMETERS"),
+                new Case("search_skus", Map.of("category_id", "abc"), "INVALID_PARAMETERS"),
+                new Case("search_skus", Map.of("category_id", "0"), "INVALID_PARAMETERS"),
+                new Case("search_skus", Map.of("barcode", "x".repeat(101)), "INVALID_PARAMETERS"),
+                new Case("search_skus", Map.of("sku_code", "x".repeat(101)), "INVALID_PARAMETERS"),
+                new Case("search_skus", Map.of("tag", "x".repeat(101)), "INVALID_PARAMETERS"),
+                new Case("search_skus", Map.of("active", "true"), "INVALID_PARAMETERS"),
+                new Case("search_skus", Map.of("active", "1"), "INVALID_PARAMETERS"),
+                new Case("search_skus", Map.of("status", "ACTIVE"), "INVALID_PARAMETERS"),
                 new Case("get_sku", Map.of("sku_id", "0"), "INVALID_PARAMETERS"),
                 new Case("get_sku", Map.of("sku_id", "-1"), "INVALID_PARAMETERS"),
                 new Case("get_sku", Map.of(), "INVALID_PARAMETERS"),
@@ -289,6 +337,92 @@ class McpDomainReadToolsTest {
                 Map.of("provider_id", String.valueOf(providerId)));
         assertThat(emptyMappings.get("items")).isEmpty();
         assertThat(emptyMappings.get("total_elements").asLong()).isZero();
+    }
+
+    @Test
+    void searchSkusNarrowsByBarcodeSkuCodeCategoryTagAndActive() throws Exception {
+        long providerA = createProvider("MCPFLTA", "筛选履约方甲");
+        long providerB = createProvider("MCPFLTB", "筛选履约方乙");
+        long categoryA = createCategory();
+        long categoryB = createCategory("CAT-MCP-FLT", "筛选品类乙");
+        long taggedProductId =
+                createProductWithTags(categoryA, "MCP-PROD-TAG", "子牧羊小腿", "[\"fresh\",\"preorder\"]");
+        long plainProductId = createProduct(categoryB, "MCP-PROD-PLAIN", "子牧羊腩");
+
+        long taggedSkuId = createSkuWithBarcode(providerA, taggedProductId, "500g/盒", "6901234567892", true);
+        long taggedInactiveSkuId =
+                createSkuWithBarcode(providerA, taggedProductId, "1kg/袋", "6901234567908", false);
+        long plainSkuId = createSkuWithBarcode(providerB, plainProductId, "2kg/箱", "6901234567915", true);
+        String taggedSkuCode = skuCodeOf(taggedSkuId);
+
+        JsonNode byBarcode = callResult(AGENT, "search_skus", Map.of("barcode", "6901234567892"));
+        assertThat(ids(byBarcode)).containsExactly(taggedSkuId);
+        assertThat(callResult(AGENT, "search_skus", Map.of("barcode", "690123456789")).get("items"))
+                .isEmpty();
+
+        // query 保留目标分支已有的条码模糊检索，不能因切换到多条件原生 SQL 而回退。
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("query", "4567892"))))
+                .containsExactly(taggedSkuId);
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("query", "6901234567892"))))
+                .containsExactly(taggedSkuId);
+
+        JsonNode bySkuCode = callResult(AGENT, "search_skus", Map.of("sku_code", taggedSkuCode));
+        assertThat(ids(bySkuCode)).containsExactly(taggedSkuId);
+        assertThat(callResult(
+                        AGENT,
+                        "search_skus",
+                        Map.of("sku_code", taggedSkuCode.substring(0, taggedSkuCode.length() - 1)))
+                .get("items"))
+                .isEmpty();
+
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("tag", "preorder"))))
+                .containsExactly(taggedSkuId, taggedInactiveSkuId);
+        assertThat(callResult(AGENT, "search_skus", Map.of("tag", "pre")).get("items"))
+                .isEmpty();
+
+        assertThat(ids(callResult(
+                        AGENT, "search_skus", Map.of("category_id", String.valueOf(categoryB)))))
+                .containsExactly(plainSkuId);
+        assertThat(ids(callResult(
+                        AGENT, "search_skus", Map.of("category_id", String.valueOf(categoryA)))))
+                .containsExactlyElementsOf(skuIdsOfCategory(categoryA));
+
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("active", false))))
+                .containsExactly(taggedInactiveSkuId);
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("active", true))))
+                .containsExactly(taggedSkuId, plainSkuId);
+
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("tag", "fresh", "active", true))))
+                .containsExactly(taggedSkuId);
+        assertThat(callResult(
+                        AGENT,
+                        "search_skus",
+                        Map.of("tag", "fresh", "provider_id", String.valueOf(providerB)))
+                .get("items"))
+                .isEmpty();
+        assertThat(callResult(
+                        AGENT,
+                        "search_skus",
+                        Map.of("query", "羊腩", "barcode", "6901234567892"))
+                .get("items"))
+                .isEmpty();
+    }
+
+    @Test
+    void searchSkusWithoutFiltersOrActiveKeepsExistingAllSkuSemantics() throws Exception {
+        long providerId = createProvider("MCPDEF", "默认口径履约方");
+        long productId = createProduct(createCategory(), "MCP-PROD-DEF", "默认口径商品");
+        long activeSkuId = createSkuWithBarcode(providerId, productId, "500g/盒", "6902000000001", true);
+        long inactiveSkuId = createSkuWithBarcode(providerId, productId, "1kg/袋", "6902000000018", false);
+
+        JsonNode all = callResult(AGENT, "search_skus", Map.of());
+        assertThat(all.get("total_elements").asLong()).isEqualTo(2);
+        assertThat(ids(all)).containsExactly(activeSkuId, inactiveSkuId);
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("query", "默认口径商品"))))
+                .containsExactly(activeSkuId, inactiveSkuId);
+        assertThat(ids(callResult(
+                        AGENT, "search_skus", Map.of("provider_id", String.valueOf(providerId)))))
+                .containsExactly(activeSkuId, inactiveSkuId);
     }
 
     // ------------------------------------------------------------------
@@ -603,6 +737,27 @@ class McpDomainReadToolsTest {
                 Long.class);
     }
 
+    private long createCategory(String code, String name) {
+        return jdbc.queryForObject(
+                "INSERT INTO app.categories (category_code, category_name) VALUES (?, ?) RETURNING id",
+                Long.class,
+                code,
+                name);
+    }
+
+    private long createProductWithTags(long categoryId, String code, String name, String tagsJson) {
+        return jdbc.queryForObject(
+                """
+                INSERT INTO app.products (product_code, product_name, category_id, tags)
+                VALUES (?, ?, ?, ?::jsonb) RETURNING id
+                """,
+                Long.class,
+                code,
+                name,
+                categoryId,
+                tagsJson);
+    }
+
     private long createProduct(long categoryId, String code, String name) {
         return jdbc.queryForObject(
                 "INSERT INTO app.products (product_code, product_name, category_id) VALUES (?, ?, ?) RETURNING id",
@@ -622,6 +777,38 @@ class McpDomainReadToolsTest {
                 productId,
                 providerId,
                 specification);
+    }
+
+    private long createSkuWithBarcode(
+            long providerId, long productId, String specification, String barcode, boolean active) {
+        return jdbc.queryForObject(
+                """
+                INSERT INTO app.skus (product_id, fulfillment_provider_id, specification, unit,
+                                      barcode, active)
+                VALUES (?, ?, ?, '盒', ?, ?) RETURNING id
+                """,
+                Long.class,
+                productId,
+                providerId,
+                specification,
+                barcode,
+                active);
+    }
+
+    private String skuCodeOf(long skuId) {
+        return jdbc.queryForObject("SELECT sku_code FROM app.skus WHERE id = ?", String.class, skuId);
+    }
+
+    private List<Long> skuIdsOfCategory(long categoryId) {
+        return jdbc.queryForList(
+                """
+                SELECT s.id FROM app.skus s
+                JOIN app.products p ON p.id = s.product_id
+                WHERE p.category_id = ?
+                ORDER BY s.id
+                """,
+                Long.class,
+                categoryId);
     }
 
     private long createSkuWithPrices(long providerId, long productId, String specification, String unit,
@@ -766,6 +953,12 @@ class McpDomainReadToolsTest {
         JsonNode error = parse(result.get("content").get(0).get("text").asText());
         assertThat(error.get("code").asText()).as("%s 错误码", label).isEqualTo(expectedCode);
         assertThat(error.toString()).doesNotContain(AGENT).doesNotContain("MCP_AGENT_IDENTITY");
+    }
+
+    private List<Long> ids(JsonNode page) {
+        List<Long> values = new ArrayList<>();
+        page.get("items").forEach(item -> values.add(item.get("id").asLong()));
+        return values;
     }
 
     private JsonNode firstItem(JsonNode page, String expectedProviderCode, String expectedSkuId) {
