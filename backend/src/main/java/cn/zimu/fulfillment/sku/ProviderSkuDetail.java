@@ -1,6 +1,6 @@
 package cn.zimu.fulfillment.sku;
 
-/** 履约方 SKU 映射只读详情：含内部 SKU 与履约方编码投影；只暴露已知外部编码键。 */
+/** 履约方 SKU 映射只读详情：scope 明确区分真实外码与 TP 内部自路由。 */
 public record ProviderSkuDetail(
         String id,
         String providerId,
@@ -9,6 +9,7 @@ public record ProviderSkuDetail(
         String skuId,
         String skuCode,
         String providerSkuCode,
+        ProviderSkuCodeScope providerSkuCodeScope,
         String merchantSkuCode,
         boolean active,
         String providerSkuName,

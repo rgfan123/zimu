@@ -38,6 +38,7 @@ import cn.zimu.fulfillment.sku.FulfillmentProviderRepository;
 import cn.zimu.fulfillment.sku.FulfillmentProviderWecomConfig;
 import cn.zimu.fulfillment.sku.ProviderSku;
 import cn.zimu.fulfillment.sku.ProviderSkuDetail;
+import cn.zimu.fulfillment.sku.ProviderSkuCodeScope;
 import cn.zimu.fulfillment.sku.ProviderSkuJdFactorImport;
 import cn.zimu.fulfillment.sku.ProviderSkuJdFactorImportResult;
 import cn.zimu.fulfillment.sku.ProviderSkuMappingPatch;
@@ -831,18 +832,28 @@ public class MasterDataService {
     @Transactional(readOnly = true)
     public PageResponse<MasterDataRecord> providerMappings(int page, int size) {
         Page<ProviderSku> result = providerMappings.findAll(page(page, size));
-        return PageResponse.of(result.stream().map(this::providerMapping).toList(), result);
+        List<ProviderSku> values = result.getContent();
+        Map<Long, Sku> skuById = providerMappingSkus(values);
+        Map<Long, FulfillmentProvider> providerById = providerMappingProviders(values);
+        return PageResponse.of(values.stream()
+                .map(value -> providerMapping(
+                        value,
+                        skuById.get(value.getSkuId()),
+                        providerById.get(value.getFulfillmentProviderId())))
+                .toList(), result);
     }
 
     @Transactional(readOnly = true)
     public PageResponse<ProviderSkuDetail> providerSkus(long providerId, int page, int size) {
-        if (!providers.existsById(providerId)) {
-            throw BusinessException.notFound("履约方不存在");
-        }
+        FulfillmentProvider provider = providers.findById(providerId)
+                .orElseThrow(() -> BusinessException.notFound("履约方不存在"));
         Sort sort = Sort.by("providerSkuCode").ascending().and(Sort.by("id").ascending());
         Page<ProviderSku> result =
                 providerMappings.findByFulfillmentProviderId(providerId, PageRequest.of(page, size, sort));
-        return PageResponse.of(result.stream().map(this::providerSkuDetail).toList(), result);
+        Map<Long, Sku> skuById = providerMappingSkus(result.getContent());
+        return PageResponse.of(result.stream()
+                .map(value -> providerSkuDetail(value, skuById.get(value.getSkuId()), provider))
+                .toList(), result);
     }
 
     @Transactional(readOnly = true)
@@ -1099,11 +1110,22 @@ public class MasterDataService {
     }
 
     private MasterDataRecord providerMapping(ProviderSku value) {
+        Sku sku = skus.findById(value.getSkuId()).orElse(null);
+        FulfillmentProvider provider = providers.findById(value.getFulfillmentProviderId()).orElse(null);
+        return providerMapping(value, sku, provider);
+    }
+
+    private MasterDataRecord providerMapping(
+            ProviderSku value, Sku sku, FulfillmentProvider provider) {
         String name = value.getExternalCodes().get("provider_sku_name") instanceof String text
                 ? text : value.getProviderSkuCode();
         return record(value.getId(), value.getProviderSkuCode(), name, value.isActive(), value.getLockVersion(),
                 map("provider_id", id(value.getFulfillmentProviderId()), "sku_id", id(value.getSkuId()),
                         "provider_sku_code", value.getProviderSkuCode(), "provider_sku_name", name,
+                        "provider_sku_code_scope", ProviderSkuCodeScope.resolve(
+                                provider == null ? null : provider.getProviderType().name(),
+                                sku == null ? null : sku.getSkuCode(),
+                                value.getProviderSkuCode()).name(),
                         "merchant_sku_code", value.getMerchantSkuCode(), "jd_pieces_per_unit",
                         decimalText(value.getExternalCodes().get("jd_pieces_per_unit"))), value);
     }
@@ -1149,6 +1171,11 @@ public class MasterDataService {
     private ProviderSkuDetail providerSkuDetail(ProviderSku value) {
         Sku sku = skus.findById(value.getSkuId()).orElse(null);
         FulfillmentProvider provider = providers.findById(value.getFulfillmentProviderId()).orElse(null);
+        return providerSkuDetail(value, sku, provider);
+    }
+
+    private ProviderSkuDetail providerSkuDetail(
+            ProviderSku value, Sku sku, FulfillmentProvider provider) {
         Map<String, Object> external = value.getExternalCodes();
         String name = external.get("provider_sku_name") instanceof String text ? text : null;
         return new ProviderSkuDetail(
@@ -1159,10 +1186,32 @@ public class MasterDataService {
                 id(value.getSkuId()),
                 sku == null ? null : sku.getSkuCode(),
                 value.getProviderSkuCode(),
+                ProviderSkuCodeScope.resolve(
+                        provider == null ? null : provider.getProviderType().name(),
+                        sku == null ? null : sku.getSkuCode(),
+                        value.getProviderSkuCode()),
                 value.getMerchantSkuCode(),
                 value.isActive(),
                 name,
                 decimalText(external.get("jd_pieces_per_unit")));
+    }
+
+    private Map<Long, Sku> providerMappingSkus(Collection<ProviderSku> values) {
+        Set<Long> ids = new LinkedHashSet<>();
+        values.forEach(value -> ids.add(value.getSkuId()));
+        if (ids.isEmpty()) return Map.of();
+        Map<Long, Sku> result = new LinkedHashMap<>();
+        skus.findAllById(ids).forEach(value -> result.put(value.getId(), value));
+        return result;
+    }
+
+    private Map<Long, FulfillmentProvider> providerMappingProviders(Collection<ProviderSku> values) {
+        Set<Long> ids = new LinkedHashSet<>();
+        values.forEach(value -> ids.add(value.getFulfillmentProviderId()));
+        if (ids.isEmpty()) return Map.of();
+        Map<Long, FulfillmentProvider> result = new LinkedHashMap<>();
+        providers.findAllById(ids).forEach(value -> result.put(value.getId(), value));
+        return result;
     }
 
     private MasterDataRecord record(

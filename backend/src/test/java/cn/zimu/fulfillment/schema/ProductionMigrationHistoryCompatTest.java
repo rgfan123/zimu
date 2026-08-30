@@ -31,7 +31,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V73）升级，Flyway validate（默认开启）必须成功且只追加
+ * migration set（V1..V74）升级，Flyway validate（默认开启）必须成功且只追加
  * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）、
  * V50（中汇稳定上传意图，Issue #116）、V51（企微业务通知 outbox，Issue #90）与
  * V52（企微订单草稿卡片，Issues #87/#88）、V53（礼包组件删除保护）与 V54（Shipment 来源同步状态机）与 V55（通用业务卡投递，#87/#88）与 V56（履约单据 Agent）；
@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV73() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV74() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -108,22 +108,22 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V73）升级——Flyway validate 默认开启，
-        // V40–V47 校验通过后只追加 V48–V73，任何 repair/改写历史都会在此失败。
+        // 阶段二：完整当前 migration set（V1..V74）升级——Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加 V48–V74，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 73 条历史")
-                .hasSize(73);
+                .as("完整升级后应恰有 74 条历史")
+                .hasSize(74);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
-        // V48–V73 按当前文件计算校验和，与 Flyway 阶段二
+        // V48–V74 按当前文件计算校验和，与 Flyway 阶段二
         // 真实写入 flyway_schema_history 的校验和互证（前 47 行 isEqualTo(historyBefore) 已保证
         // V40–V47 未被改写）。
-        assertThat(historyAfter.subList(47, 73))
-                .as("升级只追加 V48–V73，其中 V73 强制有效 SKU 条码跨主字段/别名唯一并登记审计阻断")
+        assertThat(historyAfter.subList(47, 74))
+                .as("升级只追加 V48–V74；V73 强制条码边界，V74 清理 WECOM 伪映射并补 TP 内部路由")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -202,11 +202,14 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V72__index_trusted_source_template_batch.sql")),
                         new HistoryRow("73", "V73__enforce_active_sku_barcode_uniqueness.sql",
                                 "enforce active sku barcode uniqueness",
-                                crc32Of("V73__enforce_active_sku_barcode_uniqueness.sql")));
+                                crc32Of("V73__enforce_active_sku_barcode_uniqueness.sql")),
+                        new HistoryRow("74", "V74__repair_wecom_pseudo_mappings_and_tp_routes.sql",
+                                "repair wecom pseudo mappings and tp routes",
+                                crc32Of("V74__repair_wecom_pseudo_mappings_and_tp_routes.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // 后续断言覆盖内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片、
-        // Shipment 来源同步状态机与客户跟进结构；完整 V48–V73 顺序由上方历史断言锁定。
+        // Shipment 来源同步状态机与客户跟进结构；完整 V48–V74 顺序由上方历史断言锁定。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {

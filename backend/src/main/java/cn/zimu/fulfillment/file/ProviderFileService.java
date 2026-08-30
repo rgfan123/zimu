@@ -9,6 +9,7 @@ import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.fulfillment.ContinuationExportGenerator;
 import cn.zimu.fulfillment.order.ReadySourceBatchExporter;
+import cn.zimu.fulfillment.sku.ProviderSkuCodeScope;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -27,7 +28,6 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -1102,10 +1102,8 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
 
     /** 内部自映射仅用于本系统路由，不能被页面或审计误解为外部履约方已核验编码。 */
     private String providerSkuCodeScope(ExportRow source) {
-        return "THIRD_PARTY".equals(source.providerType())
-                        && Objects.equals(source.providerSkuCode(), source.skuCode())
-                ? "INTERNAL_ROUTING"
-                : "PROVIDER_EXTERNAL";
+        return ProviderSkuCodeScope.resolve(
+                source.providerType(), source.skuCode(), source.providerSkuCode()).name();
     }
 
     PageResponse<Map<String, Object>> list(int page, int size, Long providerId, String usageStatus) {

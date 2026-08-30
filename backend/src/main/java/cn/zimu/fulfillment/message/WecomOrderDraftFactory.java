@@ -44,6 +44,8 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
 
     public static final String REASON_CODE = "WECOM_ORDER_DRAFT";
     public static final String CASE_TYPE = "WECOM_DRAFT";
+    /** 与 V74 共用：草稿候选读取到草稿落库期间持共享锁，伪映射迁移持排他锁。 */
+    static final long WECOM_DRAFT_MAPPING_LOCK_KEY = 756426269157L;
 
     private static final String SKU_CANDIDATE_SQL =
             """
@@ -90,6 +92,7 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
     @Override
     @Transactional
     public List<Long> createDrafts(MessageSubmission submission, InterpretationResult result) {
+        jdbc.execute("SELECT pg_advisory_xact_lock_shared(" + WECOM_DRAFT_MAPPING_LOCK_KEY + ")");
         Map<String, Object> output = result.structuredOutput() == null ? Map.of() : result.structuredOutput();
 
         // 票 06：只有系统草稿号或稳定父消息 ID 才追加到既有草稿；企微引用类型/内容只作证据，

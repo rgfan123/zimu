@@ -2722,7 +2722,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/Size' }]
       responses:
         '200':
-          description: Provider SKU mappings
+          description: Provider SKU mappings; attributes.provider_sku_code_scope distinguishes PROVIDER_EXTERNAL from TP INTERNAL_ROUTING, which is not a verified external code
           content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataPage' } } }
         default: { $ref: '#/components/responses/ErrorResponse' }
     post:
