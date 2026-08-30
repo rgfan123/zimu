@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -173,6 +174,31 @@ class JdSkuMappingCheckServiceTest {
         assertThat(category.category()).isEqualTo("MAPPING_MISSING");
         assertThat(category.items().getFirst().reason()).isEqualTo("QUERY_FAILED");
         assertThat(category.items().getFirst().message()).contains("SDK_CALL_FAILED");
+        verify(jdbc, never()).update(contains("external_codes - 'jd_goods_verification'"), any(Object[].class));
+    }
+
+    @Test
+    void realAuthoritativeNegativesRevokePriorVerificationEvidence() {
+        stubProviderAndMappings(List.of(
+                row(1, "JD-NOT-FOUND", "SKU-JD-000001", "500g/盒"),
+                row(2, "JD-DISABLED", "SKU-JD-000002", "500g/盒"),
+                row(3, "JD-MISMATCH", "SKU-JD-000003", "500g/盒")));
+        when(goodsVerifier.verify("JD-NOT-FOUND"))
+                .thenReturn(JdGoodsReadOnlyVerifier.Verification.notFound("1000", "req-not-found"));
+        when(goodsVerifier.verify("JD-DISABLED"))
+                .thenReturn(JdGoodsReadOnlyVerifier.Verification.found(
+                        "1000", "req-disabled", "JD-DISABLED", null, null, 1));
+        when(goodsVerifier.verify("JD-MISMATCH"))
+                .thenReturn(JdGoodsReadOnlyVerifier.Verification.found(
+                        "1000", "req-mismatch", "A-DIFFERENT-GOODS-NO", null, null, 2));
+        stubRunIdempotency();
+
+        JdSkuMappingCheckResult result = run("key-authoritative-negatives");
+
+        verify(jdbc, times(3)).update(
+                contains("external_codes - 'jd_goods_verification'"), any(Object[].class));
+        assertThat(result.categories()).anySatisfy(category -> assertThat(category.items())
+                .anySatisfy(item -> assertThat(item.reason()).isEqualTo("GOODS_NO_MISMATCH")));
     }
 
     @Test
@@ -209,6 +235,8 @@ class JdSkuMappingCheckServiceTest {
         assertThat(category.category()).isEqualTo("GOODS_STATUS_UNKNOWN");
         assertThat(category.items().getFirst().reason()).isEqualTo("STATUS_UNKNOWN");
         assertThat(category.items().getFirst().message()).contains("enableFlag=0");
+        verify(jdbc, never()).update(
+                contains("external_codes - 'jd_goods_verification'"), any(Object[].class));
     }
 
     @Test

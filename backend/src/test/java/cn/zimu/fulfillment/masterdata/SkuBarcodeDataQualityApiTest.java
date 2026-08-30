@@ -2,7 +2,12 @@ package cn.zimu.fulfillment.masterdata;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
+import cn.zimu.fulfillment.common.web.CommandContext;
+import cn.zimu.fulfillment.sku.JdGoodsReadOnlyVerifier;
+import cn.zimu.fulfillment.sku.JdSkuMappingCheckService;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -16,6 +21,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -29,12 +35,15 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 @Testcontainers
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "app.jd.client-mode=REAL")
 class SkuBarcodeDataQualityApiTest {
 
     @Container
@@ -43,6 +52,8 @@ class SkuBarcodeDataQualityApiTest {
 
     @Autowired TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
+    @Autowired JdSkuMappingCheckService jdMappingCheck;
+    @MockitoBean JdGoodsReadOnlyVerifier goodsVerifier;
 
     @Test
     void activeMainBarcodeAndBarcodeAliasShareOneDatabaseBoundaryWhileInactiveHistoryRemains() {
@@ -294,6 +305,27 @@ class SkuBarcodeDataQualityApiTest {
         Map<String, Object> ready = http.getForObject("/api/v1/skus/" + sku750Id, Map.class);
         assertThat(readiness(ready)).containsEntry("ready", true);
         assertThat(reasonCodes(ready)).isEmpty();
+
+        when(goodsVerifier.verify(anyString())).thenAnswer(invocation -> {
+            String goodsNo = invocation.getArgument(0);
+            int enableFlag = independentGoodsNo.equals(goodsNo) ? 1 : 2;
+            return JdGoodsReadOnlyVerifier.Verification.found(
+                    "1000", "req-authoritative-refresh", goodsNo, null, null, enableFlag);
+        });
+        jdMappingCheck.run(
+                "beef-rib-authoritative-disable-" + UUID.randomUUID(),
+                new CommandContext("req-authoritative-refresh", "trace-authoritative-refresh", "test"));
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT jsonb_exists(external_codes, 'jd_goods_verification') "
+                                + "FROM app.provider_skus WHERE sku_id=?",
+                        Boolean.class,
+                        sku750Id))
+                .as("REAL 查询明确返回未启用后必须撤销旧的正向凭证")
+                .isFalse();
+        Map<String, Object> reblocked = http.getForObject("/api/v1/skus/" + sku750Id, Map.class);
+        assertThat(reasonCodes(reblocked)).containsExactly("BARCODE_CONFLICT");
+        assertThat(dataQualityFlags(reblocked).getFirst()).containsEntry("currently_blocking", true);
         assertThat(jdbc.queryForObject(
                         "SELECT barcode FROM app.skus WHERE id=?", String.class, sku500Id))
                 .isEqualTo("06977872890135");

@@ -30,6 +30,7 @@ class SkuDataQualityFlagMigrationTest {
     private static final String NO_COHORT_DB = "sku_quality_no_cohort";
     private static final String EXISTING_FLAG_DB = "sku_quality_existing_flag";
     private static final String LOCK_RACE_DB = "sku_quality_lock_race";
+    private static final String REVERSE_LOCK_RACE_DB = "sku_quality_reverse_lock_race";
 
     @Container
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
@@ -182,7 +183,7 @@ class SkuDataQualityFlagMigrationTest {
     }
 
     @Test
-    void migrationWaitsForCatalogWriterBeforeReadingAuditSnapshot() throws Exception {
+    void migrationFailsFastRatherThanReadingPastAnActiveCatalogWriter() throws Exception {
         createDatabase(LOCK_RACE_DB);
         String url = jdbcUrl(LOCK_RACE_DB);
         flyway(url, MigrationVersion.fromVersion("72")).migrate();
@@ -200,18 +201,59 @@ class SkuDataQualityFlagMigrationTest {
             }
 
             Future<?> migration = pool.submit(() -> flyway(url, null).migrate());
-            awaitAdvisoryLockWaiter(url);
-            assertThat(migration.isDone())
-                    .as("V73 必须先等待目录写事务，不能提前读取审计快照")
-                    .isFalse();
+            assertThatThrownBy(() -> migration.get(30, TimeUnit.SECONDS))
+                    .hasStackTraceContaining("V73 requires a quiescent SKU catalog");
             writer.commit();
 
-            assertThatThrownBy(() -> migration.get(30, TimeUnit.SECONDS))
+            assertThatThrownBy(() -> flyway(url, null).migrate())
                     .hasStackTraceContaining("鸵鸟蛋变重差异审计前置条件漂移");
         } finally {
             pool.shutdownNow();
         }
         assertV73RolledBack(url);
+    }
+
+    @Test
+    void productThenSkuWriterCannotDeadlockAgainstMigrationLockAcquisition()
+            throws Exception {
+        createDatabase(REVERSE_LOCK_RACE_DB);
+        String url = jdbcUrl(REVERSE_LOCK_RACE_DB);
+        flyway(url, MigrationVersion.fromVersion("72")).migrate();
+        seedAuditedSnapshot(url, false);
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try (Connection writer = DriverManager.getConnection(
+                url, postgres.getUsername(), postgres.getPassword())) {
+            writer.setAutoCommit(false);
+            try (Statement statement = writer.createStatement()) {
+                statement.executeUpdate(
+                        "INSERT INTO app.products(product_code,product_name,category_id,active) "
+                                + "SELECT 'PROD-CONCURRENT-WRITER','并发目录写',id,TRUE "
+                                + "FROM app.categories WHERE category_code='SKU-AUDIT'");
+            }
+
+            Future<?> migration = pool.submit(() -> flyway(url, null).migrate());
+            assertThatThrownBy(() -> migration.get(30, TimeUnit.SECONDS))
+                    .hasStackTraceContaining("V73 requires a quiescent SKU catalog");
+
+            try (Statement statement = writer.createStatement()) {
+                statement.executeUpdate(
+                        "INSERT INTO app.skus(sku_sequence_no,sku_code,product_id,fulfillment_provider_id,"
+                                + "specification,unit,active) "
+                                + "SELECT 999,'SKU-JD-000999',p.id,fp.id,'1kg','件',TRUE "
+                                + "FROM app.products p CROSS JOIN app.fulfillment_providers fp "
+                                + "WHERE p.product_code='PROD-CONCURRENT-WRITER' AND fp.provider_code='JD'");
+            }
+            writer.commit();
+        } finally {
+            pool.shutdownNow();
+        }
+
+        flyway(url, null).migrate();
+        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='73'"))
+                .isEqualTo(1);
+        assertThat(intQuery(url, "SELECT count(*) FROM app.sku_data_quality_flags"))
+                .isEqualTo(5);
     }
 
     private static void seedAuditedSnapshot(String jdbcUrl, boolean driftMultiplier) throws Exception {
@@ -342,18 +384,6 @@ class SkuDataQualityFlagMigrationTest {
                                 + "('trg_skus_active_barcode_unique',"
                                 + "'trg_sku_aliases_active_barcode_unique')"))
                 .isZero();
-    }
-
-    private static void awaitAdvisoryLockWaiter(String jdbcUrl) throws Exception {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (System.nanoTime() < deadline) {
-            if (intQuery(jdbcUrl,
-                    "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND granted=FALSE") > 0) {
-                return;
-            }
-            Thread.sleep(20);
-        }
-        throw new AssertionError("V73 did not wait for the SKU catalog advisory lock");
     }
 
     private static void execute(String jdbcUrl, String sql) throws Exception {

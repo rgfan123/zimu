@@ -23,6 +23,22 @@ final class JdGoodsVerificationEvidence {
                 && Integer.valueOf(2).equals(verification.enableFlag());
     }
 
+    /**
+     * REAL 查询成功且明确给出“未找到、goodsNo 不同或 enableFlag=1”时，旧凭证失效。
+     * 传输失败、状态缺失和未文档化状态都不是权威否定，保留上一次凭证并告警复查。
+     */
+    static boolean shouldRevoke(
+            String clientMode,
+            String expectedGoodsNo,
+            JdGoodsReadOnlyVerifier.Verification verification) {
+        return "REAL".equals(clientMode)
+                && verification != null
+                && verification.querySucceeded()
+                && (!verification.found()
+                        || !Objects.equals(expectedGoodsNo, verification.goodsNo())
+                        || Integer.valueOf(1).equals(verification.enableFlag()));
+    }
+
     static boolean isCurrent(ProviderSku mapping) {
         if (mapping == null || !mapping.isActive() || mapping.getExternalCodes() == null) return false;
         Object raw = mapping.getExternalCodes().get(KEY);

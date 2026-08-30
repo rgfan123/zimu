@@ -1,10 +1,34 @@
 -- 有效 SKU 的主条码与 BARCODE 别名共享同一规范化唯一边界。
 -- V71 的 BEFORE STATEMENT 目录锁会串行相关写语句；本迁移的 AFTER STATEMENT
 -- 校验因此既能覆盖跨表所有权，又不会留下并发双写窗口。
--- 必须在任何索引扫描/审计前置读取之前取得同一事务级锁，避免迁移按陈旧目录快照落证据。
+-- 迁移不能等待目录 advisory lock：业务事务可能已在其它 V71 目录表上取得该锁，随后
+-- 还要写 skus。这里先 try-lock；失败就要求部署方重试。取得 advisory 后，再以 NOWAIT
+-- 一次性封住全部 V71 目录表；若某写事务正处在“已取表锁、尚未进 trigger”的窗口，同样
+-- 立即失败并释放事务锁。只有 advisory + 全目录 SHARE 锁都已取得后才进入 DDL/审计，
+-- 从而既不读取漂移快照，也不形成 advisory/table 的互等环。
 DO $$
 BEGIN
-    PERFORM pg_advisory_xact_lock(756426269156::BIGINT);
+    IF NOT pg_try_advisory_xact_lock(756426269156::BIGINT) THEN
+        RAISE EXCEPTION 'V73 requires a quiescent SKU catalog; retry after active catalog writes finish'
+            USING ERRCODE='55P03';
+    END IF;
+    BEGIN
+        LOCK TABLE
+            app.products,
+            app.skus,
+            app.fulfillment_providers,
+            app.provider_skus,
+            app.source_channel_skus,
+            app.sku_aliases,
+            app.sku_data_quality_flags,
+            app.bundle_items,
+            app.product_bundles,
+            app.source_channel_bundles
+        IN SHARE MODE NOWAIT;
+    EXCEPTION WHEN lock_not_available THEN
+        RAISE EXCEPTION 'V73 requires a quiescent SKU catalog; retry after active catalog writes finish'
+            USING ERRCODE='55P03';
+    END;
 END;
 $$;
 

@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -111,12 +112,26 @@ public class JdSkuMappingCheckService {
         return result;
     }
 
-    /** 只有 REAL 客户端返回同一、已启用 goodsNo 时才固化凭证；映射在外调期间漂移则整次核对失败。 */
+    /**
+     * REAL 客户端返回同一、已启用 goodsNo 时固化凭证；后续 REAL 成功查询给出未找到、
+     * goodsNo 漂移或明确未启用（enableFlag=1）时撤销旧凭证。传输失败、状态缺失和
+     * 未文档化状态不冒充权威否定。
+     */
     private void recordVerification(
             SkuMappingRow mapping, JdGoodsReadOnlyVerifier.Verification verification) {
-        if (!JdGoodsVerificationEvidence.canRecord(clientMode, mapping.providerSkuCode(), verification)) {
+        if (JdGoodsVerificationEvidence.canRecord(clientMode, mapping.providerSkuCode(), verification)) {
+            persistPositiveVerification(mapping, verification);
             return;
         }
+        if (!JdGoodsVerificationEvidence.shouldRevoke(
+                clientMode, mapping.providerSkuCode(), verification)) {
+            return;
+        }
+        revokeVerification(mapping);
+    }
+
+    private void persistPositiveVerification(
+            SkuMappingRow mapping, JdGoodsReadOnlyVerifier.Verification verification) {
         int updated = jdbc.update(
                 """
                 UPDATE app.provider_skus
@@ -143,10 +158,40 @@ public class JdSkuMappingCheckService {
                 mapping.id(),
                 mapping.providerSkuCode());
         if (updated != 1) {
-            throw BusinessException.conflict(
-                    "JD_SKU_MAPPING_CHANGED_DURING_CHECK",
-                    "京东商品只读核验期间映射已变化，请刷新后重新核验");
+            throw mappingChangedDuringCheck();
         }
+    }
+
+    private void revokeVerification(SkuMappingRow mapping) {
+        int updated = jdbc.update(
+                """
+                UPDATE app.provider_skus
+                SET external_codes = external_codes - 'jd_goods_verification',
+                    lock_version=lock_version+1,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND active=TRUE AND provider_sku_code=?
+                  AND jsonb_exists(external_codes, 'jd_goods_verification')
+                """,
+                mapping.id(),
+                mapping.providerSkuCode());
+        if (updated == 1) {
+            return;
+        }
+        Boolean mappingUnchanged = jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM app.provider_skus "
+                        + "WHERE id=? AND active=TRUE AND provider_sku_code=?)",
+                Boolean.class,
+                mapping.id(),
+                mapping.providerSkuCode());
+        if (!Boolean.TRUE.equals(mappingUnchanged)) {
+            throw mappingChangedDuringCheck();
+        }
+    }
+
+    private BusinessException mappingChangedDuringCheck() {
+        return BusinessException.conflict(
+                "JD_SKU_MAPPING_CHANGED_DURING_CHECK",
+                "京东商品只读核验期间映射已变化，请刷新后重新核验");
     }
 
     private void classify(
@@ -163,6 +208,12 @@ public class JdSkuMappingCheckService {
         }
         if (!result.found()) {
             missing.add(diff(mapping, "NOT_FOUND", "京东未查到该商品编码（goodsNo）对应的商品"));
+            return;
+        }
+        if (!Objects.equals(mapping.providerSkuCode(), result.goodsNo())) {
+            missing.add(diff(mapping, "GOODS_NO_MISMATCH",
+                    "京东返回 goodsNo=" + result.goodsNo()
+                            + "，与系统映射 " + mapping.providerSkuCode() + " 不一致"));
             return;
         }
         // enableFlag 官方语义（快照 2026-08-11，docs/research/jdl-api-367/json/1610-queryGoodsInfo.json）：
