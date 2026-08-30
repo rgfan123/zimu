@@ -64,6 +64,7 @@ public class McpDomainReadTools {
     private static final int MAX_QUERY_LENGTH = 100;
     private static final Set<String> TICKET_STATUSES =
             Set.of("PENDING", "SUCCESS", "PARTIAL", "FAILED", "CANCELLED");
+    private static final Set<String> ARCHIVE_STATUSES = Set.of("在产", "停产", "研发", "新品");
 
     private final FulfillmentReadService reads;
     private final InventoryOverviewService inventoryOverview;
@@ -148,11 +149,16 @@ public class McpDomainReadTools {
                         "masterdata"),
                 new McpToolRegistry.SimpleTool(
                         "search_product_archive",
-                        "按商品名模糊检索成本表全列档案（fields 数组序即原表列序 A..AU；AI=成本/份、AJ=不含运费售价）；"
-                                + "未挂接商品的档案行也能搜到。",
+                        "组合查询商品成本档案：商品名模糊，69 码精确，或按品牌/肉类/状态/SKU 挂接状态过滤。"
+                                + "重复 69 码返回全部命中行；保留全部业务成本列，不返回文件名、指纹、行号或列字母。",
                         schema(
                                 Map.of(
                                         "query", stringProperty("商品名模糊查询词"),
+                                        "barcode", stringProperty("69 码精确匹配（相同码可返回多行）"),
+                                        "brand", stringProperty("品牌精确匹配"),
+                                        "meat_type", stringProperty("肉类精确匹配"),
+                                        "status", stringProperty("产品状态：在产/停产/研发/新品"),
+                                        "linked", booleanProperty("是否已挂接 SKU（true/false）"),
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
@@ -339,17 +345,17 @@ public class McpDomainReadTools {
         return pageNode(result, McpDomainReadTools::providerSkuNode);
     }
 
-    /**
-     * 商品档案·成本表全列检索（V63）：按商品名模糊搜全部档案行，含未挂接商品的行——
-     * 现有 {@link ProductArchiveSheetService#byProduct} 只能读到已挂接的行，覆盖不了
-     * 「还没挂接、但要先看看成本」这种场景。fields 保持原表列序（数组序 == 列序），
-     * 这里逐字段投影而不是整体 valueToTree，避免记录新增字段时默认外泄未经审阅的内容。
-     */
+    /** MCP 领域查询：不走内部管理面的快照存储形状。 */
     private JsonNode searchProductArchive(McpRequestContext context, Map<String, Object> args) {
         String query = optionalQuery(args, "query");
-        PageResponse<ProductArchiveSheet> result =
-                productArchive.search(query, page(args, 0), pageSize(args, 20));
-        return pageNode(result, McpDomainReadTools::archiveSheetNode);
+        String barcode = optionalQuery(args, "barcode");
+        String brand = optionalQuery(args, "brand");
+        String meatType = optionalQuery(args, "meat_type");
+        String status = optionalArchiveStatus(args);
+        Boolean linked = optionalBoolean(args, "linked");
+        PageResponse<ProductArchiveSummary> result = productArchive.search(
+                query, barcode, brand, meatType, status, linked, page(args, 0), pageSize(args, 20));
+        return pageNode(result, McpDomainReadTools::archiveSummaryNode);
     }
 
     // ------------------------------------------------------------------
@@ -595,32 +601,24 @@ public class McpDomainReadTools {
         return item;
     }
 
-    /**
-     * 档案行投影：逐字段显式构造（不整体 {@code valueToTree}），但 {@code fields}/{@code extra_cells}
-     * 数组按源列表顺序原样搬运——顺序才是这张表的意义所在，绝不能在这一层重排或按键分组。
-     */
-    private static ObjectNode archiveSheetNode(ProductArchiveSheet sheet) {
+    private static ObjectNode archiveSummaryNode(ProductArchiveSummary summary) {
         ObjectNode item = node();
-        item.put("id", sheet.id());
-        item.put("source_file_name", sheet.sourceFileName());
-        item.put("source_file_sha256", sheet.sourceFileSha256());
-        item.put("sheet_name", sheet.sheetName());
-        item.put("row_no", sheet.rowNo());
-        item.put("product_name", sheet.productName());
-        ArrayNode fields = item.putArray("fields");
-        for (ProductArchiveSheet.Field field : sheet.fields()) {
-            ObjectNode fieldNode = fields.addObject();
-            fieldNode.put("column", field.column());
+        item.put("product_name", summary.productName());
+        item.put("brand", summary.brand());
+        item.put("specification_g", summary.specificationG());
+        item.put("barcode", summary.barcode());
+        item.put("meat_type", summary.meatType());
+        item.put("material", summary.material());
+        item.put("status", summary.status());
+        item.put("linked", summary.linked());
+        item.put("sku_code", summary.skuCode());
+        item.put("sku_id", summary.skuId());
+        ArrayNode costing = item.putArray("costing");
+        for (ProductArchiveSummary.CostingField field : summary.costing()) {
+            ObjectNode fieldNode = costing.addObject();
             fieldNode.put("name", field.name());
             fieldNode.put("value", field.value());
         }
-        ArrayNode extraCells = item.putArray("extra_cells");
-        for (ProductArchiveSheet.ExtraCell cell : sheet.extraCells()) {
-            ObjectNode cellNode = extraCells.addObject();
-            cellNode.put("column", cell.column());
-            cellNode.put("value", cell.value());
-        }
-        item.put("created_at", sheet.createdAt() == null ? null : sheet.createdAt().toString());
         return item;
     }
 
@@ -872,6 +870,29 @@ public class McpDomainReadTools {
         return value;
     }
 
+    private static String optionalArchiveStatus(Map<String, Object> args) {
+        String value = optionalString(args, "status");
+        if (value == null) {
+            return null;
+        }
+        if (!ARCHIVE_STATUSES.contains(value)) {
+            throw BusinessException.badRequest(
+                    "INVALID_PARAMETERS", "参数 status 必须是 在产/停产/研发/新品");
+        }
+        return value;
+    }
+
+    private static Boolean optionalBoolean(Map<String, Object> args, String key) {
+        Object value = args.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Boolean flag) {
+            return flag;
+        }
+        throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 " + key + " 必须是布尔值");
+    }
+
     private static Instant optionalDate(Map<String, Object> args, String key) {
         String value = optionalString(args, key);
         if (value == null) {
@@ -933,5 +954,9 @@ public class McpDomainReadTools {
 
     private static ObjectNode integerProperty(String description) {
         return McpToolRegistry.integerProperty(description);
+    }
+
+    private static ObjectNode booleanProperty(String description) {
+        return McpToolRegistry.booleanProperty(description);
     }
 }

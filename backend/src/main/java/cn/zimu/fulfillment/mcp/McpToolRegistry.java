@@ -175,6 +175,10 @@ public class McpToolRegistry {
         return JsonNodeFactory.instance.objectNode().put("type", "integer").put("description", description);
     }
 
+    public static ObjectNode booleanProperty(String description) {
+        return JsonNodeFactory.instance.objectNode().put("type", "boolean").put("description", description);
+    }
+
     public static ObjectNode objectProperty(String description) {
         // 恒带空 properties：与 McpToolSchemaConverter 的规范化输出一致（等价性测试逐字段比对）
         ObjectNode node = JsonNodeFactory.instance.objectNode()

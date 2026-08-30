@@ -382,47 +382,82 @@ class McpDomainReadToolsTest {
     private static final String ARCHIVE_SHA = "a1".repeat(32);
 
     @Test
-    void productArchiveReadToolSearchesUnmatchedRowsAndKeepsFieldOrder() throws Exception {
+    void productArchiveReadToolQueriesDomainFieldsWithoutLeakingStorageShape() throws Exception {
         long categoryId = createCategory();
-        long productId = createProduct(categoryId, "MCP-PROD-ARCHIVE", "档案商品羔羊肉卷");
+        long providerId = createProvider("MCPARCHIVE", "档案履约方");
+        long linkedProductId = createProduct(categoryId, "MCP-PROD-ARCHIVE", "档案商品牛肋条");
+        long linkedSkuId = createSku(providerId, linkedProductId, "500g");
+        String linkedSkuCode = jdbc.queryForObject(
+                "SELECT sku_code FROM app.skus WHERE id=?", String.class, linkedSkuId);
 
-        insertArchiveRow(ARCHIVE_SHA, 2, "新西兰羔羊肉卷", productId);
-        insertArchiveRow(ARCHIVE_SHA, 3, "新西兰羔羊排骨", null); // 未挂接，matched_product_id 为空
-        insertArchiveRow(ARCHIVE_SHA, 4, "本地散养鸡", null); // 不匹配查询词
+        insertArchiveRow(ARCHIVE_SHA, 61, "原切牛肋条", "在产", "500g", "06977872890135",
+                "子牧", "牛肉", "牛肋条", linkedSkuId, linkedProductId);
+        insertArchiveRow(ARCHIVE_SHA, 62, "原切牛肋条", "停产", "750g", "06977872890135",
+                "子牧", "牛肉", "牛肋条", null, null);
+        insertArchiveRow(ARCHIVE_SHA, 69, "原切牛肉卷", "新品", "300g", "06977872890432",
+                "子牧", "牛肉", "肥牛", null, null);
+        insertArchiveRow(ARCHIVE_SHA, 70, "新西兰羔羊肉卷", "研发", "200g", "06977872890579",
+                "其他品牌", "羊肉", "羔羊肉", null, null);
 
-        JsonNode matched = callResult(AGENT, "search_product_archive", Map.of("query", "羔羊"));
+        JsonNode exactBarcode = callResult(
+                AGENT, "search_product_archive", Map.of("barcode", "06977872890432"));
+        assertThat(exactBarcode.get("items")).hasSize(1);
+        assertThat(exactBarcode.at("/items/0/product_name").asText()).isEqualTo("原切牛肉卷");
+        assertThat(exactBarcode.at("/items/0/specification_g").asText()).isEqualTo("300g");
+
+        JsonNode duplicateBarcode = callResult(
+                AGENT, "search_product_archive", Map.of("barcode", "06977872890135"));
+        assertThat(duplicateBarcode.get("items")).hasSize(2);
+        assertThat(duplicateBarcode.get("items")).extracting(item -> item.get("specification_g").asText())
+                .containsExactly("500g", "750g");
+
+        JsonNode matched = callResult(AGENT, "search_product_archive", Map.of("query", "肉卷"));
         assertThat(matched.get("total_elements").asLong()).isEqualTo(2);
         assertThat(matched.get("items")).hasSize(2);
-        // 稳定序：source_file_sha256, row_no —— row_no=2 排在 row_no=3 之前
-        assertThat(matched.get("items").get(0).get("row_no").asInt()).isEqualTo(2);
-        assertThat(matched.get("items").get(0).get("product_name").asText()).isEqualTo("新西兰羔羊肉卷");
-        // 未挂接商品的档案行也能搜到（不按 matched_product_id 过滤）
-        assertThat(matched.get("items").get(1).get("row_no").asInt()).isEqualTo(3);
-        assertThat(matched.get("items").get(1).get("product_name").asText()).isEqualTo("新西兰羔羊排骨");
 
-        // fields 数组序即原表列序 A..AU：不得被 jsonb 对象键重排洗掉
-        JsonNode fields = matched.get("items").get(0).get("fields");
-        assertThat(fields.get(0).get("column").asText()).isEqualTo("A");
-        assertThat(fields.get(1).get("column").asText()).isEqualTo("AI");
-        assertThat(fields.get(1).get("name").asText()).isEqualTo("线下供货成本/份");
-        assertThat(fields.get(1).get("value").asText()).isEqualTo("9.99");
-        assertThat(fields.get(2).get("column").asText()).isEqualTo("AJ");
-        assertThat(fields.get(2).get("name").asText()).isEqualTo("售价");
-        assertThat(fields.get(2).get("value").asText()).isEqualTo("19.99");
+        assertThat(callResult(AGENT, "search_product_archive", Map.of("brand", "其他品牌"))
+                .get("items")).hasSize(1);
+        assertThat(callResult(AGENT, "search_product_archive", Map.of("meat_type", "羊肉"))
+                .get("items")).hasSize(1);
+        assertThat(callResult(AGENT, "search_product_archive", Map.of("status", "研发"))
+                .get("items")).hasSize(1);
+        JsonNode linked = callResult(AGENT, "search_product_archive", Map.of("linked", true));
+        assertThat(linked.get("items")).hasSize(1);
+        assertThat(linked.at("/items/0/linked").asBoolean()).isTrue();
+        assertThat(linked.at("/items/0/sku_id").asText()).isEqualTo(String.valueOf(linkedSkuId));
+        assertThat(linked.at("/items/0/sku_code").asText()).isEqualTo(linkedSkuCode);
+        JsonNode unlinked = callResult(AGENT, "search_product_archive", Map.of("linked", false));
+        assertThat(unlinked.get("items")).hasSize(3);
+        assertThat(unlinked.get("items")).allSatisfy(item -> {
+            assertThat(item.get("linked").asBoolean()).isFalse();
+            assertThat(item.get("sku_id").isNull()).isTrue();
+            assertThat(item.get("sku_code").isNull()).isTrue();
+        });
+
+        JsonNode item = exactBarcode.at("/items/0");
+        List<String> itemFields = new ArrayList<>();
+        item.fieldNames().forEachRemaining(itemFields::add);
+        assertThat(itemFields).containsExactlyInAnyOrder(
+                "product_name", "brand", "specification_g", "barcode", "meat_type", "material", "status",
+                "linked", "sku_code", "sku_id", "costing");
+        assertThat(item.get("costing")).hasSize(40);
+        assertThat(item.at("/costing/0/name").asText()).isEqualTo("成本列 H");
+        assertThat(item.at("/costing/39/name").asText()).isEqualTo("成本列 AU");
+        assertThat(item.toString()).doesNotContain(
+                "source_file_name", "source_file_sha256", "sheet_name", "row_no", "\"column\"", "extra_cells");
 
         JsonNode all = callResult(AGENT, "search_product_archive", Map.of());
-        assertThat(all.get("total_elements").asLong()).isEqualTo(3);
+        assertThat(all.get("total_elements").asLong()).isEqualTo(4);
 
         JsonNode noMatch = callResult(AGENT, "search_product_archive", Map.of("query", "不存在的商品名"));
         assertThat(noMatch.get("items")).isEmpty();
         assertThat(noMatch.get("total_elements").asLong()).isZero();
 
         JsonNode paged = callResult(AGENT, "search_product_archive",
-                Map.of("query", "羔羊", "page", 1, "size", 1));
+                Map.of("barcode", "06977872890135", "page", 1, "size", 1));
         assertThat(paged.get("items")).hasSize(1);
-        assertThat(paged.get("items").get(0).get("row_no").asInt()).isEqualTo(3);
+        assertThat(paged.at("/items/0/specification_g").asText()).isEqualTo("750g");
         assertThat(paged.get("total_pages").asInt()).isEqualTo(2);
-        assertThat(productId).isPositive();
     }
 
     @Test
@@ -431,27 +466,66 @@ class McpDomainReadToolsTest {
                 new Case("search_product_archive", Map.of("page", -1), "INVALID_PARAMETERS"),
                 new Case("search_product_archive", Map.of("size", 0), "INVALID_PARAMETERS"),
                 new Case("search_product_archive", Map.of("size", 201), "INVALID_PARAMETERS"),
-                new Case("search_product_archive", Map.of("query", "x".repeat(101)), "INVALID_PARAMETERS"));
+                new Case("search_product_archive", Map.of("query", "x".repeat(101)), "INVALID_PARAMETERS"),
+                new Case("search_product_archive", Map.of("barcode", "x".repeat(101)), "INVALID_PARAMETERS"),
+                new Case("search_product_archive", Map.of("linked", "true"), "INVALID_PARAMETERS"));
         for (Case testCase : cases) {
             assertToolError(testCase.tool(), testCase.args(), testCase.code(), testCase.tool());
         }
     }
 
     /** 档案行直灌：档案由成本表一次性灌库，应用侧没有写接口，测试按生产同款语句插入。 */
-    private void insertArchiveRow(String sha256, int rowNo, String productName, Long matchedProductId) {
-        String fields = """
-                [{"column":"A","name":"产品名称","value":"%s"},
-                 {"column":"AI","name":"线下供货成本/份","value":"9.99"},
-                 {"column":"AJ","name":"售价","value":"19.99"}]
-                """.formatted(productName);
+    private void insertArchiveRow(
+            String sha256,
+            int rowNo,
+            String productName,
+            String status,
+            String specification,
+            String barcode,
+            String brand,
+            String meatType,
+            String material,
+            Long matchedSkuId,
+            Long matchedProductId) {
+        var fields = mapper.createArrayNode();
+        addArchiveField(fields, "A", "产品名称", productName);
+        addArchiveField(fields, "B", "产品状态", status);
+        addArchiveField(fields, "C", "规格/g", specification);
+        addArchiveField(fields, "D", "国条", barcode);
+        addArchiveField(fields, "E", "品牌", brand);
+        addArchiveField(fields, "F", "肉类", meatType);
+        addArchiveField(fields, "G", "原料", material);
+        for (int index = 8; index <= 47; index++) {
+            String column = excelColumn(index);
+            addArchiveField(fields, column, "成本列 " + column, String.valueOf(index));
+        }
         jdbc.update(
                 """
                 INSERT INTO app.product_archive_sheets (
                     source_file_name, source_file_sha256, sheet_name, row_no,
-                    product_name, fields, matched_product_id)
-                VALUES ('archive-fixture.xlsx', ?, '成品', ?, ?, ?::jsonb, ?)
+                    product_name, fields, matched_sku_id, matched_product_id)
+                VALUES ('archive-fixture.xlsx', ?, '成品', ?, ?, ?::jsonb, ?, ?)
                 """,
-                sha256, rowNo, productName, fields, matchedProductId);
+                sha256, rowNo, productName, fields.toString(), matchedSkuId, matchedProductId);
+    }
+
+    private static void addArchiveField(
+            com.fasterxml.jackson.databind.node.ArrayNode fields,
+            String column,
+            String name,
+            String value) {
+        fields.addObject().put("column", column).put("name", name).put("value", value);
+    }
+
+    private static String excelColumn(int oneBasedIndex) {
+        StringBuilder result = new StringBuilder();
+        int value = oneBasedIndex;
+        while (value > 0) {
+            value--;
+            result.append((char) ('A' + value % 26));
+            value /= 26;
+        }
+        return result.reverse().toString();
     }
 
     // ------------------------------------------------------------------
