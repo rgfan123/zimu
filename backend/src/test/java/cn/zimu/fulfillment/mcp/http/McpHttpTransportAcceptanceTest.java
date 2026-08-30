@@ -56,7 +56,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
             "app.message-worker.enabled=false",
             "app.mcp.enabled=false",
             "app.mcp.http.enabled=true",
-            "app.mcp.http.token=" + McpHttpTransportAcceptanceTest.TOKEN
+            "app.mcp.http.token=" + McpHttpTransportAcceptanceTest.TOKEN,
+            "app.mcp.protocol-modules=masterdata,write"
         })
 class McpHttpTransportAcceptanceTest {
 
@@ -134,9 +135,9 @@ class McpHttpTransportAcceptanceTest {
 
     @Test
     void toolCallResultMatchesDirectStdioProtocolHandling() throws Exception {
-        // list_agent_tools：控制面只读工具，不依赖任何业务数据种子，结果确定。
+        // list_categories：公共主数据只读工具；Agent 工具元数据明确不进入外部协议面。
         String request = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\","
-                + "\"params\":{\"name\":\"list_agent_tools\",\"arguments\":{}}}";
+                + "\"params\":{\"name\":\"list_categories\",\"arguments\":{}}}";
 
         ResponseEntity<String> httpResponse = postToMcp(bearer(), request);
         assertThat(httpResponse.getStatusCode()).isEqualTo(HttpStatus.OK);

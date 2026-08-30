@@ -91,7 +91,7 @@ class McpDomainReadToolsTest {
                 "get_inventory_overview", "get_inventory_detail",
                 "list_products", "list_categories", "list_fulfillment_providers",
                 "check_shipment_source_sync")) {
-            McpTool tool = registry.find(name).orElseThrow();
+            McpTool tool = registry.findAgentTool(name).orElseThrow();
             assertThat(tool.description() + " " + tool.inputSchema())
                     .doesNotContain("MCP_AGENT_IDENTITY")
                     .doesNotContain("MCP_ENABLED")

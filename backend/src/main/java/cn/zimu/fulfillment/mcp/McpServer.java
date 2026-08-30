@@ -146,15 +146,15 @@ public class McpServer {
             return errorResponse(INVALID_PARAMS, "Invalid params: tools/call requires name", id);
         }
         String name = params.get("name").asText();
-        McpTool tool = registry.find(name).orElse(null);
-        if (tool == null) {
+        McpTool tool = registry.findProtocolTool(name).orElse(null);
+        if (tool == null || !tool.externallyDiscoverable()) {
             return errorResponse(INVALID_PARAMS, "Unknown tool: " + name, id);
         }
         // 08 决策：stdio 面一期收紧为只读——外部客户端共用全局 identity、无 per-agent 权限，
         // 写工具与只读接口不共存（tools/list 也不暴露），调用写工具按无效请求拒绝。
         // 拒绝先于身份/幂等处理：只读接口上写工具不存在，认证语义（MCP_AUTH_REQUIRED）
         // 只对暴露出的只读工具生效。HTTP 传输复用同一分发逻辑，写工具同样一律拒绝。
-        if (!tool.readOnly() || !tool.externallyDiscoverable()) {
+        if (!tool.readOnly()) {
             return errorResponse(INVALID_PARAMS, "Tool is read-only restricted: " + name, id);
         }
         JsonNode arguments = params.get("arguments");
@@ -206,7 +206,7 @@ public class McpServer {
         ObjectNode result = mapper.createObjectNode();
         ArrayNode tools = result.putArray("tools");
         // 08 决策：stdio 面只暴露只读工具（readOnly=true），写工具不外露
-        for (McpTool tool : registry.all()) {
+        for (McpTool tool : registry.protocolTools()) {
             if (!tool.readOnly() || !tool.externallyDiscoverable()) {
                 continue;
             }

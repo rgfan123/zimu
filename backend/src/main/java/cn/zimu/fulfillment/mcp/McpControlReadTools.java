@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * MCP 控制面只读工具（06 决策；meta-agent-platform-impl 10）：{@code list_agent_tools}
- * 返回注册表全部工具的名称/描述/参数 schema/读写属性（07 票读写元数据），供元 Agent
+ * 返回 Agent 工具面全部工具的名称/描述/参数 schema/读写属性（07 票读写元数据），供元 Agent
  * 规划工具白名单——工具面增长无需改提示词（「注册一次自动获得」延续）。
  *
  * <p>经 {@link ObjectProvider} 懒解析 {@link McpToolRegistry}（构造期互依赖：
@@ -34,12 +34,18 @@ public class McpControlReadTools {
                 "列出平台注册的全部 Agent 工具（名称/描述/参数 JSON Schema/读写属性 readOnly），供规划 Agent 工具白名单。",
                 McpToolRegistry.schema(Map.of(), List.of()),
                 this::listAgentTools,
-                "control"));
+                "control") {
+            @Override
+            public boolean externallyDiscoverable() {
+                // 结果包含 Agent-only 写工具的名称和 schema，只允许进程内 Agent 绑定调用。
+                return false;
+            }
+        });
     }
 
     private JsonNode listAgentTools(McpRequestContext context, Map<String, Object> arguments) {
         ArrayNode tools = mapper.createArrayNode();
-        for (McpTool tool : registryProvider.getObject().all()) {
+        for (McpTool tool : registryProvider.getObject().agentTools()) {
             ObjectNode item = tools.addObject();
             item.put("name", tool.name());
             item.put("description", tool.description());

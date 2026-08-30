@@ -58,10 +58,10 @@ ssh zimupc "type C:\\Deploy\\zimu\\releases\\agent-platform-e50bb3e-20260825-075
   | sed -e "s/backend:real-[a-z0-9]*/backend:$TAG/" \
         -e "s/frontend:real-[a-z0-9]*/frontend:$TAG/" \
         -e "s/nginx:real-[a-z0-9]*/nginx:$TAG/" > /tmp/off.yml
-# 两项都必须 >=1 才允许 scp:
+# 三项都必须 >=1 才允许 scp:
 grep -c GATEWAY_BASIC_AUTH_ENABLED /tmp/off.yml   # 抹掉 = 公网入口失去认证
-grep -c MCP_MODULES                /tmp/off.yml   # 抹掉 = 公网 30000 从 11 个只读工具
-                                                  #        放大到全部 28 个,含客户 PII
+grep -c AGENT_TOOL_MODULES         /tmp/off.yml   # 抹掉 = 内部 Agent 工具面为空或漂移
+grep -c MCP_MODULES                /tmp/off.yml   # 抹掉 = 公共协议面无工具并在传输开启时启动失败
 scp -q /tmp/off.yml "zimupc:$R/offline.runtime.override.yml"
 ```
 

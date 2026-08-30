@@ -180,7 +180,7 @@ public class AgentReadService {
 
     private Map<String, McpTool> toolIndex() {
         Map<String, McpTool> index = new LinkedHashMap<>();
-        for (McpTool tool : toolRegistry.all()) {
+        for (McpTool tool : toolRegistry.agentTools()) {
             index.put(tool.name(), tool);
         }
         return index;

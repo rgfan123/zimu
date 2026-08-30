@@ -179,7 +179,7 @@ public class AgentInvariantEval {
                 problems.add(tag + " tool_sequence 含白名单外工具（stub 模型永远选不中）: " + toolName);
                 continue;
             }
-            McpTool tool = registryProvider.getObject().find(toolName).orElse(null);
+            McpTool tool = registryProvider.getObject().findAgentTool(toolName).orElse(null);
             if (tool != null && !tool.readOnly() && !definition.allowWrite()) {
                 problems.add(tag + " tool_sequence 含写工具但未声明 allow_write=true: " + toolName);
             }

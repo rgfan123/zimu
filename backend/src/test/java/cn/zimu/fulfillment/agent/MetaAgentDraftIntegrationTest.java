@@ -9,14 +9,10 @@ import cn.zimu.fulfillment.common.audit.AuditLog;
 import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.common.web.TestRequestAuthenticationConfiguration;
 import cn.zimu.fulfillment.mcp.McpAgentIdentity;
-import cn.zimu.fulfillment.mcp.McpServer;
 import cn.zimu.fulfillment.mcp.McpToolRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -44,7 +40,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         properties = {
             "app.message-worker.enabled=false",
             "app.mcp.enabled=false",
-            "app.mcp.agent-identity=meta-agent-test"
+            "app.mcp.agent-identity=meta-agent-test",
+            "app.agent.tool-modules=masterdata,inventory,orders-read,control,write",
+            "app.mcp.protocol-modules=masterdata,inventory,orders-read"
         })
 @Import(TestRequestAuthenticationConfiguration.class)
 class MetaAgentDraftIntegrationTest {
@@ -111,9 +109,9 @@ class MetaAgentDraftIntegrationTest {
 
     @Test
     void listAgentToolsExposesReadWriteMetadataConsistentWithRegistry() throws Exception {
-        JsonNode tools = listAgentToolsViaStdio();
+        JsonNode tools = listAgentToolsViaAgent();
 
-        Set<String> writeNames = registry.writeToolNames();
+        Set<String> writeNames = registry.agentWriteToolNames();
         assertThat(writeNames).contains("create_agent_draft", "update_agent_draft");
         for (JsonNode tool : tools) {
             assertThat(tool.has("name")).isTrue();
@@ -128,6 +126,23 @@ class MetaAgentDraftIntegrationTest {
                 assertThat(readOnly).as("只读工具 readOnly 必须为 true: %s", name).isTrue();
             }
         }
+    }
+
+    @Test
+    void productionEquivalentSplitKeepsProtocolReadOnlyAndAgentDraftToolsAvailable() {
+        assertThat(registry.protocolTools())
+                .allSatisfy(tool -> assertThat(tool.readOnly()).isTrue())
+                .extracting(tool -> tool.module())
+                .containsOnly("masterdata", "inventory", "orders-read");
+        assertThat(registry.agentTools())
+                .extracting(tool -> tool.module())
+                .containsOnly("masterdata", "inventory", "orders-read", "control", "write");
+        assertThat(registry.findAgentTool("list_agent_tools")).isPresent();
+        assertThat(registry.findAgentTool("create_agent_draft")).isPresent();
+        assertThat(registry.findAgentTool("update_agent_draft")).isPresent();
+        assertThat(registry.findProtocolTool("list_agent_tools")).isEmpty();
+        assertThat(registry.findProtocolTool("create_agent_draft")).isEmpty();
+        assertThat(registry.findProtocolTool("update_agent_draft")).isEmpty();
     }
 
     // ------------------------------------------------------------------
@@ -296,7 +311,7 @@ class MetaAgentDraftIntegrationTest {
     // ------------------------------------------------------------------
 
     @Test
-    void metaAgentWhitelistBindsWithAllowWrite() {
+    void metaAgentWhitelistBindsWhenProtocolSurfaceExcludesControlAndWrite() {
         AgentDefinition meta = holder.current().bySlug("meta-agent");
         assertThat(meta).isNotNull();
         assertThat(meta.allowWrite()).isTrue();
@@ -355,25 +370,18 @@ class MetaAgentDraftIntegrationTest {
         return mapper.readTree(text);
     }
 
-    /** list_agent_tools 是只读工具，stdio 直接可调。 */
-    private JsonNode listAgentToolsViaStdio() throws Exception {
-        String request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
-                + "\"params\":{\"name\":\"list_agent_tools\",\"arguments\":{}}}";
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        McpServer server = new McpServer(
-                new ByteArrayInputStream((request + "\n").getBytes(StandardCharsets.UTF_8)),
-                out,
-                registry,
-                new McpAgentIdentity(IDENTITY),
-                mapper);
-        server.run();
-        JsonNode response = mapper.readTree(out.toString(StandardCharsets.UTF_8).lines()
-                .filter(line -> !line.isBlank())
-                .findFirst()
-                .orElseThrow());
-        assertThat(response.has("error")).as("协议层不应报错: %s", response).isFalse();
-        String text = response.get("result").get("content").get(0).get("text").asText();
-        return mapper.readTree(text).path("tools");
+    /** list_agent_tools 属 Agent 控制面，只经进程内绑定调用，不暴露给外部协议面。 */
+    private JsonNode listAgentToolsViaAgent() throws Exception {
+        AgentToolBinding binding = new AgentToolBindingFactory(registry, identity, mapper)
+                .bind(RUN_ID, List.of("list_agent_tools"), false);
+        AgentToolInvoker invoker = (AgentToolInvoker) binding.tools().values().iterator().next();
+        String result = invoker.execute(
+                dev.langchain4j.agent.tool.ToolExecutionRequest.builder()
+                        .name("list_agent_tools")
+                        .arguments("{}")
+                        .build(),
+                null);
+        return mapper.readTree(result).path("tools");
     }
 
     private AuditLog onlyAudit(String operation) {

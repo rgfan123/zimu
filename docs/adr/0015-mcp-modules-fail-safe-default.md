@@ -6,7 +6,10 @@
 
 ## 背景
 
-`app.mcp.modules`（env `MCP_MODULES`，逗号分隔）决定 MCP 注册表暴露哪些模块的工具。
+`app.mcp.protocol-modules`（优先 env `MCP_PROTOCOL_MODULES`，迁移期回退
+`MCP_MODULES`，逗号分隔）决定外部 MCP 协议面暴露哪些模块的工具。
+进程内 Agent 使用独立的 `app.agent.tool-modules`（env `AGENT_TOOL_MODULES`），
+不再从外部协议清单推导。
 一期为向后兼容，把**空值定义为「全部模块」**——不配置即等于「注册即暴露」。
 
 2026-08-28 的 MCP 设计审计（全部 38 个工具逐个查返回方式与 DTO 内容）发现，
@@ -27,8 +30,13 @@
 
 **空值语义翻转为「不暴露任何模块」。** 要暴露必须显式列出。
 
-同时新增**启动期自检**：若 `app.mcp.enabled=true` 而解析出的模块集为空，
+同时新增**启动期自检**：若 `app.mcp.enabled=true` 或 `app.mcp.http.enabled=true`，
+而解析出的协议模块集为空，
 构造 `McpToolRegistry` 时抛 `IllegalStateException`，容器起不来。
+
+Agent 与协议面分别建立索引、分别校验未知模块。协议 `tools/list` / `tools/call`
+只访问协议索引，并继续拒绝写工具和 `externallyDiscoverable=false` 的内部工具；
+即使协议模块清单误含 `write` 或 `control`，也不会把这些工具开放出去。
 
 自检选 fail-fast 而非 WARN 的理由：语义翻转把配置丢失的失败模式从
 「PII 外泄」变成「机器人全哑」。外泄是响亮的（有人会看到不该看到的数据），
@@ -48,9 +56,12 @@
 
 ## 影响与风险
 
-- **生产无感**：已显式设置 `MCP_MODULES=masterdata,inventory,orders-read`（实测），
+- **生产兼容**：已显式设置 `MCP_MODULES=masterdata,inventory,orders-read`（实测），
+  新配置在迁移期回退读取该变量；迁移到 `MCP_PROTOCOL_MODULES` 后暴露面不变。
   切换前后暴露的 11 个工具不变。**但部署前必须再确认一次，不能反过来。**
+- **Agent 恢复独立配置**：默认 Agent 清单覆盖当前内部业务模块，但具体 Agent 仍必须通过
+  `tool_whitelist` 与 `allow_write` 两道既有门禁；协议清单不再误伤内部 Agent 能力。
 - **开发/测试环境若依赖「空 = 全开」会受影响**，需一并补显式配置。
 - **运维纪律的失败模式反向了**：双 grep 这条现在两个方向都要守——
   变量丢失不再导致 PII 外泄，而是导致 MCP 面一个工具都没有。部署清单需同步改写。
-- 启动期自检只在 `app.mcp.enabled=true` 时生效；整体关闭 MCP 仍是合法状态。
+- 启动期自检在 stdio 或 HTTP 任一传输开启时生效；两个传输都关闭时空协议面仍是合法状态。

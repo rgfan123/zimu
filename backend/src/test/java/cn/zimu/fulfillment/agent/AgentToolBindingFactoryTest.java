@@ -54,9 +54,9 @@ class AgentToolBindingFactoryTest {
                 .containsExactlyInAnyOrder("list_channel_messages", "list_order_drafts");
         for (String name : new String[] {"list_channel_messages", "list_order_drafts"}) {
             ToolSpecification spec = specOf(binding, name);
-            assertThat(spec.description()).isEqualTo(registry.find(name).orElseThrow().description());
+            assertThat(spec.description()).isEqualTo(registry.findAgentTool(name).orElseThrow().description());
             McpToolSchemaTestSupport.assertSchemaEquals(
-                    registry.find(name).orElseThrow().inputSchema().deepCopy(), spec.parameters());
+                    registry.findAgentTool(name).orElseThrow().inputSchema().deepCopy(), spec.parameters());
         }
     }
 
@@ -137,12 +137,12 @@ class AgentToolBindingFactoryTest {
                 .containsExactlyInAnyOrder("list_channel_messages", "list_order_drafts", "get_sku");
         ToolSpecification sku = specOf(after, "get_sku");
         McpToolSchemaTestSupport.assertSchemaEquals(
-                grown.find("get_sku").orElseThrow().inputSchema().deepCopy(), sku.parameters());
+                grown.findAgentTool("get_sku").orElseThrow().inputSchema().deepCopy(), sku.parameters());
     }
 
     @Test
     void bindingAllRegistryToolsExposesExactlyRegistrySet() {
-        List<String> allNames = registry.all().stream().map(McpTool::name).toList();
+        List<String> allNames = registry.agentTools().stream().map(McpTool::name).toList();
 
         AgentToolBinding binding = factory.bind(RUN_ID, allNames);
 

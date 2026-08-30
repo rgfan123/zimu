@@ -42,7 +42,7 @@ public final class McpToolTestSupport {
         return new McpToolRegistry(reads, writes, domains, control, modulesOf(tools));
     }
 
-    /** 把传入工具声明的模块去重拼成 {@code app.mcp.modules} 形态的清单。 */
+    /** 把传入工具声明的模块去重拼成两个工具面都能使用的显式模块清单。 */
     private static String modulesOf(McpTool... tools) {
         return Arrays.stream(tools)
                 .map(McpTool::module)

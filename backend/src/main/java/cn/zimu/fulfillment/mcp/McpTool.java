@@ -40,15 +40,13 @@ public interface McpTool {
     }
 
     /**
-     * 工具所属模块（分模块暴露，用户诉求：「有些 mcp 我不想提供给公共 agent」）。默认
+     * 工具所属模块。默认
      * {@code "default"}——只有旧式构造（未显式传 module）的工具落在这里；五个内建 provider
      * 与写工具的每个真实工具都显式声明模块（见各 provider 构造函数）。
      *
-     * <p>{@link McpToolRegistry} 按 {@code app.mcp.modules}（env {@code MCP_MODULES}）配置的
-     * 模块名过滤：空值 = 零模块（未配置即不开放任何工具）；非空则只注册列出的模块，未列出模块
-     * 的工具在注册表构造期就被排除——{@code tools/list} 和 {@code tools/call} 因此天然一致，
-     * 不存在「列表里藏起来但还能调用」的假隔离。同理，声明 {@code "default"} 的工具只有在
-     * 配置里显式写上 {@code default} 时才会注册。
+     * <p>{@link McpToolRegistry} 分别按 {@code app.agent.tool-modules} 与
+     * {@code app.mcp.protocol-modules} 建立 Agent 和外部协议索引。任一配置为空都表示该面
+     * 不提供工具；未列出模块在对应面的发现与调用上都不可见。
      */
     default String module() {
         return "default";

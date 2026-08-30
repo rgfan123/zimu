@@ -155,6 +155,7 @@ services:
       AGENT_MODEL: ${AGENT_MODEL:-}
       AGENT_BASE_URL: ${AGENT_BASE_URL:-}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
+      AGENT_TOOL_MODULES: ${AGENT_TOOL_MODULES:-messages,orders,masterdata,inventory,procurement,orders-read,followup,control,write}
       # MCP 工具面按模块开放。留空 = 不开放任何 MCP 工具（后端默认 fail-safe），这条透传只是
       # 让 .env.example 里的示例值真的能生效。部署侧要覆盖它，请写在 override 文件的
       # environment 里（override 的 environment 优先级高于本文件）；写在 env_file 里会被本行盖掉。

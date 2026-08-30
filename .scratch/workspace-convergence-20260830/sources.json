@@ -69,7 +69,8 @@
         "unstaged": 21,
         "untracked": 0
       },
-      "disposition": "rescue_uncommitted"
+      "disposition": "rescued_to_convergence",
+      "target_ticket": "05"
     }
   ],
   "deferred_sources": [
