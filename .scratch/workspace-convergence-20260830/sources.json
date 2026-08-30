@@ -58,7 +58,8 @@
         "unstaged": 3,
         "untracked": 4
       },
-      "disposition": "rescue_uncommitted"
+      "disposition": "rescued_to_convergence",
+      "target_ticket": "06"
     },
     {
       "id": "agent-public-mcp-split",

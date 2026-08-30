@@ -193,6 +193,26 @@ class McpToolRegistryModuleFilterTest {
         assertThat(listAgentTools.externallyDiscoverable()).isFalse();
     }
 
+    @Test
+    void bundleReadToolsRequireIndependentOptInOnEachSurface() {
+        McpTool bundle = tool("list_bundles", McpBundleReadTools.MODULE);
+        McpTool masterdata = tool("search_skus", "masterdata");
+
+        McpToolRegistry agentOnly = registryWithBundle(
+                "masterdata,bundles-read", "masterdata", bundle, masterdata);
+        assertThat(agentOnly.findAgentTool("list_bundles")).isPresent();
+        assertThat(agentOnly.findProtocolTool("list_bundles")).isEmpty();
+
+        McpToolRegistry protocolOnly = registryWithBundle(
+                "masterdata", "masterdata,bundles-read", bundle, masterdata);
+        assertThat(protocolOnly.findAgentTool("list_bundles")).isEmpty();
+        assertThat(protocolOnly.findProtocolTool("list_bundles")).isPresent();
+
+        McpToolRegistry disabled = registryWithBundle("masterdata", "masterdata", bundle, masterdata);
+        assertThat(disabled.findAgentTool("list_bundles")).isEmpty();
+        assertThat(disabled.findProtocolTool("list_bundles")).isEmpty();
+    }
+
     private static McpToolRegistry registry(
             String agentModulesProperty, String protocolModulesProperty, McpTool... tools) {
         return registry(agentModulesProperty, protocolModulesProperty, false, false, tools);
@@ -228,6 +248,33 @@ class McpToolRegistryModuleFilterTest {
                 protocolModulesProperty,
                 mcpEnabled,
                 mcpHttpEnabled);
+    }
+
+    private static McpToolRegistry registryWithBundle(
+            String agentModulesProperty,
+            String protocolModulesProperty,
+            McpTool bundleTool,
+            McpTool masterdataTool) {
+        McpReadTools reads = mock(McpReadTools.class);
+        when(reads.tools()).thenReturn(List.of(masterdataTool));
+        McpWriteTools writes = mock(McpWriteTools.class);
+        when(writes.tools()).thenReturn(List.of());
+        McpDomainReadTools domains = mock(McpDomainReadTools.class);
+        when(domains.tools()).thenReturn(List.of());
+        McpControlReadTools control = mock(McpControlReadTools.class);
+        when(control.tools()).thenReturn(List.of());
+        McpBundleReadTools bundles = mock(McpBundleReadTools.class);
+        when(bundles.tools()).thenReturn(List.of(bundleTool));
+        return new McpToolRegistry(
+                reads,
+                writes,
+                domains,
+                control,
+                null,
+                null,
+                bundles,
+                agentModulesProperty,
+                protocolModulesProperty);
     }
 
     private static McpTool tool(String name, String module) {

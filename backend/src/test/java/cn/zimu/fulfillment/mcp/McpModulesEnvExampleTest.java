@@ -32,7 +32,7 @@ class McpModulesEnvExampleTest {
     /** 生产当前的显式配置（只读三模块），样例值必须与之一致。 */
     private static final String PRODUCTION_PROTOCOL_MODULES = "masterdata,inventory,orders-read";
     private static final String DEFAULT_AGENT_MODULES =
-            "messages,orders,masterdata,inventory,procurement,orders-read,followup,control,write";
+            "messages,orders,masterdata,inventory,procurement,orders-read,bundles-read,followup,control,write";
 
     @Test
     void envExampleDeclaresModulesWithProductionValueAndFailSafeNote() throws IOException {

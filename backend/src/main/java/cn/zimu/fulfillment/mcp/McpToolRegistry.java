@@ -52,6 +52,7 @@ public class McpToolRegistry {
                 controlReadTools,
                 null,
                 null,
+                null,
                 modulesProperty,
                 modulesProperty,
                 false,
@@ -65,7 +66,19 @@ public class McpToolRegistry {
             McpWriteTools writeTools,
             McpDomainReadTools domainReadTools,
             McpControlReadTools controlReadTools) {
-        this(readTools, writeTools, domainReadTools, controlReadTools, null, null, null, null, false, false, true);
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                false,
+                true);
     }
 
     @Autowired
@@ -76,6 +89,7 @@ public class McpToolRegistry {
             McpControlReadTools controlReadTools,
             McpOrdersReadTools ordersReadTools,
             KehuzxRemoteReadTools kehuzxReadTools,
+            McpBundleReadTools bundleReadTools,
             @Value("${app.agent.tool-modules:}") String agentModulesProperty,
             @Value("${app.mcp.protocol-modules:}") String protocolModulesProperty,
             @Value("${app.mcp.enabled:false}") boolean mcpEnabled,
@@ -87,6 +101,7 @@ public class McpToolRegistry {
                 controlReadTools,
                 ordersReadTools,
                 kehuzxReadTools,
+                bundleReadTools,
                 agentModulesProperty,
                 protocolModulesProperty,
                 mcpEnabled,
@@ -110,6 +125,60 @@ public class McpToolRegistry {
                 controlReadTools,
                 ordersReadTools,
                 kehuzxReadTools,
+                null,
+                agentModulesProperty,
+                protocolModulesProperty,
+                false,
+                false,
+                false);
+    }
+
+    /** 兼容测试装配：未注入礼包 provider，但保留传输面启动门禁参数。 */
+    public McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools,
+            McpOrdersReadTools ordersReadTools,
+            KehuzxRemoteReadTools kehuzxReadTools,
+            String agentModulesProperty,
+            String protocolModulesProperty,
+            boolean mcpEnabled,
+            boolean mcpHttpEnabled) {
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                ordersReadTools,
+                kehuzxReadTools,
+                null,
+                agentModulesProperty,
+                protocolModulesProperty,
+                mcpEnabled,
+                mcpHttpEnabled,
+                false);
+    }
+
+    /** 测试/组合装配入口：可显式注入礼包读取 provider 并分别配置两个工具面。 */
+    public McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools,
+            McpOrdersReadTools ordersReadTools,
+            KehuzxRemoteReadTools kehuzxReadTools,
+            McpBundleReadTools bundleReadTools,
+            String agentModulesProperty,
+            String protocolModulesProperty) {
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                ordersReadTools,
+                kehuzxReadTools,
+                bundleReadTools,
                 agentModulesProperty,
                 protocolModulesProperty,
                 false,
@@ -124,6 +193,7 @@ public class McpToolRegistry {
             McpControlReadTools controlReadTools,
             McpOrdersReadTools ordersReadTools,
             KehuzxRemoteReadTools kehuzxReadTools,
+            McpBundleReadTools bundleReadTools,
             String agentModulesProperty,
             String protocolModulesProperty,
             boolean mcpEnabled,
@@ -139,6 +209,9 @@ public class McpToolRegistry {
         }
         if (kehuzxReadTools != null) {
             tools.addAll(kehuzxReadTools.tools());
+        }
+        if (bundleReadTools != null) {
+            tools.addAll(bundleReadTools.tools());
         }
 
         // 重名检测在两个工具面过滤之前进行：注册冲突与当前启用哪些模块无关，不能因配置隐藏。

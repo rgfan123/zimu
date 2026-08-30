@@ -245,7 +245,7 @@ app:
   agent:
     # 进程内 Agent 工具面（env AGENT_TOOL_MODULES）：默认登记当前业务模块，最终权限仍由
     # AgentDefinition.tool_whitelist + allow_write 判定；显式空值 = 零工具，未知模块启动失败。
-    tool-modules: ${AGENT_TOOL_MODULES:messages,orders,masterdata,inventory,procurement,orders-read,followup,control,write}
+    tool-modules: ${AGENT_TOOL_MODULES:messages,orders,masterdata,inventory,procurement,orders-read,bundles-read,followup,control,write}
     # Agent 运行时模型传输配置（仅经环境变量注入，绝不在 yml/日志/DTO 中出现明文密钥）。
     # 未配置 base-url 时注册 fail-closed 的 DefaultAgentRuntime（不连接任何模型），
     # 与 app.message-interpreter.* 相互独立。
@@ -275,7 +275,7 @@ app:
     # 外部 MCP 协议工具面：优先读取 MCP_PROTOCOL_MODULES，未迁移部署继续兼容 MCP_MODULES。
     # 留空 = 不开放任何协议工具；非空只注册列出的模块，tools/list 与 tools/call 使用同一索引。
     # 已声明模块：masterdata / inventory / orders / orders-read / messages / followup /
-    # procurement / control / write。生产当前显式配置见 .env.example。
+    # procurement / bundles-read / control / write。生产当前显式配置见 .env.example。
     protocol-modules: ${MCP_PROTOCOL_MODULES:${MCP_MODULES:}}
     http:
       # 对外 HTTP/SSE 传输开关（env MCP_HTTP_ENABLED），默认关闭——不开等于不新增公网攻击面。
