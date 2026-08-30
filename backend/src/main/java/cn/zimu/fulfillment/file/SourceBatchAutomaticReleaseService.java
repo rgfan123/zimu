@@ -34,6 +34,9 @@ class SourceBatchAutomaticReleaseService {
     boolean releaseIfTrusted(long batchId) {
         SourceTemplateProfileService.ConsumedRelease consumed = profiles.consumedRelease(batchId).orElse(null);
         if (consumed == null) {
+            consumed = profiles.recoverLegacyConsumedAuthorization(batchId, systemOperator).orElse(null);
+        }
+        if (consumed == null) {
             SourceTemplateProfileService.TrustedTemplate profile = profiles.trustedForBatch(batchId).orElse(null);
             if (profile == null) {
                 return false;
@@ -44,8 +47,11 @@ class SourceBatchAutomaticReleaseService {
                     profile.id(),
                     "automatic-release-template-" + profile.id() + "-batch-" + batchId,
                     confirmContext);
-            consumed = new SourceTemplateProfileService.ConsumedRelease(
-                    profile.id(), profile.profileNo(), "CONFIRMED_PENDING_OUTBOUND");
+            // confirm 可能是对既有人工确认批次的幂等重放。只有确认事务真正持久化了
+            // automatic_release 授权消费快照，才允许跨事务继续外部出站。
+            consumed = profiles.consumedRelease(batchId).orElseThrow(() -> BusinessException.conflict(
+                    "AUTOMATIC_RELEASE_STATE_INVALID",
+                    "来源批次未持久化自动放行授权，禁止继续出站"));
         }
         if ("RECONCILIATION_REQUIRED".equals(consumed.stage())) {
             throw BusinessException.conflict(

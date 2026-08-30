@@ -17,6 +17,7 @@ import cn.zimu.fulfillment.customer.ImportedCustomerIdentity;
 import cn.zimu.fulfillment.order.OrderCreateService;
 import cn.zimu.fulfillment.order.domain.LineType;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
+import cn.zimu.fulfillment.order.dto.BundleComponentInput;
 import cn.zimu.fulfillment.order.dto.CanonicalOrderInput;
 import cn.zimu.fulfillment.order.dto.CustomerInput;
 import cn.zimu.fulfillment.order.dto.OrderItemInput;
@@ -262,6 +263,162 @@ class StructuredImportApiTest {
                 "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
                 Integer.class, ref);
         assertThat(orders).isEqualTo(1);
+    }
+
+    @Test
+    void fractionalJdBundleComponentQuantityIsBlockedBeforeCreatingAnOrder() {
+        Map<String, Object> jdSku = jdbc.queryForMap(
+                """
+                SELECT s.id, s.sku_code, p.product_name, s.specification, s.unit
+                FROM app.skus s
+                JOIN app.products p ON p.id=s.product_id
+                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
+                JOIN app.provider_skus ps ON ps.sku_id=s.id
+                    AND ps.fulfillment_provider_id=fp.id AND ps.active
+                WHERE fp.provider_type='JD_WAREHOUSE' AND fp.active AND s.active
+                  AND ps.external_codes ? 'jd_pieces_per_unit'
+                ORDER BY s.id
+                LIMIT 1
+                """);
+        String ref = orderRef("CSX-JD-FRACTIONAL-BUNDLE");
+        String componentRef = "CSX-JD-FRACTIONAL-COMPONENT-" + SEQ.get();
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                VALUES ('CAISHIXIAN', ?, ?, ?, 1, ?, true)
+                """,
+                componentRef,
+                jdSku.get("product_name"),
+                jdSku.get("specification"),
+                ((Number) jdSku.get("id")).longValue());
+        OrderItemInput bundle = new OrderItemInput(
+                ref + "-L1",
+                LineType.CUSTOM_BUNDLE,
+                null,
+                null,
+                "京东小数件当单礼包",
+                "1份",
+                "份",
+                "1",
+                List.of(new BundleComponentInput(
+                        jdSku.get("sku_code").toString(),
+                        componentRef,
+                        jdSku.get("product_name").toString(),
+                        jdSku.get("specification").toString(),
+                        jdSku.get("unit").toString(),
+                        "0.5")));
+        CanonicalOrderInput input = new CanonicalOrderInput(
+                SourceChannel.CAISHIXIAN,
+                ref,
+                "v1",
+                new CustomerInput(null, "CSX-MEMBER-001", "测试客户"),
+                new Receiver("测试收货人", "13800000001", "北京", "北京市", "朝阳区", null, "测试路 1 号"),
+                List.of(bundle),
+                new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                "ticket04-jd-component-quantity",
+                List.of());
+
+        Map<String, Object> imported = sourceImportService.importStructured(
+                SourceChannel.CAISHIXIAN,
+                List.of(new StructuredOrderRow(ref, null, input, Map.of("source_ref", ref))),
+                batchNo(),
+                ctx());
+        long batchId = Long.parseLong(imported.get("id").toString());
+
+        assertThat(imported.get("status")).isEqualTo("COMPLETED_WITH_REVIEW");
+        assertThat(jdbc.queryForObject(
+                "SELECT (error_detail->'reason_codes') @> '[\"QUANTITY_SCALE\"]'::jsonb "
+                        + "FROM app.raw_import_rows WHERE import_batch_id=?",
+                Boolean.class,
+                batchId)).isTrue();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                batchId)).isZero();
+        assertThatThrownBy(() -> sourceImportService.confirm(batchId, "confirm-" + ref, ctx()))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED"));
+    }
+
+    @Test
+    void customBundleComponentCannotBeReinterpretedAfterItsSourceMappingChanges() {
+        List<Map<String, Object>> readySkus = jdbc.queryForList(
+                """
+                SELECT s.id, p.product_name, s.specification, s.unit
+                FROM app.skus s
+                JOIN app.products p ON p.id=s.product_id AND p.active
+                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id AND fp.active
+                JOIN app.provider_skus ps ON ps.sku_id=s.id
+                    AND ps.fulfillment_provider_id=fp.id AND ps.active
+                WHERE s.active
+                ORDER BY fp.provider_type, s.id
+                LIMIT 2
+                """);
+        assertThat(readySkus).hasSize(2);
+        Map<String, Object> original = readySkus.get(0);
+        Map<String, Object> replacement = readySkus.get(1);
+        String ref = orderRef("CSX-BUNDLE-MAPPING-DRIFT");
+        String componentRef = "CSX-BUNDLE-MAPPING-DRIFT-COMPONENT-" + SEQ.get();
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                VALUES ('CAISHIXIAN', ?, ?, ?, 1, ?, true)
+                """,
+                componentRef,
+                original.get("product_name"),
+                original.get("specification"),
+                ((Number) original.get("id")).longValue());
+        OrderItemInput bundle = new OrderItemInput(
+                ref + "-L1",
+                LineType.CUSTOM_BUNDLE,
+                null,
+                null,
+                "来源映射漂移当单礼包",
+                "1份",
+                "份",
+                "1",
+                List.of(new BundleComponentInput(
+                        null,
+                        componentRef,
+                        original.get("product_name").toString(),
+                        original.get("specification").toString(),
+                        original.get("unit").toString(),
+                        "1")));
+        CanonicalOrderInput input = new CanonicalOrderInput(
+                SourceChannel.CAISHIXIAN,
+                ref,
+                "v1",
+                new CustomerInput(null, "CSX-MEMBER-001", "测试客户"),
+                new Receiver("测试收货人", "13800000001", "北京", "北京市", "朝阳区", null, "测试路 1 号"),
+                List.of(bundle),
+                new Settlement(SettlementMethod.MONTHLY, Instant.now()),
+                "ticket04-component-mapping-snapshot",
+                List.of());
+        Map<String, Object> imported = sourceImportService.importStructured(
+                SourceChannel.CAISHIXIAN,
+                List.of(new StructuredOrderRow(ref, null, input, Map.of("source_ref", ref))),
+                batchNo(),
+                ctx());
+        long batchId = Long.parseLong(imported.get("id").toString());
+        assertThat(imported.get("status")).isEqualTo("COMPLETED");
+
+        jdbc.update(
+                "UPDATE app.source_channel_skus SET sku_id=? "
+                        + "WHERE source_channel='CAISHIXIAN' AND source_sku_ref=?",
+                ((Number) replacement.get("id")).longValue(),
+                componentRef);
+
+        assertThatThrownBy(() -> sourceImportService.confirm(batchId, "confirm-" + ref, ctx()))
+                .isInstanceOfSatisfying(BusinessException.class, error ->
+                        assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED"));
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                batchId)).isZero();
     }
 
     @Test

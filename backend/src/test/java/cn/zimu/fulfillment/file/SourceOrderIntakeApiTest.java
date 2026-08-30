@@ -384,6 +384,19 @@ class SourceOrderIntakeApiTest {
                         "automatic-release-batch-" + batchId))
                 .as("AutomaticRelease 的确认审计必须忠实记录为系统动作")
                 .isEqualTo("SYSTEM");
+        List<String> outboundActors = jdbc.queryForList(
+                """
+                SELECT actor_type FROM app.audit_logs
+                WHERE request_id=?
+                  AND operation IN ('shipment.jd_outbound.submit.intent', 'shipment.jd_outbound.submit')
+                ORDER BY id
+                """,
+                String.class,
+                "automatic-release-batch-" + batchId);
+        assertThat(outboundActors)
+                .as("AutomaticRelease 的京东提交意图与结果审计必须全部忠实记录为系统动作")
+                .isNotEmpty()
+                .containsOnly("SYSTEM");
         verify(imports).submitJdOutboundsForSourceBatch(org.mockito.ArgumentMatchers.eq(batchId), any());
 
         // 模拟“确认已提交、出站步骤或任务收尾前进程中断”后的同任务重入；

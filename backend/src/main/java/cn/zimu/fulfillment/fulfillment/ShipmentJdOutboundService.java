@@ -539,7 +539,8 @@ public class ShipmentJdOutboundService {
         audits.record(new AuditLogService.AuditCommand()
                 .dataScope(DataScope.BUSINESS).orderId(current.orderId())
                 .requestId(context.requestId()).traceId(context.traceId()).operator(context.operator())
-                .actorType(AuditActorType.SYSTEM).service("fulfillment").operation(ShipmentJdOutboundAuditService.SCOPE)
+                .actorType(ShipmentJdOutboundAuditService.actorType(context))
+                .service("fulfillment").operation(ShipmentJdOutboundAuditService.SCOPE)
                 .requestPayload(Map.of(
                         "shipment_id", String.valueOf(current.shipmentId()),
                         "erp_delivery_no", current.erpDeliveryNo()))
@@ -596,7 +597,8 @@ public class ShipmentJdOutboundService {
         audits.record(new AuditLogService.AuditCommand()
                 .dataScope(DataScope.BUSINESS).orderId(current.orderId())
                 .requestId(context.requestId()).traceId(context.traceId()).operator(context.operator())
-                .actorType(AuditActorType.SYSTEM).service("fulfillment").operation(ShipmentJdOutboundAuditService.SCOPE)
+                .actorType(ShipmentJdOutboundAuditService.actorType(context))
+                .service("fulfillment").operation(ShipmentJdOutboundAuditService.SCOPE)
                 .requestPayload(Map.of(
                         "shipment_id", String.valueOf(current.shipmentId()),
                         "erp_delivery_no", current.erpDeliveryNo(),

@@ -163,6 +163,84 @@ class SourceTemplateProfileAuthorizationIntegrationTest {
         assertUnconfirmedWithoutOrders(pendingBatchId);
     }
 
+    @Test
+    void legacyAutomaticConfirmationCanRecoverOnlyFromItsStableAuditEvidence() {
+        String suffix = suffix();
+        String fingerprint = "DAZHE-v1-legacy-recovery-" + suffix;
+        long seedBatchId = insertBatch(
+                "DAZHE", "DAZHE_SOURCE_ORDER", "v1", fingerprint, true, suffix + "a");
+        long profileId = Long.parseLong(profiles.trust(
+                        seedBatchId,
+                        "trust-legacy-recovery-" + suffix,
+                        new CommandContext(
+                                "trust-legacy-recovery-" + suffix,
+                                "trust-legacy-recovery-" + suffix,
+                                "source-ops"))
+                .result()
+                .get("id")
+                .toString());
+        String profileNo = jdbc.queryForObject(
+                "SELECT profile_no FROM app.source_template_profiles WHERE id=?",
+                String.class,
+                profileId);
+        long batchId = insertBatch(
+                "DAZHE", "DAZHE_SOURCE_ORDER", "v1", fingerprint, true, suffix + "b");
+        String systemOperator = "source-order-automatic-release";
+        jdbc.update("UPDATE app.import_batches SET confirmed_by=? WHERE id=?", systemOperator, batchId);
+        long auditId = jdbc.queryForObject(
+                """
+                INSERT INTO app.audit_logs
+                    (request_id, trace_id, operator, actor_type, service, operation,
+                     request_payload, response_payload, http_status, business_code)
+                VALUES (?, ?, ?, 'HUMAN', 'source-file-import', 'source-orders.confirm',
+                        ?::jsonb, '{}'::jsonb, 200, 'IMPORT_BATCH_CONFIRMED')
+                RETURNING id
+                """,
+                Long.class,
+                "automatic-release-batch-" + batchId,
+                "automatic-release-template-" + profileId + "-batch-" + batchId,
+                systemOperator,
+                "{\"batch_id\":" + batchId + ",\"template_profile_id\":" + profileId + "}");
+        jdbc.update(
+                "UPDATE app.source_template_profiles "
+                        + "SET status='REVOKED', revoked_by='security-ops', revoked_at=CURRENT_TIMESTAMP WHERE id=?",
+                profileId);
+
+        SourceTemplateProfileService.ConsumedRelease recovered = profiles
+                .recoverLegacyConsumedAuthorization(batchId, systemOperator)
+                .orElseThrow();
+
+        assertThat(recovered.profileId()).isEqualTo(profileId);
+        assertThat(recovered.profileNo()).isEqualTo(profileNo);
+        assertThat(jdbc.queryForObject(
+                "SELECT (error_detail#>>'{automatic_release,recovered_from_audit_log_id}')::bigint "
+                        + "FROM app.import_batches WHERE id=?",
+                Long.class,
+                batchId)).isEqualTo(auditId);
+
+        long currentNoOpBatchId = insertBatch(
+                "DAZHE", "DAZHE_SOURCE_ORDER", "v1", fingerprint, true, suffix + "c");
+        jdbc.update(
+                "UPDATE app.import_batches SET confirmed_by=? WHERE id=?",
+                systemOperator,
+                currentNoOpBatchId);
+        jdbc.update(
+                """
+                INSERT INTO app.audit_logs
+                    (request_id, trace_id, operator, actor_type, service, operation,
+                     request_payload, response_payload, http_status, business_code)
+                VALUES (?, ?, ?, 'SYSTEM', 'source-file-import', 'source-orders.confirm',
+                        ?::jsonb, '{}'::jsonb, 200, 'IMPORT_BATCH_CONFIRMED')
+                """,
+                "automatic-release-batch-" + currentNoOpBatchId,
+                "automatic-release-template-" + profileId + "-batch-" + currentNoOpBatchId,
+                systemOperator,
+                "{\"batch_id\":" + currentNoOpBatchId + ",\"template_profile_id\":" + profileId + "}");
+        assertThat(profiles.recoverLegacyConsumedAuthorization(currentNoOpBatchId, systemOperator))
+                .as("当前版本对既有人工确认批次产生的 SYSTEM no-op 审计不能被提升成旧授权")
+                .isEmpty();
+    }
+
     private BusinessException releaseFailure(long batchId) {
         try {
             automaticRelease.releaseIfTrusted(batchId);

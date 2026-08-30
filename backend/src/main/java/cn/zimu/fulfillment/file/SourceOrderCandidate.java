@@ -20,7 +20,7 @@ record SourceOrderCandidate(
         List<SourceMappingSnapshot> sourceMappings,
         List<SourceBundleMappingSnapshot> sourceBundleMappings) {
 
-    static final int SNAPSHOT_VERSION = 2;
+    static final int SNAPSHOT_VERSION = 3;
 
     SourceOrderCandidate {
         rows = List.copyOf(rows);
@@ -58,12 +58,16 @@ record SourceOrderCandidate(
     /** 上传时观察到的来源映射事实；确认时必须与当前长期映射一致。 */
     record SourceMappingSnapshot(
             int itemIndex,
+            Integer componentIndex,
             String sourceSkuRef,
             Long skuId,
             String skuCode,
             BigDecimal quantityMultiplier) {
         SourceMappingSnapshot {
-            if (itemIndex < 0 || sourceSkuRef == null || sourceSkuRef.isBlank()) {
+            if (itemIndex < 0
+                    || (componentIndex != null && componentIndex < 0)
+                    || sourceSkuRef == null
+                    || sourceSkuRef.isBlank()) {
                 throw new IllegalArgumentException("来源映射快照缺少商品行位置或来源编码");
             }
         }

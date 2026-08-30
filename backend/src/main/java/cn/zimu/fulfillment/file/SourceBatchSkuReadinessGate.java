@@ -139,8 +139,11 @@ class SourceBatchSkuReadinessGate {
         catalogLock.acquireShared();
         Set<String> refs = candidates.stream()
                 .flatMap(candidate -> candidate.order().items().stream())
-                .filter(item -> item.lineType() == LineType.SINGLE)
-                .map(OrderItemInput::sourceSkuRef)
+                .flatMap(item -> item.lineType() == LineType.SINGLE
+                        ? java.util.stream.Stream.of(item.sourceSkuRef())
+                        : item.components() == null
+                                ? java.util.stream.Stream.empty()
+                                : item.components().stream().map(component -> component.sourceSkuRef()))
                 .filter(Objects::nonNull)
                 .filter(ref -> !ref.isBlank())
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
@@ -173,11 +176,30 @@ class SourceBatchSkuReadinessGate {
                 Sku sku = mapping == null ? null : skuById.get(mapping.getSkuId());
                 if (mapping != null) {
                     snapshots.add(new SourceOrderCandidate.SourceMappingSnapshot(
-                            itemIndex,
-                            mapping.getSourceSkuRef(),
-                            mapping.getSkuId(),
-                            sku == null ? null : sku.getSkuCode(),
-                            mapping.getQuantityMultiplier()));
+                        itemIndex,
+                        null,
+                        mapping.getSourceSkuRef(),
+                        mapping.getSkuId(),
+                        sku == null ? null : sku.getSkuCode(),
+                        mapping.getQuantityMultiplier()));
+                }
+                if (item.lineType() == LineType.CUSTOM_BUNDLE && item.components() != null) {
+                    for (int componentIndex = 0; componentIndex < item.components().size(); componentIndex++) {
+                        var component = item.components().get(componentIndex);
+                        SourceChannelSku componentMapping = mappingByRef.get(component.sourceSkuRef());
+                        Sku componentSku = componentMapping == null
+                                ? null
+                                : skuById.get(componentMapping.getSkuId());
+                        if (componentMapping != null) {
+                            snapshots.add(new SourceOrderCandidate.SourceMappingSnapshot(
+                                    itemIndex,
+                                    componentIndex,
+                                    componentMapping.getSourceSkuRef(),
+                                    componentMapping.getSkuId(),
+                                    componentSku == null ? null : componentSku.getSkuCode(),
+                                    componentMapping.getQuantityMultiplier()));
+                        }
+                    }
                 }
             }
             List<SourceOrderCandidate.SourceBundleMappingSnapshot> bundleSnapshots = new ArrayList<>();
@@ -609,8 +631,10 @@ class SourceBatchSkuReadinessGate {
             List<SourceOrderReadinessCandidate> candidates) {
         List<CandidateLine> lines = new ArrayList<>();
         for (SourceOrderReadinessCandidate candidate : candidates) {
-            Map<Integer, SourceOrderCandidate.SourceMappingSnapshot> mappingByItem = new LinkedHashMap<>();
-            candidate.sourceMappings().forEach(snapshot -> mappingByItem.put(snapshot.itemIndex(), snapshot));
+            Map<MappingPosition, SourceOrderCandidate.SourceMappingSnapshot> mappingByPosition =
+                    new LinkedHashMap<>();
+            candidate.sourceMappings().forEach(snapshot -> mappingByPosition.put(
+                    new MappingPosition(snapshot.itemIndex(), snapshot.componentIndex()), snapshot));
             int itemCursor = 0;
             int lineNo = 1;
             for (SourceOrderReadinessCandidate.CandidateRow row : candidate.rows()) {
@@ -621,7 +645,8 @@ class SourceBatchSkuReadinessGate {
                     int currentItemIndex = itemCursor;
                     OrderItemInput item = candidate.items().get(itemCursor++);
                     if (item.lineType() == LineType.SINGLE) {
-                        SourceOrderCandidate.SourceMappingSnapshot mapping = mappingByItem.get(currentItemIndex);
+                        SourceOrderCandidate.SourceMappingSnapshot mapping =
+                                mappingByPosition.get(new MappingPosition(currentItemIndex, null));
                         lines.add(new CandidateLine(
                                 row.rawImportRowId(),
                                 candidate.candidateKey(),
@@ -630,22 +655,29 @@ class SourceBatchSkuReadinessGate {
                                 mapping == null ? null : mapping.skuId(),
                                 mapping == null ? item.skuCode() : mapping.skuCode(),
                                 mapping == null ? null : mapping.quantityMultiplier(),
-                                decimal(item.quantity())));
+                                decimal(item.quantity()),
+                                true));
                     } else if (item.components() == null || item.components().isEmpty()) {
                         lines.add(new CandidateLine(
                                 row.rawImportRowId(), candidate.candidateKey(), lineNo,
-                                null, null, null, null, decimal(item.quantity())));
+                                null, null, null, null, decimal(item.quantity()), false));
                     } else {
                         int candidateLineNo = lineNo;
-                        item.components().forEach(component -> lines.add(new CandidateLine(
-                                row.rawImportRowId(),
-                                candidate.candidateKey(),
-                                candidateLineNo,
-                                component.sourceSkuRef(),
-                                null,
-                                component.skuCode(),
-                                null,
-                                decimal(item.quantity()))));
+                        for (int componentIndex = 0; componentIndex < item.components().size(); componentIndex++) {
+                            var component = item.components().get(componentIndex);
+                            SourceOrderCandidate.SourceMappingSnapshot mapping = mappingByPosition.get(
+                                    new MappingPosition(currentItemIndex, componentIndex));
+                            lines.add(new CandidateLine(
+                                    row.rawImportRowId(),
+                                    candidate.candidateKey(),
+                                    candidateLineNo,
+                                    component.sourceSkuRef(),
+                                    mapping == null ? null : mapping.skuId(),
+                                    mapping == null ? component.skuCode() : mapping.skuCode(),
+                                    mapping == null ? null : mapping.quantityMultiplier(),
+                                    product(item.quantity(), component.quantityPerBundle()),
+                                    false));
+                        }
                     }
                     lineNo++;
                 }
@@ -661,6 +693,11 @@ class SourceBatchSkuReadinessGate {
         if (line.sourceQuantity() == null) {
             return null;
         }
+        // 礼包组件的 quantityPerBundle 已经是内部 SKU 数量口径；只有普通来源单品
+        // 仍需再乘来源包装换算，保持与 JdCargoPlanner 的实际出站数量一致。
+        if (!line.applySourceMultiplier()) {
+            return line.sourceQuantity();
+        }
         BigDecimal multiplier;
         if (line.directInternalSku()) {
             multiplier = BigDecimal.ONE;
@@ -670,6 +707,12 @@ class SourceBatchSkuReadinessGate {
             multiplier = mapping == null ? null : mapping.getQuantityMultiplier();
         }
         return multiplier == null ? null : line.sourceQuantity().multiply(multiplier);
+    }
+
+    private BigDecimal product(Object left, Object right) {
+        BigDecimal leftValue = decimal(left);
+        BigDecimal rightValue = decimal(right);
+        return leftValue == null || rightValue == null ? null : leftValue.multiply(rightValue);
     }
 
     private BigDecimal decimal(Object raw) {
@@ -934,7 +977,8 @@ class SourceBatchSkuReadinessGate {
             Long frozenSkuId,
             String skuCode,
             BigDecimal mappingMultiplier,
-            BigDecimal sourceQuantity) {
+            BigDecimal sourceQuantity,
+            boolean applySourceMultiplier) {
 
         boolean directInternalSku() {
             return (sourceSkuRef == null || sourceSkuRef.isBlank())
@@ -942,6 +986,8 @@ class SourceBatchSkuReadinessGate {
                     && !skuCode.isBlank();
         }
     }
+
+    private record MappingPosition(int itemIndex, Integer componentIndex) {}
 
     private record CandidateBundle(
             long rawImportRowId,

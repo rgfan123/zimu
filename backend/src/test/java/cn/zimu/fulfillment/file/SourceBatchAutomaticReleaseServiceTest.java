@@ -5,6 +5,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.common.domain.SourceChannel;
@@ -35,6 +37,10 @@ class SourceBatchAutomaticReleaseServiceTest {
                         1L,
                         OffsetDateTime.now());
         when(profiles.trustedForBatch(42L)).thenReturn(Optional.of(profile));
+        when(profiles.consumedRelease(42L)).thenReturn(
+                Optional.empty(),
+                Optional.of(new SourceTemplateProfileService.ConsumedRelease(
+                        profile.id(), profile.profileNo(), "CONFIRMED_PENDING_OUTBOUND")));
         when(sourceBatches.confirmTrustedSourceBatch(anyLong(), anyLong(), anyString(), any()))
                 .thenReturn(IdempotentResult.executed(Map.of(), 200));
         when(sourceBatches.submitJdOutboundsForSourceBatch(anyLong(), any()))
@@ -53,5 +59,34 @@ class SourceBatchAutomaticReleaseServiceTest {
                 .isInstanceOfSatisfying(BusinessException.class, exception ->
                         org.assertj.core.api.Assertions.assertThat(exception.getBusinessCode())
                                 .isEqualTo("RECONCILIATION_REQUIRED"));
+    }
+
+    @Test
+    void confirmedBatchWithoutPersistedAutomaticAuthorizationFailsBeforeOutbound() {
+        SourceTemplateProfileService profiles = mock(SourceTemplateProfileService.class);
+        SourceBatchConfirmer sourceBatches = mock(SourceBatchConfirmer.class);
+        SourceTemplateProfileService.TrustedTemplate profile =
+                new SourceTemplateProfileService.TrustedTemplate(
+                        8L,
+                        "TPL-LEGACY-001",
+                        SourceChannel.DAZHE,
+                        "DAZHE_SOURCE_ORDER",
+                        "v1",
+                        "DAZHE-v1-legacy",
+                        "TRUSTED",
+                        1L,
+                        OffsetDateTime.now());
+        when(profiles.trustedForBatch(43L)).thenReturn(Optional.of(profile));
+        when(profiles.consumedRelease(43L)).thenReturn(Optional.empty());
+        when(sourceBatches.confirmTrustedSourceBatch(anyLong(), anyLong(), anyString(), any()))
+                .thenReturn(IdempotentResult.executed(Map.of(), 200));
+        SourceBatchAutomaticReleaseService service =
+                new SourceBatchAutomaticReleaseService(profiles, sourceBatches, "system-release");
+
+        assertThatThrownBy(() -> service.releaseIfTrusted(43L))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        org.assertj.core.api.Assertions.assertThat(exception.getBusinessCode())
+                                .isEqualTo("AUTOMATIC_RELEASE_STATE_INVALID"));
+        verify(sourceBatches, never()).submitJdOutboundsForSourceBatch(anyLong(), any());
     }
 }

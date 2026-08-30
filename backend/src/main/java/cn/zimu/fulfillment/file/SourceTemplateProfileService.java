@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /** 显式建立并读取来源模板的单一 AutomaticRelease 授权。 */
 @Service
@@ -329,6 +330,109 @@ class SourceTemplateProfileService {
                 .findFirst();
     }
 
+    /**
+     * 兼容早期自动确认：当批次快照缺失时，只接受同一系统操作人、稳定 request/trace id、
+     * 成功确认码和明确 template_profile_id 四项追加审计证据；人工确认不得被推断成自动授权。
+     */
+    @Transactional
+    Optional<ConsumedRelease> recoverLegacyConsumedAuthorization(long batchId, String systemOperator) {
+        Boolean alreadyConfirmed = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM app.import_batches "
+                        + "WHERE id=? AND batch_type='SOURCE_ORDER' AND confirmed_at IS NOT NULL)",
+                Boolean.class,
+                batchId);
+        if (!Boolean.TRUE.equals(alreadyConfirmed)) {
+            // 未确认批次继续走正常 standing authorization 路径；这里不能抢批次行锁，
+            // 否则会改变并发归因纠正的既有冲突语义。
+            return Optional.empty();
+        }
+        List<ConfirmedBatch> batches = jdbc.query(
+                """
+                SELECT confirmed_at, confirmed_by
+                FROM app.import_batches
+                WHERE id=? AND batch_type='SOURCE_ORDER'
+                FOR UPDATE
+                """,
+                (resultSet, rowNumber) -> new ConfirmedBatch(
+                        resultSet.getObject("confirmed_at", OffsetDateTime.class),
+                        resultSet.getString("confirmed_by")),
+                batchId);
+        if (batches.isEmpty()
+                || batches.getFirst().confirmedAt() == null
+                || !Objects.equals(systemOperator, batches.getFirst().confirmedBy())) {
+            return Optional.empty();
+        }
+        Optional<ConsumedRelease> existing = consumedRelease(batchId);
+        if (existing.isPresent()) {
+            return existing;
+        }
+
+        List<LegacyAuthorizationEvidence> evidence = jdbc.query(
+                """
+                SELECT DISTINCT ON (profile.id)
+                       audit.id audit_id, profile.id profile_id, profile.profile_no
+                FROM app.audit_logs audit
+                JOIN app.source_template_profiles profile
+                  ON profile.id::text=audit.request_payload->>'template_profile_id'
+                WHERE audit.service='source-file-import'
+                  AND audit.operation='source-orders.confirm'
+                  AND audit.business_code='IMPORT_BATCH_CONFIRMED'
+                  AND audit.http_status=200
+                  -- 仅兼容 marker 上线前已知的 actor 误标版本；当前 SYSTEM no-op
+                  -- 审计不得在下一次重试时被提升成历史授权。
+                  AND audit.actor_type='HUMAN'
+                  AND audit.operator=?
+                  AND audit.request_id=?
+                  AND audit.trace_id='automatic-release-template-' || profile.id::text || '-batch-' || ?::text
+                  AND audit.request_payload->>'batch_id'=?::text
+                  AND audit.data_scope='BUSINESS'
+                ORDER BY profile.id, audit.id DESC
+                """,
+                (resultSet, rowNumber) -> new LegacyAuthorizationEvidence(
+                        resultSet.getLong("audit_id"),
+                        resultSet.getLong("profile_id"),
+                        resultSet.getString("profile_no")),
+                systemOperator,
+                "automatic-release-batch-" + batchId,
+                batchId,
+                batchId);
+        if (evidence.isEmpty()) {
+            return Optional.empty();
+        }
+        if (evidence.size() != 1) {
+            throw BusinessException.conflict(
+                    "AUTOMATIC_RELEASE_STATE_INVALID",
+                    "来源批次存在冲突的历史自动放行审计，禁止继续出站");
+        }
+        LegacyAuthorizationEvidence recovered = evidence.getFirst();
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("profile_id", recovered.profileId());
+        state.put("profile_no", recovered.profileNo());
+        state.put("stage", "CONFIRMED_PENDING_OUTBOUND");
+        state.put("recovered_from_audit_log_id", recovered.auditId());
+        int updated = jdbc.update(
+                """
+                UPDATE app.import_batches
+                SET error_detail=jsonb_set(
+                    COALESCE(error_detail, '{}'::jsonb),
+                    '{automatic_release}',
+                    ?::jsonb,
+                    true)
+                WHERE id=? AND confirmed_at IS NOT NULL AND confirmed_by=?
+                  AND NOT jsonb_exists(COALESCE(error_detail, '{}'::jsonb), 'automatic_release')
+                """,
+                json(state),
+                batchId,
+                systemOperator);
+        if (updated != 1) {
+            throw BusinessException.conflict(
+                    "AUTOMATIC_RELEASE_STATE_INVALID",
+                    "来源批次历史自动放行授权恢复冲突，禁止继续出站");
+        }
+        return Optional.of(new ConsumedRelease(
+                recovered.profileId(), recovered.profileNo(), "CONFIRMED_PENDING_OUTBOUND"));
+    }
+
     void recordAutomaticReleaseStage(
             long batchId,
             long profileId,
@@ -393,6 +497,10 @@ class SourceTemplateProfileService {
             OffsetDateTime trustedAt) {}
 
     record ConsumedRelease(long profileId, String profileNo, String stage) {}
+
+    private record ConfirmedBatch(OffsetDateTime confirmedAt, String confirmedBy) {}
+
+    private record LegacyAuthorizationEvidence(long auditId, long profileId, String profileNo) {}
 
     private record BatchTemplate(
             SourceChannel channel,
