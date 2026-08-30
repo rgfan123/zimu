@@ -189,7 +189,11 @@ class InventoryDetailsApiTest {
         return jdbc.queryForObject(
                 """
                 INSERT INTO app.skus (product_id, fulfillment_provider_id, specification, unit)
-                SELECT id, ?, ?, '件' FROM app.products WHERE product_code='PROD-LAMBLEG'
+                SELECT sku.product_id, ?, ?, '件'
+                FROM app.provider_skus mapping
+                JOIN app.fulfillment_providers provider ON provider.id = mapping.fulfillment_provider_id
+                JOIN app.skus sku ON sku.id = mapping.sku_id
+                WHERE provider.provider_code='JD' AND mapping.provider_sku_code='JD-SKU-000001'
                 RETURNING id
                 """,
                 Long.class,

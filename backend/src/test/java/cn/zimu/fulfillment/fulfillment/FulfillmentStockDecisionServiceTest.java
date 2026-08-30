@@ -353,12 +353,17 @@ class FulfillmentStockDecisionServiceTest {
         jdbc.update(
                 """
                 INSERT INTO app.skus (product_id, fulfillment_provider_id, specification, unit)
-                SELECT p.id, fp.id, '标准箱', '箱'
-                FROM app.products p, app.fulfillment_providers fp
-                WHERE p.product_code='PROD-LAMBLEG' AND fp.provider_code='TPM'
+                SELECT seed_sku.product_id, fp.id, '标准箱', '箱'
+                FROM app.provider_skus mapping
+                JOIN app.fulfillment_providers seed_provider ON seed_provider.id = mapping.fulfillment_provider_id
+                JOIN app.skus seed_sku ON seed_sku.id = mapping.sku_id
+                CROSS JOIN app.fulfillment_providers fp
+                WHERE seed_provider.provider_code='JD'
+                  AND mapping.provider_sku_code='JD-SKU-000001'
+                  AND fp.provider_code='TPM'
                   AND NOT EXISTS (
                       SELECT 1 FROM app.skus s
-                      WHERE s.product_id=p.id AND s.fulfillment_provider_id=fp.id
+                      WHERE s.product_id=seed_sku.product_id AND s.fulfillment_provider_id=fp.id
                         AND s.specification='标准箱' AND s.unit='箱')
                 """);
         jdbc.update(
