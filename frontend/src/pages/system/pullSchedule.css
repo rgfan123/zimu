@@ -1,0 +1,80 @@
+/**
+ * 渠道拉取规则卡片。
+ *
+ * 手写展示层（ADR 0011）：AntD 只用来做交互控件（Switch / TimePicker / Button），
+ * 骨架与排版一律走这里的 zs- 风格类，不用 Card / Row / Col 搭。
+ */
+
+.pull-schedule {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pull-schedule__heading {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ant-color-text);
+}
+
+.pull-schedule__intro {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ant-color-text-secondary);
+}
+
+.pull-schedule__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.pull-schedule-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: var(--ant-border-radius-lg);
+  background: var(--ant-color-bg-container);
+}
+
+.pull-schedule-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pull-schedule-card__hint {
+  font-size: 12px;
+  color: var(--ant-color-text-tertiary);
+}
+
+.pull-schedule-card__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pull-schedule-card__label {
+  flex: 1;
+  font-size: 13px;
+  color: var(--ant-color-text);
+}
+
+.pull-schedule-card__summary {
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--ant-color-border-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ant-color-text-secondary);
+}
+
+.pull-schedule-card__actions {
+  display: flex;
+  gap: 8px;
+}

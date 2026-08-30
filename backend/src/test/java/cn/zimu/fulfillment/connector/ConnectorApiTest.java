@@ -157,6 +157,118 @@ class ConnectorApiTest {
                 .doesNotContainKey("credential_secret_ref");
     }
 
+    /**
+     * 拉取时间表的读投影：**永远有值**，没配过的渠道回显实际生效的全局默认。
+     *
+     * <p>让「没配置」在界面上表现成一个空白框，正是「以为关了其实在跑 / 以为在跑其实关了」
+     * 的来源；后端语义是「读不到就按默认拉」，界面必须看到同一件事。
+     */
+    @Test
+    void unconfiguredChannelsEchoTheDefaultsThatActuallyApply() {
+        // 用彩食鲜读、用聚福宝写：同一个 Spring 上下文里用例顺序不保证，
+        // 两个用例抢同一个渠道会变成偶发红。
+        ResponseEntity<Map> caishixian = http.getForEntity("/api/v1/connectors/CAISHIXIAN", Map.class);
+
+        assertThat(caishixian.getStatusCode()).isEqualTo(HttpStatus.OK);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> schedule = (Map<String, Object>) caishixian.getBody().get("pull_schedule");
+        assertThat(schedule)
+                .containsEntry("schedulable", true)
+                .containsEntry("configured", false)
+                .containsEntry("notify_wecom", true);
+        assertThat(schedule.get("morning")).isEqualTo(Map.of("enabled", true, "at", "09:00"));
+        assertThat(schedule.get("evening")).isEqualTo(Map.of("enabled", true, "at", "18:00"));
+
+        // 不参与定时拉取的渠道也有投影，但明确标成不可调度，界面据此不出卡片。
+        @SuppressWarnings("unchecked")
+        Map<String, Object> zhonghui = (Map<String, Object>)
+                http.getForEntity("/api/v1/connectors/ZHONGHUI", Map.class).getBody().get("pull_schedule");
+        assertThat(zhonghui).containsEntry("schedulable", false);
+    }
+
+    @Test
+    void pullScheduleIsSavedUnderOptimisticLockAndReadBackAsSaved() {
+        ResponseEntity<Map> before = http.getForEntity("/api/v1/connectors/JUFUBAO", Map.class);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", "connector-patch-jufubao-schedule-001");
+        headers.set("X-Operator", "integration-test");
+        Map<String, Object> patch = Map.of(
+                "expected_version", ((Number) before.getBody().get("version")).longValue(),
+                "pull_schedule", Map.of(
+                        "morning", Map.of("enabled", true, "at", "07:30"),
+                        "evening", Map.of("enabled", false, "at", "21:00"),
+                        "notify_wecom", false));
+
+        ResponseEntity<Map> updated = http.exchange(
+                "/api/v1/connectors/JUFUBAO", HttpMethod.PATCH, new HttpEntity<>(patch, headers), Map.class);
+
+        assertThat(updated.getStatusCode()).isEqualTo(HttpStatus.OK);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> schedule = (Map<String, Object>) updated.getBody().get("pull_schedule");
+        assertThat(schedule).containsEntry("configured", true).containsEntry("notify_wecom", false);
+        assertThat(schedule.get("morning")).isEqualTo(Map.of("enabled", true, "at", "07:30"));
+        // 停用是显式的 false，读回来还是 false——这条链路上任何一环把它变成「缺省」都是事故。
+        assertThat(schedule.get("evening")).isEqualTo(Map.of("enabled", false, "at", "21:00"));
+
+        // 版本已推进：拿旧版本再提交必须 409，不能悄悄覆盖别人的改动。
+        HttpHeaders stale = new HttpHeaders();
+        stale.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        stale.set("Idempotency-Key", "connector-patch-jufubao-schedule-stale-001");
+        stale.set("X-Operator", "integration-test");
+        assertThat(http.exchange(
+                                "/api/v1/connectors/JUFUBAO",
+                                HttpMethod.PATCH,
+                                new HttpEntity<>(patch, stale),
+                                Map.class)
+                        .getStatusCode())
+                .isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void aChannelThatIsNotScheduledRefusesAPullScheduleInsteadOfSilentlyAcceptingIt() {
+        ResponseEntity<Map> before = http.getForEntity("/api/v1/connectors/ZHONGHUI", Map.class);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", "connector-patch-zhonghui-schedule-001");
+        headers.set("X-Operator", "integration-test");
+        Map<String, Object> patch = Map.of(
+                "expected_version", ((Number) before.getBody().get("version")).longValue(),
+                "pull_schedule", Map.of(
+                        "morning", Map.of("enabled", true, "at", "07:30"),
+                        "evening", Map.of("enabled", true, "at", "21:00"),
+                        "notify_wecom", true));
+
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/connectors/ZHONGHUI", HttpMethod.PATCH, new HttpEntity<>(patch, headers), Map.class);
+
+        // 静默接受最难查：用户以为它开始按时拉了，而后端根本不会去问这个渠道。
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(rejected.getBody()).containsEntry("business_code", "PULL_SCHEDULE_NOT_SCHEDULABLE");
+    }
+
+    @Test
+    void aHalfFilledPullScheduleIsRejectedRatherThanPartiallyApplied() {
+        ResponseEntity<Map> before = http.getForEntity("/api/v1/connectors/FEIXIANG", Map.class);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", "connector-patch-feixiang-schedule-partial-001");
+        headers.set("X-Operator", "integration-test");
+        Map<String, Object> patch = Map.of(
+                "expected_version", ((Number) before.getBody().get("version")).longValue(),
+                // 少了 evening 与 notify_wecom：整体替换语义下这是残缺报文，不能被当成
+                //「只改早班」——否则一次漏发的字段会把用户刚关掉的档位重新打开。
+                "pull_schedule", Map.of("morning", Map.of("enabled", true, "at", "07:30")));
+
+        assertThat(http.exchange(
+                                "/api/v1/connectors/FEIXIANG",
+                                HttpMethod.PATCH,
+                                new HttpEntity<>(patch, headers),
+                                Map.class)
+                        .getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
     /** username 非敏感直接回显；password 以 AES-GCM 密文落库（password_encrypted），
      * 读回（响应体、GET 详情、审计负载、库内 config）一律不出现明文，只投影存在性标记。 */
     @Test

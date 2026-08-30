@@ -185,10 +185,26 @@ class ScheduledPullReportCardSourceTest {
     }
 
     @Test
-    void slotIsSpelledOutInPlainChinese() {
+    void slotIsSpelledOutInPlainChineseWithoutPretendingToKnowTheClock() {
         long runId = seedRun("SLOT", "COMPLETED", 1, 0, "[]", "[]");
 
-        assertThat(card(runId).toString()).contains("早上 09:00");
+        String card = card(runId).toString();
+        // 每个渠道各自设时间之后，写死「早上 09:00」对配了别的时间的渠道就是假话。
+        assertThat(card).contains("早班").doesNotContain("09:00");
+        // 真实时刻与渠道都在 run_key 里，卡面 desc 带着它。
+        assertThat(card).contains("FEIXIANG");
+    }
+
+    @Test
+    void aChannelThatTurnedWecomPushOffRaisesNoCardAtAll() {
+        long silent = seedRunRaw("NOPUSH", "COMPLETED", 3, 0, "[]", "[]", false);
+
+        assertThat(source.pending(OffsetDateTime.now().minusDays(1), 50).stream()
+                        .map(taskId -> taskId.entityId())
+                        .toList())
+                .doesNotContain(silent);
+        // 连渲染都不给：扫描漏了也不能把卡发出去，两处判据必须一致。
+        assertThat(source.render(silent, 1)).isEmpty();
     }
 
     @Test
@@ -247,28 +263,43 @@ class ScheduledPullReportCardSourceTest {
 
     private long seedRun(
             String suffix, String status, int problems, int shipped, String pullJson, String shipJson) {
-        return seedRunRaw(suffix, status, problems, shipped, pullJson, shipJson);
+        return seedRunRaw(suffix, status, problems, shipped, pullJson, shipJson, true);
     }
 
     private long seedRunRaw(
             String suffix, String status, int problems, int shipped, String pullJson, String shipJson) {
+        return seedRunRaw(suffix, status, problems, shipped, pullJson, shipJson, true);
+    }
+
+    private long seedRunRaw(
+            String suffix,
+            String status,
+            int problems,
+            int shipped,
+            String pullJson,
+            String shipJson,
+            boolean notifyWecom) {
         return jdbc.queryForObject(
                 """
                 INSERT INTO app.scheduled_pull_runs
-                    (run_key, slot, run_date, status, pull_summary, ship_summary,
+                    (run_key, slot, run_date, source_channel, notify_wecom, status,
+                     pull_summary, ship_summary,
                      problem_count, shipped_batches, lock_version, finished_at)
-                VALUES ('2026-08-28:MORNING:' || ?, 'MORNING', DATE '2026-08-28', ?, ?::jsonb, ?::jsonb,
+                VALUES ('2026-08-28:MORNING:FEIXIANG:' || ?, 'MORNING', DATE '2026-08-28',
+                        'FEIXIANG', ?, ?, ?::jsonb, ?::jsonb,
                         ?, ?, 1, now())
                 RETURNING id
                 """,
-                Long.class, suffix, status, pullJson, shipJson, problems, shipped);
+                Long.class, suffix, notifyWecom, status, pullJson, shipJson, problems, shipped);
     }
 
     private long seedRunning(String suffix) {
         return jdbc.queryForObject(
                 """
-                INSERT INTO app.scheduled_pull_runs (run_key, slot, run_date, status, problem_count)
-                VALUES ('2026-08-28:EVENING:' || ?, 'EVENING', DATE '2026-08-28', 'RUNNING', 5)
+                INSERT INTO app.scheduled_pull_runs
+                    (run_key, slot, run_date, source_channel, status, problem_count)
+                VALUES ('2026-08-28:EVENING:FEIXIANG:' || ?, 'EVENING', DATE '2026-08-28',
+                        'FEIXIANG', 'RUNNING', 5)
                 RETURNING id
                 """,
                 Long.class, suffix);

@@ -35,6 +35,7 @@ import type {
   ChannelMetric,
   ConnectionTestResult,
   ConnectorConfig,
+  ConnectorPullScheduleSlot,
   DashboardSummary,
   DemoRun,
   DemoScenario,
@@ -938,6 +939,16 @@ export const connectorsApi = {
     credential_secret_ref?: string;
     username?: string;
     password?: string;
+    /**
+     * 拉取时间表：给就必须五个字段齐全（整体替换），省略表示不改。
+     * 后端刻意不接受部分 patch——缺省会回落成「启用」，一次漏发的字段等于把用户刚关掉的档位
+     * 重新打开。
+     */
+    pull_schedule?: {
+      morning: ConnectorPullScheduleSlot;
+      evening: ConnectorPullScheduleSlot;
+      notify_wecom: boolean;
+    };
   }) =>
     apiRequest<ConnectorConfig>(`/api/v1/connectors/${channel}`, { method: 'PATCH', body, headers: writeHeaders() }),
   /** POST /api/v1/connectors/{source_channel}/test-connection —— 连通性测试。 */

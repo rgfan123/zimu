@@ -124,13 +124,16 @@ services:
       # 没有收件人任何字段，因此可以进群（对比下面的 preship）。
       WECOM_CARD_SCHEDULED_PULL_ROUTE_TYPE: ${WECOM_CARD_SCHEDULED_PULL_ROUTE_TYPE:-GROUP}
       WECOM_CARD_SCHEDULED_PULL_CHAT_ID: ${WECOM_CARD_SCHEDULED_PULL_CHAT_ID:-}
-      # 每天 09:00 / 18:00 定时拉取三平台。自动发货另有独立开关，默认关：
-      # 确认发货会向京东建真实出库单，不该因为升了个版本就自己开始跑。开启需两件事同时做到：
-      # SCHEDULED_AUTO_SHIP_ENABLED=true，且把 system:scheduled-pull 加进
-      # JD_OUTBOUND_AUTHORIZED_OPERATORS——否则 requireAuthorized 稳定 403。
+      # 定时拉取：每分钟跳一次，逐渠道比对界面上设的早/晚时间。默认 09:00 / 18:00，
+      # 与本特性上线前完全一致——渠道没配过就按默认拉，读不到配置也按默认拉，绝不停摆。
+      # 自动发货另有独立开关，默认关：确认发货会向京东建真实出库单，不该因为升了个版本
+      # 就自己开始跑。开启需两件事同时做到：SCHEDULED_AUTO_SHIP_ENABLED=true，
+      # 且把 system:scheduled-pull 加进 JD_OUTBOUND_AUTHORIZED_OPERATORS——否则稳定 403。
       SCHEDULED_PULL_ENABLED: ${SCHEDULED_PULL_ENABLED:-true}
-      SCHEDULED_PULL_MORNING_CRON: ${SCHEDULED_PULL_MORNING_CRON:-0 0 9 * * *}
-      SCHEDULED_PULL_EVENING_CRON: ${SCHEDULED_PULL_EVENING_CRON:-0 0 18 * * *}
+      SCHEDULED_PULL_TICK_CRON: ${SCHEDULED_PULL_TICK_CRON:-0 * * * * *}
+      SCHEDULED_PULL_DEFAULT_MORNING_AT: ${SCHEDULED_PULL_DEFAULT_MORNING_AT:-09:00}
+      SCHEDULED_PULL_DEFAULT_EVENING_AT: ${SCHEDULED_PULL_DEFAULT_EVENING_AT:-18:00}
+      SCHEDULED_PULL_CATCH_UP_MINUTES: ${SCHEDULED_PULL_CATCH_UP_MINUTES:-30}
       SCHEDULED_PULL_ZONE: ${SCHEDULED_PULL_ZONE:-Asia/Shanghai}
       SCHEDULED_AUTO_SHIP_ENABLED: ${SCHEDULED_AUTO_SHIP_ENABLED:-false}
       SCHEDULED_AUTO_SHIP_BATCH_LIMIT: ${SCHEDULED_AUTO_SHIP_BATCH_LIMIT:-20}

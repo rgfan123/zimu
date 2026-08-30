@@ -21,9 +21,13 @@ import org.springframework.stereotype.Service;
 /**
  * 定时拉取运行播报卡的来源：从 {@code app.scheduled_pull_runs} 按当前事实渲染。
  *
- * <p>只扫 {@code status <> 'RUNNING' AND problem_count > 0}——收口且有问题才发卡。
- * V83 为这条判据建了偏索引 {@code idx_scheduled_pull_runs_notify}。
+ * <p>只扫 {@code status <> 'RUNNING' AND problem_count > 0 AND notify_wecom}——收口、有问题、
+ * 且这个渠道开着「拉取后推企微」，三者齐了才发卡。
+ * V83 为前两条判据建了偏索引 {@code idx_scheduled_pull_runs_notify}。
  * 没问题的运行一张卡都不发：每天两次准点报平安，两周后就没人看了。
+ *
+ * <p>{@code notify_wecom} 读的是运行行上的列，不是当下的渠道配置（V85）——卡发不发取决于
+ * 触发那一刻的配置，事后有人改了开关，也不该让一次历史运行的含义跟着变。
  *
  * <p><b>投影即 PII 边界</b>。运行表本身刻意不存收件人任何字段，但两个 JSONB 摘要里
  * 仍有自由文本：拉取结果的 {@code message}（可能是 {@code "导入失败: " + 异常消息}，
@@ -84,6 +88,7 @@ public class ScheduledPullReportCardSource implements WecomBusinessCardSource {
                        pull_summary::text AS pull_summary, ship_summary::text AS ship_summary
                 FROM app.scheduled_pull_runs
                 WHERE id = ? AND lock_version = ? AND status <> 'RUNNING' AND problem_count > 0
+                  AND notify_wecom
                 """,
                 (rs, rowNum) -> view(
                         rs.getLong("id"),
@@ -110,6 +115,7 @@ public class ScheduledPullReportCardSource implements WecomBusinessCardSource {
                       AND c.entity_version = r.lock_version
                 WHERE r.status <> 'RUNNING'
                   AND r.problem_count > 0
+                  AND r.notify_wecom
                   AND r.finished_at >= ?
                   AND c.id IS NULL
                 ORDER BY r.finished_at
@@ -207,10 +213,16 @@ public class ScheduledPullReportCardSource implements WecomBusinessCardSource {
         }
     }
 
+    /**
+     * 时段文案。
+     *
+     * <p>刻意**不写具体时刻**：V85 起每个渠道各自设时间，「早上 09:00」对配了 08:00 的渠道
+     * 就是假话。真实时刻在 {@code run_key}（{@code 日期:时段:渠道}）里，卡面 desc 已经带着它。
+     */
     private static String slotLabel(String slot) {
         return switch (slot == null ? "" : slot) {
-            case "MORNING" -> "早上 09:00";
-            case "EVENING" -> "下午 18:00";
+            case "MORNING" -> "早班";
+            case "EVENING" -> "晚班";
             case "MANUAL" -> "手动触发";
             default -> "未知时段";
         };

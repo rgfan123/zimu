@@ -2,7 +2,9 @@ package cn.zimu.fulfillment.connector.schedule;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -13,6 +15,7 @@ import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.connector.PlatformOrderRefreshService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -33,7 +36,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * 定时拉取编排：跨实例单飞、失败收口、以及「摘要不得夹带脚本输出」的 PII 边界。
+ * 定时拉取编排：跨实例单飞、渠道之间不互挤、失败收口、以及「摘要不得夹带脚本输出」的 PII 边界。
  * 单飞与收口都靠数据库约束成立，因此用真库跑而不是 mock JdbcTemplate。
  */
 @Testcontainers
@@ -48,6 +51,7 @@ class ScheduledPlatformPullServiceTest {
     private ScheduledPullRunStore runs;
     private PlatformOrderRefreshService refreshService;
     private AuditLogService auditLogService;
+    private ChannelPullScheduleStore schedules;
 
     @BeforeAll
     static void migrate() {
@@ -70,21 +74,26 @@ class ScheduledPlatformPullServiceTest {
         runs = new ScheduledPullRunStore(jdbc, new ObjectMapper());
         refreshService = mock(PlatformOrderRefreshService.class);
         auditLogService = mock(AuditLogService.class);
+        schedules = mock(ChannelPullScheduleStore.class);
     }
 
     private ScheduledPlatformPullService service() {
         return new ScheduledPlatformPullService(
-                refreshService, runs, auditLogService, Optional.empty());
+                refreshService, runs, auditLogService, Optional.empty(), schedules, 30);
     }
 
     private ScheduledPlatformPullService service(SourceBatchAutoShipper shipper) {
         return new ScheduledPlatformPullService(
-                refreshService, runs, auditLogService, Optional.of(shipper));
+                refreshService, runs, auditLogService, Optional.of(shipper), schedules, 30);
+    }
+
+    private Optional<Long> run(ScheduledPullRunStore.Slot slot) {
+        return service().runOnce(slot, "FEIXIANG", true);
     }
 
     @Test
-    void oneSlotPerDayRunsOnceEvenWhenTriggeredConcurrently() throws Exception {
-        when(refreshService.refresh(any(), any())).thenReturn(Map.of("channels", List.of()));
+    void oneSlotPerChannelPerDayRunsOnceEvenWhenTriggeredConcurrently() throws Exception {
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
         int threads = 6;
         CountDownLatch startTogether = new CountDownLatch(1);
         ExecutorService pool = Executors.newFixedThreadPool(threads);
@@ -92,7 +101,7 @@ class ScheduledPlatformPullServiceTest {
             List<Future<Optional<Long>>> futures = java.util.stream.IntStream.range(0, threads)
                     .mapToObj(ignored -> pool.submit(() -> {
                         startTogether.await();
-                        return service().runOnce(ScheduledPullRunStore.Slot.MORNING);
+                        return run(ScheduledPullRunStore.Slot.MORNING);
                     }))
                     .toList();
             startTogether.countDown();
@@ -110,23 +119,129 @@ class ScheduledPlatformPullServiceTest {
                         "SELECT count(*) FROM app.scheduled_pull_runs", Integer.class))
                 .isEqualTo(1);
         // 拉取只发生一次：单飞若失效，这里会是 6。
-        verify(refreshService).refresh(any(), any());
+        verify(refreshService).refreshChannels(anyList(), any());
     }
 
     @Test
     void morningAndEveningAreDistinctRuns() {
-        when(refreshService.refresh(any(), any())).thenReturn(Map.of("channels", List.of()));
-        assertThat(service().runOnce(ScheduledPullRunStore.Slot.MORNING)).isPresent();
-        assertThat(service().runOnce(ScheduledPullRunStore.Slot.EVENING)).isPresent();
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
+        assertThat(run(ScheduledPullRunStore.Slot.MORNING)).isPresent();
+        assertThat(run(ScheduledPullRunStore.Slot.EVENING)).isPresent();
         assertThat(jdbc.queryForList("SELECT run_key FROM app.scheduled_pull_runs ORDER BY run_key", String.class))
                 .containsExactly(
-                        LocalDate.now(ScheduledPlatformPullService.SHANGHAI) + ":EVENING",
-                        LocalDate.now(ScheduledPlatformPullService.SHANGHAI) + ":MORNING");
+                        LocalDate.now(ScheduledPlatformPullService.SHANGHAI) + ":EVENING:FEIXIANG",
+                        LocalDate.now(ScheduledPlatformPullService.SHANGHAI) + ":MORNING:FEIXIANG");
+    }
+
+    /**
+     * 本特性的核心回归：run_key 只有 {@code 日期:时段} 时，先跑完的渠道会占掉整个时段，
+     * 后跑的被判成「已被领取」直接跳过——静默漏拉。
+     */
+    @Test
+    void twoChannelsInTheSameSlotDoNotSqueezeEachOtherOut() {
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
+
+        assertThat(service().runOnce(ScheduledPullRunStore.Slot.MORNING, "CAISHIXIAN", true)).isPresent();
+        assertThat(service().runOnce(ScheduledPullRunStore.Slot.MORNING, "FEIXIANG", true)).isPresent();
+        assertThat(service().runOnce(ScheduledPullRunStore.Slot.MORNING, "JUFUBAO", true)).isPresent();
+
+        assertThat(jdbc.queryForList(
+                        "SELECT source_channel FROM app.scheduled_pull_runs ORDER BY source_channel",
+                        String.class))
+                .containsExactly("CAISHIXIAN", "FEIXIANG", "JUFUBAO");
+        // 三个渠道各自被真的拉了一次。
+        verify(refreshService, times(3)).refreshChannels(anyList(), any());
+    }
+
+    /** 补偿窗口内每分钟都会再试一次；同一渠道同一档当天只能真正跑一次。 */
+    @Test
+    void catchUpRetryWithinTheWindowNeverRunsTheSameSlotTwice() {
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
+
+        assertThat(run(ScheduledPullRunStore.Slot.MORNING)).isPresent();
+        assertThat(run(ScheduledPullRunStore.Slot.MORNING)).isEmpty();
+        assertThat(run(ScheduledPullRunStore.Slot.MORNING)).isEmpty();
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM app.scheduled_pull_runs", Integer.class))
+                .isEqualTo(1);
+        verify(refreshService).refreshChannels(anyList(), any());
+    }
+
+    /** 拉取只针对本次运行的渠道，不再是 null（全渠道）。 */
+    @Test
+    void onlyThisRunsChannelIsPulled() {
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
+
+        service().runOnce(ScheduledPullRunStore.Slot.MORNING, "CAISHIXIAN", true);
+
+        var channels = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(refreshService).refreshChannels(channels.capture(), any());
+        assertThat(channels.getValue()).containsExactly("CAISHIXIAN");
+    }
+
+    /** 「拉取后推企微」按触发那一刻的配置固化进运行记录，事后改配置不影响既有运行。 */
+    @Test
+    void wecomPushDecisionIsFrozenOnTheRunRow() {
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
+
+        service().runOnce(ScheduledPullRunStore.Slot.MORNING, "CAISHIXIAN", false);
+        service().runOnce(ScheduledPullRunStore.Slot.MORNING, "FEIXIANG", true);
+
+        assertThat(jdbc.queryForList(
+                        "SELECT source_channel FROM app.scheduled_pull_runs"
+                                + " WHERE notify_wecom ORDER BY source_channel",
+                        String.class))
+                .containsExactly("FEIXIANG");
+    }
+
+    /** 每分钟一跳的入口：只有「现在该拉」的渠道会被拉起来，且推送开关按配置固化。 */
+    @Test
+    void runDuePullsOnlyTheChannelsWhoseTimeItIs() {
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
+        LocalTime nowHm = LocalTime.now(ScheduledPlatformPullService.SHANGHAI).withSecond(0).withNano(0);
+        when(schedules.loadScheduled()).thenReturn(Map.of(
+                // 现在就该拉，且这个渠道关掉了推企微
+                "FEIXIANG", new ChannelPullSchedule(
+                        new ChannelPullSchedule.Slot(true, nowHm),
+                        new ChannelPullSchedule.Slot(false, nowHm),
+                        false),
+                // 早班被显式关掉、晚班时间还没到 → 一次都不该跑
+                "CAISHIXIAN", new ChannelPullSchedule(
+                        new ChannelPullSchedule.Slot(false, nowHm),
+                        new ChannelPullSchedule.Slot(true, LocalTime.of(23, 59)),
+                        true)));
+
+        assertThat(service().runDue()).hasSize(1);
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT source_channel, slot, notify_wecom FROM app.scheduled_pull_runs");
+        assertThat(row.get("source_channel")).isEqualTo("FEIXIANG");
+        assertThat(row.get("slot")).isEqualTo("MORNING");
+        assertThat(row.get("notify_wecom")).isEqualTo(false);
+    }
+
+    /** 同一分钟被跳两次（多实例、补偿窗口）不得跑两遍。 */
+    @Test
+    void runDueIsIdempotentWithinTheSameSlot() {
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
+        LocalTime nowHm = LocalTime.now(ScheduledPlatformPullService.SHANGHAI).withSecond(0).withNano(0);
+        when(schedules.loadScheduled()).thenReturn(Map.of(
+                "FEIXIANG", new ChannelPullSchedule(
+                        new ChannelPullSchedule.Slot(true, nowHm),
+                        new ChannelPullSchedule.Slot(false, nowHm),
+                        true)));
+
+        assertThat(service().runDue()).hasSize(1);
+        assertThat(service().runDue()).isEmpty();
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM app.scheduled_pull_runs", Integer.class))
+                .isEqualTo(1);
+        verify(refreshService).refreshChannels(anyList(), any());
     }
 
     @Test
     void allChannelsFailedIsRecordedAsAResultNotAnEscapingException() {
-        when(refreshService.refresh(any(), any())).thenThrow(new BusinessException(
+        when(refreshService.refreshChannels(anyList(), any())).thenThrow(new BusinessException(
                 502,
                 "PLATFORM_REFRESH_ALL_FAILED",
                 "所有渠道刷新均未成功",
@@ -137,7 +252,7 @@ class ScheduledPlatformPullServiceTest {
                         "business_code", "SCRIPT_FAILED",
                         "message", "登录失败")))));
 
-        assertThat(service().runOnce(ScheduledPullRunStore.Slot.MORNING)).isPresent();
+        assertThat(run(ScheduledPullRunStore.Slot.MORNING)).isPresent();
 
         Map<String, Object> row = jdbc.queryForMap(
                 "SELECT status, problem_count, pull_summary::text AS pull FROM app.scheduled_pull_runs");
@@ -149,7 +264,7 @@ class ScheduledPlatformPullServiceTest {
 
     @Test
     void summaryNeverCarriesScriptOutputOrCommandLine() {
-        when(refreshService.refresh(any(), any())).thenReturn(Map.of("channels", List.of(Map.of(
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of(Map.of(
                 "channel", "CAISHIXIAN",
                 "status", "OK",
                 "business_code", "OK",
@@ -159,7 +274,7 @@ class ScheduledPlatformPullServiceTest {
                 "script_output", "收货人 张三 13800000000 北京市朝阳区...",
                 "command", List.of("python3", "/app/scripts/csx_fetch_orders.py", "--force")))));
 
-        service().runOnce(ScheduledPullRunStore.Slot.MORNING);
+        run(ScheduledPullRunStore.Slot.MORNING);
 
         String pull = jdbc.queryForObject(
                 "SELECT pull_summary::text FROM app.scheduled_pull_runs", String.class);
@@ -177,10 +292,10 @@ class ScheduledPlatformPullServiceTest {
 
     @Test
     void autoShipIsNotEvenReachableWhenTheBeanIsAbsent() {
-        when(refreshService.refresh(any(), any())).thenReturn(Map.of("channels", List.of()));
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
         SourceBatchAutoShipper shipper = mock(SourceBatchAutoShipper.class);
 
-        service().runOnce(ScheduledPullRunStore.Slot.MORNING);
+        run(ScheduledPullRunStore.Slot.MORNING);
 
         verifyNoInteractions(shipper);
         assertThat(jdbc.queryForObject(
@@ -190,8 +305,8 @@ class ScheduledPlatformPullServiceTest {
 
     @Test
     void runIsAuditedAsSystemNotHuman() {
-        when(refreshService.refresh(any(), any())).thenReturn(Map.of("channels", List.of()));
-        service().runOnce(ScheduledPullRunStore.Slot.MORNING);
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
+        run(ScheduledPullRunStore.Slot.MORNING);
 
         var captor = org.mockito.ArgumentCaptor.forClass(AuditLogService.AuditCommand.class);
         verify(auditLogService).record(captor.capture());
@@ -199,15 +314,16 @@ class ScheduledPlatformPullServiceTest {
         // 硬性要求值得断言到底。
         assertThat(fieldOf(captor.getValue(), "actorType")).isEqualTo(AuditActorType.SYSTEM);
         assertThat(fieldOf(captor.getValue(), "operator")).isEqualTo("system:scheduled-pull");
+        assertThat(String.valueOf(fieldOf(captor.getValue(), "requestPayload"))).contains("FEIXIANG");
     }
 
     @Test
     void autoShipOutcomeIsFoldedIntoTheRunSummary() {
-        when(refreshService.refresh(any(), any())).thenReturn(Map.of("channels", List.of()));
-        SourceBatchAutoShipper shipper = runDate -> new SourceBatchAutoShipper.Outcome(
+        when(refreshService.refreshChannels(anyList(), any())).thenReturn(Map.of("channels", List.of()));
+        SourceBatchAutoShipper shipper = (runDate, channel) -> new SourceBatchAutoShipper.Outcome(
                 List.of(Map.of("batch_no", "B-9", "outcome", "SHIPPED")), 2, 1);
 
-        service(shipper).runOnce(ScheduledPullRunStore.Slot.EVENING);
+        service(shipper).runOnce(ScheduledPullRunStore.Slot.EVENING, "FEIXIANG", true);
 
         Map<String, Object> row = jdbc.queryForMap(
                 "SELECT problem_count, shipped_batches, ship_summary::text AS ship"

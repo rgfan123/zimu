@@ -696,6 +696,28 @@ export interface OperatorTeamResolution {
   pushable: boolean;
 }
 
+/** 一档拉取：`at` 为 HH:mm（Asia/Shanghai）。停用必须是显式的 `enabled: false`。 */
+export interface ConnectorPullScheduleSlot {
+  enabled: boolean;
+  at: string;
+}
+
+/**
+ * 渠道拉取时间表。
+ *
+ * 后端投影**永远有值**：没配过的渠道回显的是实际生效的全局默认（09:00 / 18:00 全开、推企微），
+ * 不是 null 也不是空对象。空值语义与后端一致——读不到就按默认拉，绝不等于「不拉」。
+ */
+export interface ConnectorPullSchedule {
+  /** 本渠道是否参与定时拉取（今天是彩食鲜 / 聚福宝 / 飞象）。不参与的不出时间卡片。 */
+  schedulable: boolean;
+  /** false 表示回显的是全局默认而非运营设过的值。仅用于展示，不参与任何行为判断。 */
+  configured: boolean;
+  morning: ConnectorPullScheduleSlot;
+  evening: ConnectorPullScheduleSlot;
+  notify_wecom: boolean;
+}
+
 export interface ConnectorConfig {
   source_channel: SourceChannel;
   client_mode: 'MOCK' | 'REAL';
@@ -709,6 +731,8 @@ export interface ConnectorConfig {
   password_configured?: boolean;
   /** 历史明文密码残留（已废弃、不再使用）：需要在界面重新输入一次，下一次保存会清除残留。 */
   password_needs_reentry?: boolean;
+  /** 拉取时间表：后端永远给值；可选只是为了兼容尚未升级的后端。 */
+  pull_schedule?: ConnectorPullSchedule;
   version: number;
 }
 

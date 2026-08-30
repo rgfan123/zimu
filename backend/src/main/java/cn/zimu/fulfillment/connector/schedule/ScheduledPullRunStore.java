@@ -17,6 +17,11 @@ import org.springframework.stereotype.Component;
  * 于是两个实例同时去拉三个平台、同时去确认同一批货。{@code run_key} 的唯一约束把这个
  * 判断交给数据库：{@code ON CONFLICT DO NOTHING} 返回空即代表「别人已经领走了」，
  * 没有任何窗口。
+ *
+ * <p><b>V85 起 run_key 下沉到渠道</b>（{@code 日期:时段:渠道}）。各平台可以各自设时间之后，
+ * 原来的 {@code 日期:时段} 会让先跑完的那个渠道占掉整个时段，后跑的被判成「已被领取」直接
+ * 跳过——静默漏拉。同一个唯一约束现在同时承担两件事：跨实例单飞，以及补偿窗口内的重复触发
+ * 去重（{@link ScheduledPullPlanner} 会在窗口内每分钟重试一次）。
  */
 @Component
 class ScheduledPullRunStore {
@@ -37,31 +42,39 @@ class ScheduledPullRunStore {
     }
 
     /** 一次运行的句柄。{@code runDate} 同时是自动发货幂等键的日期部分。 */
-    record Run(long id, String runKey, Slot slot, LocalDate runDate) {}
+    record Run(long id, String runKey, Slot slot, LocalDate runDate, String sourceChannel) {}
 
-    static String runKey(LocalDate runDate, Slot slot) {
-        return runDate + ":" + slot.name();
+    static String runKey(LocalDate runDate, Slot slot, String sourceChannel) {
+        return runDate + ":" + slot.name() + ":" + sourceChannel;
     }
 
     /**
-     * 领取「某天某时段」这一次运行。
+     * 领取「某天某时段某渠道」这一次运行。
      *
-     * @return 领到则返回句柄；已被本实例或其它实例领走则返回 empty，调用方必须直接返回
+     * @param notifyWecom 按触发那一刻的渠道配置固化：卡发不发取决于当时的配置，事后改配置
+     *                    不该改写既有运行的含义，否则「这次为什么没发卡」永远查不清
+     * @return 领到则返回句柄；已被本实例或其它实例领走、或补偿窗口内的重复触发则返回 empty，
+     *         调用方必须直接返回
      */
-    Optional<Run> begin(LocalDate runDate, Slot slot) {
-        String key = runKey(runDate, slot);
+    Optional<Run> begin(LocalDate runDate, Slot slot, String sourceChannel, boolean notifyWecom) {
+        String key = runKey(runDate, slot, sourceChannel);
         List<Long> ids = jdbc.query(
                 """
-                INSERT INTO app.scheduled_pull_runs (run_key, slot, run_date, status)
-                VALUES (?, ?, ?, 'RUNNING')
+                INSERT INTO app.scheduled_pull_runs
+                    (run_key, slot, run_date, source_channel, notify_wecom, status)
+                VALUES (?, ?, ?, ?, ?, 'RUNNING')
                 ON CONFLICT (run_key) DO NOTHING
                 RETURNING id
                 """,
                 (resultSet, rowNum) -> resultSet.getLong(1),
                 key,
                 slot.name(),
-                runDate);
-        return ids.isEmpty() ? Optional.empty() : Optional.of(new Run(ids.getFirst(), key, slot, runDate));
+                runDate,
+                sourceChannel,
+                notifyWecom);
+        return ids.isEmpty()
+                ? Optional.empty()
+                : Optional.of(new Run(ids.getFirst(), key, slot, runDate, sourceChannel));
     }
 
     /**

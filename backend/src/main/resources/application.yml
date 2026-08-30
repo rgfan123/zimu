@@ -359,12 +359,22 @@ app:
     # 刷新默认拉取窗口（到今天为止的天数）。
     default-days: ${APP_PLATFORM_PULL_DEFAULT_DAYS:30}
   scheduled-pull:
-    # 定时三平台拉取：每天 09:00 与 18:00 各一次。仍受 app.scheduling.enabled 总开关管，
-    # 关掉全局调度时本特性也不会跑。
+    # 定时来源渠道拉取：每个渠道早/晚各一次，时间由界面上的渠道卡片决定，改完即时生效、
+    # 不用重启。仍受 app.scheduling.enabled 总开关管，关掉全局调度时本特性也不会跑。
     enabled: ${SCHEDULED_PULL_ENABLED:true}
-    # 时间表进配置，不写死在代码里。Spring cron 六段：秒 分 时 日 月 周。
-    morning-cron: ${SCHEDULED_PULL_MORNING_CRON:0 0 9 * * *}
-    evening-cron: ${SCHEDULED_PULL_EVENING_CRON:0 0 18 * * *}
+    # 每分钟跳一次，跳的时候逐渠道问「你现在该拉了吗」。
+    # 为什么不是两个固定 cron：cron 在启动时就固定了，表达不了「各平台各自设时间」。
+    # 判据与补偿窗口见 ScheduledPullPlanner。
+    tick-cron: ${SCHEDULED_PULL_TICK_CRON:0 * * * * *}
+    # 渠道没配过时实际生效的时间。**这不是「不拉」的开关**——读不到配置一律按这两个时刻拉，
+    # 停某一档必须在界面上显式关掉。理由见 ChannelPullSchedule 的类注释：
+    # 「空值 = 不拉」会让一次配置读取故障变成安静停摆，而界面上看不出任何异常。
+    default-morning-at: ${SCHEDULED_PULL_DEFAULT_MORNING_AT:09:00}
+    default-evening-at: ${SCHEDULED_PULL_DEFAULT_EVENING_AT:18:00}
+    # 补偿窗口（分钟）：配置时刻起这么久之内，每一跳都会重试没跑成的那一档。
+    # 应用重启、GC 停顿、上一次拉取占住执行器超过一分钟——没有这个窗口，那个渠道当天
+    # 这一档就永远没了，而且没有任何报错。重复由 run_key 唯一约束挡住，窗口不跨零点。
+    catch-up-minutes: ${SCHEDULED_PULL_CATCH_UP_MINUTES:30}
     zone: ${SCHEDULED_PULL_ZONE:Asia/Shanghai}
     auto-ship:
       # 独立开关：关掉它只停自动发货，定时拉取照常。

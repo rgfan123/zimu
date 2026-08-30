@@ -10,8 +10,11 @@ import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.credential.ConnectorCredentialCipher;
 import cn.zimu.fulfillment.connector.credential.ConnectorCredentialException;
+import cn.zimu.fulfillment.connector.schedule.ChannelPullSchedule;
+import cn.zimu.fulfillment.connector.schedule.ChannelPullScheduleStore;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.LocalTime;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +32,7 @@ public class ConnectorService {
     private final IdempotencyService idempotencyService;
     private final AuditLogService auditLogService;
     private final ConnectorCredentialCipher credentialCipher;
+    private final ChannelPullScheduleStore pullSchedules;
     private final Map<SourceChannel, PlatformConnector> connectors = new EnumMap<>(SourceChannel.class);
 
     public ConnectorService(
@@ -37,12 +41,14 @@ public class ConnectorService {
             IdempotencyService idempotencyService,
             AuditLogService auditLogService,
             ConnectorCredentialCipher credentialCipher,
+            ChannelPullScheduleStore pullSchedules,
             List<PlatformConnector> platformConnectors) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.idempotencyService = idempotencyService;
         this.auditLogService = auditLogService;
         this.credentialCipher = credentialCipher;
+        this.pullSchedules = pullSchedules;
         platformConnectors.forEach(connector -> connectors.put(connector.channel(), connector));
     }
 
@@ -144,6 +150,9 @@ public class ConnectorService {
         }
         // 历史明文 password 键：不使用、不迁移；任何一次成功保存都顺带清除残留。
         config.remove("password");
+        if (patch.pullSchedule() != null) {
+            config.put(ChannelPullSchedule.CONFIG_KEY, pullScheduleValue(channel, patch.pullSchedule()));
+        }
         String mode = Optional.ofNullable(patch.clientMode()).orElse(current.clientMode());
         String transport = Optional.ofNullable(patch.transportMode()).orElse(current.transportMode());
         boolean enabled = Optional.ofNullable(patch.enabled()).orElse(current.enabled());
@@ -168,6 +177,35 @@ public class ConnectorService {
         return result;
     }
 
+    /**
+     * 把界面提交的时间表转成落库表示。
+     *
+     * <p>只对参与定时拉取的渠道开放：往中汇、大者这类不参与定时的渠道写时间表，用户会以为
+     * 它开始按时拉了，而后端根本不会去问那些渠道——那是最难查的一类「配了没生效」。
+     * 与其静默接受，不如当场拒绝。
+     */
+    private Map<String, Object> pullScheduleValue(SourceChannel channel, ConnectorPullSchedulePatch patch) {
+        if (!pullSchedules.scheduledChannels().contains(channel.name())) {
+            throw BusinessException.unprocessable(
+                    "PULL_SCHEDULE_NOT_SCHEDULABLE",
+                    "渠道 " + channel.name() + " 不参与定时拉取，无法设置拉取时间");
+        }
+        return new ChannelPullSchedule(
+                        new ChannelPullSchedule.Slot(patch.morning().enabled(), parseTime(patch.morning().at())),
+                        new ChannelPullSchedule.Slot(patch.evening().enabled(), parseTime(patch.evening().at())),
+                        patch.notifyWecom())
+                .toConfigValue();
+    }
+
+    private static LocalTime parseTime(String text) {
+        try {
+            return LocalTime.parse(text, ChannelPullSchedule.TIME_FORMAT);
+        } catch (RuntimeException exception) {
+            // @Pattern 已经拦过一遍，走到这里说明校验被绕过；仍然要给出业务错误而不是 500。
+            throw BusinessException.badRequest("PULL_SCHEDULE_TIME_INVALID", "拉取时间必须是 HH:mm");
+        }
+    }
+
     /** 审计负载脱敏：密码明文不得进入审计记录，投影为存在性标记，与京东 pin 先例一致。 */
     private static Object auditSafe(ConnectorPatch patch) {
         if (patch.password() == null) {
@@ -181,7 +219,8 @@ public class ConnectorService {
                 patch.endpoint(),
                 patch.credentialSecretRef(),
                 patch.username(),
-                "***");
+                "***",
+                patch.pullSchedule());
     }
 
     private ConnectionTestResult check(SourceChannel channel, CommandContext context) {
@@ -235,7 +274,27 @@ public class ConnectorService {
                 && !legacy.isBlank();
         return new ConnectorConfigView(
                 channel, mode, transport, enabled, endpoint, username,
-                credentialConfigured, passwordConfigured, passwordNeedsReentry, version);
+                credentialConfigured, passwordConfigured, passwordNeedsReentry,
+                pullScheduleView(channel, config), version);
+    }
+
+    /**
+     * 拉取时间表投影：**永远有值**。
+     *
+     * <p>没配过的渠道回显的是实际生效的全局默认，而不是空。界面上出现一个空的时间框会让人
+     * 以为「没设 = 不拉」，而后端的语义恰恰相反（见 {@code ChannelPullSchedule} 的空值纪律）。
+     * 界面和后端对同一份配置的理解必须一致，所以这里把「实际会怎么跑」直接算出来给它。
+     *
+     * <p>{@code configured} 只用来告诉界面「这是默认值还是你设过的」，不参与任何行为判断。
+     */
+    private ConnectorPullScheduleView pullScheduleView(String channel, Map<String, Object> config) {
+        ChannelPullSchedule schedule = pullSchedules.parse(channel, config);
+        return new ConnectorPullScheduleView(
+                pullSchedules.scheduledChannels().contains(channel),
+                config.get(ChannelPullSchedule.CONFIG_KEY) != null,
+                new ConnectorPullScheduleView.Slot(schedule.morning().enabled(), schedule.morning().atText()),
+                new ConnectorPullScheduleView.Slot(schedule.evening().enabled(), schedule.evening().atText()),
+                schedule.notifyWecom());
     }
 
     private Map<String, Object> readConfig(String json) {

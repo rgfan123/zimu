@@ -9,10 +9,16 @@
  * （服务端未配置加密密钥 CONNECTOR_CREDENTIAL_KEY 时保存会被明确拒绝，绝不明文落库），
  * 读回只投影 password_configured 存在性标记，永不回显；留空提交 = 保持现值。
  * 历史明文残留投影为 password_needs_reentry：需重新输入一次，下一次保存自动清除残留。
+ *
+ * 页面上半部是「拉取规则」卡片：每个参与定时拉取的平台一张，两个时间选择框 + 两个启用开关
+ * + 一个「拉取后推企微」开关，保存走 expected_version 乐观锁。空值语义与后端一致——
+ * 没配过的渠道显示的是**实际生效**的默认值（09:00 / 18:00），而不是空框；
+ * 要停某一档必须显式关掉那个开关。理由见 pullSchedule.ts。
  */
 
 import { useMemo, useState } from 'react';
-import { App as AntApp, Alert, Button, Descriptions, Divider, Form, Input, Modal, Select, Space, Switch, Typography } from 'antd';
+import { App as AntApp, Alert, Button, Descriptions, Divider, Form, Input, Modal, Select, Space, Switch, TimePicker, Typography } from 'antd';
+import dayjs from 'dayjs';
 import { ApiOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { errorMessage } from '@/api/client';
@@ -25,10 +31,110 @@ import PageShell from '@/components/PageShell';
 import { AdminCategoryTag, AdminEmpty, AdminStatusTag } from '@/pages/shared/AdminVisualComponents';
 import { adminFailurePresentation, adminPageState } from '@/pages/shared/adminVisual';
 import { PageState } from '@/pages/shared/PageState';
+import {
+  TIME_FORMAT,
+  describeSchedule,
+  isDraftDirty,
+  schedulableConnectors,
+  toDraft,
+  toPatchBody,
+  validateDraft,
+  type PullScheduleDraft,
+} from '@/pages/system/pullSchedule';
 import '@/pages/shared/adminSurface.css';
+import '@/pages/system/pullSchedule.css';
 
 const MODE_LABELS = { MOCK: '仿真模式', REAL: '生产模式' } as const;
 const TRANSPORT_LABELS = { EXCEL: '文件接入', API: '在线接入' } as const;
+
+/**
+ * 一个平台的拉取规则卡片。
+ *
+ * 草稿状态本地维护。渲染处用 `渠道:版本` 作 key：**这个渠道自己**的版本变了（保存成功）才重挂载、
+ * 用服务端认可的事实覆盖草稿；保存别的渠道触发的列表刷新不会把这张卡上没提交的输入抹掉。
+ */
+function PullScheduleCard({
+  record,
+  onSave,
+  saving,
+}: {
+  record: ConnectorConfig;
+  onSave: (record: ConnectorConfig, draft: PullScheduleDraft) => Promise<void>;
+  saving: boolean;
+}) {
+  const [draft, setDraft] = useState<PullScheduleDraft>(() => toDraft(record.pull_schedule));
+
+  const dirty = isDraftDirty(draft, record.pull_schedule);
+  const patch = (change: Partial<PullScheduleDraft>) => setDraft((current) => ({ ...current, ...change }));
+
+  return (
+    <section className="pull-schedule-card" aria-label={`${CHANNEL_LABELS[record.source_channel]}拉取规则`}>
+      <header className="pull-schedule-card__head">
+        <AdminCategoryTag category={record.source_channel}>
+          {CHANNEL_LABELS[record.source_channel]}
+        </AdminCategoryTag>
+        {record.pull_schedule?.configured ? null : (
+          // 没设过就直说「用的是默认」，别让人对着两个填好的框猜它到底存没存。
+          <span className="pull-schedule-card__hint">未单独设置，当前按默认时间拉</span>
+        )}
+      </header>
+
+      <div className="pull-schedule-card__row">
+        <Switch
+          checked={draft.morningEnabled}
+          onChange={(checked) => patch({ morningEnabled: checked })}
+          aria-label="第一次拉取启用"
+        />
+        <span className="pull-schedule-card__label">第一次拉取</span>
+        <TimePicker
+          value={dayjs(draft.morningAt, TIME_FORMAT)}
+          format={TIME_FORMAT}
+          minuteStep={5}
+          allowClear={false}
+          disabled={!draft.morningEnabled}
+          onChange={(value) => patch({ morningAt: value ? value.format(TIME_FORMAT) : draft.morningAt })}
+        />
+      </div>
+
+      <div className="pull-schedule-card__row">
+        <Switch
+          checked={draft.eveningEnabled}
+          onChange={(checked) => patch({ eveningEnabled: checked })}
+          aria-label="第二次拉取启用"
+        />
+        <span className="pull-schedule-card__label">第二次拉取</span>
+        <TimePicker
+          value={dayjs(draft.eveningAt, TIME_FORMAT)}
+          format={TIME_FORMAT}
+          minuteStep={5}
+          allowClear={false}
+          disabled={!draft.eveningEnabled}
+          onChange={(value) => patch({ eveningAt: value ? value.format(TIME_FORMAT) : draft.eveningAt })}
+        />
+      </div>
+
+      <div className="pull-schedule-card__row">
+        <Switch
+          checked={draft.notifyWecom}
+          onChange={(checked) => patch({ notifyWecom: checked })}
+          aria-label="拉取后推企微"
+        />
+        <span className="pull-schedule-card__label">拉取后推企业微信</span>
+      </div>
+
+      <p className="pull-schedule-card__summary">{describeSchedule(draft)}</p>
+
+      <div className="pull-schedule-card__actions">
+        <Button size="small" type="primary" disabled={!dirty || saving} loading={saving} onClick={() => onSave(record, draft)}>
+          保存
+        </Button>
+        <Button size="small" disabled={!dirty || saving} onClick={() => setDraft(toDraft(record.pull_schedule))}>
+          撤销
+        </Button>
+      </div>
+    </section>
+  );
+}
 
 export default function ConnectorsPage() {
   const { message: messageApi } = AntApp.useApp();
@@ -37,9 +143,33 @@ export default function ConnectorsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<SourceChannel | null>(null);
   const [testResult, setTestResult] = useState<{ channel: SourceChannel; success: boolean; message?: string | null; latency_ms?: number } | null>(null);
+  const [savingSchedule, setSavingSchedule] = useState<SourceChannel | null>(null);
   const [form] = Form.useForm();
 
   const rows = useMemo(() => data ?? [], [data]);
+  const scheduleRows = useMemo(() => schedulableConnectors(rows), [rows]);
+
+  const handleSaveSchedule = async (record: ConnectorConfig, draft: PullScheduleDraft) => {
+    const invalid = validateDraft(draft);
+    if (invalid) {
+      messageApi.error(invalid);
+      return;
+    }
+    setSavingSchedule(record.source_channel);
+    try {
+      await connectorsApi.update(record.source_channel, {
+        // 乐观锁：别人在这期间改过就 409，不静默覆盖
+        expected_version: record.version,
+        pull_schedule: toPatchBody(draft),
+      });
+      messageApi.success(`${CHANNEL_LABELS[record.source_channel]}拉取规则已保存`);
+      reload();
+    } catch (e) {
+      if (e instanceof Error) messageApi.error(errorMessage(e));
+    } finally {
+      setSavingSchedule(null);
+    }
+  };
 
   const openEdit = (record: ConnectorConfig) => {
     form.setFieldsValue({
@@ -182,6 +312,27 @@ export default function ConnectorsPage() {
             message={`${CHANNEL_LABELS[testResult.channel]} 连通性测试：${testResult.success ? '通过' : '失败'}`}
             description={testResult.message ?? (testResult.latency_ms != null ? `延迟 ${testResult.latency_ms} ms` : undefined)}
           />
+        ) : null}
+
+        {scheduleRows.length > 0 ? (
+          <section className="pull-schedule">
+            <h3 className="pull-schedule__heading">自动拉单时间</h3>
+            <p className="pull-schedule__intro">
+              每个平台各自设两个拉取时间，各自可单独停用；改完立即生效，不用重启。
+              没单独设置的平台按系统默认时间拉，框里显示的就是它实际会跑的时间；
+              设置读不出来时也照常按默认拉，不会静悄悄停掉。
+            </p>
+            <div className="pull-schedule__grid">
+              {scheduleRows.map((record) => (
+                <PullScheduleCard
+                  key={`${record.source_channel}:${record.version}`}
+                  record={record}
+                  onSave={handleSaveSchedule}
+                  saving={savingSchedule === record.source_channel}
+                />
+              ))}
+            </div>
+          </section>
         ) : null}
 
         <div className="admin-surface">

@@ -6,7 +6,9 @@ import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.PlatformOrderRefreshService;
+import java.time.Duration;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -15,17 +17,22 @@ import java.util.Map;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
- * 定时三平台拉取的编排：领运行 → 拉取 → （可选）自动发货 → 收口。
+ * 定时来源渠道拉取的编排：领运行 → 拉取 → （可选）自动发货 → 收口。
+ *
+ * <p><b>一次运行只负责一个渠道</b>（V85 起）。各平台各自设拉取时间之后，「一次运行拉全部」
+ * 就表达不了了；更要命的是运行记录的 {@code run_key} 只有 {@code 日期:时段} 时，先跑完的
+ * 渠道会占掉整个时段，后跑的被判成「已被领取」直接跳过——静默漏拉。
  *
  * <p><b>不另造拉取路径</b>是本类的第一条纪律。拉取一律走
  * {@link PlatformOrderRefreshService#refresh}——能力门禁、单渠道单飞、脚本回退、
  * last_error 落库、审计全都长在那条路径上。定时触发与人工点击因此走完全同一段代码，
- * 只有操作人身份不同。传 {@code null} 请求体是那个方法「不带选项」的既定入口：
- * 三个渠道全取，日期窗口取 {@code app.platform-pull.default-days}——定时任务不该
- * 另外发明一个窗口配置，那会和人工拉取的口径分叉。
+ * 只有操作人身份不同。请求体里只填渠道，日期窗口仍留空由那个方法按
+ * {@code app.platform-pull.default-days} 决定——定时任务不该另外发明一个窗口配置，
+ * 那会和人工拉取的口径分叉（本票也明确不做「拉取窗口天数」）。
  *
  * <p><b>操作人身份</b>固定 {@code system:scheduled-pull}，参照既有
  * {@code system:platform-pull} 的写法。不冒充任何人类操作员：审计里读到这个身份的人
@@ -47,30 +54,75 @@ public class ScheduledPlatformPullService {
     private final ScheduledPullRunStore runs;
     private final AuditLogService auditLogService;
     private final SourceBatchAutoShipper autoShipper;
+    private final ChannelPullScheduleStore schedules;
+    private final Duration catchUp;
 
     ScheduledPlatformPullService(
             PlatformOrderRefreshService refreshService,
             ScheduledPullRunStore runs,
             AuditLogService auditLogService,
-            Optional<SourceBatchAutoShipper> autoShipper) {
+            Optional<SourceBatchAutoShipper> autoShipper,
+            ChannelPullScheduleStore schedules,
+            @Value("${app.scheduled-pull.catch-up-minutes:30}") int catchUpMinutes) {
         this.refreshService = refreshService;
         this.runs = runs;
         this.auditLogService = auditLogService;
         this.autoShipper = autoShipper.orElse(SourceBatchAutoShipper.disabled());
+        this.schedules = schedules;
+        this.catchUp = Duration.ofMinutes(Math.max(1, catchUpMinutes));
     }
 
     /**
-     * 跑一次「拉取 + 自动发货」。
+     * 每分钟一跳的入口：问每个渠道「你现在该拉了吗」，命中的才拉。
+     *
+     * <p>时区固定 {@link #SHANGHAI}，与 {@code run_date} 同源。用系统默认时区的话，容器
+     * 时区一变，「今天」的边界就和 run_key 里的日期错位，跨零点会重复跑或漏跑。
+     *
+     * <p>本方法自己不抛异常：调度线程拿到异常也无处可去。**渠道之间也不连坐**——领运行时
+     * 数据库抖了一下，不该让同一分钟里其它渠道的那一档跟着丢掉。失败的那个渠道由补偿窗口
+     * 在后面几分钟里自己重试。
+     *
+     * @return 本轮真正领到并跑起来的运行 id
+     */
+    public List<Long> runDue() {
+        LocalDateTime now = LocalDateTime.now(SHANGHAI);
+        List<ScheduledPullPlanner.Due> due =
+                ScheduledPullPlanner.due(now, schedules.loadScheduled(), catchUp);
+        List<Long> started = new ArrayList<>();
+        for (ScheduledPullPlanner.Due item : due) {
+            try {
+                runOnce(item.slot(), item.sourceChannel(), item.notifyWecom()).ifPresent(started::add);
+            } catch (RuntimeException exception) {
+                log.error(
+                        "定时拉取本渠道未能起跑，其余渠道继续 slot={} channel={}",
+                        item.slot(),
+                        item.sourceChannel(),
+                        exception);
+            }
+        }
+        return List.copyOf(started);
+    }
+
+    /**
+     * 跑一次「某渠道某档的拉取 + 自动发货」。
      *
      * <p>本方法自己不抛异常：定时触发器拿到异常也无处可去，而运行记录必须收口。
      *
-     * @return 本次运行的 id；被别的实例领走或已跑过则 empty
+     * @param notifyWecom 拉完是否允许发企微播报卡；按调用那一刻的配置固化进运行记录
+     * @return 本次运行的 id；被别的实例领走、或补偿窗口内已经跑过则 empty
      */
-    public Optional<Long> runOnce(ScheduledPullRunStore.Slot slot) {
+    public Optional<Long> runOnce(
+            ScheduledPullRunStore.Slot slot, String sourceChannel, boolean notifyWecom) {
         LocalDate runDate = LocalDate.now(SHANGHAI);
-        Optional<ScheduledPullRunStore.Run> claimed = runs.begin(runDate, slot);
+        Optional<ScheduledPullRunStore.Run> claimed =
+                runs.begin(runDate, slot, sourceChannel, notifyWecom);
         if (claimed.isEmpty()) {
-            log.info("定时拉取已被领取，本次不重复触发 slot={} date={}", slot, runDate);
+            // 补偿窗口内每分钟都会再试一次，这条日志因此是常态而非异常，记 debug 不记 info。
+            log.debug(
+                    "定时拉取已被领取，本次不重复触发 slot={} channel={} date={}",
+                    slot,
+                    sourceChannel,
+                    runDate);
             return Optional.empty();
         }
         ScheduledPullRunStore.Run run = claimed.get();
@@ -103,17 +155,21 @@ public class ScheduledPlatformPullService {
 
     private ScheduledPullRunStore.Summary execute(ScheduledPullRunStore.Run run) {
         List<Map<String, Object>> pull = pull(run);
-        SourceBatchAutoShipper.Outcome shipped = autoShipper.shipReadyBatches(run.runDate());
+        SourceBatchAutoShipper.Outcome shipped =
+                autoShipper.shipReadyBatches(run.runDate(), run.sourceChannel());
         int problems = (int) pull.stream().filter(ScheduledPlatformPullService::isProblem).count()
                 + shipped.problemCount();
         return new ScheduledPullRunStore.Summary(pull, shipped.entries(), problems, shipped.shippedBatches());
     }
 
-    /** 三平台拉取。渠道级失败由 refresh 自己收敛成结果行，不会抛出来。 */
+    /** 本渠道拉取。渠道级失败由 refresh 自己收敛成结果行，不会抛出来。 */
     private List<Map<String, Object>> pull(ScheduledPullRunStore.Run run) {
         CommandContext context = commandContext(run);
         try {
-            Map<String, Object> result = refreshService.refresh(null, context);
+            // 只指定渠道，日期窗口留空由 refresh 按 default-days 决定：
+            // 窗口口径归一处，定时与人工点击必须一致。
+            Map<String, Object> result =
+                    refreshService.refreshChannels(List.of(run.sourceChannel()), context);
             return channelRows(result.get("channels"));
         } catch (BusinessException exception) {
             // 全渠道未成功：对 HTTP 是 502，对定时任务只是「今天没拉到东西」。
@@ -209,7 +265,10 @@ public class ScheduledPlatformPullService {
                     .actorType(AuditActorType.SYSTEM)
                     .service("scheduled-platform-pull")
                     .operation("scheduled-pull.run")
-                    .requestPayload(Map.of("run_key", run.runKey(), "slot", run.slot().name()))
+                    .requestPayload(Map.of(
+                            "run_key", run.runKey(),
+                            "slot", run.slot().name(),
+                            "source_channel", run.sourceChannel()))
                     .responsePayload(response)
                     .httpStatus(failed ? 500 : 200)
                     .businessCode(failed ? "SCHEDULED_PULL_FAILED" : "SCHEDULED_PULL_COMPLETED")
