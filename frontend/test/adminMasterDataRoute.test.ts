@@ -240,7 +240,8 @@ test('product archive shows JD EMG and opens a new-product form without an exist
     if (url === '/api/v1/fulfillment-providers') {
       return jsonResponse([{ id: '11', provider_code: 'JD', provider_name: '京东仓', active: true, version: 1 }]);
     }
-    if (url === '/api/v1/skus?page=0&size=10') {
+    if (url === '/api/v1/skus?page=0&size=10'
+        || url.includes('readiness_reason=PROVIDER_MAPPING_REQUIRED')) {
       return jsonResponse(page([{
         id: '501',
         code: 'SKU-JD-000501',
@@ -258,6 +259,15 @@ test('product archive shows JD EMG and opens a new-product form without an exist
           package_count: 1,
           package_unit: '袋',
           jd_emg_no: 'EMG4418691852262',
+          readiness: {
+            ready: false,
+            reason_codes: ['PROVIDER_MAPPING_REQUIRED'],
+            issues: [{
+              code: 'PROVIDER_MAPPING_REQUIRED',
+              message: '缺少履约方商品映射',
+              action: '维护该 SKU 对应履约方的有效商品编码',
+            }],
+          },
         },
       }]));
     }
@@ -267,7 +277,23 @@ test('product archive shows JD EMG and opens a new-product form without an exist
   await mountRoute('/product/skus');
   await waitFor(() => assert.match(bodyText(), /EMG4418691852262/));
   assert.match(bodyText(), /京东EMG编号/);
+  assert.match(bodyText(), /履约就绪/);
+  assert.match(bodyText(), /阻断/);
+  assert.match(bodyText(), /缺少履约方商品映射/);
+  assert.match(bodyText(), /按阻断原因筛选/);
   assert.equal(requestedUrls.some((url) => url.startsWith('/api/v1/products?')), false);
+
+  const readinessSelector = [...document.querySelectorAll<HTMLElement>('.ant-select-selector')]
+    .find((selector) => selector.textContent?.includes('按阻断原因筛选'));
+  assert.ok(readinessSelector);
+  await act(async () => readinessSelector.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
+  const missingMappingOption = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option-content')]
+    .find((option) => option.textContent?.includes('缺少履约方商品映射'));
+  assert.ok(missingMappingOption);
+  await act(async () => missingMappingOption.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(() => assert.ok(
+    requestedUrls.some((url) => url.includes('readiness_reason=PROVIDER_MAPPING_REQUIRED')),
+  ));
 
   const createButton = [...document.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.trim() === '新建');

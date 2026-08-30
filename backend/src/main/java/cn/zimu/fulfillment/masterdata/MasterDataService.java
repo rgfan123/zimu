@@ -47,8 +47,11 @@ import cn.zimu.fulfillment.sku.ProviderType;
 import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuCommercialPrice;
 import cn.zimu.fulfillment.sku.SkuDetail;
+import cn.zimu.fulfillment.sku.SkuFulfillmentReadiness;
+import cn.zimu.fulfillment.sku.SkuFulfillmentReadinessService;
 import cn.zimu.fulfillment.sku.SkuPackagingIdentity;
 import cn.zimu.fulfillment.sku.SkuPatch;
+import cn.zimu.fulfillment.sku.SkuReadinessReason;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SkuWrite;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
@@ -70,6 +73,7 @@ import java.util.function.Supplier;
 import jakarta.persistence.EntityManager;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -92,6 +96,7 @@ public class MasterDataService {
     private final SourceChannelSkuRepository sourceMappings;
     private final ProviderSkuRepository providerMappings;
     private final FulfillmentProviderRepository providers;
+    private final SkuFulfillmentReadinessService skuReadiness;
     private final EntityManager entityManager;
 
     public MasterDataService(
@@ -105,6 +110,7 @@ public class MasterDataService {
             SourceChannelSkuRepository sourceMappings,
             ProviderSkuRepository providerMappings,
             FulfillmentProviderRepository providers,
+            SkuFulfillmentReadinessService skuReadiness,
             EntityManager entityManager) {
         this.idempotency = idempotency;
         this.audit = audit;
@@ -116,6 +122,7 @@ public class MasterDataService {
         this.sourceMappings = sourceMappings;
         this.providerMappings = providerMappings;
         this.providers = providers;
+        this.skuReadiness = skuReadiness;
         this.entityManager = entityManager;
     }
 
@@ -519,6 +526,8 @@ public class MasterDataService {
                 skuInput.packageCount(),
                 skuInput.packageUnit());
         if (packagingIdentity != null) packagingIdentity.validateDisplaySpecification(skuInput.specification());
+        skuReadiness.validateActiveIdentity(
+                !Boolean.FALSE.equals(skuInput.active()), skuInput.specification(), skuInput.unit());
         LocalDate listedFrom = parseListedDate(productInput.listedFrom(), "listed_from");
         LocalDate listedUntil = parseListedDate(productInput.listedUntil(), "listed_until");
         requireListingOrder(listedFrom, listedUntil);
@@ -600,7 +609,25 @@ public class MasterDataService {
     }
 
     @Transactional(readOnly = true)
-    public PageResponse<MasterDataRecord> skus(int page, int size, String providerId, String query) {
+    public PageResponse<MasterDataRecord> skus(
+            int page, int size, String providerId, String query, String readinessReason) {
+        SkuReadinessReason reason = readinessReason == null ? null : SkuReadinessReason.parse(readinessReason);
+        if (reason != null) {
+            List<Sku> candidates = matchingSkus(providerId, query);
+            Map<Long, SkuFulfillmentReadiness> readinessBySku = skuReadiness.evaluateAll(candidates);
+            List<Sku> filtered = candidates.stream()
+                    .filter(sku -> readinessBySku.get(sku.getId()).hasReason(reason))
+                    .toList();
+            int from = (int) Math.min((long) page * size, filtered.size());
+            int to = Math.min(from + size, filtered.size());
+            List<Sku> pageItems = filtered.subList(from, to);
+            Map<Long, String> jdEmgCodes = jdEmgCodes(pageItems.stream().map(Sku::getId).toList());
+            List<MasterDataRecord> items = pageItems.stream()
+                    .map(sku -> sku(sku, jdEmgCodes.get(sku.getId()), readinessBySku.get(sku.getId())))
+                    .toList();
+            int totalPages = filtered.isEmpty() ? 0 : (filtered.size() + size - 1) / size;
+            return new PageResponse<>(items, page, size, filtered.size(), totalPages);
+        }
         Page<Sku> result;
         if (query != null && !query.isBlank()) {
             // 商品名/规格/SKU 编码大小写不敏感模糊检索，可与履约方筛选叠加。
@@ -613,9 +640,15 @@ public class MasterDataService {
         } else {
             result = skus.findByFulfillmentProviderId(WriteCommands.parseIdentifier(providerId), page(page, size));
         }
+        Map<Long, SkuFulfillmentReadiness> readinessBySku = skuReadiness.evaluateAll(result.getContent());
         Map<Long, String> jdEmgCodes = jdEmgCodes(result.stream().map(Sku::getId).toList());
         return PageResponse.of(
-                result.stream().map(sku -> sku(sku, jdEmgCodes.get(sku.getId()))).toList(),
+                result.stream()
+                        .map(sku -> sku(
+                                sku,
+                                jdEmgCodes.get(sku.getId()),
+                                readinessBySku.get(sku.getId())))
+                        .toList(),
                 result);
     }
 
@@ -628,7 +661,9 @@ public class MasterDataService {
     public PageResponse<SkuDetail> searchSkus(int page, int size, String query, Long providerId) {
         String pattern = query == null ? null : "%" + query + "%";
         Page<Sku> result = skus.search(pattern, providerId, PageRequest.of(page, size));
-        return PageResponse.of(result.stream().map(this::skuDetail).toList(), result);
+        Map<Long, SkuFulfillmentReadiness> readinessBySku = skuReadiness.evaluateAll(result.getContent());
+        return PageResponse.of(
+                result.stream().map(value -> skuDetail(value, readinessBySku.get(value.getId()))).toList(), result);
     }
 
     @Transactional(readOnly = true)
@@ -646,6 +681,8 @@ public class MasterDataService {
                 input.packageCount(),
                 input.packageUnit());
         if (packagingIdentity != null) packagingIdentity.validateDisplaySpecification(input.specification());
+        skuReadiness.validateActiveIdentity(
+                !Boolean.FALSE.equals(input.active()), input.specification(), input.unit());
         return writeCatalogMasterData("sku.create", key, input, CREATED, ctx, () -> {
             long providerId = WriteCommands.parseIdentifier(input.providerId());
             long productId = WriteCommands.parseIdentifier(input.productId());
@@ -697,6 +734,8 @@ public class MasterDataService {
             if (currentPackagingIdentity != null) {
                 currentPackagingIdentity.validateDisplaySpecification(value.getSpecification());
             }
+            boolean finalActive = input.active() == null ? value.isActive() : input.active();
+            skuReadiness.validateActiveIdentity(finalActive, value.getSpecification(), value.getUnit());
             if (input.barcode() != null) value.setBarcode(input.barcode());
             if (input.purchasePricePresent()) value.setPurchasePrice(purchasePrice);
             if (input.retailPricePresent()) value.setRetailPrice(retailPrice);
@@ -956,10 +995,14 @@ public class MasterDataService {
     }
 
     private MasterDataRecord sku(Sku value) {
-        return sku(value, jdEmgNo(value.getId()));
+        return sku(value, jdEmgNo(value.getId()), skuReadiness.evaluate(value));
     }
 
     private MasterDataRecord sku(Sku value, String jdEmgNo) {
+        return sku(value, jdEmgNo, skuReadiness.evaluate(value));
+    }
+
+    private MasterDataRecord sku(Sku value, String jdEmgNo, SkuFulfillmentReadiness readiness) {
         Product product = products.findById(value.getProductId()).orElse(null);
         Map<String, Object> attributes = map(
                 "product_id", id(value.getProductId()),
@@ -975,6 +1018,7 @@ public class MasterDataService {
         attributes.put("purchase_price", SkuCommercialPrice.text(value.getPurchasePrice()));
         attributes.put("retail_price", SkuCommercialPrice.text(value.getRetailPrice()));
         attributes.put("jd_emg_no", jdEmgNo);
+        attributes.put("readiness", readiness.asMap());
         if (product != null) {
             attributes.put("product_version", product.getLockVersion());
             attributes.put("product_brand_name", product.getBrandName());
@@ -1043,6 +1087,10 @@ public class MasterDataService {
     }
 
     private SkuDetail skuDetail(Sku value) {
+        return skuDetail(value, skuReadiness.evaluate(value));
+    }
+
+    private SkuDetail skuDetail(Sku value, SkuFulfillmentReadiness readiness) {
         Product product = products.findById(value.getProductId()).orElse(null);
         FulfillmentProvider provider = providers.findById(value.getFulfillmentProviderId()).orElse(null);
         return new SkuDetail(
@@ -1062,8 +1110,21 @@ public class MasterDataService {
                 provider == null ? null : provider.getProviderCode(),
                 provider == null ? null : provider.getProviderName(),
                 provider == null ? null : provider.getProviderType().name(),
+                readiness,
                 value.getCreatedAt(),
                 value.getUpdatedAt());
+    }
+
+    private List<Sku> matchingSkus(String providerId, String query) {
+        Long normalizedProviderId = providerId == null ? null : WriteCommands.parseIdentifier(providerId);
+        String pattern = query == null || query.isBlank() ? null : "%" + query.trim() + "%";
+        if (pattern != null) {
+            return skus.search(pattern, normalizedProviderId, Pageable.unpaged(ID_ASC)).getContent();
+        }
+        if (normalizedProviderId != null) {
+            return skus.findByFulfillmentProviderId(normalizedProviderId, Pageable.unpaged(ID_ASC)).getContent();
+        }
+        return skus.findAll(ID_ASC);
     }
 
     private ProviderSkuDetail providerSkuDetail(ProviderSku value) {

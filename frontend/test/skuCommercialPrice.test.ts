@@ -69,6 +69,23 @@ test('OpenAPI 公开 Product 品牌与 SKU 结构化包装身份', () => {
   assert.match(openApiSchemaBlock(openApi, 'SkuPatch'), /^        unit:/m);
 });
 
+test('OpenAPI 公开统一 SKU 履约就绪结果与原因筛选', () => {
+  const openApi = readFileSync(
+    fileURLToPath(new URL('../../docs/openapi.yaml', import.meta.url)),
+    'utf8',
+  );
+  const readiness = openApiSchemaBlock(openApi, 'SkuFulfillmentReadiness');
+  for (const property of ['ready', 'reason_codes', 'issues']) {
+    assert.match(readiness, new RegExp(`^        ${property}:`, 'm'), property);
+  }
+  assert.match(
+    openApiPropertyBlock(openApiSchemaBlock(openApi, 'SkuAttributes'), 'readiness'),
+    /SkuFulfillmentReadiness/,
+  );
+  const skuListPath = openApi.slice(openApi.indexOf('  /api/v1/skus:\n'), openApi.indexOf('  /api/v1/skus/{sku_id}:\n'));
+  assert.match(skuListPath, /^        - name: readiness_reason$/m);
+});
+
 test('商业价格只接受非负且最多两位小数的 decimal string', () => {
   for (const value of ['0', '0.00', '12', '12.3', '12.30', '999999999999.99']) {
     assert.equal(COMMERCIAL_PRICE_PATTERN.test(value), true, value);

@@ -230,6 +230,8 @@ class McpDomainReadToolsTest {
         assertThat(first.get("id").asText()).isEqualTo(String.valueOf(skuId));
         assertThat(first.get("provider_id").asText()).isEqualTo(String.valueOf(providerId));
         assertThat(first.get("purchase_price")).isNotNull();
+        assertThat(first.path("readiness").path("ready").asBoolean()).isTrue();
+        assertThat(first.path("readiness").path("reason_codes")).isEmpty();
 
         JsonNode sku = callResult(AGENT, "get_sku", Map.of("sku_id", String.valueOf(skuId)));
         assertThat(sku.get("id").asText()).isEqualTo(String.valueOf(skuId));
@@ -241,6 +243,8 @@ class McpDomainReadToolsTest {
         assertThat(sku.get("provider_id").asText()).isEqualTo(String.valueOf(providerId));
         assertThat(sku.get("provider_code").asText()).isEqualTo("MCPSKU");
         assertThat(sku.get("provider_type").asText()).isEqualTo("THIRD_PARTY");
+        assertThat(sku.path("readiness").path("ready").asBoolean()).isTrue();
+        assertThat(sku.path("readiness").path("reason_codes")).isEmpty();
 
         JsonNode mappings = callResult(AGENT, "list_provider_skus",
                 Map.of("provider_id", String.valueOf(providerId)));

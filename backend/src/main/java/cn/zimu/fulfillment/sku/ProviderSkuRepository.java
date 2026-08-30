@@ -23,6 +23,8 @@ public interface ProviderSkuRepository extends JpaRepository<ProviderSku, Long> 
 
     Optional<ProviderSku> findByFulfillmentProviderIdAndSkuId(Long fulfillmentProviderId, Long skuId);
 
+    List<ProviderSku> findBySkuIdIn(Collection<Long> skuIds);
+
     Optional<ProviderSku> findByFulfillmentProviderIdAndProviderSkuCode(
             Long fulfillmentProviderId, String providerSkuCode);
 

@@ -1,5 +1,6 @@
 package cn.zimu.fulfillment.sku;
 
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -15,6 +16,15 @@ public interface SkuRepository extends JpaRepository<Sku, Long> {
             Long productId, Long fulfillmentProviderId, String specification, String unit);
 
     Page<Sku> findByFulfillmentProviderId(Long fulfillmentProviderId, Pageable pageable);
+
+    @Query(value = """
+            SELECT lower(btrim(barcode))
+            FROM app.skus
+            WHERE active = TRUE AND barcode IS NOT NULL AND btrim(barcode) <> ''
+            GROUP BY lower(btrim(barcode))
+            HAVING count(*) > 1
+            """, nativeQuery = true)
+    List<String> findDuplicateActiveBarcodes();
 
     /** 商品名/规格/SKU 编码大小写不敏感模糊检索（pattern 为 % 包裹的查询词），按 id 升序。 */
     @Query("""

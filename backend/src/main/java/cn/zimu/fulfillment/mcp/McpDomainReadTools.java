@@ -523,6 +523,17 @@ public class McpDomainReadTools {
         item.put("provider_code", detail.providerCode());
         item.put("provider_name", detail.providerName());
         item.put("provider_type", detail.providerType());
+        ObjectNode readiness = item.putObject("readiness");
+        readiness.put("ready", detail.readiness().ready());
+        var reasons = readiness.putArray("reason_codes");
+        detail.readiness().reasonCodes().forEach(reasons::add);
+        var issues = readiness.putArray("issues");
+        detail.readiness().issues().forEach(issue -> {
+            ObjectNode value = issues.addObject();
+            value.put("code", issue.code());
+            value.put("message", issue.message());
+            value.put("action", issue.action());
+        });
         item.put("created_at", detail.createdAt() == null ? null : detail.createdAt().toString());
         item.put("updated_at", detail.updatedAt() == null ? null : detail.updatedAt().toString());
         return item;

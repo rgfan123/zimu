@@ -456,6 +456,30 @@ export interface MasterDataPage extends PageMeta {
   items: MasterDataRecord[];
 }
 
+export type SkuReadinessReason =
+  | 'PRODUCT_INACTIVE'
+  | 'SKU_INACTIVE'
+  | 'PROVIDER_INACTIVE'
+  | 'SPECIFICATION_REQUIRED'
+  | 'UNIT_REQUIRED'
+  | 'PROVIDER_MAPPING_REQUIRED'
+  | 'PROVIDER_MAPPING_INACTIVE'
+  | 'UNIT_CONVERSION_REQUIRED'
+  | 'BARCODE_CONFLICT'
+  | 'REVIEW_REQUIRED';
+
+export interface SkuReadinessIssue {
+  code: SkuReadinessReason;
+  message: string;
+  action: string;
+}
+
+export interface SkuFulfillmentReadiness {
+  ready: boolean;
+  reason_codes: SkuReadinessReason[];
+  issues: SkuReadinessIssue[];
+}
+
 /** SKU 响应属性：价格字段始终存在，null 仅表示未定价。 */
 export interface SkuAttributes {
   [key: string]: unknown;
@@ -470,6 +494,7 @@ export interface SkuAttributes {
   barcode?: string | null;
   purchase_price: string | null;
   retail_price: string | null;
+  readiness: SkuFulfillmentReadiness;
 }
 
 export interface SkuRecord extends Omit<MasterDataRecord, 'attributes'> {

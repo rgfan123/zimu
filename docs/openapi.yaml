@@ -2593,6 +2593,10 @@ paths:
           in: query
           description: 按商品名称 / 规格 / SKU 编码大小写不敏感模糊搜索
           schema: { type: string }
+        - name: readiness_reason
+          in: query
+          description: 按实时派生的 SKU 履约阻断原因筛选
+          schema: { $ref: '#/components/schemas/SkuReadinessReason' }
       responses:
         '200':
           description: Internal SKUs
@@ -6961,7 +6965,7 @@ components:
               items: { $ref: '#/components/schemas/MasterDataRecord' }
     SkuAttributes:
       type: object
-      required: [product_id, provider_id, specification, unit, purchase_price, retail_price]
+      required: [product_id, provider_id, specification, unit, purchase_price, retail_price, readiness]
       properties:
         product_id: { $ref: '#/components/schemas/Identifier' }
         provider_id: { $ref: '#/components/schemas/Identifier' }
@@ -6985,10 +6989,45 @@ components:
           type: string
           nullable: true
           description: 当前启用的京东履约方 SKU 映射编码；映射或履约方停用时为 null。
+        readiness: { $ref: '#/components/schemas/SkuFulfillmentReadiness' }
         product_version: { type: integer, format: int64, minimum: 0 }
         product_purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         product_retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         product_other_cost: { $ref: '#/components/schemas/NullableCommercialPrice' }
+    SkuReadinessReason:
+      type: string
+      enum:
+        - PRODUCT_INACTIVE
+        - SKU_INACTIVE
+        - PROVIDER_INACTIVE
+        - SPECIFICATION_REQUIRED
+        - UNIT_REQUIRED
+        - PROVIDER_MAPPING_REQUIRED
+        - PROVIDER_MAPPING_INACTIVE
+        - UNIT_CONVERSION_REQUIRED
+        - BARCODE_CONFLICT
+        - REVIEW_REQUIRED
+    SkuReadinessIssue:
+      type: object
+      required: [code, message, action]
+      properties:
+        code: { $ref: '#/components/schemas/SkuReadinessReason' }
+        message: { type: string, minLength: 1 }
+        action: { type: string, minLength: 1 }
+    SkuFulfillmentReadiness:
+      type: object
+      required: [ready, reason_codes, issues]
+      properties:
+        ready:
+          type: boolean
+          description: 实时派生；不会持久化为 SKU 的第二套状态。
+        reason_codes:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/SkuReadinessReason' }
+        issues:
+          type: array
+          items: { $ref: '#/components/schemas/SkuReadinessIssue' }
     SkuRecord:
       allOf:
         - $ref: '#/components/schemas/MasterDataRecord'

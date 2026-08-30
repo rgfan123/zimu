@@ -20,6 +20,7 @@ public record SkuDetail(
         String providerCode,
         String providerName,
         String providerType,
+        SkuFulfillmentReadiness readiness,
         Instant createdAt,
         Instant updatedAt) {
 }

@@ -3,14 +3,14 @@
  */
 
 import { useState } from 'react';
-import { Button, Input, Select, Space, Tag, Typography } from 'antd';
+import { Button, Input, Select, Space, Tag, Tooltip, Typography } from 'antd';
 import { CloudUploadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import MasterDataCrud, { attr, type CrudField } from '@/pages/shared/MasterDataCrud';
 import { MainImageThumb } from '@/pages/shared/MainImage';
 import { skusApi } from '@/api/endpoints';
-import type { MasterDataRecord } from '@/api/types';
+import type { MasterDataRecord, SkuFulfillmentReadiness, SkuReadinessReason } from '@/api/types';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
 import { useCategoryOptions, useProviderOptions } from './masterOptions';
 import { displaySkuSpecification } from './productArchive';
@@ -23,9 +23,29 @@ import {
 import { leadTimeLabel, listingPeriodLabel, marginLabel } from './productArchiveFields';
 import PlatformUploadModal from './PlatformUploadModal';
 
+const READINESS_REASON_OPTIONS: { value: SkuReadinessReason; label: string }[] = [
+  { value: 'PRODUCT_INACTIVE', label: '商品已停用' },
+  { value: 'SKU_INACTIVE', label: 'SKU 已停用' },
+  { value: 'PROVIDER_INACTIVE', label: '履约方已停用' },
+  { value: 'SPECIFICATION_REQUIRED', label: '规格缺失或待维护' },
+  { value: 'UNIT_REQUIRED', label: '库存单位缺失' },
+  { value: 'PROVIDER_MAPPING_REQUIRED', label: '缺少履约方商品映射' },
+  { value: 'PROVIDER_MAPPING_INACTIVE', label: '履约方映射已停用' },
+  { value: 'UNIT_CONVERSION_REQUIRED', label: '京东件数换算缺失' },
+  { value: 'BARCODE_CONFLICT', label: '条码冲突' },
+  { value: 'REVIEW_REQUIRED', label: '需要人工复核' },
+];
+
+function skuReadiness(record: MasterDataRecord): SkuFulfillmentReadiness | undefined {
+  const value = attr(record, 'readiness');
+  if (!value || typeof value !== 'object') return undefined;
+  return value as SkuFulfillmentReadiness;
+}
+
 export default function SkusPage() {
   const [providerId, setProviderId] = useState<string | undefined>();
   const [searchQuery, setSearchQuery] = useState<string | undefined>();
+  const [readinessReason, setReadinessReason] = useState<SkuReadinessReason | undefined>();
   const [platformUploadOpen, setPlatformUploadOpen] = useState(false);
   const providerOptions = useProviderOptions();
   const categoryOptions = useCategoryOptions();
@@ -65,6 +85,27 @@ export default function SkusPage() {
       },
     },
     { title: '单位', key: 'unit', width: 70, render: (_, r) => String(attr(r, 'unit') ?? '—') },
+    {
+      title: '履约就绪', key: 'readiness', width: 190,
+      render: (_, r) => {
+        const readiness = skuReadiness(r);
+        if (!readiness) return '未评估';
+        if (readiness.ready) return <Tag color="success">可履约</Tag>;
+        const firstIssue = readiness.issues[0];
+        return (
+          <Space direction="vertical" size={0}>
+            <Tag color="warning">阻断</Tag>
+            {firstIssue ? (
+              <Tooltip title={firstIssue.action}>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {firstIssue.message}
+                </Typography.Text>
+              </Tooltip>
+            ) : null}
+          </Space>
+        );
+      },
+    },
     { title: '履约方', key: 'provider', width: 170, render: (_, r) => providerLabels.get(String(attr(r, 'provider_id'))) ?? '—' },
     {
       title: '毛利', key: 'margin', width: 100, align: 'right',
@@ -188,6 +229,14 @@ export default function SkusPage() {
             onChange={setProviderId}
             options={providerOptions}
           />
+          <Select
+            style={{ width: 230 }}
+            placeholder="按阻断原因筛选"
+            allowClear
+            value={readinessReason}
+            onChange={setReadinessReason}
+            options={READINESS_REASON_OPTIONS}
+          />
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
             新建会同时创建商品及首个 SKU；后续可在基础信息中维护完整商品资料。
           </Typography.Text>
@@ -199,8 +248,13 @@ export default function SkusPage() {
           <Button size="small"><Link to="/product/categories">管理品类</Link></Button>
         </Space>
       }
-      extraQuery={{ provider_id: providerId, query: searchQuery }}
-      fetchPage={(q) => skusApi.list({ ...q, provider_id: providerId, query: searchQuery })}
+      extraQuery={{ provider_id: providerId, query: searchQuery, readiness_reason: readinessReason }}
+      fetchPage={(q) => skusApi.list({
+        ...q,
+        provider_id: providerId,
+        query: searchQuery,
+        readiness_reason: readinessReason,
+      })}
       create={(v) => skusApi.createWithProduct(buildProductWithInitialSkuBody(v))}
       update={(id, v) => skusApi.update(id, buildSkuUpdateBody(v))}
       columns={columns}
