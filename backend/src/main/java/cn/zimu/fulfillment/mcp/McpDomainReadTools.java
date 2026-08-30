@@ -104,10 +104,10 @@ public class McpDomainReadTools {
                         "procurement"),
                 new McpToolRegistry.SimpleTool(
                         "search_skus",
-                        "按商品名/规格/SKU 编号模糊检索 SKU 主数据（含进货价与零售价、履约方归属），可分页。",
+                        "按商品名/规格/SKU 编号/条码（69 码）模糊检索 SKU 主数据（含进货价与零售价、履约方归属），可分页。",
                         schema(
                                 Map.of(
-                                        "query", stringProperty("模糊查询词（商品名/规格/SKU 编号）"),
+                                        "query", stringProperty("模糊查询词（商品名/规格/SKU 编号/条码 69 码）"),
                                         "provider_id", stringProperty("按履约方过滤"),
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),

@@ -148,6 +148,80 @@ class SkuSearchApiTest {
                 .isEqualTo(page("/api/v1/skus").get("total_elements"));
     }
 
+    /**
+     * 按条码（69 码）检索。
+     *
+     * <p>回归锚点：2026-08-28 业务同事拿 69 码 06977872890432 在企微问「这个商品数据库里没有吗」，
+     * 系统答「没有」——码就在库里，只是检索三个字段（商品名/规格/SKU 编码）都不含条码。
+     * 同时钉死可空语义：没有条码的 SKU 不得被任意关键词误命中。
+     */
+    @Test
+    void skuListSearchesByBarcodeAndNeverMatchesSkusWithoutOne() {
+        Map<String, Object> references = skuReferences();
+        Map<String, Object> productRequest = new java.util.LinkedHashMap<>();
+        productRequest.put("product_code", "P-BARCODE-01");
+        productRequest.put("product_name", "条码检索测试牛肉卷");
+        productRequest.put("category_id", references.get("category_id"));
+        ResponseEntity<Map> product = http.exchange(
+                "/api/v1/products",
+                HttpMethod.POST,
+                new HttpEntity<>(productRequest, writeHeaders("sku-barcode-product-001", "req-sku-barcode-product-001")),
+                Map.class);
+        assertThat(product.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String productId = product.getBody().get("id").toString();
+
+        Map<String, Object> jdProvider = ((List<Map<String, Object>>) references.get("providers")).stream()
+                .filter(provider -> "JD".equals(provider.get("provider_code")))
+                .findFirst()
+                .orElseThrow();
+
+        String barcode = "06977872890432";
+        String withBarcode = createSkuWithBarcode(
+                jdProvider, productId, "300g", barcode, "sku-barcode-with-001", "req-sku-barcode-with-001");
+        String withoutBarcode = createSku(
+                jdProvider, productId, "400g", "sku-barcode-without-001", "req-sku-barcode-without-001");
+
+        // 完整 69 码命中，且只命中带该条码的那条
+        Map<String, Object> byBarcode = page("/api/v1/skus?query=" + barcode);
+        List<Map<String, Object>> hits = (List<Map<String, Object>>) byBarcode.get("items");
+        assertThat(hits).hasSize(1);
+        assertThat(hits.getFirst().get("id")).isEqualTo(withBarcode);
+
+        // 条码片段同样命中（LIKE 模糊）
+        Map<String, Object> byFragment = page("/api/v1/skus?query=" + barcode.substring(4, 12));
+        assertThat((List<Map<String, Object>>) byFragment.get("items"))
+                .anySatisfy(item -> assertThat(item.get("id")).isEqualTo(withBarcode));
+
+        // 无条码的 SKU 不被任意关键词误命中：按条码搜时它不出现
+        assertThat(hits).noneSatisfy(item -> assertThat(item.get("id")).isEqualTo(withoutBarcode));
+
+        // 既有三字段检索零回归：按商品名仍能同时搜到两条
+        Map<String, Object> byName = page("/api/v1/skus?query=" + "条码检索测试");
+        assertThat((List<Map<String, Object>>) byName.get("items")).hasSize(2);
+    }
+
+    private String createSkuWithBarcode(
+            Map<String, Object> provider,
+            String productId,
+            String specification,
+            String barcode,
+            String key,
+            String requestId) {
+        Map<String, Object> request = Map.of(
+                "provider_id", provider.get("id"),
+                "product_id", productId,
+                "specification", specification,
+                "unit", "盒",
+                "barcode", barcode);
+        ResponseEntity<Map> created = http.exchange(
+                "/api/v1/skus",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders(key, requestId)),
+                Map.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        return created.getBody().get("id").toString();
+    }
+
     private String createSku(Map<String, Object> provider, String productId, String specification, String key, String requestId) {
         Map<String, Object> request = Map.of(
                 "provider_id", provider.get("id"),
