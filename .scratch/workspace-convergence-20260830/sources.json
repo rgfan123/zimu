@@ -11,7 +11,21 @@
         "unstaged": 0,
         "untracked": 1
       },
-      "disposition": "include_committed"
+      "disposition": "evaluated_not_merged",
+      "evaluated_commits": [
+        {
+          "commit": "70ffc9d6cdf0628b5904d110a9a6e5b591afb466",
+          "decision": "exclude_superseded_by_baseline"
+        },
+        {
+          "commit": "ba2e6d8a397abdb4b8f7ef7117f25be0cb071744",
+          "decision": "exclude_conflicting_production_decision"
+        },
+        {
+          "commit": "46ea5e1c98c19d654938187943165ecd5f7ce166",
+          "decision": "defer_incomplete_active_issue"
+        }
+      ]
     },
     {
       "id": "source-bundle-resolution",
