@@ -33,7 +33,7 @@ import {
   jdReceiverAddressStatusTone,
   type JdReceiverAddressFields,
 } from './jdReceiverAddress';
-import { canSubmitJdOutbound, jdOutboundConfirmationDetail, jdOutboundConfirmationTitle, jdOutboundPresentation, jdOutboundRuntimeGate } from './shipmentJdOutbound';
+import { canSubmitJdOutbound, jdOutboundConfirmationDetail, jdOutboundConfirmationTitle, jdOutboundNotice, jdOutboundPresentation, jdOutboundRuntimeGate } from './shipmentJdOutbound';
 
 function num(v: string | number | undefined | null): string {
   if (v === undefined || v === null || v === '') return '—';
@@ -319,6 +319,12 @@ export default function ShipmentsPage() {
     jdRuntimeGate.confirmation,
     jdConfirmation.erpDeliveryNo,
   );
+  // 建单卡提示区：已提交成功给绿色确认并指路回传；只有真的可操作且预检不过才列阻断原因
+  const jdNotice = jdOutboundNotice({
+    outbound: detail.data?.jd_outbound,
+    preview: jdPreview.data,
+    canSyncToSource,
+  });
   const canSubmitJd = canSubmitJdOutbound({
     selectedShipmentId: selected?.id,
     detailShipmentId: detail.data?.id,
@@ -534,12 +540,19 @@ export default function ShipmentsPage() {
                   {jdPreview.error ? (
                     <Alert type="error" showIcon message="建单预检失败" description={errorMessage(jdPreview.error)} />
                   ) : null}
-                  {jdPreview.data && !jdPreview.data.submittable ? (
+                  {jdNotice.kind === 'SUBMITTED_OK' ? (
+                    <Alert type="success" showIcon message={jdNotice.message} description={jdNotice.description} />
+                  ) : null}
+                  {jdNotice.kind === 'BLOCKED' ? (
                     <Alert
                       type="warning"
                       showIcon
-                      message="当前不可提交"
-                      description={jdPreview.data.blockers.map((blocker) => blocker.message).join('；')}
+                      message={jdNotice.message}
+                      description={jdNotice.reasons.length === 1 ? jdNotice.reasons[0] : (
+                        <ul style={{ margin: 0, paddingInlineStart: 16 }}>
+                          {jdNotice.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                        </ul>
+                      )}
                     />
                   ) : null}
                   {!jdRuntimeGate.ready ? (

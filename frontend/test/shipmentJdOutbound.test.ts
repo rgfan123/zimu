@@ -3,9 +3,12 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  JD_BLOCKER_ENUM_LABELS,
   canSubmitJdOutbound,
+  jdOutboundBlockerText,
   jdOutboundConfirmationDetail,
   jdOutboundConfirmationTitle,
+  jdOutboundNotice,
   jdOutboundPresentation,
   jdOutboundRuntimeGate,
 } from '../src/pages/fulfillment/shipmentJdOutbound.ts';
@@ -343,5 +346,139 @@ test('the credential-gated gateway overwrites browser identity at every business
     assert.notEqual(start, -1);
     const end = nginx.indexOf('\n    }', start);
     assert.match(nginx.slice(start, end), /proxy_set_header Authorization "";/);
+  }
+});
+
+// ---------- 已提交后的提示与阻断原因说人话（2026-08-31 生产实证） ----------
+
+const SUBMITTED_OUTBOUND = {
+  erp_delivery_no: '202608310004',
+  jd_delivery_no: 'ESL00000025545270765',
+  sync_status: 'SUBMITTED',
+  retry_count: 1,
+  retryable: false,
+  client_mode: 'REAL',
+} as const;
+
+/** 后端 ShipmentJdOutboundPreparer 对已提交批次实际返回的三条 blocker（消息逐字同源）。 */
+const RESUBMIT_PRECHECK_BLOCKERS = [
+  { message: '发货批次状态必须是 CREATED 才能提交京东出库单（当前 SHIPPED）' },
+  { message: '订单行必须处于 READY_TO_EXPORT 或 WAITING_PROVIDER 阶段（当前 TRACKING_RECEIVED）' },
+  { message: '该发货批次已提交京东出库单，禁止重复提交' },
+];
+
+test('a submitted outbound shows a success note instead of the resubmit precheck warning', () => {
+  // 商户出库号 202608310004：已提交成功 + 已回传运单的批次，把「不可提交」预检渲染成
+  // 黄色警告 + 裸枚举，用户误判流程出错、不敢回传。已提交就是成功终态，必须说人话。
+  const notice = jdOutboundNotice({
+    outbound: SUBMITTED_OUTBOUND,
+    preview: { submittable: false, blockers: RESUBMIT_PRECHECK_BLOCKERS },
+    canSyncToSource: true,
+  });
+  assert.ok(notice.kind === 'SUBMITTED_OK', '已提交批次不得再渲染「当前不可提交」');
+  assert.match(notice.message, /已提交/);
+  assert.match(notice.message, /无需重复提交/);
+  assert.match(notice.description, /回传给客户平台/);
+
+  // 已提交但运单还没回来：下一步是等京东回传运单，而不是回传入口
+  const waiting = jdOutboundNotice({
+    outbound: SUBMITTED_OUTBOUND,
+    preview: { submittable: false, blockers: RESUBMIT_PRECHECK_BLOCKERS },
+    canSyncToSource: false,
+  });
+  assert.ok(waiting.kind === 'SUBMITTED_OK');
+  assert.match(waiting.description, /运单/);
+});
+
+test('genuine pre-submit blockers read in Chinese with no raw enum tokens', () => {
+  const notice = jdOutboundNotice({
+    outbound: undefined,
+    preview: {
+      submittable: false,
+      blockers: [
+        { message: '发货批次状态必须是 CREATED 才能提交京东出库单（当前 SHIPPED）' },
+        { message: '订单行必须处于 READY_TO_EXPORT 或 WAITING_PROVIDER 阶段（当前 TRACKING_RECEIVED）' },
+      ],
+    },
+    canSyncToSource: false,
+  });
+  assert.ok(notice.kind === 'BLOCKED');
+  assert.equal(notice.message, '当前不可提交');
+  assert.deepEqual(notice.reasons, [
+    '发货批次状态必须是「已创建」才能提交京东出库单（当前「已发货」）',
+    '订单行必须处于「待生成发货表」或「等待履约方」阶段（当前「已取得运单」）',
+  ]);
+});
+
+test('unknown identifiers in blocker messages stay verbatim instead of being guessed', () => {
+  // sourceSyncWording 同款哲学：翻不出的原样显示，宁可被人看见去问，也不编一句可能错的话。
+  assert.equal(
+    jdOutboundBlockerText({ message: '仅京东云仓（JD_WAREHOUSE）发货批次可提交京东出库单' }),
+    '仅京东云仓（JD_WAREHOUSE）发货批次可提交京东出库单',
+  );
+  assert.equal(
+    jdOutboundBlockerText({ message: '履约方配置缺少京东标识 warehouseNo，请先补齐后再建单' }),
+    '履约方配置缺少京东标识 warehouseNo，请先补齐后再建单',
+  );
+});
+
+test('the notice stays silent while submitting, reconciling, or when the preview allows submit', () => {
+  const base = { ...SUBMITTED_OUTBOUND };
+  const blocked = { submittable: false, blockers: RESUBMIT_PRECHECK_BLOCKERS };
+  assert.equal(jdOutboundNotice({
+    outbound: { ...base, sync_status: 'SUBMITTING' },
+    preview: blocked,
+    canSyncToSource: false,
+  }).kind, 'NONE');
+  // 需对账（提交结果未知）：结果未知就闭嘴，由 last_error_message 的告警负责解释
+  assert.equal(jdOutboundNotice({
+    outbound: { ...base, sync_status: 'SYNC_FAILED', retryable: false },
+    preview: blocked,
+    canSyncToSource: false,
+  }).kind, 'NONE');
+  // 可重试失败 + 预检不过：要给出翻译后的阻断原因
+  assert.equal(jdOutboundNotice({
+    outbound: { ...base, sync_status: 'SYNC_FAILED', retryable: true },
+    preview: blocked,
+    canSyncToSource: false,
+  }).kind, 'BLOCKED');
+  // 预检可提交或预检尚未返回：无话可说
+  assert.equal(jdOutboundNotice({
+    outbound: undefined,
+    preview: { submittable: true, blockers: [] },
+    canSyncToSource: false,
+  }).kind, 'NONE');
+  assert.equal(jdOutboundNotice({ outbound: undefined, preview: null, canSyncToSource: false }).kind, 'NONE');
+});
+
+test('duplicate blocker reasons collapse to one line', () => {
+  // 后端对每条订单行各发一条 STAGE_INVALID，多行同阶段时消息逐字相同；重复刷屏无信息量
+  const notice = jdOutboundNotice({
+    outbound: undefined,
+    preview: {
+      submittable: false,
+      blockers: [
+        { message: '订单行必须处于 READY_TO_EXPORT 或 WAITING_PROVIDER 阶段（当前 TRACKING_RECEIVED）' },
+        { message: '订单行必须处于 READY_TO_EXPORT 或 WAITING_PROVIDER 阶段（当前 TRACKING_RECEIVED）' },
+      ],
+    },
+    canSyncToSource: false,
+  });
+  assert.ok(notice.kind === 'BLOCKED');
+  assert.equal(notice.reasons.length, 1);
+});
+
+test('本地枚举文案与 constants/labels.ts 单表逐字一致（防漂移对账）', () => {
+  // JD_BLOCKER_ENUM_LABELS 因 node:test 加载不了 labels.ts（值依赖 @/ 别名模块）而本地建表；
+  // 类型只锁键覆盖，这里按源文本锁文案：labels.ts 改词而这里没跟上时立即红。
+  const labelsSource = readFileSync(
+    fileURLToPath(new URL('../src/constants/labels.ts', import.meta.url)),
+    'utf8',
+  );
+  for (const [token, label] of Object.entries(JD_BLOCKER_ENUM_LABELS)) {
+    assert.ok(
+      labelsSource.includes(`${token}: '${label}'`),
+      `${token} 的文案「${label}」与 constants/labels.ts 不一致`,
+    );
   }
 });
