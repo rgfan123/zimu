@@ -77,8 +77,8 @@ class SkuCanonicalizationMigrationTest {
                                 + "quantity_multiplier::text,',' ORDER BY source_channel,source_sku_ref) "
                                 + "FROM app.source_channel_skus scs JOIN app.skus s ON s.id=scs.sku_id "
                                 + "WHERE s.sku_code IN ('SKU-JD-000019','SKU-JD-000048') AND scs.active"))
-                .isEqualTo("CAISHIXIAN:2152074:3.000,CAISHIXIAN:2152081:3.000,"
-                        + "JUFUBAO:66693946:3.000");
+                // V99 商品数量整数化后 quantity_multiplier 为 INTEGER，::text 输出无小数位。
+                .isEqualTo("CAISHIXIAN:2152074:3,CAISHIXIAN:2152081:3,JUFUBAO:66693946:3");
         assertThat(intQuery(url, readinessSql())).isEqualTo(3);
         assertThat(intQuery(url,
                         "SELECT count(DISTINCT ol.order_id) FROM app.order_lines ol "
@@ -184,7 +184,8 @@ class SkuCanonicalizationMigrationTest {
                         "SELECT count(*) FROM app.audit_logs "
                                 + "WHERE operation='sku_masterdata_repair.ticket08'"))
                 .isZero();
-        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='75'"))
+        // 合并前该迁移编号为 V75；合并链重编号为 V98，回滚判据钉在新编号上。
+        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='98'"))
                 .isZero();
         assertThat(intQuery(url,
                         "SELECT count(*) FROM app.skus WHERE sku_code='SKU-JD-000043' AND active"))

@@ -240,14 +240,14 @@ class WangqiBundlePipelineApiTest {
                 .containsEntry("line_type", "CUSTOM_BUNDLE")
                 .containsEntry("bundle_id", Long.toString(bundleId))
                 .containsEntry("product_name", "来源大者礼包")
-                .containsEntry("requested_quantity", "2.000")
+                .containsEntry("requested_quantity", 2)
                 .containsEntry("processing_stage", "READY_TO_EXPORT");
         List<Map<String, Object>> components = castList(line.get("components"));
         assertThat(components).hasSize(2);
         assertThat(components).extracting(item -> item.get("quantity_per_bundle"))
-                .containsExactly("1.000", "2.000");
+                .containsExactly(1, 2);
         assertThat(components).extracting(item -> item.get("total_quantity"))
-                .containsExactly("2.000", "4.000");
+                .containsExactly(2, 4);
 
         Map<String, Object> routing = castMap(confirmed.getBody().get("outbound_routing"));
         List<?> shipmentIds = (List<?>) routing.get("jd_sdk_shipment_ids");
@@ -259,7 +259,7 @@ class WangqiBundlePipelineApiTest {
                 .containsEntry("shipment_status", "CREATED");
         assertThat(castList(shipment.get("items"))).singleElement().satisfies(item -> assertThat(item)
                 .containsEntry("order_line_id", line.get("id"))
-                .containsEntry("instructed_quantity", "2.000"));
+                .containsEntry("instructed_quantity", "2"));
 
         jdbc.update(
                 "UPDATE app.customers SET profile=jsonb_set(COALESCE(profile,'{}'::jsonb),"

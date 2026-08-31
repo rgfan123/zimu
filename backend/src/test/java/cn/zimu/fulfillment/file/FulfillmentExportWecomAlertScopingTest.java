@@ -544,7 +544,7 @@ class FulfillmentExportWecomAlertScopingTest {
     private String continuationExportOf(String exportA, String orderRef, String idempotencyKey) throws Exception {
         byte[] instruction = downloadExport(exportA);
         // 运单号唯一（trackings 有 (logistics_company_code, tracking_number) 全局唯一约束）
-        byte[] partial = fillThirdPartyTracking(instruction, "PARTIAL", "1.000", "JDVA-CONT-" + idempotencyKey);
+        byte[] partial = fillThirdPartyTracking(instruction, "PARTIAL", "1", "JDVA-CONT-" + idempotencyKey);
         assertThat(uploadTracking(exportA, partial, "alert-cont-tracking-" + idempotencyKey).getStatusCode())
                 .isEqualTo(HttpStatus.CREATED);
         Long fulfillment = firstFulfillmentId(exportA);
@@ -555,7 +555,7 @@ class FulfillmentExportWecomAlertScopingTest {
                 HttpMethod.POST,
                 new HttpEntity<>(Map.of(
                         "expected_version", version,
-                        "instructed_quantity", "2.000",
+                        "instructed_quantity", "2",
                         "remark", "续发"),
                         writeHeaders(idempotencyKey)),
                 Map.class);
@@ -801,7 +801,7 @@ class FulfillmentExportWecomAlertScopingTest {
                 "订单号", "会员名称", "商品名称", "商品ID", "订单商品ID", "可发货数量",
                 "收货人姓名", "收货人手机号", "收货人地址", "下单时间", "物流状态", "物流公司", "物流单号"));
         String row = orderRef + ",FX-MEMBER-001,子牧羊小腿,FX-PRODUCT-001," + orderRef
-                + "-LINE,1.500,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,\r\n";
+                + "-LINE,2,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,\r\n";
         return ("\uFEFF" + header + "\r\n" + row).getBytes(StandardCharsets.UTF_8);
     }
 

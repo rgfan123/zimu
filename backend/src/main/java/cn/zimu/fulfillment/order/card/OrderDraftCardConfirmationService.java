@@ -101,11 +101,12 @@ public class OrderDraftCardConfirmationService {
             if (blank(skuId)) {
                 missing.add("line_" + line.lineNo() + "_sku");
             }
-            if (blank(line.quantity())) {
+            if (line.quantity() == null) {
                 missing.add("line_" + line.lineNo() + "_quantity");
             }
-            if (!blank(skuId) && !blank(line.quantity())) {
-                items.add(new ConfirmOrderDraftCommand.ConfirmItem(line.lineNo(), skuId, line.quantity()));
+            if (!blank(skuId) && line.quantity() != null) {
+                items.add(new ConfirmOrderDraftCommand.ConfirmItem(
+                        line.lineNo(), skuId, String.valueOf(line.quantity())));
             }
         }
         if (!missing.isEmpty()) {

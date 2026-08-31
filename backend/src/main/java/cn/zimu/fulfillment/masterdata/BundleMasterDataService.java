@@ -245,7 +245,7 @@ public class BundleMasterDataService {
             mapping.setSourceBundleRef(input.sourceBundleRef());
             mapping.setSourceBundleName(blankToNull(input.sourceBundleName()));
             mapping.setSourceBarcode(sourceBarcode);
-            mapping.setQuantityMultiplier(BigDecimal.ONE);
+            mapping.setQuantityMultiplier(1);
             mapping.setBundleId(bundleId);
             mapping.setActive(!Boolean.FALSE.equals(input.active()));
             SourceChannelBundle saved = sourceBundleMappings.saveAndFlush(mapping);
@@ -299,7 +299,7 @@ public class BundleMasterDataService {
             BundleItem item = new BundleItem();
             item.setSortNo(sortNo++);
             item.setSkuId(skuId);
-            item.setQuantityPerBundle(new BigDecimal(input.quantityPerBundle()));
+            item.setQuantityPerBundle(Integer.valueOf(input.quantityPerBundle()));
             item.setEmgCodeSnapshot(blankToNull(input.emgCodeSnapshot()));
             item.setSourceTextSnapshot(blankToNull(input.sourceTextSnapshot()));
             result.add(item);
@@ -338,7 +338,7 @@ public class BundleMasterDataService {
         attributes.put("source_channel", value.getSourceChannel().name());
         attributes.put("source_barcode", value.getSourceBarcode());
         attributes.put("bundle_id", id(value.getBundleId()));
-        attributes.put("quantity_multiplier", decimal(value.getQuantityMultiplier()));
+        attributes.put("quantity_multiplier", value.getQuantityMultiplier());
         return new MasterDataRecord(
                 id(value.getId()),
                 value.getSourceBundleRef(),
@@ -353,7 +353,7 @@ public class BundleMasterDataService {
     private Map<String, Object> item(BundleItem item) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("sku_id", id(item.getSkuId()));
-        value.put("quantity_per_bundle", decimal(item.getQuantityPerBundle()));
+        value.put("quantity_per_bundle", item.getQuantityPerBundle());
         value.put("emg_code_snapshot", item.getEmgCodeSnapshot());
         value.put("source_text_snapshot", item.getSourceTextSnapshot());
         skus.findById(item.getSkuId()).ifPresent(sku -> {

@@ -11,7 +11,6 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
-import java.math.BigDecimal;
 
 /** 渠道礼包编号到静态礼包主数据的显式业务映射。 */
 @Entity
@@ -35,8 +34,8 @@ public class SourceChannelBundle extends AuditableEntity {
     @Column(name = "source_barcode")
     private String sourceBarcode;
 
-    @Column(name = "quantity_multiplier", precision = 18, scale = 3, nullable = false)
-    private BigDecimal quantityMultiplier = BigDecimal.ONE;
+    @Column(name = "quantity_multiplier", nullable = false)
+    private Integer quantityMultiplier = 1;
 
     @Column(name = "bundle_id", nullable = false)
     private Long bundleId;
@@ -84,11 +83,11 @@ public class SourceChannelBundle extends AuditableEntity {
         this.sourceBarcode = sourceBarcode;
     }
 
-    public BigDecimal getQuantityMultiplier() {
+    public Integer getQuantityMultiplier() {
         return quantityMultiplier;
     }
 
-    public void setQuantityMultiplier(BigDecimal quantityMultiplier) {
+    public void setQuantityMultiplier(Integer quantityMultiplier) {
         this.quantityMultiplier = quantityMultiplier;
     }
 

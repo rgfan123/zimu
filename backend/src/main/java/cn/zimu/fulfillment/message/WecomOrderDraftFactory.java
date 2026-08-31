@@ -584,13 +584,13 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
         return value instanceof List<?> list ? (List<Map<String, Object>>) list : List.of();
     }
 
-    private static BigDecimal quantity(Object value) {
+    private static Integer quantity(Object value) {
         if (value == null) {
             return null;
         }
         try {
-            return new BigDecimal(value.toString().trim());
-        } catch (NumberFormatException ex) {
+            return new java.math.BigDecimal(value.toString().trim()).intValueExact();
+        } catch (ArithmeticException | NumberFormatException ex) {
             return null;
         }
     }

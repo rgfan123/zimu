@@ -38,6 +38,6 @@ public record ConfirmOrderDraftCommand(
             @NotBlank(message = "SKU 不能为空") @Pattern(regexp = Patterns.IDENTIFIER, message = "SKU 标识符无效")
                     String skuId,
             @NotBlank(message = "数量不能为空")
-                    @Pattern(regexp = Patterns.POSITIVE_DECIMAL_QUANTITY, message = "数量必须为正数且最多三位小数")
+                    @Pattern(regexp = Patterns.POSITIVE_INTEGER_QUANTITY, message = "数量必须为正整数")
                     String quantity) {}
 }

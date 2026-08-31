@@ -64,7 +64,7 @@ public record DemoExtractedOrderInput(
                     String specification,
             @NotNull(message = "数量不能为空")
                     @DecimalMin(value = "0", inclusive = false, message = "数量必须大于 0")
-                    @Digits(integer = 15, fraction = 3, message = "数量最多三位小数")
+                    @Digits(integer = 15, fraction = 0, message = "数量必须为整数")
                     BigDecimal quantity,
             @NotBlank(message = "单位不能为空") @Size(max = 32, message = "单位超长") String unit) {}
 

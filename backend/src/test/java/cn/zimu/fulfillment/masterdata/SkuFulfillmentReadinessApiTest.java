@@ -42,13 +42,15 @@ class SkuFulfillmentReadinessApiTest {
 
     @Test
     void legacySampleSeedIsIdempotentlyUpgradedWithoutOverwritingReusableIdentity() {
+        // 合并链上样例种子的商品编码改为序列生成（不再是固定 PROD-LAMBLEG）；
+        // 京东样例 SKU 的稳定身份是履约方编码 JD-SKU-000001，按它定位。
         long skuId = jdbc.queryForObject(
                 """
                 SELECT s.id
                 FROM app.skus s
-                JOIN app.products p ON p.id=s.product_id
-                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
-                WHERE p.product_code='PROD-LAMBLEG' AND fp.provider_code='JD'
+                JOIN app.provider_skus ps ON ps.sku_id=s.id
+                JOIN app.fulfillment_providers fp ON fp.id=ps.fulfillment_provider_id
+                WHERE ps.provider_sku_code='JD-SKU-000001' AND fp.provider_code='JD'
                 """,
                 Long.class);
         jdbc.update(

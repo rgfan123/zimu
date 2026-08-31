@@ -56,7 +56,7 @@ class OrderDraftCardConfirmationServiceTest {
         assertThat(command.getValue().customer().customerId()).isEqualTo("9");
         assertThat(command.getValue().items()).singleElement().satisfies(item -> {
             assertThat(item.skuId()).isEqualTo("17");
-            assertThat(item.quantity()).isEqualTo("2.000");
+            assertThat(item.quantity()).isEqualTo("2");
         });
         assertThat(command.getValue().settlement().settlementTime())
                 .isEqualTo(Instant.parse("2026-08-31T16:00:00Z"));
@@ -135,7 +135,7 @@ class OrderDraftCardConfirmationServiceTest {
                 List.of(new OrderDraftLineDto(
                         "51", 1, null, null,
                         List.of(Map.of("sku_id", "17", "sku_code", "SKU-17")),
-                        "商品", "规格", "件", "2.000")),
+                        "商品", "规格", "件", 2)),
                 "61", 0L, null, null, null, null,
                 Instant.now(), Instant.now());
     }

@@ -161,7 +161,7 @@ public class ShipmentJdTrackingBackfillService {
                             (itemRs, row) -> new Item(
                                     itemRs.getLong("fulfillment_id"),
                                     itemRs.getLong("order_line_id"),
-                                    itemRs.getBigDecimal("instructed_quantity")),
+                                    itemRs.getInt("instructed_quantity")),
                             shipmentId);
                     return new Prepared(
                             rs.getLong("id"), rs.getLong("order_id"),
@@ -961,7 +961,7 @@ public class ShipmentJdTrackingBackfillService {
         }
     }
 
-    public record Item(long fulfillmentId, long orderLineId, BigDecimal instructedQuantity) {
+    public record Item(long fulfillmentId, long orderLineId, int instructedQuantity) {
     }
 
     private record QuantityCheck(boolean complete, boolean malformed) {

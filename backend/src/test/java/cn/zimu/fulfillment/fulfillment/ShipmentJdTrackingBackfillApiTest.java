@@ -233,7 +233,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void successfulSubmitPersistsTheExactNonPiiCargoSnapshotNeededForLaterBackfill() {
         Fixture fixture = submittedShipment("CARGO-SNAPSHOT", List.of(
-                singleItem("1.000"), singleItem("2.000")));
+                singleItem("1"), singleItem("2")));
 
         String snapshot = jdbc.queryForObject(
                 "SELECT submitted_cargo_snapshot::text FROM app.shipment_jd_outbounds WHERE shipment_id=?",
@@ -251,8 +251,8 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void submittedWarehouseSnapshotSurvivesConfigDriftAndRejectsWrongRemoteWarehouse() {
-        Fixture stable = submittedShipment("WAREHOUSE-STABLE", List.of(singleItem("1.000")));
-        Fixture mismatch = submittedShipment("WAREHOUSE-MISMATCH", List.of(singleItem("1.000")));
+        Fixture stable = submittedShipment("WAREHOUSE-STABLE", List.of(singleItem("1")));
+        Fixture mismatch = submittedShipment("WAREHOUSE-MISMATCH", List.of(singleItem("1")));
 
         assertThat(jdbc.queryForObject(
                 "SELECT submitted_warehouse_no FROM app.shipment_jd_outbounds WHERE shipment_id=?",
@@ -281,7 +281,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void submittedOwnerAuthoritySurvivesConfigDriftWhileCurrentPinRemainsEphemeral() throws Exception {
-        Fixture fixture = submittedShipment("OWNER-AUTHORITY", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("OWNER-AUTHORITY", List.of(singleItem("1")));
 
         assertThat(jdbc.queryForObject(
                 "SELECT submitted_owner_no FROM app.shipment_jd_outbounds WHERE shipment_id=?",
@@ -357,7 +357,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void defaultMockUsesSubmittedWarehouseAndStaysPendingWithoutInventingTracking() {
-        Fixture fixture = submittedShipment("DEFAULT-MOCK-PENDING", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("DEFAULT-MOCK-PENDING", List.of(singleItem("1")));
         jd.useDefaultMockForNextQuery();
 
         ResponseEntity<Map> response = backfill(
@@ -372,7 +372,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void multiLineFullResultUsesStableMerchantReferenceAndAcceptsOneTrackingAtomically() {
         Fixture fixture = submittedShipment("MULTI-FULL", List.of(
-                singleItem("1.000"), singleItem("2.000")));
+                singleItem("1"), singleItem("2")));
         jd.enqueue(fullResult(fixture, "JD-WAYBILL-MULTI-001"));
 
         ResponseEntity<Map> response = backfill(
@@ -411,7 +411,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void sameKeyReplaysBeforeRemoteAndNewKeyWithSameFactAddsNoTrackingEventOrVersion() {
-        Fixture fixture = submittedShipment("REPLAY", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("REPLAY", List.of(singleItem("1")));
         JdResult result = fullResult(fixture, "JD-WAYBILL-REPLAY-001");
         jd.enqueue(result);
         jd.enqueue(result);
@@ -458,7 +458,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void shipmentItemDriftDuringTheRemoteReadFailsClosedWithoutPersistingPartialFacts() throws Exception {
         Fixture fixture = submittedShipment("ITEM-DRIFT", List.of(
-                singleItem("1.000"), singleItem("1.000")));
+                singleItem("1"), singleItem("1")));
         jd.enqueue(fullResult(fixture, "JD-WAYBILL-ITEM-DRIFT-001"));
         jd.pauseNextQuery();
 
@@ -497,7 +497,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void prepareAndCompletionRejectionsEachPersistAnIndependentSanitizedAudit() throws Exception {
-        Fixture prepareRejected = submittedShipment("AUDIT-PREPARE-REJECT", List.of(singleItem("1.000")));
+        Fixture prepareRejected = submittedShipment("AUDIT-PREPARE-REJECT", List.of(singleItem("1")));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET submitted_cargo_snapshot=NULL WHERE shipment_id=?",
                 prepareRejected.shipmentId());
@@ -509,7 +509,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 "business_code", "JD_TRACKING_SUBMITTED_CARGO_MISSING");
 
         Fixture completionRejected = submittedShipment(
-                "AUDIT-COMPLETION-REJECT", List.of(singleItem("1.000"), singleItem("1.000")));
+                "AUDIT-COMPLETION-REJECT", List.of(singleItem("1"), singleItem("1")));
         jd.enqueue(fullResult(completionRejected, "JD-WAYBILL-AUDIT-COMPLETION"));
         jd.pauseNextQuery();
         var completionRequest = executor.submit(() -> backfill(
@@ -549,7 +549,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void pendingPartialAndMissingCargoRowsFailClosedWithoutAdvancingShipmentOrLines() {
-        Fixture pending = submittedShipment("PENDING", List.of(singleItem("1.000")));
+        Fixture pending = submittedShipment("PENDING", List.of(singleItem("1")));
         jd.enqueue(pendingResult(pending));
 
         ResponseEntity<Map> pendingResponse = backfill(
@@ -559,7 +559,7 @@ class ShipmentJdTrackingBackfillApiTest {
         assertThat(pendingResponse.getBody()).containsEntry("poll_status", "PENDING");
         assertWaitingFacts(pending, "PENDING");
 
-        Fixture partial = submittedShipment("PARTIAL", List.of(singleItem("2.000")));
+        Fixture partial = submittedShipment("PARTIAL", List.of(singleItem("2")));
         jd.enqueue(partialResult(partial));
 
         ResponseEntity<Map> partialResponse = backfill(
@@ -570,7 +570,7 @@ class ShipmentJdTrackingBackfillApiTest {
         assertWaitingFacts(partial, "PARTIAL");
 
         Fixture missing = submittedShipment("MISSING-CARGO", List.of(
-                singleItem("1.000"), singleItem("1.000")));
+                singleItem("1"), singleItem("1")));
         jd.enqueue(fullResultWithItems(
                 missing,
                 "JD-WAYBILL-MISSING-001",
@@ -587,7 +587,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @ParameterizedTest
     @ValueSource(strings = {"OBJECT", "LIST", "NON_NUMERIC"})
     void malformedRealQuantityFailsClosedInsteadOfBeingTreatedAsPartial(String shape) {
-        Fixture fixture = submittedShipment("MALFORMED-REAL-" + shape, List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("MALFORMED-REAL-" + shape, List.of(singleItem("1")));
         Map<String, Object> item = new LinkedHashMap<>(remoteItems(fixture, true).getFirst());
         item.put("realQuantity", switch (shape) {
             case "OBJECT" -> Map.of("value", 1);
@@ -621,7 +621,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @ParameterizedTest
     @ValueSource(strings = {"UNKNOWN", "CODE_NAME_MISMATCH", "AMBIGUOUS_NAME"})
     void carrierMustResolveToOneConsistentEnabledInternalMasterRecord(String shape) {
-        Fixture fixture = submittedShipment("CARRIER-MASTER-" + shape, List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("CARRIER-MASTER-" + shape, List.of(singleItem("1")));
         JdResult valid = fullResult(fixture, "XY-WAYBILL-CARRIER-MASTER-" + shape);
         Map<String, Object> data = new LinkedHashMap<>((Map<String, Object>) valid.data());
         // 运单前缀用 XY-（无前缀映射），确保 stated 解析失败时不会经前缀兜底命中 JD。
@@ -695,7 +695,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void jdStatedCarrierFallsBackToWaybillPrefixMapping() {
-        Fixture fixture = submittedShipment("PREFIX-FALLBACK", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("PREFIX-FALLBACK", List.of(singleItem("1")));
         JdResult valid = fullResult(fixture, "JDVA46541368239");
         Map<String, Object> data = new LinkedHashMap<>((Map<String, Object>) valid.data());
         // 真实京东形态（2026-08-18 探针实测）：carrierNo=CYS0000010、carrierName=京东配送
@@ -724,7 +724,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void historicalAuthorityGapsAndCrossClientModeFailBeforeTheRemoteQuery() {
-        Fixture history = submittedShipment("HISTORY-NO-CARGO", List.of(singleItem("1.000")));
+        Fixture history = submittedShipment("HISTORY-NO-CARGO", List.of(singleItem("1")));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET submitted_cargo_snapshot=NULL WHERE shipment_id=?",
                 history.shipmentId());
@@ -737,7 +737,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 "business_code", "JD_TRACKING_SUBMITTED_CARGO_MISSING");
         assertThat(jd.queries).hasValue(0);
 
-        Fixture wrongMode = submittedShipment("CLIENT-MODE", List.of(singleItem("1.000")));
+        Fixture wrongMode = submittedShipment("CLIENT-MODE", List.of(singleItem("1")));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET client_mode='REAL' WHERE shipment_id=?",
                 wrongMode.shipmentId());
@@ -750,7 +750,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 "business_code", "JD_TRACKING_CLIENT_MODE_CHANGED");
         assertThat(jd.queries).hasValue(0);
 
-        Fixture missingOwner = submittedShipment("HISTORY-NO-OWNER", List.of(singleItem("1.000")));
+        Fixture missingOwner = submittedShipment("HISTORY-NO-OWNER", List.of(singleItem("1")));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET submitted_owner_no=NULL WHERE shipment_id=?",
                 missingOwner.shipmentId());
@@ -763,7 +763,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 "business_code", "JD_TRACKING_SUBMITTED_OWNER_MISSING");
         assertThat(jd.queries).hasValue(0);
 
-        Fixture missingPin = submittedShipment("CURRENT-NO-PIN", List.of(singleItem("1.000")));
+        Fixture missingPin = submittedShipment("CURRENT-NO-PIN", List.of(singleItem("1")));
         jdbc.update(
                 "UPDATE app.fulfillment_providers SET config=config - 'pin' WHERE provider_code='JD'");
 
@@ -778,7 +778,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void queryFailurePersistsSanitizedDiagnosticsAndA_newKeyCanRetrySuccessfully() {
-        Fixture fixture = submittedShipment("QUERY-RETRY", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("QUERY-RETRY", List.of(singleItem("1")));
         jd.enqueue(new JdResult(
                 false,
                 "SYNTHETIC_QUERY_FAILURE",
@@ -830,7 +830,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void thrownConnectorFailureBecomesRetryableSanitizedDiagnosticAndAudit() {
-        Fixture fixture = submittedShipment("QUERY-THROWS", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("QUERY-THROWS", List.of(singleItem("1")));
 
         ResponseEntity<Map> response = backfill(
                 fixture.shipmentId(), "jd-tracking-query-throws", "req-jd-tracking-query-throws");
@@ -860,7 +860,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @ParameterizedTest
     @ValueSource(strings = {"OBJECT_WAYBILL", "LIST_STATUS", "OVERSIZE_CARRIER", "EXCESS_CANDIDATES"})
     void malformedRemoteShapesFailClosedWithoutAuthoritativeOrSensitiveFacts(String shape) {
-        Fixture fixture = submittedShipment("MALFORMED-" + shape, List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("MALFORMED-" + shape, List.of(singleItem("1")));
         JdResult valid = fullResult(fixture, "JD-WAYBILL-MALFORMED");
         @SuppressWarnings("unchecked")
         Map<String, Object> data = new LinkedHashMap<>((Map<String, Object>) valid.data());
@@ -913,7 +913,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void splitOrConflictingWaybillCreatesAndReusesOneBlockingReviewCase() {
-        Fixture fixture = submittedShipment("SPLIT", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("SPLIT", List.of(singleItem("1")));
         JdResult split = splitResult(fixture);
         jd.enqueue(split);
         jd.enqueue(split);
@@ -943,7 +943,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 .contains("JD-SPLIT-001", "JD-SPLIT-002")
                 .doesNotContain("receiver", "phone", "address", "token", "secret");
 
-        Fixture localConflict = submittedShipment("LOCAL-CONFLICT", List.of(singleItem("1.000")));
+        Fixture localConflict = submittedShipment("LOCAL-CONFLICT", List.of(singleItem("1")));
         jdbc.update(
                 "UPDATE app.shipment_items SET shipped_quantity=instructed_quantity WHERE shipment_id=?",
                 localConflict.shipmentId());
@@ -977,7 +977,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void operatorCanResolveJdTrackingConflictWithVersionedIdempotentAuditedAction() {
-        Fixture fixture = submittedShipment("RESOLVE-CONFLICT", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("RESOLVE-CONFLICT", List.of(singleItem("1")));
         jd.enqueue(splitResult(fixture));
 
         ResponseEntity<Map> conflict = backfill(
@@ -1050,7 +1050,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void terminalExceptionCaseStopsPollingUntilAVersionedSafeHumanResolution() {
-        Fixture fixture = submittedShipment("RESOLVE-TERMINAL-EXCEPTION", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("RESOLVE-TERMINAL-EXCEPTION", List.of(singleItem("1")));
         jd.enqueue(statusResult(fixture, "10028"));
 
         ResponseEntity<Map> conflict = backfill(
@@ -1103,7 +1103,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void reviewedTerminalExceptionAfterTrackingCannotQueryOrReopenTheCase() {
         Fixture fixture = submittedShipment(
-                "RESOLVE-TERMINAL-AFTER-TRACKING", List.of(singleItem("1.000")));
+                "RESOLVE-TERMINAL-AFTER-TRACKING", List.of(singleItem("1")));
         jd.enqueue(fullResult(fixture, "JD-WAYBILL-BEFORE-TERMINAL-REVIEW"));
         assertThat(backfill(
                 fixture.shipmentId(),
@@ -1159,7 +1159,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void wrongMerchantReferenceAndPiiRichPayloadAreRejectedWithoutRawPersistence() {
-        Fixture fixture = submittedShipment("WRONG-REFERENCE", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("WRONG-REFERENCE", List.of(singleItem("1")));
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("erpDeliveryNo", "ANOTHER-MERCHANT-REFERENCE");
         data.put("deliveryNo", fixture.jdDeliveryNo());
@@ -1193,7 +1193,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void concurrentDifferentKeysForTheSameFactConserveOneTrackingEventAndVersion() throws Exception {
         Fixture fixture = submittedShipment("CONCURRENT", List.of(
-                singleItem("1.000"), singleItem("1.000")));
+                singleItem("1"), singleItem("1")));
         JdResult full = fullResult(fixture, "JD-WAYBILL-CONCURRENT-001");
         jd.enqueue(full);
         jd.enqueue(full);
@@ -1220,7 +1220,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @ValueSource(strings = {"PENDING", "PARTIAL"})
     void trackedTerminalAbsorbsOnlyLateNonAuthoritativeProgressWithoutRegression(
             String lateResultKind) throws Exception {
-        Fixture fixture = submittedShipment("TERMINAL-" + lateResultKind, List.of(singleItem("2.000")));
+        Fixture fixture = submittedShipment("TERMINAL-" + lateResultKind, List.of(singleItem("2")));
         JdResult late = switch (lateResultKind) {
             case "PENDING" -> pendingResult(fixture);
             case "PARTIAL" -> partialResult(fixture);
@@ -1270,7 +1270,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @ValueSource(strings = {"DIFFERENT_WAYBILL", "SPLIT", "QUERY_FAILED"})
     void trackedTerminalPreservesAcceptedFactButSurfacesLateConflictOrFailure(
             String lateResultKind) throws Exception {
-        Fixture fixture = submittedShipment("TRACKED-EVIDENCE-" + lateResultKind, List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("TRACKED-EVIDENCE-" + lateResultKind, List.of(singleItem("1")));
         JdResult late = switch (lateResultKind) {
             case "DIFFERENT_WAYBILL" -> fullResult(fixture, "JD-WAYBILL-DIFFERENT-LATE");
             case "SPLIT" -> splitResult(fixture);
@@ -1364,7 +1364,7 @@ class ShipmentJdTrackingBackfillApiTest {
             String jdStatus, boolean alreadyTracked) {
         Fixture fixture = submittedShipment(
                 "TERMINAL-EXCEPTION-" + jdStatus + "-" + alreadyTracked,
-                List.of(singleItem("1.000")));
+                List.of(singleItem("1")));
         String acceptedWaybill = "JD-WAYBILL-ACCEPTED-" + jdStatus;
         if (alreadyTracked) {
             jd.enqueue(fullResult(fixture, acceptedWaybill));
@@ -1432,7 +1432,7 @@ class ShipmentJdTrackingBackfillApiTest {
     // 真正的发货前状态是 10010（见 pendingResult fixture）。
     @ValueSource(strings = {"10027", "10029"})
     void nonTerminalStatusesRemainPendingWithoutReviewCase(String jdStatus) {
-        Fixture fixture = submittedShipment("NON-TERMINAL-" + jdStatus, List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("NON-TERMINAL-" + jdStatus, List.of(singleItem("1")));
         jd.enqueue(statusResult(fixture, jdStatus));
 
         ResponseEntity<Map> response = backfill(
@@ -1454,7 +1454,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void openConflictCaseBlocksALateFullResultWithoutCreatingContradictoryTracking() throws Exception {
-        Fixture fixture = submittedShipment("CONFLICT-BEFORE-FULL", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("CONFLICT-BEFORE-FULL", List.of(singleItem("1")));
         jd.enqueue(fullResult(fixture, "JD-WAYBILL-LATE-FULL"));
         jd.enqueue(splitResult(fixture));
         jd.pauseNextQuery();
@@ -1499,7 +1499,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void disabledSchedulerDoesNotPollSubmittedShipments() {
-        submittedShipment("SCHEDULER-OFF", List.of(singleItem("1.000")));
+        submittedShipment("SCHEDULER-OFF", List.of(singleItem("1")));
 
         poller.poll();
 
@@ -1508,7 +1508,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void enabledSchedulerUsesTheSameBackfillServiceAndHonorsPendingFacts() {
-        Fixture fixture = submittedShipment("SCHEDULER-ON", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("SCHEDULER-ON", List.of(singleItem("1")));
         jd.enqueue(pendingResult(fixture));
 
         new ShipmentJdTrackingPoller(backfillService, true, 20, java.time.Duration.ZERO).poll();
@@ -1523,11 +1523,11 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void schedulerFiltersCandidatesByCurrentClientModeBeforeApplyingBatchLimit() {
-        Fixture wrongMode = submittedShipment("SCHEDULER-WRONG-MODE", List.of(singleItem("1.000")));
+        Fixture wrongMode = submittedShipment("SCHEDULER-WRONG-MODE", List.of(singleItem("1")));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET client_mode='REAL' WHERE shipment_id=?",
                 wrongMode.shipmentId());
-        Fixture currentMode = submittedShipment("SCHEDULER-CURRENT-MODE", List.of(singleItem("1.000")));
+        Fixture currentMode = submittedShipment("SCHEDULER-CURRENT-MODE", List.of(singleItem("1")));
         jd.enqueue(pendingResult(currentMode));
 
         new ShipmentJdTrackingPoller(backfillService, true, 1, java.time.Duration.ZERO).poll();
@@ -1547,12 +1547,12 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void schedulerSkipsPermanentlyIneligibleOwnerAndCurrentPinRowsBeforeApplyingBatchLimit() {
         Fixture missingOwner = submittedShipment(
-                "SCHEDULER-MISSING-OWNER", List.of(singleItem("1.000")));
+                "SCHEDULER-MISSING-OWNER", List.of(singleItem("1")));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET submitted_owner_no=NULL WHERE shipment_id=?",
                 missingOwner.shipmentId());
         Fixture eligible = submittedShipment(
-                "SCHEDULER-ELIGIBLE-AFTER-MISSING-OWNER", List.of(singleItem("1.000")));
+                "SCHEDULER-ELIGIBLE-AFTER-MISSING-OWNER", List.of(singleItem("1")));
 
         assertThat(backfillService.pollingCandidates(1))
                 .extracting(ShipmentJdTrackingBackfillService.Candidate::shipmentId)
@@ -1566,7 +1566,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void concurrentSchedulersUsePersistedCandidateGenerationAcrossConfigDrift() throws Exception {
-        Fixture fixture = submittedShipment("SCHEDULER-GENERATION", List.of(singleItem("1.000")));
+        Fixture fixture = submittedShipment("SCHEDULER-GENERATION", List.of(singleItem("1")));
         jd.enqueue(pendingResult(fixture));
         jd.enqueue(pendingResult(fixture));
         jd.pauseNextQuery();

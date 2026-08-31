@@ -507,8 +507,8 @@ public class McpWriteTools {
             Map<String, Object> entry = (Map<String, Object>) map;
             int lineNo = positiveLineNo(entry.get("line_no"));
             String quantity = optionalString(entry, "quantity");
-            if (quantity != null && !quantity.matches(Patterns.POSITIVE_DECIMAL_QUANTITY)) {
-                throw BusinessException.badRequest("INVALID_PARAMETERS", "quantity 必须为正数且最多三位小数");
+            if (quantity != null && !quantity.matches(Patterns.POSITIVE_INTEGER_QUANTITY)) {
+                throw BusinessException.badRequest("INVALID_PARAMETERS", "quantity 必须为正整数");
             }
             String skuId = optionalString(entry, "sku_id");
             if (skuId != null && !skuId.matches(Patterns.IDENTIFIER)) {
@@ -607,8 +607,8 @@ public class McpWriteTools {
                 throw BusinessException.badRequest("INVALID_PARAMETERS", "sku_id 必须是正整数标识符");
             }
             String quantity = optionalString(entry, "quantity");
-            if (quantity == null || !quantity.matches(Patterns.POSITIVE_DECIMAL_QUANTITY)) {
-                throw BusinessException.badRequest("INVALID_PARAMETERS", "quantity 必须为正数且最多三位小数");
+            if (quantity == null || !quantity.matches(Patterns.POSITIVE_INTEGER_QUANTITY)) {
+                throw BusinessException.badRequest("INVALID_PARAMETERS", "quantity 必须为正整数");
             }
             result.add(new ConfirmOrderDraftCommand.ConfirmItem(lineNo, skuId, quantity));
         }
@@ -705,7 +705,7 @@ public class McpWriteTools {
         ObjectNode item = McpToolRegistry.objectProperty("行级建议");
         ObjectNode props = item.putObject("properties");
         props.set("line_no", stringProperty("正整数行号"));
-        props.set("quantity", stringProperty("正数数量字符串，最多三位小数"));
+        props.set("quantity", stringProperty("正整数数量字符串（件数，不带小数点）"));
         props.set("sku_id", stringProperty("候选 SKU 标识符"));
         return item;
     }
@@ -744,7 +744,7 @@ public class McpWriteTools {
         ObjectNode props = item.putObject("properties");
         props.set("line_no", stringProperty("正整数行号"));
         props.set("sku_id", stringProperty("SKU 标识符"));
-        props.set("quantity", stringProperty("正数数量字符串，最多三位小数"));
+        props.set("quantity", stringProperty("正整数数量字符串（件数，不带小数点）"));
         return item;
     }
 }

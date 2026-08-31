@@ -77,7 +77,7 @@ public final class CaishixianOrderTransform {
     private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final DateTimeFormatter DATE_TIME_MINUTE = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final String QUANTITY_PATTERN =
-            cn.zimu.fulfillment.common.dto.Patterns.POSITIVE_DECIMAL_QUANTITY;
+            cn.zimu.fulfillment.common.dto.Patterns.POSITIVE_INTEGER_QUANTITY;
 
     /**
      * @param listItem orderList 的订单对象（必有）
@@ -208,7 +208,7 @@ public final class CaishixianOrderTransform {
         return List.copyOf(items);
     }
 
-    /** count 只接受正数且最多三位小数（canonical 数量门禁同款正则）；其余一律空串（不造数）。 */
+    /** count 只接受正整数（canonical 数量门禁同款正则）；其余一律空串（不造数）。 */
     private String quantityOf(JsonNode goods) {
         JsonNode count = goods.path("count");
         String raw = count.isNumber() ? count.decimalValue().stripTrailingZeros().toPlainString()

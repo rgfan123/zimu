@@ -171,7 +171,9 @@ class ExcelClosedLoopApiTest {
                 INSERT INTO app.source_channel_skus
                     (source_channel, source_sku_ref, source_product_name, source_specification,
                      quantity_multiplier, sku_id, active)
-                SELECT 'FEIXIANG', 'FX-PRODUCT-001', '子牧羊小腿', '标准箱', 2.000, sku_id, true
+                -- V99 商品数量整数化移植：旧夹具靠「1.5 × 2.000 = 3」凑出奇数履约量，
+                -- 小数来源数量已是废弃语义；改为「1 × 3 = 3」保持全部下游发货/续发数字不变。
+                SELECT 'FEIXIANG', 'FX-PRODUCT-001', '子牧羊小腿', '标准箱', 3.000, sku_id, true
                 FROM app.source_channel_skus WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-TP-001'
                 ON CONFLICT (source_channel, source_sku_ref) DO NOTHING
                 """);
@@ -274,6 +276,9 @@ class ExcelClosedLoopApiTest {
      */
     @Test
     void zhonghuiOrderPersistsSourceOrderedAtParsedFromChannelOrderTimeColumn() throws Exception {
+        // 候选流水线移植：订单在确认时才创建（upload 助手对干净批次自动确认），
+        // 未映射行只会留成候选——本用例断言订单字段，必须先把来源 SKU 映射种好。
+        upsertZhonghuiMapping("60043899", "子牧来源下单时间测试商品", "1.000");
         List<String> headers = List.of(
                 "订单号", "商品编号", "商品名称", "件数", "收件人", "收件电话", "收件地址",
                 "包装规格", "单位", "下单时间");
@@ -305,6 +310,18 @@ class ExcelClosedLoopApiTest {
      */
     @Test
     void caishixianOrderLeavesSourceOrderedAtNullWhenChannelHasNoOrderTimeColumn() throws Exception {
+        // 候选流水线移植：同上，先种映射让候选就绪，upload 助手自动确认后才有订单可断言。
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                SELECT 'CAISHIXIAN', '2099999', '子牧彩食鲜无下单时间测试商品', '500g',
+                       1.000, sku_id, true
+                FROM app.source_channel_skus
+                WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-JD-001'
+                ON CONFLICT (source_channel, source_sku_ref) DO NOTHING
+                """);
         List<String> headers = List.of(
                 "主订单编号", "子订单编号", "供应商编码", "站点编码", "收货人", "联系电话",
                 "省", "市", "区", "详细地址", "商品编号", "商品名称", "规格", "单位", "下单数量", "订单备注");
@@ -448,7 +465,7 @@ class ExcelClosedLoopApiTest {
     }
 
     @Test
-    void oneUnreadySkuKeepsTheWholeSourceBatchOutOfCanonicalOrders() throws Exception {
+    void oneUnreadySkuKeepsUploadOrderFreeAndHoldsOnlyItsOwnCandidateAtConfirm() throws Exception {
         long readySkuId = upsertZhonghuiMapping("60043837", "中汇整批门禁就绪商品", "1.000");
         long blockedSkuId = upsertReleaseBlockedSku();
         upsertZhonghuiMapping("60043838", "中汇整批门禁缺履约编码商品", "1.000", blockedSkuId);
@@ -504,24 +521,39 @@ class ExcelClosedLoopApiTest {
                         batchId))
                 .isEqualTo(1);
 
-        assertThatThrownBy(() -> sourceBatchConfirmer.confirmSourceBatch(
-                        batchId,
-                        "ticket-04-batch-atomic-confirm-001",
-                        new CommandContext(
-                                "ticket-04-batch-atomic-request-001",
-                                "ticket-04-batch-atomic-trace-001",
-                                "source-ops")))
-                .isInstanceOfSatisfying(BusinessException.class, error -> {
-                    assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED");
-                    @SuppressWarnings("unchecked")
-                    List<Map<String, Object>> lines =
-                            (List<Map<String, Object>>) error.getDetails().get("lines");
-                    assertThat(lines).singleElement().satisfies(line -> {
-                        assertThat(line).containsEntry("sku_id", Long.toString(blockedSkuId));
-                        assertThat(((List<?>) line.get("reason_codes")).stream().map(String::valueOf).toList())
-                                .contains("PROVIDER_MAPPING_REQUIRED");
-                    });
-                });
+        // 部分放行（2026-08-31 合并语义）：候选=一张来源订单独立评估——就绪候选先成单，
+        // 阻断候选原地留批（行级 SKU_READINESS + 候选复核事项），不再整批连坐。
+        var partiallyConfirmed = sourceBatchConfirmer.confirmSourceBatch(
+                batchId,
+                "ticket-04-batch-atomic-confirm-001",
+                new CommandContext(
+                        "ticket-04-batch-atomic-request-001",
+                        "ticket-04-batch-atomic-trace-001",
+                        "source-ops"));
+        assertThat(partiallyConfirmed.result().get("confirmed_at")).isNotNull();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        batchId))
+                .as("就绪候选先成单，阻断候选不得陪等")
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT status FROM app.raw_import_rows
+                        WHERE import_batch_id=? AND raw_cells->>'商品编号'='60043838'
+                        """,
+                        String.class,
+                        batchId))
+                .as("阻断候选原地留批等补做")
+                .isEqualTo("NEED_REVIEW");
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.review_cases
+                        WHERE import_batch_id=? AND case_type='SOURCE_ORDER_CANDIDATE' AND status='OPEN'
+                        """,
+                        Integer.class,
+                        batchId))
+                .isEqualTo(1);
         long providerId = jdbc.queryForObject(
                 "SELECT fulfillment_provider_id FROM app.skus WHERE id=?",
                 Long.class,
@@ -875,7 +907,7 @@ class ExcelClosedLoopApiTest {
         assertThat(skuDetail).containsEntry("source_channel", "FEIXIANG");
         assertThat(skuDetail.get("source_product_name")).isEqualTo("子牧羊小腿");
         assertThat(new BigDecimal(skuDetail.get("source_quantity").toString()))
-                .isEqualByComparingTo("1.500");
+                .isEqualByComparingTo("1");
         assertThat(skuDetail.get("source_sheet_name")).isEqualTo("CSV");
         assertThat(skuDetail.get("source_row_index")).isEqualTo(2);
         assertThat(skuDetail.get("source_sku_ref")).isEqualTo("FX-PRODUCT-REVIEW-001");
@@ -891,7 +923,7 @@ class ExcelClosedLoopApiTest {
                         "sku_id", skuId,
                         "source_channel", "FEIXIANG",
                         "source_sku_ref", "FX-PRODUCT-REVIEW-001",
-                        "quantity_multiplier", "2.000",
+                        "quantity_multiplier", "2",
                         "remark", "核对包装倍率后确认 SKU"),
                 "resolve-import-sku-001");
         ResponseEntity<Map> skuResolvedReplay = resolveReview(
@@ -902,7 +934,7 @@ class ExcelClosedLoopApiTest {
                         "sku_id", skuId,
                         "source_channel", "FEIXIANG",
                         "source_sku_ref", "FX-PRODUCT-REVIEW-001",
-                        "quantity_multiplier", "2.000",
+                        "quantity_multiplier", "2",
                         "remark", "核对包装倍率后确认 SKU"),
                 "resolve-import-sku-001");
         assertThat(skuResolved.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -1073,7 +1105,7 @@ class ExcelClosedLoopApiTest {
                         Long.parseLong(exportLine.get("order_line_id").toString()),
                         orderId,
                         "SHIPPED",
-                        new BigDecimal("4.000"),
+                        4,
                         "JD",
                         "京东物流",
                         trackingNumber,
@@ -1274,7 +1306,7 @@ class ExcelClosedLoopApiTest {
         Map<String, Object> fulfillment = get("/api/v1/fulfillments/" + fulfillmentId);
         assertThat(fulfillment)
                 .containsEntry("outcome", "PARTIALLY_FULFILLED")
-                .containsEntry("cancelled_quantity", "2.000");
+                .containsEntry("cancelled_quantity", "2");
         Map<String, Object> orders = get("/api/v1/orders?query=FX-MULTI-CANCEL-001&page=0&size=20");
         String orderId = ((Map<?, ?>) ((List<?>) orders.get("items")).getFirst()).get("id").toString();
         Map<String, Object> order = get("/api/v1/orders/" + orderId);
@@ -1547,10 +1579,13 @@ class ExcelClosedLoopApiTest {
                 batchId, "confirm-after-source-import-jd-decimal-001");
         assertThat(confirmation.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(confirmation.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
-        Map<?, ?> details = (Map<?, ?>) confirmation.getBody().get("details");
-        Map<?, ?> blockedLine = (Map<?, ?>) ((List<?>) details.get("lines")).getFirst();
-        assertThat(((List<?>) blockedLine.get("reason_codes")).stream().map(String::valueOf).toList())
-                .contains("QUANTITY_SCALE");
+        // V99 商品数量整数化：小数数量在文件解析层就落成行级 QUANTITY_SCALE 待复核
+        // （硬阻断，不进入候选），确认失败面因此不再携带 SKU 门禁的行明细。
+        assertThat(jdbc.queryForMap(
+                        "SELECT status, error_code FROM app.raw_import_rows WHERE import_batch_id=?",
+                        Long.parseLong(batchId)))
+                .containsEntry("status", "NEED_REVIEW")
+                .containsEntry("error_code", "QUANTITY_SCALE");
 
         Map<String, Object> imported = get("/api/v1/import-batches/" + batchId);
 
@@ -1969,7 +2004,9 @@ class ExcelClosedLoopApiTest {
     }
 
     private byte[] feixiangSingleCsv(String orderRef) {
-        return feixiangSingleCsv(orderRef, "FX-PRODUCT-001", "1.500");
+        // V99：来源数量必须是正整数（"1.500" 现在会落 QUANTITY_SCALE 待复核）；
+        // 履约数量 3 由映射倍率 3 提供，见 addExplicitFeixiangMappings。
+        return feixiangSingleCsv(orderRef, "FX-PRODUCT-001", "1");
     }
 
     private byte[] feixiangSingleCsv(String orderRef, String productRef, String quantity) {
@@ -1993,7 +2030,7 @@ class ExcelClosedLoopApiTest {
         cells.put("商品ID", "FX-PRODUCT-001");
         cells.put("商品规格", "标准箱");
         cells.put("订单商品ID", orderRef + "-LINE");
-        cells.put("商品数量", "1.500");
+        cells.put("商品数量", "1");
         cells.put("收货人姓名", "张三");
         cells.put("收货人手机号", "13800000000");
         cells.put("收货人地址", "上海市浦东新区测试路1号");

@@ -95,7 +95,7 @@ class SkuDataQualityFlagMigrationTest {
                                     + "AND source_sku_ref='EMG4418691851778'")))
                     .isEqualTo("3.000");
             assertThat(intValue(statement.executeQuery(
-                            "SELECT count(*) FROM flyway_schema_history WHERE version='73'")))
+                            "SELECT count(*) FROM flyway_schema_history WHERE version='96'")))
                     .isZero();
             assertThat(intValue(statement.executeQuery(
                             "SELECT count(*) FROM pg_trigger WHERE tgname IN "
@@ -117,7 +117,7 @@ class SkuDataQualityFlagMigrationTest {
                         + "WHERE source_channel='JUFUBAO' AND source_sku_ref='66487969'");
         assertThatThrownBy(() -> flyway(textDriftUrl, null).migrate())
                 .hasMessageContaining("鸵鸟蛋变重差异审计前置条件漂移");
-        assertV73RolledBack(textDriftUrl);
+        assertV96RolledBack(textDriftUrl);
 
         createDatabase(MISSING_COHORT_DB);
         String missingUrl = jdbcUrl(MISSING_COHORT_DB);
@@ -129,7 +129,7 @@ class SkuDataQualityFlagMigrationTest {
         execute(missingUrl, "DELETE FROM app.skus WHERE sku_code='SKU-JD-000085'");
         assertThatThrownBy(() -> flyway(missingUrl, null).migrate())
                 .hasMessageContaining("audit cohort incomplete: expected 5, found 4");
-        assertV73RolledBack(missingUrl);
+        assertV96RolledBack(missingUrl);
 
         createDatabase(NO_COHORT_DB);
         String noCohortUrl = jdbcUrl(NO_COHORT_DB);
@@ -152,7 +152,7 @@ class SkuDataQualityFlagMigrationTest {
                         + "WHERE p.product_code='PROD-JD-EMG4418861058751' AND fp.provider_code='JD'");
         assertThatThrownBy(() -> flyway(noCohortUrl, null).migrate())
                 .hasMessageContaining("audit cohort incomplete: expected 5, found 0");
-        assertV73RolledBack(noCohortUrl);
+        assertV96RolledBack(noCohortUrl);
     }
 
     @Test
@@ -178,7 +178,7 @@ class SkuDataQualityFlagMigrationTest {
                         "SELECT active::text || ':' || coalesce(blocking_reason,'NULL') "
                                 + "FROM app.sku_data_quality_flags"))
                 .isEqualTo("false:NULL");
-        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='73'"))
+        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='96'"))
                 .isZero();
     }
 
@@ -210,7 +210,7 @@ class SkuDataQualityFlagMigrationTest {
         } finally {
             pool.shutdownNow();
         }
-        assertV73RolledBack(url);
+        assertV96RolledBack(url);
     }
 
     @Test
@@ -250,7 +250,7 @@ class SkuDataQualityFlagMigrationTest {
         }
 
         flyway(url, null).migrate();
-        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='73'"))
+        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='96'"))
                 .isEqualTo(1);
         assertThat(intQuery(url, "SELECT count(*) FROM app.sku_data_quality_flags"))
                 .isEqualTo(5);
@@ -374,10 +374,11 @@ class SkuDataQualityFlagMigrationTest {
         return flags;
     }
 
-    private static void assertV73RolledBack(String jdbcUrl) throws Exception {
+    /** 合并前该迁移编号为 V73；合并链上 V73 另有其主，回滚判据必须钉在新编号 V96 上。 */
+    private static void assertV96RolledBack(String jdbcUrl) throws Exception {
         assertThat(intQuery(jdbcUrl, "SELECT count(*) FROM app.sku_data_quality_flags"))
                 .isZero();
-        assertThat(intQuery(jdbcUrl, "SELECT count(*) FROM flyway_schema_history WHERE version='73'"))
+        assertThat(intQuery(jdbcUrl, "SELECT count(*) FROM flyway_schema_history WHERE version='96'"))
                 .isZero();
         assertThat(intQuery(jdbcUrl,
                         "SELECT count(*) FROM pg_trigger WHERE tgname IN "

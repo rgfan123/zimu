@@ -550,11 +550,11 @@ class SourceFileParser {
                 BigDecimal parsed = new BigDecimal(quantity);
                 if (parsed.signum() <= 0) {
                     error = "数量必须大于 0";
-                } else if (parsed.stripTrailingZeros().scale() > 3) {
+                } else if (parsed.stripTrailingZeros().scale() > 0) {
                     return build(sheet, sheetIndex, row, cells, orderRef, lineRef, customerRef, customerName,
                             receiverName, receiverPhone, receiverAddress, province, city, district, sourceSkuRef,
                             productName, specification, unit, quantity, orderedAt, settlementMethod, remark,
-                            "QUANTITY_SCALE", "数量最多三位小数");
+                            "QUANTITY_SCALE", "商品数量必须为整数（不接受小数），如按重量销售请改用整数件数申报");
                 }
             } catch (NumberFormatException exception) {
                 error = "数量格式非法";

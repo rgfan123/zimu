@@ -7,7 +7,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
 
 /** 当单礼包组件快照（不可变业务事实）。 */
 @Entity
@@ -28,10 +27,10 @@ public class OrderLineComponent extends CreatedAtEntity {
     private Long skuId;
 
     @Column(name = "quantity_per_bundle", nullable = false)
-    private BigDecimal quantityPerBundle;
+    private Integer quantityPerBundle;
 
     @Column(name = "total_quantity", nullable = false)
-    private BigDecimal totalQuantity;
+    private Integer totalQuantity;
 
     @Column(name = "product_name_snapshot", nullable = false)
     private String productNameSnapshot;
@@ -70,19 +69,19 @@ public class OrderLineComponent extends CreatedAtEntity {
         this.skuId = skuId;
     }
 
-    public BigDecimal getQuantityPerBundle() {
+    public Integer getQuantityPerBundle() {
         return quantityPerBundle;
     }
 
-    public void setQuantityPerBundle(BigDecimal quantityPerBundle) {
+    public void setQuantityPerBundle(Integer quantityPerBundle) {
         this.quantityPerBundle = quantityPerBundle;
     }
 
-    public BigDecimal getTotalQuantity() {
+    public Integer getTotalQuantity() {
         return totalQuantity;
     }
 
-    public void setTotalQuantity(BigDecimal totalQuantity) {
+    public void setTotalQuantity(Integer totalQuantity) {
         this.totalQuantity = totalQuantity;
     }
 

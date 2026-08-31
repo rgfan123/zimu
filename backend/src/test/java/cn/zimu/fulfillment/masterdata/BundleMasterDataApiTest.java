@@ -150,7 +150,7 @@ class BundleMasterDataApiTest {
         assertThat((List<Map<String, Object>>) attributes(patched.getBody()).get("items"))
                 .singleElement()
                 .satisfies(item -> assertThat(item)
-                        .containsEntry("quantity_per_bundle", "2")
+                        .containsEntry("quantity_per_bundle", 2)
                         .containsEntry("emg_code_snapshot", "EMG-PATCH-001")
                         .containsEntry("source_text_snapshot", "修改后的内配"));
 
@@ -278,7 +278,7 @@ class BundleMasterDataApiTest {
         assertThat(attributes(created.getBody()))
                 .containsEntry("source_channel", "WANGQI")
                 .containsEntry("bundle_id", bundle.getBody().get("id"))
-                .containsEntry("quantity_multiplier", "1");
+                .containsEntry("quantity_multiplier", 1);
 
         ResponseEntity<Map> fetched = http.getForEntity(
                 "/api/v1/source-bundle-mappings/" + created.getBody().get("id"), Map.class);

@@ -280,7 +280,7 @@ public class OrderLineSkuSubstitutionService {
             }
             items.add(new ShipmentItemSnapshot(
                     ((Number) row.get("shipment_id")).longValue(),
-                    (BigDecimal) row.get("instructed_quantity")));
+                    ((Number) row.get("instructed_quantity")).intValue()));
         }
         return items;
     }
@@ -311,5 +311,5 @@ public class OrderLineSkuSubstitutionService {
 
     private record NewSku(String skuCode) {}
 
-    private record ShipmentItemSnapshot(long shipmentId, BigDecimal instructedQuantity) {}
+    private record ShipmentItemSnapshot(long shipmentId, int instructedQuantity) {}
 }

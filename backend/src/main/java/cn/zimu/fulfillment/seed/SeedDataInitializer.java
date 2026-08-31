@@ -98,7 +98,7 @@ public class SeedDataInitializer implements ApplicationRunner {
             Product product = product(category, jd);
             Sku jdSku = sku(product, jd, "500g/盒", "盒", "500", "g", 1, "盒");
             Sku tpSku = sku(product, tp, "标准箱", "箱", "1", "箱", 1, "箱");
-            sourceChannelSku(jdSku, "WECOM-SKU-JD-001", "子牧羊小腿", BigDecimal.ONE);
+            sourceChannelSku(jdSku, "WECOM-SKU-JD-001", "子牧羊小腿", 1);
             sourceChannelSku(tpSku, "WECOM-SKU-TP-001", "子牧羊小腿（第三方）", null);
             providerSku(jd, jdSku, "JD-SKU-000001");
             providerSku(tp, tpSku, "TP-SKU-000001");
@@ -194,7 +194,7 @@ public class SeedDataInitializer implements ApplicationRunner {
     }
 
     private void sourceChannelSku(
-            Sku sku, String sourceSkuRef, String sourceProductName, BigDecimal quantityMultiplier) {
+            Sku sku, String sourceSkuRef, String sourceProductName, Integer quantityMultiplier) {
         if (sku == null
                 || sourceChannelSkuRepository.existsBySourceChannelAndSourceSkuRef(SourceChannel.WECOM, sourceSkuRef)) {
             return;

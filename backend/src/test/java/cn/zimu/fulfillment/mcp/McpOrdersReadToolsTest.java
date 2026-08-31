@@ -96,7 +96,7 @@ class McpOrdersReadToolsTest {
         assertThat(shippedItem.get("order_status").asText()).isEqualTo("RECEIVED");
         assertThat(shippedItem.get("source_ordered_at").asText()).isEqualTo("2026-08-01T10:00:00Z");
         assertThat(shippedItem.get("line_count").asInt()).isEqualTo(2);
-        assertThat(shippedItem.get("total_quantity").asText()).isEqualTo("5.000");
+        assertThat(shippedItem.get("total_quantity").asText()).isEqualTo("5");
         assertThat(shippedItem.get("has_shipment").asBoolean()).isTrue();
         assertThat(shippedItem.get("shipment_status").asText()).isEqualTo("SHIPPED");
         assertThat(shippedItem.get("tracking_number").asText()).isEqualTo("SF1234567890001");
@@ -244,7 +244,7 @@ class McpOrdersReadToolsTest {
         assertThat(order.get("settlement_method").asText()).isEqualTo("MONTHLY");
         assertThat(order.get("settlement_time")).isNotNull();
         assertThat(order.get("line_count").asInt()).isEqualTo(2);
-        assertThat(order.get("total_quantity").asText()).isEqualTo("5.000");
+        assertThat(order.get("total_quantity").asText()).isEqualTo("5");
 
         JsonNode lines = order.get("lines");
         assertThat(lines).hasSize(2);
@@ -252,7 +252,7 @@ class McpOrdersReadToolsTest {
         assertThat(firstLine.get("product_name").asText()).isEqualTo("详情商品");
         assertThat(firstLine.get("specification").asText()).isEqualTo("500g/盒");
         assertThat(firstLine.get("unit").asText()).isEqualTo("盒");
-        assertThat(firstLine.get("requested_quantity").asText()).isEqualTo("4.000");
+        assertThat(firstLine.get("requested_quantity").asText()).isEqualTo("4");
         assertThat(firstLine.get("sku_id").asText()).isEqualTo(String.valueOf(skuId));
         assertThat(firstLine.get("sku_code").asText()).isEqualTo(skuCode);
         assertThat(firstLine.get("provider_id").asText()).isEqualTo(String.valueOf(providerId));

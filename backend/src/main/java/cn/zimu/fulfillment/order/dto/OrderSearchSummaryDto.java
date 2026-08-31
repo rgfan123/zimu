@@ -19,8 +19,8 @@ public record OrderSearchSummaryDto(
         Instant sourceOrderedAt,
         Instant settlementTime,
         int lineCount,
-        /** 全部订单行 requested_quantity 之和，decimal-string。 */
-        String totalQuantity,
+        /** 全部订单行 requested_quantity 之和（件数，整数）。 */
+        long totalQuantity,
         boolean hasShipment,
         /** 最近一个 Shipment 的状态；无 Shipment 时为 null。 */
         String shipmentStatus,

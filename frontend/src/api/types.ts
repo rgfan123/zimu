@@ -117,8 +117,8 @@ export interface OrderLineComponent {
   product_name: string;
   specification: string;
   unit: string;
-  quantity_per_bundle: string;
-  total_quantity: string;
+  quantity_per_bundle: number;
+  total_quantity: number;
 }
 
 export interface OrderLine {
@@ -131,9 +131,9 @@ export interface OrderLine {
   product_name: string;
   specification: string;
   unit: string;
-  source_quantity: string;
-  mapping_multiplier?: string;
-  requested_quantity: string;
+  source_quantity: number | null;
+  mapping_multiplier?: number | null;
+  requested_quantity: number;
   processing_stage: ProcessingStage;
   exception_code?: string;
   components?: OrderLineComponent[];

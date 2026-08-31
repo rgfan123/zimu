@@ -74,7 +74,7 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Test
     void operatorConfirmsStructuredAddressThenPreviewsExactMultiLineRequestWithoutCallingJd() {
-        Fact fact = createOrder("READY", List.of(item("1.000"), item("2.000")), "待人工修正的自由文本地址");
+        Fact fact = createOrder("READY", List.of(item("1"), item("2")), "待人工修正的自由文本地址");
         long shipmentId = createShipment(fact, "待人工修正的自由文本地址");
 
         ResponseEntity<Map> confirmation = http.exchange(
@@ -201,7 +201,7 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Test
     void submissionPlanKeepsInternalRequestAndHashSeparateFromMaskedPreview() {
-        Fact fact = createOrder("SNAPSHOT", List.of(item("2.000")), "待人工确认");
+        Fact fact = createOrder("SNAPSHOT", List.of(item("2")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         confirmAddress(shipmentId, "snapshot");
         long auditCountBefore = jdbc.queryForObject("SELECT count(*) FROM app.audit_logs", Long.class);
@@ -247,13 +247,13 @@ class ShipmentJdOutboundPreviewApiTest {
     @Test
     void previewBlocksMissingAndInactiveMappingsAndInvalidExplicitFactorsThroughHttp() {
         String missingRef = seedSourceSkuWithoutProviderMapping();
-        Fact missingFact = createOrder("MAPPING-MISSING", List.of(item(missingRef, "1.000")), "待人工确认");
+        Fact missingFact = createOrder("MAPPING-MISSING", List.of(item(missingRef, "1")), "待人工确认");
         long missingShipment = createShipment(missingFact, "待人工确认");
         confirmAddress(missingShipment, "mapping-missing");
         assertThat(blockerCodes(preview(missingShipment, "req-jd-preview-mapping-missing")))
                 .contains("JD_SHIPMENT_OUTBOUND_SKU_MAPPING_MISSING");
 
-        Fact fact = createOrder("MAPPING-INVALID", List.of(item("1.000")), "待人工确认");
+        Fact fact = createOrder("MAPPING-INVALID", List.of(item("1")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         confirmAddress(shipmentId, "mapping-invalid");
         jdbc.update("UPDATE app.provider_skus SET active=false WHERE provider_sku_code='JD-SKU-000001'");
@@ -277,7 +277,7 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Test
     void receiverAddressConfirmationUsesShipmentCasAndRejectsAStaleWriter() {
-        Fact fact = createOrder("ADDRESS-CAS", List.of(item("1.000")), "待人工确认");
+        Fact fact = createOrder("ADDRESS-CAS", List.of(item("1")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
 
         ResponseEntity<Map> accepted = putAddress(
@@ -301,7 +301,7 @@ class ShipmentJdOutboundPreviewApiTest {
     @Test
     void addressAnalysisOffByDefaultKeepsTheOperatorConfirmedFourLevelPath() {
         // 缺省不配 = 老路径一字不变。这条是防回归：新功能不得悄悄改变既有行为。
-        Fact fact = createOrder("ADDR-DEFAULT", List.of(item("1.000")), "待人工确认");
+        Fact fact = createOrder("ADDR-DEFAULT", List.of(item("1")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
 
         ResponseEntity<Map> before = preview(shipmentId, "req-addr-default-unconfirmed");
@@ -319,7 +319,7 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Test
     void addressAnalysisTwoDelegatesFourLevelParsingToJdAndStopsSendingLevels() {
-        Fact fact = createOrder("ADDR-JD-PARSE", List.of(item("1.000")), "待人工确认");
+        Fact fact = createOrder("ADDR-JD-PARSE", List.of(item("1")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         confirmAddress(shipmentId, "addr-jd-parse");
 
@@ -355,7 +355,7 @@ class ShipmentJdOutboundPreviewApiTest {
         // 把"能不能拆四级"这件事从我方词典手里交出去。
         // （收货人快照由 DB 触发器保护为不可变，因此空地址场景无法在此构造，
         //   改由 putJdAnalyzedAddress 的 hasText 分支在单元层面保证，不在此重复。）
-        Fact fact = createOrder("ADDR-RAW", List.of(item("1.000")), "待人工确认");
+        Fact fact = createOrder("ADDR-RAW", List.of(item("1")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         jdbc.update(
                 "UPDATE app.fulfillment_providers "
@@ -378,7 +378,7 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Test
     void townRequirementMustBeAnExplicitProviderPolicyAndSupportsBothBranches() {
-        Fact fact = createOrder("TOWN-POLICY", List.of(item("1.000")), "待人工确认");
+        Fact fact = createOrder("TOWN-POLICY", List.of(item("1")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         confirmAddress(shipmentId, "town-policy");
 
@@ -423,7 +423,7 @@ class ShipmentJdOutboundPreviewApiTest {
                         "specification", "500g/盒",
                         "unit", "盒",
                         "quantity_per_bundle", "3")))), "待人工确认");
-        long shipmentId = createShipment(fact, "待人工确认", new BigDecimal("1.000"));
+        long shipmentId = createShipment(fact, "待人工确认", new BigDecimal("1"));
         confirmAddress(shipmentId, "partial-bundle");
 
         ResponseEntity<Map> response = preview(shipmentId, "req-jd-preview-partial-bundle-001");
@@ -445,7 +445,7 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Test
     void previewReturnsAllActionableBlockersWithoutGuessingAddressOrDefaultingBoxConversion() {
-        Fact fact = createOrder("BLOCKED", List.of(item("1.000")), "上海市浦东新区测试路1号");
+        Fact fact = createOrder("BLOCKED", List.of(item("1")), "上海市浦东新区测试路1号");
         long shipmentId = createShipment(fact, "上海市浦东新区测试路1号");
         jdbc.update(
                 "UPDATE app.fulfillment_providers SET config=config-'warehouseNo' WHERE provider_code='JD'");
@@ -505,7 +505,7 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Test
     void jdIdentifiersWrittenThroughTheApiClearConfigBlockersInPreview() {
-        Fact fact = createOrder("API-CONFIG", List.of(item("1.000")), "待人工确认");
+        Fact fact = createOrder("API-CONFIG", List.of(item("1")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         jdbc.update("UPDATE app.fulfillment_providers SET config='{}'::jsonb WHERE provider_code='JD'");
         jdbc.update(
@@ -563,7 +563,7 @@ class ShipmentJdOutboundPreviewApiTest {
                 SET config = config || '{"customerCode":"010K-API-001"}'::jsonb
                 WHERE provider_code='JD'
                 """);
-        Fact fact = createOrder("CONFIG-CUSTOMER-CODE", List.of(item("1.000")), "待人工确认");
+        Fact fact = createOrder("CONFIG-CUSTOMER-CODE", List.of(item("1")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         confirmAddress(shipmentId, "config-customer-code");
 
@@ -580,7 +580,7 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Test
     void missingJdCustomerCodeBlocksPreviewPointingAtProviderConfig() {
-        Fact fact = createOrder("NO-CUSTOMER-CODE", List.of(item("1.000")), "待人工确认");
+        Fact fact = createOrder("NO-CUSTOMER-CODE", List.of(item("1")), "待人工确认");
         long shipmentId = createShipment(fact, "待人工确认");
         jdbc.update(
                 "UPDATE app.customers SET profile=profile-'jd_customer_code' "
@@ -604,21 +604,26 @@ class ShipmentJdOutboundPreviewApiTest {
 
     @Test
     void previewBlocksNonIntegralConversionInsteadOfRounding() {
-        // 03 起小数换算系数（如 0.5 件/盒）在配置校验阶段即阻断（UNIT_CONFIG_INVALID）；
-        // 本测试继续覆盖数量侧：整数系数 × 非整数指令数量不得被四舍五入。
-        Fact fact = createOrder("FRACTION", List.of(item("1.500")), "待人工确认");
-        long shipmentId = createShipment(fact, "待人工确认");
+        // 03 起小数换算系数（如 0.5 件/盒）在配置校验阶段即阻断（UNIT_CONFIG_INVALID）。
+        // V99 商品数量整数化移植：非整数指令数量在订单创建入口即被 pattern 校验拒绝
+        //（数量必须为正整数），不再进入 shipment/预览层被四舍五入；
+        // 预览层 JD_SHIPMENT_OUTBOUND_NON_INTEGRAL_QUANTITY 判据保留为纵深防御。
+        Map<String, Object> request = Map.of(
+                "source", "WECOM",
+                "source_ref", "WECOM-JD-PREVIEW-FRACTION",
+                "customer", Map.of("source_customer_ref", "WECOM-CUSTOMER-001", "name", "测试客户"),
+                "receiver", Map.of("name", "张三", "phone", "13800000000", "address", "待人工确认"),
+                "items", List.of(item("1.500")),
+                "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-13T10:00:00+08:00"));
+        ResponseEntity<Map> response = http.exchange(
+                "/internal/v1/orders",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders(
+                        "jd-preview-order-fraction", "req-jd-preview-order-fraction")),
+                Map.class);
 
-        confirmAddress(shipmentId, "fraction");
-        ResponseEntity<Map> response = preview(shipmentId, "req-jd-preview-fraction-001");
-
-        assertThat(response.getBody()).containsEntry("submittable", false);
-        assertThat(castList(response.getBody().get("blockers")))
-                .extracting(row -> row.get("code"))
-                .contains("JD_SHIPMENT_OUTBOUND_NON_INTEGRAL_QUANTITY");
-        Map<String, Object> cargo = castMap(((List<?>) castMap(response.getBody().get("request"))
-                .get("cargoInfos")).getFirst());
-        assertThat(cargo).doesNotContainKey("planQuantity");
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(String.valueOf(response.getBody())).contains("数量必须为正整数");
     }
 
     private ResponseEntity<Map> preview(long shipmentId, String requestId) {

@@ -868,7 +868,9 @@ class FulfillmentExportWecomPipelineApiTest {
         Map<String, Object> batch = uploaded.getBody();
         ResponseEntity<Map> confirmed = confirmBatch(
                 batch.get("id").toString(), "confirm-" + orderRef.toLowerCase());
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(confirmed.getStatusCode())
+                .as("confirm body: %s; upload body: %s", confirmed.getBody(), batch)
+                .isEqualTo(HttpStatus.OK);
         return confirmed.getBody();
     }
 
@@ -1099,7 +1101,8 @@ class FulfillmentExportWecomPipelineApiTest {
     }
 
     private byte[] feixiangSingleCsv(String orderRef) {
-        return feixiangSingleCsv(orderRef, "FX-PRODUCT-001", "1.500");
+        // V99 商品数量整数化：来源数量一律正整数（旧夹具的 1.500 属于已废弃的小数件语义）。
+        return feixiangSingleCsv(orderRef, "FX-PRODUCT-001", "2");
     }
 
     private byte[] feixiangSingleCsv(String orderRef, String productRef, String quantity) {

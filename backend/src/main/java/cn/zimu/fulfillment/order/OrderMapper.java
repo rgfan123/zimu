@@ -106,9 +106,9 @@ public class OrderMapper {
                 line.getProductNameSnapshot(),
                 line.getSpecificationSnapshot(),
                 line.getUnitSnapshot(),
-                line.getSourceQuantitySnapshot() == null ? null : line.getSourceQuantitySnapshot().toPlainString(),
-                line.getMappingMultiplierSnapshot() == null ? null : line.getMappingMultiplierSnapshot().toPlainString(),
-                line.getRequestedQuantity().toPlainString(),
+                line.getSourceQuantitySnapshot(),
+                line.getMappingMultiplierSnapshot(),
+                line.getRequestedQuantity(),
                 line.getProcessingStage().name(),
                 line.getExceptionCode(),
                 components);
@@ -121,8 +121,8 @@ public class OrderMapper {
                 component.getProductNameSnapshot(),
                 component.getSpecificationSnapshot(),
                 component.getUnitSnapshot(),
-                component.getQuantityPerBundle().toPlainString(),
-                component.getTotalQuantity().toPlainString());
+                component.getQuantityPerBundle(),
+                component.getTotalQuantity());
     }
 
     public ReviewCaseDto toReviewCase(ReviewCase reviewCase) {
@@ -300,13 +300,11 @@ public class OrderMapper {
         snapshot.put("unit", line.getUnitSnapshot());
         snapshot.put(
                 "source_quantity",
-                line.getSourceQuantitySnapshot() == null ? null : line.getSourceQuantitySnapshot().toPlainString());
+                line.getSourceQuantitySnapshot());
         snapshot.put(
                 "mapping_multiplier",
-                line.getMappingMultiplierSnapshot() == null
-                        ? null
-                        : line.getMappingMultiplierSnapshot().toPlainString());
-        snapshot.put("requested_quantity", line.getRequestedQuantity().toPlainString());
+                line.getMappingMultiplierSnapshot());
+        snapshot.put("requested_quantity", line.getRequestedQuantity());
         snapshot.put("processing_stage", line.getProcessingStage().name());
         snapshot.put("fulfillment_committed_at", line.getFulfillmentCommittedAt());
         snapshot.put("components", components.stream().map(this::componentSnapshot).toList());
@@ -317,8 +315,8 @@ public class OrderMapper {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("component_no", component.getComponentNo());
         snapshot.put("sku_id", component.getSkuId());
-        snapshot.put("quantity_per_bundle", component.getQuantityPerBundle().toPlainString());
-        snapshot.put("total_quantity", component.getTotalQuantity().toPlainString());
+        snapshot.put("quantity_per_bundle", component.getQuantityPerBundle());
+        snapshot.put("total_quantity", component.getTotalQuantity());
         snapshot.put("product_name", component.getProductNameSnapshot());
         snapshot.put("specification", component.getSpecificationSnapshot());
         snapshot.put("unit", component.getUnitSnapshot());

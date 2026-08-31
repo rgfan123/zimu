@@ -177,7 +177,7 @@ class WecomOrderFulfillmentRoutingApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "2.000")),
+                        "quantity", "2")),
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-20T10:00:00+08:00"));

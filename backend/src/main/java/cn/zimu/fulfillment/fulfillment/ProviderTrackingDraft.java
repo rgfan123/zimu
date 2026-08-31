@@ -10,7 +10,6 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -83,7 +82,7 @@ public class ProviderTrackingDraft extends AuditableEntity {
     private ShipmentJudgment shipmentJudgment = ShipmentJudgment.FULL;
 
     @Column(name = "actual_quantity")
-    private BigDecimal actualQuantity;
+    private Integer actualQuantity;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "validation_issues", nullable = false)
@@ -195,11 +194,11 @@ public class ProviderTrackingDraft extends AuditableEntity {
         this.shipmentJudgment = shipmentJudgment;
     }
 
-    public BigDecimal getActualQuantity() {
+    public Integer getActualQuantity() {
         return actualQuantity;
     }
 
-    public void setActualQuantity(BigDecimal actualQuantity) {
+    public void setActualQuantity(Integer actualQuantity) {
         this.actualQuantity = actualQuantity;
     }
 

@@ -194,7 +194,7 @@ class OrderDraftApiTest {
         assertThat(lines.getFirst())
                 .containsEntry("line_no", 1)
                 .containsEntry("product_name_raw", "子牧羊小腿")
-                .containsEntry("quantity", "2.000");
+                .containsEntry("quantity", 2);
         List<Map<String, Object>> skuCandidates = castMapList(lines.getFirst().get("sku_candidates"));
         assertThat(skuCandidates).hasSize(1);
         assertThat(skuCandidates.getFirst().get("sku_id")).isNotEqualTo("999999992");
@@ -847,7 +847,7 @@ class OrderDraftApiTest {
                 .containsEntry("confirmed_by", "ticket-04-reviewer");
         assertThat(castMapList(confirmed.getBody().get("lines")).getFirst())
                 .containsEntry("sku_id", skuId)
-                .containsEntry("quantity", "3");
+                .containsEntry("quantity", 3);
         String orderId = confirmed.getBody().get("confirmed_order_id").toString();
 
         ResponseEntity<Map> replayed = postCommand(
@@ -873,9 +873,9 @@ class OrderDraftApiTest {
                 .containsEntry("product_name", "确认时规范商品-CONFIRM")
                 .containsEntry("specification", "500g×2袋")
                 .containsEntry("unit", "盒")
-                .containsEntry("source_quantity", "3.000")
-                .containsEntry("mapping_multiplier", "1.000")
-                .containsEntry("requested_quantity", "3.000");
+                .containsEntry("source_quantity", 3)
+                .containsEntry("mapping_multiplier", 1)
+                .containsEntry("requested_quantity", 3);
         assertThat(orderLines.getFirst().get("provider_id")).isNotEqualTo("999999993");
         assertThat(pseudoSourceSkuCount()).isEqualTo(pseudoMappingsBefore);
         assertThat(jdbc.queryForObject(
@@ -896,9 +896,9 @@ class OrderDraftApiTest {
                 .containsEntry("product_name", "确认时规范商品-CONFIRM")
                 .containsEntry("specification", "500g×2袋")
                 .containsEntry("unit", "盒")
-                .containsEntry("source_quantity", "3.000")
-                .containsEntry("mapping_multiplier", "1.000")
-                .containsEntry("requested_quantity", "3.000");
+                .containsEntry("source_quantity", 3)
+                .containsEntry("mapping_multiplier", 1)
+                .containsEntry("requested_quantity", 3);
 
         Map<String, Object> resolvedCase = get("/api/v1/review-cases/" + reviewCase.get("id"));
         assertThat(resolvedCase)

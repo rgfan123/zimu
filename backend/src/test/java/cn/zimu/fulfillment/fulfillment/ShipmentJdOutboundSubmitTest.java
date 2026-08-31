@@ -274,8 +274,8 @@ class ShipmentJdOutboundSubmitTest {
     @Test
     void multiLineShipmentProducesSingleJdOutboundAggregateAndSharedRecord() {
         Fact fact = createOrder("MULTI", List.of(
-                singleItem("WECOM-SKU-JD-001", "1.000"),
-                singleItem("WECOM-SKU-JD-001", "2.000")));
+                singleItem("WECOM-SKU-JD-001", "1"),
+                singleItem("WECOM-SKU-JD-001", "2")));
         long shipmentId = createShipment(fact);
         JdShipmentSubmissionPlan preview = planner.plan(shipmentId);
         assertThat(preview.submittable()).isTrue();
@@ -404,7 +404,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void sameIdempotencyKeyReplaysOriginalResultWithoutSecondCall() {
-        Fact fact = createOrder("REPLAY", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("REPLAY", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -433,7 +433,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void secondSubmissionWithNewKeyIsRejected() {
-        Fact fact = createOrder("DUP", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("DUP", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -453,7 +453,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void retryAfterFailureUpdatesSameRecordAndRecovers() {
-        Fact fact = createOrder("RETRY", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("RETRY", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -494,7 +494,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void unresolvedRealAttemptCannotBeReconciledOrRelabeledByMockRuntime() {
-        Fact fact = createOrder("CROSS-MODE", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("CROSS-MODE", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -538,7 +538,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void adapterRuntimeFailurePersistsSafeDurableFailureFacts() {
-        Fact fact = createOrder("ADAPTER-FAIL", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("ADAPTER-FAIL", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         controlledJdWrite.failNextOrderSoCreate();
 
@@ -606,7 +606,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void jdBusinessRejectionIsDurableAndRetryableWithoutAdvancingShipment() {
-        Fact fact = createOrder("JD-REJECT", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("JD-REJECT", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         controlledJdWrite.rejectNextOrderSoCreate();
 
@@ -635,7 +635,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void successfulResponseWithoutDeliveryNumberIsQuarantinedInsteadOfMarkedSubmitted() {
-        Fact fact = createOrder("MISSING-DELIVERY", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("MISSING-DELIVERY", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         controlledJdWrite.omitDeliveryNoNextOrderSoCreate();
 
@@ -662,7 +662,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void successfulResponseForAnotherMerchantReferenceIsQuarantined() {
-        Fact fact = createOrder("MISMATCHED-ERP", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("MISMATCHED-ERP", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         controlledJdWrite.mismatchErpDeliveryNoNextOrderSoCreate();
 
@@ -685,7 +685,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void uncertainWriteRetryReconcilesOriginalErpReferenceBeforeAnySecondCreate() {
-        Fact fact = createOrder("UNCERTAIN", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("UNCERTAIN", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         controlledJdWrite.failNextOrderSoCreate();
 
@@ -714,7 +714,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void uncertainWriteIsReconciledBeforeAStockFailureCanEraseTheUnresolvedIntent() {
-        Fact fact = createOrder("UNCERTAIN-STOCK", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("UNCERTAIN-STOCK", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         controlledJdWrite.failNextOrderSoCreate();
 
@@ -747,7 +747,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void reconciliationAuditFailureCannotMakeAnotherOutboundCreateReachable() {
-        Fact fact = createOrder("UNCERTAIN-AUDIT", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("UNCERTAIN-AUDIT", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         controlledJdWrite.failNextOrderSoCreate();
 
@@ -786,7 +786,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void indeterminateBusinessResponseRetryReconcilesBeforeAnySecondCreate() {
-        Fact fact = createOrder("INDETERMINATE", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("INDETERMINATE", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         controlledJdWrite.uncertainBusinessFailureNextOrderSoCreate();
 
@@ -819,7 +819,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void unauthorizedOperatorCannotRecordIntentOrReachJdWrite() {
-        Fact fact = createOrder("UNAUTHORIZED", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("UNAUTHORIZED", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         HttpHeaders headers = writeHeaders("shipment-jd-unauthorized-001", "req-shipment-jd-unauthorized-001");
         headers.set("X-Operator", "not-authorized");
@@ -847,7 +847,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void spoofedAllowlistedOperatorWithoutAuthenticatedGatewayCredentialsIsRejectedAndAudited() {
-        Fact fact = createOrder("SPOOFED-IDENTITY", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("SPOOFED-IDENTITY", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         HttpHeaders headers = writeHeaders(
                 "shipment-jd-spoofed-identity-001", "req-shipment-jd-spoofed-identity-001");
@@ -878,7 +878,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void authenticatedPrincipalMustMatchGatewayOperatorHeader() {
-        Fact fact = createOrder("IDENTITY-MISMATCH", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("IDENTITY-MISMATCH", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         HttpHeaders headers = writeHeaders(
                 "shipment-jd-identity-mismatch-001", "req-shipment-jd-identity-mismatch-001");
@@ -926,7 +926,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void successfulExternalCreateWithEligibilityDriftIsQuarantinedForReconciliation() {
-        Fact fact = createOrder("ELIGIBILITY-DRIFT", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("ELIGIBILITY-DRIFT", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         controlledJdWrite.invalidateEligibilityAfterCreate();
 
@@ -956,7 +956,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void changedRequestUnderSameShipmentIsRejected() {
-        Fact fact = createOrder("DRIFT", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("DRIFT", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -1027,7 +1027,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void rejectsWhenAnyLineStageAlreadyAdvanced() {
-        Fact fact = createOrder("STAGE", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("STAGE", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -1059,7 +1059,7 @@ class ShipmentJdOutboundSubmitTest {
     void rejectsThirdPartyProviderShipment() {
         jdbc.update(
                 "UPDATE app.source_channel_skus SET quantity_multiplier=1.000 WHERE source_sku_ref='WECOM-SKU-TP-001'");
-        Fact fact = createOrder("TP", List.of(singleItem("WECOM-SKU-TP-001", "1.000")));
+        Fact fact = createOrder("TP", List.of(singleItem("WECOM-SKU-TP-001", "1")));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -1075,7 +1075,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void rejectsShippedShipment() {
-        Fact fact = createOrder("SHIPPED", List.of(singleItem("WECOM-SKU-JD-001", "1.000")));
+        Fact fact = createOrder("SHIPPED", List.of(singleItem("WECOM-SKU-JD-001", "1")));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);

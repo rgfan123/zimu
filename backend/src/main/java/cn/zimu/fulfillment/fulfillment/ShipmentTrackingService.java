@@ -92,11 +92,11 @@ public class ShipmentTrackingService {
         Map<String, Object> quantities = jdbc.queryForMap(
                 "SELECT requested_quantity, cumulative_shipped_quantity, cancelled_quantity FROM app.fulfillments WHERE id=?",
                 command.fulfillmentId());
-        BigDecimal requested = (BigDecimal) quantities.get("requested_quantity");
-        BigDecimal cumulative = (BigDecimal) quantities.get("cumulative_shipped_quantity");
-        BigDecimal cancelled = (BigDecimal) quantities.get("cancelled_quantity");
-        if (cumulative.add(cancelled).compareTo(requested) == 0) {
-            String outcome = cancelled.signum() == 0 ? "FULLY_FULFILLED" : "PARTIALLY_FULFILLED";
+        int requested = ((Number) quantities.get("requested_quantity")).intValue();
+        int cumulative = ((Number) quantities.get("cumulative_shipped_quantity")).intValue();
+        int cancelled = ((Number) quantities.get("cancelled_quantity")).intValue();
+        if (cumulative + cancelled == requested) {
+            String outcome = cancelled == 0 ? "FULLY_FULFILLED" : "PARTIALLY_FULFILLED";
             jdbc.update("UPDATE app.fulfillments SET outcome=? WHERE id=?", outcome, command.fulfillmentId());
         }
         boolean requiresSourceFollowup = "PARTIAL".equals(command.result())
@@ -203,12 +203,11 @@ public class ShipmentTrackingService {
         for (Map<String, Object> row : persisted) {
             long fulfillmentId = ((Number) row.get("fulfillment_id")).longValue();
             long orderLineId = ((Number) row.get("order_line_id")).longValue();
-            BigDecimal instructed = (BigDecimal) row.get("instructed_quantity");
+            int instructed = ((Number) row.get("instructed_quantity")).intValue();
             ShipmentTrackingBatchCommand.Item item = requested.get(fulfillmentId);
             if (item == null
                     || item.orderLineId() != orderLineId
-                    || item.shippedQuantity() == null
-                    || item.shippedQuantity().compareTo(instructed) != 0
+                    || item.shippedQuantity() != instructed
                     || row.get("shipped_quantity") != null) {
                 throw BusinessException.unprocessable(
                         "SHIPMENT_TRACKING_ITEMS_MISMATCH", "物流回填明细与发货批次指令量不完全一致");
@@ -245,13 +244,13 @@ public class ShipmentTrackingService {
                     "SELECT requested_quantity, cumulative_shipped_quantity, cancelled_quantity "
                             + "FROM app.fulfillments WHERE id=?",
                     item.fulfillmentId());
-            BigDecimal requestedQuantity = (BigDecimal) quantities.get("requested_quantity");
-            BigDecimal cumulative = (BigDecimal) quantities.get("cumulative_shipped_quantity");
-            BigDecimal cancelled = (BigDecimal) quantities.get("cancelled_quantity");
-            if (cumulative.add(cancelled).compareTo(requestedQuantity) == 0) {
+            int requestedQuantity = ((Number) quantities.get("requested_quantity")).intValue();
+            int cumulative = ((Number) quantities.get("cumulative_shipped_quantity")).intValue();
+            int cancelled = ((Number) quantities.get("cancelled_quantity")).intValue();
+            if (cumulative + cancelled == requestedQuantity) {
                 jdbc.update(
                         "UPDATE app.fulfillments SET outcome=? WHERE id=?",
-                        cancelled.signum() == 0 ? "FULLY_FULFILLED" : "PARTIALLY_FULFILLED",
+                        cancelled == 0 ? "FULLY_FULFILLED" : "PARTIALLY_FULFILLED",
                         item.fulfillmentId());
             }
             boolean requiresSourceFollowup = jdbc.queryForObject(
@@ -293,7 +292,7 @@ public class ShipmentTrackingService {
     }
 
     private void createSourceFollowup(
-            ShipmentTrackingCommand command, BigDecimal cumulative, BigDecimal requested) {
+            ShipmentTrackingCommand command, int cumulative, int requested) {
         jdbc.update(
                 """
                 INSERT INTO app.review_cases
@@ -312,15 +311,15 @@ public class ShipmentTrackingService {
                 command.orderLineId(),
                 command.fulfillmentId(),
                 command.shipmentId(),
-                cumulative.toPlainString(),
-                requested.toPlainString());
+                String.valueOf(cumulative),
+                String.valueOf(requested));
     }
 
     private void createSourceFollowup(
             ShipmentTrackingBatchCommand command,
             ShipmentTrackingBatchCommand.Item item,
-            BigDecimal cumulative,
-            BigDecimal requested) {
+            int cumulative,
+            int requested) {
         jdbc.update(
                 """
                 INSERT INTO app.review_cases
@@ -336,7 +335,7 @@ public class ShipmentTrackingService {
                 """,
                 "RC-MULTI-SHIPMENT-" + item.fulfillmentId(),
                 command.orderId(), item.orderLineId(), item.fulfillmentId(), command.shipmentId(),
-                cumulative.toPlainString(), requested.toPlainString());
+                String.valueOf(cumulative), String.valueOf(requested));
     }
 
     private void appendShipmentFacts(ShipmentTrackingBatchCommand command, CommandContext context) {

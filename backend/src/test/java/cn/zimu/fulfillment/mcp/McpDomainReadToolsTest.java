@@ -178,11 +178,11 @@ class McpDomainReadToolsTest {
         assertThat(ticket.get("id").asText()).isEqualTo(String.valueOf(successTicketId));
         assertThat(ticket.get("ticket_no").asText()).isEqualTo("MCP-PROC-002");
         assertThat(ticket.get("status").asText()).isEqualTo("SUCCESS");
-        assertThat(ticket.get("requested_quantity").asText()).isEqualTo("2.000");
+        assertThat(ticket.get("requested_quantity").asText()).isEqualTo("2");
         assertThat(ticket.get("items")).hasSize(1);
         assertThat(ticket.get("items").get(0).get("sku_id").asText()).isEqualTo(String.valueOf(skuId));
-        // 回执触发器已把可用量计入 fulfilled，剩余缺口为 2.000 - 1.500
-        assertThat(ticket.get("items").get(0).get("remaining_quantity").asText()).isEqualTo("0.500");
+        // 回执触发器已把可用量计入 fulfilled，剩余缺口为 2 - 1（V99 起商品数量为整数）
+        assertThat(ticket.get("items").get(0).get("remaining_quantity").asText()).isEqualTo("1");
         assertThat(ticket.get("receipts")).hasSize(1);
         assertThat(ticket.get("order_line").get("order_line_id")).isNotNull();
         assertThat(ticket.get("order_line").get("product_name").asText()).isEqualTo("采购商品");
@@ -192,7 +192,7 @@ class McpDomainReadToolsTest {
         assertThat(receipts).hasSize(1);
         assertThat(receipts.get(0).get("id").asText()).isEqualTo(String.valueOf(receiptId));
         assertThat(receipts.get(0).get("result").asText()).isEqualTo("PARTIAL");
-        assertThat(receipts.get(0).get("items").get(0).get("available_quantity").asText()).isEqualTo("1.500");
+        assertThat(receipts.get(0).get("items").get(0).get("available_quantity").asText()).isEqualTo("1");
 
         // 回执摘要投影不包含凭据/下载地址
         assertThat(receipts.toString()).doesNotContain("secret").doesNotContain("http");
@@ -986,7 +986,7 @@ class McpDomainReadToolsTest {
                 """
                 INSERT INTO app.procurement_receipt_items
                     (procurement_receipt_id, procurement_ticket_item_id, available_quantity)
-                VALUES (?, ?, 1.500)
+                VALUES (?, ?, 1)
                 """,
                 receiptId,
                 ticketItemId);

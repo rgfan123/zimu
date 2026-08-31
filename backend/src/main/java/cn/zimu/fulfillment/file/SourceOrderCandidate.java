@@ -2,7 +2,6 @@ package cn.zimu.fulfillment.file;
 
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.order.dto.CanonicalOrderInput;
-import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -62,7 +61,7 @@ record SourceOrderCandidate(
             String sourceSkuRef,
             Long skuId,
             String skuCode,
-            BigDecimal quantityMultiplier) {
+            Integer quantityMultiplier) {
         SourceMappingSnapshot {
             if (itemIndex < 0
                     || (componentIndex != null && componentIndex < 0)
@@ -80,7 +79,7 @@ record SourceOrderCandidate(
             int partitionCount,
             String sourceBundleRef,
             Long bundleId,
-            BigDecimal quantityMultiplier,
+            Integer quantityMultiplier,
             List<BundleComponentSnapshot> components) {
         SourceBundleMappingSnapshot {
             if (rawImportRowId <= 0
@@ -96,7 +95,7 @@ record SourceOrderCandidate(
     }
 
     /** 静态礼包 BOM 的内部 SKU 身份与每礼包数量。 */
-    record BundleComponentSnapshot(Long skuId, String skuCode, BigDecimal quantityPerBundle) {
+    record BundleComponentSnapshot(Long skuId, String skuCode, Integer quantityPerBundle) {
         BundleComponentSnapshot {
             if (skuId == null || skuCode == null || skuCode.isBlank() || quantityPerBundle == null) {
                 throw new IllegalArgumentException("礼包组件快照不完整");

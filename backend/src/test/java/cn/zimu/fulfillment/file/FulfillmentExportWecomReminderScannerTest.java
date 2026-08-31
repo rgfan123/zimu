@@ -592,7 +592,7 @@ class FulfillmentExportWecomReminderScannerTest {
     private void completeTrackingWithKey(String exportId, String idempotencyKey) throws Exception {
         byte[] instruction = downloadExport(exportId);
         // 运单号唯一（trackings 有 (logistics_company_code, tracking_number) 全局唯一约束）
-        byte[] returned = fillThirdPartyTracking(instruction, "SHIPPED", "3.000", "JDVA-RM-" + exportId);
+        byte[] returned = fillThirdPartyTracking(instruction, "SHIPPED", "4", "JDVA-RM-" + exportId);
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         body.add("file", new ByteArrayResource(returned) {
             @Override public String getFilename() { return "tracking.xlsx"; }
@@ -878,7 +878,7 @@ class FulfillmentExportWecomReminderScannerTest {
                 "订单号", "会员名称", "商品名称", "商品ID", "订单商品ID", "可发货数量",
                 "收货人姓名", "收货人手机号", "收货人地址", "下单时间", "物流状态", "物流公司", "物流单号"));
         String row = orderRef + ",FX-MEMBER-001,子牧羊小腿,FX-PRODUCT-001," + orderRef
-                + "-LINE,1.500,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,\r\n";
+                + "-LINE,2,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,\r\n";
         return ("\uFEFF" + header + "\r\n" + row).getBytes(StandardCharsets.UTF_8);
     }
 

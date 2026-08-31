@@ -272,7 +272,7 @@ class TrackingDraftApiTest {
         Map<String, Object> refreshed = detail(String.valueOf(draft.get("id")));
         assertThat(refreshed.get("status")).isEqualTo("CONFIRMED");
         assertThat(refreshed.get("confirmed_by")).isEqualTo(OPERATOR);
-        assertThat(refreshed.get("actual_quantity")).isEqualTo("2.000");
+        assertThat(refreshed.get("actual_quantity")).isEqualTo(2);
         assertThat(refreshed.get("review_case_id")).isNull();
         assertThat(refreshed.get("review_case_version")).isNull();
         assertThat(submissionDetail("MSG-TASK-UNIQUE-01").get("status")).isEqualTo("CONFIRMED");
@@ -293,7 +293,7 @@ class TrackingDraftApiTest {
     @Test
     void invalidOrNotApplicableTaskNumberGoesToManualProcessing() throws Exception {
         createThirdPartyOrder("TRK-TASK-INVALID-001", "李四", "2.000");
-        Map<String, Object> jdOrder = createJdOrder("TRK-TASK-JD-002", "钱七", "1.000");
+        Map<String, Object> jdOrder = createJdOrder("TRK-TASK-JD-002", "钱七", "1");
         String jdTaskNo = (String) fulfillmentFacts("TRK-TASK-JD-002").get("fulfillment_no");
 
         Map<String, Object> missing = sendTracking(
@@ -408,7 +408,7 @@ class TrackingDraftApiTest {
 
     @Test
     void readyToExportTaskWithoutAnExistingShipmentCannotBeLinkedOrConfirmed() throws Exception {
-        createUnexportedThirdPartyOrder("TRK-TASK-NOT-EXPORTED-001", "未导出客户", "2.000");
+        createUnexportedThirdPartyOrder("TRK-TASK-NOT-EXPORTED-001", "未导出客户", "2");
         Map<String, Object> facts = fulfillmentFacts("TRK-TASK-NOT-EXPORTED-001");
         assertThat(jdbc.queryForObject(
                         "SELECT processing_stage FROM app.order_lines WHERE id=?",
@@ -559,7 +559,7 @@ class TrackingDraftApiTest {
 
     @Test
     void multiplePendingShipmentsForOneTaskRemainAmbiguousAndCreateNoTracking() throws Exception {
-        createUnexportedThirdPartyOrder("TRK-TASK-MULTI-SHIP-001", "多批次客户", "2.000");
+        createUnexportedThirdPartyOrder("TRK-TASK-MULTI-SHIP-001", "多批次客户", "2");
         Map<String, Object> facts = fulfillmentFacts("TRK-TASK-MULTI-SHIP-001");
         long firstShipmentId = addPendingShipment("TRK-TASK-MULTI-SHIP-001", 1, "1.000");
         long secondShipmentId = addPendingShipment("TRK-TASK-MULTI-SHIP-001", 2, "1.000");

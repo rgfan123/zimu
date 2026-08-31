@@ -55,7 +55,7 @@ class FulfillmentStockDecisionServiceTest {
 
     @Test
     void legacyJdDecisionSeamFailsClosedWithoutCreatingStockOrProcurementFacts() {
-        Fact fact = createOrder("RETIRED", "150.000");
+        Fact fact = createOrder("RETIRED", "150");
         long snapshotsBefore = jdbc.queryForObject(
                 "SELECT count(*) FROM app.provider_stock_snapshots", Long.class);
 
@@ -79,8 +79,8 @@ class FulfillmentStockDecisionServiceTest {
     @Test
     @Disabled("旧 JD 决策语义已由 ShipmentJdStockCheckApiTest 取代")
     void jdRealtimeStockDecidesAvailabilityAndCreatesProcurementTicketOnShortage() {
-        Fact available = createOrder("AVAILABLE", "2.000");
-        Fact shortage = createOrder("SHORTAGE", "150.000");
+        Fact available = createOrder("AVAILABLE", "2");
+        Fact shortage = createOrder("SHORTAGE", "150");
         long jdProviderId = providerId("JD");
         long jdSkuId = skuId("SKU-JD-000001");
         long snapshotRowsBefore = jdbc.queryForObject(
@@ -206,8 +206,8 @@ class FulfillmentStockDecisionServiceTest {
                 """,
                 jdSkuId);
 
-        Fact available = createOrder("CONV-AVAILABLE", "60.000");
-        Fact shortage = createOrder("CONV-SHORTAGE", "201.000");
+        Fact available = createOrder("CONV-AVAILABLE", "60");
+        Fact shortage = createOrder("CONV-SHORTAGE", "201");
 
         StockDecisionResult availableResult = service.decide(
                 available.fulfillmentId(), envelope("AVAILABLE"), "stock-decision-conv-available-001",
@@ -234,7 +234,7 @@ class FulfillmentStockDecisionServiceTest {
                 "UPDATE app.provider_skus SET active=false WHERE fulfillment_provider_id="
                         + "(SELECT id FROM app.fulfillment_providers WHERE provider_code='JD') AND sku_id=?",
                 jdSkuId);
-        Fact fact = createOrder("NOMAP", "2.000");
+        Fact fact = createOrder("NOMAP", "2");
 
         assertThatThrownBy(() -> service.decide(
                 fact.fulfillmentId(), envelope("AVAILABLE"), "stock-decision-nomap-001",
@@ -265,7 +265,7 @@ class FulfillmentStockDecisionServiceTest {
                 WHERE fp.provider_code='TP' AND s.specification='标准箱' AND s.unit='箱'
                 ON CONFLICT (source_channel, source_sku_ref) DO NOTHING
                 """);
-        Fact fact = createOrder("TPREJECT", "2.000", "WECOM-SKU-TP-OWN-001", "标准箱", "箱");
+        Fact fact = createOrder("TPREJECT", "2", "WECOM-SKU-TP-OWN-001", "标准箱", "箱");
 
         assertThatThrownBy(() -> service.decide(
                 fact.fulfillmentId(), envelope("AVAILABLE"), "stock-decision-tp-reject-001",
@@ -279,12 +279,12 @@ class FulfillmentStockDecisionServiceTest {
     void managedThirdPartyProviderKeepsNormalizedDecisionPathAndReplay() {
         long tpSkuId = seedManagedThirdPartyFixture();
 
-        Fact available = createOrder("TPM-AVAILABLE", "2.000", "WECOM-SKU-TPM-001", "标准箱", "箱");
+        Fact available = createOrder("TPM-AVAILABLE", "2", "WECOM-SKU-TPM-001", "标准箱", "箱");
         StockDecisionCommand availableCommand = new StockDecisionCommand(
                 StockDecisionCommand.Decision.AVAILABLE,
                 Instant.parse("2026-08-12T03:00:00Z"),
                 List.of(new StockDecisionCommand.Item(
-                        String.valueOf(tpSkuId), "TP-WH-01", "10.000", "10.000", "tp-stock-available-001")));
+                        String.valueOf(tpSkuId), "TP-WH-01", "10", "10", "tp-stock-available-001")));
         StockDecisionResult availableResult = service.decide(
                 available.fulfillmentId(), availableCommand, "stock-decision-tpm-available-001",
                 new CommandContext("req-stock-tpm-available-001", "trace-stock-tpm-available-001", "stock-test"))
@@ -294,12 +294,12 @@ class FulfillmentStockDecisionServiceTest {
         assertThat(availableResult.processingStage()).isEqualTo("READY_TO_EXPORT");
         assertThat(availableResult.procurementTicketId()).isNull();
 
-        Fact shortage = createOrder("TPM-SHORTAGE", "2.000", "WECOM-SKU-TPM-001", "标准箱", "箱");
+        Fact shortage = createOrder("TPM-SHORTAGE", "2", "WECOM-SKU-TPM-001", "标准箱", "箱");
         StockDecisionCommand shortageCommand = new StockDecisionCommand(
                 StockDecisionCommand.Decision.OUT_OF_STOCK,
                 Instant.parse("2026-08-12T03:05:00Z"),
                 List.of(new StockDecisionCommand.Item(
-                        String.valueOf(tpSkuId), "TP-WH-01", "1.000", "1.000", "tp-stock-shortage-001")));
+                        String.valueOf(tpSkuId), "TP-WH-01", "1", "1", "tp-stock-shortage-001")));
         CommandContext shortageContext = new CommandContext(
                 "req-stock-tpm-shortage-001", "trace-stock-tpm-shortage-001", "stock-test");
         IdempotentResult<StockDecisionResult> first = service.decide(
@@ -315,7 +315,7 @@ class FulfillmentStockDecisionServiceTest {
         assertThat(jdbc.queryForObject(
                 "SELECT requested_quantity FROM app.procurement_ticket_items pti "
                         + "JOIN app.procurement_tickets pt ON pt.id=pti.procurement_ticket_id WHERE pt.fulfillment_id=?",
-                String.class, shortage.fulfillmentId())).isEqualTo("1.000");
+                String.class, shortage.fulfillmentId())).isEqualTo("1");
         assertThat(jdbc.queryForObject(
                 "SELECT unit_snapshot FROM app.procurement_ticket_items pti "
                         + "JOIN app.procurement_tickets pt ON pt.id=pti.procurement_ticket_id WHERE pt.fulfillment_id=?",

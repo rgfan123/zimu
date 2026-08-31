@@ -4970,14 +4970,23 @@ components:
       type: string
       pattern: '^[1-9][0-9]*$'
       example: '42'
+    # V99 商品数量整数化：数量域字符串一律整数文本；十进制形态仅保留给「含量」类字段。
     DecimalQuantity:
       type: string
-      pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
-      example: '6.000'
+      pattern: '^(0|[1-9][0-9]*)$'
+      example: '6'
     PositiveDecimalQuantity:
       type: string
+      pattern: '^[1-9][0-9]*$'
+      example: '6'
+    PositiveDecimalAmount:
+      type: string
       pattern: '^(?!0(?:\.0{1,3})?$)(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
-      example: '6.000'
+      example: '0.500'
+    DecimalAmount:
+      type: string
+      pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
+      example: '12.30'
     NullableCommercialPrice:
       type: string
       nullable: true
@@ -5910,7 +5919,7 @@ components:
       properties:
         line_no: { type: integer, minimum: 1 }
         sku_id: { $ref: '#/components/schemas/Identifier' }
-        quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        quantity: { type: integer, nullable: true }
     ConfirmOrderDraftCommand:
       type: object
       additionalProperties: false
@@ -6245,9 +6254,9 @@ components:
         product_name: { type: string }
         specification: { type: string }
         unit: { type: string }
-        source_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        mapping_multiplier: { $ref: '#/components/schemas/DecimalQuantity' }
-        requested_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        source_quantity: { type: integer, nullable: true }
+        mapping_multiplier: { type: integer, nullable: true }
+        requested_quantity: { type: integer }
         processing_stage: { $ref: '#/components/schemas/ProcessingStage' }
         exception_code: { type: string }
         components:
@@ -6262,8 +6271,8 @@ components:
         product_name: { type: string }
         specification: { type: string }
         unit: { type: string }
-        quantity_per_bundle: { $ref: '#/components/schemas/DecimalQuantity' }
-        total_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        quantity_per_bundle: { type: integer }
+        total_quantity: { type: integer }
     OrderSummary:
       type: object
       required: [id, order_no, source_channel, order_status, processing_stage, processing_health, completed_count, total_count, created_at, version]
@@ -7880,7 +7889,7 @@ components:
         provider_id: { $ref: '#/components/schemas/Identifier' }
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
-        net_content_value: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        net_content_value: { $ref: '#/components/schemas/PositiveDecimalAmount' }
         net_content_unit: { type: string, minLength: 1, maxLength: 16, example: g }
         package_count: { type: integer, minimum: 1 }
         package_unit: { type: string, minLength: 1, maxLength: 32, example: 袋 }
@@ -7955,7 +7964,7 @@ components:
         product_id: { $ref: '#/components/schemas/Identifier' }
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
-        net_content_value: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        net_content_value: { $ref: '#/components/schemas/PositiveDecimalAmount' }
         net_content_unit: { type: string, minLength: 1, maxLength: 16, example: g }
         package_count: { type: integer, minimum: 1 }
         package_unit: { type: string, minLength: 1, maxLength: 32, example: 袋 }
@@ -9181,7 +9190,7 @@ components:
       required: [provider_code, price, price_basis]
       properties:
         provider_code: { type: string }
-        price: { $ref: '#/components/schemas/DecimalQuantity' }
+        price: { $ref: '#/components/schemas/DecimalAmount' }
         price_basis: { type: string, enum: [sku_commercial_price, provider_sku] }
         note: { type: string }
     ExcludedCandidate:
@@ -9190,7 +9199,7 @@ components:
       required: [provider_code, price, price_basis, exclusion_reason]
       properties:
         provider_code: { type: string }
-        price: { $ref: '#/components/schemas/DecimalQuantity' }
+        price: { $ref: '#/components/schemas/DecimalAmount' }
         price_basis: { type: string, enum: [sku_commercial_price, provider_sku] }
         note: { type: string }
         exclusion_reason: { type: string, enum: [price_outlier, price_missing, mapping_stale] }

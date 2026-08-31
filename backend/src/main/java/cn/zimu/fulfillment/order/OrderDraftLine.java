@@ -7,7 +7,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -46,10 +45,10 @@ public class OrderDraftLine extends AuditableEntity {
     private String unitRaw;
 
     @Column(name = "quantity")
-    private BigDecimal quantity;
+    private Integer quantity;
 
     @Column(name = "fulfilled_quantity", nullable = false)
-    private BigDecimal fulfilledQuantity = BigDecimal.ZERO;
+    private Integer fulfilledQuantity = 0;
 
     public Long getId() {
         return id;
@@ -111,19 +110,19 @@ public class OrderDraftLine extends AuditableEntity {
         this.unitRaw = unitRaw;
     }
 
-    public BigDecimal getQuantity() {
+    public Integer getQuantity() {
         return quantity;
     }
 
-    public void setQuantity(BigDecimal quantity) {
+    public void setQuantity(Integer quantity) {
         this.quantity = quantity;
     }
 
-    public BigDecimal getFulfilledQuantity() {
+    public Integer getFulfilledQuantity() {
         return fulfilledQuantity;
     }
 
-    public void setFulfilledQuantity(BigDecimal fulfilledQuantity) {
+    public void setFulfilledQuantity(Integer fulfilledQuantity) {
         this.fulfilledQuantity = fulfilledQuantity;
     }
 }

@@ -708,7 +708,7 @@ class FulfillmentExportWecomResendStopApiTest {
                 put.accept(columns.get("运单号"), "JDVA-RS-COMPLETE-001");
             } else {
                 put.accept(columns.get("结果"), "SHIPPED");
-                put.accept(columns.get("实际发货数量"), "3.000");
+                put.accept(columns.get("实际发货数量"), "4");
                 put.accept(columns.get("快递公司"), "京东物流");
                 put.accept(columns.get("物流单号"), "JDVA-RS-COMPLETE-001");
                 put.accept(columns.get("发货时间"), "2026-08-12 12:00:00");
@@ -753,7 +753,7 @@ class FulfillmentExportWecomResendStopApiTest {
                 "订单号", "会员名称", "商品名称", "商品ID", "订单商品ID", "可发货数量",
                 "收货人姓名", "收货人手机号", "收货人地址", "下单时间", "物流状态", "物流公司", "物流单号"));
         String row = orderRef + ",FX-MEMBER-001,子牧羊小腿,FX-PRODUCT-001," + orderRef
-                + "-LINE,1.500,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,\r\n";
+                + "-LINE,2,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,\r\n";
         return ("\uFEFF" + header + "\r\n" + row).getBytes(StandardCharsets.UTF_8);
     }
 

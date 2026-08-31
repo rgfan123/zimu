@@ -180,7 +180,7 @@ public class DeepSeekMessageInterpreter implements MessageInterpreter {
             }
             规则：
             1. intent 必须取六个枚举之一；普通问候/闲聊 → NON_BUSINESS；无法判断 → NEED_REVIEW。
-            2. 订单消息提取收货人与商品；quantity 必须是正数，最多三位小数；无法确定就不填。
+            2. 订单消息提取收货人与商品；quantity 必须是正整数（件数，不带小数点）；无法确定就不填。
             3. 运单回传要求一行姓名对应一行运单号，逐行写入 lines；无法逐行对应时把姓名列表与运单号列表分别放入 names/tracking_nos 并置 intent=NEED_REVIEW 由人工配对。
             4. 不输出任何系统内部 ID 或编码（source_sku_ref/task_no 等仅在消息明确提供时原样保留）；不猜测。
             5. 只提取消息原值，不做业务判断（是否第三方履约、SKU 归属等由系统决定）。

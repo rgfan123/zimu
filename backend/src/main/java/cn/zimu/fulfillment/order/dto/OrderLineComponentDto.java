@@ -7,6 +7,6 @@ public record OrderLineComponentDto(
         String productName,
         String specification,
         String unit,
-        String quantityPerBundle,
-        String totalQuantity) {
+        int quantityPerBundle,
+        int totalQuantity) {
 }

@@ -94,7 +94,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void checksEveryShipmentItemThroughJdReadOnlyFactsAndReplaysWithoutDuplicateFacts() {
-        Fact fact = shipment("PASS", "2.000");
+        Fact fact = shipment("PASS", "2");
 
         ResponseEntity<Map> checked = check(fact.shipmentId(), "jd-sku-gate-pass-001", "req-jd-sku-gate-pass-001");
 
@@ -171,8 +171,8 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void rejectsSameIdempotencyKeyForAnotherShipmentBeforeQueryingJdAgain() {
-        Fact first = shipment("IDEMPOTENCY-PAYLOAD-FIRST", "1.000");
-        Fact second = shipment("IDEMPOTENCY-PAYLOAD-SECOND", "1.000");
+        Fact first = shipment("IDEMPOTENCY-PAYLOAD-FIRST", "1");
+        Fact second = shipment("IDEMPOTENCY-PAYLOAD-SECOND", "1");
         String key = "jd-sku-gate-payload-conflict-001";
 
         ResponseEntity<Map> accepted = check(first.shipmentId(), key, "req-jd-sku-gate-payload-first-001");
@@ -202,7 +202,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void blocksMissingConversionAndResolvesTheSameReviewCaseAfterPublicMappingRepairAndRerun() {
-        Fact fact = shipment("REPAIR", "2.000");
+        Fact fact = shipment("REPAIR", "2");
         jdbc.update(
                 "UPDATE app.provider_skus SET external_codes=external_codes-'jd_pieces_per_unit' WHERE id=?",
                 fact.mappingId());
@@ -317,7 +317,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void blocksAShipmentItemWhoseInternalSkuHasNoJdMapping() {
-        Fact fact = shipment("MISSING-MAPPING", "1.000");
+        Fact fact = shipment("MISSING-MAPPING", "1");
         jdbc.update("DELETE FROM app.provider_skus WHERE id=?", fact.mappingId());
 
         ResponseEntity<Map> blocked = check(
@@ -392,7 +392,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void repairsAnErpGoodsNumberConflictThroughThePublicMappingPatchAndRerun() {
-        Fact fact = shipment("ERP-CONFLICT", "1.000");
+        Fact fact = shipment("ERP-CONFLICT", "1");
         jdbc.update("UPDATE app.provider_skus SET merchant_sku_code='WRONG-ERP-CODE' WHERE id=?", fact.mappingId());
 
         ResponseEntity<Map> blocked = check(
@@ -430,7 +430,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void createsMerchantSkuCodeThroughThePublicProviderMappingWrite() {
-        Fact fact = shipment("MERCHANT-CREATE", "1.000");
+        Fact fact = shipment("MERCHANT-CREATE", "1");
         Map<String, Object> identity = jdbc.queryForMap(
                 "SELECT fulfillment_provider_id provider_id, sku_id FROM app.provider_skus WHERE id=?",
                 fact.mappingId());
@@ -492,7 +492,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void skuGateAndShipmentTrackingCompleteWithoutDeadlockAndConserveFacts() throws Exception {
-        Fact fact = shipment("GATE-TRACKING-CONCURRENT", "1.000");
+        Fact fact = shipment("GATE-TRACKING-CONCURRENT", "1");
         long fulfillmentId = jdbc.queryForObject(
                 "SELECT fulfillment_id FROM app.shipment_items WHERE id=?",
                 Long.class,
@@ -526,7 +526,7 @@ class ShipmentJdSkuMappingGateApiTest {
                     fact.orderLineId(),
                     fact.orderId(),
                     "SHIPPED",
-                    new BigDecimal("1.000"),
+                    1,
                     "SF",
                     "顺丰速运",
                     "SF-GATE-TRACKING-" + databaseToken,
@@ -573,7 +573,7 @@ class ShipmentJdSkuMappingGateApiTest {
                 """,
                 fact.shipmentId()))
                 .containsEntry("shipment_status", "SHIPPED")
-                .containsEntry("shipped_quantity", new BigDecimal("1.000"))
+                .containsEntry("shipped_quantity", 1)
                 .containsEntry("tracking_count", 1L);
         assertThat(jdbc.queryForMap(
                 """
@@ -603,7 +603,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void blocksTheAffectedShipmentItemWhenJdReportsTheMappedGoodsDisabled() {
-        Fact fact = shipment("DISABLED-GOODS", "1.000");
+        Fact fact = shipment("DISABLED-GOODS", "1");
         jdbc.update(
                 """
                 UPDATE app.provider_skus
@@ -640,7 +640,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void reportsNameMismatchAsWarningWithoutBlockingOrRewritingTheMapping() {
-        Fact fact = shipment("NAME-WARNING", "1.000");
+        Fact fact = shipment("NAME-WARNING", "1");
         jdbc.update(
                 "UPDATE app.order_lines SET product_name_snapshot='完全不同的系统展示名' WHERE id=?",
                 fact.orderLineId());
@@ -689,7 +689,7 @@ class ShipmentJdSkuMappingGateApiTest {
      */
     @Test
     void treatsSkuUnitAsAuthoritativeWhenOrderLineUnitSnapshotIsJustASourcePlaceholder() {
-        Fact fact = shipment("UNIT-PLACEHOLDER", "1.000");
+        Fact fact = shipment("UNIT-PLACEHOLDER", "1");
         long skuId = jdbc.queryForObject(
                 "SELECT sku_id FROM app.order_lines WHERE id=?", Long.class, fact.orderLineId());
         try {
@@ -796,7 +796,7 @@ class ShipmentJdSkuMappingGateApiTest {
     }
 
     private ShipmentPair twoShipmentsOfOneOrder(String suffix) {
-        Fact first = shipment(suffix, "2.000", "1.000");
+        Fact first = shipment(suffix, "2", "1");
         Map<String, Object> row = jdbc.queryForMap(
                 """
                 SELECT f.id fulfillment_id, f.fulfillment_provider_id provider_id

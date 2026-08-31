@@ -260,17 +260,17 @@ public class TrackingFileService {
                 throw BusinessException.unprocessable(
                         "TRACKING_BUNDLE_TRACKING_MISMATCH", "同一礼包分组的组件必须使用同一承运商、运单与发货时间");
             }
-            BigDecimal bundleQuantity = null;
+            Integer bundleQuantity = null;
             for (TrackingRow row : group) {
-                BigDecimal componentQuantity = row.line().componentQuantityPerBundle();
-                BigDecimal current;
-                try {
-                    current = row.shippedQuantity().divide(componentQuantity, 0, RoundingMode.UNNECESSARY);
-                } catch (ArithmeticException exception) {
+                Integer componentQuantity = row.line().componentQuantityPerBundle();
+                Integer current;
+                if (componentQuantity == null || componentQuantity <= 0
+                        || row.shippedQuantity() % componentQuantity != 0) {
                     throw BusinessException.unprocessable(
                             "TRACKING_BUNDLE_QUANTITY_MISMATCH", "礼包组件实发数量无法还原为完整礼包份数");
                 }
-                if (current.signum() <= 0 || (bundleQuantity != null && current.compareTo(bundleQuantity) != 0)) {
+                current = row.shippedQuantity() / componentQuantity;
+                if (current <= 0 || (bundleQuantity != null && !current.equals(bundleQuantity))) {
                     throw BusinessException.unprocessable(
                             "TRACKING_BUNDLE_QUANTITY_MISMATCH", "同一礼包分组的组件实发比例必须一致");
                 }
@@ -481,10 +481,11 @@ public class TrackingFileService {
                     throw BusinessException.unprocessable(
                             "TRACKING_QUANTITY_INVALID", "第 " + (index + 1) + " 行数量不是有效数字");
                 }
-                if (shipped.signum() <= 0 || shipped.compareTo(line.instructedQuantity()) > 0) {
+                if (shipped.signum() <= 0 || shipped.stripTrailingZeros().scale() > 0
+                        || shipped.compareTo(line.instructedQuantity()) > 0) {
                     throw BusinessException.unprocessable(
                             "TRACKING_QUANTITY_INVALID",
-                            "第 " + (index + 1) + " 行实发数量必须在 0 与请求数量之间");
+                            "第 " + (index + 1) + " 行实发数量必须为不超过请求数量的正整数");
                 }
                 String rowResult = shipped.compareTo(line.instructedQuantity()) == 0 ? "SHIPPED" : "PARTIAL";
                 // 兼容下游既有键位：收件人 / 礼包分组标识 取导出指令原值；「结果」是人读八列
@@ -495,7 +496,7 @@ public class TrackingFileService {
                 cells.put("结果", rowResult);
                 result.add(new TrackingRow(
                         index + 1, cells, rowResult, line,
-                        shipped, carrier, trackingNo, null, null));
+                        shipped.intValueExact(), carrier, trackingNo, null, null));
             }
             if (dataRows != expected.size()) {
                 throw BusinessException.unprocessable(
@@ -675,9 +676,9 @@ public class TrackingFileService {
         } catch (NumberFormatException exception) {
             throw BusinessException.unprocessable("TRACKING_QUANTITY_INVALID", "实际发货数量非法");
         }
-        if (quantity.signum() <= 0 || quantity.stripTrailingZeros().scale() > 3
+        if (quantity.signum() <= 0 || quantity.stripTrailingZeros().scale() > 0
                 || quantity.compareTo(line.instructedQuantity()) > 0) {
-            throw BusinessException.unprocessable("TRACKING_QUANTITY_INVALID", "实际数量必须大于0、不超过指令数且最多三位小数");
+            throw BusinessException.unprocessable("TRACKING_QUANTITY_INVALID", "实际数量必须为正整数且不超过指令数");
         }
         if (("SHIPPED".equals(result) && quantity.compareTo(line.instructedQuantity()) != 0)
                 || ("PARTIAL".equals(result) && quantity.compareTo(line.instructedQuantity()) >= 0)) {
@@ -691,7 +692,7 @@ public class TrackingFileService {
         Instant shippedAt = cells.get("发货时间").isBlank()
                 ? null
                 : parseShippedAt(cells.get("发货时间"));
-        return new TrackingRow(rowIndex, cells, result, line, quantity, carrier, trackingNo, shippedAt, null);
+        return new TrackingRow(rowIndex, cells, result, line, quantity.intValueExact(), carrier, trackingNo, shippedAt, null);
     }
 
     private Instant parseShippedAt(String value) {
@@ -1213,7 +1214,7 @@ public class TrackingFileService {
                         (Long) resultSet.getObject("order_line_component_id"),
                         resultSet.getLong("order_id"), resultSet.getString("outbound_order_no"),
                         resultSet.getBigDecimal("instructed_quantity"),
-                        resultSet.getBigDecimal("component_quantity_per_bundle"),
+                        (Integer) resultSet.getObject("component_quantity_per_bundle"),
                         jsonMap(resultSet.getString("output_cells"))),
                 exportId);
     }
@@ -1406,10 +1407,10 @@ public class TrackingFileService {
     private record ExpectedExportLine(
             int lineNo, long shipmentId, long fulfillmentId, long orderLineId, Long orderLineComponentId,
             long orderId, String outboundOrderNo, BigDecimal instructedQuantity,
-            BigDecimal componentQuantityPerBundle, Map<String, Object> outputCells) {}
+            Integer componentQuantityPerBundle, Map<String, Object> outputCells) {}
     private record TrackingRow(
             int rowIndex, Map<String, String> cells, String result, ExpectedExportLine line,
-            BigDecimal shippedQuantity, String carrier, String trackingNo, Instant shippedAt, String failureReason) {
+            Integer shippedQuantity, String carrier, String trackingNo, Instant shippedAt, String failureReason) {
         long shipmentId() { return line.shipmentId(); }
         long fulfillmentId() { return line.fulfillmentId(); }
         long orderLineId() { return line.orderLineId(); }
@@ -1429,7 +1430,7 @@ public class TrackingFileService {
             long orderId,
             String receiverName,
             String result,
-            BigDecimal shippedQuantity,
+            Integer shippedQuantity,
             String carrierCode,
             String carrierName,
             String trackingNo,

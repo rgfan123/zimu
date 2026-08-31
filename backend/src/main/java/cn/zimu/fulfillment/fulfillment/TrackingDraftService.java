@@ -360,7 +360,7 @@ public class TrackingDraftService {
 
         TrackingTaskResolver.TaskCandidate task = requireTask(draft, command);
         CarrierPrefixMatcher.Carrier carrier = requireCarrier(draft, command);
-        BigDecimal shippedQuantity = resolveShippedQuantity(draft, command, task);
+        int shippedQuantity = resolveShippedQuantity(draft, command, task);
         requireNoDuplicateTracking(carrier.code(), draft.getTrackingNo());
 
         long shipmentId = task.shipmentId();
@@ -407,7 +407,7 @@ public class TrackingDraftService {
         resolution.put("carrier_code", carrier.code());
         resolution.put("tracking_no", draft.getTrackingNo());
         resolution.put("shipment_judgment", draft.getShipmentJudgment().name());
-        resolution.put("shipped_quantity", shippedQuantity.toPlainString());
+        resolution.put("shipped_quantity", shippedQuantity);
         resolution.put("remark", command.remark());
         reviewCase.setStatus(ReviewCaseStatus.RESOLVED);
         reviewCase.setResolution(resolution);
@@ -429,7 +429,7 @@ public class TrackingDraftService {
                         "tracking_no", draft.getTrackingNo(),
                         "carrier_code", carrier.code(),
                         "task_id", task.taskId(),
-                        "shipped_quantity", shippedQuantity.toPlainString(),
+                        "shipped_quantity", shippedQuantity,
                         "shipment_judgment", draft.getShipmentJudgment().name()))
                 .httpStatus(200).businessCode("TRACKING_DRAFT_CONFIRMED"));
         return toDetail(draft);
@@ -486,9 +486,9 @@ public class TrackingDraftService {
 
         markWecomTrackingReceived(fileShipment.shipmentId());
 
-        BigDecimal total = fileShipment.items().stream()
-                .map(ShipmentTrackingBatchCommand.Item::shippedQuantity)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        int total = fileShipment.items().stream()
+                .mapToInt(ShipmentTrackingBatchCommand.Item::shippedQuantity)
+                .sum();
         draft.setCarrierCode(carrier.code());
         draft.setActualQuantity(total);
         draft.setStatus(ProviderTrackingDraft.Status.CONFIRMED);
@@ -504,7 +504,7 @@ public class TrackingDraftService {
         resolution.put("carrier_code", carrier.code());
         resolution.put("tracking_no", draft.getTrackingNo());
         resolution.put("shipment_judgment", draft.getShipmentJudgment().name());
-        resolution.put("shipped_quantity", total.toPlainString());
+        resolution.put("shipped_quantity", total);
         resolution.put("file_shipment_item_count", fileShipment.items().size());
         resolution.put("remark", command.remark());
         reviewCase.setStatus(ReviewCaseStatus.RESOLVED);
@@ -534,7 +534,7 @@ public class TrackingDraftService {
                         "tracking_no", draft.getTrackingNo(),
                         "carrier_code", carrier.code(),
                         "file_shipment_item_count", fileShipment.items().size(),
-                        "shipped_quantity", total.toPlainString(),
+                        "shipped_quantity", total,
                         "shipment_judgment", draft.getShipmentJudgment().name()))
                 .httpStatus(200).businessCode("TRACKING_DRAFT_CONFIRMED"));
         return result;
@@ -558,7 +558,7 @@ public class TrackingDraftService {
                 return new ShipmentTrackingBatchCommand.Item(
                         Long.parseLong(String.valueOf(row.get("fulfillment_id"))),
                         Long.parseLong(String.valueOf(row.get("order_line_id"))),
-                        new BigDecimal(String.valueOf(row.get("shipped_quantity"))));
+                        new BigDecimal(String.valueOf(row.get("shipped_quantity"))).intValueExact());
             }).toList();
             return new FileShipment(shipmentId, orderId, commands);
         } catch (RuntimeException exception) {
@@ -585,7 +585,7 @@ public class TrackingDraftService {
             TrackingDraftConfirmCommand command,
             TrackingTaskResolver.TaskCandidate task,
             CarrierPrefixMatcher.Carrier carrier,
-            BigDecimal shippedQuantity) {
+            int shippedQuantity) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("draft_id", String.valueOf(draftId));
         payload.put("expected_draft_revision", command.expectedDraftRevision());
@@ -599,7 +599,7 @@ public class TrackingDraftService {
                         : hasText(command.taskId()) ? "OPERATOR" : "UNIQUE_CANDIDATE");
         payload.put("carrier_code", carrier.code());
         payload.put("carrier_selection_source", hasText(command.carrierCode()) ? "OPERATOR" : "UNIQUE_CANDIDATE");
-        payload.put("actual_quantity", shippedQuantity.toPlainString());
+        payload.put("actual_quantity", shippedQuantity);
         payload.put("remark_present", hasText(command.remark()));
         return payload;
     }
@@ -760,14 +760,14 @@ public class TrackingDraftService {
                         "CARRIER_INVALID", "物流公司必须是已启用的标准主数据，请人工选择"));
     }
 
-    private BigDecimal resolveShippedQuantity(
+    private int resolveShippedQuantity(
             ProviderTrackingDraft draft, TrackingDraftConfirmCommand command, TrackingTaskResolver.TaskCandidate task) {
         BigDecimal instructed = task.instructedQuantity();
         if (instructed.signum() <= 0) {
             throw BusinessException.unprocessable("TASK_INVALID", "该发货批次没有可确认的指令数量");
         }
         if (draft.getShipmentJudgment() == ProviderTrackingDraft.ShipmentJudgment.FULL) {
-            return instructed;
+            return instructed.intValueExact();
         }
         String raw = command.actualQuantity();
         if (raw == null || raw.isBlank()) {
@@ -780,12 +780,12 @@ public class TrackingDraftService {
         } catch (NumberFormatException ex) {
             throw BusinessException.unprocessable("ACTUAL_QUANTITY_INVALID", "实际数量非法");
         }
-        if (quantity.signum() <= 0 || quantity.stripTrailingZeros().scale() > 3
+        if (quantity.signum() <= 0 || quantity.stripTrailingZeros().scale() > 0
                 || quantity.compareTo(instructed) > 0) {
             throw BusinessException.unprocessable(
-                    "ACTUAL_QUANTITY_INVALID", "实际数量必须大于0、不超过该发货批次指令数量且最多三位小数");
+                    "ACTUAL_QUANTITY_INVALID", "实际数量必须为正整数且不超过该发货批次指令数量");
         }
-        return quantity.setScale(3, RoundingMode.HALF_UP);
+        return quantity.intValueExact();
     }
 
     private void requireNoDuplicateTracking(String carrierCode, String trackingNo) {
@@ -834,7 +834,7 @@ public class TrackingDraftService {
             ProviderTrackingDraft draft,
             ReviewCase reviewCase,
             TrackingDraftConfirmCommand command,
-            BigDecimal shippedQuantity) {
+            int shippedQuantity) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("source", "WECOM_TRACKING_DRAFT");
         payload.put("draft_id", String.valueOf(draft.getId()));
@@ -843,7 +843,7 @@ public class TrackingDraftService {
         payload.put("line_no", draft.getLineNo());
         payload.put("review_case_id", String.valueOf(reviewCase.getId()));
         payload.put("shipment_judgment", draft.getShipmentJudgment().name());
-        payload.put("shipped_quantity", shippedQuantity.toPlainString());
+        payload.put("shipped_quantity", shippedQuantity);
         payload.put("operator_remark", command.remark());
         return payload;
     }
@@ -885,7 +885,7 @@ public class TrackingDraftService {
                 draft.getShipmentJudgment().name(),
                 draft.getShipmentJudgment() == ProviderTrackingDraft.ShipmentJudgment.FULL
                         && !draft.getValidationIssues().contains(SHIPMENT_JUDGMENT_INVALID),
-                draft.getActualQuantity() == null ? null : draft.getActualQuantity().toPlainString(),
+                draft.getActualQuantity(),
                 draft.getValidationIssues(),
                 draft.getStatus().name(),
                 draft.getRevision(),

@@ -154,7 +154,7 @@ public class ManualTrackingEntryService {
                 (rs, row) -> new ShipmentTrackingBatchCommand.Item(
                         rs.getLong("fulfillment_id"),
                         rs.getLong("order_line_id"),
-                        rs.getBigDecimal("instructed_quantity")),
+                        rs.getInt("instructed_quantity")),
                 shipmentId);
     }
 

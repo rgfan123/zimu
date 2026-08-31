@@ -65,7 +65,7 @@ export interface SnapshotOrderSource {
     product_name?: string | null;
     specification?: string | null;
     unit?: string | null;
-    requested_quantity?: string | null;
+    requested_quantity?: number | null;
   }> | null;
 }
 
@@ -150,7 +150,7 @@ export function presentSnapshotRowFacts(
   // —— 商品/件数/规格：整组同源，不允许一个取订单、一个取快照 ——
   const line = order?.lines?.find((item) => item.id === realOrNull(row.orderLineId)) ?? null;
   const lineProductName = realOrNull(line?.product_name);
-  const lineQuantity = realOrNull(line?.requested_quantity);
+  const lineQuantity = line?.requested_quantity != null ? realOrNull(String(line.requested_quantity)) : null;
   const hasOrderLine = Boolean(lineProductName || lineQuantity);
 
   const snapshotProductName = realOrNull(row.productName);

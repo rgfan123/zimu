@@ -93,8 +93,9 @@ public class SourceBundleResolver {
         if (channel == null) {
             return Decision.single();
         }
-        // 数量不参与身份判定：命中礼包映射就返回 STATIC_BUNDLE。OrderCreateService 统一校验
-        // 礼包数量必须为整数，绝不能在这里因数量形状降级成 SINGLE 后沿 SKU 映射静默放行。
+        // 数量不参与身份判定：命中礼包映射就返回 STATIC_BUNDLE，绝不能因数量形状降级成
+        // SINGLE 后沿 SKU 映射静默放行。数量整数性由各路径在候选构建/创建时经
+        // requireIntegerQuantityForBundle 统一校验（V99 起全部商品数量为整数）。
         Long bundleId = activeBundleId(channel, sourceSkuRef, productName);
         SourceChannelSku skuMapping = activeSkuMapping(channel, sourceSkuRef);
         if (bundleId != null && skuMapping != null) {
@@ -269,8 +270,19 @@ public class SourceBundleResolver {
                 .findBySourceChannelAndSourceSkuRef(channel, sourceSkuRef)
                 .filter(SourceChannelSku::isActive)
                 .filter(mapping -> mapping.getQuantityMultiplier() != null)
-                .filter(mapping -> mapping.getQuantityMultiplier().signum() > 0)
+                .filter(mapping -> mapping.getQuantityMultiplier() > 0)
                 .orElse(null);
+    }
+
+    /** 礼包行数量必须为正整数：三条导入路径共用同一判据与错误码，拒绝而不是降级。 */
+    public static void requireIntegerQuantityForBundle(String quantity) {
+        try {
+            if (quantity == null || new java.math.BigDecimal(quantity).intValueExact() <= 0) {
+                throw BusinessException.unprocessable("BUNDLE_QUANTITY_NOT_INTEGER", "礼包行数量必须为正整数");
+            }
+        } catch (ArithmeticException | NumberFormatException exception) {
+            throw BusinessException.unprocessable("BUNDLE_QUANTITY_NOT_INTEGER", "礼包行数量必须为整数");
+        }
     }
 
     /** 名字启发式：只看商品名里有没有礼包/礼盒/组合，是最后一档兜底。 */

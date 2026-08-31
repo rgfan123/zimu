@@ -250,7 +250,7 @@ class DataQueryAgentServiceIntegrationTest {
                         FROM app.procurement_ticket_items WHERE procurement_ticket_id=9005
                         """,
                         BigDecimal.class);
-                assertThat(remaining.toPlainString()).isEqualTo("23.500");
+                assertThat(remaining.toPlainString()).isEqualTo("23");
                 assertThat(result.output().answer()).contains(remaining.toPlainString());
                 assertThat(result.output().sources().get(0).row_count()).isEqualTo(1);
                 assertThat(call.arguments().get("ticket_id")).isEqualTo("9005");
@@ -320,9 +320,9 @@ class DataQueryAgentServiceIntegrationTest {
         // PENDING 但超出 7 天窗口 → 不计入
         long fulfillment4 = orderWithFulfillment("EVAL-ORD-0004", providerId, sku2, refDate.minusDays(10));
         ticket(9004, "EVAL-PT-0004", fulfillment4, "PENDING", refDate.minusDays(10), sku2, "4");
-        // 缺口核对：9005 remaining_quantity = 23.500
+        // 缺口核对：9005 remaining_quantity = 23（V99 起商品数量为整数）
         long fulfillment5 = orderWithFulfillment("EVAL-ORD-0005", providerId, sku1, refDate.minusDays(2));
-        ticket(9005, "EVAL-PT-0005", fulfillment5, "PENDING", refDate.minusDays(2), sku1, "23.5");
+        ticket(9005, "EVAL-PT-0005", fulfillment5, "PENDING", refDate.minusDays(2), sku1, "23");
     }
 
     private long sku(

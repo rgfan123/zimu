@@ -373,7 +373,7 @@ public class OrderCreateService {
         orderRepository.flush();
         List<Map<String, Object>> summaries = fulfillments.stream().map(value -> Map.<String, Object>of(
                 "fulfillment_id", value.getId(), "fulfillment_no", value.getFulfillmentNo(),
-                "requested_quantity", value.getRequestedQuantity().toPlainString())).toList();
+                "requested_quantity", value.getRequestedQuantity())).toList();
         versionService.append(orderId, input.sourceVersion(), input.changeReason(), context.operator(),
                 orderMapper.snapshot(order, lines, components, reviewCases, skuCodes, summaries));
         eventService.append(orderId, "ORDER_UPDATED", null, null, null, null, DataScope.BUSINESS,
@@ -517,7 +517,7 @@ public class OrderCreateService {
                 .map(fulfillment -> Map.<String, Object>of(
                         "fulfillment_id", fulfillment.getId(),
                         "fulfillment_no", fulfillment.getFulfillmentNo(),
-                        "requested_quantity", fulfillment.getRequestedQuantity().toPlainString()))
+                        "requested_quantity", fulfillment.getRequestedQuantity()))
                 .toList();
         versionService.append(
                 order.getId(),
@@ -583,7 +583,7 @@ public class OrderCreateService {
             int lineNo,
             Map<Long, String> skuCodes,
             Sku confirmedSku) {
-        BigDecimal quantity = parseQuantity(item.quantity());
+        int quantity = parseQuantity(item.quantity());
         OrderLine line = baseLine(item, lineNo, quantity);
         if (confirmedSku != null) {
             return createConfirmedSkuLine(item, quantity, line, skuCodes, confirmedSku);
@@ -596,7 +596,7 @@ public class OrderCreateService {
             return new LineResult(
                     line, List.of(), List.of(blankToEmpty(item.sourceSkuRef())), List.of(), "SKU_MAPPING_REQUIRED");
         }
-        if (mapping.getQuantityMultiplier() == null || mapping.getQuantityMultiplier().signum() <= 0) {
+        if (mapping.getQuantityMultiplier() == null || mapping.getQuantityMultiplier() <= 0) {
             line.setProcessingStage(ProcessingStage.NEED_REVIEW);
             line.setExceptionCode("MAPPING_MULTIPLIER");
             line.setExceptionReason("来源 SKU 映射缺少有效的包装乘数: " + blankToEmpty(item.sourceSkuRef()));
@@ -619,11 +619,11 @@ public class OrderCreateService {
         line.setSkuId(sku.getId());
         line.setFulfillmentProviderId(sku.getFulfillmentProviderId());
         line.setSkuCodeSnapshot(sku.getSkuCode());
-        BigDecimal multiplier = mapping.getQuantityMultiplier();
+        Integer multiplier = mapping.getQuantityMultiplier();
         if (multiplier != null) {
             line.setSourceQuantitySnapshot(quantity);
             line.setMappingMultiplierSnapshot(multiplier);
-            line.setRequestedQuantity(quantity.multiply(multiplier).setScale(3, RoundingMode.HALF_UP));
+            line.setRequestedQuantity(Math.multiplyExact(quantity, multiplier));
         }
         line.setProcessingStage(ProcessingStage.READY_TO_EXPORT);
         return new LineResult(line, List.of(), List.of(), List.of(), null);
@@ -631,7 +631,7 @@ public class OrderCreateService {
 
     private LineResult createConfirmedSkuLine(
             OrderItemInput item,
-            BigDecimal quantity,
+            int quantity,
             OrderLine line,
             Map<Long, String> skuCodes,
             Sku sku) {
@@ -640,7 +640,7 @@ public class OrderCreateService {
         line.setFulfillmentProviderId(sku.getFulfillmentProviderId());
         line.setSkuCodeSnapshot(sku.getSkuCode());
         line.setSourceQuantitySnapshot(quantity);
-        line.setMappingMultiplierSnapshot(BigDecimal.ONE);
+        line.setMappingMultiplierSnapshot(1);
         line.setRequestedQuantity(quantity);
         line.setProcessingStage(ProcessingStage.READY_TO_EXPORT);
         return new LineResult(line, List.of(), List.of(), List.of(), null);
@@ -740,10 +740,8 @@ public class OrderCreateService {
     }
 
     private LineResult createBundleLine(SourceChannel channel, OrderItemInput item, int lineNo, Map<Long, String> skuCodes) {
-        BigDecimal requested = parseQuantity(item.quantity());
-        if (requested.stripTrailingZeros().scale() > 0) {
-            throw BusinessException.unprocessable("BUNDLE_QUANTITY_NOT_INTEGER", "礼包行数量必须为整数");
-        }
+        SourceBundleResolver.requireIntegerQuantityForBundle(item.quantity());
+        int requested = parseQuantity(item.quantity());
         List<BundleComponentInput> inputs = item.components() == null ? List.of() : item.components();
         if (inputs.isEmpty()) {
             throw BusinessException.badRequest("BUNDLE_COMPONENTS_REQUIRED", "礼包行必须携带当单明确组件清单");
@@ -795,7 +793,7 @@ public class OrderCreateService {
             component.setSkuId(resolution.sku().getId());
             component.setQuantityPerBundle(parseQuantity(resolution.input().quantityPerBundle()));
             component.setTotalQuantity(
-                    requested.multiply(component.getQuantityPerBundle()).setScale(3, RoundingMode.HALF_UP));
+                    Math.multiplyExact(requested, component.getQuantityPerBundle()));
             component.setProductNameSnapshot(resolution.input().productName());
             component.setSpecificationSnapshot(resolution.input().specification());
             component.setUnitSnapshot(resolution.input().unit());
@@ -811,13 +809,13 @@ public class OrderCreateService {
         }
         long parsedBundleId = WriteCommands.parseIdentifier(bundleId);
         List<BundleItem> expected = bundleItemRepository.findByBundleIdOrderBySortNo(parsedBundleId);
-        Map<Long, BigDecimal> expectedQuantities = new LinkedHashMap<>();
+        Map<Long, Integer> expectedQuantities = new LinkedHashMap<>();
         for (BundleItem item : expected) {
             expectedQuantities.put(item.getSkuId(), item.getQuantityPerBundle());
         }
         for (ComponentResolution resolution : resolutions) {
-            BigDecimal expectedQuantity = expectedQuantities.remove(resolution.sku().getId());
-            BigDecimal actualQuantity = parseQuantity(resolution.input().quantityPerBundle());
+            Integer expectedQuantity = expectedQuantities.remove(resolution.sku().getId());
+            Integer actualQuantity = parseQuantity(resolution.input().quantityPerBundle());
             if (expectedQuantity == null || expectedQuantity.compareTo(actualQuantity) != 0) {
                 throw BusinessException.unprocessable(
                         "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包组件与主数据 BOM 不一致");
@@ -831,8 +829,8 @@ public class OrderCreateService {
      */
     private void validateCompleteStaticBundlePartitions(List<LineResult> results) {
         Long currentBundleId = null;
-        Map<Long, BigDecimal> actual = new LinkedHashMap<>();
-        Map<Long, BigDecimal> expected = Map.of();
+        Map<Long, Integer> actual = new LinkedHashMap<>();
+        Map<Long, Integer> expected = Map.of();
         for (LineResult result : results) {
             Long bundleId = result.line().getBundleId();
             if (!result.mapped()) {
@@ -883,7 +881,7 @@ public class OrderCreateService {
         }
     }
 
-    private OrderLine baseLine(OrderItemInput item, int lineNo, BigDecimal requestedQuantity) {
+    private OrderLine baseLine(OrderItemInput item, int lineNo, int requestedQuantity) {
         OrderLine line = new OrderLine();
         line.setLineNo(lineNo);
         line.setLineType(item.lineType());
@@ -1032,8 +1030,8 @@ public class OrderCreateService {
             if (previous != null) {
                 appendChange(changes, changedFields, "quantity", lineNo,
                         previous.getSourceQuantitySnapshot() == null
-                                ? previous.getRequestedQuantity().toPlainString()
-                                : previous.getSourceQuantitySnapshot().toPlainString(),
+                                ? String.valueOf(previous.getRequestedQuantity())
+                                : String.valueOf(previous.getSourceQuantitySnapshot()),
                         item.quantity());
                 appendChange(changes, changedFields, "product_name", lineNo,
                         previous.getProductNameSnapshot(), item.productName());
@@ -1125,7 +1123,7 @@ public class OrderCreateService {
         detail.put("source_product_name", line.getProductNameSnapshot());
         detail.put("source_specification", line.getSpecificationSnapshot());
         detail.put("source_unit", line.getUnitSnapshot());
-        detail.put("source_quantity", line.getRequestedQuantity().toPlainString());
+        detail.put("source_quantity", line.getRequestedQuantity());
         // 结构化证据：逐个被阻断的商品独立成行，避免前端把多个编号合并成一串。
         detail.put("evidence_items", skuEvidenceItems(line, missingSourceSkuRefs, missingComponentInputs));
         reviewCase.setDetail(detail);
@@ -1153,7 +1151,7 @@ public class OrderCreateService {
             item.put("product_name", blankToEmpty(line.getProductNameSnapshot()));
             item.put("specification", blankToEmpty(line.getSpecificationSnapshot()));
             item.put("unit", blankToEmpty(line.getUnitSnapshot()));
-            item.put("quantity", line.getRequestedQuantity().toPlainString());
+            item.put("quantity", line.getRequestedQuantity());
             return List.of(item);
         }
         // 非单行且无组件明细（理论不发生）：逐个编号成行，其余字段留空。
@@ -1164,8 +1162,13 @@ public class OrderCreateService {
         }).toList();
     }
 
-    private static BigDecimal parseQuantity(String quantity) {
-        return new BigDecimal(quantity);
+    /** 商品数量域一律正整数（V99）；容忍 "2.000" 形态但拒绝真实小数与非法输入。 */
+    private static int parseQuantity(String quantity) {
+        try {
+            return new java.math.BigDecimal(quantity).intValueExact();
+        } catch (ArithmeticException | NumberFormatException exception) {
+            throw BusinessException.unprocessable("QUANTITY_NOT_INTEGER", "商品数量必须为整数: " + quantity);
+        }
     }
 
     private static String blankToEmpty(String value) {

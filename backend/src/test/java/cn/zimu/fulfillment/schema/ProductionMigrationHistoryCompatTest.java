@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV98() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV99() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -108,7 +108,7 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V73 + V77 + V83..V89 + V90..V98）升级——
+        // 阶段二：完整当前 migration set（V1..V73 + V77 + V83..V89 + V90..V99）升级——
         // V73 为卡片/回传线实占；V74–V76 为在途交付线预留后未用而跳号；V77 为换货事件类型；
         // V78/V81/V82 被在途票占用、V79 永久空置、V83 已被 scheduled_pull_runs 占用，
         // 因此飞象在线回传取 V84。V90–V98 为 SKU 主数据线（原按旧基线分配 V67–V75，
@@ -119,8 +119,8 @@ class ProductionMigrationHistoryCompatTest {
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 90 条历史（V1–V73 + 跳号的 V77、V83–V89 + SKU 线 V90–V98）")
-                .hasSize(90);
+                .as("完整升级后应恰有 91 条历史（V1–V73 + 跳号的 V77、V83–V89 + SKU 线 V90–V98 + V99 数量整数化）")
+                .hasSize(91);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
@@ -129,8 +129,8 @@ class ProductionMigrationHistoryCompatTest {
         // 两条并行开发线在 2026-08-27 合流：V59–V64 为已上线的企微/档案/订单线
         //（生产已执行，号位不可动），客户跟进线原 V59–V66 八个迁移整体顺延为 V65–V72
         //（其中 V71 冻结结构化执行意图、V72 新增来源订单附件任务）。
-        assertThat(historyAfter.subList(47, 90))
-                .as("升级只追加到 V98；V88/V89 留存并冻结来源 SKU 身份，V90–V98 为 SKU 主数据线重编号合入")
+        assertThat(historyAfter.subList(47, 91))
+                .as("升级只追加到 V99；V90–V98 为 SKU 主数据线重编号合入，V99 商品数量整数化")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -260,11 +260,14 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V97__repair_wecom_pseudo_mappings_and_tp_routes.sql")),
                         new HistoryRow("98", "V98__canonicalize_duplicate_skus_and_names.sql",
                                 "canonicalize duplicate skus and names",
-                                crc32Of("V98__canonicalize_duplicate_skus_and_names.sql")));
+                                crc32Of("V98__canonicalize_duplicate_skus_and_names.sql")),
+                        new HistoryRow("99", "V99__integer_goods_quantities.sql",
+                                "integer goods quantities",
+                                crc32Of("V99__integer_goods_quantities.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // 后续断言覆盖内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片、
-        // Shipment 来源同步状态机与客户跟进结构；完整 V48–V98 顺序由上方历史断言锁定。
+        // Shipment 来源同步状态机与客户跟进结构；完整 V48–V99 顺序由上方历史断言锁定。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {

@@ -238,14 +238,12 @@ public class McpOrdersReadTools {
         return names;
     }
 
-    private static String sumRequestedQuantity(List<OrderLineDto> lines) {
-        BigDecimal total = BigDecimal.ZERO;
+    private static long sumRequestedQuantity(List<OrderLineDto> lines) {
+        long total = 0;
         for (OrderLineDto line : lines) {
-            if (line.requestedQuantity() != null) {
-                total = total.add(new BigDecimal(line.requestedQuantity()));
-            }
+            total += line.requestedQuantity();
         }
-        return total.toPlainString();
+        return total;
     }
 
     /**

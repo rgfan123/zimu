@@ -142,7 +142,7 @@ class ReviewCaseResolutionApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "1.000")),
+                        "quantity", "1")),
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-12T10:00:00+08:00"));
@@ -178,7 +178,7 @@ class ReviewCaseResolutionApiTest {
                 "sku_id", skuId,
                 "source_channel", "WECOM",
                 "source_sku_ref", "WECOM-SKU-REVIEW-001",
-                "quantity_multiplier", "2.000",
+                "quantity_multiplier", "2",
                 "remark", "人工按已确认装箱规格选择既有 SKU");
 
         ResponseEntity<Map> resolved = http.exchange(
@@ -192,18 +192,18 @@ class ReviewCaseResolutionApiTest {
         assertThat((Map<String, Object>) resolved.getBody().get("resolution"))
                 .containsEntry("resolution_type", "SKU_CONFIRMED")
                 .containsEntry("sku_id", skuId)
-                .containsEntry("quantity_multiplier", "2.000");
+                .containsEntry("quantity_multiplier", 2);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM app.skus", Integer.class)).isEqualTo(skuCountBefore);
         assertThat(jdbc.queryForMap(
                         "SELECT sku_id::text sku_id, quantity_multiplier::text multiplier FROM app.source_channel_skus WHERE source_channel='WECOM' AND source_sku_ref=?",
                         "WECOM-SKU-REVIEW-001"))
                 .containsEntry("sku_id", skuId)
-                .containsEntry("multiplier", "2.000");
+                .containsEntry("multiplier", "2");
         assertThat(jdbc.queryForMap(
                         "SELECT sku_id::text sku_id, requested_quantity::text quantity, processing_stage FROM app.order_lines WHERE order_id=?",
                         Long.parseLong(createdOrder.get("id").toString())))
                 .containsEntry("sku_id", skuId)
-                .containsEntry("quantity", "4.000")
+                .containsEntry("quantity", "4")
                 .containsEntry("processing_stage", "READY_TO_EXPORT");
         assertThat(jdbc.queryForObject(
                 "SELECT order_status FROM app.orders WHERE id=?",
@@ -231,7 +231,7 @@ class ReviewCaseResolutionApiTest {
                 "sku_id", skuId,
                 "source_channel", "WECOM",
                 "source_sku_ref", oneTimeRef,
-                "quantity_multiplier", "1.000",
+                "quantity_multiplier", "1",
                 "remark", "一次性草稿号不能固化为商品映射");
 
         ResponseEntity<Map> rejected = http.exchange(
@@ -553,7 +553,7 @@ class ReviewCaseResolutionApiTest {
                 "receiver", Map.of("name", "王五", "phone", "13700000000", "address", "上海市测试地址"),
                 "items", List.of(Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2.000")),
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2")),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-12T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST,
@@ -579,7 +579,7 @@ class ReviewCaseResolutionApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "1.000")),
+                        "quantity", "1")),
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-12T10:00:00+08:00"));
@@ -615,7 +615,7 @@ class ReviewCaseResolutionApiTest {
                         "product_name", "待映射商品",
                         "specification", "2盒/组",
                         "unit", "组",
-                        "quantity", "2.000")),
+                        "quantity", "2")),
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-12T10:00:00+08:00"));
@@ -697,7 +697,7 @@ class ReviewCaseResolutionApiTest {
                 "receiver", Map.of("name", "王五", "phone", "13700000000", "address", "上海市测试地址"),
                 "items", List.of(Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2.000")),
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2")),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-12T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST,
@@ -714,7 +714,7 @@ class ReviewCaseResolutionApiTest {
                 "receiver", Map.of("name", "赵六", "phone", "13600000000", "address", "上海市测试地址"),
                 "items", List.of(Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "1.000")),
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "1")),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-12T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST,

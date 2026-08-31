@@ -260,7 +260,7 @@ class OrderDraftCardRunnerTest {
                         "商品",
                         "规格",
                         "件",
-                        "2.000")),
+                        2)),
                 "61",
                 0L,
                 null,

@@ -9,7 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * 采购比价 Agent 的结构化输入（agent-decision-layer 05）。
  *
  * <p>输入契约：{@code procurement_ticket_id} 或 {@code sku_id} 至少其一（正整数 ID），
- * {@code quantity} 可选（正 decimal-string，最多三位小数，与订单行数量语义一致）。
+ * {@code quantity} 可选（正整数字符串，与订单行数量语义一致）。
  * 解析失败/校验失败抛 {@link BusinessException}（INVALID_PARAMETERS），服务调用方按
  * 4xx 错误处理，不进入模型调用。{@link #toUserInput()} 把归一化后的输入序列化为
  * JSON 传给模型。
@@ -45,8 +45,8 @@ public record ProcurementPriceInput(String procurementTicketId, String skuId, St
         if (!isBlank(skuId) && !skuId.matches(ID_PATTERN)) {
             throw badRequest("sku_id 必须是正整数 ID");
         }
-        if (!isBlank(quantity) && !quantity.matches(Patterns.POSITIVE_DECIMAL_QUANTITY)) {
-            throw badRequest("quantity 必须为正数且最多三位小数");
+        if (!isBlank(quantity) && !quantity.matches(Patterns.POSITIVE_INTEGER_QUANTITY)) {
+            throw badRequest("quantity 必须为正整数");
         }
         return new ProcurementPriceInput(
                 blankToNull(ticketId), blankToNull(skuId), blankToNull(quantity));

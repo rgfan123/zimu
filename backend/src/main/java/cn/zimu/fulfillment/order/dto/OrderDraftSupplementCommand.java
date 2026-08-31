@@ -33,7 +33,7 @@ public record OrderDraftSupplementCommand(
     /** 草稿行补充：数量为正数时修订；sku_id 仅限候选内选择，不作为主数据确认。 */
     public record LineSupplement(
             @NotNull(message = "行号不能为空") Integer lineNo,
-            @Pattern(regexp = Patterns.POSITIVE_DECIMAL_QUANTITY, message = "数量必须为正数且最多三位小数")
+            @Pattern(regexp = Patterns.POSITIVE_INTEGER_QUANTITY, message = "数量必须为正整数")
                     String quantity,
             @Pattern(regexp = Patterns.IDENTIFIER, message = "SKU 标识符无效") String skuId) {}
 }

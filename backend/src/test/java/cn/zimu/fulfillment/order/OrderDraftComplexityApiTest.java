@@ -183,7 +183,7 @@ class OrderDraftComplexityApiTest {
         assertThat(lines.stream().map(line -> line.get("line_no")).toList())
                 .containsExactly(1, 2, 3);
         assertThat(lines.stream().map(line -> line.get("quantity")).toList())
-                .containsExactly("2.000", "1.000", "3.000");
+                .containsExactly(2, 1, 3);
         assertThat(castList(draft.get("missing_fields"))).isEmpty();
         assertThat(draft.get("source_order_no").toString()).matches("WECOM-SUB-\\d+-1");
     }
@@ -451,7 +451,7 @@ class OrderDraftComplexityApiTest {
                 .isEqualTo(((Number) draft.get("revision")).longValue() + 1);
         assertThat(castList(supplemented.get("missing_fields"))).isEmpty();
         assertThat(castMapList(supplemented.get("lines")).getFirst())
-                .containsEntry("quantity", "6");
+                .containsEntry("quantity", 6);
 
         // 幂等重放返回同一结果，不重复修订
         ResponseEntity<Map> replayed = postCommand(

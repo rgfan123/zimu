@@ -1,6 +1,5 @@
 package cn.zimu.fulfillment.fulfillment;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Map;
 
@@ -12,7 +11,7 @@ public record ShipmentTrackingCommand(
         long orderLineId,
         long orderId,
         String result,
-        BigDecimal shippedQuantity,
+        int shippedQuantity,
         String logisticsCompanyCode,
         String logisticsCompanyName,
         String trackingNumber,

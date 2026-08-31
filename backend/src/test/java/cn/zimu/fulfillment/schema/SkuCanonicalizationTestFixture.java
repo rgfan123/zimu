@@ -157,8 +157,46 @@ final class SkuCanonicalizationTestFixture {
             assertThat(result.next()).isTrue();
             String value = result.getString(1);
             assertThat(result.next()).isFalse();
-            return value;
+            return normalizeNumbers(value);
         }
+    }
+
+    /**
+     * V99 商品数量整数化把数量列改为 INTEGER：同一事实在改列前后 to_jsonb 的数字字面
+     * 不同（3.000 vs 3）。历史事实保护比较按数值语义归一化，不比小数位渲染。
+     */
+    private static String normalizeNumbers(String json) {
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper mapper =
+                    new com.fasterxml.jackson.databind.ObjectMapper();
+            return mapper.writeValueAsString(normalizeNode(mapper, mapper.readTree(json)));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            throw new IllegalStateException("protected facts snapshot is not valid JSON", exception);
+        }
+    }
+
+    private static com.fasterxml.jackson.databind.JsonNode normalizeNode(
+            com.fasterxml.jackson.databind.ObjectMapper mapper,
+            com.fasterxml.jackson.databind.JsonNode node) {
+        if (node.isNumber()) {
+            java.math.BigDecimal stripped = node.decimalValue().stripTrailingZeros();
+            if (stripped.scale() < 0) {
+                stripped = stripped.setScale(0);
+            }
+            return com.fasterxml.jackson.databind.node.DecimalNode.valueOf(stripped);
+        }
+        if (node.isObject()) {
+            var copy = mapper.createObjectNode();
+            node.fields().forEachRemaining(entry ->
+                    copy.set(entry.getKey(), normalizeNode(mapper, entry.getValue())));
+            return copy;
+        }
+        if (node.isArray()) {
+            var copy = mapper.createArrayNode();
+            node.forEach(item -> copy.add(normalizeNode(mapper, item)));
+            return copy;
+        }
+        return node;
     }
 
     private static void insertSku(

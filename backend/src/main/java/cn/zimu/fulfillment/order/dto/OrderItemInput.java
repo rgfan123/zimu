@@ -19,7 +19,7 @@ public record OrderItemInput(
         @NotBlank(message = "规格不能为空") @Size(max = 255, message = "规格超长") String specification,
         @NotBlank(message = "单位不能为空") @Size(max = 32, message = "单位超长") String unit,
         @NotBlank(message = "数量不能为空")
-                @Pattern(regexp = Patterns.POSITIVE_DECIMAL_QUANTITY, message = "数量必须为正数且最多三位小数")
+                @Pattern(regexp = Patterns.POSITIVE_INTEGER_QUANTITY, message = "数量必须为正整数")
         String quantity,
         @Pattern(regexp = Patterns.IDENTIFIER, message = "静态礼包标识符无效") String bundleId,
         List<@Valid BundleComponentInput> components) {

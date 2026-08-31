@@ -143,7 +143,7 @@ public class OrderDraftQueryService {
                 line.getProductNameRaw(),
                 line.getSpecRaw(),
                 line.getUnitRaw(),
-                line.getQuantity() == null ? null : line.getQuantity().toPlainString());
+                line.getQuantity());
     }
 
     /** 草稿确认后从已解决复核事项的决议读取订单号，用于页面跳转与幂等重放。 */

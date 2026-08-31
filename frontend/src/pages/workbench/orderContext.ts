@@ -78,7 +78,7 @@ export interface OrderContextSource {
     product_name?: string | null;
     specification?: string | null;
     unit?: string | null;
-    requested_quantity?: string | null;
+    requested_quantity?: number | null;
     sku_code?: string | null;
   }> | null;
 }
@@ -141,7 +141,7 @@ export function presentOrderContext(
       productName: trimmedOrNull(line.product_name) ?? '（商品名缺失）',
       specification: trimmedOrNull(line.specification),
       unit: trimmedOrNull(line.unit),
-      quantity: trimmedOrNull(line.requested_quantity) ?? '—',
+      quantity: line.requested_quantity != null ? String(line.requested_quantity) : '—',
       skuCode: trimmedOrNull(line.sku_code),
       blocked: blocked.has(line.id),
     })),

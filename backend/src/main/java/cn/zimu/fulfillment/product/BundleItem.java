@@ -7,7 +7,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
 
 /** 静态礼包当前 BOM 的一个组件。 */
 @Entity
@@ -27,8 +26,8 @@ public class BundleItem extends AuditableEntity {
     @Column(name = "sku_id", nullable = false)
     private Long skuId;
 
-    @Column(name = "quantity_per_bundle", precision = 18, scale = 3, nullable = false)
-    private BigDecimal quantityPerBundle;
+    @Column(name = "quantity_per_bundle", nullable = false)
+    private Integer quantityPerBundle;
 
     @Column(name = "emg_code_snapshot")
     private String emgCodeSnapshot;
@@ -64,11 +63,11 @@ public class BundleItem extends AuditableEntity {
         this.skuId = skuId;
     }
 
-    public BigDecimal getQuantityPerBundle() {
+    public Integer getQuantityPerBundle() {
         return quantityPerBundle;
     }
 
-    public void setQuantityPerBundle(BigDecimal quantityPerBundle) {
+    public void setQuantityPerBundle(Integer quantityPerBundle) {
         this.quantityPerBundle = quantityPerBundle;
     }
 

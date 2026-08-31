@@ -1,6 +1,5 @@
 package cn.zimu.fulfillment.fulfillment;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +22,6 @@ public record ShipmentTrackingBatchCommand(
         rawPayload = rawPayload == null ? Map.of() : Map.copyOf(rawPayload);
     }
 
-    public record Item(long fulfillmentId, long orderLineId, BigDecimal shippedQuantity) {
+    public record Item(long fulfillmentId, long orderLineId, int shippedQuantity) {
     }
 }

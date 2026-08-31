@@ -14,9 +14,9 @@ public record OrderLineDto(
         String productName,
         String specification,
         String unit,
-        String sourceQuantity,
-        String mappingMultiplier,
-        String requestedQuantity,
+        Integer sourceQuantity,
+        Integer mappingMultiplier,
+        int requestedQuantity,
         String processingStage,
         String exceptionCode,
         List<OrderLineComponentDto> components) {

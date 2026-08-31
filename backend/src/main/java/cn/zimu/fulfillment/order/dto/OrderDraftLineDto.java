@@ -13,4 +13,4 @@ public record OrderDraftLineDto(
         String productNameRaw,
         String specRaw,
         String unitRaw,
-        String quantity) {}
+        Integer quantity) {}

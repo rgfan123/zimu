@@ -11,7 +11,6 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
-import java.math.BigDecimal;
 
 /** 来源平台商品到内部 SKU 的显式映射。 */
 @Entity
@@ -36,7 +35,7 @@ public class SourceChannelSku extends AuditableEntity {
     private String sourceSpecification;
 
     @Column(name = "quantity_multiplier")
-    private BigDecimal quantityMultiplier;
+    private Integer quantityMultiplier;
 
     @Column(name = "sku_id", nullable = false)
     private Long skuId;
@@ -84,11 +83,11 @@ public class SourceChannelSku extends AuditableEntity {
         this.sourceSpecification = sourceSpecification;
     }
 
-    public BigDecimal getQuantityMultiplier() {
+    public Integer getQuantityMultiplier() {
         return quantityMultiplier;
     }
 
-    public void setQuantityMultiplier(BigDecimal quantityMultiplier) {
+    public void setQuantityMultiplier(Integer quantityMultiplier) {
         this.quantityMultiplier = quantityMultiplier;
     }
 

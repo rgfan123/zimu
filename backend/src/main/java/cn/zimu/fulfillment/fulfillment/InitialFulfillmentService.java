@@ -29,9 +29,9 @@ public class InitialFulfillmentService {
         fulfillment.setFulfillmentNo("FL-" + order.getOrderNo() + "-" + line.getLineNo());
         fulfillment.setOrderLineId(line.getId());
         fulfillment.setFulfillmentProviderId(line.getFulfillmentProviderId());
-        fulfillment.setRequestedQuantity(line.getRequestedQuantity().setScale(3, RoundingMode.HALF_UP));
-        fulfillment.setCumulativeShippedQuantity(BigDecimal.ZERO.setScale(3));
-        fulfillment.setCancelledQuantity(BigDecimal.ZERO.setScale(3));
+        fulfillment.setRequestedQuantity(line.getRequestedQuantity());
+        fulfillment.setCumulativeShippedQuantity(0);
+        fulfillment.setCancelledQuantity(0);
         fulfillment.setShippingProgress(ShippingProgress.NOT_SHIPPED);
         fulfillment.setOutcome(FulfillmentOutcome.IN_PROGRESS);
         return fulfillmentRepository.save(fulfillment);

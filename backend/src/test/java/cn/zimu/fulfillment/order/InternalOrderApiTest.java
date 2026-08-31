@@ -69,7 +69,7 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "2.000")},
+                        "quantity", "2")},
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-11T10:00:00+08:00"));
@@ -113,7 +113,7 @@ class InternalOrderApiTest {
                 "WECOM-CORRECTION-NEW-001",
                 Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "3.000"));
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "3"));
         Map<String, Object> command = Map.of(
                 "expected_version", original.getBody().get("version"),
                 "reason", "客户追加一盒",
@@ -129,7 +129,7 @@ class InternalOrderApiTest {
         assertThat(((List<?>) correction.getBody().get("lines")).stream()
                         .map(item -> ((Map<?, ?>) item).get("requested_quantity").toString())
                         .toList())
-                .containsExactly("3.000");
+                .containsExactly("3");
         assertThat(jdbc.queryForObject(
                 "SELECT correction_of_order_id FROM app.orders WHERE id=?", Long.class,
                 Long.parseLong(correction.getBody().get("id").toString())))
@@ -147,7 +147,7 @@ class InternalOrderApiTest {
                 "WECOM-REVISION-001",
                 Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2.000")));
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2")));
         revision.put("source_version", "revision-2");
         revision.put("expected_version", original.getBody().get("version"));
         revision.put("change_reason", "客户修改数量");
@@ -161,7 +161,7 @@ class InternalOrderApiTest {
         assertThat(revised.getBody().get("id")).isEqualTo(orderId);
         assertThat(((List<?>) revised.getBody().get("lines")).stream()
                         .map(item -> ((Map<?, ?>) item).get("requested_quantity").toString()).toList())
-                .containsExactly("2.000");
+                .containsExactly("2");
         assertThat(http.getForEntity("/api/v1/orders/" + orderId + "/versions", Map[].class).getBody())
                 .hasSize(2);
         assertThat(http.getForEntity("/api/v1/orders/" + orderId + "/timeline", Map[].class).getBody())
@@ -194,14 +194,14 @@ class InternalOrderApiTest {
                             "product_name", "子牧羊小腿",
                             "specification", "标准箱",
                             "unit", "箱",
-                            "quantity", "1.000"),
+                            "quantity", "1"),
                     Map.of(
                             "line_type", "SINGLE",
                             "source_sku_ref", "WECOM-SKU-JD-001",
                             "product_name", "子牧羊小腿",
                             "specification", "500g/盒",
                             "unit", "盒",
-                            "quantity", "1.000")
+                            "quantity", "1")
                 },
                 "settlement", Map.of(
                         "method", "MONTHLY",
@@ -432,13 +432,13 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊腿礼盒",
                         "specification", "2盒/份",
                         "unit", "份",
-                        "quantity", "2.000",
+                        "quantity", "2",
                         "components", new Object[] {Map.of(
                                 "source_sku_ref", "WECOM-SKU-JD-001",
                                 "product_name", "子牧羊小腿",
                                 "specification", "500g/盒",
                                 "unit", "盒",
-                                "quantity_per_bundle", "2.000")}));
+                                "quantity_per_bundle", "2")}));
 
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST, new HttpEntity<>(request, headers), Map.class);
@@ -466,7 +466,7 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "1.000"));
+                        "quantity", "1"));
 
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST, new HttpEntity<>(request, headers), Map.class);
@@ -482,7 +482,7 @@ class InternalOrderApiTest {
         assertThat(detail).containsEntry("source_product_name", "子牧羊小腿");
         assertThat(detail).containsEntry("source_specification", "500g/盒");
         assertThat(detail).containsEntry("source_unit", "盒");
-        assertThat(detail).containsEntry("source_quantity", "1.000");
+        assertThat(detail).containsEntry("source_quantity", 1);
         assertThat((List<?>) detail.get("evidence_items")).singleElement().satisfies(item -> {
             Map<?, ?> evidence = (Map<?, ?>) item;
             assertThat(evidence.get("source_sku_ref")).isEqualTo("WECOM-SKU-JD-001");
@@ -505,20 +505,20 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊腿礼盒",
                         "specification", "2盒/份",
                         "unit", "份",
-                        "quantity", "2.000",
+                        "quantity", "2",
                         "components", new Object[] {
                                 Map.of(
                                         "source_sku_ref", "WECOM-SKU-JD-001",
                                         "product_name", "子牧羊小腿",
                                         "specification", "500g/盒",
                                         "unit", "盒",
-                                        "quantity_per_bundle", "1.000"),
+                                        "quantity_per_bundle", "1"),
                                 Map.of(
                                         "source_sku_ref", "WECOM-SKU-UNMAPPED-001",
                                         "product_name", "未映射礼盒组件",
                                         "specification", "300g/袋",
                                         "unit", "袋",
-                                        "quantity_per_bundle", "2.000")}));
+                                        "quantity_per_bundle", "2")}));
 
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST, new HttpEntity<>(request, headers), Map.class);
@@ -537,7 +537,7 @@ class InternalOrderApiTest {
             assertThat(evidence.get("product_name")).isEqualTo("未映射礼盒组件");
             assertThat(evidence.get("specification")).isEqualTo("300g/袋");
             assertThat(evidence.get("unit")).isEqualTo("袋");
-            assertThat(evidence.get("quantity")).isEqualTo("2.000");
+            assertThat(evidence.get("quantity")).isEqualTo("2");
         });
     }
 
@@ -652,19 +652,22 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "标准箱",
                         "unit", "箱",
-                        "quantity", "1.000"));
+                        "quantity", "1"));
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST, new HttpEntity<>(request, headers), Map.class);
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
+        // 收敛线统一了「活跃来源 SKU 映射」口径（SourceBundleResolver#activeSkuMapping：
+        // 启用且乘数非空为正）——乘数缺失的映射按「无映射」失败关闭，复核理由随之收敛为
+        // SKU_MAPPING_REQUIRED；本用例关心的是列表按理由/渠道过滤，理由随口径同步移植。
         ResponseEntity<Map> cases = http.getForEntity(
-                "/api/v1/review-cases?status=OPEN&reason_code=MAPPING_MULTIPLIER&page=0&size=100",
+                "/api/v1/review-cases?status=OPEN&reason_code=SKU_MAPPING_REQUIRED&page=0&size=100",
                 Map.class);
         ResponseEntity<Map> otherChannelCases = http.getForEntity(
-                "/api/v1/review-cases?status=OPEN&reason_code=MAPPING_MULTIPLIER&source_channel=JUFUBAO&page=0&size=100",
+                "/api/v1/review-cases?status=OPEN&reason_code=SKU_MAPPING_REQUIRED&source_channel=JUFUBAO&page=0&size=100",
                 Map.class);
         ResponseEntity<Map> wecomCases = http.getForEntity(
-                "/api/v1/review-cases?status=OPEN&reason_code=MAPPING_MULTIPLIER&source_channel=WECOM&page=0&size=100",
+                "/api/v1/review-cases?status=OPEN&reason_code=SKU_MAPPING_REQUIRED&source_channel=WECOM&page=0&size=100",
                 Map.class);
 
         assertThat(cases.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -773,7 +776,7 @@ class InternalOrderApiTest {
                         Map.of(
                                 "product_name", "子牧牛腱子",
                                 "specification", "500g/袋",
-                                "quantity", 3.5,
+                                "quantity", 3,
                                 "unit", "袋")),
                 "settlement", Map.of(
                         "settlement_method", "月结",
@@ -807,7 +810,7 @@ class InternalOrderApiTest {
                     assertThat(line.get("product_name")).isEqualTo("子牧羊小腿");
                     assertThat(line.get("sku_code")).isEqualTo("SKU-JD-000001");
                     assertThat(line.get("specification")).isEqualTo("500g/盒");
-                    assertThat(line.get("quantity")).isEqualTo("2.000");
+                    assertThat(line.get("quantity")).isEqualTo("2");
                     assertThat(line.get("unit")).isEqualTo("盒");
                 },
                 item -> {
@@ -815,7 +818,7 @@ class InternalOrderApiTest {
                     assertThat(line.get("line_no")).isEqualTo(2);
                     assertThat(line.get("product_name")).isEqualTo("子牧牛腱子");
                     assertThat(line.get("specification")).isEqualTo("500g/袋");
-                    assertThat(line.get("quantity")).isEqualTo("3.500");
+                    assertThat(line.get("quantity")).isEqualTo("3");
                     assertThat(line.get("unit")).isEqualTo("袋");
                 });
         java.util.List<?> timeline = (java.util.List<?>) run.getBody().get("timeline");
@@ -946,7 +949,7 @@ class InternalOrderApiTest {
                         "product_name", productName,
                         "specification", specification,
                         "unit", unit,
-                        "quantity", "1.000")},
+                        "quantity", "1")},
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-11T10:00:00+08:00"));

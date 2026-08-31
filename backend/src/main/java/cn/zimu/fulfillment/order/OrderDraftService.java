@@ -244,7 +244,7 @@ public class OrderDraftService {
         for (OrderDraftLine draftLine : draftLines) {
             ConfirmOrderDraftCommand.ConfirmItem confirmedItem = confirmedItems.get(draftLine.getLineNo());
             draftLine.setSkuId(WriteCommands.parseIdentifier(confirmedItem.skuId()));
-            draftLine.setQuantity(new BigDecimal(confirmedItem.quantity()));
+            draftLine.setQuantity(Integer.valueOf(confirmedItem.quantity()));
         }
         this.draftLines.saveAll(draftLines);
         drafts.save(draft);
@@ -365,7 +365,7 @@ public class OrderDraftService {
                         "DRAFT_LINE_NOT_FOUND", "补充命令引用了不存在的草稿行: " + supplement.lineNo());
             }
             if (supplement.quantity() != null) {
-                line.setQuantity(new BigDecimal(supplement.quantity()));
+                line.setQuantity(Integer.valueOf(supplement.quantity()));
             }
             if (supplement.skuId() != null) {
                 String skuId = supplement.skuId();

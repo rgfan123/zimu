@@ -435,7 +435,7 @@ class WecomEndToEndAcceptanceTest {
                 .containsEntry("order_status", "SKU_MAPPED");
         assertThat(castMapList(order.get("lines")).getFirst())
                 .containsEntry("product_name", "子牧羊小腿")
-                .containsEntry("requested_quantity", "3.000");
+                .containsEntry("requested_quantity", 3);
 
         // ReviewCase 解决 + 事件 + 版本 + 审计
         Map<String, Object> resolved = get("/api/v1/review-cases/" + revised.get("review_case_id"));

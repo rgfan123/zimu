@@ -304,12 +304,12 @@ class SourceBatchSkuReadinessGate {
                             "当前来源礼包映射已改指其他礼包",
                             "核对映射变更后重新导入，禁止覆盖历史候选"));
                 }
-                BigDecimal currentMultiplier = current == null ? null : current.quantityMultiplier();
+                Integer currentMultiplier = current == null ? null : current.quantityMultiplier();
                 if (snapshot.quantityMultiplier() == null
-                        || snapshot.quantityMultiplier().signum() <= 0
+                        || snapshot.quantityMultiplier() <= 0
                         || currentMultiplier == null
-                        || currentMultiplier.signum() <= 0
-                        || currentMultiplier.compareTo(snapshot.quantityMultiplier()) != 0) {
+                        || currentMultiplier <= 0
+                        || !currentMultiplier.equals(snapshot.quantityMultiplier())) {
                     issues.add(issue(
                             "MAPPING_MULTIPLIER",
                             "来源礼包包装乘数缺失、无效或与上传快照冲突",
@@ -475,7 +475,7 @@ class SourceBatchSkuReadinessGate {
                         new SourceBundleFact(
                                 resultSet.getString("source_bundle_ref"),
                                 resultSet.getLong("bundle_id"),
-                                resultSet.getBigDecimal("quantity_multiplier"),
+                                getInteger(resultSet, "quantity_multiplier"),
                                 resultSet.getBoolean("active"))),
                 arguments.toArray());
         return Map.copyOf(result);
@@ -498,7 +498,7 @@ class SourceBatchSkuReadinessGate {
                         .add(new SourceOrderCandidate.BundleComponentSnapshot(
                                 resultSet.getLong("sku_id"),
                                 resultSet.getString("sku_code"),
-                                resultSet.getBigDecimal("quantity_per_bundle"))),
+                                getInteger(resultSet, "quantity_per_bundle"))),
                 bundleIds.toArray());
         Map<Long, List<SourceOrderCandidate.BundleComponentSnapshot>> immutable = new LinkedHashMap<>();
         result.forEach((id, components) -> immutable.put(id, List.copyOf(components)));
@@ -570,7 +570,7 @@ class SourceBatchSkuReadinessGate {
                     ? skuByCode.get(line.declaredSkuCode())
                     : mapping == null ? null : skuById.get(mapping.getSkuId());
             List<Map<String, String>> issues = candidateMappingIssues(line, mapping, sku);
-            BigDecimal convertedQuantity = candidateRequestedQuantity(line, mapping);
+            Integer convertedQuantity = candidateRequestedQuantity(line, mapping);
             if (sku != null && jdProviderIds.contains(sku.getFulfillmentProviderId())) {
                 Map<String, String> quantityIssue = candidateJdQuantityIssue(
                         line, sku, providerMappingBySkuId.get(sku.getId()), convertedQuantity);
@@ -619,10 +619,10 @@ class SourceBatchSkuReadinessGate {
                 detail.put("current_sku_code", sku.getSkuCode());
             }
             if (line.sourceQuantity() != null) {
-                detail.put("source_quantity", line.sourceQuantity().toPlainString());
+                detail.put("source_quantity", line.sourceQuantity());
             }
             if (convertedQuantity != null) {
-                detail.put("converted_quantity", convertedQuantity.toPlainString());
+                detail.put("converted_quantity", convertedQuantity);
             }
             List<String> reasons = new ArrayList<>();
             List<Map<String, String>> actionable = new ArrayList<>();
@@ -675,12 +675,12 @@ class SourceBatchSkuReadinessGate {
                                 item.skuCode(),
                                 mapping == null ? null : mapping.skuCode(),
                                 mapping == null ? null : mapping.quantityMultiplier(),
-                                decimal(item.quantity()),
+                                integerQuantity(item.quantity()),
                                 true));
                     } else if (item.components() == null || item.components().isEmpty()) {
                         lines.add(new CandidateLine(
                                 row.rawImportRowId(), candidate.candidateKey(), lineNo,
-                                null, null, null, null, null, decimal(item.quantity()), false));
+                                null, null, null, null, null, integerQuantity(item.quantity()), false));
                     } else {
                         int candidateLineNo = lineNo;
                         for (int componentIndex = 0; componentIndex < item.components().size(); componentIndex++) {
@@ -696,7 +696,7 @@ class SourceBatchSkuReadinessGate {
                                     component.skuCode(),
                                     mapping == null ? null : mapping.skuCode(),
                                     mapping == null ? null : mapping.quantityMultiplier(),
-                                    product(item.quantity(), component.quantityPerBundle()),
+                                    integerProduct(item.quantity(), component.quantityPerBundle()),
                                     false));
                         }
                     }
@@ -710,7 +710,7 @@ class SourceBatchSkuReadinessGate {
         return List.copyOf(lines);
     }
 
-    private BigDecimal candidateRequestedQuantity(CandidateLine line, SourceChannelSku mapping) {
+    private Integer candidateRequestedQuantity(CandidateLine line, SourceChannelSku mapping) {
         if (line.sourceQuantity() == null) {
             return null;
         }
@@ -719,19 +719,19 @@ class SourceBatchSkuReadinessGate {
         if (!line.applySourceMultiplier()) {
             return line.sourceQuantity();
         }
-        BigDecimal multiplier;
+        Integer multiplier;
         if (line.directInternalSku()) {
-            multiplier = BigDecimal.ONE;
+            multiplier = 1;
         } else if (line.mappingMultiplier() != null) {
             multiplier = line.mappingMultiplier();
         } else {
             multiplier = mapping == null ? null : mapping.getQuantityMultiplier();
         }
-        return multiplier == null ? null : line.sourceQuantity().multiply(multiplier);
+        return multiplier == null ? null : Math.multiplyExact(line.sourceQuantity(), multiplier);
     }
 
     private Map<String, String> candidateJdQuantityIssue(
-            CandidateLine line, Sku sku, ProviderSku providerMapping, BigDecimal convertedQuantity) {
+            CandidateLine line, Sku sku, ProviderSku providerMapping, Integer convertedQuantity) {
         JdCargoPlanner.Goods goods = providerMapping == null
                 ? null
                 : new JdCargoPlanner.Goods(
@@ -744,7 +744,7 @@ class SourceBatchSkuReadinessGate {
                 Integer.toString(line.lineNo()),
                 sku.getSkuCode(),
                 sku.getUnit(),
-                convertedQuantity,
+                convertedQuantity == null ? null : BigDecimal.valueOf(convertedQuantity),
                 "来源数量 × 来源包装乘数 × 京东件数换算",
                 null,
                 goods);
@@ -757,6 +757,27 @@ class SourceBatchSkuReadinessGate {
                 "QUANTITY_SCALE",
                 failure.message(),
                 "核对来源数量、礼包组件用量、包装乘数和京东件数换算后重新导入批次");
+    }
+
+    /** 数量域整数解析：容忍 "2.000" 字面形态，真实小数 → null（由上游门禁按缺失/无效处理）。 */
+    private static Integer integerQuantity(Object raw) {
+        if (raw == null) return null;
+        try {
+            return new BigDecimal(raw.toString()).intValueExact();
+        } catch (ArithmeticException | NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private static Integer integerProduct(Object left, Object right) {
+        Integer leftValue = integerQuantity(left);
+        Integer rightValue = integerQuantity(right);
+        return leftValue == null || rightValue == null ? null : Math.multiplyExact(leftValue, rightValue);
+    }
+
+    private static Integer getInteger(java.sql.ResultSet resultSet, String column) throws java.sql.SQLException {
+        int value = resultSet.getInt(column);
+        return resultSet.wasNull() ? null : value;
     }
 
     private BigDecimal product(Object left, Object right) {
@@ -795,7 +816,7 @@ class SourceBatchSkuReadinessGate {
                     "维护可跨订单复用的有效来源商品映射后重新确认批次"));
             return issues;
         }
-        if (mapping.getQuantityMultiplier() == null || mapping.getQuantityMultiplier().signum() <= 0) {
+        if (mapping.getQuantityMultiplier() == null || mapping.getQuantityMultiplier() <= 0) {
             issues.add(issue(
                     "MAPPING_MULTIPLIER",
                     "来源包装乘数缺失或不是正数",
@@ -803,7 +824,7 @@ class SourceBatchSkuReadinessGate {
         }
         if (line.mappingMultiplier() != null
                 && (mapping.getQuantityMultiplier() == null
-                    || mapping.getQuantityMultiplier().compareTo(line.mappingMultiplier()) != 0)) {
+                    || !mapping.getQuantityMultiplier().equals(line.mappingMultiplier()))) {
             issues.add(issue(
                     "MAPPING_MULTIPLIER",
                     "当前来源包装乘数与上传时冻结值冲突",
@@ -908,12 +929,12 @@ class SourceBatchSkuReadinessGate {
                     "当前来源商品映射与订单冻结的内部 SKU 不一致",
                     "核对映射变更后重新导入批次，禁止覆盖历史订单快照"));
         }
-        BigDecimal currentMultiplier = mapping == null ? line.mappingMultiplier() : mapping.getQuantityMultiplier();
+        Integer currentMultiplier = mapping == null ? line.mappingMultiplier() : mapping.getQuantityMultiplier();
         if (line.mappingMultiplier() == null
-                || line.mappingMultiplier().signum() <= 0
+                || line.mappingMultiplier() <= 0
                 || currentMultiplier == null
-                || currentMultiplier.signum() <= 0
-                || currentMultiplier.compareTo(line.mappingMultiplier()) != 0) {
+                || currentMultiplier <= 0
+                || !currentMultiplier.equals(line.mappingMultiplier())) {
             issues.add(issue(
                     "MAPPING_MULTIPLIER",
                     "来源包装乘数缺失、无效或与订单冻结值冲突",
@@ -980,7 +1001,7 @@ class SourceBatchSkuReadinessGate {
                             resultSet.getInt("line_no"),
                             resultSet.getLong("sku_id"),
                             resultSet.getString("sku_code_snapshot"),
-                            resultSet.getBigDecimal("mapping_multiplier_snapshot"),
+                            getInteger(resultSet, "mapping_multiplier_snapshot"),
                             directInternalSku);
                 },
                 sourceBatchId,
@@ -1027,7 +1048,7 @@ class SourceBatchSkuReadinessGate {
             int lineNo,
             long skuId,
             String skuCode,
-            BigDecimal mappingMultiplier,
+            Integer mappingMultiplier,
             boolean directInternalSku) {}
 
     private record CandidateLine(
@@ -1038,8 +1059,8 @@ class SourceBatchSkuReadinessGate {
             Long frozenSkuId,
             String declaredSkuCode,
             String frozenSkuCode,
-            BigDecimal mappingMultiplier,
-            BigDecimal sourceQuantity,
+            Integer mappingMultiplier,
+            Integer sourceQuantity,
             boolean applySourceMultiplier) {
 
         boolean directInternalSku() {
@@ -1067,6 +1088,6 @@ class SourceBatchSkuReadinessGate {
     private record SourceBundleFact(
             String sourceBundleRef,
             long bundleId,
-            BigDecimal quantityMultiplier,
+            Integer quantityMultiplier,
             boolean active) {}
 }

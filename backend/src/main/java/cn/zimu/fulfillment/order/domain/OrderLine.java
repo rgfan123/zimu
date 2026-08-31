@@ -9,7 +9,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
 import java.time.Instant;
 
 /** CanonicalOrder 商品行；权威 processing_stage 在行级。 */
@@ -63,13 +62,13 @@ public class OrderLine extends AuditableEntity {
     private String unitSnapshot;
 
     @Column(name = "source_quantity_snapshot")
-    private BigDecimal sourceQuantitySnapshot;
+    private Integer sourceQuantitySnapshot;
 
     @Column(name = "mapping_multiplier_snapshot")
-    private BigDecimal mappingMultiplierSnapshot;
+    private Integer mappingMultiplierSnapshot;
 
     @Column(name = "requested_quantity", nullable = false)
-    private BigDecimal requestedQuantity;
+    private Integer requestedQuantity;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "processing_stage", nullable = false)
@@ -176,27 +175,27 @@ public class OrderLine extends AuditableEntity {
         this.unitSnapshot = unitSnapshot;
     }
 
-    public BigDecimal getSourceQuantitySnapshot() {
+    public Integer getSourceQuantitySnapshot() {
         return sourceQuantitySnapshot;
     }
 
-    public void setSourceQuantitySnapshot(BigDecimal sourceQuantitySnapshot) {
+    public void setSourceQuantitySnapshot(Integer sourceQuantitySnapshot) {
         this.sourceQuantitySnapshot = sourceQuantitySnapshot;
     }
 
-    public BigDecimal getMappingMultiplierSnapshot() {
+    public Integer getMappingMultiplierSnapshot() {
         return mappingMultiplierSnapshot;
     }
 
-    public void setMappingMultiplierSnapshot(BigDecimal mappingMultiplierSnapshot) {
+    public void setMappingMultiplierSnapshot(Integer mappingMultiplierSnapshot) {
         this.mappingMultiplierSnapshot = mappingMultiplierSnapshot;
     }
 
-    public BigDecimal getRequestedQuantity() {
+    public Integer getRequestedQuantity() {
         return requestedQuantity;
     }
 
-    public void setRequestedQuantity(BigDecimal requestedQuantity) {
+    public void setRequestedQuantity(Integer requestedQuantity) {
         this.requestedQuantity = requestedQuantity;
     }
 

@@ -10,7 +10,6 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
-import java.math.BigDecimal;
 
 /** 一条订单行的履约单元（1:1）；后续履约票在本实体上扩展状态机。 */
 @Entity
@@ -31,13 +30,13 @@ public class Fulfillment extends AuditableEntity {
     private Long fulfillmentProviderId;
 
     @Column(name = "requested_quantity", nullable = false)
-    private BigDecimal requestedQuantity;
+    private Integer requestedQuantity;
 
     @Column(name = "cumulative_shipped_quantity", nullable = false)
-    private BigDecimal cumulativeShippedQuantity = BigDecimal.ZERO;
+    private Integer cumulativeShippedQuantity = 0;
 
     @Column(name = "cancelled_quantity", nullable = false)
-    private BigDecimal cancelledQuantity = BigDecimal.ZERO;
+    private Integer cancelledQuantity = 0;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "shipping_progress", nullable = false)
@@ -85,27 +84,27 @@ public class Fulfillment extends AuditableEntity {
         this.fulfillmentProviderId = fulfillmentProviderId;
     }
 
-    public BigDecimal getRequestedQuantity() {
+    public Integer getRequestedQuantity() {
         return requestedQuantity;
     }
 
-    public void setRequestedQuantity(BigDecimal requestedQuantity) {
+    public void setRequestedQuantity(Integer requestedQuantity) {
         this.requestedQuantity = requestedQuantity;
     }
 
-    public BigDecimal getCumulativeShippedQuantity() {
+    public Integer getCumulativeShippedQuantity() {
         return cumulativeShippedQuantity;
     }
 
-    public void setCumulativeShippedQuantity(BigDecimal cumulativeShippedQuantity) {
+    public void setCumulativeShippedQuantity(Integer cumulativeShippedQuantity) {
         this.cumulativeShippedQuantity = cumulativeShippedQuantity;
     }
 
-    public BigDecimal getCancelledQuantity() {
+    public Integer getCancelledQuantity() {
         return cancelledQuantity;
     }
 
-    public void setCancelledQuantity(BigDecimal cancelledQuantity) {
+    public void setCancelledQuantity(Integer cancelledQuantity) {
         this.cancelledQuantity = cancelledQuantity;
     }
 

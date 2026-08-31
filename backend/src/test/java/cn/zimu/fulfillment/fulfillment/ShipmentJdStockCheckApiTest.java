@@ -101,7 +101,7 @@ class ShipmentJdStockCheckApiTest {
 
     @Test
     void sufficientStockPassesAndSameKeyReplaysWithoutAnotherJdQuery() {
-        Fact fact = shipment("PASS", "2.000");
+        Fact fact = shipment("PASS", "2");
         when(jdWarehouse.queryStock(any())).thenReturn(stock(
                 "jd-stock-pass-001",
                 List.of(stockRow("WH-STOCK-001", "10", "8"))));
@@ -153,7 +153,7 @@ class ShipmentJdStockCheckApiTest {
 
     @Test
     void jdQueryFailureFailsClosedWithOneDurableResultAndNoSnapshot() {
-        Fact fact = shipment("QUERY-FAIL", "2.000");
+        Fact fact = shipment("QUERY-FAIL", "2");
         long snapshotsBefore = jdbc.queryForObject(
                 "SELECT count(*) FROM app.provider_stock_snapshots WHERE fulfillment_provider_id=? AND sku_id=?",
                 Long.class,
@@ -191,7 +191,7 @@ class ShipmentJdStockCheckApiTest {
 
     @Test
     void missingTargetWarehouseRowIsNotObservedAndDoesNotWriteFakeZeroSnapshot() {
-        Fact fact = shipment("MISSING-WH", "2.000");
+        Fact fact = shipment("MISSING-WH", "2");
         when(jdWarehouse.queryStock(any())).thenReturn(stock(
                 "jd-stock-missing-wh-001",
                 List.of(stockRow("WH-OTHER-001", "100", "100"))));
@@ -221,7 +221,7 @@ class ShipmentJdStockCheckApiTest {
 
     @Test
     void malformedTargetWarehouseRowFailsClosedWithoutSnapshot() {
-        Fact fact = shipment("MALFORMED", "2.000");
+        Fact fact = shipment("MALFORMED", "2");
         when(jdWarehouse.queryStock(any())).thenReturn(stock(
                 "jd-stock-malformed-001",
                 List.of(stockRow("WH-STOCK-001", "1", "2"))));
@@ -240,7 +240,7 @@ class ShipmentJdStockCheckApiTest {
 
     @Test
     void overPrecisionTargetWarehouseRowFailsClosedWithoutDatabaseRounding() {
-        Fact fact = shipment("OVER-PRECISION", "2.000");
+        Fact fact = shipment("OVER-PRECISION", "2");
         when(jdWarehouse.queryStock(any())).thenReturn(stock(
                 "jd-stock-over-precision-001",
                 List.of(stockRow("WH-STOCK-001", "1.0000", "0.9999"))));
@@ -262,7 +262,7 @@ class ShipmentJdStockCheckApiTest {
 
     @Test
     void eligibilityChangeDuringRemoteQueryRejectsStalePassBeforeWritingAnyFact() {
-        Fact fact = shipment("ELIGIBILITY-RACE", "2.000");
+        Fact fact = shipment("ELIGIBILITY-RACE", "2");
         java.util.concurrent.atomic.AtomicBoolean queryCalled = new java.util.concurrent.atomic.AtomicBoolean();
         java.util.concurrent.atomic.AtomicLong updatedRows = new java.util.concurrent.atomic.AtomicLong(-1);
         java.util.concurrent.atomic.AtomicReference<Boolean> autoCommit = new java.util.concurrent.atomic.AtomicReference<>();
@@ -319,7 +319,7 @@ class ShipmentJdStockCheckApiTest {
 
     @Test
     void skuDeactivationDuringRemoteQueryInvalidatesTheLocalGateBeforeAnyStockFact() {
-        Fact fact = shipment("SKU-RACE", "2.000");
+        Fact fact = shipment("SKU-RACE", "2");
         java.util.concurrent.atomic.AtomicLong updatedRows = new java.util.concurrent.atomic.AtomicLong(-1);
         when(jdWarehouse.queryStock(any())).thenAnswer(invocation -> {
             try (var connection = DriverManager.getConnection(
@@ -382,7 +382,7 @@ class ShipmentJdStockCheckApiTest {
 
     @Test
     void laterSufficientObservationResolvesTheExistingBlockerButStillDoesNotReserveStock() {
-        Fact fact = shipment("RECOVER", "2.000");
+        Fact fact = shipment("RECOVER", "2");
         when(jdWarehouse.queryStock(any()))
                 .thenReturn(stock("jd-stock-recover-zero", List.of(stockRow("WH-STOCK-001", "0", "0"))))
                 .thenReturn(stock("jd-stock-recover-pass", List.of(stockRow("WH-STOCK-001", "5", "5"))));
@@ -416,7 +416,7 @@ class ShipmentJdStockCheckApiTest {
 
     @Test
     void explicitTargetWarehouseZeroIsObservedAndBlocksWithoutCreatingProcurement() {
-        Fact fact = shipment("ZERO", "2.000");
+        Fact fact = shipment("ZERO", "2");
         when(jdWarehouse.queryStock(any())).thenReturn(new JdResult(
                 true,
                 "1000",

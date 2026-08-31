@@ -786,7 +786,7 @@ public class MasterDataService {
             value.setSourceSkuRef(input.sourceSkuRef());
             value.setSourceProductName(input.sourceSkuName());
             value.setSkuId(skuId);
-            value.setQuantityMultiplier(new BigDecimal(input.quantityMultiplier()));
+            value.setQuantityMultiplier(Integer.valueOf(input.quantityMultiplier()));
             value.setActive(!Boolean.FALSE.equals(input.active()));
             return sourceMapping(refresh(sourceMappings.saveAndFlush(value)));
         });
@@ -811,7 +811,7 @@ public class MasterDataService {
                 requireSku(skuId);
                 value.setSkuId(skuId);
             }
-            if (input.quantityMultiplier() != null) value.setQuantityMultiplier(new BigDecimal(input.quantityMultiplier()));
+            if (input.quantityMultiplier() != null) value.setQuantityMultiplier(Integer.valueOf(input.quantityMultiplier()));
             if (input.active() != null) value.setActive(input.active());
             return sourceMapping(refresh(sourceMappings.saveAndFlush(value)));
         });
@@ -1087,7 +1087,7 @@ public class MasterDataService {
         return record(value.getId(), code, name, value.isActive(), value.getLockVersion(),
                 map("source_channel", value.getSourceChannel(), "source_sku_ref", value.getSourceSkuRef(),
                         "sku_id", id(value.getSkuId()), "quantity_multiplier",
-                        value.getQuantityMultiplier() == null ? null : value.getQuantityMultiplier().toPlainString()), value);
+                        value.getQuantityMultiplier()), value);
     }
 
     private MasterDataRecord providerMapping(ProviderSku value) {

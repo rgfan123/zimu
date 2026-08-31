@@ -115,7 +115,7 @@ public class OrderSearchReadService {
             toInstant(rs, "source_ordered_at"),
             toInstant(rs, "settlement_time"),
             rs.getInt("line_count"),
-            decimal(rs.getBigDecimal("total_quantity")),
+            rs.getLong("total_quantity"),
             hasValue(rs, "shipment_id"),
             rs.getString("shipment_status"),
             rs.getString("tracking_number"),
