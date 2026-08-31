@@ -470,6 +470,40 @@ export interface MasterDataPage extends PageMeta {
   items: MasterDataRecord[];
 }
 
+export type SkuReadinessReason =
+  | 'PRODUCT_INACTIVE'
+  | 'SKU_INACTIVE'
+  | 'PROVIDER_INACTIVE'
+  | 'SPECIFICATION_REQUIRED'
+  | 'UNIT_REQUIRED'
+  | 'PROVIDER_MAPPING_REQUIRED'
+  | 'PROVIDER_MAPPING_INACTIVE'
+  | 'UNIT_CONVERSION_REQUIRED'
+  | 'BARCODE_CONFLICT'
+  | 'REVIEW_REQUIRED';
+
+export interface SkuReadinessIssue {
+  code: SkuReadinessReason;
+  message: string;
+  action: string;
+}
+
+export interface SkuDataQualityFlag {
+  flag_code: string;
+  blocking_reason: SkuReadinessReason | null;
+  currently_blocking: boolean;
+  message: string;
+  action: string;
+  evidence: Record<string, unknown>;
+}
+
+export interface SkuFulfillmentReadiness {
+  ready: boolean;
+  reason_codes: SkuReadinessReason[];
+  issues: SkuReadinessIssue[];
+  data_quality_flags: SkuDataQualityFlag[];
+}
+
 /** SKU 响应属性：价格字段始终存在，null 仅表示未定价。 */
 export interface SkuAttributes {
   [key: string]: unknown;
@@ -477,10 +511,15 @@ export interface SkuAttributes {
   provider_id: string;
   specification: string;
   unit: string;
+  net_content_value?: string | null;
+  net_content_unit?: string | null;
+  package_count?: number | null;
+  package_unit?: string | null;
   barcode?: string | null;
   purchase_price: string | null;
   retail_price: string | null;
   margin: string | null;
+  readiness: SkuFulfillmentReadiness;
 }
 
 export interface SkuRecord extends Omit<MasterDataRecord, 'attributes'> {
@@ -843,6 +882,7 @@ export interface FulfillmentExportLine {
   raw_import_row_id?: string;
   outbound_order_no?: string;
   provider_sku_code: string;
+  provider_sku_code_scope?: 'INTERNAL_ROUTING' | 'PROVIDER_EXTERNAL';
   instructed_quantity: string;
   unit: string;
   item_amount: string;

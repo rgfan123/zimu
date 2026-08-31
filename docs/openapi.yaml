@@ -1119,6 +1119,26 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ImportBatch' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/import-batches/{batch_id}/trust-template:
+    parameters:
+      - $ref: '#/components/parameters/BatchId'
+    post:
+      tags: [Imports]
+      operationId: trustSourceImportTemplate
+      summary: 显式信任一个已确认来源批次的精确模板版本
+      description: >-
+        只有已确认批次可建立 standing authorization；来源渠道、模板族、版本或结构指纹
+        任一变化都不会继承此授权。TRUSTED 同时授权后续批次自动确认和既有京东出站步骤。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      responses:
+        '200':
+          description: 已存在或新建的受信模板档案
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceTemplateProfile' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/import-batches/{batch_id}/jd-outbound-submit:
     parameters:
       - $ref: '#/components/parameters/BatchId'
@@ -1991,7 +2011,7 @@ paths:
           schema: { type: string, maxLength: 128 }
         - name: source_channel
           in: query
-          description: Limits the queue to BUSINESS orders from this source channel.
+          description: Limits the queue to BUSINESS orders or pre-order source candidates from this source channel.
           schema: { $ref: '#/components/schemas/SourceChannel' }
         - name: import_batch_id
           in: query
@@ -2630,8 +2650,12 @@ paths:
           schema: { $ref: '#/components/schemas/Identifier' }
         - name: query
           in: query
-          description: 按商品名称 / 规格 / SKU 编码大小写不敏感模糊搜索
+          description: 按商品名称 / SKU 别名 / 规格 / SKU 编码大小写不敏感模糊搜索
           schema: { type: string }
+        - name: readiness_reason
+          in: query
+          description: 按实时派生的 SKU 履约阻断原因筛选
+          schema: { $ref: '#/components/schemas/SkuReadinessReason' }
       responses:
         '200':
           description: Internal SKUs
@@ -2757,7 +2781,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/Page' }, { $ref: '#/components/parameters/Size' }]
       responses:
         '200':
-          description: Provider SKU mappings
+          description: Provider SKU mappings; attributes.provider_sku_code_scope distinguishes PROVIDER_EXTERNAL from TP INTERNAL_ROUTING, which is not a verified external code
           content: { application/json: { schema: { $ref: '#/components/schemas/MasterDataPage' } } }
         default: { $ref: '#/components/responses/ErrorResponse' }
     post:
@@ -4996,6 +5020,19 @@ components:
         lock_version: { type: integer, format: int64, minimum: 0 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    SourceTemplateProfile:
+      type: object
+      additionalProperties: false
+      required: [id, profile_no, source_channel, template_family, template_version, template_fingerprint, status, trusted_at]
+      properties:
+        id: { $ref: '#/components/schemas/Identifier' }
+        profile_no: { type: string, maxLength: 64 }
+        source_channel: { $ref: '#/components/schemas/SourceChannel' }
+        template_family: { type: string, maxLength: 128 }
+        template_version: { type: string, maxLength: 64 }
+        template_fingerprint: { type: string, maxLength: 128 }
+        status: { type: string, enum: [TRUSTED, REVOKED] }
+        trusted_at: { type: string, format: date-time }
     ImportBatchStatus:
       type: string
       enum: [RECEIVED, PROCESSING, COMPLETED, COMPLETED_WITH_REVIEW, FAILED]
@@ -6483,13 +6520,14 @@ components:
         partial: { type: boolean }
     ImportBatchJdOutboundSubmitResult:
       type: object
-      required: [submitted_count, skipped_count, items]
+      required: [submitted_count, skipped_count, failed_count, items]
       description: >-
         批次内京东履约发货批次的批量 SDK 建单结果（jd-real-sdk-switch 05）。已提交
         （SUBMITTED）的跳过；失败项留痕后可安全重试，重试不重复提交已成功项。
       properties:
         submitted_count: { type: integer, minimum: 0 }
         skipped_count: { type: integer, minimum: 0 }
+        failed_count: { type: integer, minimum: 0 }
         items:
           type: array
           items: { $ref: '#/components/schemas/ImportBatchJdOutboundSubmitItem' }
@@ -7042,6 +7080,10 @@ components:
         raw_import_row_id: { $ref: '#/components/schemas/Identifier' }
         outbound_order_no: { type: string }
         provider_sku_code: { type: string }
+        provider_sku_code_scope:
+          type: string
+          enum: [INTERNAL_ROUTING, PROVIDER_EXTERNAL]
+          description: INTERNAL_ROUTING 表示仅供本系统确定性路由，不代表第三方外部编码已核验。
         instructed_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
         unit: { type: string }
         item_amount: { type: string, enum: ['0.00'] }
@@ -7225,8 +7267,13 @@ components:
         status: { type: string, enum: [OPEN, RESOLVED, DISMISSED] }
         order_id: { $ref: '#/components/schemas/Identifier' }
         order_line_id: { $ref: '#/components/schemas/Identifier' }
-        subject_type: { type: string }
-        subject_id: { $ref: '#/components/schemas/Identifier' }
+        subject_type:
+          type: string
+          enum: [ORDER_LINE, SHIPMENT, ORDER, MESSAGE_SUBMISSION, ORDER_DRAFT, TRACKING_DRAFT, IMPORT_BATCH, UNKNOWN]
+        subject_id:
+          allOf:
+            - $ref: '#/components/schemas/Identifier'
+          nullable: true
         detail: { type: object, additionalProperties: true }
         suggestions:
           type: array
@@ -7235,7 +7282,7 @@ components:
           type: array
           items:
             type: string
-            enum: [RESOLVE_CUSTOMER, RESOLVE_SKU, RESOLVE_CARRIER, RESOLVE_IMPORT_DATA, COMPLETE_SOURCE_FOLLOWUP, CONFIRM_ORDER_DRAFT, REJECT_ORDER_DRAFT, CONFIRM_TRACKING_DRAFT, OPEN_SKU_MAPPING, RERUN_JD_SKU_MAPPING_CHECK, RERUN_JD_STOCK_CHECK, REINTERPRET, REJECT]
+            enum: [RESOLVE_CUSTOMER, RESOLVE_SKU, RESOLVE_CARRIER, RESOLVE_IMPORT_DATA, RESOLVE_MANUALLY, DISMISS, COMPLETE_SOURCE_FOLLOWUP, RESOLVE_JD_TRACKING_CONFLICT, CONFIRM_ORDER_DRAFT, REJECT_ORDER_DRAFT, CONFIRM_TRACKING_DRAFT, REJECT_TRACKING_DRAFT, OPEN_SKU_MAPPING, RERUN_JD_SKU_MAPPING_CHECK, RERUN_JD_STOCK_CHECK, REINTERPRET, REJECT]
         resolution: { type: object, additionalProperties: true, nullable: true }
         resolved_by: { type: string, nullable: true }
         resolved_at: { type: string, format: date-time, nullable: true }
@@ -7536,12 +7583,19 @@ components:
               items: { $ref: '#/components/schemas/ProductArchiveSheet' }
     SkuAttributes:
       type: object
-      required: [product_id, provider_id, specification, unit, purchase_price, retail_price, margin]
+      required: [product_id, provider_id, specification, unit, purchase_price, retail_price, margin, readiness]
       properties:
         product_id: { $ref: '#/components/schemas/Identifier' }
         provider_id: { $ref: '#/components/schemas/Identifier' }
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32 }
+        net_content_value:
+          allOf: [{ $ref: '#/components/schemas/PositiveDecimalQuantity' }]
+          nullable: true
+          description: 单个内包装的净含量；与其余包装身份字段同时存在或同时为空。
+        net_content_unit: { type: string, minLength: 1, maxLength: 16, nullable: true }
+        package_count: { type: integer, minimum: 1, nullable: true }
+        package_unit: { type: string, minLength: 1, maxLength: 32, nullable: true }
         barcode: { type: string, minLength: 1, maxLength: 64, nullable: true }
         purchase_price:
           allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]
@@ -7558,7 +7612,60 @@ components:
           type: string
           nullable: true
           description: 当前启用的京东履约方 SKU 映射编码；映射或履约方停用时为 null。
+        readiness: { $ref: '#/components/schemas/SkuFulfillmentReadiness' }
         product_version: { type: integer, format: int64, minimum: 0 }
+    SkuReadinessReason:
+      type: string
+      enum:
+        - PRODUCT_INACTIVE
+        - SKU_INACTIVE
+        - PROVIDER_INACTIVE
+        - SPECIFICATION_REQUIRED
+        - UNIT_REQUIRED
+        - PROVIDER_MAPPING_REQUIRED
+        - PROVIDER_MAPPING_INACTIVE
+        - UNIT_CONVERSION_REQUIRED
+        - BARCODE_CONFLICT
+        - REVIEW_REQUIRED
+    SkuReadinessIssue:
+      type: object
+      required: [code, message, action]
+      properties:
+        code: { $ref: '#/components/schemas/SkuReadinessReason' }
+        message: { type: string, minLength: 1 }
+        action: { type: string, minLength: 1 }
+    SkuFulfillmentReadiness:
+      type: object
+      required: [ready, reason_codes, issues, data_quality_flags]
+      properties:
+        ready:
+          type: boolean
+          description: 实时派生；不会持久化为 SKU 的第二套状态。
+        reason_codes:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/SkuReadinessReason' }
+        issues:
+          type: array
+          items: { $ref: '#/components/schemas/SkuReadinessIssue' }
+        data_quality_flags:
+          type: array
+          description: 当前有效的数据质量与档案证据；currently_blocking=false 的参考证据不会改变 active 或 ready。
+          items: { $ref: '#/components/schemas/SkuDataQualityFlag' }
+    SkuDataQualityFlag:
+      type: object
+      required: [flag_code, blocking_reason, currently_blocking, message, action, evidence]
+      properties:
+        flag_code: { type: string, minLength: 1, maxLength: 64 }
+        blocking_reason:
+          allOf: [{ $ref: '#/components/schemas/SkuReadinessReason' }]
+          nullable: true
+        currently_blocking:
+          type: boolean
+          description: 是否仍参与当前 readiness；条码冲突证据只有在独立条码与 REAL 京东 goodsNo 核验凭证同时成立后才转为非阻断历史证据。
+        message: { type: string, minLength: 1 }
+        action: { type: string, minLength: 1 }
+        evidence: { type: object, additionalProperties: true }
     SkuRecord:
       allOf:
         - $ref: '#/components/schemas/MasterDataRecord'
@@ -7754,6 +7861,7 @@ components:
         # 都会让触发器因「非空」而不发号，静默写进一个假编码。
         product_code: { type: string, minLength: 1, maxLength: 64 }
         product_name: { type: string, minLength: 1, maxLength: 128 }
+        brand_name: { type: string, minLength: 1, maxLength: 128, description: 规范品牌；无品牌时省略。 }
         category_id: { $ref: '#/components/schemas/Identifier' }
         ingredients: { type: string, minLength: 1, maxLength: 1000 }
         tags:
@@ -7772,6 +7880,10 @@ components:
         provider_id: { $ref: '#/components/schemas/Identifier' }
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
+        net_content_value: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        net_content_unit: { type: string, minLength: 1, maxLength: 16, example: g }
+        package_count: { type: integer, minimum: 1 }
+        package_unit: { type: string, minLength: 1, maxLength: 32, example: 袋 }
         barcode: { type: string, minLength: 1, maxLength: 64 }
         purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
@@ -7788,6 +7900,12 @@ components:
       properties:
         expected_version: { type: integer, minimum: 0 }
         product_name: { type: string, minLength: 1, maxLength: 128 }
+        brand_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          nullable: true
+          description: 显式 null 清空品牌；缺省不修改。
         category_id: { $ref: '#/components/schemas/Identifier' }
         ingredients:
           type: string
@@ -7837,6 +7955,10 @@ components:
         product_id: { $ref: '#/components/schemas/Identifier' }
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
+        net_content_value: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        net_content_unit: { type: string, minLength: 1, maxLength: 16, example: g }
+        package_count: { type: integer, minimum: 1 }
+        package_unit: { type: string, minLength: 1, maxLength: 32, example: 袋 }
         barcode: { type: string, minLength: 1, maxLength: 64 }
         purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
         retail_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
@@ -7972,6 +8094,13 @@ components:
         expected_version: { type: integer, minimum: 0 }
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32 }
+        net_content_value:
+          allOf: [{ $ref: '#/components/schemas/PositiveDecimalQuantity' }]
+          nullable: true
+          description: 显式 null 与其余三个包装字段同时传入可清空结构化包装身份。
+        net_content_unit: { type: string, minLength: 1, maxLength: 16, nullable: true }
+        package_count: { type: integer, minimum: 1, nullable: true }
+        package_unit: { type: string, minLength: 1, maxLength: 32, nullable: true }
         barcode: { type: string, minLength: 1, maxLength: 64, nullable: true }
         purchase_price:
           allOf: [{ $ref: '#/components/schemas/NullableCommercialPrice' }]

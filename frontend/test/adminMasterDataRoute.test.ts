@@ -220,8 +220,10 @@ test('real product route presents the category name and code instead of an inter
   const row = [...document.querySelectorAll<HTMLTableRowElement>('.ant-table-tbody .ant-table-row')]
     .find((candidate) => candidate.textContent?.includes('P-BEEF-001'));
   assert.ok(row, 'the product must be visible through the production route');
-  // 商品之后是品类列；档案字段（主图/标签/毛利）不应破坏品类展示。
-  const categoryCell = row.querySelectorAll<HTMLTableCellElement>('td')[1];
+  // 商品、品牌之后是品类列；档案字段（主图/标签/毛利）不应破坏品类展示。
+  const cells = row.querySelectorAll<HTMLTableCellElement>('td');
+  assert.equal(cells[1]?.textContent?.trim(), '—');
+  const categoryCell = cells[2];
   assert.equal(categoryCell?.textContent?.trim(), '牛肉（MEAT/BEEF）');
   // 页面自己只取品类/商品/标签三份数据；外壳另有一次基线请求——AppLayout 每次挂载都要读
   // 业务模块开放清单来过滤导航树（票 03），与停在哪一页无关，故一并计入期望。
@@ -243,7 +245,8 @@ test('product archive shows JD EMG and opens a new-product form without an exist
     if (url === '/api/v1/fulfillment-providers') {
       return jsonResponse([{ id: '11', provider_code: 'JD', provider_name: '京东仓', active: true, version: 1 }]);
     }
-    if (url === '/api/v1/skus?page=0&size=10') {
+    if (url === '/api/v1/skus?page=0&size=10'
+        || url.includes('readiness_reason=PROVIDER_MAPPING_REQUIRED')) {
       return jsonResponse(page([{
         id: '501',
         code: 'SKU-JD-000501',
@@ -255,7 +258,46 @@ test('product archive shows JD EMG and opens a new-product form without an exist
           provider_id: '11',
           specification: '500g',
           unit: '袋',
+          product_brand_name: '子牧',
+          net_content_value: '500',
+          net_content_unit: 'g',
+          package_count: 1,
+          package_unit: '袋',
           jd_emg_no: 'EMG4418691852262',
+          readiness: {
+            ready: false,
+            reason_codes: ['PRODUCT_INACTIVE', 'PROVIDER_MAPPING_REQUIRED'],
+            issues: [
+              {
+                code: 'PRODUCT_INACTIVE',
+                message: '所属商品已停用',
+                action: '确认商品状态后恢复商品，或继续保持不可履约',
+              },
+              {
+                code: 'PROVIDER_MAPPING_REQUIRED',
+                message: '缺少履约方商品映射',
+                action: '维护该 SKU 对应履约方的有效商品编码',
+              },
+            ],
+            data_quality_flags: [
+              {
+                flag_code: 'PRODUCT_ARCHIVE_STATUS_REFERENCE',
+                blocking_reason: null,
+                currently_blocking: false,
+                message: '商品档案状态：停产（仅作为参考证据）',
+                action: '未确认权威关系前不要自动停用 SKU',
+                evidence: { archive_status: '停产' },
+              },
+              {
+                flag_code: 'SOURCE_BRAND_MISMATCH',
+                blocking_reason: 'REVIEW_REQUIRED',
+                currently_blocking: true,
+                message: '来源品牌子牧与内部品牌卓宸不一致',
+                action: '核对品牌证据后人工关闭',
+                evidence: {},
+              },
+            ],
+          },
         },
       }]));
     }
@@ -267,7 +309,31 @@ test('product archive shows JD EMG and opens a new-product form without an exist
   await mountRoute('/product/skus');
   await waitFor(() => assert.match(bodyText(), /EMG4418691852262/));
   assert.match(bodyText(), /京东EMG编号/);
+  assert.match(bodyText(), /履约就绪/);
+  assert.match(bodyText(), /阻断/);
+  assert.match(bodyText(), /所属商品已停用/);
+  assert.match(bodyText(), /缺少履约方商品映射/);
+  assert.match(bodyText(), /数据质量 \/ 档案证据/);
+  assert.match(bodyText(), /商品档案状态：停产（仅作为参考证据）/);
+  assert.match(bodyText(), /来源品牌子牧与内部品牌卓宸不一致/);
+  assert.match(bodyText(), /处理：未确认权威关系前不要自动停用 SKU/);
+  assert.match(bodyText(), /处理：核对品牌证据后人工关闭/);
+  assert.match(bodyText(), /按阻断原因筛选/);
   assert.equal(requestedUrls.some((url) => url.startsWith('/api/v1/products?')), false);
+
+  const readinessSelector = [...document.querySelectorAll<HTMLElement>('.ant-select-selector')]
+    .find((selector) => selector.textContent?.includes('按阻断原因筛选'));
+  assert.ok(readinessSelector);
+  await act(async () => readinessSelector.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
+  const missingMappingOption = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option-content')]
+    .find((option) => option.textContent?.includes('缺少履约方商品映射'));
+  assert.ok(missingMappingOption);
+  assert.ok([...document.querySelectorAll<HTMLElement>('.ant-select-item-option-content')]
+    .some((option) => option.textContent?.includes('京东件数换算缺失或无效')));
+  await act(async () => missingMappingOption.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(() => assert.ok(
+    requestedUrls.some((url) => url.includes('readiness_reason=PROVIDER_MAPPING_REQUIRED')),
+  ));
 
   const createButton = [...document.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent?.trim() === '新建');
@@ -279,6 +345,13 @@ test('product archive shows JD EMG and opens a new-product form without an exist
     .map((label) => label.textContent?.trim());
   assert.ok(labels.includes('商品编码'));
   assert.ok(labels.includes('商品名称'));
+  assert.ok(labels.includes('品牌'));
+  assert.ok(labels.includes('规格展示'));
+  assert.ok(labels.includes('净含量'));
+  assert.ok(labels.includes('净含量单位'));
+  assert.ok(labels.includes('包装件数'));
+  assert.ok(labels.includes('包装单位'));
+  assert.ok(labels.includes('库存计数单位'));
   assert.equal(labels.includes('商品'), false);
 });
 

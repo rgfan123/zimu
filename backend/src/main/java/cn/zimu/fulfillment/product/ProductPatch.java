@@ -20,6 +20,10 @@ public final class ProductPatch {
     @Size(max = 128, message = "商品名称超长")
     private String productName;
 
+    @Size(max = 128, message = "品牌名称超长")
+    private String brandName;
+    private boolean brandNamePresent;
+
     @Pattern(regexp = cn.zimu.fulfillment.common.dto.Patterns.IDENTIFIER, message = "品类标识符无效")
     private String categoryId;
 
@@ -61,6 +65,16 @@ public final class ProductPatch {
 
     public void setProductName(String productName) {
         this.productName = productName;
+    }
+
+    public String brandName() {
+        return brandName;
+    }
+
+    @JsonSetter("brand_name")
+    public void setBrandName(String brandName) {
+        this.brandName = brandName;
+        this.brandNamePresent = true;
     }
 
     public String categoryId() {
@@ -145,6 +159,11 @@ public final class ProductPatch {
     }
 
     @JsonIgnore
+    public boolean brandNamePresent() {
+        return brandNamePresent;
+    }
+
+    @JsonIgnore
     public boolean tagsPresent() {
         return tagsPresent;
     }
@@ -172,7 +191,7 @@ public final class ProductPatch {
     /** 是否出现任意新字段（含显式 null 清空），用于判定本次是否为有效修改。 */
     @JsonIgnore
     public boolean anyArchiveFieldPresent() {
-        return ingredientsPresent || tagsPresent || listedFromPresent || listedUntilPresent
+        return brandNamePresent || ingredientsPresent || tagsPresent || listedFromPresent || listedUntilPresent
                 || leadTimeHoursPresent || mainImageRefPresent;
     }
 }

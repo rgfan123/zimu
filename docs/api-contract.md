@@ -238,7 +238,7 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | 商品成本档案 | `GET /api/v1/product-archive-sheets`（含未挂接行，支持 query/page/size），`GET /api/v1/products/{product_id}/archive-sheet`（已挂接到指定商品的行） |
 | SKU | `GET/POST /api/v1/skus`，`GET/PATCH /api/v1/skus/{sku_id}`；`GET /api/v1/skus/export` 导出全部 active SKU（固定 8 列 + 成本档案 A..AU 47 列，SKU 级挂接优先、product 级兜底、未挂接档案列为空，文件名业务日为 Asia/Shanghai） |
 | 来源 SKU 映射 | `GET/POST /api/v1/source-sku-mappings`，`GET/PATCH /api/v1/source-sku-mappings/{mapping_id}` |
-| 履约方 SKU 映射 | `GET/POST /api/v1/provider-sku-mappings`，`GET/PATCH /api/v1/provider-sku-mappings/{mapping_id}` |
+| 履约方 SKU 映射 | `GET/POST /api/v1/provider-sku-mappings`，`GET/PATCH /api/v1/provider-sku-mappings/{mapping_id}`；读模型以 `provider_sku_code_scope` 区分 `PROVIDER_EXTERNAL` 与仅供子牧内部路由的 `INTERNAL_ROUTING`，后者不得解释为已核验外部编码 |
 | FulfillmentProvider | `GET /api/v1/fulfillment-providers`，`GET/PATCH /api/v1/fulfillment-providers/{provider_id}` |
 | 内部运营人员（Issue #89） | `GET/POST /api/v1/operators`，`GET/PATCH /api/v1/operators/{operator_id}`；只读诊断 `GET /api/v1/operator-team-resolutions?responsible_team=...`（返回 active 人员、可推送 userid 与未绑定人员名单，不静默过滤）；`&require_pushable=true` 时不可全员推送直接 422 `OPERATOR_TEAM_NOT_PUSHABLE` |
 | 企微主动通知投递记录（Issue #90） | `GET /api/v1/admin/wecom-notifications/deliveries`；按 `source_type/source_id/status` 过滤，逐源事实 × 收件人返回 SENT/BLOCKED/UNKNOWN/FAILED、尝试次数、req_id、稳定原因及 durable alert id/key/severity；要求 `X-Operator`，不暴露源 payload 或客户 PII |
@@ -246,6 +246,8 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 | Connector 连通性 | `POST /api/v1/connectors/{source_channel}/test-connection` |
 | 业务模块开放清单（票 03） | `GET /api/v1/business-modules`；只读部署事实，返回 `{ "modules": [...] }` 即当前**已开放**的业务模块标识（现有标识：`customer-center` = 客户中心 kehuzx，判据取其只读网关是否就绪，与抛 `KEHUZX_NOT_CONFIGURED` 的是同一个开关）。前端外壳启动时读取并据此过滤导航树，使入口可见性与接通开关联动；清单只列已开放的模块，不暴露未开放模块及其未接通原因。**与 MCP 的 `MCP_MODULES`（§8 工具暴露面）是两件不同的事，不互相推导** |
 | MCP 开放面核对（票 05） | `GET /api/v1/mcp-exposure`；只读部署事实，返回 `{ "open_modules": [{ "module", "tools": [{ "name", "description", "read_only" }] }], "unopened_modules": [...] }`。**已开放** = 该模块的工具真的进了注册表（`McpToolRegistry` 是唯一真源，不重新解析 `MCP_MODULES`）；**已知但未开放** = 有工具声明该模块但当前未列出，只给模块名不给工具明细（未注册的工具凭空列出就得另建一份必然漂移的清单）。两个清单都可能为空且空是合法状态（未配置 → `open_modules` 空，全开 → `unopened_modules` 空）。纯只读，不提供修改开放面的能力——开放面在部署期由 `MCP_MODULES` 决定、启动期一次性生效（§8 / ADR 0015）。前端 `/system/mcp-exposure` 消费 |
+
+SKU 列表与候选搜索的 `query` 同时匹配商品名称、active SKU 别名、规格和内部 SKU 编码；规范名称变更后，历史 NAME 别名仍可定位 canonical SKU，但不会恢复或改写已停用的重复 SKU。
 
 主数据不提供硬删除端点。已被订单快照引用的 Product/SKU/provider 不能改写历史。来源 SKU 映射的 `quantity_multiplier` 必须为正数；空值只能作为待复核主数据，不能进入自动履约。
 

@@ -21,8 +21,10 @@ import cn.zimu.fulfillment.sku.Sku;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
 import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
+import cn.zimu.fulfillment.sku.SourceSkuRefPolicy;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -94,8 +96,8 @@ public class SeedDataInitializer implements ApplicationRunner {
         if (sampleMasterDataEnabled) {
             Category category = category();
             Product product = product(category, jd);
-            Sku jdSku = sku(product, jd, "500g/盒", "盒");
-            Sku tpSku = sku(product, tp, "标准箱", "箱");
+            Sku jdSku = sku(product, jd, "500g/盒", "盒", "500", "g", 1, "盒");
+            Sku tpSku = sku(product, tp, "标准箱", "箱", "1", "箱", 1, "箱");
             sourceChannelSku(jdSku, "WECOM-SKU-JD-001", "子牧羊小腿", BigDecimal.ONE);
             sourceChannelSku(tpSku, "WECOM-SKU-TP-001", "子牧羊小腿（第三方）", null);
             providerSku(jd, jdSku, "JD-SKU-000001");
@@ -147,17 +149,47 @@ public class SeedDataInitializer implements ApplicationRunner {
         return providerRepository.save(provider);
     }
 
-    private Sku sku(Product product, FulfillmentProvider provider, String specification, String unit) {
+    private Sku sku(
+            Product product,
+            FulfillmentProvider provider,
+            String specification,
+            String unit,
+            String netContentValue,
+            String netContentUnit,
+            int packageCount,
+            String packageUnit) {
         var existing = skuRepository.findByProductIdAndFulfillmentProviderIdAndSpecificationAndUnit(
                 product.getId(), provider.getId(), specification, unit);
         if (existing.isPresent()) {
-            return existing.get();
+            Sku sku = existing.get();
+            boolean changed = false;
+            if (sku.getNetContentValue() == null) {
+                sku.setNetContentValue(new BigDecimal(netContentValue));
+                changed = true;
+            }
+            if (sku.getNetContentUnit() == null || sku.getNetContentUnit().isBlank()) {
+                sku.setNetContentUnit(netContentUnit);
+                changed = true;
+            }
+            if (sku.getPackageCount() == null) {
+                sku.setPackageCount(packageCount);
+                changed = true;
+            }
+            if (sku.getPackageUnit() == null || sku.getPackageUnit().isBlank()) {
+                sku.setPackageUnit(packageUnit);
+                changed = true;
+            }
+            return changed ? skuRepository.save(sku) : sku;
         }
         Sku sku = new Sku();
         sku.setProductId(product.getId());
         sku.setFulfillmentProviderId(provider.getId());
         sku.setSpecification(specification);
         sku.setUnit(unit);
+        sku.setNetContentValue(new BigDecimal(netContentValue));
+        sku.setNetContentUnit(netContentUnit);
+        sku.setPackageCount(packageCount);
+        sku.setPackageUnit(packageUnit);
         return skuRepository.save(sku);
     }
 
@@ -167,6 +199,7 @@ public class SeedDataInitializer implements ApplicationRunner {
                 || sourceChannelSkuRepository.existsBySourceChannelAndSourceSkuRef(SourceChannel.WECOM, sourceSkuRef)) {
             return;
         }
+        SourceSkuRefPolicy.requireReusable(sourceSkuRef);
         SourceChannelSku mapping = new SourceChannelSku();
         mapping.setSourceChannel(SourceChannel.WECOM);
         mapping.setSourceSkuRef(sourceSkuRef);
@@ -177,16 +210,32 @@ public class SeedDataInitializer implements ApplicationRunner {
     }
 
     private void providerSku(FulfillmentProvider provider, Sku sku, String providerSkuCode) {
-        if (sku == null
-                || providerSkuRepository.existsByFulfillmentProviderIdAndProviderSkuCode(
-                        provider.getId(), providerSkuCode)) {
+        if (sku == null) {
+            return;
+        }
+        var existing = providerSkuRepository.findByFulfillmentProviderIdAndProviderSkuCode(
+                provider.getId(), providerSkuCode);
+        if (existing.isPresent()) {
+            ProviderSku mapping = existing.get();
+            if (provider.getProviderType() == ProviderType.JD_WAREHOUSE
+                    && mapping.getSkuId().equals(sku.getId())
+                    && !mapping.getExternalCodes().containsKey("jd_pieces_per_unit")) {
+                Map<String, Object> externalCodes = new LinkedHashMap<>(mapping.getExternalCodes());
+                externalCodes.put("jd_pieces_per_unit", BigDecimal.ONE);
+                mapping.setExternalCodes(externalCodes);
+                providerSkuRepository.save(mapping);
+            }
             return;
         }
         ProviderSku providerSku = new ProviderSku();
         providerSku.setFulfillmentProviderId(provider.getId());
         providerSku.setSkuId(sku.getId());
         providerSku.setProviderSkuCode(providerSkuCode);
-        providerSku.setExternalCodes(new LinkedHashMap<>());
+        Map<String, Object> externalCodes = new LinkedHashMap<>();
+        if (provider.getProviderType() == ProviderType.JD_WAREHOUSE) {
+            externalCodes.put("jd_pieces_per_unit", BigDecimal.ONE);
+        }
+        providerSku.setExternalCodes(externalCodes);
         providerSkuRepository.save(providerSku);
     }
 

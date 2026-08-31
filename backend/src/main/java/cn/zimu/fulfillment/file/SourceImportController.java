@@ -21,10 +21,15 @@ class SourceImportController {
 
     private final SourceImportService service;
     private final SourceBatchListService batchList;
+    private final SourceTemplateProfileService templateProfiles;
 
-    SourceImportController(SourceImportService service, SourceBatchListService batchList) {
+    SourceImportController(
+            SourceImportService service,
+            SourceBatchListService batchList,
+            SourceTemplateProfileService templateProfiles) {
         this.service = service;
         this.batchList = batchList;
+        this.templateProfiles = templateProfiles;
     }
 
     /**
@@ -35,6 +40,18 @@ class SourceImportController {
     @GetMapping("/api/v1/import-batches/pending-confirmation")
     Map<String, Object> pendingConfirmation() {
         return Map.of("items", batchList.pendingConfirmation());
+    }
+
+    /** 显式授权该已确认批次的精确模板版本参与后续 AutomaticRelease。 */
+    @PostMapping("/api/v1/import-batches/{batch_id}/trust-template")
+    ResponseEntity<?> trustTemplate(
+            @PathVariable("batch_id") String batchId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(value = "X-Operator", required = false) String operator) {
+        return WriteCommands.respond(templateProfiles.trust(
+                WriteCommands.parseIdentifier(batchId),
+                WriteCommands.requireIdempotencyKey(idempotencyKey),
+                WriteCommands.writeContext(operator)));
     }
 
     @PostMapping(path = "/api/v1/import-batches/source-orders", consumes = "multipart/form-data")

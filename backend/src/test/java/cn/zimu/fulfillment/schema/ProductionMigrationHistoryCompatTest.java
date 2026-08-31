@@ -31,7 +31,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * 「已发布版本号不可改名，新增迁移只可追加」。
  *
  * <p>本测试把该原则固化为门禁：① 先只迁移到 V47（模拟当前真实库）；② 再用完整当前
- * migration set（V1..V64）升级，Flyway validate（默认开启）必须成功且只追加
+ * migration set（V1..V75）升级，Flyway validate（默认开启）必须成功且只追加
  * V48（internal_operators，Issue #89）、V49（企微导出 delivery 代际栅栏，Issue #84）、
  * V50（中汇稳定上传意图，Issue #116）、V51（企微业务通知 outbox，Issue #90）与
  * V52（企微订单草稿卡片，Issues #87/#88）、V53（礼包组件删除保护）与 V54（Shipment 来源同步状态机）与 V55（通用业务卡投递，#87/#88）与 V56（履约单据 Agent）；
@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV89() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV98() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -108,17 +108,19 @@ class ProductionMigrationHistoryCompatTest {
 
         seedV47MultiGenerationDeliveryHistory();
 
-        // 阶段二：完整当前 migration set（V1..V73 + V77 + V83 + V84 + V85 + V86 + V87 + V88 + V89）升级——
+        // 阶段二：完整当前 migration set（V1..V73 + V77 + V83..V89 + V90..V98）升级——
         // V73 为卡片/回传线实占；V74–V76 为在途交付线预留后未用而跳号；V77 为换货事件类型；
         // V78/V81/V82 被在途票占用、V79 永久空置、V83 已被 scheduled_pull_runs 占用，
-        // 因此飞象在线回传取 V84。Flyway validate 默认开启，V40–V47 校验通过后只追加
-        // V48–V73、V77、V83、V84、V85、V86、V87、V88 与 V89，任何 repair/改写历史都会在此失败。
+        // 因此飞象在线回传取 V84。V90–V98 为 SKU 主数据线（原按旧基线分配 V67–V75，
+        // 2026-08-31 合入时因号段已被跟进线顺延占用而整体重编号为 V90–V98；生产已执行号位不可动，
+        // 未执行方顺延——与 V65–V72 那次的处置同一条规矩）。Flyway validate 默认开启，
+        // V40–V47 校验通过后只追加上述号段，任何 repair/改写历史都会在此失败。
         flyway(null).migrate();
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 81 条历史（V1–V73 + 跳号的 V77、V83、V84、V85、V86、V87、V88、V89）")
-                .hasSize(81);
+                .as("完整升级后应恰有 90 条历史（V1–V73 + 跳号的 V77、V83–V89 + SKU 线 V90–V98）")
+                .hasSize(90);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
@@ -127,8 +129,8 @@ class ProductionMigrationHistoryCompatTest {
         // 两条并行开发线在 2026-08-27 合流：V59–V64 为已上线的企微/档案/订单线
         //（生产已执行，号位不可动），客户跟进线原 V59–V66 八个迁移整体顺延为 V65–V72
         //（其中 V71 冻结结构化执行意图、V72 新增来源订单附件任务）。
-        assertThat(historyAfter.subList(47, 81))
-                .as("升级只追加到 V89；V88 留存 source_sku_ref，V89 冻结已分配订单行的来源身份")
+        assertThat(historyAfter.subList(47, 90))
+                .as("升级只追加到 V98；V88/V89 留存并冻结来源 SKU 身份，V90–V98 为 SKU 主数据线重编号合入")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -231,11 +233,38 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V88__order_line_source_sku_ref.sql")),
                         new HistoryRow("89", "V89__freeze_allocated_order_line_source_sku_ref.sql",
                                 "freeze allocated order line source sku ref",
-                                crc32Of("V89__freeze_allocated_order_line_source_sku_ref.sql")));
+                                crc32Of("V89__freeze_allocated_order_line_source_sku_ref.sql")),
+                        new HistoryRow("90", "V90__structured_product_sku_identity.sql",
+                                "structured product sku identity",
+                                crc32Of("V90__structured_product_sku_identity.sql")),
+                        new HistoryRow("91", "V91__sku_data_quality_flags.sql",
+                                "sku data quality flags",
+                                crc32Of("V91__sku_data_quality_flags.sql")),
+                        new HistoryRow("92", "V92__sku_readiness_catalog_lock.sql",
+                                "sku readiness catalog lock",
+                                crc32Of("V92__sku_readiness_catalog_lock.sql")),
+                        new HistoryRow("93", "V93__trusted_source_template_profiles.sql",
+                                "trusted source template profiles",
+                                crc32Of("V93__trusted_source_template_profiles.sql")),
+                        new HistoryRow("94", "V94__serialize_sku_catalog_writes_before_rows.sql",
+                                "serialize sku catalog writes before rows",
+                                crc32Of("V94__serialize_sku_catalog_writes_before_rows.sql")),
+                        new HistoryRow("95", "V95__index_trusted_source_template_batch.sql",
+                                "index trusted source template batch",
+                                crc32Of("V95__index_trusted_source_template_batch.sql")),
+                        new HistoryRow("96", "V96__enforce_active_sku_barcode_uniqueness.sql",
+                                "enforce active sku barcode uniqueness",
+                                crc32Of("V96__enforce_active_sku_barcode_uniqueness.sql")),
+                        new HistoryRow("97", "V97__repair_wecom_pseudo_mappings_and_tp_routes.sql",
+                                "repair wecom pseudo mappings and tp routes",
+                                crc32Of("V97__repair_wecom_pseudo_mappings_and_tp_routes.sql")),
+                        new HistoryRow("98", "V98__canonicalize_duplicate_skus_and_names.sql",
+                                "canonicalize duplicate skus and names",
+                                crc32Of("V98__canonicalize_duplicate_skus_and_names.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // 后续断言覆盖内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片、
-        // Shipment 来源同步状态机与客户跟进结构；完整 V48–V72 顺序由上方历史断言锁定。
+        // Shipment 来源同步状态机与客户跟进结构；完整 V48–V98 顺序由上方历史断言锁定。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -583,6 +612,7 @@ class ProductionMigrationHistoryCompatTest {
                     """)))
                     .as("V63 必须持久化确定性 Kehuzx payload hash")
                     .isEqualTo("1");
+
             // V77：换货事件类型必须注册进词表，否则换货端点的 order_events 落库被
             // order_events_event_type_code_fkey 拒绝（23503 → 409）。
             assertThat(single(statement.executeQuery(
@@ -617,6 +647,9 @@ class ProductionMigrationHistoryCompatTest {
                             + "AND pg_get_constraintdef(oid) LIKE '%FEIXIANG%'")))
                     .as("V84 必须把 RECONCILIATION_REQUIRED 的 platform_intent_key 约束扩到飞象")
                     .isEqualTo("1");
+            assertIndex(statement, "idx_source_template_profiles_trusted_from_batch",
+                    "V95：受信模板来源批次外键必须有支持索引",
+                    "source_template_profiles", "trusted_from_batch_id");
         }
     }
 

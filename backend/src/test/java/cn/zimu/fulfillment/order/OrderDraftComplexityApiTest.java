@@ -153,7 +153,7 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", " ",
-                "items", List.of(Map.of("product", "子牧羊小腿")))));
+                "items", List.of(Map.of("product", "不存在于主数据的待确认商品")))));
         String messageId = "MSG-TICKET-06-INCOMPLETE-02";
         postMessage(messageId, 102, null);
 

@@ -14,16 +14,19 @@ public class SourceOrderIntakeProcessor {
     private final SourceOrderIntakeFileStore files;
     private final SourceFileParser parser;
     private final SourceImportService imports;
+    private final SourceBatchAutomaticReleaseService automaticRelease;
 
     SourceOrderIntakeProcessor(
             SourceOrderIntakeService intake,
             SourceOrderIntakeFileStore files,
             SourceFileParser parser,
-            SourceImportService imports) {
+            SourceImportService imports,
+            SourceBatchAutomaticReleaseService automaticRelease) {
         this.intake = intake;
         this.files = files;
         this.parser = parser;
         this.imports = imports;
+        this.automaticRelease = automaticRelease;
     }
 
     public void process(AsyncTaskStore.AsyncTask task) {
@@ -63,7 +66,25 @@ public class SourceOrderIntakeProcessor {
                     job.parentBatchId(),
                     job.idempotencyKey(),
                     context);
-            intake.markSucceeded(jobId, Long.parseLong(batch.get("id").toString()));
+            long batchId = Long.parseLong(batch.get("id").toString());
+            try {
+                automaticRelease.releaseIfTrusted(batchId);
+            } catch (BusinessException exception) {
+                if ("RECONCILIATION_REQUIRED".equals(exception.getBusinessCode())) {
+                    intake.markReconciliationRequired(jobId, batchId);
+                    return;
+                }
+                if ("IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())
+                        || "AUTOMATIC_RELEASE_OUTBOUND_BLOCKED".equals(exception.getBusinessCode())
+                        || "TEMPLATE_PROFILE_REVOKED".equals(exception.getBusinessCode())
+                        || "TEMPLATE_PROFILE_MISMATCH".equals(exception.getBusinessCode())
+                        || "AUTOMATIC_RELEASE_STATE_INVALID".equals(exception.getBusinessCode())) {
+                    intake.markNeedsReview(jobId, batchId, exception.getBusinessCode());
+                    return;
+                }
+                throw exception;
+            }
+            intake.markSucceeded(jobId, batchId);
         } catch (BusinessException exception) {
             intake.markFailed(jobId, exception.getBusinessCode());
         }

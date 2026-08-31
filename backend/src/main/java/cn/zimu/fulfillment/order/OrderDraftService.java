@@ -37,9 +37,9 @@ import cn.zimu.fulfillment.order.dto.Settlement;
 import cn.zimu.fulfillment.product.Product;
 import cn.zimu.fulfillment.product.ProductRepository;
 import cn.zimu.fulfillment.sku.Sku;
+import cn.zimu.fulfillment.sku.SkuFulfillmentReadiness;
+import cn.zimu.fulfillment.sku.SkuFulfillmentReadinessService;
 import cn.zimu.fulfillment.sku.SkuRepository;
-import cn.zimu.fulfillment.sku.SourceChannelSku;
-import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
@@ -51,7 +51,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -62,10 +61,11 @@ import org.springframework.transaction.support.TransactionTemplate;
  * 订单草稿确认/拒绝应用用例。
  *
  * <p>确认在单个事务内：校验草稿与复核事项期望版本 → 选择已有或创建新 Customer →
- * 使用草稿级稳定来源引用 → 消息入口提供真实客户渠道身份时建立该身份到唯一 Customer 的
- * 显式绑定 → 复用 {@link OrderCreateService} 创建 WECOM CanonicalOrder → 记录证据引用与
- * 草稿状态 → 解决 ReviewCase → 写 OrderEvent/OrderVersion/AuditLog。重复确认、过期版本
- * 与并发确认均被明确拒绝并留下审计证据。
+ * 为客户建立草稿级来源引用 → 消息入口提供真实客户渠道身份时建立该身份到唯一 Customer 的
+ * 显式绑定 → 校验所选 SKU readiness → 直接冻结已确认内部 SKU 与订单行快照（不创建全局
+ * SourceChannelSku）→ 复用 {@link OrderCreateService} 创建 WECOM CanonicalOrder → 记录证据引用、
+ * 解决 ReviewCase 并写 OrderEvent/OrderVersion/AuditLog。重复确认、过期版本与并发确认均被
+ * 明确拒绝并留下审计证据。
  */
 @Service
 public class OrderDraftService {
@@ -85,7 +85,7 @@ public class OrderDraftService {
     private final ChannelIdentityService channelIdentityService;
     private final SkuRepository skus;
     private final ProductRepository products;
-    private final SourceChannelSkuRepository sourceChannelSkus;
+    private final SkuFulfillmentReadinessService skuReadiness;
     private final OrderCreateService orderCreateService;
     private final OrderEventService events;
     private final OrderVersionService versions;
@@ -107,7 +107,7 @@ public class OrderDraftService {
             ChannelIdentityService channelIdentityService,
             SkuRepository skus,
             ProductRepository products,
-            SourceChannelSkuRepository sourceChannelSkus,
+            SkuFulfillmentReadinessService skuReadiness,
             OrderCreateService orderCreateService,
             OrderEventService events,
             OrderVersionService versions,
@@ -127,7 +127,7 @@ public class OrderDraftService {
         this.channelIdentityService = channelIdentityService;
         this.skus = skus;
         this.products = products;
-        this.sourceChannelSkus = sourceChannelSkus;
+        this.skuReadiness = skuReadiness;
         this.orderCreateService = orderCreateService;
         this.events = events;
         this.versions = versions;
@@ -223,9 +223,10 @@ public class OrderDraftService {
         Map<Integer, ConfirmOrderDraftCommand.ConfirmItem> confirmedItems =
                 requireComplete(draftLines, command, customer);
 
-        CanonicalOrderInput input =
+        ConfirmedDraftOrder confirmedOrder =
                 buildOrderInput(draft, draftLines, confirmedItems, command, customer, customerRef);
-        IdempotentResult<OrderDetailDto> created = orderCreateService.create(input, idempotencyKey, context);
+        IdempotentResult<OrderDetailDto> created = orderCreateService.createConfirmedDraft(
+                confirmedOrder.input(), confirmedOrder.skus(), idempotencyKey, context);
         long orderId = created.replayed()
                 ? parseId(created.replayedBody().get("id").asText())
                 : parseId(created.result().id());
@@ -591,7 +592,7 @@ public class OrderDraftService {
         return byLine;
     }
 
-    private CanonicalOrderInput buildOrderInput(
+    private ConfirmedDraftOrder buildOrderInput(
             OrderDraft draft,
             List<OrderDraftLine> draftLines,
             Map<Integer, ConfirmOrderDraftCommand.ConfirmItem> confirmedItems,
@@ -600,32 +601,61 @@ public class OrderDraftService {
             String customerRef) {
         Receiver receiver = command.receiver();
         Settlement settlement = command.settlement();
-        List<OrderItemInput> items = new ArrayList<>();
+        List<ConfirmedDraftLine> selectedLines = new ArrayList<>();
         for (OrderDraftLine line : draftLines) {
             ConfirmOrderDraftCommand.ConfirmItem item = confirmedItems.get(line.getLineNo());
             long skuId = WriteCommands.parseIdentifier(item.skuId());
             Sku sku = skus.findById(skuId).orElseThrow(() -> BusinessException.notFound("SKU 不存在"));
-            if (!sku.isActive()) {
-                throw BusinessException.unprocessable("SKU_INACTIVE", "只能引用已启用的 SKU 主数据");
-            }
-            String mappingRef = "WECOM-DRAFT-" + draft.getId() + "-L" + line.getLineNo();
-            ensureSourceChannelSku(mappingRef, sku, line);
             String productName = products
                     .findById(sku.getProductId())
                     .map(Product::getProductName)
                     .orElse(line.getProductNameRaw());
+            selectedLines.add(new ConfirmedDraftLine(line, item, sku, productName));
+        }
+        Map<Long, SkuFulfillmentReadiness> readinessBySku = skuReadiness.evaluateAll(
+                selectedLines.stream().map(ConfirmedDraftLine::sku).toList());
+        List<Map<String, Object>> blockedLines = selectedLines.stream()
+                .filter(selected -> !readinessBySku.get(selected.sku().getId()).ready())
+                .map(selected -> {
+                    SkuFulfillmentReadiness readiness = readinessBySku.get(selected.sku().getId());
+                    Map<String, Object> detail = new LinkedHashMap<>();
+                    detail.put("line_no", selected.draftLine().getLineNo());
+                    detail.put("sku_id", String.valueOf(selected.sku().getId()));
+                    detail.put("sku_code", selected.sku().getSkuCode());
+                    detail.putAll(readiness.asMap());
+                    return Map.copyOf(detail);
+                })
+                .toList();
+        if (!blockedLines.isEmpty()) {
+            throw new BusinessException(
+                    422,
+                    "SKU_NOT_READY",
+                    "所选 SKU 尚未达到履约就绪条件，订单草稿保持待确认",
+                    List.of(),
+                    Map.of("lines", blockedLines));
+        }
+
+        List<OrderItemInput> items = new ArrayList<>();
+        List<ConfirmedDraftSku> confirmedSkus = new ArrayList<>();
+        for (ConfirmedDraftLine selected : selectedLines) {
+            OrderDraftLine line = selected.draftLine();
+            Sku sku = selected.sku();
+            String sourceLineRef = "line-" + line.getLineNo();
             items.add(new OrderItemInput(
-                    "line-" + line.getLineNo(),
+                    sourceLineRef,
                     LineType.SINGLE,
                     sku.getSkuCode(),
-                    mappingRef,
-                    productName,
+                    null,
+                    selected.productName(),
                     sku.getSpecification(),
                     sku.getUnit(),
-                    item.quantity(),
+                    selected.item().quantity(),
+                    null,
                     null));
+            confirmedSkus.add(new ConfirmedDraftSku(
+                    line.getLineNo(), sourceLineRef, sku.getId(), sku.getSkuCode()));
         }
-        return new CanonicalOrderInput(
+        CanonicalOrderInput input = new CanonicalOrderInput(
                 SourceChannel.WECOM,
                 draft.getSourceOrderNo(),
                 "rev-" + draft.getRevision(),
@@ -646,39 +676,18 @@ public class OrderDraftService {
                 List.of(
                         "message_submission:" + draft.getSubmissionId(),
                         "order_draft:" + draft.getId()));
+        return new ConfirmedDraftOrder(input, confirmedSkus);
     }
 
-    /** 订单创建用例按来源 SKU 映射解析 SKU；确认时保证映射存在且指向被选 SKU。 */
-    private void ensureSourceChannelSku(String mappingRef, Sku sku, OrderDraftLine line) {
-        try {
-            sourceChannelSkus
-                    .findBySourceChannelAndSourceSkuRef(SourceChannel.WECOM, mappingRef)
-                    .ifPresentOrElse(existing -> {
-                        if (!existing.isActive() || !Objects.equals(existing.getSkuId(), sku.getId())) {
-                            throw BusinessException.conflict(
-                                    "SOURCE_SKU_MAPPING_CONFLICT", "该来源 SKU 已存在不一致映射，请先处理主数据冲突");
-                        }
-                    }, () -> {
-                        SourceChannelSku mapping = new SourceChannelSku();
-                        mapping.setSourceChannel(SourceChannel.WECOM);
-                        mapping.setSourceSkuRef(mappingRef);
-                        mapping.setSourceProductName(line.getProductNameRaw());
-                        mapping.setSourceSpecification(sku.getSpecification());
-                        mapping.setQuantityMultiplier(BigDecimal.ONE);
-                        mapping.setSkuId(sku.getId());
-                        mapping.setActive(true);
-                        sourceChannelSkus.save(mapping);
-                    });
-        } catch (DuplicateKeyException ex) {
-            // 并发确认同一草稿被草稿级悲观锁串行化；映射撞唯一键时按已存在路径处理
-            SourceChannelSku existing = sourceChannelSkus
-                    .findBySourceChannelAndSourceSkuRef(SourceChannel.WECOM, mappingRef)
-                    .orElseThrow(() -> BusinessException.conflict(
-                            "SOURCE_SKU_MAPPING_CONFLICT", "来源 SKU 映射并发冲突，请重试"));
-            if (!existing.isActive() || !Objects.equals(existing.getSkuId(), sku.getId())) {
-                throw BusinessException.conflict(
-                        "SOURCE_SKU_MAPPING_CONFLICT", "该来源 SKU 已存在不一致映射，请先处理主数据冲突");
-            }
+    private record ConfirmedDraftLine(
+            OrderDraftLine draftLine,
+            ConfirmOrderDraftCommand.ConfirmItem item,
+            Sku sku,
+            String productName) {}
+
+    private record ConfirmedDraftOrder(CanonicalOrderInput input, List<ConfirmedDraftSku> skus) {
+        private ConfirmedDraftOrder {
+            skus = List.copyOf(skus);
         }
     }
 

@@ -3,6 +3,7 @@ package cn.zimu.fulfillment.fulfillment;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.web.AuthenticationKind;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import cn.zimu.fulfillment.fulfillment.JdShipmentSubmissionPlan.Blocker;
@@ -67,7 +68,7 @@ public class ShipmentJdOutboundAuditService {
             AuditLogService.AuditCommand audit = new AuditLogService.AuditCommand()
                     .dataScope(DataScope.BUSINESS)
                     .requestId(context.requestId()).traceId(context.traceId()).operator(auditOperator(context))
-                    .actorType(AuditActorType.HUMAN).service("fulfillment").operation(SCOPE)
+                    .actorType(actorType(context)).service("fulfillment").operation(SCOPE)
                     .requestPayload(Map.of("shipment_id", String.valueOf(shipmentId)))
                     .responsePayload(response).httpStatus(httpStatus).businessCode(businessCode);
             if (orderId != null) {
@@ -88,7 +89,7 @@ public class ShipmentJdOutboundAuditService {
         requiresNew.executeWithoutResult(status -> audits.record(new AuditLogService.AuditCommand()
                 .dataScope(DataScope.BUSINESS).orderId(plan.orderId())
                 .requestId(context.requestId()).traceId(context.traceId()).operator(auditOperator(context))
-                .actorType(AuditActorType.HUMAN).service("fulfillment").operation(SCOPE)
+                .actorType(actorType(context)).service("fulfillment").operation(SCOPE)
                 .requestPayload(Map.of(
                         "shipment_id", String.valueOf(plan.shipmentId()),
                         "erp_delivery_no", plan.erpDeliveryNo(),
@@ -138,7 +139,7 @@ public class ShipmentJdOutboundAuditService {
         audits.record(new AuditLogService.AuditCommand()
                 .dataScope(DataScope.BUSINESS).orderId(current.orderId())
                 .requestId(context.requestId()).traceId(context.traceId()).operator(context.operator())
-                .actorType(AuditActorType.HUMAN).service("fulfillment").operation(SCOPE + ".intent")
+                .actorType(actorType(context)).service("fulfillment").operation(SCOPE + ".intent")
                 .requestPayload(Map.of(
                         "shipment_id", String.valueOf(current.shipmentId()),
                         "erp_delivery_no", current.erpDeliveryNo(),
@@ -205,6 +206,12 @@ public class ShipmentJdOutboundAuditService {
         return context.authenticatedOperator() == null
                 ? "unauthenticated"
                 : context.authenticatedOperator();
+    }
+
+    static AuditActorType actorType(CommandContext context) {
+        return context.authenticationKind() == AuthenticationKind.INTERNAL_SERVICE
+                ? AuditActorType.SYSTEM
+                : AuditActorType.HUMAN;
     }
 
     private String json(Object value) {

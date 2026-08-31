@@ -151,7 +151,8 @@ public class McpDomainReadTools {
                         "masterdata"),
                 new McpToolRegistry.SimpleTool(
                         "list_provider_skus",
-                        "分页查询履约方外部商品编码映射（供比价对照），只投影已知外部编码键。",
+                        "分页查询履约方 SKU 路由。provider_sku_code_scope=INTERNAL_ROUTING 仅表示子牧内部路由，"
+                                + "不得当作已核验外部编码；PROVIDER_EXTERNAL 才是履约方外码。",
                         schema(
                                 Map.of(
                                         "provider_id", stringProperty("履约方 ID"),
@@ -616,6 +617,17 @@ public class McpDomainReadTools {
         item.put("provider_code", detail.providerCode());
         item.put("provider_name", detail.providerName());
         item.put("provider_type", detail.providerType());
+        ObjectNode readiness = item.putObject("readiness");
+        readiness.put("ready", detail.readiness().ready());
+        var reasons = readiness.putArray("reason_codes");
+        detail.readiness().reasonCodes().forEach(reasons::add);
+        var issues = readiness.putArray("issues");
+        detail.readiness().issues().forEach(issue -> {
+            ObjectNode value = issues.addObject();
+            value.put("code", issue.code());
+            value.put("message", issue.message());
+            value.put("action", issue.action());
+        });
         item.put("created_at", detail.createdAt() == null ? null : detail.createdAt().toString());
         item.put("updated_at", detail.updatedAt() == null ? null : detail.updatedAt().toString());
         return item;
@@ -651,6 +663,7 @@ public class McpDomainReadTools {
         item.put("sku_id", detail.skuId());
         item.put("sku_code", detail.skuCode());
         item.put("provider_sku_code", detail.providerSkuCode());
+        item.put("provider_sku_code_scope", detail.providerSkuCodeScope().name());
         item.put("merchant_sku_code", detail.merchantSkuCode());
         item.put("active", detail.active());
         item.put("provider_sku_name", detail.providerSkuName());

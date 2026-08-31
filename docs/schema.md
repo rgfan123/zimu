@@ -4,7 +4,7 @@
 依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
-和 `V2`–`V53` 增量迁移；两条路径必须得到等价的当前结构——
+和 `V2`–`V75` 增量迁移（V74/V75 仅执行带前置断言的数据修复）；两条路径必须得到等价的当前结构——
 [`SchemaSnapshotMigrationEquivalenceTest`](../backend/src/test/java/cn/zimu/fulfillment/schema/SchemaSnapshotMigrationEquivalenceTest.java)
 用 Testcontainers 分别以空库快照与 Flyway 全链建库，从 `pg_catalog` 比对表/视图/列
 （类型/可空/默认/identity）/主键/唯一键/check 约束/外键/普通索引/触发器/显式序列/
@@ -13,7 +13,7 @@
 ## 1. 设计结论
 
 - PostgreSQL 使用 `app` 业务 schema 与 `analytics` 分析 schema。
-- 当前权威快照共 71 张业务表、4 个分析视图和 2 个操作视图。
+- 当前权威快照共 81 张业务表、4 个分析视图和 2 个操作视图。
 - 有限且仍可能演进的状态值使用 `VARCHAR + CHECK`；可扩展的 OrderEvent 类型使用目录表。
 - 所有业务时间使用 `TIMESTAMPTZ`；Java 使用 `Instant`。来源 Excel 的无时区时间按 `Asia/Shanghai` 解释，分析视图也按上海自然日分桶。
 - 所有数量使用 `NUMERIC(18,3)`；应用写入前必须拒绝超过三位小数的输入，不能依赖数据库隐式舍入。
@@ -54,19 +54,20 @@ erDiagram
 
 ## 3. 表清单
 
-### 3.1 客户、商品与履约方主数据（10）
+### 3.1 客户、商品与履约方主数据（11）
 
 | 表 | 职责 | 关键约束 |
 |---|---|---|
 | `customers` | 公司统一客户档案 | `customer_code` 唯一；BUSINESS/DEMO 分域 |
 | `customer_source_refs` | 来源客户身份映射 | `(source_channel, source_customer_ref)` 唯一；不得按电话自动合并 |
 | `categories` | 商品品类树 | code 唯一；禁止自指父级 |
-| `products` | 商品族 | 规格、单位和履约方不放在 Product |
+| `products` | 商品族 | 可保存品牌；规格、单位和履约方不放在 Product |
 | `fulfillment_providers` | 京东云仓或第三方履约方 | `provider_code` 生成后不可变；保存运单 SLA |
-| `skus` | 公司唯一可履约 SKU | `SKU-{provider_code}-{6位全局流水号}`；provider 不可变 |
+| `skus` | 公司唯一可履约 SKU | `SKU-{provider_code}-{6位全局流水号}`；provider 不可变；净含量、计量单位、包装件数和包装单位须成组填写，库存计数单位独立保存；active 主条码与 active `BARCODE` 别名共享规范化唯一所有权 |
+| `sku_data_quality_flags` | SKU 审计与人工复核证据 | 保存显式事实与阻断原因，不保存可漂移的 ready 状态 |
 | `sku_aliases` | 人工检索候选别名 | 只用于建议，不自动建立业务映射 |
 | `source_channel_skus` | 来源平台商品到内部 SKU 的显式映射 | `(source_channel, source_sku_ref)` 唯一；`quantity_multiplier` 缺失时只能进入人工复核，正值时参与来源数量换算 |
-| `provider_skus` | 内部 SKU 到履约方商品编码的映射 | provider 必须与 SKU 归属一致 |
+| `provider_skus` | 内部 SKU 到履约方商品编码或内部路由键的映射 | provider 必须与 SKU 归属一致；第三方自映射（`provider_sku_code = sku_code`）属于 `INTERNAL_ROUTING`，只供本系统确定性路由，不代表外部编码已核验；REAL 京东 `queryGoodsInfo` 成功核验可在 `external_codes.jd_goods_verification` 留下与当前 goodsNo 绑定的内部凭证，MOCK 结果不记为真实凭证 |
 | `provider_stock_snapshots` | 标准化库存观测快照 | 我方库存允许标准快照；外部京东云仓只允许分类为 `JD_PIECE/JD_ISC_QUERY_STOCK` 的只读观测；只追加，历史单位不明时保持 `UNKNOWN` |
 
 普通第三方自有库存不进入 `provider_stock_snapshots`。京东云仓是受控例外：系统可追加实时只读观测用于出库门禁，但不预占或改写京东库存，也不会因此获得公司自营采购资格。系统维护第三方专属 SKU、生成发货指令并接收实发结果，但不采集、判断、预占或改写其他第三方库存。
@@ -274,11 +275,11 @@ P0 不等待客户签收或妥投，Shipment 可以停留在 SHIPPED，且履约
 DDL 必须通过以下门槛：
 
 1. PostgreSQL 16 空库先执行 `docs/schema.sql`；应用启动时由 Flyway 按版本顺序执行全部增量 migration。
-2. `information_schema` 实测 71 张 `app` 基础表、2 个 `app` 操作视图和 4 个 `analytics` 分析视图。
+2. `information_schema` 实测 81 张 `app` 基础表、2 个 `app` 操作视图和 4 个 `analytics` 分析视图。
 3. 执行 `docs/schema-smoke.sql`，覆盖：上海业务日出库单号原子流水、运单回传与原 FulfillmentExport/provider 关联、已发货但未提供实际发货时间、非已发货状态的不一致时间拒绝、第三方库存写入拒绝、错误修订链拒绝、跨 provider/非整份礼包拒绝、重复待出库批次拒绝、跨订单导出/回填拒绝、Demo 业务隔离、京东金额非 0 拒绝、Shipment 超发拒绝、Tracking 冲突拒绝、最终回填含等待项拒绝、已导出订单字段冻结、分析视图排除 Demo 和未知实际发货日数据，以及渠道/商品实发量的乘数换算与礼包组件展开。
 4. `git diff --check` 无空白错误。
 5. `SchemaSnapshotMigrationEquivalenceTest`（Testcontainers，`mvn test` 默认阶段运行）：分别用
-   `docs/schema.sql` 与 Flyway 全链（V1..V53）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
+   `docs/schema.sql` 与 Flyway 全链（V1..V75）建库，比对 12 类结构事实（见 §1 引言），不等价即失败。
 
 ## 11. 快照与迁移链的更新责任
 

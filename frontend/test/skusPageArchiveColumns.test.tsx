@@ -229,7 +229,7 @@ describe('商品档案页成本表列', () => {
     await user.click(within(row).getByText('编辑'));
 
     const dialog = within(screen.getByRole('dialog'));
-    expect(dialog.getByLabelText('单位')).toHaveValue('袋');
+    expect(dialog.getByLabelText('库存计数单位')).toHaveValue('袋');
     expect(dialog.getByPlaceholderText('来自成本核算表 AI 线下供货成本/份，可人工覆盖')).toBeInTheDocument();
     expect(dialog.getByPlaceholderText('来自成本核算表 AJ 售价，可人工覆盖')).toBeInTheDocument();
     expect(dialog.getByText(/商品名和品类属于商品资料/)).toBeInTheDocument();

@@ -27,6 +27,7 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+    private static final String ACTIVE_SKU_BARCODE_UNIQUE = "uq_active_sku_effective_barcode";
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiError> handleBusiness(BusinessException ex) {
@@ -80,6 +81,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiError> handleDataIntegrity(DataIntegrityViolationException ex) {
         String sqlState = extractSqlState(ex);
+        if ("23505".equals(sqlState) && ACTIVE_SKU_BARCODE_UNIQUE.equals(extractConstraintName(ex))) {
+            return build(
+                    409,
+                    "BARCODE_CONFLICT",
+                    "该有效条码已属于另一个启用的 SKU，请维护独立条码或先停用原记录",
+                    List.of(),
+                    Map.of("sql_state", sqlState));
+        }
         return switch (sqlState == null ? "" : sqlState) {
             case "23505" -> build(409, "DUPLICATE_RESOURCE", "数据已存在，唯一性约束冲突", List.of(), Map.of("sql_state", sqlState));
             case "23503" -> build(409, "REFERENCE_CONFLICT", "引用的数据不存在或存在冲突", List.of(), Map.of("sql_state", sqlState));
@@ -104,6 +113,20 @@ public class GlobalExceptionHandler {
         Throwable cause = ex.getMostSpecificCause();
         if (cause instanceof PSQLException psql) {
             return psql.getSQLState();
+        }
+        return null;
+    }
+
+    private String extractConstraintName(DataIntegrityViolationException ex) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.hibernate.exception.ConstraintViolationException violation
+                    && violation.getConstraintName() != null) {
+                return violation.getConstraintName();
+            }
+            if (cause instanceof PSQLException psql && psql.getServerErrorMessage() != null
+                    && psql.getServerErrorMessage().getConstraint() != null) {
+                return psql.getServerErrorMessage().getConstraint();
+            }
         }
         return null;
     }

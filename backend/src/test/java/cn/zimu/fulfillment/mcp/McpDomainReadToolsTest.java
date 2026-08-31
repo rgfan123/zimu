@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import cn.zimu.fulfillment.masterdata.MasterDataService;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -54,6 +55,9 @@ class McpDomainReadToolsTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private MasterDataService masterData;
 
     @BeforeEach
     void resetDomainTables() {
@@ -253,24 +257,38 @@ class McpDomainReadToolsTest {
         long providerId = createProvider("MCPSKU", "SKU 履约方");
         long categoryId = createCategory();
         long productId = createProduct(categoryId, "MCP-PROD-SKU", "子牧羊小腿");
-        long skuId = createSkuWithPrices(providerId, productId, "500g/盒", "盒", "12.5", "25.00");
-        long otherSkuId = createSkuWithPrices(providerId, productId, "1kg/袋", "袋", "99", "188");
+        long skuId = createSkuWithPrices(
+                providerId, productId, "500g/盒", "盒", "500", "g", 1, "盒", "12.5", "25.00");
+        long otherSkuId = createSkuWithPrices(
+                providerId, productId, "1kg/袋", "袋", "1", "kg", 1, "袋", "99", "188");
+        long internalRouteSkuId = createSkuWithPrices(
+                providerId, productId, "80g/件", "件", "80", "g", 1, "件", "5.65", "8.00");
         createProviderSku(providerId, skuId, "JD-SKU-900001", "M-900001", "子牧羊小腿 500g", "1");
         createProviderSku(providerId, otherSkuId, "JD-SKU-900002", "M-900002", "子牧羊小腿 1kg", "2");
+        String internalSkuCode = jdbc.queryForObject(
+                "SELECT sku_code FROM app.skus WHERE id=?", String.class, internalRouteSkuId);
+        jdbc.update(
+                "INSERT INTO app.provider_skus(fulfillment_provider_id,sku_id,provider_sku_code,external_codes) "
+                        + "VALUES (?,?,?,'{}'::jsonb)",
+                providerId,
+                internalRouteSkuId,
+                internalSkuCode);
 
         JsonNode byName = callResult(AGENT, "search_skus", Map.of("query", "羊小腿"));
-        assertThat(byName.get("total_elements").asLong()).isEqualTo(2);
+        assertThat(byName.get("total_elements").asLong()).isEqualTo(3);
         JsonNode bySpec = callResult(AGENT, "search_skus", Map.of("query", "500g"));
         assertThat(bySpec.get("total_elements").asLong()).isEqualTo(1);
         JsonNode byCode = callResult(AGENT, "search_skus",
                 Map.of("query", jdbc.queryForObject("SELECT sku_code FROM app.skus WHERE id=?", String.class, skuId)));
         assertThat(byCode.get("total_elements").asLong()).isEqualTo(1);
         JsonNode byProvider = callResult(AGENT, "search_skus", Map.of("provider_id", String.valueOf(providerId)));
-        assertThat(byProvider.get("total_elements").asLong()).isEqualTo(2);
+        assertThat(byProvider.get("total_elements").asLong()).isEqualTo(3);
         JsonNode first = byName.get("items").get(0);
         assertThat(first.get("id").asText()).isEqualTo(String.valueOf(skuId));
         assertThat(first.get("provider_id").asText()).isEqualTo(String.valueOf(providerId));
         assertThat(first.get("purchase_price")).isNotNull();
+        assertThat(first.path("readiness").path("ready").asBoolean()).isTrue();
+        assertThat(first.path("readiness").path("reason_codes")).isEmpty();
 
         JsonNode sku = callResult(AGENT, "get_sku", Map.of("sku_id", String.valueOf(skuId)));
         assertThat(sku.get("id").asText()).isEqualTo(String.valueOf(skuId));
@@ -282,15 +300,28 @@ class McpDomainReadToolsTest {
         assertThat(sku.get("provider_id").asText()).isEqualTo(String.valueOf(providerId));
         assertThat(sku.get("provider_code").asText()).isEqualTo("MCPSKU");
         assertThat(sku.get("provider_type").asText()).isEqualTo("THIRD_PARTY");
+        assertThat(sku.path("readiness").path("ready").asBoolean()).isTrue();
+        assertThat(sku.path("readiness").path("reason_codes")).isEmpty();
 
         JsonNode mappings = callResult(AGENT, "list_provider_skus",
                 Map.of("provider_id", String.valueOf(providerId)));
-        assertThat(mappings.get("total_elements").asLong()).isEqualTo(2);
+        assertThat(mappings.get("total_elements").asLong()).isEqualTo(3);
         assertThat(mappings.get("items").get(0).get("provider_sku_code").asText()).isEqualTo("JD-SKU-900001");
+        assertThat(mappings.get("items").get(0).get("provider_sku_code_scope").asText())
+                .isEqualTo("PROVIDER_EXTERNAL");
         assertThat(mappings.get("items").get(0).get("sku_id").asText()).isEqualTo(String.valueOf(skuId));
         assertThat(mappings.get("items").get(0).get("provider_sku_name").asText()).isEqualTo("子牧羊小腿 500g");
         assertThat(mappings.get("items").get(0).get("jd_pieces_per_unit").asText()).isEqualTo("1");
         assertThat(mappings.get("items").get(1).get("jd_pieces_per_unit").asText()).isEqualTo("2");
+        assertThat(mappings.get("items").get(2).get("provider_sku_code").asText())
+                .isEqualTo(internalSkuCode);
+        assertThat(mappings.get("items").get(2).get("provider_sku_code_scope").asText())
+                .isEqualTo("INTERNAL_ROUTING");
+        assertThat(masterData.providerMappings(0, 200).items()).anySatisfy(mapping -> {
+            assertThat(mapping.code()).isEqualTo(internalSkuCode);
+            assertThat(mapping.attributes())
+                    .containsEntry("provider_sku_code_scope", "INTERNAL_ROUTING");
+        });
 
         JsonNode priceSku = callResult(AGENT, "get_sku", Map.of("sku_id", String.valueOf(otherSkuId)));
         assertThat(priceSku.get("purchase_price").asText()).isEqualTo("99.00");
@@ -811,19 +842,40 @@ class McpDomainReadToolsTest {
                 categoryId);
     }
 
+    /** 既有 6 参便捷重载：包装身份取测试无关的占位默认值。 */
     private long createSkuWithPrices(long providerId, long productId, String specification, String unit,
             String purchasePrice, String retailPrice) {
+        return createSkuWithPrices(
+                providerId, productId, specification, unit, "500", "g", 1, "盒", purchasePrice, retailPrice);
+    }
+
+    private long createSkuWithPrices(
+            long providerId,
+            long productId,
+            String specification,
+            String unit,
+            String netContentValue,
+            String netContentUnit,
+            int packageCount,
+            String packageUnit,
+            String purchasePrice,
+            String retailPrice) {
         return jdbc.queryForObject(
                 """
                 INSERT INTO app.skus (product_id, fulfillment_provider_id, specification, unit,
+                                      net_content_value, net_content_unit, package_count, package_unit,
                                       purchase_price, retail_price)
-                VALUES (?, ?, ?, ?, ?::numeric, ?::numeric) RETURNING id
+                VALUES (?, ?, ?, ?, ?::numeric, ?, ?, ?, ?::numeric, ?::numeric) RETURNING id
                 """,
                 Long.class,
                 productId,
                 providerId,
                 specification,
                 unit,
+                netContentValue,
+                netContentUnit,
+                packageCount,
+                packageUnit,
                 purchasePrice,
                 retailPrice);
     }

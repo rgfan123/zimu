@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -8,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
+import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.jufubao.JufubaoShipmentGateway;
 import cn.zimu.fulfillment.connector.sync.SourceShipmentSyncService;
@@ -17,6 +19,7 @@ import cn.zimu.fulfillment.connector.sync.SourceSyncStatus;
 import cn.zimu.fulfillment.customer.ImportedCustomerIdentity;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingCommand;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingService;
+import cn.zimu.fulfillment.order.SourceBatchConfirmer;
 import cn.zimu.fulfillment.order.domain.LineType;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
 import cn.zimu.fulfillment.order.dto.CanonicalOrderInput;
@@ -30,10 +33,14 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipInputStream;
+import javax.sql.DataSource;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
@@ -83,8 +90,10 @@ class ExcelClosedLoopApiTest {
 
     @Autowired TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
+    @Autowired DataSource dataSource;
     @Autowired TrackingFileService trackingFileService;
     @Autowired SourceImportService sourceImportService;
+    @Autowired SourceBatchConfirmer sourceBatchConfirmer;
     @Autowired ShipmentTrackingService shipmentTrackingService;
     @Autowired SourceShipmentSyncService sourceShipmentSyncService;
     @MockitoBean JufubaoShipmentGateway jufubaoGateway;
@@ -322,7 +331,404 @@ class ExcelClosedLoopApiTest {
     }
 
     @Test
-    void feixiangCsvRetainsRowsCreatesCanonicalOrderAndReplaysByContentHash() {
+    void zhonghui60043831OneSourceUnitDeterministicallyReleasesTwoCanonicalPieces() throws Exception {
+        long skuId = upsertZhonghuiMapping("60043831", "中汇牛肋条500g", "2.000");
+        String orderNo = "S-ZHONGHUI-60043831-001";
+
+        ResponseEntity<Map> uploaded = uploadRaw(
+                "中汇60043831.xlsx",
+                zhonghuiWorkbook(orderNo, "60043831", "中汇牛肋条500g"),
+                "ticket-04-zhonghui-upload-001");
+
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+        ResponseEntity<Map> confirmed = confirmBatch(
+                Long.toString(batchId), "ticket-04-zhonghui-confirm-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Map<String, Object> line = jdbc.queryForMap(
+                """
+                SELECT ol.sku_id, ol.sku_code_snapshot, ol.source_quantity_snapshot::text source_quantity,
+                       ol.mapping_multiplier_snapshot::text mapping_multiplier,
+                       ol.requested_quantity::text requested_quantity
+                FROM app.raw_import_rows rir
+                JOIN app.order_lines ol ON ol.id=rir.order_line_id
+                WHERE rir.import_batch_id=?
+                """,
+                batchId);
+        assertThat(((Number) line.get("sku_id")).longValue()).isEqualTo(skuId);
+        assertThat(line.get("sku_code_snapshot")).isEqualTo("SKU-JD-000021");
+        assertThat(new BigDecimal(line.get("source_quantity").toString())).isEqualByComparingTo("1");
+        assertThat(new BigDecimal(line.get("mapping_multiplier").toString())).isEqualByComparingTo("2");
+        assertThat(new BigDecimal(line.get("requested_quantity").toString())).isEqualByComparingTo("2");
+
+        assertThat(confirmed.getBody().get("confirmed_at")).isNotNull();
+    }
+
+    @Test
+    void nonHttpAutomaticReleasePortBlocksEverySharedSkuReadinessReasonWithoutExports() throws Exception {
+        long skuId = upsertReleaseBlockedSku();
+        upsertZhonghuiMapping("60043832", "中汇就绪门禁测试商品", "1.000", skuId);
+        ResponseEntity<Map> uploaded = uploadRaw(
+                "中汇自动放行门禁.xlsx",
+                zhonghuiWorkbook("S-ZHONGHUI-RELEASE-BLOCKED-001", "60043832", "中汇就绪门禁测试商品"),
+                "ticket-04-auto-release-upload-001");
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+
+        jdbc.update("UPDATE app.skus SET active=FALSE, specification='待维护' WHERE id=?", skuId);
+        jdbc.update(
+                """
+                INSERT INTO app.sku_data_quality_flags
+                    (sku_id, flag_code, blocking_reason, message, action, evidence, active)
+                VALUES (?, 'TICKET04_BARCODE', 'BARCODE_CONFLICT', '条码冲突证据', '维护独立条码', '{}'::jsonb, TRUE),
+                       (?, 'TICKET04_REVIEW', 'REVIEW_REQUIRED', '需要人工裁决', '完成人工裁决', '{}'::jsonb, TRUE)
+                ON CONFLICT (sku_id, flag_code) DO UPDATE
+                SET blocking_reason=EXCLUDED.blocking_reason, message=EXCLUDED.message,
+                    action=EXCLUDED.action, active=TRUE
+                """,
+                skuId,
+                skuId);
+
+        try {
+            sourceBatchConfirmer.confirmSourceBatch(
+                    batchId,
+                    "ticket-04-auto-release-confirm-001",
+                    new CommandContext(
+                            "ticket-04-auto-release-request-001",
+                            "ticket-04-auto-release-trace-001",
+                            "automatic-release:trusted-template"));
+            throw new AssertionError("未就绪 SKU 不得通过来源批次自动放行端口");
+        } catch (BusinessException error) {
+            assertThat(error.getHttpStatus()).isEqualTo(409);
+            assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED");
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> lines =
+                    (List<Map<String, Object>>) error.getDetails().get("lines");
+            assertThat(lines).singleElement().satisfies(blocked -> {
+                assertThat(blocked)
+                        .containsEntry("sku_id", Long.toString(skuId))
+                        .containsEntry("ready", false);
+                assertThat(((List<?>) blocked.get("reason_codes")).stream().map(String::valueOf).toList())
+                        .containsExactly(
+                        "SKU_INACTIVE",
+                        "SPECIFICATION_REQUIRED",
+                        "PROVIDER_MAPPING_REQUIRED",
+                        "BARCODE_CONFLICT",
+                        "REVIEW_REQUIRED");
+            });
+        }
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_at IS NULL FROM app.import_batches WHERE id=?",
+                        Boolean.class,
+                        batchId))
+                .isTrue();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*)
+                        FROM app.fulfillment_export_items fei
+                        JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id
+                        WHERE rir.import_batch_id=?
+                        """,
+                        Integer.class,
+                        batchId))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*)
+                        FROM app.shipment_items si
+                        JOIN app.fulfillments f ON f.id=si.fulfillment_id
+                        JOIN app.order_lines ol ON ol.id=f.order_line_id
+                        JOIN app.orders o ON o.id=ol.order_id
+                        WHERE o.source_import_batch_id=?
+                        """,
+                        Integer.class,
+                        batchId))
+                .isZero();
+    }
+
+    @Test
+    void oneUnreadySkuKeepsTheWholeSourceBatchOutOfCanonicalOrders() throws Exception {
+        long readySkuId = upsertZhonghuiMapping("60043837", "中汇整批门禁就绪商品", "1.000");
+        long blockedSkuId = upsertReleaseBlockedSku();
+        upsertZhonghuiMapping("60043838", "中汇整批门禁缺履约编码商品", "1.000", blockedSkuId);
+
+        ResponseEntity<Map> uploaded = uploadRaw(
+                "中汇整批SKU就绪门禁.xlsx",
+                zhonghuiWorkbook(List.of(
+                        new ZhonghuiSourceRow(
+                                "S-ZHONGHUI-BATCH-READY-001", "60043837", "中汇整批门禁就绪商品"),
+                        new ZhonghuiSourceRow(
+                                "S-ZHONGHUI-BATCH-BLOCKED-001", "60043838", "中汇整批门禁缺履约编码商品"))),
+                "ticket-04-batch-atomic-upload-001");
+
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+        assertThat(uploaded.getBody()).containsEntry("status", "COMPLETED_WITH_REVIEW");
+        assertThat(uploaded.getBody().toString())
+                .doesNotContain("source_order_candidates")
+                .doesNotContain("source_order_readiness_candidates");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        batchId))
+                .as("任一 SKU 未就绪时不得留下已就绪订单的部分 CanonicalOrder")
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*)
+                        FROM app.fulfillments f
+                        JOIN app.order_lines ol ON ol.id=f.order_line_id
+                        JOIN app.orders o ON o.id=ol.order_id
+                        WHERE o.source_import_batch_id=?
+                        """,
+                        Integer.class,
+                        batchId))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT error_detail::text
+                        FROM app.raw_import_rows
+                        WHERE import_batch_id=? AND raw_cells->>'商品编号'='60043838'
+                        """,
+                        String.class,
+                        batchId))
+                .contains("PROVIDER_MAPPING_REQUIRED")
+                .contains(Long.toString(blockedSkuId));
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.review_cases
+                        WHERE import_batch_id=? AND case_type='SOURCE_ORDER_CANDIDATE' AND status='OPEN'
+                        """,
+                        Integer.class,
+                        batchId))
+                .isEqualTo(1);
+
+        assertThatThrownBy(() -> sourceBatchConfirmer.confirmSourceBatch(
+                        batchId,
+                        "ticket-04-batch-atomic-confirm-001",
+                        new CommandContext(
+                                "ticket-04-batch-atomic-request-001",
+                                "ticket-04-batch-atomic-trace-001",
+                                "source-ops")))
+                .isInstanceOfSatisfying(BusinessException.class, error -> {
+                    assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED");
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> lines =
+                            (List<Map<String, Object>>) error.getDetails().get("lines");
+                    assertThat(lines).singleElement().satisfies(line -> {
+                        assertThat(line).containsEntry("sku_id", Long.toString(blockedSkuId));
+                        assertThat(((List<?>) line.get("reason_codes")).stream().map(String::valueOf).toList())
+                                .contains("PROVIDER_MAPPING_REQUIRED");
+                    });
+                });
+        long providerId = jdbc.queryForObject(
+                "SELECT fulfillment_provider_id FROM app.skus WHERE id=?",
+                Long.class,
+                blockedSkuId);
+        jdbc.update(
+                """
+                INSERT INTO app.provider_skus
+                    (fulfillment_provider_id, sku_id, provider_sku_code, external_codes, active)
+                VALUES (?, ?, 'EMG-TICKET04-BATCH-BLOCKED', '{"jd_pieces_per_unit":1}'::jsonb, TRUE)
+                ON CONFLICT (fulfillment_provider_id, sku_id) DO UPDATE
+                SET provider_sku_code=EXCLUDED.provider_sku_code,
+                    external_codes=EXCLUDED.external_codes, active=TRUE
+                """,
+                providerId,
+                blockedSkuId);
+
+        var confirmed = sourceBatchConfirmer.confirmSourceBatch(
+                batchId,
+                "ticket-04-batch-atomic-confirm-002",
+                new CommandContext(
+                        "ticket-04-batch-atomic-request-002",
+                        "ticket-04-batch-atomic-trace-002",
+                        "source-ops"));
+        assertThat(confirmed.result().get("confirmed_at")).isNotNull();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        batchId))
+                .isEqualTo(2);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*)
+                        FROM app.fulfillments f
+                        JOIN app.order_lines ol ON ol.id=f.order_line_id
+                        JOIN app.orders o ON o.id=ol.order_id
+                        WHERE o.source_import_batch_id=?
+                        """,
+                        Integer.class,
+                        batchId))
+                .isEqualTo(2);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.review_cases
+                        WHERE import_batch_id=? AND case_type='SOURCE_ORDER_CANDIDATE' AND status='OPEN'
+                        """,
+                        Integer.class,
+                        batchId))
+                .as("主数据修复并成功恢复批次后不得留下过期的开放复核事项")
+                .isZero();
+        assertThat(readySkuId).isNotEqualTo(blockedSkuId);
+    }
+
+    @Test
+    void sourceReleaseWaitsForConcurrentCatalogWriteAndUsesTheCommittedState() throws Exception {
+        long skuId = upsertZhonghuiMapping("60043839", "中汇并发门禁测试商品", "1.000");
+        ResponseEntity<Map> uploaded = uploadRaw(
+                "中汇并发SKU门禁.xlsx",
+                zhonghuiWorkbook(
+                        "S-ZHONGHUI-CATALOG-LOCK-001", "60043839", "中汇并发门禁测试商品"),
+                "ticket-04-catalog-lock-upload-001");
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+
+        CompletableFuture<BusinessException> release;
+        try (Connection writer = dataSource.getConnection()) {
+            writer.setAutoCommit(false);
+            try (var update = writer.prepareStatement("UPDATE app.provider_skus SET active=FALSE WHERE sku_id=?")) {
+                update.setLong(1, skuId);
+                assertThat(update.executeUpdate()).isEqualTo(1);
+            }
+            release = CompletableFuture.supplyAsync(() -> {
+                try {
+                    sourceBatchConfirmer.confirmSourceBatch(
+                            batchId,
+                            "ticket-04-catalog-lock-confirm-001",
+                            new CommandContext(
+                                    "ticket-04-catalog-lock-request-001",
+                                    "ticket-04-catalog-lock-trace-001",
+                                    "source-ops"));
+                    return null;
+                } catch (BusinessException exception) {
+                    return exception;
+                }
+            });
+            Thread.sleep(250);
+            assertThat(release.isDone())
+                    .as("放行必须等待正在提交的 SKU 主数据写事务")
+                    .isFalse();
+            writer.commit();
+        }
+
+        BusinessException blocked = release.get(5, TimeUnit.SECONDS);
+        assertThat(blocked).isNotNull();
+        assertThat(blocked.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> lines = (List<Map<String, Object>>) blocked.getDetails().get("lines");
+        assertThat(lines).singleElement().satisfies(line ->
+                assertThat(((List<?>) line.get("reason_codes")).stream().map(String::valueOf).toList())
+                        .contains("PROVIDER_MAPPING_INACTIVE"));
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_at IS NULL FROM app.import_batches WHERE id=?",
+                        Boolean.class,
+                        batchId))
+                .isTrue();
+        jdbc.update("UPDATE app.provider_skus SET active=TRUE WHERE sku_id=?", skuId);
+    }
+
+    @Test
+    void sourceBatchReleaseRechecksActiveMappingAndFrozenPackMultiplier() throws Exception {
+        long skuId = upsertZhonghuiMapping("60043833", "中汇映射停用测试商品", "2.000");
+        ResponseEntity<Map> inactiveUploaded = uploadRaw(
+                "中汇映射停用.xlsx",
+                zhonghuiWorkbook("S-ZHONGHUI-MAPPING-INACTIVE-001", "60043833", "中汇映射停用测试商品"),
+                "ticket-04-mapping-inactive-upload-001");
+        long inactiveBatchId = Long.parseLong(inactiveUploaded.getBody().get("id").toString());
+        jdbc.update(
+                "UPDATE app.source_channel_skus SET active=FALSE "
+                        + "WHERE source_channel='ZHONGHUI' AND source_sku_ref='60043833'");
+
+        ResponseEntity<Map> inactiveBlocked = confirmBatch(
+                Long.toString(inactiveBatchId), "ticket-04-mapping-inactive-confirm-001");
+        assertReleaseBlockReason(inactiveBlocked, skuId, "SOURCE_SKU_MAPPING_REQUIRED");
+
+        upsertZhonghuiMapping("60043834", "中汇倍率漂移测试商品", "2.000", skuId);
+        ResponseEntity<Map> factorUploaded = uploadRaw(
+                "中汇倍率漂移.xlsx",
+                zhonghuiWorkbook("S-ZHONGHUI-MULTIPLIER-DRIFT-001", "60043834", "中汇倍率漂移测试商品"),
+                "ticket-04-multiplier-drift-upload-001");
+        long factorBatchId = Long.parseLong(factorUploaded.getBody().get("id").toString());
+        jdbc.update(
+                "UPDATE app.source_channel_skus SET quantity_multiplier=3.000 "
+                        + "WHERE source_channel='ZHONGHUI' AND source_sku_ref='60043834'");
+
+        ResponseEntity<Map> factorBlocked = confirmBatch(
+                Long.toString(factorBatchId), "ticket-04-multiplier-drift-confirm-001");
+        assertReleaseBlockReason(factorBlocked, skuId, "MAPPING_MULTIPLIER");
+
+        upsertZhonghuiMapping("60043836", "中汇目标漂移测试商品", "2.000", skuId);
+        ResponseEntity<Map> targetUploaded = uploadRaw(
+                "中汇目标漂移.xlsx",
+                zhonghuiWorkbook("S-ZHONGHUI-MAPPING-DRIFT-001", "60043836", "中汇目标漂移测试商品"),
+                "ticket-04-mapping-drift-upload-001");
+        long targetBatchId = Long.parseLong(targetUploaded.getBody().get("id").toString());
+        long otherSkuId = jdbc.queryForObject(
+                """
+                SELECT sku_id FROM app.source_channel_skus
+                WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-TP-001'
+                """,
+                Long.class);
+        jdbc.update(
+                "UPDATE app.source_channel_skus SET sku_id=? "
+                        + "WHERE source_channel='ZHONGHUI' AND source_sku_ref='60043836'",
+                otherSkuId);
+
+        ResponseEntity<Map> targetBlocked = confirmBatch(
+                Long.toString(targetBatchId), "ticket-04-mapping-drift-confirm-001");
+        assertReleaseBlockReason(targetBlocked, skuId, "SKU_MAPPING_CONFLICT");
+    }
+
+    @Test
+    void missingSourcePackMultiplierKeepsItsIndependentReviewReason() throws Exception {
+        long skuId = upsertTicket04BeefRibSku();
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                VALUES ('ZHONGHUI', '60043835', '中汇缺倍率测试商品', '500g', NULL, ?, TRUE)
+                ON CONFLICT (source_channel, source_sku_ref) DO UPDATE
+                SET quantity_multiplier=NULL, sku_id=EXCLUDED.sku_id, active=TRUE
+                """,
+                skuId);
+
+        ResponseEntity<Map> uploaded = uploadRaw(
+                "中汇缺倍率.xlsx",
+                zhonghuiWorkbook("S-ZHONGHUI-MULTIPLIER-MISSING-001", "60043835", "中汇缺倍率测试商品"),
+                "ticket-04-multiplier-missing-upload-001");
+
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT rc.reason_code
+                        FROM app.review_cases rc
+                        WHERE rc.import_batch_id=? AND rc.raw_import_row_id IS NOT NULL
+                        """,
+                        String.class,
+                        batchId))
+                .isEqualTo("MAPPING_MULTIPLIER");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        batchId))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT error_detail::text FROM app.raw_import_rows WHERE import_batch_id=?",
+                        String.class,
+                        batchId))
+                .contains("MAPPING_MULTIPLIER");
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_at IS NULL FROM app.import_batches WHERE id=?",
+                        Boolean.class,
+                        batchId))
+                .isTrue();
+    }
+
+    @Test
+    void feixiangCsvRetainsTheWholeCandidateBatchAndReplaysByContentHash() {
         byte[] file = feixiangCsv(true);
         Map<String, Object> first = upload("batch.csv", file, "source-import-fx-001");
         Map<String, Object> replay = upload("renamed.csv", file, "source-import-fx-002");
@@ -331,8 +737,8 @@ class ExcelClosedLoopApiTest {
         assertThat(first.get("content_sha256").toString()).hasSize(64);
         Map<?, ?> counts = (Map<?, ?>) first.get("row_counts");
         assertThat(counts.get("total")).isEqualTo(2);
-        assertThat(counts.get("accepted")).isEqualTo(1);
-        assertThat(counts.get("need_review")).isEqualTo(1);
+        assertThat(counts.get("accepted")).isEqualTo(0);
+        assertThat(counts.get("need_review")).isEqualTo(2);
 
         Map<String, Object> rows = get("/api/v1/import-batches/" + first.get("id") + "/rows?page=0&size=20");
         assertThat(rows.get("total_elements")).isEqualTo(2);
@@ -372,15 +778,7 @@ class ExcelClosedLoopApiTest {
         });
 
         Map<String, Object> orders = get("/api/v1/orders?query=FX-ORDER-001&page=0&size=20");
-        assertThat(orders.get("total_elements")).isEqualTo(1);
-        Map<?, ?> orderSummary = (Map<?, ?>) ((List<?>) orders.get("items")).getFirst();
-        Map<String, Object> order = get("/api/v1/orders/" + orderSummary.get("id"));
-        assertThat(order.get("source_channel")).isEqualTo("FEIXIANG");
-        assertThat(((List<?>) order.get("lines")).stream()
-                        .map(line -> ((Map<?, ?>) line).get("requested_quantity").toString())
-                        .toList())
-                .contains("3.000");
-        assertThat((List<?>) order.get("review_cases")).hasSize(1);
+        assertThat(orders.get("total_elements")).isEqualTo(0);
     }
 
     @Test
@@ -400,6 +798,8 @@ class ExcelClosedLoopApiTest {
 
         assertThat((List<?>) imported.get("generated_fulfillment_export_ids")).isEmpty();
         assertThat(imported.get("confirmed_at")).isNull();
+        ResponseEntity<Map> confirmed = confirmBatch(imported.get("id").toString(), "confirm-batch-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         String orderId = ((Map<?, ?>) ((List<?>) get(
                 "/api/v1/orders?query=FX-BATCH-CONFIRM-001&page=0&size=20").get("items")).getFirst())
                 .get("id").toString();
@@ -410,9 +810,7 @@ class ExcelClosedLoopApiTest {
                 "SELECT count(*) FROM app.customers WHERE customer_name='批次客户' AND profile->>'identity_phone'='13911112222'",
                 Integer.class)).isEqualTo(1);
 
-        ResponseEntity<Map> confirmed = confirmBatch(imported.get("id").toString(), "confirm-batch-001");
         ResponseEntity<Map> replay = confirmBatch(imported.get("id").toString(), "confirm-batch-001");
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(replay.getBody()).isEqualTo(confirmed.getBody());
         assertThat(confirmed.getBody().get("confirmed_at")).isNotNull();
@@ -430,6 +828,10 @@ class ExcelClosedLoopApiTest {
                 .getBytes(StandardCharsets.UTF_8);
         Map<String, Object> second = uploadRaw(
                 "batch-confirm-2.csv", secondFile, "source-import-batch-confirm-002").getBody();
+        assertThat(second.get("confirmed_at")).isNull();
+        ResponseEntity<Map> secondConfirmed = confirmBatch(
+                second.get("id").toString(), "confirm-batch-002");
+        assertThat(secondConfirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         String secondOrderId = ((Map<?, ?>) ((List<?>) get(
                 "/api/v1/orders?query=FX-BATCH-CONFIRM-002&page=0&size=20").get("items")).getFirst())
                 .get("id").toString();
@@ -437,7 +839,6 @@ class ExcelClosedLoopApiTest {
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.customers WHERE customer_name='批次客户' AND profile->>'identity_phone'='13911112222'",
                 Integer.class)).isEqualTo(1);
-        assertThat(second.get("confirmed_at")).isNull();
     }
 
     @Test
@@ -452,10 +853,12 @@ class ExcelClosedLoopApiTest {
         assertThat((List<?>) imported.get("generated_fulfillment_export_ids")).isEmpty();
         assertThat(((Map<?, ?>) imported.get("row_counts")).get("need_review")).isEqualTo(1);
 
-        Map<String, Object> orders = get("/api/v1/orders?query=FX-REVIEW-RESUME-001&page=0&size=20");
-        String orderId = ((Map<?, ?>) ((List<?>) orders.get("items")).getFirst()).get("id").toString();
-        Map<String, Object> order = get("/api/v1/orders/" + orderId);
-        Map<String, Map<String, Object>> cases = ((List<Map<String, Object>>) order.get("review_cases")).stream()
+        assertThat(get("/api/v1/orders?query=FX-REVIEW-RESUME-001&page=0&size=20")
+                        .get("total_elements"))
+                .isEqualTo(0);
+        Map<String, Object> reviewQueue = get(
+                "/api/v1/review-cases?import_batch_id=" + imported.get("id") + "&page=0&size=20");
+        Map<String, Map<String, Object>> cases = ((List<Map<String, Object>>) reviewQueue.get("items")).stream()
                 .collect(java.util.stream.Collectors.toMap(
                         item -> item.get("reason_code").toString(), item -> item));
         String skuId = jdbc.queryForObject(
@@ -463,20 +866,19 @@ class ExcelClosedLoopApiTest {
                 String.class);
 
         Map<String, Object> skuCase = cases.get("SKU_MAPPING_REQUIRED");
+        assertThat(skuCase)
+                .containsEntry("subject_type", "IMPORT_BATCH")
+                .containsEntry("subject_id", imported.get("id").toString());
         @SuppressWarnings("unchecked")
         Map<String, Object> skuDetail = (Map<String, Object>) skuCase.get("detail");
         // 复核抽屉逐条展示来源商品信息：名称/数量来自行快照，sheet/行号来自 raw_import_rows。
         assertThat(skuDetail).containsEntry("source_channel", "FEIXIANG");
         assertThat(skuDetail.get("source_product_name")).isEqualTo("子牧羊小腿");
-        assertThat(skuDetail.get("source_quantity")).isEqualTo("1.500");
+        assertThat(new BigDecimal(skuDetail.get("source_quantity").toString()))
+                .isEqualByComparingTo("1.500");
         assertThat(skuDetail.get("source_sheet_name")).isEqualTo("CSV");
         assertThat(skuDetail.get("source_row_index")).isEqualTo(2);
-        assertThat((List<?>) skuDetail.get("evidence_items")).singleElement().satisfies(item -> {
-            Map<?, ?> evidence = (Map<?, ?>) item;
-            assertThat(evidence.get("source_sku_ref")).isEqualTo("FX-PRODUCT-REVIEW-001");
-            assertThat(evidence.get("product_name")).isEqualTo("子牧羊小腿");
-            assertThat(evidence.get("quantity")).isEqualTo("1.500");
-        });
+        assertThat(skuDetail.get("source_sku_ref")).isEqualTo("FX-PRODUCT-REVIEW-001");
         // 复核事项直连原始文件行外键，原始单元格值可达。
         assertThat(jdbc.queryForObject(
                 "SELECT raw_import_row_id FROM app.review_cases WHERE id=?",
@@ -517,6 +919,8 @@ class ExcelClosedLoopApiTest {
         assertThat((Map<String, Object>) resumed.get("row_counts"))
                 .containsEntry("accepted", 1)
                 .containsEntry("need_review", 0);
+        Map<String, Object> orders = get("/api/v1/orders?query=FX-REVIEW-RESUME-001&page=0&size=20");
+        String orderId = ((Map<?, ?>) ((List<?>) orders.get("items")).getFirst()).get("id").toString();
         Map<String, Object> resumedOrder = get("/api/v1/orders/" + orderId);
         assertThat(((List<?>) resumedOrder.get("lines")).getFirst()).satisfies(item ->
                 assertThat(((Map<?, ?>) item).get("processing_stage")).isEqualTo("WAITING_PROVIDER"));
@@ -1129,7 +1533,7 @@ class ExcelClosedLoopApiTest {
     }
 
     @Test
-    void jdNonIntegerQuantityCreatesAnActionableReviewCaseInsteadOfAnExport() {
+    void jdNonIntegerQuantityBlocksBeforeCreatingOrdersOrExports() {
         addExplicitJdFeixiangMapping();
 
         ResponseEntity<Map> uploadResponse = uploadRaw(
@@ -1142,32 +1546,27 @@ class ExcelClosedLoopApiTest {
         ResponseEntity<Map> confirmation = confirmBatch(
                 batchId, "confirm-after-source-import-jd-decimal-001");
         assertThat(confirmation.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(confirmation.getBody()).containsEntry("business_code", "IMPORT_BATCH_EXPORT_INCOMPLETE");
+        assertThat(confirmation.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        Map<?, ?> details = (Map<?, ?>) confirmation.getBody().get("details");
+        Map<?, ?> blockedLine = (Map<?, ?>) ((List<?>) details.get("lines")).getFirst();
+        assertThat(((List<?>) blockedLine.get("reason_codes")).stream().map(String::valueOf).toList())
+                .contains("QUANTITY_SCALE");
 
         Map<String, Object> imported = get("/api/v1/import-batches/" + batchId);
 
         assertThat((List<?>) imported.get("generated_fulfillment_export_ids")).isEmpty();
         Map<String, Object> orders = get("/api/v1/orders?query=FX-JD-DECIMAL-001&page=0&size=20");
-        Map<?, ?> summary = (Map<?, ?>) ((List<?>) orders.get("items")).getFirst();
-        Map<String, Object> order = get("/api/v1/orders/" + summary.get("id"));
-        List<?> reviewCases = (List<?>) order.get("review_cases");
-        assertThat(reviewCases).singleElement().satisfies(item -> {
-            Map<?, ?> reviewCase = (Map<?, ?>) item;
-            assertThat(reviewCase.get("reason_code")).isEqualTo("QUANTITY_SCALE");
-            assertThat(reviewCase.get("status")).isEqualTo("OPEN");
-            assertThat(reviewCase.get("order_line_id")).isNotNull();
-            Map<String, Object> detail = (Map<String, Object>) reviewCase.get("detail");
-            assertThat(detail)
-                    .containsEntry("reject_reason", "京东出库数量必须为正整数")
-                    // 飞象样表无单位列：解析器回退标记「来源数量单位」即行快照里的真实事实。
-                    .containsEntry("source_unit", "来源数量单位");
-            assertThat(new java.math.BigDecimal((String) detail.get("source_quantity")))
-                    .isEqualByComparingTo("1.5");
-            assertThat(new java.math.BigDecimal((String) detail.get("quantity_multiplier")))
-                    .isEqualByComparingTo("1.000");
-            assertThat(new java.math.BigDecimal((String) detail.get("converted_quantity")))
-                    .isEqualByComparingTo("1.5");
-        });
+        assertThat(orders.get("total_elements")).isEqualTo(0);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.fulfillments f
+                        JOIN app.order_lines ol ON ol.id=f.order_line_id
+                        JOIN app.orders o ON o.id=ol.order_id
+                        WHERE o.source_import_batch_id=?
+                        """,
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isZero();
     }
 
     private String zipXmlText(byte[] bytes) throws Exception {
@@ -1396,6 +1795,165 @@ class ExcelClosedLoopApiTest {
             return output.toByteArray();
         }
     }
+
+    private long upsertZhonghuiMapping(String sourceSkuRef, String productName, String multiplier) {
+        long skuId = upsertTicket04BeefRibSku();
+        upsertZhonghuiMapping(sourceSkuRef, productName, multiplier, skuId);
+        return skuId;
+    }
+
+    private long upsertTicket04BeefRibSku() {
+        long productId = jdbc.queryForObject(
+                """
+                INSERT INTO app.products(product_code, product_name, active)
+                VALUES ('PROD-TICKET04-BEEF-RIB-500', '牛肋条500g', TRUE)
+                ON CONFLICT (product_code) DO UPDATE
+                SET product_name=EXCLUDED.product_name, active=TRUE
+                RETURNING id
+                """,
+                Long.class);
+        long providerId = jdbc.queryForObject(
+                "SELECT id FROM app.fulfillment_providers WHERE provider_code='JD'",
+                Long.class);
+        long skuId = jdbc.queryForObject(
+                """
+                INSERT INTO app.skus
+                    (sku_sequence_no, sku_code, product_id, fulfillment_provider_id,
+                     specification, unit, barcode,
+                     net_content_value, net_content_unit, package_count, package_unit, active)
+                VALUES (21, 'SKU-JD-000021', ?, ?, '500g/件', '件', '06977872890135',
+                        500, 'g', 1, '件', TRUE)
+                ON CONFLICT (sku_code) DO UPDATE
+                SET product_id=EXCLUDED.product_id,
+                    fulfillment_provider_id=EXCLUDED.fulfillment_provider_id,
+                    specification=EXCLUDED.specification, unit=EXCLUDED.unit,
+                    barcode=EXCLUDED.barcode,
+                    net_content_value=EXCLUDED.net_content_value,
+                    net_content_unit=EXCLUDED.net_content_unit,
+                    package_count=EXCLUDED.package_count,
+                    package_unit=EXCLUDED.package_unit,
+                    active=TRUE
+                RETURNING id
+                """,
+                Long.class,
+                productId,
+                providerId);
+        jdbc.update(
+                """
+                INSERT INTO app.provider_skus
+                    (fulfillment_provider_id, sku_id, provider_sku_code, external_codes, active)
+                VALUES (?, ?, 'EMG4418861058751', '{"jd_pieces_per_unit":1}'::jsonb, TRUE)
+                ON CONFLICT (fulfillment_provider_id, sku_id) DO UPDATE
+                SET provider_sku_code=EXCLUDED.provider_sku_code,
+                    external_codes=EXCLUDED.external_codes, active=TRUE
+                """,
+                providerId,
+                skuId);
+        return skuId;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void assertReleaseBlockReason(
+            ResponseEntity<Map> response, long skuId, String expectedReason) {
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        Map<String, Object> details = (Map<String, Object>) response.getBody().get("details");
+        List<Map<String, Object>> lines = (List<Map<String, Object>>) details.get("lines");
+        assertThat(lines).singleElement().satisfies(line -> {
+            assertThat(line).containsEntry("sku_id", Long.toString(skuId));
+            assertThat(((List<?>) line.get("reason_codes")).stream().map(String::valueOf).toList())
+                    .contains(expectedReason);
+        });
+    }
+
+    private void upsertZhonghuiMapping(
+            String sourceSkuRef, String productName, String multiplier, long skuId) {
+        jdbc.update(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name, source_specification,
+                     quantity_multiplier, sku_id, active)
+                VALUES ('ZHONGHUI', ?, ?, '500g', ?::numeric, ?, TRUE)
+                ON CONFLICT (source_channel, source_sku_ref) DO UPDATE
+                SET source_product_name=EXCLUDED.source_product_name,
+                    source_specification=EXCLUDED.source_specification,
+                    quantity_multiplier=EXCLUDED.quantity_multiplier,
+                    sku_id=EXCLUDED.sku_id, active=TRUE
+                """,
+                sourceSkuRef,
+                productName,
+                multiplier,
+                skuId);
+    }
+
+    private long upsertReleaseBlockedSku() {
+        long productId = jdbc.queryForObject(
+                """
+                INSERT INTO app.products(product_code, product_name, active)
+                VALUES ('PROD-TICKET04-BLOCKED', '中汇就绪门禁测试商品', TRUE)
+                ON CONFLICT (product_code) DO UPDATE
+                SET product_name=EXCLUDED.product_name, active=TRUE
+                RETURNING id
+                """,
+                Long.class);
+        long providerId = jdbc.queryForObject(
+                "SELECT id FROM app.fulfillment_providers WHERE provider_code='JD'",
+                Long.class);
+        long skuSequence = jdbc.queryForObject("SELECT nextval('app.sku_code_seq')", Long.class);
+        String skuCode = "SKU-JD-" + String.format("%06d", skuSequence);
+        long skuId = jdbc.queryForObject(
+                """
+                INSERT INTO app.skus
+                    (sku_sequence_no, sku_code, product_id, fulfillment_provider_id, specification, unit,
+                     net_content_value, net_content_unit, package_count, package_unit, active)
+                VALUES (?, ?, ?, ?, '500g/件', '件', 500, 'g', 1, '件', TRUE)
+                RETURNING id
+                """,
+                Long.class,
+                skuSequence,
+                skuCode,
+                productId,
+                providerId);
+        jdbc.update("DELETE FROM app.provider_skus WHERE sku_id=?", skuId);
+        jdbc.update("DELETE FROM app.sku_data_quality_flags WHERE sku_id=?", skuId);
+        return skuId;
+    }
+
+    private byte[] zhonghuiWorkbook(String orderNo, String sourceSkuRef, String productName) throws Exception {
+        return zhonghuiWorkbook(List.of(new ZhonghuiSourceRow(orderNo, sourceSkuRef, productName)));
+    }
+
+    private byte[] zhonghuiWorkbook(List<ZhonghuiSourceRow> sourceRows) throws Exception {
+        List<String> headers = List.of(
+                "订单号", "下单时间", "支付时间", "完成时间", "商品编号", "商品名称", "税率",
+                "一级分类", "二级分类", "三级分类", "订单状态", "商品状态", "件数", "商家单价",
+                "商家金额", "上游成本价", "商家结算金额", "商家优惠", "商家运费", "收件人",
+                "收件电话", "收件地址", "发货状态", "包装规格", "单位");
+        try (XSSFWorkbook workbook = new XSSFWorkbook();
+                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("Sheet1");
+            var header = sheet.createRow(0);
+            for (int index = 0; index < headers.size(); index++) {
+                header.createCell(index).setCellValue(headers.get(index));
+            }
+            for (int rowIndex = 0; rowIndex < sourceRows.size(); rowIndex++) {
+                ZhonghuiSourceRow source = sourceRows.get(rowIndex);
+                List<String> values = List.of(
+                        source.orderNo(), "2026-08-30 10:00:00", "2026-08-30 10:00:01", "",
+                        source.sourceSkuRef(), source.productName(), "9", "生鲜食品", "猪牛羊肉", "牛肉",
+                        "待发货", "正常", "1", "100", "100", "60", "60", "0", "0", "门禁测试客户",
+                        "13800000002", "北京市丰台区测试路2号", "未发货", "500g", "份");
+                var row = sheet.createRow(rowIndex + 1);
+                for (int column = 0; column < values.size(); column++) {
+                    row.createCell(column).setCellValue(values.get(column));
+                }
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    private record ZhonghuiSourceRow(String orderNo, String sourceSkuRef, String productName) {}
 
     private byte[] feixiangCsv(boolean includeRows) {
         String header = String.join(",", List.of(

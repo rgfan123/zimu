@@ -13,6 +13,22 @@ import java.util.Map;
  */
 public final class JdStockUnitConverter {
 
+    public enum OutboundFactorStatus {
+        DEFAULT_ONE,
+        EXPLICIT_VALID,
+        MISSING,
+        INVALID,
+        NON_INTEGER
+    }
+
+    /** 京东真实出库使用的单位换算判定；readiness 与建单必须复用同一结果。 */
+    public record OutboundFactorValidation(OutboundFactorStatus status, BigDecimal factor) {
+        public boolean valid() {
+            return status == OutboundFactorStatus.DEFAULT_ONE
+                    || status == OutboundFactorStatus.EXPLICIT_VALID;
+        }
+    }
+
     /** 采购工单与缺口数量使用的京东库存单位。 */
     public static final String PIECES_UNIT = "件";
 
@@ -75,6 +91,26 @@ public final class JdStockUnitConverter {
         }
         BigDecimal factor = toDecimal(raw);
         return factor != null && factor.signum() > 0 ? factor : null;
+    }
+
+    /**
+     * 校验京东建单的单位换算：未显式配置时只有“件”可按 1 放行；显式配置必须为正整数。
+     */
+    public static OutboundFactorValidation validateOutboundFactor(
+            String systemUnit, Map<String, Object> externalCodes) {
+        if (externalCodes == null || !externalCodes.containsKey(FACTOR_CONFIG_KEY)) {
+            return PIECES_UNIT.equals(systemUnit)
+                    ? new OutboundFactorValidation(OutboundFactorStatus.DEFAULT_ONE, DEFAULT_FACTOR)
+                    : new OutboundFactorValidation(OutboundFactorStatus.MISSING, null);
+        }
+        BigDecimal factor = explicitFactorOrNull(externalCodes);
+        if (factor == null) {
+            return new OutboundFactorValidation(OutboundFactorStatus.INVALID, null);
+        }
+        if (factor.stripTrailingZeros().scale() > 0) {
+            return new OutboundFactorValidation(OutboundFactorStatus.NON_INTEGER, factor);
+        }
+        return new OutboundFactorValidation(OutboundFactorStatus.EXPLICIT_VALID, factor);
     }
 
     private static BigDecimal toDecimal(Object value) {

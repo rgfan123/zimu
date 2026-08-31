@@ -52,6 +52,50 @@ test('OpenAPI 3.0.3 用显式 typed nullable schema 表达 SKU 未定价', () =>
   }
 });
 
+test('OpenAPI 公开 Product 品牌与 SKU 结构化包装身份', () => {
+  const openApi = readFileSync(
+    fileURLToPath(new URL('../../docs/openapi.yaml', import.meta.url)),
+    'utf8',
+  );
+  for (const schemaName of ['ProductWrite', 'ProductPatch']) {
+    assert.match(openApiSchemaBlock(openApi, schemaName), /^        brand_name:/m);
+  }
+  for (const schemaName of ['SkuAttributes', 'SkuWrite', 'InitialSkuWrite', 'SkuPatch']) {
+    const schema = openApiSchemaBlock(openApi, schemaName);
+    for (const property of ['net_content_value', 'net_content_unit', 'package_count', 'package_unit']) {
+      assert.match(schema, new RegExp(`^        ${property}:`, 'm'), `${schemaName}.${property}`);
+    }
+  }
+  assert.match(openApiSchemaBlock(openApi, 'SkuPatch'), /^        unit:/m);
+});
+
+test('OpenAPI 公开统一 SKU 履约就绪结果与原因筛选', () => {
+  const openApi = readFileSync(
+    fileURLToPath(new URL('../../docs/openapi.yaml', import.meta.url)),
+    'utf8',
+  );
+  const readiness = openApiSchemaBlock(openApi, 'SkuFulfillmentReadiness');
+  for (const property of ['ready', 'reason_codes', 'issues', 'data_quality_flags']) {
+    assert.match(readiness, new RegExp(`^        ${property}:`, 'm'), property);
+  }
+  assert.match(readiness, /SkuDataQualityFlag/);
+  assert.match(
+    openApiPropertyBlock(openApiSchemaBlock(openApi, 'SkuAttributes'), 'readiness'),
+    /SkuFulfillmentReadiness/,
+  );
+  const skuListPath = openApi.slice(openApi.indexOf('  /api/v1/skus:\n'), openApi.indexOf('  /api/v1/skus/{sku_id}:\n'));
+  assert.match(skuListPath, /^        - name: readiness_reason$/m);
+});
+
+test('共享 CanonicalOrder JSON 不暴露草稿确认专用 sku_id 能力', () => {
+  const openApi = readFileSync(
+    fileURLToPath(new URL('../../docs/openapi.yaml', import.meta.url)),
+    'utf8',
+  );
+  const orderItem = openApiSchemaBlock(openApi, 'OrderItemInput');
+  assert.doesNotMatch(orderItem, /^        sku_id:/m);
+});
+
 test('商业价格只接受非负且最多两位小数的 decimal string', () => {
   for (const value of ['0', '0.00', '12', '12.3', '12.30', '999999999999.99']) {
     assert.equal(COMMERCIAL_PRICE_PATTERN.test(value), true, value);
@@ -83,6 +127,10 @@ test('SKU 新建和编辑把两个价格投影到公开 API 载荷', () => {
     product_id: '22',
     specification: '500g',
     unit: '袋',
+    net_content_value: '500',
+    net_content_unit: 'g',
+    package_count: '2',
+    package_unit: '袋',
     barcode: ' 690000000001 ',
     purchase_price: ' 12.30 ',
     retail_price: '',
@@ -92,6 +140,10 @@ test('SKU 新建和编辑把两个价格投影到公开 API 载荷', () => {
     product_id: '22',
     specification: '500g',
     unit: '袋',
+    net_content_value: '500',
+    net_content_unit: 'g',
+    package_count: 2,
+    package_unit: '袋',
     barcode: '690000000001',
     purchase_price: '12.30',
     retail_price: undefined,
@@ -101,7 +153,11 @@ test('SKU 新建和编辑把两个价格投影到公开 API 载荷', () => {
   assert.deepEqual(buildSkuUpdateBody({
     expected_version: 3,
     specification: '400g',
-    unit: '箱',
+    unit: '件',
+    net_content_value: '400',
+    net_content_unit: 'g',
+    package_count: '1',
+    package_unit: '袋',
     barcode: '',
     purchase_price: '13',
     retail_price: '',
@@ -109,7 +165,11 @@ test('SKU 新建和编辑把两个价格投影到公开 API 载荷', () => {
   }), {
     expected_version: 3,
     specification: '400g',
-    unit: '箱',
+    unit: '件',
+    net_content_value: '400',
+    net_content_unit: 'g',
+    package_count: 1,
+    package_unit: '袋',
     barcode: null,
     purchase_price: '13',
     retail_price: null,
@@ -121,10 +181,15 @@ test('商品档案新建提交新商品资料而不是已有商品标识', () =>
   const body = buildProductWithInitialSkuBody({
     product_code: 'PROD-NEW-001',
     product_name: '新商品',
+    brand_name: '子牧',
     category_id: '9',
     provider_id: '11',
     specification: '500g',
     unit: '袋',
+    net_content_value: '500',
+    net_content_unit: 'g',
+    package_count: '1',
+    package_unit: '袋',
     barcode: ' 690000000009 ',
     purchase_price: '12.30',
     retail_price: '18',
@@ -135,6 +200,7 @@ test('商品档案新建提交新商品资料而不是已有商品标识', () =>
     product: {
       product_code: 'PROD-NEW-001',
       product_name: '新商品',
+      brand_name: '子牧',
       category_id: '9',
       active: true,
     },
@@ -142,6 +208,10 @@ test('商品档案新建提交新商品资料而不是已有商品标识', () =>
       provider_id: '11',
       specification: '500g',
       unit: '袋',
+      net_content_value: '500',
+      net_content_unit: 'g',
+      package_count: 1,
+      package_unit: '袋',
       barcode: '690000000009',
       purchase_price: '12.30',
       retail_price: '18',

@@ -327,7 +327,7 @@ export default function ZhonghuiChannelPage() {
       <Space wrap style={{ width: '100%', marginBottom: 8 }}>
         <Input.Search
           style={{ width: 260 }}
-          placeholder="搜索 SKU 编码 / 商品名称"
+          placeholder="搜索 SKU 编码 / 商品名称 / 历史别名"
           allowClear
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}

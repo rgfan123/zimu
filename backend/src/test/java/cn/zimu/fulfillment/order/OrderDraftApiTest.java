@@ -804,16 +804,14 @@ class OrderDraftApiTest {
         postEncryptedMessage(messageId, 2);
         Map<String, Object> draft = awaitDraftForMessage(messageId);
         Map<String, Object> reviewCase = onlyOrderDraftReviewCase(draft.get("id").toString());
+        TestSku selectedSku = insertTestTpSku("CONFIRM", true);
+        long pseudoMappingsBefore = pseudoSourceSkuCount();
 
         String customerId = castMapList(draft.get("customer_candidates"))
                 .getFirst()
                 .get("customer_id")
                 .toString();
-        Map<String, Object> draftLine = castMapList(draft.get("lines")).getFirst();
-        String skuId = castMapList(draftLine.get("sku_candidates"))
-                .getFirst()
-                .get("sku_id")
-                .toString();
+        String skuId = String.valueOf(selectedSku.skuId());
         Map<String, Object> command = Map.of(
                 "expected_revision", ((Number) draft.get("revision")).longValue(),
                 "expected_case_version", ((Number) draft.get("review_case_version")).longValue(),
@@ -871,9 +869,36 @@ class OrderDraftApiTest {
         assertThat(orderLines).hasSize(1);
         assertThat(orderLines.getFirst())
                 .containsEntry("sku_id", skuId)
-                .containsEntry("product_name", "子牧羊小腿")
+                .containsEntry("sku_code", selectedSku.skuCode())
+                .containsEntry("product_name", "确认时规范商品-CONFIRM")
+                .containsEntry("specification", "500g×2袋")
+                .containsEntry("unit", "盒")
+                .containsEntry("source_quantity", "3.000")
+                .containsEntry("mapping_multiplier", "1.000")
                 .containsEntry("requested_quantity", "3.000");
         assertThat(orderLines.getFirst().get("provider_id")).isNotEqualTo("999999993");
+        assertThat(pseudoSourceSkuCount()).isEqualTo(pseudoMappingsBefore);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.source_channel_skus "
+                                + "WHERE source_channel='WECOM' AND source_sku_ref=?",
+                        Long.class,
+                        "WECOM-DRAFT-" + draft.get("id") + "-L1"))
+                .isZero();
+
+        jdbc.update("UPDATE app.products SET product_name='确认后已改名' WHERE id=?", selectedSku.productId());
+        jdbc.update(
+                "UPDATE app.skus SET specification='1kg/袋', unit='袋' WHERE id=?",
+                selectedSku.skuId());
+        Map<String, Object> frozenOrder = get("/api/v1/orders/" + orderId);
+        assertThat(castMapList(frozenOrder.get("lines")).getFirst())
+                .containsEntry("sku_id", skuId)
+                .containsEntry("sku_code", selectedSku.skuCode())
+                .containsEntry("product_name", "确认时规范商品-CONFIRM")
+                .containsEntry("specification", "500g×2袋")
+                .containsEntry("unit", "盒")
+                .containsEntry("source_quantity", "3.000")
+                .containsEntry("mapping_multiplier", "1.000")
+                .containsEntry("requested_quantity", "3.000");
 
         Map<String, Object> resolvedCase = get("/api/v1/review-cases/" + reviewCase.get("id"));
         assertThat(resolvedCase)
@@ -895,6 +920,160 @@ class OrderDraftApiTest {
                         .containsEntry("operation", "order_draft.confirm")
                         .containsEntry("business_code", "ORDER_DRAFT_CONFIRMED")
                         .containsEntry("order_id", orderId));
+    }
+
+    @Test
+    void unreadySelectedSkuReturnsStableLineReasonsAndKeepsDraftCaseAndMappingsOpen() throws Exception {
+        InterpreterControl.queue(customerOrderResultWithTwoItems());
+        String messageId = "MSG-TICKET-03-UNREADY-SKU";
+        postEncryptedMessage(messageId, 301);
+        Map<String, Object> draft = awaitDraftForMessage(messageId);
+        Map<String, Object> reviewCase = onlyOrderDraftReviewCase(draft.get("id").toString());
+        TestSku unreadySku = insertTestTpSku("UNREADY", false);
+        TestSku inactiveSku = insertTestTpSku("INACTIVE", true);
+        jdbc.update("UPDATE app.skus SET active=FALSE WHERE id=?", inactiveSku.skuId());
+        Map<String, Object> command = confirmationCommandHeader(draft);
+        command.put("items", List.of(
+                Map.of(
+                        "line_no", 1,
+                        "sku_id", String.valueOf(unreadySku.skuId()),
+                        "quantity", "3"),
+                Map.of(
+                        "line_no", 2,
+                        "sku_id", String.valueOf(inactiveSku.skuId()),
+                        "quantity", "2")));
+        long sourceMappingsBefore = jdbc.queryForObject(
+                "SELECT count(*) FROM app.source_channel_skus", Long.class);
+
+        ResponseEntity<Map> blocked = postCommand(
+                "/api/v1/order-drafts/" + draft.get("id") + "/confirm",
+                command,
+                "ticket-03-unready-confirm-0001",
+                "req-ticket-03-unready-confirm-0001");
+
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(blocked.getBody()).containsEntry("business_code", "SKU_NOT_READY");
+        Map<String, Object> details = castMap(blocked.getBody().get("details"));
+        List<Map<String, Object>> blockedLines = castMapList(details.get("lines"));
+        assertThat(blockedLines).extracting(line -> line.get("line_no")).containsExactly(1, 2);
+        assertThat(blockedLines.getFirst())
+                .containsEntry("sku_id", String.valueOf(unreadySku.skuId()))
+                .containsEntry("sku_code", unreadySku.skuCode())
+                .containsEntry("ready", false);
+        assertThat(castList(blockedLines.getFirst().get("reason_codes")))
+                .containsExactly("PROVIDER_MAPPING_REQUIRED");
+        assertThat(blockedLines.getLast())
+                .containsEntry("sku_id", String.valueOf(inactiveSku.skuId()))
+                .containsEntry("sku_code", inactiveSku.skuCode())
+                .containsEntry("ready", false);
+        assertThat(castList(blockedLines.getLast().get("reason_codes")))
+                .containsExactly("SKU_INACTIVE");
+        assertThat(get("/api/v1/order-drafts/" + draft.get("id")))
+                .containsEntry("status", "OPEN");
+        assertThat(get("/api/v1/review-cases/" + reviewCase.get("id")))
+                .containsEntry("status", "OPEN");
+        assertNoCanonicalOrder(draft.get("source_order_no").toString());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM app.source_channel_skus", Long.class))
+                .isEqualTo(sourceMappingsBefore);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.customer_source_refs "
+                                + "WHERE source_channel='WECOM' AND source_customer_ref=?",
+                        Long.class,
+                        "WECOM-DRAFT-" + draft.get("id")))
+                .isZero();
+    }
+
+    @Test
+    void permanentSourceSkuWriteRejectsDraftOrderCorrectionAndLineReferences() {
+        TestSku sku = insertTestTpSku("SOURCE-REF-POLICY", true);
+        List<String> rejectedRefs = List.of(
+                "WECOM-DRAFT-99-L1",
+                "CORR-SKU-CAISHIXIAN-2152074",
+                "OD-123-1",
+                "ORD-0123456789ABCDEF0123456789ABCDEF",
+                "LINE-1");
+
+        int index = 0;
+        for (String sourceSkuRef : rejectedRefs) {
+            ResponseEntity<Map> rejected = postCommand(
+                    "/api/v1/source-sku-mappings",
+                    Map.of(
+                            "source_channel", "WECOM",
+                            "source_sku_ref", sourceSkuRef,
+                            "source_sku_name", "一次性编号不得入主数据",
+                            "sku_id", String.valueOf(sku.skuId()),
+                            "quantity_multiplier", "1",
+                            "active", true),
+                    "ticket-03-source-ref-reject-" + index,
+                    "req-ticket-03-source-ref-reject-" + index);
+            assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+            assertThat(rejected.getBody()).containsEntry("business_code", "NON_REUSABLE_SOURCE_SKU_REF");
+            assertThat(jdbc.queryForObject(
+                            "SELECT count(*) FROM app.source_channel_skus WHERE source_sku_ref=?",
+                            Long.class,
+                            sourceSkuRef))
+                    .isZero();
+            index++;
+        }
+
+        ResponseEntity<Map> accepted = postCommand(
+                "/api/v1/source-sku-mappings",
+                Map.of(
+                        "source_channel", "WECOM",
+                        "source_sku_ref", "WECOM-PRODUCT-STABLE-001",
+                        "source_sku_name", "可跨订单复用的真实来源商品",
+                        "sku_id", String.valueOf(sku.skuId()),
+                        "quantity_multiplier", "1",
+                        "active", true),
+                "ticket-03-source-ref-accept-0001",
+                "req-ticket-03-source-ref-accept-0001");
+        assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        long legacyMappingId = jdbc.queryForObject(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name,
+                     quantity_multiplier, sku_id, active)
+                VALUES ('WECOM', 'WECOM-DRAFT-888-L1', '历史伪映射', 1, ?, FALSE)
+                RETURNING id
+                """,
+                Long.class,
+                sku.skuId());
+        ResponseEntity<Map> rejectedRestore = patchCommand(
+                "/api/v1/source-sku-mappings/" + legacyMappingId,
+                Map.of("expected_version", 0, "active", true),
+                "ticket-03-source-ref-restore-0001",
+                "req-ticket-03-source-ref-restore-0001");
+        assertThat(rejectedRestore.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(rejectedRestore.getBody()).containsEntry(
+                "business_code", "NON_REUSABLE_SOURCE_SKU_REF");
+        assertThat(jdbc.queryForObject(
+                        "SELECT active FROM app.source_channel_skus WHERE id=?",
+                        Boolean.class,
+                        legacyMappingId))
+                .isFalse();
+
+        long activeLegacyMappingId = jdbc.queryForObject(
+                """
+                INSERT INTO app.source_channel_skus
+                    (source_channel, source_sku_ref, source_product_name,
+                     quantity_multiplier, sku_id, active)
+                VALUES ('WECOM', 'CORR-SKU-ZHONGHUI-60043831', '待停用历史伪映射', 1, ?, TRUE)
+                RETURNING id
+                """,
+                Long.class,
+                sku.skuId());
+        ResponseEntity<Map> deactivated = patchCommand(
+                "/api/v1/source-sku-mappings/" + activeLegacyMappingId,
+                Map.of("expected_version", 0, "active", false),
+                "ticket-03-source-ref-deactivate-0001",
+                "req-ticket-03-source-ref-deactivate-0001");
+        assertThat(deactivated.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jdbc.queryForObject(
+                        "SELECT active FROM app.source_channel_skus WHERE id=?",
+                        Boolean.class,
+                        activeLegacyMappingId))
+                .isFalse();
     }
 
     @Test
@@ -1052,15 +1231,46 @@ class OrderDraftApiTest {
                 base.error());
     }
 
+    private InterpretationResult customerOrderResultWithTwoItems() {
+        InterpretationResult base = customerOrderResult();
+        Map<String, Object> output = new java.util.LinkedHashMap<>(base.structuredOutput());
+        output.put("items", List.of(
+                Map.of(
+                        "product", "待确认商品一",
+                        "spec", "500g/袋",
+                        "unit", "袋",
+                        "quantity", "3",
+                        "source_sku_ref", "WECOM-UNREADY-LINE-1"),
+                Map.of(
+                        "product", "待确认商品二",
+                        "spec", "500g/袋",
+                        "unit", "袋",
+                        "quantity", "2",
+                        "source_sku_ref", "WECOM-UNREADY-LINE-2")));
+        return new InterpretationResult(
+                base.intent(),
+                output,
+                base.provider(),
+                base.model(),
+                base.promptVersion(),
+                base.error());
+    }
+
     private Map<String, Object> confirmationCommand(Map<String, Object> draft) {
-        String customerId = castMapList(draft.get("customer_candidates"))
-                .getFirst()
-                .get("customer_id")
-                .toString();
         Map<String, Object> draftLine = castMapList(draft.get("lines")).getFirst();
         String skuId = castMapList(draftLine.get("sku_candidates"))
                 .getFirst()
                 .get("sku_id")
+                .toString();
+        Map<String, Object> command = confirmationCommandHeader(draft);
+        command.put("items", List.of(Map.of("line_no", 1, "sku_id", skuId, "quantity", "3")));
+        return command;
+    }
+
+    private Map<String, Object> confirmationCommandHeader(Map<String, Object> draft) {
+        String customerId = castMapList(draft.get("customer_candidates"))
+                .getFirst()
+                .get("customer_id")
                 .toString();
         Map<String, Object> command = new java.util.LinkedHashMap<>();
         command.put("expected_revision", ((Number) draft.get("revision")).longValue());
@@ -1077,10 +1287,64 @@ class OrderDraftApiTest {
         command.put("settlement", Map.of(
                 "method", "MONTHLY",
                 "settlement_time", Instant.parse("2026-08-31T16:00:00Z").toString()));
-        command.put("items", List.of(Map.of("line_no", 1, "sku_id", skuId, "quantity", "3")));
         command.put("remark", "已对照企微原始消息和主数据");
         return command;
     }
+
+    private TestSku insertTestTpSku(String suffix, boolean withProviderMapping) {
+        long categoryId = jdbc.queryForObject(
+                "SELECT id FROM app.categories ORDER BY id LIMIT 1", Long.class);
+        long providerId = jdbc.queryForObject(
+                "SELECT id FROM app.fulfillment_providers WHERE provider_code='TP'", Long.class);
+        long productId = jdbc.queryForObject(
+                """
+                INSERT INTO app.products (product_code, product_name, category_id, active)
+                VALUES (?, ?, ?, TRUE)
+                RETURNING id
+                """,
+                Long.class,
+                "PROD-DRAFT-" + suffix,
+                "确认时规范商品-" + suffix,
+                categoryId);
+        long skuId = jdbc.queryForObject(
+                """
+                INSERT INTO app.skus
+                    (product_id, fulfillment_provider_id, specification, unit,
+                     net_content_value, net_content_unit, package_count, package_unit, active)
+                VALUES (?, ?, '500g×2袋', '盒', 500, 'g', 2, '袋', TRUE)
+                RETURNING id
+                """,
+                Long.class,
+                productId,
+                providerId);
+        String skuCode = jdbc.queryForObject(
+                "SELECT sku_code FROM app.skus WHERE id=?", String.class, skuId);
+        if (withProviderMapping) {
+            jdbc.update(
+                    """
+                    INSERT INTO app.provider_skus
+                        (fulfillment_provider_id, sku_id, provider_sku_code, external_codes, active)
+                    VALUES (?, ?, ?, '{}'::jsonb, TRUE)
+                    """,
+                    providerId,
+                    skuId,
+                    skuCode);
+        }
+        return new TestSku(productId, skuId, skuCode);
+    }
+
+    private long pseudoSourceSkuCount() {
+        return jdbc.queryForObject(
+                """
+                SELECT count(*)
+                FROM app.source_channel_skus
+                WHERE source_sku_ref LIKE 'WECOM-DRAFT-%'
+                   OR source_sku_ref LIKE 'CORR-SKU-%'
+                """,
+                Long.class);
+    }
+
+    private record TestSku(long productId, long skuId, String skuCode) {}
 
     private long customersTotal() {
         return ((Number) get("/api/v1/customers?size=200").get("total_elements")).longValue();

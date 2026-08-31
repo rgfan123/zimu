@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import cn.zimu.fulfillment.connector.jd.MockJdWarehouseClient;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -65,6 +66,7 @@ class CaishixianJdBatchClosedLoopApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper objectMapper;
     @Autowired ControlledJdClient jd;
+    @Autowired SourceOrderCandidateMaterializer candidateMaterializer;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     cn.zimu.fulfillment.connector.wecom.WecomConnectionManager ignoredWecomConnectionManager;
 
@@ -99,7 +101,7 @@ class CaishixianJdBatchClosedLoopApiTest {
                 SET config=('{' ||
                     '"sourceNo":"ISV-CSX-001","warehouseNo":"WH-CSX-001",' ||
                     '"erpShopNo":"SHOP-CSX-001","shopNo":"SHOP-CSX-001",' ||
-                    '"ownerNo":"OWNER-CSX-001",' ||
+                    '"ownerNo":"OWNER-CSX-001","customerCode":"CUST-CSX-001",' ||
                     '"pin":"PIN-CSX-001","carrierNo":"JD","salesPlatformSource":"6",' ||
                     '"townRequired":false}')::jsonb
                 WHERE provider_code='JD'
@@ -140,7 +142,8 @@ class CaishixianJdBatchClosedLoopApiTest {
         Map<String, Object> batch = uploaded.getBody();
         String batchId = batch.get("id").toString();
         Map<?, ?> rowCounts = (Map<?, ?>) batch.get("row_counts");
-        assertThat(rowCounts.get("accepted")).isEqualTo(1);
+        assertThat(rowCounts.get("accepted")).isEqualTo(0);
+        assertThat(rowCounts.get("total")).isEqualTo(1);
         assertThat(rowCounts.get("need_review")).isEqualTo(0);
         assertThat(batch.get("confirmed_at")).isNull();
         assertThat((List<?>) batch.get("generated_fulfillment_export_ids")).isEmpty();
@@ -260,7 +263,18 @@ class CaishixianJdBatchClosedLoopApiTest {
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
         Map<?, ?> counts = (Map<?, ?>) uploaded.getBody().get("row_counts");
-        assertThat(counts.get("accepted")).isEqualTo(1);
+        assertThat(counts.get("accepted")).isEqualTo(0);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                Long.parseLong(batchId))).isZero();
+
+        ResponseEntity<Map> confirmed = confirm(batchId, "csx-batch-confirm-persist-001");
+        ResponseEntity<Map> replayed = confirm(batchId, "csx-batch-confirm-persist-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(replayed.getBody()).isEqualTo(confirmed.getBody());
+        assertThat(confirmed.getBody().get("confirmed_at")).isNotNull();
+        assertThat((List<?>) confirmed.getBody().get("generated_fulfillment_export_ids")).hasSize(1);
 
         Map<String, Object> acceptedRows = http.exchange(
                 "/api/v1/import-batches/" + batchId + "/rows?page=0&size=20&status=ACCEPTED",
@@ -283,12 +297,6 @@ class CaishixianJdBatchClosedLoopApiTest {
                 Integer.class,
                 Long.parseLong(batchId))).isEqualTo(1);
 
-        ResponseEntity<Map> confirmed = confirm(batchId, "csx-batch-confirm-persist-001");
-        ResponseEntity<Map> replayed = confirm(batchId, "csx-batch-confirm-persist-001");
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(replayed.getBody()).isEqualTo(confirmed.getBody());
-        assertThat(confirmed.getBody().get("confirmed_at")).isNotNull();
-        assertThat((List<?>) confirmed.getBody().get("generated_fulfillment_export_ids")).hasSize(1);
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.fulfillment_exports fe JOIN app.fulfillment_export_items fei ON fei.fulfillment_export_id=fe.id JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id WHERE rir.import_batch_id=?",
                 Integer.class,
@@ -296,7 +304,7 @@ class CaishixianJdBatchClosedLoopApiTest {
     }
 
     @Test
-    void importRowsExposeTheExactJdSdkCargoQuantitiesBeforeConfirmation() throws Exception {
+    void importRowsExposeTheExactJdSdkCargoQuantitiesAfterAtomicConfirmation() throws Exception {
         jdbc.update(
                 """
                 UPDATE app.source_channel_skus
@@ -318,6 +326,17 @@ class CaishixianJdBatchClosedLoopApiTest {
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
 
+        // 本用例走京东 SDK 建单闭环：确认前把该批次路由切到 SDK（其余用例保持 FILE 路径）。
+        // 自动提交会因收货地址尚未人工确认而失败留痕，随后由本用例补齐地址并安全重试。
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config=config || '{"outboundMode":"SDK"}'::jsonb
+                WHERE provider_code='JD'
+                """);
+        ResponseEntity<Map> confirmed = confirm(batchId, "csx-batch-confirm-jd-cargo-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+
         Map<String, Object> rows = http.exchange(
                 "/api/v1/import-batches/" + batchId + "/rows?page=0&size=20&status=ACCEPTED",
                 HttpMethod.GET,
@@ -329,22 +348,6 @@ class CaishixianJdBatchClosedLoopApiTest {
                 .containsEntry("provider_sku_code", "JD-SKU-000001")
                 .containsEntry("plan_quantity", 6));
 
-        // 本用例走京东 SDK 建单闭环：确认前把该批次路由切到 SDK（其余用例保持 FILE 路径）
-        jdbc.update(
-                """
-                UPDATE app.fulfillment_providers
-                SET config=config || '{"outboundMode":"SDK"}'::jsonb
-                WHERE provider_code='JD'
-                """);
-        // 客户档案 jd_customer_code 回退值：本次导入新建的客户未经过 @BeforeEach 的批量更新，
-        // 提交前为该订单客户补齐（单用例隔离运行时也成立）
-        jdbc.update(
-                "UPDATE app.customers SET profile=jsonb_set(COALESCE(profile,'{}'::jsonb),"
-                        + "'{jd_customer_code}','\"CUST-CSX-001\"'::jsonb,true) "
-                        + "WHERE id=(SELECT customer_id FROM app.orders WHERE id=?)",
-                Long.parseLong(String.valueOf(row.get("order_id"))));
-        ResponseEntity<Map> confirmed = confirm(batchId, "csx-batch-confirm-jd-cargo-001");
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         long shipmentId = Long.parseLong(((List<?>) ((Map<?, ?>) confirmed.getBody()
                 .get("outbound_routing")).get("jd_sdk_shipment_ids")).getFirst().toString());
         ResponseEntity<Map> addressConfirmed = http.exchange(
@@ -401,13 +404,23 @@ class CaishixianJdBatchClosedLoopApiTest {
     }
 
     @Test
-    void confirmationRejectsAcceptedRowsWhoseOrdersStillHaveOpenReviewCases() throws Exception {
+    void confirmationRejectsLegacyMaterializedRowsWhoseOrdersStillHaveOpenReviewCases() throws Exception {
         ResponseEntity<Map> uploaded = uploadSource(
                 caishixianWorkbook("CSX-IMPORT-BLOCKED-001", "CSX-IMPORT-BLOCKED-LINE-001"),
                 "csx-source-upload-blocked-001");
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
-        assertThat(((Map<?, ?>) uploaded.getBody().get("row_counts")).get("accepted")).isEqualTo(1);
+        assertThat(((Map<?, ?>) uploaded.getBody().get("row_counts")).get("accepted")).isEqualTo(0);
+
+        // 模拟 Ticket 04 之前已经成单、但尚未确认的历史批次；新批次不会在确认前走到这里。
+        assertThat(candidateMaterializer.materializeStaged(
+                Long.parseLong(batchId),
+                new CommandContext("legacy-review-materialize", "legacy-review-materialize", "caishixian-e2e")))
+                .isTrue();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.raw_import_rows WHERE import_batch_id=? AND status='ACCEPTED'",
+                Integer.class,
+                Long.parseLong(batchId))).isEqualTo(1);
         long orderId = jdbc.queryForObject(
                 "SELECT order_id FROM app.raw_import_rows WHERE import_batch_id=?",
                 Long.class,
@@ -435,6 +448,39 @@ class CaishixianJdBatchClosedLoopApiTest {
                 Long.parseLong(batchId))).isZero();
     }
 
+    @Test
+    void providerFailureRollsBackOrdersAndAllowsImmediateRetryAfterRepair() throws Exception {
+        ResponseEntity<Map> uploaded = uploadSource(
+                caishixianWorkbook("CSX-ATOMIC-RETRY-001", "CSX-ATOMIC-RETRY-LINE-001"),
+                "csx-source-upload-atomic-retry-001");
+        assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        String batchId = uploaded.getBody().get("id").toString();
+        jdbc.update(
+                "UPDATE app.fulfillment_providers SET config=config-'warehouseNo' WHERE provider_code='JD'");
+
+        ResponseEntity<Map> blocked = confirm(batchId, "csx-confirm-atomic-retry-blocked-001");
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(blocked.getBody()).containsEntry("business_code", "JD_EXPORT_PROVIDER_CONFIG_MISSING");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                Long.parseLong(batchId))).isZero();
+
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config=jsonb_set(config, '{warehouseNo}', '"WH-CSX-001"'::jsonb, true)
+                WHERE provider_code='JD'
+                """);
+        ResponseEntity<Map> recovered = confirm(batchId, "csx-confirm-atomic-retry-recovered-001");
+
+        assertThat(recovered.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                Long.parseLong(batchId))).isEqualTo(1);
+    }
+
     private ResponseEntity<Map> uploadSource(byte[] bytes) {
         return uploadSource(bytes, "csx-source-upload-001");
     }
@@ -456,17 +502,6 @@ class CaishixianJdBatchClosedLoopApiTest {
     }
 
     private ResponseEntity<Map> confirm(String batchId, String key) {
-        // 导入会为新收货人创建客户档案（profile 可能为 NULL），确认前补齐京东客户编码（02 门禁）
-        jdbc.update(
-                """
-                UPDATE app.customers
-                SET profile = jsonb_set(COALESCE(profile, '{}'::jsonb), '{jd_customer_code}',
-                                        '"CUST-CSX-001"'::jsonb, true)
-                WHERE id IN (
-                    SELECT customer_id FROM app.orders WHERE source_import_batch_id=?
-                )
-                """,
-                Long.parseLong(batchId));
         HttpHeaders headers = operatorHeaders();
         headers.set("Idempotency-Key", key);
         return http.exchange(

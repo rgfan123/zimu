@@ -218,6 +218,47 @@ class ReviewCaseResolutionApiTest {
     }
 
     @Test
+    void skuReviewCannotPersistAOneTimeDraftReferenceAsGlobalProductMapping() {
+        String oneTimeRef = "WECOM-DRAFT-777-L1";
+        Map<String, Object> createdOrder = createOrderNeedingSkuReview(
+                "WECOM-ORDER-PSEUDO-SKU-001", oneTimeRef, "pseudo-source-ref");
+        Map<String, Object> createdCase = firstReviewCase(createdOrder);
+        String caseId = createdCase.get("id").toString();
+        String skuId = jdbc.queryForObject(
+                "SELECT id::text FROM app.skus WHERE active=true ORDER BY id LIMIT 1", String.class);
+        Map<String, Object> command = Map.of(
+                "expected_version", createdCase.get("version"),
+                "sku_id", skuId,
+                "source_channel", "WECOM",
+                "source_sku_ref", oneTimeRef,
+                "quantity_multiplier", "1.000",
+                "remark", "一次性草稿号不能固化为商品映射");
+
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/review-cases/" + caseId + "/resolve-sku",
+                HttpMethod.POST,
+                new HttpEntity<>(command, writeHeaders(
+                        "review-sku-pseudo-ref-001", "req-review-sku-pseudo-ref-001")),
+                Map.class);
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(rejected.getBody()).containsEntry("business_code", "NON_REUSABLE_SOURCE_SKU_REF");
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM app.review_cases WHERE id=?", String.class, Long.parseLong(caseId)))
+                .isEqualTo("OPEN");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.source_channel_skus WHERE source_channel='WECOM' AND source_sku_ref=?",
+                        Long.class,
+                        oneTimeRef))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.order_lines WHERE order_id=? AND sku_id IS NOT NULL",
+                        Long.class,
+                        Long.parseLong(createdOrder.get("id").toString())))
+                .isZero();
+    }
+
+    @Test
     void completesSourceFollowupOnlyAfterTerminalFulfillmentAndTrackingForEveryRealShipment() {
         SourceFollowupFixture fixture = sourceFollowupFixture();
         Map<String, Object> command = Map.of(
@@ -389,6 +430,29 @@ class ReviewCaseResolutionApiTest {
         assertThat(jdbc.queryForObject(
                 "SELECT status FROM app.review_cases WHERE id=?", String.class, draftCaseId))
                 .isEqualTo("OPEN");
+
+        // 履约就绪阻断不能通过“忽略”关闭；否则订单行仍停在 NEED_REVIEW，且再无 OPEN case 可恢复。
+        long readinessCaseId = insertBusinessReviewCase(
+                orderId, "RC-DISMISS-READINESS-001", "PROVIDER_MAPPING_REQUIRED");
+        ResponseEntity<Map> readinessDetail = http.getForEntity(
+                "/api/v1/review-cases/" + readinessCaseId, Map.class);
+        assertThat(readinessDetail.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat((List<?>) readinessDetail.getBody().get("allowed_actions"))
+                .extracting(String::valueOf)
+                .containsExactly("RESOLVE_MANUALLY");
+
+        ResponseEntity<Map> readinessDismiss = http.exchange(
+                "/api/v1/review-cases/" + readinessCaseId + "/dismiss",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        Map.of("expected_version", 0, "note", "错误地尝试忽略履约门禁"),
+                        writeHeaders("dismiss-readiness-001", "req-dismiss-readiness-001")),
+                Map.class);
+        assertThat(readinessDismiss.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(readinessDismiss.getBody()).containsEntry("business_code", "REVIEW_DISMISS_NOT_ALLOWED");
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM app.review_cases WHERE id=?", String.class, readinessCaseId))
+                .isEqualTo("OPEN");
     }
 
     @Test
@@ -529,9 +593,15 @@ class ReviewCaseResolutionApiTest {
     }
 
     private Map<String, Object> createOrderNeedingSkuReview() {
+        return createOrderNeedingSkuReview(
+                "WECOM-ORDER-SKU-REVIEW-001", "WECOM-SKU-REVIEW-001", "review-sku-001");
+    }
+
+    private Map<String, Object> createOrderNeedingSkuReview(
+            String sourceOrderRef, String sourceSkuRef, String keySuffix) {
         Map<String, Object> request = Map.of(
                 "source", "WECOM",
-                "source_ref", "WECOM-ORDER-SKU-REVIEW-001",
+                "source_ref", sourceOrderRef,
                 "customer", Map.of(
                         "source_customer_ref", "WECOM-CUSTOMER-001",
                         "name", "子牧测试客户"),
@@ -541,7 +611,7 @@ class ReviewCaseResolutionApiTest {
                         "address", "上海市浦东新区测试路 2 号"),
                 "items", List.of(Map.of(
                         "line_type", "SINGLE",
-                        "source_sku_ref", "WECOM-SKU-REVIEW-001",
+                        "source_sku_ref", sourceSkuRef,
                         "product_name", "待映射商品",
                         "specification", "2盒/组",
                         "unit", "组",
@@ -552,7 +622,7 @@ class ReviewCaseResolutionApiTest {
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders",
                 HttpMethod.POST,
-                new HttpEntity<>(request, writeHeaders("order-review-sku-001", "req-order-review-sku-001")),
+                new HttpEntity<>(request, writeHeaders("order-" + keySuffix, "req-order-" + keySuffix)),
                 Map.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         return response.getBody();

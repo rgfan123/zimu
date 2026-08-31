@@ -658,13 +658,13 @@ class InternalOrderApiTest {
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
         ResponseEntity<Map> cases = http.getForEntity(
-                "/api/v1/review-cases?status=OPEN&reason_code=SKU_MAPPING_REQUIRED&page=0&size=100",
+                "/api/v1/review-cases?status=OPEN&reason_code=MAPPING_MULTIPLIER&page=0&size=100",
                 Map.class);
         ResponseEntity<Map> otherChannelCases = http.getForEntity(
-                "/api/v1/review-cases?status=OPEN&reason_code=SKU_MAPPING_REQUIRED&source_channel=JUFUBAO&page=0&size=100",
+                "/api/v1/review-cases?status=OPEN&reason_code=MAPPING_MULTIPLIER&source_channel=JUFUBAO&page=0&size=100",
                 Map.class);
         ResponseEntity<Map> wecomCases = http.getForEntity(
-                "/api/v1/review-cases?status=OPEN&reason_code=SKU_MAPPING_REQUIRED&source_channel=WECOM&page=0&size=100",
+                "/api/v1/review-cases?status=OPEN&reason_code=MAPPING_MULTIPLIER&source_channel=WECOM&page=0&size=100",
                 Map.class);
 
         assertThat(cases.getStatusCode()).isEqualTo(HttpStatus.OK);

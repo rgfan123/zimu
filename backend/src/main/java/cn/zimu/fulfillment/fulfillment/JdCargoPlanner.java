@@ -144,31 +144,28 @@ public final class JdCargoPlanner {
                     base + ".goodsNo", "provider_skus.provider_sku_code", "provider SKU mapping",
                     "SKU " + skuId + " 未配置有效京东商品编码，无法建出库单");
         }
-        BigDecimal factor = BigDecimal.ONE;
-        if (!goods.externalCodes().containsKey(JdStockUnitConverter.FACTOR_CONFIG_KEY)) {
-            if (!JdStockUnitConverter.PIECES_UNIT.equals(unit)) {
-                return new Failure(
-                        422, "JD_SHIPMENT_OUTBOUND_UNIT_CONVERSION_MISSING",
-                        base + ".planQuantity", quantitySource, "provider SKU unit conversion",
-                        "非‘件’单位必须配置显式京东件数换算；系统不默认为 1");
-            }
-        } else {
-            factor = JdStockUnitConverter.explicitFactorOrNull(goods.externalCodes());
-            if (factor == null) {
-                return new Failure(
-                        422, "JD_SHIPMENT_OUTBOUND_UNIT_CONFIG_INVALID",
-                        base + ".planQuantity", quantitySource, "provider SKU unit conversion",
-                        "SKU " + skuId + " 的京东单位换算必须是正数");
-            }
-            // jd-real-sdk-switch 03: 换算值必须为正整数件数；小数系数(如 0.5 件/盒)不用于建单
-            if (factor.stripTrailingZeros().scale() > 0) {
-                return new Failure(
-                        422, "JD_SHIPMENT_OUTBOUND_UNIT_CONFIG_INVALID",
-                        base + ".planQuantity", quantitySource, "provider SKU unit conversion",
-                        "SKU " + skuId + " 的京东件数换算必须是正整数件数（当前 "
-                                + factor.toPlainString() + "）");
-            }
+        JdStockUnitConverter.OutboundFactorValidation conversion =
+                JdStockUnitConverter.validateOutboundFactor(unit, goods.externalCodes());
+        if (conversion.status() == JdStockUnitConverter.OutboundFactorStatus.MISSING) {
+            return new Failure(
+                    422, "JD_SHIPMENT_OUTBOUND_UNIT_CONVERSION_MISSING",
+                    base + ".planQuantity", quantitySource, "provider SKU unit conversion",
+                    "非‘件’单位必须配置显式京东件数换算；系统不默认为 1");
         }
+        if (conversion.status() == JdStockUnitConverter.OutboundFactorStatus.INVALID) {
+            return new Failure(
+                    422, "JD_SHIPMENT_OUTBOUND_UNIT_CONFIG_INVALID",
+                    base + ".planQuantity", quantitySource, "provider SKU unit conversion",
+                    "SKU " + skuId + " 的京东单位换算必须是正数");
+        }
+        if (conversion.status() == JdStockUnitConverter.OutboundFactorStatus.NON_INTEGER) {
+            return new Failure(
+                    422, "JD_SHIPMENT_OUTBOUND_UNIT_CONFIG_INVALID",
+                    base + ".planQuantity", quantitySource, "provider SKU unit conversion",
+                    "SKU " + skuId + " 的京东件数换算必须是正整数件数（当前 "
+                            + conversion.factor().toPlainString() + "）");
+        }
+        BigDecimal factor = conversion.factor();
         BigDecimal exact = JdStockUnitConverter.exactPiecesOrNull(quantity, factor);
         if (exact == null) {
             return new Failure(

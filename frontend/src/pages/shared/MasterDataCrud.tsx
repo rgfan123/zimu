@@ -4,7 +4,7 @@
  * 字段与列由各页配置，写操作严格按 openapi Write/Patch 载荷（expected_version 乐观锁）。
  */
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { App as AntApp, Button, Form, Input, Modal, Select, Space, Switch, Table, Typography } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -108,7 +108,18 @@ export default function MasterDataCrud({
   const [form] = Form.useForm();
   const { message: messageApi } = AntApp.useApp();
 
-  const query = { ...extraQuery, page, size };
+  const extraQueryKey = JSON.stringify(extraQuery);
+  const paginationScope = useRef(extraQueryKey);
+  const scopedPage = paginationScope.current === extraQueryKey ? page : 0;
+
+  useEffect(() => {
+    if (paginationScope.current !== extraQueryKey) {
+      paginationScope.current = extraQueryKey;
+      setPage(0);
+    }
+  }, [extraQueryKey]);
+
+  const query = { ...extraQuery, page: scopedPage, size };
   const queryKey = JSON.stringify(query);
 
   useEffect(() => {

@@ -39,7 +39,11 @@ import cn.zimu.fulfillment.order.dto.OrderItemInput;
 import cn.zimu.fulfillment.order.dto.OrderRevisionInput;
 import cn.zimu.fulfillment.product.BundleItem;
 import cn.zimu.fulfillment.product.BundleItemRepository;
+import cn.zimu.fulfillment.product.Product;
+import cn.zimu.fulfillment.product.ProductRepository;
 import cn.zimu.fulfillment.sku.Sku;
+import cn.zimu.fulfillment.sku.SkuFulfillmentReadiness;
+import cn.zimu.fulfillment.sku.SkuFulfillmentReadinessService;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
 import java.math.BigDecimal;
@@ -54,12 +58,15 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 受信任内部入口的订单创建用例：只创建 BUSINESS / WECOM 结构化订单。
  *
- * <p>执行 Schema → Business → 客户/SKU 映射校验；缺客户/SKU 时保存订单/行与 ReviewCase 但不进入履约。
+ * <p>执行 Schema → Business → 客户/SKU 映射校验；普通来源行按 SourceChannelSku 解析，人工确认的
+ * WECOM 草稿通过仅限服务端的 {@link ConfirmedDraftSku} capability 直接冻结快照，但仍必须通过共享 readiness。
+ * 缺客户/SKU 时保存订单/行与 ReviewCase 但不进入履约。
  * 订单事实（订单、行、组件、ReviewCase、Fulfillment、OrderEvent、OrderVersion、AuditLog）在
  * 同一事务内原子写入；重放同幂等键返回首次响应快照。
  */
@@ -78,6 +85,8 @@ public class OrderCreateService {
     private final CustomerSourceRefRepository customerSourceRefRepository;
     private final SourceBundleResolver sourceBundleResolver;
     private final SkuRepository skuRepository;
+    private final ProductRepository productRepository;
+    private final SkuFulfillmentReadinessService skuReadiness;
     private final BundleItemRepository bundleItemRepository;
     private final OrderEventRepository eventRepository;
     private final OrderEventService eventService;
@@ -99,6 +108,8 @@ public class OrderCreateService {
             CustomerSourceRefRepository customerSourceRefRepository,
             SourceBundleResolver sourceBundleResolver,
             SkuRepository skuRepository,
+            ProductRepository productRepository,
+            SkuFulfillmentReadinessService skuReadiness,
             BundleItemRepository bundleItemRepository,
             OrderEventRepository eventRepository,
             OrderEventService eventService,
@@ -118,6 +129,8 @@ public class OrderCreateService {
         this.customerSourceRefRepository = customerSourceRefRepository;
         this.sourceBundleResolver = sourceBundleResolver;
         this.skuRepository = skuRepository;
+        this.productRepository = productRepository;
+        this.skuReadiness = skuReadiness;
         this.bundleItemRepository = bundleItemRepository;
         this.eventRepository = eventRepository;
         this.eventService = eventService;
@@ -135,7 +148,31 @@ public class OrderCreateService {
             CanonicalOrderInput input, String idempotencyKey, CommandContext context) {
         return idempotencyService.execute(
                 IDEMPOTENCY_SCOPE, idempotencyKey, input, CREATED,
-                () -> doCreate(input, null, null, context, "order.create", "ORDER_CREATED", AuditActorType.AGENT));
+                () -> doCreate(
+                        input, null, null, List.of(), context,
+                        "order.create", "ORDER_CREATED", AuditActorType.AGENT));
+    }
+
+    /**
+     * OrderDraft 确认专用服务端接缝。package-private capability 不属于共享 HTTP DTO，
+     * 普通创建、修订和纠正入口无法构造或传入。
+     */
+    IdempotentResult<OrderDetailDto> createConfirmedDraft(
+            CanonicalOrderInput input,
+            List<ConfirmedDraftSku> confirmedSkus,
+            String idempotencyKey,
+            CommandContext context) {
+        Map<String, Object> payload = Map.of(
+                "canonical_order", input,
+                "confirmed_skus", List.copyOf(confirmedSkus));
+        return idempotencyService.execute(
+                "order.create.confirmed_draft",
+                idempotencyKey,
+                payload,
+                CREATED,
+                () -> doCreate(
+                        input, null, null, confirmedSkus, context,
+                        "order.create.confirmed_draft", "ORDER_CREATED", AuditActorType.HUMAN));
     }
 
     /**
@@ -167,7 +204,30 @@ public class OrderCreateService {
                 idempotencyKey,
                 payload,
                 CREATED,
-                () -> doCreate(input, sourceImportBatchId, null, context, "order.import", "ORDER_IMPORTED", actor));
+                () -> doCreate(
+                        input, sourceImportBatchId, null, List.of(), context,
+                        "order.import", "ORDER_IMPORTED", actor));
+    }
+
+    /**
+     * 来源批次原子确认专用接缝。调用方必须已经持有批次级事务和父幂等 claim；这里不再创建
+     * 独立 claim，避免后续 Provider/路由门禁回滚时遗留 IN_PROGRESS 子 claim。
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public OrderDetailDto createImportedWithinBatch(
+            CanonicalOrderInput input,
+            long sourceImportBatchId,
+            CommandContext context,
+            AuditActorType actor) {
+        return doCreate(
+                input,
+                sourceImportBatchId,
+                null,
+                List.of(),
+                context,
+                "order.import",
+                "ORDER_IMPORTED",
+                actor);
     }
 
     @Transactional
@@ -184,7 +244,7 @@ public class OrderCreateService {
             if (!original.getLockVersion().equals(command.expectedVersion())) {
                 throw BusinessException.conflict("VERSION_CONFLICT", "原订单已更新，请刷新后重试");
             }
-            return doCreate(command.correctedOrder(), null, originalOrderId, context,
+            return doCreate(command.correctedOrder(), null, originalOrderId, List.of(), context,
                     "order.correction.create", "CORRECTION_ORDER_CREATED", AuditActorType.AGENT);
         });
     }
@@ -339,6 +399,7 @@ public class OrderCreateService {
             CanonicalOrderInput input,
             Long sourceImportBatchId,
             Long correctionOfOrderId,
+            List<ConfirmedDraftSku> confirmedSkus,
             CommandContext context,
             String auditOperation,
             String businessCode,
@@ -355,6 +416,7 @@ public class OrderCreateService {
                 DataScope.BUSINESS, channel, input.sourceRef())) {
             throw BusinessException.conflict("DUPLICATE_ORDER", "相同来源渠道与来源单号的订单已存在");
         }
+        Map<String, Sku> confirmedSkuByLineRef = validateConfirmedDraftSkus(input, confirmedSkus);
 
         CustomerSourceRef customerRef = customerSourceRefRepository
                 .findBySourceChannelAndSourceCustomerRef(channel, input.customer().sourceCustomerRef())
@@ -370,8 +432,13 @@ public class OrderCreateService {
         boolean fullyMapped = customerMatched;
         int lineNo = 1;
         for (OrderItemInput item : input.items()) {
+            Sku confirmedSku = item.sourceLineRef() == null
+                    ? null
+                    : confirmedSkuByLineRef.get(item.sourceLineRef());
             LineResult result = item.lineType() == LineType.SINGLE
-                    ? createSingleLine(channel, item, lineNo++, skuCodes)
+                    ? createSingleLine(
+                            channel, item, lineNo++, skuCodes,
+                            confirmedSku)
                     : createBundleLine(channel, item, lineNo++, skuCodes);
             lines.add(result.line());
             components.addAll(result.components());
@@ -507,15 +574,34 @@ public class OrderCreateService {
     }
 
     private LineResult createSingleLine(SourceChannel channel, OrderItemInput item, int lineNo, Map<Long, String> skuCodes) {
+        return createSingleLine(channel, item, lineNo, skuCodes, null);
+    }
+
+    private LineResult createSingleLine(
+            SourceChannel channel,
+            OrderItemInput item,
+            int lineNo,
+            Map<Long, String> skuCodes,
+            Sku confirmedSku) {
         BigDecimal quantity = parseQuantity(item.quantity());
         OrderLine line = baseLine(item, lineNo, quantity);
-        SourceChannelSku mapping = findMapping(channel, item.sourceSkuRef());
+        if (confirmedSku != null) {
+            return createConfirmedSkuLine(item, quantity, line, skuCodes, confirmedSku);
+        }
+        SourceChannelSku mapping = sourceBundleResolver.activeSkuMapping(channel, item.sourceSkuRef());
         if (mapping == null) {
             line.setProcessingStage(ProcessingStage.NEED_REVIEW);
             line.setExceptionCode("SKU_MAPPING_REQUIRED");
             line.setExceptionReason("未找到来源 SKU 映射: " + blankToEmpty(item.sourceSkuRef()));
             return new LineResult(
                     line, List.of(), List.of(blankToEmpty(item.sourceSkuRef())), List.of(), "SKU_MAPPING_REQUIRED");
+        }
+        if (mapping.getQuantityMultiplier() == null || mapping.getQuantityMultiplier().signum() <= 0) {
+            line.setProcessingStage(ProcessingStage.NEED_REVIEW);
+            line.setExceptionCode("MAPPING_MULTIPLIER");
+            line.setExceptionReason("来源 SKU 映射缺少有效的包装乘数: " + blankToEmpty(item.sourceSkuRef()));
+            return new LineResult(
+                    line, List.of(), List.of(blankToEmpty(item.sourceSkuRef())), List.of(), "MAPPING_MULTIPLIER");
         }
         Sku sku = requireSku(mapping);
         if (hasConflictingSkuCode(item.skuCode(), sku)) {
@@ -541,6 +627,116 @@ public class OrderCreateService {
         }
         line.setProcessingStage(ProcessingStage.READY_TO_EXPORT);
         return new LineResult(line, List.of(), List.of(), List.of(), null);
+    }
+
+    private LineResult createConfirmedSkuLine(
+            OrderItemInput item,
+            BigDecimal quantity,
+            OrderLine line,
+            Map<Long, String> skuCodes,
+            Sku sku) {
+        skuCodes.put(sku.getId(), sku.getSkuCode());
+        line.setSkuId(sku.getId());
+        line.setFulfillmentProviderId(sku.getFulfillmentProviderId());
+        line.setSkuCodeSnapshot(sku.getSkuCode());
+        line.setSourceQuantitySnapshot(quantity);
+        line.setMappingMultiplierSnapshot(BigDecimal.ONE);
+        line.setRequestedQuantity(quantity);
+        line.setProcessingStage(ProcessingStage.READY_TO_EXPORT);
+        return new LineResult(line, List.of(), List.of(), List.of(), null);
+    }
+
+    private Map<String, Sku> validateConfirmedDraftSkus(
+            CanonicalOrderInput input, List<ConfirmedDraftSku> confirmedSkus) {
+        if (confirmedSkus == null || confirmedSkus.isEmpty()) {
+            return Map.of();
+        }
+        if (input.source() != SourceChannel.WECOM) {
+            throw BusinessException.unprocessable(
+                    "DIRECT_SKU_NOT_ALLOWED", "只有人工确认的企业微信订单可以直接引用内部 SKU");
+        }
+
+        Map<String, OrderItemInput> itemByLineRef = new LinkedHashMap<>();
+        Map<String, Integer> lineNoByRef = new LinkedHashMap<>();
+        int lineNo = 1;
+        for (OrderItemInput item : input.items()) {
+            if (item.lineType() != LineType.SINGLE
+                    || item.sourceLineRef() == null
+                    || item.sourceLineRef().isBlank()
+                    || (item.sourceSkuRef() != null && !item.sourceSkuRef().isBlank())
+                    || itemByLineRef.putIfAbsent(item.sourceLineRef(), item) != null) {
+                throw BusinessException.unprocessable(
+                        "CONFIRMED_DRAFT_CAPABILITY_MISMATCH",
+                        "已确认草稿 capability 必须与无来源映射的普通订单行一一对应");
+            }
+            lineNoByRef.put(item.sourceLineRef(), lineNo++);
+        }
+
+        Map<String, ConfirmedDraftSku> capabilityByLineRef = new LinkedHashMap<>();
+        for (ConfirmedDraftSku capability : confirmedSkus) {
+            if (capability == null
+                    || capability.sourceLineRef() == null
+                    || capability.sourceLineRef().isBlank()
+                    || capabilityByLineRef.putIfAbsent(capability.sourceLineRef(), capability) != null) {
+                throw BusinessException.unprocessable(
+                        "CONFIRMED_DRAFT_CAPABILITY_MISMATCH", "已确认草稿 capability 重复或缺少来源行标识");
+            }
+        }
+        if (!itemByLineRef.keySet().equals(capabilityByLineRef.keySet())) {
+            throw BusinessException.unprocessable(
+                    "CONFIRMED_DRAFT_CAPABILITY_MISMATCH", "已确认草稿 capability 与订单行集合不一致");
+        }
+
+        List<Long> skuIds = confirmedSkus.stream().map(ConfirmedDraftSku::skuId).distinct().toList();
+        Map<Long, Sku> skuById = new LinkedHashMap<>();
+        skuRepository.findAllById(skuIds).forEach(sku -> skuById.put(sku.getId(), sku));
+        if (skuById.size() != skuIds.size()) {
+            throw BusinessException.notFound("已确认草稿引用的内部 SKU 不存在");
+        }
+        Map<Long, SkuFulfillmentReadiness> readinessBySku =
+                skuReadiness.evaluateAll(skuById.values());
+        List<Map<String, Object>> blockedLines = new ArrayList<>();
+        for (ConfirmedDraftSku capability : confirmedSkus) {
+            SkuFulfillmentReadiness readiness = readinessBySku.get(capability.skuId());
+            if (readiness.ready()) continue;
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("line_no", capability.lineNo());
+            detail.put("sku_id", String.valueOf(capability.skuId()));
+            detail.put("sku_code", capability.skuCode());
+            detail.putAll(readiness.asMap());
+            blockedLines.add(Map.copyOf(detail));
+        }
+        if (!blockedLines.isEmpty()) {
+            throw new BusinessException(
+                    422,
+                    "SKU_NOT_READY",
+                    "内部 SKU 尚未达到履约就绪条件",
+                    List.of(),
+                    Map.of("lines", List.copyOf(blockedLines)));
+        }
+
+        Map<Long, Product> productById = new LinkedHashMap<>();
+        productRepository.findAllById(
+                        skuById.values().stream().map(Sku::getProductId).distinct().toList())
+                .forEach(product -> productById.put(product.getId(), product));
+        Map<String, Sku> result = new LinkedHashMap<>();
+        for (ConfirmedDraftSku capability : confirmedSkus) {
+            OrderItemInput item = itemByLineRef.get(capability.sourceLineRef());
+            Sku sku = skuById.get(capability.skuId());
+            Product product = productById.get(sku.getProductId());
+            if (!Objects.equals(lineNoByRef.get(capability.sourceLineRef()), capability.lineNo())
+                    || product == null
+                    || !capability.skuCode().equals(sku.getSkuCode())
+                    || !capability.skuCode().equals(item.skuCode())
+                    || !item.productName().equals(product.getProductName())
+                    || !item.specification().equals(sku.getSpecification())
+                    || !item.unit().equals(sku.getUnit())) {
+                throw BusinessException.unprocessable(
+                        "DIRECT_SKU_SNAPSHOT_MISMATCH", "已确认 SKU 身份与订单行快照不一致，请刷新后重试");
+            }
+            result.put(capability.sourceLineRef(), sku);
+        }
+        return Map.copyOf(result);
     }
 
     private LineResult createBundleLine(SourceChannel channel, OrderItemInput item, int lineNo, Map<Long, String> skuCodes) {
@@ -735,6 +931,7 @@ public class OrderCreateService {
      * 一旦漂移，就会出现「判定说这是单品、建单却说找不到映射」这种比缺陷本身更难查的不一致。
      */
     private SourceChannelSku findMapping(SourceChannel channel, String sourceSkuRef) {
+        // 数量乘数正性守卫两线各自实现过一次；统一收在 SourceBundleResolver.activeSkuMapping 一处。
         return sourceBundleResolver.activeSkuMapping(channel, sourceSkuRef);
     }
 

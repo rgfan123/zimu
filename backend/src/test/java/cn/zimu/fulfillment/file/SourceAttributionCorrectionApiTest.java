@@ -37,6 +37,7 @@ class SourceAttributionCorrectionApiTest {
 
     @Autowired TestRestTemplate http;
     @Autowired JdbcTemplate jdbc;
+    @Autowired SourceBatchAutomaticReleaseService automaticRelease;
 
     @Test
     void correctionIsAppendOnlyIdempotentAndLeavesRecordedFactsUnchanged() {
@@ -156,6 +157,89 @@ class SourceAttributionCorrectionApiTest {
                 "SELECT count(*) FROM app.source_attribution_corrections WHERE import_batch_id=?",
                 Integer.class,
                 batchId)).isZero();
+    }
+
+    @Test
+    void correctedBatchTrustsOnlyItsEffectiveTemplateIdentity() {
+        String suffix = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        long batchId = jdbc.queryForObject(
+                """
+                INSERT INTO app.import_batches
+                    (batch_no,batch_type,import_mode,revision_no,source_channel,
+                     template_family,template_version,template_fingerprint,
+                     original_file_name,content_sha256,file_ref,status,uploaded_by,processed_at,
+                     confirmed_at,confirmed_by)
+                VALUES (?, 'SOURCE_ORDER','NEW',1,'WANGQI',
+                        'WANGQI_SOURCE_ORDER','v1',?,
+                        '历史来源.xlsx',?,?,'COMPLETED','source-attribution-test',CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP,'source-attribution-test')
+                RETURNING id
+                """,
+                Long.class,
+                "IMP-CORRECTED-TRUST-" + suffix,
+                "WANGQI-v1-trust-" + suffix,
+                suffix.repeat(6).substring(0, 64),
+                "test://corrected-trust/" + suffix);
+        ResponseEntity<Map> corrected = http.exchange(
+                "/api/v1/import-batches/" + batchId + "/source-attribution-corrections",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "source_channel_display_name", "大者",
+                        "reason", "确认历史十五列表格实际来自大者",
+                        "evidence", Map.of("source", "人工确认")),
+                        writeHeaders("source-attribution-trust-correct-" + suffix)),
+                Map.class);
+        assertThat(corrected.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        ResponseEntity<Map> trusted = http.exchange(
+                "/api/v1/import-batches/" + batchId + "/trust-template",
+                HttpMethod.POST,
+                new HttpEntity<>(null, writeHeaders("source-attribution-trust-profile-" + suffix)),
+                Map.class);
+
+        assertThat(trusted.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(trusted.getBody())
+                .containsEntry("source_channel", "DAZHE")
+                .containsEntry("template_family", "DAZHE_SOURCE_ORDER")
+                .containsEntry("template_version", "v1")
+                .containsEntry("template_fingerprint", "DAZHE-v1-trust-" + suffix);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.source_template_profiles
+                        WHERE source_channel='WANGQI' OR template_family='WANGQI_SOURCE_ORDER'
+                           OR template_fingerprint=?
+                        """,
+                        Integer.class,
+                        "WANGQI-v1-trust-" + suffix))
+                .isZero();
+
+        long revisionId = jdbc.queryForObject(
+                """
+                INSERT INTO app.import_batches
+                    (batch_no,batch_type,import_mode,parent_import_batch_id,revision_no,source_channel,
+                     template_family,template_version,template_fingerprint,
+                     original_file_name,content_sha256,file_ref,status,error_detail,uploaded_by,processed_at)
+                VALUES (?, 'SOURCE_ORDER','REVISION',?,2,'DAZHE',
+                        'DAZHE_SOURCE_ORDER','v1',?,
+                        '历史来源修订.xlsx',?,?,'COMPLETED',
+                        '{"candidate_status":"PENDING","candidate_snapshot_version":3,
+                          "source_order_candidates":[]}'::jsonb,
+                        'source-attribution-test',CURRENT_TIMESTAMP)
+                RETURNING id
+                """,
+                Long.class,
+                "IMP-CORRECTED-REVISION-" + suffix,
+                batchId,
+                "DAZHE-v1-trust-" + suffix,
+                (suffix + "e").repeat(5).substring(0, 64),
+                "test://corrected-revision/" + suffix);
+
+        assertThat(automaticRelease.releaseIfTrusted(revisionId)).isTrue();
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_at IS NOT NULL FROM app.import_batches WHERE id=?",
+                        Boolean.class,
+                        revisionId))
+                .isTrue();
     }
 
     private HttpHeaders writeHeaders(String key) {

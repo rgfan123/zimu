@@ -156,8 +156,10 @@ export interface MasterDataListQuery {
   size?: number;
   provider_id?: string;
   source_channel?: string;
-  /** SKU 档案列表：按 SKU 编码 / 商品名称模糊搜索。 */
+  /** SKU 档案列表：按 SKU 编码 / 商品名称 / 历史别名模糊搜索。 */
   query?: string;
+  /** SKU 档案列表：按实时履约阻断原因筛选。 */
+  readiness_reason?: string;
 }
 
 export interface CustomerListQuery extends PageQuery {
@@ -292,6 +294,7 @@ export const productsApi = {
     /** 留空即由服务端发号（V86 触发器）；留空时必须整个不发这个字段，发 "" 或 "undefined" 都会让触发器不发号。 */
     product_code?: string;
     product_name: string;
+    brand_name?: string;
     category_id: string;
     ingredients?: string;
     tags?: string[];
@@ -305,6 +308,7 @@ export const productsApi = {
   update: (id: string, body: {
     expected_version: number;
     product_name?: string;
+    brand_name?: string | null;
     category_id?: string;
     ingredients?: string | null;
     tags?: string[] | null;
@@ -352,6 +356,10 @@ export const skusApi = {
     product_id: string;
     specification: string;
     unit: string;
+    net_content_value?: string;
+    net_content_unit?: string;
+    package_count?: number;
+    package_unit?: string;
     barcode?: string;
     purchase_price?: string;
     retail_price?: string;
@@ -363,6 +371,7 @@ export const skusApi = {
       /** 留空即由服务端发号（V86 触发器）；留空时必须整个不发这个字段，发 "" 或 "undefined" 都会让触发器不发号。 */
       product_code?: string;
       product_name: string;
+      brand_name?: string;
       category_id: string;
       active?: boolean;
     };
@@ -370,6 +379,10 @@ export const skusApi = {
       provider_id: string;
       specification: string;
       unit: string;
+      net_content_value?: string;
+      net_content_unit?: string;
+      package_count?: number;
+      package_unit?: string;
       barcode?: string;
       purchase_price?: string;
       retail_price?: string;
@@ -381,6 +394,10 @@ export const skusApi = {
     expected_version: number;
     specification?: string;
     unit?: string;
+    net_content_value?: string | null;
+    net_content_unit?: string | null;
+    package_count?: number | null;
+    package_unit?: string | null;
     barcode?: string | null;
     purchase_price?: string | null;
     retail_price?: string | null;

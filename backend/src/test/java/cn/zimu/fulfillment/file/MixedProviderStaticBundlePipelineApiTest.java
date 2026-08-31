@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.file;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import cn.zimu.fulfillment.connector.jd.MockJdWarehouseClient;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -68,6 +69,8 @@ class MixedProviderStaticBundlePipelineApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper objectMapper;
     @Autowired ControlledJdClient jd;
+    @Autowired SourceOrderCandidateMaterializer candidateMaterializer;
+    @Autowired ProviderFileService providerFileService;
 
     @TestConfiguration
     static class ControlledJdConfig {
@@ -126,7 +129,13 @@ class MixedProviderStaticBundlePipelineApiTest {
         ResponseEntity<Map> uploaded = upload(workbook());
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
-        assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+        assertThat(castMap(uploaded.getBody().get("row_counts")))
+                .containsEntry("accepted", 0)
+                .containsEntry("total", 1);
+        assertThat(uploaded.getBody()).containsEntry("error_detail", null);
+
+        ResponseEntity<Map> confirmed = confirm(batchId);
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         Map<String, Object> orderPage = get("/api/v1/orders?query=" + SOURCE_ORDER_REF + "&page=0&size=20");
         String orderId = castMap(castList(orderPage.get("items")).getFirst()).get("id").toString();
@@ -135,14 +144,13 @@ class MixedProviderStaticBundlePipelineApiTest {
         assertThat(lines).hasSize(2);
         assertThat(lines).allSatisfy(line -> assertThat(line)
                 .containsEntry("line_type", "CUSTOM_BUNDLE")
-                .containsEntry("bundle_id", bundleId)
-                .containsEntry("processing_stage", "READY_TO_EXPORT"));
+                .containsEntry("bundle_id", bundleId));
+        assertThat(lines).extracting(line -> line.get("processing_stage"))
+                .containsExactlyInAnyOrder("READY_TO_EXPORT", "WAITING_PROVIDER");
         assertThat(lines).extracting(line -> line.get("provider_id")).doesNotHaveDuplicates();
         assertThat(lines).extracting(line -> ((List<?>) line.get("components")).size())
                 .containsExactlyInAnyOrder(1, 2);
 
-        ResponseEntity<Map> confirmed = confirm(batchId);
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<?> jdShipmentIds = (List<?>) castMap(confirmed.getBody().get("outbound_routing"))
                 .get("jd_sdk_shipment_ids");
         assertThat(jdShipmentIds).hasSize(1);
@@ -282,6 +290,155 @@ class MixedProviderStaticBundlePipelineApiTest {
     }
 
     @Test
+    void unreadyThirdPartyComponentBlocksOnlyItsBundlePartition() throws Exception {
+        String orderRef = "WQ-MIXED-PARTITION-BLOCK-ORDER-001";
+        String bundleRef = "WQ-MIXED-PARTITION-BLOCK-BUNDLE-001";
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-PARTITION-BLOCK", "鸵鸟分片阻断组件", "TP-PARTITION-BLOCK-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-PARTITION-BLOCK-001",
+                "羊蝎子鸵鸟分片阻断礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-partition-block-001");
+        createSourceBundleMapping(
+                bundleRef,
+                "羊蝎子鸵鸟分片阻断礼包",
+                bundleId,
+                "mix-source-bundle-partition-block-001");
+
+        ResponseEntity<Map> uploaded = upload(
+                workbook(orderRef, bundleRef, "羊蝎子鸵鸟分片阻断礼包"),
+                "mix-upload-partition-block-001");
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+        candidateMaterializer.materializeStaged(
+                batchId,
+                new CommandContext(
+                        "ticket05-materialize-request",
+                        "ticket05-materialize-trace",
+                        "ticket05-provider-ops"));
+
+        jdbc.update("UPDATE app.skus SET active=FALSE WHERE id=?",
+                Long.parseLong(tpSku.get("id").toString()));
+        Map<String, Object> routing;
+        try {
+            routing = providerFileService.routeForSourceBatch(batchId, "ticket05-provider-ops");
+        } finally {
+            jdbc.update("UPDATE app.skus SET active=TRUE WHERE id=?",
+                    Long.parseLong(tpSku.get("id").toString()));
+        }
+
+        assertThat((List<?>) routing.get("jd_sdk_shipment_ids")).hasSize(1);
+        assertThat((List<?>) routing.get("file_export_ids")).isEmpty();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> blocked = (List<Map<String, Object>>) routing.get("blocked_partitions");
+        assertThat(blocked).singleElement().satisfies(partition ->
+                assertThat(((List<?>) partition.get("reason_codes")).stream().map(String::valueOf).toList())
+                        .contains("SKU_INACTIVE"));
+        List<Map<String, Object>> stages = jdbc.queryForList(
+                """
+                SELECT fp.provider_type, ol.processing_stage, ol.exception_code
+                FROM app.order_lines ol
+                JOIN app.fulfillments f ON f.order_line_id=ol.id
+                JOIN app.fulfillment_providers fp ON fp.id=f.fulfillment_provider_id
+                JOIN app.orders o ON o.id=ol.order_id
+                WHERE o.source_import_batch_id=?
+                ORDER BY fp.provider_type
+                """,
+                batchId);
+        assertThat(stages).anySatisfy(line -> assertThat(line)
+                .containsEntry("provider_type", "THIRD_PARTY")
+                .containsEntry("processing_stage", "NEED_REVIEW")
+                .containsEntry("exception_code", "SKU_INACTIVE"));
+        assertThat(stages).anySatisfy(line -> assertThat(line)
+                .containsEntry("provider_type", "JD_WAREHOUSE")
+                .containsEntry("processing_stage", "READY_TO_EXPORT"));
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.shipments s
+                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
+                JOIN app.orders o ON o.id=s.order_id
+                WHERE o.source_import_batch_id=? AND fp.provider_type='JD_WAREHOUSE'
+                """,
+                Integer.class,
+                batchId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.fulfillment_exports fe
+                JOIN app.fulfillment_export_items fei ON fei.fulfillment_export_id=fe.id
+                JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id
+                WHERE rir.import_batch_id=? AND fe.export_kind='THIRD_PARTY'
+                """,
+                Integer.class,
+                batchId)).isZero();
+    }
+
+    @Test
+    void thirdPartyInternalSelfMappingIsRoutableWithoutExternalVerificationClaim() throws Exception {
+        String orderRef = "WQ-MIXED-TP-SELF-MAP-ORDER-001";
+        String bundleRef = "WQ-MIXED-TP-SELF-MAP-BUNDLE-001";
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySelfMappedSkuFixture();
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-TP-SELF-MAP-001",
+                "羊蝎子鸵鸟内部路由礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-tp-self-map-001");
+        createSourceBundleMapping(
+                bundleRef,
+                "羊蝎子鸵鸟内部路由礼包",
+                bundleId,
+                "mix-source-bundle-tp-self-map-001");
+
+        ResponseEntity<Map> uploaded = upload(
+                workbook(orderRef, bundleRef, "羊蝎子鸵鸟内部路由礼包"),
+                "mix-upload-tp-self-map-001");
+        ResponseEntity<Map> confirmed = confirm(
+                uploaded.getBody().get("id").toString(),
+                "mix-confirm-tp-self-map-001");
+
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        List<?> exportIds = (List<?>) confirmed.getBody().get("generated_fulfillment_export_ids");
+        assertThat(exportIds).hasSize(1);
+        Map<String, Object> export = get("/api/v1/fulfillment-exports/" + exportIds.getFirst());
+        Map<String, Object> line = castMap(castList(export.get("lines")).getFirst());
+        assertThat(line)
+                .containsEntry("provider_sku_code", tpSku.get("sku_code"))
+                .containsEntry("provider_sku_code_scope", "INTERNAL_ROUTING")
+                .doesNotContainKey("provider_sku_externally_verified");
+        Map<String, Object> evidence = objectMapper.readValue(
+                jdbc.queryForObject(
+                        "SELECT output_cells::text FROM app.fulfillment_export_items "
+                                + "WHERE fulfillment_export_id=?",
+                        String.class,
+                        Long.parseLong(exportIds.getFirst().toString())),
+                new TypeReference<>() {});
+        assertThat(evidence)
+                .containsEntry("_provider_sku_code_scope", "INTERNAL_ROUTING")
+                .doesNotContainKey("provider_sku_externally_verified");
+
+        // 模拟 V1 允许的历史数组证据；生产事实仍保持 append-only，测试只临时绕过更新触发器造夹具。
+        jdbc.execute("ALTER TABLE app.fulfillment_export_items "
+                + "DISABLE TRIGGER trg_fulfillment_export_item_append_only");
+        try {
+            jdbc.update(
+                    "UPDATE app.fulfillment_export_items SET output_cells='[]'::jsonb "
+                            + "WHERE fulfillment_export_id=?",
+                    Long.parseLong(exportIds.getFirst().toString()));
+        } finally {
+            jdbc.execute("ALTER TABLE app.fulfillment_export_items "
+                    + "ENABLE TRIGGER trg_fulfillment_export_item_append_only");
+        }
+        Map<String, Object> legacyArrayExport = get(
+                "/api/v1/fulfillment-exports/" + exportIds.getFirst());
+        assertThat(castMap(castList(legacyArrayExport.get("lines")).getFirst()))
+                .containsEntry("provider_sku_code", tpSku.get("sku_code"))
+                .doesNotContainKey("provider_sku_code_scope");
+    }
+
+    @Test
     void importRowsExposeJdBundlePartitionCargosAndFavorFrozenSubmittedValues() throws Exception {
         Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
         Map<String, Object> tpSku = createThirdPartySkuFixture(
@@ -300,7 +457,12 @@ class MixedProviderStaticBundlePipelineApiTest {
                 "mix-upload-cargo-001");
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
-        assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+        assertThat(castMap(uploaded.getBody().get("row_counts")))
+                .containsEntry("accepted", 0)
+                .containsEntry("total", 1);
+
+        ResponseEntity<Map> confirmed = confirm(batchId, "mix-confirm-cargo-001");
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         // 混合履约方礼包按 provider 分片：行投影只暴露京东分片的货品（数量 = 购买 1 ×
         // quantity_per_bundle 1 × jd_pieces_per_unit 1），第三方组件不得出现
@@ -313,8 +475,6 @@ class MixedProviderStaticBundlePipelineApiTest {
                 .containsKey("product_name"));
 
         // 确认 → 地址确认 → 提交建单：提交后行投影优先冻结实际提交值
-        ResponseEntity<Map> confirmed = confirm(batchId, "mix-confirm-cargo-001");
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<?> jdShipmentIds = (List<?>) castMap(confirmed.getBody().get("outbound_routing"))
                 .get("jd_sdk_shipment_ids");
         assertThat(jdShipmentIds).hasSize(1);
@@ -357,7 +517,233 @@ class MixedProviderStaticBundlePipelineApiTest {
     }
 
     @Test
-    void missingThirdPartyProviderSkuLeavesOnlyThatPartitionInReviewAndStillRoutesJd() throws Exception {
+    void manualConfirmationRechecksEveryBundleComponentAgainstCurrentReadiness() throws Exception {
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-RECHECK-OSTRICH", "鸵鸟复核组件", "TP-RECHECK-OSTRICH-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-RECHECK-001",
+                "羊蝎子鸵鸟复核礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-recheck-001");
+        createSourceBundleMapping(
+                "WQ-MIXED-RECHECK-BUNDLE-001",
+                "羊蝎子鸵鸟复核礼包",
+                bundleId,
+                "mix-source-bundle-recheck-001");
+
+        ResponseEntity<Map> uploaded = upload(
+                workbook(
+                        "WQ-MIXED-RECHECK-ORDER-001",
+                        "WQ-MIXED-RECHECK-BUNDLE-001",
+                        "羊蝎子鸵鸟复核礼包"),
+                "mix-upload-recheck-001");
+        String batchId = uploaded.getBody().get("id").toString();
+        assertThat(castMap(uploaded.getBody().get("row_counts")))
+                .containsEntry("accepted", 0)
+                .containsEntry("total", 1);
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .as("上传只保存候选，人工确认前不得提前创建正式订单")
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.fulfillments f
+                        JOIN app.order_lines ol ON ol.id=f.order_line_id
+                        JOIN app.orders o ON o.id=ol.order_id
+                        WHERE o.source_import_batch_id=?
+                        """,
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isZero();
+
+        jdbc.update("UPDATE app.skus SET active=FALSE WHERE id=?",
+                Long.parseLong(tpSku.get("id").toString()));
+
+        ResponseEntity<Map> blocked = confirm(batchId, "mix-confirm-recheck-001");
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(blocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_at IS NULL FROM app.import_batches WHERE id=?",
+                        Boolean.class,
+                        Long.parseLong(batchId)))
+                .isTrue();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.fulfillment_export_items fei
+                        JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id
+                        WHERE rir.import_batch_id=?
+                        """,
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .as("确认阶段任一组件阻断时整批仍不得留下正式订单")
+                .isZero();
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.fulfillments f
+                        JOIN app.order_lines ol ON ol.id=f.order_line_id
+                        JOIN app.orders o ON o.id=ol.order_id
+                        WHERE o.source_import_batch_id=?
+                        """,
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isZero();
+
+        jdbc.update("UPDATE app.skus SET active=TRUE WHERE id=?",
+                Long.parseLong(tpSku.get("id").toString()));
+        ResponseEntity<Map> recovered = confirm(batchId, "mix-confirm-recheck-recovered-001");
+        assertThat(recovered.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void sourceBundleMappingAndBomDriftBlockBeforeCreatingOrders() throws Exception {
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-BUNDLE-DRIFT", "鸵鸟礼包漂移组件", "TP-BUNDLE-DRIFT-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-DRIFT-001",
+                "羊蝎子鸵鸟漂移礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-drift-001");
+        String bundleRef = "WQ-MIXED-DRIFT-BUNDLE-001";
+        createSourceBundleMapping(
+                bundleRef, "羊蝎子鸵鸟漂移礼包", bundleId, "mix-source-bundle-drift-001");
+
+        ResponseEntity<Map> mappingCandidate = upload(
+                workbook("WQ-MIXED-DRIFT-MAPPING-001", bundleRef, "羊蝎子鸵鸟漂移礼包"),
+                "mix-upload-drift-mapping-001");
+        long mappingBatchId = Long.parseLong(mappingCandidate.getBody().get("id").toString());
+        jdbc.update(
+                "UPDATE app.source_channel_bundles SET active=FALSE "
+                        + "WHERE source_channel='WANQI' AND source_bundle_ref=?",
+                bundleRef);
+
+        ResponseEntity<Map> mappingBlocked = confirm(
+                Long.toString(mappingBatchId), "mix-confirm-drift-mapping-001");
+        assertThat(mappingBlocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(mappingBlocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                mappingBatchId)).isZero();
+
+        jdbc.update(
+                "UPDATE app.source_channel_bundles SET active=TRUE "
+                        + "WHERE source_channel='WANQI' AND source_bundle_ref=?",
+                bundleRef);
+        ResponseEntity<Map> bomCandidate = upload(
+                workbook("WQ-MIXED-DRIFT-BOM-001", bundleRef, "羊蝎子鸵鸟漂移礼包"),
+                "mix-upload-drift-bom-001");
+        long bomBatchId = Long.parseLong(bomCandidate.getBody().get("id").toString());
+        jdbc.update(
+                "UPDATE app.bundle_items SET quantity_per_bundle=quantity_per_bundle+1 "
+                        + "WHERE bundle_id=? AND sku_id=?",
+                Long.parseLong(bundleId),
+                Long.parseLong(tpSku.get("id").toString()));
+
+        ResponseEntity<Map> bomBlocked = confirm(
+                Long.toString(bomBatchId), "mix-confirm-drift-bom-001");
+        assertThat(bomBlocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(bomBlocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                bomBatchId)).isZero();
+    }
+
+    @Test
+    void unversionedPendingCandidateFailsClosedInsteadOfReinterpretingCurrentMappings() throws Exception {
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-UNVERSIONED", "鸵鸟旧候选组件", "TP-UNVERSIONED-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-UNVERSIONED-001",
+                "羊蝎子鸵鸟旧候选礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-unversioned-001");
+        String bundleRef = "WQ-MIXED-UNVERSIONED-BUNDLE-001";
+        createSourceBundleMapping(
+                bundleRef, "羊蝎子鸵鸟旧候选礼包", bundleId, "mix-source-bundle-unversioned-001");
+        ResponseEntity<Map> uploaded = upload(
+                workbook("WQ-MIXED-UNVERSIONED-ORDER-001", bundleRef, "羊蝎子鸵鸟旧候选礼包"),
+                "mix-upload-unversioned-001");
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+        jdbc.update(
+                "UPDATE app.import_batches SET error_detail=error_detail-'candidate_snapshot_version' WHERE id=?",
+                batchId);
+
+        ResponseEntity<Map> blocked = confirm(Long.toString(batchId), "mix-confirm-unversioned-001");
+
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(blocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                Integer.class,
+                batchId)).isZero();
+    }
+
+    @Test
+    void legacyMaterializedBundleWithoutCandidateSnapshotStillRechecksEveryComponent() throws Exception {
+        Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
+        Map<String, Object> tpSku = createThirdPartySkuFixture(
+                "PROD-TP-LEGACY-OSTRICH", "鸵鸟遗留组件", "TP-LEGACY-OSTRICH-001");
+        String bundleId = createMixedBundle(
+                "BUNDLE-MIXED-LEGACY-001",
+                "羊蝎子鸵鸟遗留礼包",
+                jdSku.get("id").toString(),
+                tpSku.get("id").toString(),
+                "mix-bundle-legacy-001");
+        createSourceBundleMapping(
+                "WQ-MIXED-LEGACY-BUNDLE-001",
+                "羊蝎子鸵鸟遗留礼包",
+                bundleId,
+                "mix-source-bundle-legacy-001");
+
+        ResponseEntity<Map> uploaded = upload(
+                workbook(
+                        "WQ-MIXED-LEGACY-ORDER-001",
+                        "WQ-MIXED-LEGACY-BUNDLE-001",
+                        "羊蝎子鸵鸟遗留礼包"),
+                "mix-upload-legacy-001");
+        long batchId = Long.parseLong(uploaded.getBody().get("id").toString());
+        assertThat(confirm(Long.toString(batchId), "mix-confirm-legacy-seed-001").getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        // 模拟升级前已经成单、尚待确认且没有 ticket-04 候选快照的历史批次。
+        jdbc.update(
+                "UPDATE app.import_batches SET confirmed_at=NULL, confirmed_by=NULL, error_detail=NULL WHERE id=?",
+                batchId);
+        jdbc.update("UPDATE app.skus SET active=FALSE WHERE id=?",
+                Long.parseLong(tpSku.get("id").toString()));
+
+        ResponseEntity<Map> blocked = confirm(Long.toString(batchId), "mix-confirm-legacy-recheck-001");
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(blocked.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
+        assertThat(jdbc.queryForObject(
+                        "SELECT confirmed_at IS NULL FROM app.import_batches WHERE id=?",
+                        Boolean.class,
+                        batchId))
+                .isTrue();
+    }
+
+    @Test
+    void missingThirdPartyProviderSkuBlocksTheWholeMixedBundleBeforeOrdersAndRouting() throws Exception {
         String orderRef = "WQ-MIXED-HOLD-ORDER-001";
         String bundleRef = "WQ-MIXED-HOLD-BUNDLE-001";
         Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
@@ -372,65 +758,39 @@ class MixedProviderStaticBundlePipelineApiTest {
                 workbook(orderRef, bundleRef, "羊蝎子鸵鸟待映射礼包"), "mix-upload-hold-001");
         assertThat(uploaded.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         String batchId = uploaded.getBody().get("id").toString();
-        assertThat(castMap(uploaded.getBody().get("row_counts"))).containsEntry("accepted", 1);
+        assertThat(castMap(uploaded.getBody().get("row_counts")))
+                .containsEntry("accepted", 0)
+                .containsEntry("need_review", 1);
 
         ResponseEntity<Map> confirmed = confirm(batchId, "mix-confirm-hold-001");
-        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat((List<?>) confirmed.getBody().get("generated_fulfillment_export_ids")).isEmpty();
-        List<?> jdShipmentIds = (List<?>) castMap(confirmed.getBody().get("outbound_routing"))
-                .get("jd_sdk_shipment_ids");
-        assertThat(jdShipmentIds).hasSize(1);
+        assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(confirmed.getBody()).containsEntry("business_code", "IMPORT_BATCH_BLOCKED");
 
         Map<String, Object> orderPage = get("/api/v1/orders?query=" + orderRef + "&page=0&size=20");
-        String orderId = castMap(castList(orderPage.get("items")).getFirst()).get("id").toString();
-        Map<String, Object> order = get("/api/v1/orders/" + orderId);
-        List<Map<String, Object>> lines = castList(order.get("lines"));
-        assertThat(lines).filteredOn(line -> "NEED_REVIEW".equals(line.get("processing_stage")))
-                .singleElement()
-                .satisfies(line -> assertThat(line)
-                        .containsEntry("exception_code", "PROVIDER_SKU_MAPPING_REQUIRED"));
+        assertThat(orderPage.get("total_elements")).isEqualTo(0);
         assertThat(jdbc.queryForObject(
-                """
-                SELECT count(*) FROM app.shipments s
-                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
-                WHERE s.order_id=? AND fp.provider_type='THIRD_PARTY'
-                """,
-                Integer.class,
-                Long.parseLong(orderId))).isZero();
-        assertThat(jdbc.queryForObject(
-                """
-                SELECT count(*) FROM app.review_cases
-                WHERE order_id=? AND status='OPEN' AND reason_code='PROVIDER_SKU_MAPPING_REQUIRED'
-                """,
-                Integer.class,
-                Long.parseLong(orderId))).isEqualTo(1);
+                        "SELECT count(*) FROM app.shipments s JOIN app.orders o ON o.id=s.order_id "
+                                + "WHERE o.source_import_batch_id=?",
+                        Integer.class,
+                        Long.parseLong(batchId)))
+                .isZero();
         String reviewDetailJson = jdbc.queryForObject(
                 """
                 SELECT detail::text FROM app.review_cases
-                WHERE order_id=? AND status='OPEN' AND reason_code='PROVIDER_SKU_MAPPING_REQUIRED'
+                WHERE import_batch_id=? AND case_type='SOURCE_ORDER_CANDIDATE'
+                  AND status='OPEN' AND reason_code='PROVIDER_MAPPING_REQUIRED'
                 """,
                 String.class,
-                Long.parseLong(orderId));
+                Long.parseLong(batchId));
         Map<String, Object> reviewDetail = objectMapper.readValue(reviewDetailJson, new TypeReference<>() {});
         assertThat(reviewDetail)
                 .containsEntry("source_channel", "WANQI")
-                .containsEntry("line_no", 2)
-                .containsEntry("source_product_name", "羊蝎子鸵鸟待映射礼包")
-                .containsEntry("source_specification", "规格:1080g;")
-                .containsEntry("source_unit", "件")
-                .containsEntry("source_quantity", "1.000")
+                .containsEntry("sku_id", tpSku.get("id").toString())
                 .containsEntry("source_sheet_name", "订单")
                 .containsEntry("source_row_index", 2);
-        assertThat(reviewDetail.get("missing_source_sku_refs"))
-                .isEqualTo(List.of(bundleRef));
-        assertThat((List<?>) reviewDetail.get("evidence_items")).singleElement().satisfies(item -> {
-            assertThat(castMap(item))
-                    .containsEntry("source_sku_ref", bundleRef)
-                    .containsEntry("product_name", "鸵鸟80g待映射组件")
-                    .containsEntry("specification", "80g/袋")
-                    .containsEntry("unit", "袋")
-                    .containsEntry("quantity", "1.000");
-        });
+        assertThat(reviewDetail.get("sku_code")).as("阻断结果必须标明具体内部 SKU").isNotNull();
+        assertThat(((List<?>) reviewDetail.get("reason_codes")).stream().map(String::valueOf).toList())
+                .contains("PROVIDER_MAPPING_REQUIRED");
         List<?> returns = http.getForObject(
                 "/api/v1/import-batches/" + batchId + "/source-return-exports", List.class);
         assertThat(returns).isEmpty();
@@ -453,8 +813,9 @@ class MixedProviderStaticBundlePipelineApiTest {
                 productCode,
                 productName);
         long skuId = jdbc.queryForObject(
-                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit) "
-                        + "VALUES (?,?,'80g/袋','袋') RETURNING id",
+                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit,"
+                        + "net_content_value,net_content_unit,package_count,package_unit) "
+                        + "VALUES (?,?,'80g/袋','袋',80,'g',1,'袋') RETURNING id",
                 Long.class,
                 productId,
                 providerId);
@@ -476,12 +837,42 @@ class MixedProviderStaticBundlePipelineApiTest {
                         + "VALUES ('PROD-TP-OSTRICH-HOLD','鸵鸟80g待映射组件') RETURNING id",
                 Long.class);
         long skuId = jdbc.queryForObject(
-                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit) "
-                        + "VALUES (?,?,'80g/袋','袋') RETURNING id",
+                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit,"
+                        + "net_content_value,net_content_unit,package_count,package_unit) "
+                        + "VALUES (?,?,'80g/袋','袋',80,'g',1,'袋') RETURNING id",
                 Long.class,
                 productId,
                 providerId);
         return get("/api/v1/skus/" + skuId);
+    }
+
+    private Map<String, Object> createThirdPartySelfMappedSkuFixture() {
+        long providerId = jdbc.queryForObject(
+                "SELECT id FROM app.fulfillment_providers WHERE provider_type='THIRD_PARTY' ORDER BY id LIMIT 1",
+                Long.class);
+        long productId = jdbc.queryForObject(
+                "INSERT INTO app.products(product_code,product_name) "
+                        + "VALUES ('PROD-TP-SELF-MAP','鸵鸟内部路由组件') RETURNING id",
+                Long.class);
+        Map<String, Object> sku = jdbc.queryForMap(
+                """
+                INSERT INTO app.skus(
+                    product_id, fulfillment_provider_id, specification, unit,
+                    net_content_value, net_content_unit, package_count, package_unit)
+                VALUES (?,?,'80g/袋','袋',80,'g',1,'袋')
+                RETURNING id, sku_code
+                """,
+                productId,
+                providerId);
+        jdbc.update(
+                "INSERT INTO app.provider_skus(fulfillment_provider_id,sku_id,provider_sku_code,active) "
+                        + "VALUES (?,?,?,true)",
+                providerId,
+                ((Number) sku.get("id")).longValue(),
+                sku.get("sku_code").toString());
+        Map<String, Object> result = new LinkedHashMap<>(get("/api/v1/skus/" + sku.get("id")));
+        result.put("sku_code", sku.get("sku_code").toString());
+        return Map.copyOf(result);
     }
 
     private Map<String, Object> createSecondThirdPartySkuFixture() {
@@ -493,8 +884,9 @@ class MixedProviderStaticBundlePipelineApiTest {
                         + "VALUES ('PROD-TP-SAUCE-FIXTURE','测试礼包配料') RETURNING id",
                 Long.class);
         long skuId = jdbc.queryForObject(
-                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit) "
-                        + "VALUES (?,?,'1袋','袋') RETURNING id",
+                "INSERT INTO app.skus(product_id,fulfillment_provider_id,specification,unit,"
+                        + "net_content_value,net_content_unit,package_count,package_unit) "
+                        + "VALUES (?,?,'1袋','袋',1,'袋',1,'袋') RETURNING id",
                 Long.class,
                 productId,
                 providerId);
