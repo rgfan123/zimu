@@ -31,6 +31,8 @@ test('non-semantic chart series use the clear blue teal violet data palette and 
     saasChartPalette.categorical[4],
     saasChartPalette.categorical[5],
     saasChartPalette.categorical[0],
+    // V100 MANUAL：手工渠道复用数据色阶（与 FEIXIANG 同档，非语义色）。
+    saasChartPalette.categorical[2],
   ]);
   assert.ok(channelColors.every((color) => !semanticColors.has(color)));
   assert.deepEqual(visualSystem.chartColors.categories, [...saasChartPalette.categorical]);

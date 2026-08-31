@@ -119,4 +119,5 @@ export const RECON_CHANNEL_LABELS: Record<string, string> = {
   FEIXIANG: '飞象',
   ZHONGHUI: '中汇',
   WECOM: '企业微信',
+  MANUAL: '手工',
 };

@@ -51,6 +51,7 @@ export function createAdminVisualSystem(tokens: AdminVisualTokenInput) {
     DAZHE: tokens.data.violetSoft,
     WANQI: tokens.data.blueSoft,
     WECOM: tokens.data.blueSoft,
+    MANUAL: tokens.data.cyanSoft,
     JD_WAREHOUSE: tokens.data.blue,
     THIRD_PARTY: tokens.data.cyan,
     REAL: tokens.data.violet,

@@ -33,7 +33,7 @@ import {
   jdReceiverAddressStatusTone,
   type JdReceiverAddressFields,
 } from './jdReceiverAddress';
-import { canSubmitJdOutbound, jdOutboundConfirmationDetail, jdOutboundConfirmationTitle, jdOutboundNotice, jdOutboundPresentation, jdOutboundRuntimeGate } from './shipmentJdOutbound';
+import { canSubmitJdOutbound, jdOutboundConfirmationDetail, jdOutboundConfirmationTitle, jdOutboundListCell, jdOutboundNotice, jdOutboundPresentation, jdOutboundRuntimeGate } from './shipmentJdOutbound';
 
 function num(v: string | number | undefined | null): string {
   if (v === undefined || v === null || v === '') return '—';
@@ -374,12 +374,17 @@ export default function ShipmentsPage() {
       render: (v: ShipmentStatus) => <Tag color={SHIPMENT_STATUS_COLORS[v]}>{SHIPMENT_STATUS_LABELS[v] ?? v}</Tag>,
     },
     {
-      title: '京东建单',
+      title: '京东出库',
       key: 'jd_outbound',
       width: 130,
       render: (_, r) => {
-        const presentation = jdOutboundPresentation(r.jd_outbound);
-        return <Tag color={presentation.statusTone}>{presentation.statusLabel}</Tag>;
+        // 非京东行「—」；京东行按出库状态着色，未提交给醒目可操作色（详情抽屉里人工提交）。
+        const cell = jdOutboundListCell({
+          providerType: providerById.get(r.provider_id ?? '')?.provider_type,
+          outbound: r.jd_outbound,
+        });
+        if (cell.kind === 'NOT_JD') return '—';
+        return <Tag color={cell.tone}>{cell.label}</Tag>;
       },
     },
     {

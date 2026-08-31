@@ -53,6 +53,7 @@ export function createAnalyticsVisualSystem(
         DAZHE: dataPalette[4],
         WANQI: dataPalette[5],
         WECOM: dataPalette[0],
+        MANUAL: dataPalette[2],
       } satisfies Record<SourceChannel, string>,
       categories: [...dataPalette],
       status: {

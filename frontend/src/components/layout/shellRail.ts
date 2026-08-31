@@ -34,6 +34,8 @@ const GLYPHS: Record<string, string> = {
   '/workbench/shipping': '▣',
   '/workbench/reviews': '!',
   '/workbench/business-followups': '◇',
+  // 外链字形与「管理驾驶舱」(/bi) 一致：↗ 表示会离开本应用打开新页签。
+  '/kehuzx-portal': '↗',
   '/workbench/procurement': '⊟',
   '/workbench/recon': '▦',
   '/dashboard': '◱',

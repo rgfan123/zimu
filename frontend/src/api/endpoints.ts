@@ -58,6 +58,7 @@ import type {
   JdPiecesCandidate,
   JdPiecesImportResult,
   JdReceiverAddressCandidate,
+  ManualOrderCreateInput,
   MasterDataPage,
   MasterDataRecord,
   McpExposure,
@@ -70,6 +71,7 @@ import type {
   ProductBundleRecord,
   ProductImageUploadResult,
   OrderDetail,
+  OrderFulfillmentRoutingResult,
   OrderShipment,
   OrderAssistantConfig,
   OrderAssistantSession,
@@ -89,6 +91,7 @@ import type {
   ProductMetric,
   PlatformOrderRefreshResult,
   RawImportRowPage,
+  RawMaterialStockResponse,
   RawRowStatus,
   ReviewCasePage,
   ReviewCase,
@@ -136,6 +139,11 @@ import {
   type CarrierOption,
   type ManualTrackingOutcome,
 } from './manualTracking';
+import {
+  manualOrderCreateRequest,
+  manualOrderRoutingIdempotencyKey,
+  manualOrderRoutingRequest,
+} from './manualOrderCreate';
 
 /** 写操作只由浏览器生成幂等键；操作人由受信网关认证后注入。 */
 export function writeHeaders(options?: TrustedWriteHeaderOptions): Record<string, string> {
@@ -231,6 +239,30 @@ export const ordersApi = {
 
   /** GET /api/v1/orders/{order_id}/shipments —— 分批、实发量、运单（不含收件人快照）。 */
   shipments: (orderId: string) => apiRequest<OrderShipment[]>(`/api/v1/orders/${orderId}/shipments`),
+
+  /**
+   * POST /api/v1/orders/manual —— 手工建单（V100 MANUAL 渠道）：绑定既有客户 + 系统 SKU
+   * 直选，201 返回 OrderDetail（source_channel=MANUAL、order_status=SKU_MAPPED）。
+   * 幂等键由调用方按草稿生成（见 manualOrderCreate.manualOrderIdempotencyKey），
+   * 同草稿重复点击重放首次结果，不会建两单。
+   */
+  createManual: (body: ManualOrderCreateInput, options: { idempotencyKey: string }) => {
+    const request = manualOrderCreateRequest(body, writeHeaders({ idempotencyKey: options.idempotencyKey }));
+    return apiRequest<OrderDetail>(request.path, request.options);
+  },
+
+  /**
+   * POST /api/v1/orders/{order_id}/fulfillment-routing —— 显式生成发货批次
+   * （只建本地 Shipment，不调用京东）。失败 business_code：ORDER_ROUTING_NOT_READY /
+   * ORDER_ROUTING_REVIEW_OPEN / ORDER_ALREADY_ROUTED / VERSION_CONFLICT 等，
+   * message 可直接展示。幂等键钉「订单 × 期望版本」：同版本重试重放，换版本换键。
+   */
+  fulfillmentRouting: (orderId: string, expectedOrderVersion: number) => {
+    const request = manualOrderRoutingRequest(orderId, expectedOrderVersion, writeHeaders({
+      idempotencyKey: manualOrderRoutingIdempotencyKey(orderId, expectedOrderVersion),
+    }));
+    return apiRequest<OrderFulfillmentRoutingResult>(request.path, request.options);
+  },
 };
 
 export const demoApi = {
@@ -693,6 +725,20 @@ export const inventoryApi = {
         sku_id: query.sku_id,
         warehouse_code: query.warehouse_code,
       },
+    }),
+};
+
+/**
+ * GET /api/v1/raw-material-inventory/stock —— yuanliaokc 实时结存只读视图（票 09）。
+ *
+ * 失败以稳定 business_code 表达（RAW_MATERIAL_NOT_CONFIGURED / UNAVAILABLE /
+ * UNAUTHORIZED / CONTRACT_DRIFT），由页面映射成可区分的「读不到」措辞——
+ * 这条链路上任何失败都不得被呈现为空表或零结存。
+ */
+export const rawMaterialInventoryApi = {
+  stock: (query: { keyword?: string } = {}) =>
+    apiRequest<RawMaterialStockResponse>('/api/v1/raw-material-inventory/stock', {
+      params: { keyword: query.keyword },
     }),
 };
 

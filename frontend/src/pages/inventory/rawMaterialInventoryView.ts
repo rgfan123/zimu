@@ -1,24 +1,26 @@
 /**
- * 原料库存页的呈现口径（票 06 / spec `unified-business-frontend` D6、D7）。
+ * 原料库存页的呈现口径（票 06 落骨架，票 09 接真数据；spec `unified-business-frontend` D6、D7）。
  *
- * 这条链路的第一颗曳光弹只打通入口、路由与状态：上游原料库存（yuanliaokc）今天只有 stdio
- * MCP 面、没有 HTTP 接口，子牧后端在容器里够不着（D7），所以本页**没有任何取数**。
- * 也正因为没有数据，页面的全部价值都落在措辞上——
+ * 票 08 的远端只读网关落地后，后端已提供 `GET /api/v1/raw-material-inventory/stock`：
+ * 模块开放即有取数路径，票 06 时代的「已接通但没接上取数」中间态不复存在，状态机据此收敛为
+ * checking / ready / unavailable 三态。页面的价值仍然首先落在措辞上——
  *
  * **「读不到原料」不是「没有原料」。** 运营看见空白或 0 会当成库存耗尽并据此下采购决定，
- * 那是把故障读成了事实。因此本模块规定：接入不通时页面一个结存数字都不显示，既不显示 0，
- * 也不显示「暂无数据」的空表，只显示一句说清「读不到」的话。
+ * 那是把故障读成了事实。因此本模块规定：取数失败时页面一个结存数字都不显示，既不显示 0，
+ * 也不显示「暂无数据」的空表，只显示一句说清「读不到」的话。反过来，**读取成功但在库物料
+ * 为零是合法业务事实**（「读到了没有」），必须用与失败可区分的措辞说出来。
  *
  * 失败原因分四类（spec D2 要求远端只读网关给出各自独立的稳定错误码）：未配置 / 不可用 /
  * 鉴权失败 / 契约漂移。四类分开呈现不是为了好看，是因为处置不同——「未配置」要去做部署，
  * 「鉴权失败」要换令牌，「契约漂移」是上游改了结构、必须停在这里而不是猜着解析出一份可能
  * 错的结存，「不可用」才是那个可以稍后重试的。
  *
- * **本模块只负责「原因 → 怎么说」。** 「网关稳定错误码 → 原因」的映射留给票 08/09：
- * 网关和它的错误码此刻还不存在，照着不存在的契约先写一张码表，只会写出一张必然漂移的表。
- * 票 08 落地时把码表接在这里，四类的措辞不必再动。
+ * **本模块负责「码表 → 原因 → 怎么说」。** 票 06 预告的接线点在此兑现：后端错误信封的
+ * `business_code`（RAW_MATERIAL_*）由 {@link rawMaterialReadFailureReasonFromBusinessCode}
+ * 映射到四类原因，四类的措辞不再变动；认不出的码一律归 UNKNOWN——仍是「读不到」，不猜含义。
  */
 
+import { ApiError } from '../../api/client.ts';
 import type { BusinessModuleStatus } from '../../components/layout/useBusinessModules.ts';
 
 /** 取数失败的原因分类；每一类都是「读不到原料」，一类都不得被当成「没有原料」。 */
@@ -34,14 +36,14 @@ export type RawMaterialReadFailureReason =
   /** 未识别的失败：仍然是「读不到」，不是「没有」。 */
   | 'UNKNOWN';
 
-/** 页面状态：三种都不含结存数据——本票不接真实数据，接上是票 09 的事。 */
+/** 页面状态：模块清单只裁定「有没有取数路径」；取数本身的成败由页面按码表另行归类。 */
 export type RawMaterialInventoryState =
   /** 模块开放清单还没落定：没有证据，不对用户断言任何接通结论。 */
   | { kind: 'checking' }
   /** 拿不到原料事实，附带可区分的原因。 */
   | { kind: 'unavailable'; reason: RawMaterialReadFailureReason }
-  /** 上游已接通，但本版本还没有接上取数（票 08 落地到票 09 之间的真实中间态）。 */
-  | { kind: 'connected-without-read-path' };
+  /** 模块已开放：取数路径存在（票 09），页面据此调用结存端点。 */
+  | { kind: 'ready' };
 
 export interface RawMaterialNotice {
   tone: 'info' | 'warning' | 'error';
@@ -51,6 +53,9 @@ export interface RawMaterialNotice {
 
 /** 清单未落定时的措辞：只说在确认，不说「未接通」——那是一句此刻拿不出证据的话。 */
 export const RAW_MATERIAL_CHECKING_HINT = '正在确认原料库存是否已接通…';
+
+/** 取数进行中的措辞：还没有答案，既不断言失败也不预先渲染任何结存。 */
+export const RAW_MATERIAL_LOADING_HINT = '正在读取原料结存…';
 
 /**
  * 所有「拿不到数」的措辞共用的收尾句。
@@ -106,12 +111,76 @@ const FAILURE_COPY: Readonly<Record<RawMaterialReadFailureReason, RawMaterialFai
   },
 };
 
-const CONNECTED_WITHOUT_READ_PATH: RawMaterialNotice = {
-  tone: 'warning',
-  title: '原料库存已接通，但本页还没有接上取数',
-  description: '入口与状态先行落地，原料、批次与结存的读取要等只读网关接线完成。'
-    + RAW_MATERIAL_NOT_A_ZERO_NOTICE,
+/**
+ * 码表（票 06 预告、票 09 兑现的接线点）：后端错误信封 `business_code` → 失败原因。
+ *
+ * 只认后端契约里的四个稳定码；缺码、空码或认不出的码一律 UNKNOWN——那仍是「读不到」，
+ * 呈现层不得因为认不出码就退化成空表或零结存。
+ */
+const REASON_BY_BUSINESS_CODE: Readonly<Record<string, RawMaterialReadFailureReason>> = {
+  RAW_MATERIAL_NOT_CONFIGURED: 'NOT_CONFIGURED',
+  RAW_MATERIAL_UNAVAILABLE: 'UNAVAILABLE',
+  RAW_MATERIAL_UNAUTHORIZED: 'UNAUTHORIZED',
+  RAW_MATERIAL_CONTRACT_DRIFT: 'CONTRACT_DRIFT',
 };
+
+export function rawMaterialReadFailureReasonFromBusinessCode(
+  businessCode: string | null | undefined,
+): RawMaterialReadFailureReason {
+  if (!businessCode) return 'UNKNOWN';
+  return REASON_BY_BUSINESS_CODE[businessCode] ?? 'UNKNOWN';
+}
+
+/**
+ * 取数异常 → 失败原因：后端 ApiError 走码表；网络级失败与其他异常一律 UNKNOWN。
+ * 网络失败不映射到 UNAVAILABLE——那句措辞断言的是「上游不可用」，而请求根本没到网关时
+ * 我们并没有这个证据，宁可说「原因不在已知分类里」也不编一个更具体的原因。
+ */
+export function rawMaterialReadFailureReason(error: unknown): RawMaterialReadFailureReason {
+  if (error instanceof ApiError) {
+    return rawMaterialReadFailureReasonFromBusinessCode(error.body.business_code);
+  }
+  return 'UNKNOWN';
+}
+
+/**
+ * 读取成功且 items 为空时的措辞：这是「读到了没有」，不是「读不到」。
+ * 与失败措辞必须可区分——这里明说「读取已成功」，并且绝不携带失败收尾句。
+ * 带关键词时空结果只说「无匹配」，不升级成「无在库物料」：搜索没搜到 ≠ 库房是空的。
+ */
+export function rawMaterialEmptyStockText(keyword?: string): string {
+  const trimmed = keyword?.trim();
+  if (trimmed) {
+    return `本次读取已成功，但没有匹配「${trimmed}」的在库物料；可更换关键词或清空后查看全部。`;
+  }
+  return '当前无在库物料：本次读取已成功，上游此刻没有任何在库原料记录。';
+}
+
+/** 结存状态呈现；tone 词汇与 inventoryOverviewView 一致，由页面映射为 antd Tag 颜色。 */
+export interface RawMaterialStockStatusPresentation {
+  label: string;
+  tone: 'neutral' | 'info' | 'success' | 'warning' | 'error';
+}
+
+/**
+ * 上游 status 口径：normal / low / near_expiry / frozen。
+ * near_expiry 与 low 按票面要求用警示色；frozen 意味着结存整体不可动用，给错误色级；
+ * 认不出的值原文中性呈现——上游新增一档不该被本页翻译成任何更乐观或更悲观的含义。
+ */
+export function rawMaterialStockStatusPresentation(status: string): RawMaterialStockStatusPresentation {
+  switch (status) {
+    case 'normal':
+      return { label: '正常', tone: 'success' };
+    case 'low':
+      return { label: '低库存', tone: 'warning' };
+    case 'near_expiry':
+      return { label: '临期', tone: 'warning' };
+    case 'frozen':
+      return { label: '冻结', tone: 'error' };
+    default:
+      return { label: status, tone: 'neutral' };
+  }
+}
 
 /**
  * 页面状态只由「模块接通与否」决定——判据取外壳读到的那份后端清单（`useBusinessModuleStatus`），
@@ -121,13 +190,20 @@ export function rawMaterialInventoryState(module: BusinessModuleStatus): RawMate
   if (module === 'pending') return { kind: 'checking' };
   // 后端只在只读网关配置齐备时才把本模块列进开放清单，因此「清单里没有」= 未配置。
   if (module === 'closed') return { kind: 'unavailable', reason: 'NOT_CONFIGURED' };
-  return { kind: 'connected-without-read-path' };
+  return { kind: 'ready' };
 }
 
-/** 状态 → 提示；`checking` 返回 null（页面此时显示加载态，不作任何断言）。 */
-export function rawMaterialInventoryNotice(state: RawMaterialInventoryState): RawMaterialNotice | null {
-  if (state.kind === 'checking') return null;
-  if (state.kind === 'connected-without-read-path') return CONNECTED_WITHOUT_READ_PATH;
-  const { tone, title, body } = FAILURE_COPY[state.reason];
+/**
+ * 失败原因 → 提示（总是有话可说）：模块未开放与取数失败共用同一张措辞表——
+ * 「清单里没有」和「取数拿到 RAW_MATERIAL_NOT_CONFIGURED」本就该说同一句话。
+ */
+export function rawMaterialReadFailureNotice(reason: RawMaterialReadFailureReason): RawMaterialNotice {
+  const { tone, title, body } = FAILURE_COPY[reason];
   return { tone, title, description: body + RAW_MATERIAL_NOT_A_ZERO_NOTICE };
+}
+
+/** 状态 → 提示；`checking` 与 `ready` 返回 null（前者显示确认中，后者由取数结果说话）。 */
+export function rawMaterialInventoryNotice(state: RawMaterialInventoryState): RawMaterialNotice | null {
+  if (state.kind === 'checking' || state.kind === 'ready') return null;
+  return rawMaterialReadFailureNotice(state.reason);
 }

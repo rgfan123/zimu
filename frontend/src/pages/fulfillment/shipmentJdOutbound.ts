@@ -128,6 +128,34 @@ export function jdOutboundPresentation(
   };
 }
 
+export type JdOutboundListCell =
+  | { kind: 'NOT_JD' }
+  | { kind: 'STATUS'; label: string; tone: ShipmentJdOutboundPresentation['statusTone'] };
+
+/**
+ * 发货记录列表「京东建单」列的投影。
+ *
+ * 非京东仓行显示「—」——第三方履约没有京东出库这回事，此前对全部行套
+ * jdOutboundPresentation 会让第三方行也顶着灰色「未提交」，运营误以为漏了操作。
+ * 京东行按出库记录状态着色；**未提交是可操作状态**，用 warning 醒目——手工建单
+ * 出来的新发货单就靠这一眼在列表里找到，点详情走人工提交闸门。
+ * 判定京东行优先信事实：行上已有 jd_outbound 记录即京东行（履约方目录暂时缺失
+ * 也不把已提交事实误呈现成「—」）。
+ */
+export function jdOutboundListCell(input: {
+  providerType?: 'JD_WAREHOUSE' | 'THIRD_PARTY' | null;
+  outbound?: ShipmentJdOutbound | null;
+}): JdOutboundListCell {
+  const isJdRow = input.providerType === 'JD_WAREHOUSE' || Boolean(input.outbound);
+  if (!isJdRow) return { kind: 'NOT_JD' };
+  const presentation = jdOutboundPresentation(input.outbound);
+  return {
+    kind: 'STATUS',
+    label: presentation.statusLabel,
+    tone: input.outbound ? presentation.statusTone : 'warning',
+  };
+}
+
 /**
  * 建单预检 blocker 消息里会出现的状态/阶段枚举 → 中文。
  *

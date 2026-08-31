@@ -30,6 +30,7 @@ export const CHANNEL_LABELS: Record<SourceChannel, string> = {
   DAZHE: '大者',
   WANQI: '万齐',
   WECOM: '企业微信',
+  MANUAL: '手工',
 };
 
 export const SOURCE_ORDER_INTAKE_STATUS_LABELS: Record<SourceOrderIntakeStatus, string> = {

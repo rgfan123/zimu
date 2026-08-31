@@ -1,6 +1,6 @@
 import type { SourceChannel } from '../../api/types';
 
-const CHANNELS: SourceChannel[] = ['CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI', 'DAZHE', 'WANQI', 'WECOM'];
+const CHANNELS: SourceChannel[] = ['CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI', 'DAZHE', 'WANQI', 'WECOM', 'MANUAL'];
 
 /** URL `ch` 参数是数据中台跨刷新、可分享的渠道筛选状态。 */
 export function parseChannels(raw: string | null): SourceChannel[] {

@@ -69,6 +69,7 @@ export const CHANNEL_ACCENT: Record<SourceChannel, string> = {
   DAZHE: saasVisualTokens.data.violetSoft,
   WANQI: saasVisualTokens.data.blueSoft,
   WECOM: saasVisualTokens.data.blueSoft,
+  MANUAL: saasVisualTokens.data.cyanSoft,
 };
 
 export function severitySemantic(severity: string): SemanticTagColor {

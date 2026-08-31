@@ -82,19 +82,29 @@ test('客户中心未接通：侧边栏没有客户跟进，但直达仍渲染�
   assert.match(harness.bodyText(), /KEHUZX_NOT_CONFIGURED/, '提示要说清失败会以哪个稳定错误码出现');
 });
 
-test('客户中心已接通：客户跟进回到原位置，页面不再出现未接通提示', async () => {
+test('客户中心已接通：客户跟进回到原位置，客户中心外链紧随其后并以新页签打开', async () => {
   globalThis.fetch = followUpFetch(['customer-center']);
   await harness.mount(['/workbench/business-followups']);
 
   await harness.waitFor(() => {
     assert.deepEqual(
       railItems('我的工作台'),
-      ['今日发货工作台', '复核收件箱', '客户跟进', '采购', '对账工作台', '调度台'],
-      '接通后「客户跟进」回到复核收件箱之后、采购之前的原有位置',
+      ['今日发货工作台', '复核收件箱', '客户跟进', '客户中心', '采购', '对账工作台', '调度台'],
+      '接通后「客户跟进」回到复核收件箱之后的原有位置，「客户中心」外链紧随其后',
     );
   });
   const link = document.querySelector<HTMLAnchorElement>('.zs-nav a[href="/workbench/business-followups"]');
   assert.equal(link?.querySelector('.nm')?.textContent?.trim(), '客户跟进', 'label 不变');
+
+  // 外链入口按 /bi 先例渲染为 <a href> 新页签直开：href 指向网关反代前缀，不是本应用路由。
+  const portal = document.querySelector<HTMLAnchorElement>('.zs-nav a[href="/kehuzx/"]');
+  assert.equal(portal?.querySelector('.nm')?.textContent?.trim(), '客户中心');
+  assert.equal(portal?.getAttribute('target'), '_blank', '外链在新页签打开（与管理驾驶舱同一约定）');
+  assert.equal(
+    document.querySelector('.zs-nav a[href="/kehuzx-portal"]'),
+    null,
+    '菜单标识 path 不得被渲染成应用内链接——外链打开的是 /kehuzx/',
+  );
 
   assert.equal(harness.location(), '/workbench/business-followups');
   assert.match(harness.bodyText(), /BF-0000000001/);

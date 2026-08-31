@@ -35,6 +35,8 @@ test('my-workbench section leads the navigation with the role workbenches (Issue
       { path: '/workbench/shipping', label: '今日发货工作台', hideInMenu: false },
       { path: '/workbench/reviews', label: '复核收件箱', hideInMenu: false },
       { path: '/workbench/business-followups', label: '客户跟进', hideInMenu: false },
+      // kehuzx 独立 Web 应用的外链入口：紧随客户跟进（两者读同一个客户中心）。
+      { path: '/kehuzx-portal', label: '客户中心', hideInMenu: false },
       // Issue #64 运营提醒：上下文二级入口，随复核收件箱移入我的工作台。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       // Issue #110：采购工作台露出，我的工作台可见入口达到 spec D6 的 4 个；UIUX-10 #144 更名为「采购」。
@@ -66,7 +68,9 @@ test('客户跟进受客户中心接通状态裁定，接通与否决定它进�
       .map(({ path, requiresModule }) => ({ path, requiresModule })),
     [
       { path: '/workbench/business-followups', requiresModule: 'customer-center' },
-      // 票 06：原料库存是生产树里第二个受控入口，判据同样取后端下发的模块开放清单。
+      // 客户中心外链与客户跟进同一判据：kehuzx 未接通时外链打开也只有错误页，一起消失。
+      { path: '/kehuzx-portal', requiresModule: 'customer-center' },
+      // 票 06：原料库存是生产树里另一个受控入口，判据同样取后端下发的模块开放清单。
       { path: '/inventory/raw-materials', requiresModule: 'raw-material-inventory' },
     ],
     '受控是显式的：这一层只能带走明写了 requiresModule 的入口',
@@ -78,8 +82,8 @@ test('客户跟进受客户中心接通状态裁定，接通与否决定它进�
   assert.deepEqual(
     open,
     ['/workbench/shipping', '/workbench/reviews', '/workbench/business-followups',
-      '/workbench/procurement', '/workbench/recon'],
-    '客户中心已接通：客户跟进出现在原有位置（复核收件箱之后、采购之前）',
+      '/kehuzx-portal', '/workbench/procurement', '/workbench/recon'],
+    '客户中心已接通：客户跟进在原有位置（复核收件箱之后），客户中心外链紧随其后',
   );
   assert.equal(
     findNavigationNode(
@@ -91,12 +95,38 @@ test('客户跟进受客户中心接通状态裁定，接通与否决定它进�
   );
   assert.deepEqual(
     closed,
-    open.filter((path) => path !== '/workbench/business-followups'),
-    '客户中心未接通：菜单里少的恰好只有客户跟进这一项',
+    open.filter((path) => path !== '/workbench/business-followups' && path !== '/kehuzx-portal'),
+    '客户中心未接通：菜单里少的恰好是客户跟进与客户中心外链这两项（同一判据）',
   );
-  assert.equal(open.length, 5, '我的工作台可见叶子：接通 5');
+  assert.equal(open.length, 6, '我的工作台可见叶子：接通 6（已到准入上限，再加要走准入评审）');
   assert.equal(closed.length, 4, '我的工作台可见叶子：未接通 4');
   assert.ok(open.length <= 6, '我的工作台可见叶子不得超过准入上限 6');
+});
+
+test('客户中心外链随 customer-center 清单两态可见，且不注册为应用路由（外链 ≠ 页面）', () => {
+  const portal = findNavigationNode(appNavigation, '/kehuzx-portal');
+
+  assert.equal(portal?.label, '客户中心');
+  assert.equal(portal?.external, '/kehuzx/', 'kehuzx 独立 Web 应用经网关 /kehuzx/ 反代，菜单以外链打开');
+  assert.equal(
+    portal?.requiresModule,
+    'customer-center',
+    '接通判据与客户跟进同一份清单：kehuzx 未接通时外链打开也只有错误页，入口必须一起消失',
+  );
+
+  const visibleWith = (open: ReadonlySet<BusinessModuleId>) =>
+    flattenNavigationLeaves(visibleNavigationTree(moduleVisibleNavigationTree(appNavigation, open)))
+      .map(({ path }) => path);
+  assert.ok(visibleWith(ALL_MODULES_OPEN).includes('/kehuzx-portal'), 'customer-center 开放时客户中心外链可见');
+  assert.ok(
+    !visibleWith(NO_OPEN_BUSINESS_MODULES).includes('/kehuzx-portal'),
+    'customer-center 关闭时客户中心外链隐藏',
+  );
+
+  assert.ok(
+    !routableNavigationLeaves(appNavigation).some(({ path }) => path === '/kehuzx-portal'),
+    '外链不注册路由：/kehuzx-portal 只是菜单标识，真实打开的是网关反代的 /kehuzx/',
+  );
 });
 
 test('客户跟进未接通只是不显示：路由与板块归属两态都不变（票 04，降级 ≠ 删除）', () => {
@@ -358,10 +388,21 @@ test('order presets collapse into one visible entry while direct URLs stay routa
   const routablePaths = routableNavigationLeaves(appNavigation).map(({ path }) => path);
 
   const visibleChildren = orders?.children?.filter(({ hideInMenu }) => !hideInMenu) ?? [];
-  // UIUX-11：订单与发货组 = 全部订单 + 发货记录 + 履约任务；预设视图仍页内切换。
+  // UIUX-11：订单与发货组 = 全部订单 + 手工建单 + 发货记录 + 履约任务；预设视图仍页内切换。
+  // V100 手工建单是可见新叶子（可见叶子 3 → 4，不超准入上限 6），不加 requiresModule。
   assert.deepEqual(
     visibleChildren.map(({ label }) => label),
-    ['全部订单', '发货记录', '履约任务'],
+    ['全部订单', '手工建单', '发货记录', '履约任务'],
+  );
+  assert.ok(visibleChildren.length <= 6, '订单与发货可见叶子不得超过准入上限 6');
+  assert.deepEqual(navigationContext('/orders/manual-create', ''), {
+    section: '订单与发货',
+    page: '手工建单',
+  });
+  assert.equal(
+    findNavigationNode(appNavigation, '/orders/manual-create')?.requiresModule,
+    undefined,
+    '手工建单不受业务模块门禁：能力随核心订单域常开',
   );
   for (const presetPath of ['/orders/pending', '/orders/exceptions', '/orders/tracking']) {
     assert.equal(visiblePaths.includes(presetPath), false, `${presetPath} 不再出现在菜单`);

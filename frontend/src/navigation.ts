@@ -32,6 +32,11 @@ export const appNavigation = [
       // 必然拿到 KEHUZX_NOT_CONFIGURED。因此入口受运行期清单控制：接通才进菜单，位置、label 与
       // path 都不变；未接通只是不显示，路由照常注册、URL 照常直达（降级 ≠ 删除）。
       { path: '/workbench/business-followups', label: '客户跟进', requiresModule: 'customer-center' },
+      // 客户中心（kehuzx）是独立 Web 应用，经网关 /kehuzx/ 反代——外链直开，不是本应用路由。
+      // path 只作菜单标识（external 节点不注册路由，见 routableNavigationLeaves / routes.tsx），
+      // 取 '/kehuzx-portal' 避免与反代前缀 /kehuzx/ 撞出「点菜单却被本应用兜底路由接走」的歧义。
+      // 接通判据与客户跟进同一份：kehuzx 未接通时链接打开也只有错误页，入口随清单一起消失。
+      { path: '/kehuzx-portal', label: '客户中心', external: '/kehuzx/', requiresModule: 'customer-center' },
       // Issue #64 运营提醒独立路由：上下文二级入口（复核页 ↔ 提醒页互为切换），随复核收件箱移入本板块。
       { path: '/workbench/alerts', label: '运营提醒', hideInMenu: true },
       // Issue #110：采购工作台（建议区等 #121/#118 供数，工单区今天即真数）。UIUX-10 #144：采购入口去重后唯一入口。
@@ -49,6 +54,9 @@ export const appNavigation = [
     label: '订单与发货',
     children: [
       { path: '/orders', label: '全部订单' },
+      // V100 手工建单：运营柜台直录 MANUAL 订单并当场路由出发货单——真实触发京东发货的入口。
+      // 不加 requiresModule：能力随核心订单域常开，无独立接通判据。
+      { path: '/orders/manual-create', label: '手工建单' },
       { path: '/fulfillment/shipments', label: '发货记录' },
       { path: '/fulfillment/tasks', label: '履约任务' },
       // 预设视图并入「全部订单」页内切换（Segmented），旧 URL 保留为隐藏直达路径，书签不失效。

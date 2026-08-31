@@ -8,6 +8,7 @@ import {
   jdOutboundBlockerText,
   jdOutboundConfirmationDetail,
   jdOutboundConfirmationTitle,
+  jdOutboundListCell,
   jdOutboundNotice,
   jdOutboundPresentation,
   jdOutboundRuntimeGate,
@@ -481,4 +482,45 @@ test('本地枚举文案与 constants/labels.ts 单表逐字一致（防漂移�
       `${token} 的文案「${label}」与 constants/labels.ts 不一致`,
     );
   }
+});
+
+test('发货记录列表「京东出库」列：第三方行给「—」，京东行按状态着色', () => {
+  // 第三方履约没有京东出库这回事：不给灰色「未提交」误导运营去找不存在的操作。
+  assert.deepEqual(
+    jdOutboundListCell({ providerType: 'THIRD_PARTY', outbound: null }),
+    { kind: 'NOT_JD' },
+  );
+  // 履约方目录读不到且行上没有出库事实：同样不冒充京东行。
+  assert.deepEqual(jdOutboundListCell({ outbound: null }), { kind: 'NOT_JD' });
+
+  // 京东行未提交是可操作状态：warning 醒目色，运营在列表一眼定位手工建单出的新发货单。
+  assert.deepEqual(
+    jdOutboundListCell({ providerType: 'JD_WAREHOUSE', outbound: null }),
+    { kind: 'STATUS', label: '未提交', tone: 'warning' },
+  );
+
+  const submitted = {
+    erp_delivery_no: '202608310001',
+    sync_status: 'SUBMITTED' as const,
+    retry_count: 1,
+    retryable: false,
+    client_mode: 'REAL' as const,
+  };
+  assert.deepEqual(
+    jdOutboundListCell({ providerType: 'JD_WAREHOUSE', outbound: submitted }),
+    { kind: 'STATUS', label: '已提交', tone: 'success' },
+  );
+  // 目录暂时缺失但行上已有出库事实：事实优先，不得退化成「—」。
+  assert.deepEqual(
+    jdOutboundListCell({ outbound: submitted }),
+    { kind: 'STATUS', label: '已提交', tone: 'success' },
+  );
+
+  assert.deepEqual(
+    jdOutboundListCell({
+      providerType: 'JD_WAREHOUSE',
+      outbound: { ...submitted, sync_status: 'SYNC_FAILED' as const, retryable: true },
+    }),
+    { kind: 'STATUS', label: '提交失败', tone: 'error' },
+  );
 });

@@ -20,6 +20,7 @@ import {
 } from '@ant-design/icons';
 import OrderDetailPage from '@/pages/orders/OrderDetailPage';
 import OrdersPage from '@/pages/orders/OrdersPage';
+import ManualOrderCreatePage from '@/pages/orders/ManualOrderCreatePage';
 import InventoryOverviewPage from '@/pages/inventory/InventoryOverviewPage';
 import InventoryDetailsPage from '@/pages/inventory/InventoryDetailsPage';
 import RawMaterialInventoryPage from '@/pages/inventory/RawMaterialInventoryPage';
@@ -84,6 +85,8 @@ const routeElements: Readonly<Record<string, ReactNode>> = {
   '/fulfillment/shipments': <ShipmentsPage />,
   '/fulfillment/outbound-recon': <OutboundReconPage />,
   '/orders': <OrdersPage />,
+  // V100 手工建单：MANUAL 渠道柜台直录 + 当场路由出发货单。
+  '/orders/manual-create': <ManualOrderCreatePage />,
   // 预设视图已并入「全部订单」页内切换；旧 URL 直达同一合并组件，由 OrdersPage 按 pathname 解析预设。
   '/orders/pending': <OrdersPage />,
   '/orders/exceptions': <OrdersPage />,

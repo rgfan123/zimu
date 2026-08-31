@@ -5,7 +5,7 @@
 
 // ---------- 枚举 ----------
 
-export type SourceChannel = 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG' | 'ZHONGHUI' | 'WANGQI' | 'DAZHE' | 'WANQI' | 'WECOM';
+export type SourceChannel = 'CAISHIXIAN' | 'JUFUBAO' | 'FEIXIANG' | 'ZHONGHUI' | 'WANGQI' | 'DAZHE' | 'WANQI' | 'WECOM' | 'MANUAL';
 
 export type OrderStatus =
   | 'RECEIVED'
@@ -221,6 +221,36 @@ export interface OrderVersion {
   triggered_by: string;
   snapshot: Record<string, unknown>;
   created_at: string;
+}
+
+// ---------- 手工建单（V100 MANUAL 渠道，openapi ManualOrderCreateWrite） ----------
+
+/** 收货三要素快照；手工单地址整段录入，省市区留空由后端豁免。 */
+export interface ManualOrderReceiverInput {
+  name: string;
+  phone: string;
+  address: string;
+}
+
+/** 一行 = 一个系统 SKU × 正整数数量字符串（V99 整数纪律）。 */
+export interface ManualOrderItemInput {
+  sku_id: string;
+  quantity: string;
+}
+
+/** POST /api/v1/orders/manual 请求体：绑定既有客户 + 系统 SKU 直选，201 返回 OrderDetail。 */
+export interface ManualOrderCreateInput {
+  customer_code: string;
+  receiver: ManualOrderReceiverInput;
+  items: ManualOrderItemInput[];
+  remark?: string;
+}
+
+/** POST /api/v1/orders/{order_id}/fulfillment-routing 的 201 结果（openapi OrderFulfillmentRoutingResult）。 */
+export interface OrderFulfillmentRoutingResult {
+  order_id: string;
+  order_version: number;
+  shipment_ids: string[];
 }
 
 // ---------- 发货 / 运单 ----------
@@ -1300,6 +1330,46 @@ export interface InventoryDetailsResponse {
   query_time: string;
   freshness_policy: string;
   capabilities: InventoryDetailCapability[];
+}
+
+// ---------- 原料库存（yuanliaokc 只读，票 09） ----------
+
+/**
+ * 结存状态的上游口径：normal / low / near_expiry / frozen。
+ * 后端原样透传上游文本、不做枚举收窄，所以这里不能用封闭联合钉死——上游新增一档
+ * 不该让整页在类型层面崩掉；未识别的值由呈现层按中性样式原文展示。
+ */
+export type RawMaterialStockStatus = string;
+
+/**
+ * GET /api/v1/raw-material-inventory/stock 的单行结存。
+ *
+ * kg 三列是 **decimal-string**：它们是重量（可带小数，V99 商品数量整数纪律不适用），
+ * 后端已按 3 位刻度去尾零输出。前端原样展示字符串 + 单位，**不得 parseFloat 再格式化**
+ * ——浮点会把 103.5 这类事实改写成 103.49999… 的精度谎言。
+ */
+export interface RawMaterialStockItem {
+  material_id: number;
+  material_code: string;
+  material_name: string;
+  category: string | null;
+  spec: string | null;
+  /** 上游首选展示单位（如 kg）；件数列另有 piece_count。 */
+  unit: string;
+  piece_count: number | null;
+  current_kg: string;
+  available_kg: string;
+  frozen_kg: string;
+  batch_count: number;
+  /** ISO 日期（yyyy-MM-dd）；上游没有到期口径时为 null。 */
+  earliest_expiry: string | null;
+  status: RawMaterialStockStatus;
+}
+
+export interface RawMaterialStockResponse {
+  /** 事实来源标识；后端恒写 YUANLIAOKC，前端只展示不判断。 */
+  source: string;
+  items: RawMaterialStockItem[];
 }
 
 export interface ShipmentJdStockObservation {

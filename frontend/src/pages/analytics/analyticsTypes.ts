@@ -11,7 +11,7 @@ import { analyticsVisualSystem } from './analyticsTheme';
 export type RangeKey = 'today' | '7d' | '30d' | 'custom';
 export type MetricKey = 'orders' | 'qty';
 
-export const CHANNELS: SourceChannel[] = ['CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI', 'DAZHE', 'WANQI', 'WECOM'];
+export const CHANNELS: SourceChannel[] = ['CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI', 'DAZHE', 'WANQI', 'WECOM', 'MANUAL'];
 
 /** 渠道是非语义数据系列，统一取自 SaaS 品牌色与中性色阶。 */
 export const CHANNEL_HEX: Record<SourceChannel, string> = analyticsVisualSystem.chartColors.channels;

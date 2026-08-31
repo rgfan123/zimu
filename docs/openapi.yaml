@@ -880,6 +880,31 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/OrderShipment' }
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/orders/manual:
+    post:
+      tags: [Orders]
+      operationId: createManualOrder
+      summary: Create a manual (counter) order on the MANUAL source channel
+      description: >-
+        手工建单（V100）：柜台/运营直录，不经导入批次。客户必须以 customer_code 精确绑定
+        既有 BUSINESS/ACTIVE 档案（手工单不是建档入口）；商品按系统 SKU 直选、数量为正整数
+        （V99），建成即 SKU_MAPPED；随后调用 fulfillment-routing 生成发货单，京东仓行走
+        既有「提交京东出库单」人工闸门。来源单号由服务端生成（MAN-yyyyMMdd-xxxxxxxx）。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManualOrderCreateWrite' }
+      responses:
+        '201':
+          description: Manual order created (SKU_MAPPED, ready for fulfillment routing)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetail' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/orders/{order_id}/corrections:
     parameters:
       - $ref: '#/components/parameters/OrderId'
@@ -4509,8 +4534,8 @@ paths:
       description: >-
         只读部署事实：当前**已开放**的业务模块标识清单。前端外壳启动时读取它并据此过滤侧边栏
         导航树（票 03 / spec unified-business-frontend D3），避免菜单承诺系统给不出的能力。
-        判据取自各模块自己的接通开关（客户中心 = kehuzx 只读网关就绪；原料库存本仓尚无网关，
-        没有开关可取，恒为未开放），与 MCP 工具暴露面 MCP_MODULES 是两件不同的事，不互相推导。
+        判据取自各模块自己的接通开关（客户中心 = kehuzx 只读网关就绪；原料库存 = yuanliaokc
+        只读网关配置完备，票 08），与 MCP 工具暴露面 MCP_MODULES 是两件不同的事，不互相推导。
         清单只列已开放的模块；未开放模块及其未接通的原因不对浏览器暴露。
       parameters:
         - $ref: '#/components/parameters/Operator'
@@ -4520,6 +4545,32 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BusinessModuleAvailability' }
+        default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/raw-material-inventory/stock:
+    get:
+      tags: [Operations]
+      summary: Read raw material realtime stock through the yuanliaokc read-only gateway
+      description: >-
+        原料库存实时结存（票 09）：经 yuanliaokc 只读网关取「按物料聚合批次」的结存事实，
+        原样呈现、不落库。kg 结存是重量事实，以 decimal-string 出口（商品数量整数纪律
+        V99 不适用于重量）。失败按四类稳定 business_code 区分（spec D2），前端据此分流措辞，
+        「读不到」永远不得呈现为「没有」：RAW_MATERIAL_NOT_CONFIGURED（本部署未开放，503）、
+        RAW_MATERIAL_UNAVAILABLE（上游不可达/异常，503）、RAW_MATERIAL_UNAUTHORIZED
+        （上游拒绝本系统只读凭据，502——刻意不用 401，避免连坐浏览器的网关会话）、
+        RAW_MATERIAL_CONTRACT_DRIFT（上游结构漂移，停止解析，502）。
+      parameters:
+        - $ref: '#/components/parameters/Operator'
+        - name: keyword
+          in: query
+          required: false
+          schema: { type: string }
+          description: 物料名/编码模糊词；缺省为全量在库物料
+      responses:
+        '200':
+          description: 实时结存行（按物料聚合）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RawMaterialStockView' }
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/mcp-exposure:
     get:
@@ -4683,13 +4734,44 @@ components:
       description: >-
         已开放的业务模块标识清单。标识是稳定契约（前端导航树的 requiresModule 直接引用），
         改名等同于破坏契约；已知标识：customer-center（客户中心 kehuzx）、
-        raw-material-inventory（原料库存 yuanliaokc，票 06 声明——本仓尚无其只读网关，
-        没有开关可取，因此恒不出现在本清单里；前置见 spec unified-business-frontend D7）。
+        raw-material-inventory（原料库存 yuanliaokc，票 08 起判据 = 其只读网关配置完备）。
       required: [modules]
       properties:
         modules:
           type: array
           items: { type: string, minLength: 1, maxLength: 64 }
+    RawMaterialStockView:
+      type: object
+      description: >-
+        原料实时结存（票 09）：yuanliaokc 权威事实的只读投影，本系统不落库、不加工。
+        kg 三列是重量 decimal-string；piece_count 是可空整数件数；earliest_expiry 为
+        ISO 日期或 null；status 取上游口径（normal / low / near_expiry / frozen）。
+      required: [source, items]
+      properties:
+        source:
+          type: string
+          enum: [YUANLIAOKC]
+        items:
+          type: array
+          items:
+            type: object
+            required:
+              [material_id, material_code, material_name, unit,
+               current_kg, available_kg, frozen_kg, batch_count, status]
+            properties:
+              material_id: { type: integer, format: int64 }
+              material_code: { type: string }
+              material_name: { type: string }
+              category: { type: string, nullable: true }
+              spec: { type: string, nullable: true }
+              unit: { type: string }
+              piece_count: { type: integer, format: int64, nullable: true }
+              current_kg: { $ref: '#/components/schemas/DecimalAmount' }
+              available_kg: { $ref: '#/components/schemas/DecimalAmount' }
+              frozen_kg: { $ref: '#/components/schemas/DecimalAmount' }
+              batch_count: { type: integer, format: int64 }
+              earliest_expiry: { type: string, format: date, nullable: true }
+              status: { type: string }
     McpExposure:
       type: object
       description: >-
@@ -4998,7 +5080,33 @@ components:
       pattern: '^[0-9a-f]{64}$'
     SourceChannel:
       type: string
-      enum: [CAISHIXIAN, JUFUBAO, FEIXIANG, ZHONGHUI, WANGQI, DAZHE, WANQI, WECOM]
+      enum: [CAISHIXIAN, JUFUBAO, FEIXIANG, ZHONGHUI, WANGQI, DAZHE, WANQI, WECOM, MANUAL]
+    ManualOrderCreateWrite:
+      type: object
+      description: 手工建单输入（V100 MANUAL 渠道）：绑定既有客户 + 系统 SKU 直选。
+      required: [customer_code, receiver, items]
+      properties:
+        customer_code:
+          type: string
+          maxLength: 64
+          description: 既有 BUSINESS/ACTIVE 客户档案编码，精确绑定
+        receiver:
+          type: object
+          required: [name, phone, address]
+          properties:
+            name: { type: string, maxLength: 128 }
+            phone: { type: string, maxLength: 64 }
+            address: { type: string, maxLength: 1000 }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [sku_id, quantity]
+            properties:
+              sku_id: { $ref: '#/components/schemas/Identifier' }
+              quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        remark: { type: string, maxLength: 2000 }
     ImportMode:
       type: string
       enum: [NEW, REVISION]
