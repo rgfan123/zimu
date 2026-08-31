@@ -24,7 +24,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * yuanliaokc REST 只读客户端：OAuth2 password 登录换短时 JWT，再取实时结存。
+ * yuanliaokc REST 只读客户端：OAuth2 password 登录换短时 JWT，再取实时结存/入库单/流水。
  *
  * <p>失败一律收敛到四类稳定错误码（{@link RawMaterialReadException.Code}）：
  * 网络/超时→UNAVAILABLE；登录被拒或令牌两次被拒→UNAUTHORIZED；响应结构不符→CONTRACT_DRIFT
@@ -62,19 +62,83 @@ public class YuanliaokcReadClient implements YuanliaokcReadGateway {
 
     @Override
     public List<YuanliaokcStockRow> stock(String keyword) {
+        StringBuilder path = new StringBuilder("/api/stock?only_in_stock=true");
+        if (keyword != null && !keyword.isBlank()) {
+            path.append("&keyword=").append(URLEncoder.encode(keyword.trim(), StandardCharsets.UTF_8));
+        }
+        return parseRows(authorizedGetJson(path.toString(), "结存"));
+    }
+
+    @Override
+    public List<YuanliaokcInboundOrder> inboundOrders(String status) {
+        StringBuilder path = new StringBuilder("/api/inbound-orders");
+        if (status != null && !status.isBlank()) {
+            path.append("?status=").append(URLEncoder.encode(status.trim(), StandardCharsets.UTF_8));
+        }
+        JsonNode body = authorizedGetJson(path.toString(), "入库单");
+        if (!body.isArray()) {
+            throw new RawMaterialReadException(
+                    RAW_MATERIAL_CONTRACT_DRIFT, "入库单响应不是数组，契约已漂移");
+        }
+        List<YuanliaokcInboundOrder> orders = new ArrayList<>(body.size());
+        for (JsonNode node : body) {
+            orders.add(YuanliaokcPayloadParser.inboundOrder(node, READ_DRIFT));
+        }
+        return List.copyOf(orders);
+    }
+
+    @Override
+    public List<YuanliaokcStockTransaction> stockTransactions(
+            Long materialId, String transactionType, int limit, int offset) {
+        // 上游对 limit 有 min(limit, 500) 保护，这里再钉一次工具面的 1..200 边界，
+        // 防止调用方把 0/负数传给上游造成语义歧义（limit=0 在上游等于空结果）。
+        int boundedLimit = Math.max(1, Math.min(limit, 200));
+        int boundedOffset = Math.max(0, offset);
+        StringBuilder path = new StringBuilder("/api/transactions?limit=")
+                .append(boundedLimit)
+                .append("&offset=")
+                .append(boundedOffset);
+        if (materialId != null) {
+            path.append("&material_id=").append(materialId);
+        }
+        if (transactionType != null && !transactionType.isBlank()) {
+            path.append("&transaction_type=")
+                    .append(URLEncoder.encode(transactionType.trim(), StandardCharsets.UTF_8));
+        }
+        JsonNode body = authorizedGetJson(path.toString(), "流水");
+        if (!body.isArray()) {
+            throw new RawMaterialReadException(
+                    RAW_MATERIAL_CONTRACT_DRIFT, "流水响应不是数组，契约已漂移");
+        }
+        List<YuanliaokcStockTransaction> rows = new ArrayList<>(body.size());
+        for (JsonNode node : body) {
+            rows.add(YuanliaokcPayloadParser.transaction(node, READ_DRIFT));
+        }
+        return List.copyOf(rows);
+    }
+
+    /** 读侧契约漂移工厂：交给共享解析器（{@link YuanliaokcPayloadParser}），异常类型归读通道。 */
+    private static final java.util.function.Function<String, RuntimeException> READ_DRIFT =
+            message -> new RawMaterialReadException(RAW_MATERIAL_CONTRACT_DRIFT, message);
+
+    /**
+     * 带令牌生命周期的只读 GET 公共流程：登录换令牌 → 401 作废重登一次 → 再拒才定性鉴权失败。
+     * 三个读端点（结存/入库单/流水）共用，令牌缓存也共用——同一只读账号没有理由各养一份令牌。
+     */
+    private JsonNode authorizedGetJson(String pathAndQuery, String interfaceLabel) {
         requireConfigured();
         String token = cachedToken.get();
         if (token == null) {
             token = login();
             cachedToken.set(token);
         }
-        HttpResponse<byte[]> response = send(stockRequest(token, keyword));
+        HttpResponse<byte[]> response = send(getRequest(token, pathAndQuery));
         if (response.statusCode() == 401) {
             // 令牌自然过期或被上游作废：重登一次。再次 401 才定性为鉴权失败。
             cachedToken.set(null);
             token = login();
             cachedToken.set(token);
-            response = send(stockRequest(token, keyword));
+            response = send(getRequest(token, pathAndQuery));
             if (response.statusCode() == 401) {
                 throw new RawMaterialReadException(
                         RAW_MATERIAL_UNAUTHORIZED, "上游拒绝了只读令牌（重登后仍 401）");
@@ -86,9 +150,10 @@ public class YuanliaokcReadClient implements YuanliaokcReadGateway {
         }
         if (response.statusCode() != 200) {
             throw new RawMaterialReadException(
-                    RAW_MATERIAL_UNAVAILABLE, "上游结存接口异常状态 " + response.statusCode());
+                    RAW_MATERIAL_UNAVAILABLE,
+                    "上游" + interfaceLabel + "接口异常状态 " + response.statusCode());
         }
-        return parseRows(bodyJson(response));
+        return bodyJson(response);
     }
 
     private void requireConfigured() {
@@ -125,12 +190,8 @@ public class YuanliaokcReadClient implements YuanliaokcReadGateway {
         return token.asText();
     }
 
-    private HttpRequest stockRequest(String token, String keyword) {
-        StringBuilder path = new StringBuilder("/api/stock?only_in_stock=true");
-        if (keyword != null && !keyword.isBlank()) {
-            path.append("&keyword=").append(URLEncoder.encode(keyword.trim(), StandardCharsets.UTF_8));
-        }
-        return HttpRequest.newBuilder(resolve(path.toString()))
+    private HttpRequest getRequest(String token, String pathAndQuery) {
+        return HttpRequest.newBuilder(resolve(pathAndQuery))
                 .timeout(properties.getReadTimeout())
                 .header("Authorization", "Bearer " + token)
                 .header("Accept", "application/json")

@@ -24,6 +24,12 @@ public class YuanliaokcGatewayProperties {
     private URI endpoint;
     private String username;
     private String password;
+    // 写通道（出入库 MCP）：独立开关 + 独立写账号。写账号绝不复用只读账号——
+    // 上游按角色区分 require_writer/require_reviewer，读凭据天然无写权限，
+    // 两套凭据分开配置才能保证「读通道永远无法升格成写」。默认关。
+    private boolean writeEnabled;
+    private String writeUsername;
+    private String writePassword;
     private String allowedHost = "yuanliaokc-api";
     private int allowedPort = 9200;
     private Duration connectTimeout = Duration.ofSeconds(3);
@@ -46,6 +52,20 @@ public class YuanliaokcGatewayProperties {
                 && !password.isBlank();
     }
 
+    /**
+     * 写通道是否就绪：在 {@link #isReady()}（端点/主机/端口钉死 + 读凭据齐全）的基础上，
+     * 还要求显式打开写开关且写凭据齐全。任何一项缺失都视为「本部署未开放写」，
+     * 写客户端 fail-closed 且不发包——与读通道的 NOT_CONFIGURED 同一哲学。
+     */
+    public boolean isWriteReady() {
+        return isReady()
+                && writeEnabled
+                && writeUsername != null
+                && !writeUsername.isBlank()
+                && writePassword != null
+                && !writePassword.isBlank();
+    }
+
     private static int effectivePort(URI endpoint) {
         if (endpoint.getPort() != -1) {
             return endpoint.getPort();
@@ -61,6 +81,12 @@ public class YuanliaokcGatewayProperties {
     public void setUsername(String username) { this.username = username; }
     public String getPassword() { return password; }
     public void setPassword(String password) { this.password = password; }
+    public boolean isWriteEnabled() { return writeEnabled; }
+    public void setWriteEnabled(boolean writeEnabled) { this.writeEnabled = writeEnabled; }
+    public String getWriteUsername() { return writeUsername; }
+    public void setWriteUsername(String writeUsername) { this.writeUsername = writeUsername; }
+    public String getWritePassword() { return writePassword; }
+    public void setWritePassword(String writePassword) { this.writePassword = writePassword; }
     public String getAllowedHost() { return allowedHost; }
     public void setAllowedHost(String value) { allowedHost = normalize(value, "yuanliaokc-api"); }
     public int getAllowedPort() { return allowedPort; }

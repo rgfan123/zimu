@@ -38,6 +38,26 @@ class YuanliaokcReadClientTest {
              "batch_count":3,"earliest_expiry":"2026-11-02","status":"normal"}
             """;
 
+    /** 与上游 _inbound_out 投影同构的入库单样例（含一行）。 */
+    private static final String INBOUND_ORDER =
+            """
+            {"id":11,"order_no":"RK20260831001","supplier_name":"雷山供应商","warehouse_id":1,
+             "warehouse_name":"冷库一号","status":"pending_approval","notes":"MCP 建单",
+             "created_at":"2026-08-31T09:00:00",
+             "lines":[{"id":21,"material_id":7,"material_name":"雷山黑猪前腿","batch_no":null,
+                       "supplier_batch_no":"SUP-77","piece_count":12,"quantity_kg":103.5,
+                       "production_date":"2026-08-30","expiry_date":null,"created_batch_id":null}]}
+            """;
+
+    /** 与上游 TransactionOut 契约同构的流水样例：报废出库，变动量为负。 */
+    private static final String TRANSACTION_ROW =
+            """
+            {"id":31,"material_id":7,"material_name":"雷山黑猪前腿","batch_id":5,"batch_no":"C0001",
+             "transaction_type":"scrap_out","quantity_change_kg":-2.5,"quantity_after_kg":101.0,
+             "source_document_type":"scrap_order","source_document_id":9,"notes":"变质",
+             "operator_id":3,"created_at":"2026-08-31T10:00:00"}
+            """;
+
     private final ObjectMapper mapper = new ObjectMapper();
     private HttpServer server;
     private YuanliaokcGatewayProperties properties;
@@ -52,12 +72,19 @@ class YuanliaokcReadClientTest {
     private volatile boolean stockRowMissingRequiredField;
     private volatile int stockStatus = 200;
     private volatile String observedLoginForm;
+    private volatile boolean inboundBodyNotArray;
+    private volatile boolean inboundLineMissingMaterialId;
+    private volatile String observedInboundQuery;
+    private volatile boolean transactionMissingType;
+    private volatile String observedTransactionQuery;
 
     @BeforeEach
     void setUp() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/auth/login", this::handleLogin);
         server.createContext("/api/stock", this::handleStock);
+        server.createContext("/api/inbound-orders", this::handleInboundOrders);
+        server.createContext("/api/transactions", this::handleTransactions);
         server.start();
         properties = new YuanliaokcGatewayProperties();
         properties.setEnabled(true);
@@ -197,6 +224,105 @@ class YuanliaokcReadClientTest {
         assertThat(stockCalls).hasValue(0);
     }
 
+    // ------------------------------------------------------------------
+    // 入库单读路径（出入库 MCP）
+    // ------------------------------------------------------------------
+
+    @Test
+    void inboundOrdersParseWhitelistedFieldsAndPassStatusThrough() {
+        List<YuanliaokcInboundOrder> orders = client().inboundOrders("pending_approval");
+
+        assertThat(orders).hasSize(1);
+        YuanliaokcInboundOrder order = orders.get(0);
+        assertThat(order.orderNo()).isEqualTo("RK20260831001");
+        assertThat(order.supplierName()).isEqualTo("雷山供应商");
+        assertThat(order.warehouseName()).isEqualTo("冷库一号");
+        assertThat(order.status()).isEqualTo("pending_approval");
+        assertThat(order.lines()).hasSize(1);
+        YuanliaokcInboundOrder.Line line = order.lines().get(0);
+        assertThat(line.materialId()).isEqualTo(7L);
+        assertThat(line.quantityKg()).isEqualByComparingTo(new BigDecimal("103.5"));
+        assertThat(line.batchNo()).isNull();
+        assertThat(line.createdBatchId()).isNull();
+        // status 原样传给上游查询串
+        assertThat(observedInboundQuery).isEqualTo("status=pending_approval");
+        assertThat(logins).hasValue(1);
+    }
+
+    @Test
+    void inboundOrdersWithoutStatusOmitTheQueryParameter() {
+        client().inboundOrders(null);
+        assertThat(observedInboundQuery).isNull();
+    }
+
+    @Test
+    void nonArrayInboundBodyIsContractDrift() {
+        inboundBodyNotArray = true;
+
+        assertThatThrownBy(() -> client().inboundOrders(null))
+                .isInstanceOf(RawMaterialReadException.class)
+                .extracting(e -> ((RawMaterialReadException) e).code())
+                .isEqualTo(RawMaterialReadException.Code.RAW_MATERIAL_CONTRACT_DRIFT);
+    }
+
+    @Test
+    void inboundLineMissingRequiredFieldIsContractDriftNotAGuessedDefault() {
+        inboundLineMissingMaterialId = true;
+
+        assertThatThrownBy(() -> client().inboundOrders(null))
+                .isInstanceOf(RawMaterialReadException.class)
+                .extracting(e -> ((RawMaterialReadException) e).code())
+                .isEqualTo(RawMaterialReadException.Code.RAW_MATERIAL_CONTRACT_DRIFT);
+    }
+
+    // ------------------------------------------------------------------
+    // 流水读路径（出入库 MCP）
+    // ------------------------------------------------------------------
+
+    @Test
+    void transactionsParseSignedKgAndForwardFiltersLimitAndOffset() {
+        List<YuanliaokcStockTransaction> rows =
+                client().stockTransactions(7L, "scrap_out", 50, 10);
+
+        assertThat(rows).hasSize(1);
+        YuanliaokcStockTransaction row = rows.get(0);
+        assertThat(row.transactionType()).isEqualTo("scrap_out");
+        // 出库变动量必须保住负号：这是流水与结存的根本区别
+        assertThat(row.quantityChangeKg()).isEqualByComparingTo(new BigDecimal("-2.5"));
+        assertThat(row.quantityAfterKg()).isEqualByComparingTo(new BigDecimal("101.0"));
+        assertThat(row.sourceDocumentType()).isEqualTo("scrap_order");
+        assertThat(row.operatorId()).isEqualTo(3L);
+        assertThat(observedTransactionQuery)
+                .isEqualTo("limit=50&offset=10&material_id=7&transaction_type=scrap_out");
+    }
+
+    @Test
+    void transactionsClampLimitIntoOneToTwoHundred() {
+        client().stockTransactions(null, null, 9999, -5);
+        assertThat(observedTransactionQuery).isEqualTo("limit=200&offset=0");
+    }
+
+    @Test
+    void transactionRowMissingRequiredFieldIsContractDrift() {
+        transactionMissingType = true;
+
+        assertThatThrownBy(() -> client().stockTransactions(null, null, 50, 0))
+                .isInstanceOf(RawMaterialReadException.class)
+                .extracting(e -> ((RawMaterialReadException) e).code())
+                .isEqualTo(RawMaterialReadException.Code.RAW_MATERIAL_CONTRACT_DRIFT);
+    }
+
+    @Test
+    void allThreeReadPathsShareOneCachedToken() {
+        YuanliaokcReadClient client = client();
+        client.stock(null);
+        client.inboundOrders(null);
+        client.stockTransactions(null, null, 50, 0);
+
+        // 同一只读账号只登录一次：结存/入库单/流水共用令牌缓存
+        assertThat(logins).hasValue(1);
+    }
+
     private YuanliaokcReadClient client() {
         return new YuanliaokcReadClient(properties, mapper);
     }
@@ -241,6 +367,46 @@ class YuanliaokcReadClientTest {
             return;
         }
         respond(exchange, 200, "[" + STOCK_ROW + "]");
+    }
+
+    private void handleInboundOrders(HttpExchange exchange) throws IOException {
+        if (!bearerAccepted(exchange)) {
+            respond(exchange, 401, "{\"detail\":\"登录已过期，请重新登录\"}");
+            return;
+        }
+        observedInboundQuery = exchange.getRequestURI().getRawQuery();
+        if (inboundBodyNotArray) {
+            respond(exchange, 200, "{\"items\":[]}");
+            return;
+        }
+        if (inboundLineMissingMaterialId) {
+            respond(exchange, 200,
+                    "[{\"id\":11,\"order_no\":\"RK20260831001\",\"warehouse_id\":1,"
+                            + "\"warehouse_name\":\"冷库一号\",\"status\":\"pending_approval\","
+                            + "\"created_at\":\"2026-08-31T09:00:00\","
+                            + "\"lines\":[{\"id\":21,\"material_name\":\"缺物料\",\"quantity_kg\":1.0}]}]");
+            return;
+        }
+        respond(exchange, 200, "[" + INBOUND_ORDER + "]");
+    }
+
+    private void handleTransactions(HttpExchange exchange) throws IOException {
+        if (!bearerAccepted(exchange)) {
+            respond(exchange, 401, "{\"detail\":\"登录已过期，请重新登录\"}");
+            return;
+        }
+        observedTransactionQuery = exchange.getRequestURI().getRawQuery();
+        if (transactionMissingType) {
+            respond(exchange, 200, "[{\"id\":31,\"material_id\":7,\"quantity_change_kg\":-2.5,"
+                    + "\"quantity_after_kg\":101.0,\"created_at\":\"2026-08-31T10:00:00\"}]");
+            return;
+        }
+        respond(exchange, 200, "[" + TRANSACTION_ROW + "]");
+    }
+
+    private boolean bearerAccepted(HttpExchange exchange) {
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        return authorization != null && authorization.equals("Bearer " + issuedToken);
     }
 
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {

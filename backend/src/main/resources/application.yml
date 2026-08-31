@@ -123,6 +123,11 @@ app:
       endpoint: ${YUANLIAOKC_GATEWAY_ENDPOINT:}
       username: ${YUANLIAOKC_GATEWAY_USERNAME:}
       password: ${YUANLIAOKC_GATEWAY_PASSWORD:}
+      # 写通道（出入库 MCP）：默认关。写账号是 yuanliaokc 侧 operator/reviewer 角色的
+      # 专用账号，与只读账号分离；三项任一缺失则 isWriteReady=false，写客户端不发包。
+      write-enabled: ${YUANLIAOKC_GATEWAY_WRITE_ENABLED:false}
+      write-username: ${YUANLIAOKC_GATEWAY_WRITE_USERNAME:}
+      write-password: ${YUANLIAOKC_GATEWAY_WRITE_PASSWORD:}
       allowed-host: ${YUANLIAOKC_GATEWAY_ALLOWED_HOST:yuanliaokc-api}
       allowed-port: ${YUANLIAOKC_GATEWAY_ALLOWED_PORT:9200}
       connect-timeout: ${YUANLIAOKC_GATEWAY_CONNECT_TIMEOUT:PT3S}
