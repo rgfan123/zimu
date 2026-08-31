@@ -19,6 +19,21 @@ public interface BundleReadQuery {
     PageResponse<BundleCandidate> findCandidates(
             String query, Long providerId, String mappingStatus, int page, int size);
 
+    /**
+     * 组包经济核算所需的组件 SKU 事实（票：组包师 Agent）。按入参顺序返回；
+     * 未命中的 id 不补空行——调用方据缺失项 fail-fast，绝不带缺口硬算。
+     */
+    List<ComponentSkuFact> componentSkuFacts(List<Long> skuIds);
+
+    /** purchasePrice 为 decimal-string（分位两位），无价时 null——缺价必须显式呈现。 */
+    record ComponentSkuFact(
+            String id,
+            String skuCode,
+            String productName,
+            String specification,
+            boolean active,
+            String purchasePrice) {}
+
     record ProviderSummary(String id, String code, String name, String type) {}
 
     record BundleSummary(

@@ -408,4 +408,32 @@ public class BundleReadService implements BundleReadQuery {
             ProviderSummary provider,
             String providerSkuCode) {}
 
+    @Override
+    public List<ComponentSkuFact> componentSkuFacts(List<Long> skuIds) {
+        if (skuIds.isEmpty()) {
+            return List.of();
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(skuIds.size(), "?"));
+        var byId = new java.util.HashMap<String, ComponentSkuFact>();
+        jdbc.query(
+                "SELECT s.id, s.sku_code, p.product_name, s.specification, s.active, s.purchase_price "
+                        + "FROM app.skus s JOIN app.products p ON p.id = s.product_id "
+                        + "WHERE s.id IN (" + placeholders + ")",
+                resultSet -> {
+                    byId.put(String.valueOf(resultSet.getLong("id")), new ComponentSkuFact(
+                            String.valueOf(resultSet.getLong("id")),
+                            resultSet.getString("sku_code"),
+                            resultSet.getString("product_name"),
+                            resultSet.getString("specification"),
+                            resultSet.getBoolean("active"),
+                            price(resultSet.getBigDecimal("purchase_price"))));
+                },
+                skuIds.toArray());
+        // 按入参顺序回，缺失项如实缺席（调用方 fail-fast）
+        return skuIds.stream()
+                .map(id -> byId.get(String.valueOf(id)))
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    }
+
 }

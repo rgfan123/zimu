@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV100() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV101() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -119,8 +119,8 @@ class ProductionMigrationHistoryCompatTest {
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 92 条历史（V1–V73 + 跳号的 V77、V83–V89 + SKU 线 V90–V98 + V99 数量整数化 + V100 手工渠道）")
-                .hasSize(92);
+                .as("完整升级后应恰有 93 条历史（…V99 整数化 + V100 手工渠道 + V101 组包师）")
+                .hasSize(93);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
@@ -129,8 +129,8 @@ class ProductionMigrationHistoryCompatTest {
         // 两条并行开发线在 2026-08-27 合流：V59–V64 为已上线的企微/档案/订单线
         //（生产已执行，号位不可动），客户跟进线原 V59–V66 八个迁移整体顺延为 V65–V72
         //（其中 V71 冻结结构化执行意图、V72 新增来源订单附件任务）。
-        assertThat(historyAfter.subList(47, 92))
-                .as("升级只追加到 V100；V90–V98 为 SKU 主数据线重编号合入，V99 数量整数化，V100 手工渠道")
+        assertThat(historyAfter.subList(47, 93))
+                .as("升级只追加到 V101；V90–V98 SKU 线重编号，V99 整数化，V100 手工渠道，V101 组包师")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -266,7 +266,10 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V99__integer_goods_quantities.sql")),
                         new HistoryRow("100", "V100__manual_source_channel.sql",
                                 "manual source channel",
-                                crc32Of("V100__manual_source_channel.sql")));
+                                crc32Of("V100__manual_source_channel.sql")),
+                        new HistoryRow("101", "V101__bundle_composer_agent.sql",
+                                "bundle composer agent",
+                                crc32Of("V101__bundle_composer_agent.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // 后续断言覆盖内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片、

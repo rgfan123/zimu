@@ -28,7 +28,9 @@ class McpBundleReadToolsUnitTest {
     @Test
     void allToolsAreReadOnlyAndStayInDedicatedModule() {
         assertThat(provider.tools()).extracting(McpTool::name)
-                .containsExactly("list_bundles", "get_bundle", "find_bundle_candidates");
+                .containsExactly(
+                        "list_bundles", "get_bundle", "find_bundle_candidates",
+                        "estimate_bundle_economics");
         assertThat(provider.tools()).allSatisfy(tool -> {
             assertThat(tool.readOnly()).isTrue();
             assertThat(tool.module()).isEqualTo("bundles-read");
@@ -156,6 +158,70 @@ class McpBundleReadToolsUnitTest {
                 .hasMessageContaining("bundle_id");
     }
 
+    /** 组包经济核算：算术全在工具内、口径公开可复算——组包师 Agent 的可信底座。 */
+    @Test
+    void bundleEconomicsComputesExactMarginFromToolNotModel() throws Exception {
+        reads.componentFacts = List.of(
+                new BundleReadQuery.ComponentSkuFact("11", "SKU-A", "羊腿肉 500g", "500g/袋", true, "36.50"),
+                new BundleReadQuery.ComponentSkuFact("12", "SKU-B", "黑猪排骨 450g", "450g/盒", true, "41.00"));
+
+        JsonNode result = tool("estimate_bundle_economics").invoke(context, Map.of(
+                "components", List.of(
+                        Map.of("sku_id", "11", "quantity", "2"),
+                        Map.of("sku_id", "12", "quantity", "1")),
+                "expected_price", "199",
+                "freight_fee", "12",
+                "storage_fee", "3"));
+
+        JsonNode economics = result.path("economics");
+        // 组件 36.50×2+41.00=114.00；总成本 114+12+3+0=129.00；毛利 70.00；毛利率 0.3518
+        assertThat(economics.path("computable").asBoolean()).isTrue();
+        assertThat(economics.path("component_cost").asText()).isEqualTo("114.00");
+        assertThat(economics.path("total_cost").asText()).isEqualTo("129.00");
+        assertThat(economics.path("gross_margin").asText()).isEqualTo("70.00");
+        assertThat(economics.path("gross_margin_rate").asText()).isEqualTo("0.3518");
+        assertThat(result.path("components").get(0).path("line_cost").asText()).isEqualTo("73.00");
+        assertThat(result.path("missing_prices")).isEmpty();
+    }
+
+    /** 缺供货价绝不带缺口硬算：computable=false 且逐项点名，总账全 null。 */
+    @Test
+    void bundleEconomicsFailsExplicitlyOnMissingPurchasePrice() throws Exception {
+        reads.componentFacts = List.of(
+                new BundleReadQuery.ComponentSkuFact("11", "SKU-A", "羊腿肉 500g", "500g/袋", true, "36.50"),
+                new BundleReadQuery.ComponentSkuFact("13", "SKU-C", "新品无价", "1kg", false, null));
+
+        JsonNode result = tool("estimate_bundle_economics").invoke(context, Map.of(
+                "components", List.of(
+                        Map.of("sku_id", "11", "quantity", "1"),
+                        Map.of("sku_id", "13", "quantity", "1")),
+                "expected_price", "99"));
+
+        assertThat(result.path("economics").path("computable").asBoolean()).isFalse();
+        assertThat(result.path("economics").path("total_cost").isNull()).isTrue();
+        assertThat(result.path("missing_prices")).hasSize(1);
+        assertThat(result.path("missing_prices").get(0).path("sku_code").asText()).isEqualTo("SKU-C");
+        assertThat(result.path("warnings").get(0).asText()).contains("已停用");
+    }
+
+    /** 入参门禁：小数数量/负价/未知 SKU 分别拒绝。 */
+    @Test
+    void bundleEconomicsRejectsDecimalQuantityBadMoneyAndUnknownSku() {
+        reads.componentFacts = List.of();
+        assertThatThrownBy(() -> tool("estimate_bundle_economics").invoke(context, Map.of(
+                "components", List.of(Map.of("sku_id", "11", "quantity", "1.5")),
+                "expected_price", "99")))
+                .hasMessageContaining("正整数");
+        assertThatThrownBy(() -> tool("estimate_bundle_economics").invoke(context, Map.of(
+                "components", List.of(Map.of("sku_id", "11", "quantity", "1")),
+                "expected_price", "99.999")))
+                .hasMessageContaining("两位小数");
+        assertThatThrownBy(() -> tool("estimate_bundle_economics").invoke(context, Map.of(
+                "components", List.of(Map.of("sku_id", "11", "quantity", "1")),
+                "expected_price", "99")))
+                .hasMessageContaining("SKU 不存在");
+    }
+
     private McpTool tool(String name) {
         return provider.tools().stream().filter(tool -> name.equals(tool.name())).findFirst().orElseThrow();
     }
@@ -166,6 +232,13 @@ class McpBundleReadToolsUnitTest {
         private BundleDetail bundle;
         private PageResponse<BundleSummary> bundles;
         private PageResponse<BundleCandidate> candidates;
+        private java.util.List<ComponentSkuFact> componentFacts = java.util.List.of();
+
+        @Override
+        public java.util.List<ComponentSkuFact> componentSkuFacts(java.util.List<Long> skuIds) {
+            return componentFacts;
+        }
+
         @Override
         public PageResponse<BundleSummary> searchBundles(
                 String status, Long providerId, String query, int page, int size) {

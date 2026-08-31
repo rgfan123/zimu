@@ -78,6 +78,28 @@ public class McpBundleReadTools {
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
                         this::findBundleCandidates,
+                        MODULE),
+                new McpToolRegistry.SimpleTool(
+                        "estimate_bundle_economics",
+                        "组包经济核算（组包师 Agent 的算账底座）：给定组件清单与预期售价、运费、仓储费、"
+                                + "其他费用，按 SKU 供货价精确核算组件成本、总成本、毛利与毛利率。"
+                                + "全部算术由本工具完成，调用方不得自行心算；组件缺供货价时 computable=false "
+                                + "并逐项列出缺价 SKU，绝不带缺口硬算。金额均为 decimal-string。",
+                        schema(
+                                Map.of(
+                                        "components", McpToolRegistry.arrayProperty(
+                                                "组件清单，至少 1 项",
+                                                schema(
+                                                        Map.of(
+                                                                "sku_id", stringProperty("系统 SKU ID"),
+                                                                "quantity", stringProperty("每份礼包所含数量，正整数")),
+                                                        List.of("sku_id", "quantity"))),
+                                        "expected_price", stringProperty("预期售价（元，最多两位小数）"),
+                                        "freight_fee", stringProperty("每份运费（元，可选，默认 0）"),
+                                        "storage_fee", stringProperty("每份仓储费（元，可选，默认 0）"),
+                                        "other_fee", stringProperty("每份其他费用（元，可选，默认 0）")),
+                                List.of("components", "expected_price")),
+                        this::estimateBundleEconomics,
                         MODULE));
     }
 
@@ -327,6 +349,137 @@ public class McpBundleReadTools {
             throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 " + key + " 必须是整数");
         }
         throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 " + key + " 必须是整数");
+    }
+
+    private static final java.util.regex.Pattern MONEY =
+            java.util.regex.Pattern.compile("^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$");
+    private static final java.util.regex.Pattern POSITIVE_INT =
+            java.util.regex.Pattern.compile("^[1-9][0-9]*$");
+    private static final int MAX_ECONOMICS_COMPONENTS = 50;
+
+    /**
+     * 组包经济核算：BigDecimal 全程、两位分厘，毛利率四位小数。
+     * 缺价组件 fail-explicit（computable=false + 逐项列缺），未知 SKU 直接 422——
+     * 让 Agent 回到 find_bundle_candidates 取合法组件，而不是拿错账继续聊。
+     */
+    private JsonNode estimateBundleEconomics(McpRequestContext context, Map<String, Object> args) {
+        Object rawComponents = args.get("components");
+        if (!(rawComponents instanceof List<?> list) || list.isEmpty()) {
+            throw BusinessException.badRequest("BUNDLE_ECONOMICS_COMPONENTS_REQUIRED", "组件清单不能为空");
+        }
+        if (list.size() > MAX_ECONOMICS_COMPONENTS) {
+            throw BusinessException.badRequest(
+                    "BUNDLE_ECONOMICS_COMPONENTS_TOO_MANY", "组件数量超过上限 " + MAX_ECONOMICS_COMPONENTS);
+        }
+        List<Long> skuIds = new java.util.ArrayList<>(list.size());
+        List<Integer> quantities = new java.util.ArrayList<>(list.size());
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> component)) {
+                throw BusinessException.badRequest("BUNDLE_ECONOMICS_COMPONENT_INVALID", "组件项必须是对象");
+            }
+            String quantityText = component.get("quantity") == null
+                    ? "" : String.valueOf(component.get("quantity")).trim();
+            if (!POSITIVE_INT.matcher(quantityText).matches()) {
+                throw BusinessException.badRequest(
+                        "BUNDLE_ECONOMICS_QUANTITY_INVALID", "组件数量必须为正整数: " + quantityText);
+            }
+            skuIds.add(WriteCommands.parseIdentifier(String.valueOf(component.get("sku_id"))));
+            quantities.add(Integer.valueOf(quantityText));
+        }
+        BigDecimal expectedPrice = money(args, "expected_price", null);
+        BigDecimal freight = money(args, "freight_fee", BigDecimal.ZERO);
+        BigDecimal storage = money(args, "storage_fee", BigDecimal.ZERO);
+        BigDecimal other = money(args, "other_fee", BigDecimal.ZERO);
+
+        Map<String, BundleReadQuery.ComponentSkuFact> facts = new java.util.LinkedHashMap<>();
+        reads.componentSkuFacts(skuIds).forEach(fact -> facts.put(fact.id(), fact));
+        List<Long> unknown = skuIds.stream()
+                .filter(id -> !facts.containsKey(String.valueOf(id)))
+                .distinct()
+                .toList();
+        if (!unknown.isEmpty()) {
+            throw BusinessException.unprocessable(
+                    "BUNDLE_ECONOMICS_SKU_NOT_FOUND", "SKU 不存在: " + unknown);
+        }
+
+        ObjectNode result = objectMapper.createObjectNode();
+        ArrayNode componentsNode = result.putArray("components");
+        ArrayNode missing = result.putArray("missing_prices");
+        ArrayNode warnings = result.putArray("warnings");
+        BigDecimal componentCost = BigDecimal.ZERO;
+        boolean computable = true;
+        for (int i = 0; i < skuIds.size(); i++) {
+            BundleReadQuery.ComponentSkuFact fact = facts.get(String.valueOf(skuIds.get(i)));
+            int quantity = quantities.get(i);
+            ObjectNode node = componentsNode.addObject();
+            node.put("sku_id", fact.id());
+            node.put("sku_code", fact.skuCode());
+            node.put("product_name", fact.productName());
+            node.put("specification", fact.specification());
+            node.put("quantity", quantity);
+            node.put("active", fact.active());
+            if (!fact.active()) {
+                warnings.add("SKU 已停用: " + fact.skuCode() + "（" + fact.productName() + "）");
+            }
+            if (fact.purchasePrice() == null) {
+                node.putNull("unit_purchase_price");
+                node.putNull("line_cost");
+                ObjectNode miss = missing.addObject();
+                miss.put("sku_id", fact.id());
+                miss.put("sku_code", fact.skuCode());
+                miss.put("product_name", fact.productName());
+                computable = false;
+                continue;
+            }
+            BigDecimal unit = new BigDecimal(fact.purchasePrice());
+            BigDecimal lineCost = unit.multiply(BigDecimal.valueOf(quantity));
+            node.put("unit_purchase_price", scale2(unit));
+            node.put("line_cost", scale2(lineCost));
+            componentCost = componentCost.add(lineCost);
+        }
+
+        ObjectNode economics = result.putObject("economics");
+        economics.put("computable", computable);
+        economics.put("expected_price", scale2(expectedPrice));
+        economics.put("freight_fee", scale2(freight));
+        economics.put("storage_fee", scale2(storage));
+        economics.put("other_fee", scale2(other));
+        if (computable) {
+            BigDecimal totalCost = componentCost.add(freight).add(storage).add(other);
+            BigDecimal margin = expectedPrice.subtract(totalCost);
+            economics.put("component_cost", scale2(componentCost));
+            economics.put("total_cost", scale2(totalCost));
+            economics.put("gross_margin", scale2(margin));
+            economics.put("gross_margin_rate", expectedPrice.signum() == 0
+                    ? null
+                    : margin.divide(expectedPrice, 4, java.math.RoundingMode.HALF_UP).toPlainString());
+        } else {
+            economics.putNull("component_cost");
+            economics.putNull("total_cost");
+            economics.putNull("gross_margin");
+            economics.putNull("gross_margin_rate");
+        }
+        return result;
+    }
+
+    private static BigDecimal money(Map<String, Object> args, String key, BigDecimal defaultValue) {
+        Object raw = args.get(key);
+        if (raw == null || String.valueOf(raw).isBlank()) {
+            if (defaultValue == null) {
+                throw BusinessException.badRequest("BUNDLE_ECONOMICS_PRICE_REQUIRED", key + " 不能为空");
+            }
+            return defaultValue;
+        }
+        String text = String.valueOf(raw).trim();
+        if (!MONEY.matcher(text).matches()) {
+            throw BusinessException.badRequest(
+                    "BUNDLE_ECONOMICS_PRICE_INVALID", key + " 必须是非负金额（最多两位小数）: " + text);
+        }
+        return new BigDecimal(text);
+    }
+
+    private static String scale2(BigDecimal value) {
+        return value.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
     }
 
     private static ObjectNode schema(Map<String, ObjectNode> properties, List<String> required) {
