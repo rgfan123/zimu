@@ -166,9 +166,10 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         if (header.version() != expectedOrderVersion) {
             throw BusinessException.conflict("VERSION_CONFLICT", "订单已更新，请刷新后重试");
         }
-        if (!"WECOM".equals(header.sourceChannel())) {
+        if (!"WECOM".equals(header.sourceChannel()) && !"MANUAL".equals(header.sourceChannel())) {
+            // 无批次通道（企微成单 / V100 手工建单）之外的渠道必须走批次确认路由。
             throw BusinessException.unprocessable(
-                    "ORDER_ROUTING_SOURCE_UNSUPPORTED", "该入口只处理已确认的企业微信订单");
+                    "ORDER_ROUTING_SOURCE_UNSUPPORTED", "该入口只处理已确认的企业微信/手工订单");
         }
         if (header.sourceImportBatchId() != null) {
             throw BusinessException.unprocessable(
@@ -279,7 +280,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 JOIN app.skus s ON s.id=ol.sku_id
                 JOIN app.provider_skus ps ON ps.fulfillment_provider_id=fp.id
                     AND ps.sku_id=ol.sku_id AND ps.active
-                WHERE o.id=? AND o.data_scope='BUSINESS' AND o.source_channel='WECOM'
+                WHERE o.id=? AND o.data_scope='BUSINESS' AND o.source_channel IN ('WECOM', 'MANUAL')
                 ORDER BY fp.id, ol.line_no
                 FOR UPDATE OF ol, f
                 """,

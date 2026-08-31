@@ -104,10 +104,15 @@ class ConnectorApiTest {
 
         assertThat(configs.getStatusCode()).isEqualTo(HttpStatus.OK);
         // 连接器集合跟随来源渠道枚举本身：新增来源渠道（及对应迁移登记）后无需改本测试。
+        // MANUAL（V100 手工建单）例外：它没有外部平台，设计上不存在连接器配置——
+        // connector_configs 的渠道白名单同样刻意不含它。
         assertThat(configs.getBody())
                 .extracting(config -> config.get("source_channel"))
                 .containsExactlyInAnyOrderElementsOf(
-                        Arrays.stream(SourceChannel.values()).map(SourceChannel::name).toList());
+                        Arrays.stream(SourceChannel.values())
+                                .filter(channel -> channel != SourceChannel.MANUAL)
+                                .map(SourceChannel::name)
+                                .toList());
         assertThat(configs.getBody()).allSatisfy(config -> assertThat(config)
                 .containsKeys("source_channel", "client_mode", "transport_mode", "enabled", "version")
                 .doesNotContainKey("credential_secret_ref")

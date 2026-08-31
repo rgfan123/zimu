@@ -8552,3 +8552,38 @@ WITH shipped_products AS (
    FROM shipped_products
   GROUP BY metric_date, source_channel, category_id, category_code, category_name, product_id, product_code, product_name, sku_id, sku_code;
 -- END V99__integer_goods_quantities.sql
+
+-- BEGIN V100__manual_source_channel.sql
+-- 手工建单渠道 MANUAL：只放行真实出现的两张表（orders/customer_source_refs），
+-- 其余渠道白名单不加——手工单无批次/无连接器/无回传。
+ALTER TABLE app.orders DROP CONSTRAINT orders_source_channel_check;
+ALTER TABLE app.orders ADD CONSTRAINT orders_source_channel_check
+    CHECK (source_channel IN (
+        'CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI',
+        'WANGQI', 'DAZHE', 'WANQI', 'WECOM', 'MANUAL'));
+
+ALTER TABLE app.orders DROP CONSTRAINT orders_check2;
+ALTER TABLE app.orders ADD CONSTRAINT orders_check2
+    CHECK (data_scope = 'DEMO'
+        OR source_channel IN ('WECOM', 'MANUAL')
+        OR source_import_batch_id IS NOT NULL);
+
+ALTER TABLE app.orders DROP CONSTRAINT orders_check3;
+ALTER TABLE app.orders ADD CONSTRAINT orders_check3
+    CHECK (data_scope = 'DEMO'
+        OR source_channel NOT IN ('WECOM', 'MANUAL')
+        OR source_import_batch_id IS NULL);
+
+ALTER TABLE app.orders DROP CONSTRAINT orders_settlement_consistency;
+ALTER TABLE app.orders ADD CONSTRAINT orders_settlement_consistency
+    CHECK ((source_channel IN ('WANQI', 'MANUAL')
+                AND settlement_method = 'UNSPECIFIED'
+                AND settlement_time IS NULL)
+        OR (settlement_method <> 'UNSPECIFIED' AND settlement_time IS NOT NULL));
+
+ALTER TABLE app.customer_source_refs DROP CONSTRAINT customer_source_refs_source_channel_check;
+ALTER TABLE app.customer_source_refs ADD CONSTRAINT customer_source_refs_source_channel_check
+    CHECK (source_channel IN (
+        'CAISHIXIAN', 'JUFUBAO', 'FEIXIANG', 'ZHONGHUI',
+        'WANGQI', 'DAZHE', 'WANQI', 'WECOM', 'MANUAL'));
+-- END V100__manual_source_channel.sql

@@ -43,14 +43,17 @@ public class OrderController {
     private final OrderQueryService queryService;
     private final FulfillmentReadService fulfillmentReadService;
     private final OrderCreateService orderCreateService;
+    private final ManualOrderCreateService manualOrderCreateService;
 
     public OrderController(
             OrderQueryService queryService,
             FulfillmentReadService fulfillmentReadService,
-            OrderCreateService orderCreateService) {
+            OrderCreateService orderCreateService,
+            ManualOrderCreateService manualOrderCreateService) {
         this.queryService = queryService;
         this.fulfillmentReadService = fulfillmentReadService;
         this.orderCreateService = orderCreateService;
+        this.manualOrderCreateService = manualOrderCreateService;
     }
 
     @GetMapping
@@ -106,6 +109,16 @@ public class OrderController {
     @GetMapping("/{order_id}/shipments")
     public List<Map<String, Object>> shipments(@PathVariable("order_id") String orderId) {
         return fulfillmentReadService.orderShipments(WriteCommands.parseIdentifier(orderId));
+    }
+
+    /** 手工建单（V100 MANUAL）：建成即 SKU_MAPPED，随后经 fulfillment-routing 生成发货单。 */
+    @PostMapping("/manual")
+    public ResponseEntity<?> createManual(
+            @RequestHeader(value = "Idempotency-Key", required = false) String key,
+            @RequestHeader(value = "X-Operator", required = false) String operator,
+            @Valid @RequestBody ManualOrderCreateWrite command) {
+        return WriteCommands.respond(manualOrderCreateService.create(
+                command, WriteCommands.requireIdempotencyKey(key), WriteCommands.writeContext(operator)));
     }
 
     @PostMapping("/{order_id}/corrections")

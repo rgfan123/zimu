@@ -407,10 +407,12 @@ public class OrderCreateService {
         long startedNanos = System.nanoTime();
         SourceChannel channel = input.source();
         boolean imported = sourceImportBatchId != null;
-        if ((!imported && channel != SourceChannel.WECOM) || (imported && channel == SourceChannel.WECOM)) {
+        // 无批次通道白名单：WECOM（企微成单）与 MANUAL（V100 手工建单）；带批次入口反向拒绝两者。
+        boolean batchFreeChannel = channel == SourceChannel.WECOM || channel == SourceChannel.MANUAL;
+        if ((!imported && !batchFreeChannel) || (imported && batchFreeChannel)) {
             throw BusinessException.unprocessable(
                     "SOURCE_CHANNEL_NOT_SUPPORTED",
-                    imported ? "文件导入入口不接受 WECOM 渠道" : "内部创建入口仅支持 WECOM 渠道");
+                    imported ? "文件导入入口不接受无批次渠道（WECOM/MANUAL）" : "内部创建入口仅支持 WECOM/MANUAL 渠道");
         }
         if (orderRepository.existsByDataScopeAndSourceChannelAndSourceRef(
                 DataScope.BUSINESS, channel, input.sourceRef())) {
@@ -651,9 +653,11 @@ public class OrderCreateService {
         if (confirmedSkus == null || confirmedSkus.isEmpty()) {
             return Map.of();
         }
-        if (input.source() != SourceChannel.WECOM) {
+        if (input.source() != SourceChannel.WECOM && input.source() != SourceChannel.MANUAL) {
+            // 直接引用内部 SKU 的仅限「人已确认」的两条通道：企微草稿确认与 V100 手工建单；
+            // 文件/拉单渠道必须经来源映射词表，不给绕过口。
             throw BusinessException.unprocessable(
-                    "DIRECT_SKU_NOT_ALLOWED", "只有人工确认的企业微信订单可以直接引用内部 SKU");
+                    "DIRECT_SKU_NOT_ALLOWED", "只有人工确认的企业微信/手工订单可以直接引用内部 SKU");
         }
 
         Map<String, OrderItemInput> itemByLineRef = new LinkedHashMap<>();

@@ -12,5 +12,7 @@ public enum SourceChannel {
     WANGQI,
     /** 万齐订单管理导出 52 列来源文件。 */
     WANQI,
-    WECOM
+    WECOM,
+    /** 手工建单（柜台/运营直录）：不经导入批次，无平台拉取与回传（V100）。 */
+    MANUAL
 }

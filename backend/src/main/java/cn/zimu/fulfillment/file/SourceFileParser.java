@@ -281,6 +281,7 @@ class SourceFileParser {
             case WANGQI -> wangqi(sheetName, sheetIndex, rowIndex, cells);
             case WANQI -> wanqi52(sheetName, sheetIndex, rowIndex, cells);
             case WECOM -> throw new IllegalArgumentException("WECOM is not a file source adapter");
+            case MANUAL -> throw new IllegalArgumentException("MANUAL is not a file source adapter");
         };
     }
 
@@ -675,6 +676,7 @@ class SourceFileParser {
             case WANGQI -> index == 0;
             case WANQI -> index == 0;
             case WECOM -> false;
+            case MANUAL -> false;
         };
     }
 
