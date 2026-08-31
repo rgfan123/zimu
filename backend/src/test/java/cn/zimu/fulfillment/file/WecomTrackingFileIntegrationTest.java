@@ -124,7 +124,8 @@ class WecomTrackingFileIntegrationTest {
                 INSERT INTO app.source_channel_skus
                     (source_channel, source_sku_ref, source_product_name, source_specification,
                      quantity_multiplier, sku_id, active)
-                SELECT 'FEIXIANG', 'FX-PRODUCT-001', '子牧羊小腿', '标准箱', 2.000, sku_id, true
+                -- V99 商品数量整数化移植：来源数量必须为正整数，旧夹具「1.5 × 2」改为「1 × 3」保持履约量 3 不变。
+                SELECT 'FEIXIANG', 'FX-PRODUCT-001', '子牧羊小腿', '标准箱', 3.000, sku_id, true
                 FROM app.source_channel_skus
                 WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-TP-001'
                 ON CONFLICT (source_channel, source_sku_ref) DO NOTHING
@@ -229,6 +230,78 @@ class WecomTrackingFileIntegrationTest {
                         String.class,
                         Long.parseLong(exportId)))
                 .isEqualTo("COMPLETED");
+    }
+
+    /**
+     * 防回归（2026-08-31 中汇生产事故）：企微单聊发来的<b>来源订单表</b>必须走
+     * 「先认模板再分岔」的导入分支——生成 SOURCE_ORDER 导入批次并当场收口任务
+     * （SUCCEEDED + submission DRAFTED）。事故形态：导入成功但任务未收口，
+     * 租约到期被重领、attempts 耗尽后被兜底判成 WECOM_TRACKING_FILE_PROCESSING_FAILED。
+     */
+    @Test
+    void wecomSourceOrderFileImportsABatchAndSucceedsTheTaskInPlace() throws Exception {
+        responseBody.set(encrypt(zhonghuiSourceOrderWorkbook("S-WECOM-SOURCE-001")));
+        long submissionId = submissions.submit(fileMessage("WF-MSG-SOURCE-001", mediaUrl, "single"));
+
+        worker().poll();
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM app.async_tasks WHERE payload_ref=? AND task_type='WECOM_TRACKING_FILE'",
+                        String.class,
+                        "submission:" + submissionId))
+                .as("导入成功必须当场收口任务，不得留给租约重领打成 PROCESSING_FAILED")
+                .isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM app.message_submissions WHERE id=?",
+                        String.class,
+                        submissionId))
+                .isEqualTo("DRAFTED");
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.import_batches
+                        WHERE batch_type='SOURCE_ORDER' AND source_channel='ZHONGHUI'
+                          AND original_file_name LIKE 'zhonghui%'
+                        """,
+                        Long.class))
+                .as("订单表必须落成来源订单导入批次（与后台上传同一条链路）")
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.raw_import_rows rir JOIN app.import_batches ib "
+                                + "ON ib.id=rir.import_batch_id WHERE ib.source_channel='ZHONGHUI' "
+                                + "AND rir.source_order_ref='S-WECOM-SOURCE-001'",
+                        Long.class))
+                .isEqualTo(1);
+        // 订单表不是运单回传：不得产出运单草稿，也不得触发消息解读。
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.provider_tracking_drafts WHERE submission_id=?",
+                        Long.class,
+                        submissionId))
+                .isZero();
+        verifyNoInteractions(interpreter);
+    }
+
+    /** 中汇来源订单表（与 SourceFileParser 的 ZHONGHUI 指纹必填集一致）。 */
+    private byte[] zhonghuiSourceOrderWorkbook(String orderNo) throws Exception {
+        List<String> headers = List.of(
+                "订单号", "商品编号", "商品名称", "件数", "收件人", "收件电话", "收件地址",
+                "包装规格", "单位", "下单时间");
+        List<String> values = List.of(
+                orderNo, "60049901", "子牧企微订单表测试商品", "1",
+                "企微订单表收件人", "13000000010", "北京朝阳区示例路10号1001",
+                "500g*2", "份", "2026-08-30 10:30:00");
+        try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("Sheet1");
+            var header = sheet.createRow(0);
+            for (int index = 0; index < headers.size(); index++) {
+                header.createCell(index).setCellValue(headers.get(index));
+            }
+            var row = sheet.createRow(1);
+            for (int index = 0; index < values.size(); index++) {
+                row.createCell(index).setCellValue(values.get(index));
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        }
     }
 
     @Test
@@ -402,7 +475,7 @@ class WecomTrackingFileIntegrationTest {
                 submissionId);
         assertThat(draft)
                 .containsEntry("shipment_judgment", "PARTIAL")
-                .containsEntry("actual_quantity", new java.math.BigDecimal("1.000"));
+                .containsEntry("actual_quantity", 1);
         ResponseEntity<Map> detail = http.exchange(
                 "/api/v1/tracking-drafts/" + draft.get("id"),
                 HttpMethod.GET,
@@ -412,7 +485,7 @@ class WecomTrackingFileIntegrationTest {
         assertThat(detail.getBody())
                 .containsEntry("source", "WECOM_TRACKING_FILE")
                 .containsEntry("confirmation_scope", "SINGLE_TASK")
-                .containsEntry("actual_quantity", "1.000");
+                .containsEntry("actual_quantity", 1);
 
         ResponseEntity<Map> confirmed = batchConfirm(draft);
 
@@ -661,7 +734,7 @@ class WecomTrackingFileIntegrationTest {
                 "订单号", "会员名称", "商品名称", "商品ID", "订单商品ID", "可发货数量",
                 "收货人姓名", "收货人手机号", "收货人地址", "下单时间", "物流状态", "物流公司", "物流单号"));
         String row = orderRef + ",FX-MEMBER-001,子牧羊小腿,FX-PRODUCT-001," + orderRef
-                + "-LINE,1.500,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,\r\n";
+                + "-LINE,1,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,\r\n";
         return ("\uFEFF" + header + "\r\n" + row).getBytes(StandardCharsets.UTF_8);
     }
 
@@ -670,9 +743,9 @@ class WecomTrackingFileIntegrationTest {
                 "订单号", "会员名称", "商品名称", "商品ID", "订单商品ID", "可发货数量",
                 "收货人姓名", "收货人手机号", "收货人地址", "下单时间", "物流状态", "物流公司", "物流单号"));
         String first = orderRef + ",FX-MEMBER-001,子牧羊小腿,FX-PRODUCT-001," + orderRef
-                + "-LINE-1,1.500,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,";
+                + "-LINE-1,1,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,";
         String second = orderRef + ",FX-MEMBER-001,子牧羊小腿,FX-PRODUCT-001," + orderRef
-                + "-LINE-2,1.500,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,";
+                + "-LINE-2,1,张三,13800000000,上海市浦东新区测试路1号,2026-08-11 10:00:00,,,";
         return ("\uFEFF" + header + "\r\n" + first + "\r\n" + second + "\r\n")
                 .getBytes(StandardCharsets.UTF_8);
     }

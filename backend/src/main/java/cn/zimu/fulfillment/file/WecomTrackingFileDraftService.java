@@ -91,6 +91,26 @@ public class WecomTrackingFileDraftService {
         tasks.succeedOwned(task.id(), task.leaseOwner());
     }
 
+    /**
+     * 企微来源订单表导入成功后的任务收口（生产事故 2026-08-31：缺这一步会让任务租约
+     * 到期被反复重领，attempts 耗尽后被 FINALIZING 兜底判成「处理失败」——而导入其实
+     * 已成功，用户重发只会撞一批 ORDER_ALREADY_EXISTS）。
+     *
+     * <p>DRAFTED 语义沿用「已生成待确认产物」：来源订单批次已建（候选待批次确认），
+     * 与运单草稿等待确认同一阶段口径。导入自身的幂等键（wecom-source-import-<submission>）
+     * 保证租约竞争下不会产生第二个批次。
+     */
+    @Transactional
+    public void succeedSourceImport(AsyncTaskStore.AsyncTask task) {
+        MessageSubmission submission = requireSubmission(task.submissionId());
+        AsyncTaskStore.ApplicationFence fence = tasks.lockApplicationFence(task.id(), task.leaseOwner());
+        if (fence.disposition() == AsyncTaskStore.ApplicationDisposition.LOST_LEASE) {
+            return;
+        }
+        submission.setStatus(MessageSubmission.Status.DRAFTED);
+        tasks.succeedOwned(task.id(), task.leaseOwner());
+    }
+
     @Transactional
     public void recordFailure(
             AsyncTaskStore.AsyncTask task,
@@ -155,7 +175,8 @@ public class WecomTrackingFileDraftService {
         draft.setActualQuantity(shipmentRows.stream()
                 .map(TrackingFileService.ParsedTrackingRow::shippedQuantity)
                 .filter(java.util.Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add));
+                .mapToInt(Integer::intValue)
+                .sum());
         List<String> issues = new ArrayList<>();
         if (row.trackingNo() == null || row.trackingNo().isBlank()) {
             issues.add("TRACKING_NO_MISSING");
@@ -190,7 +211,7 @@ public class WecomTrackingFileDraftService {
                         "order_line_id", String.valueOf(item.orderLineId()),
                         "shipped_quantity", item.shippedQuantity() == null
                                 ? ""
-                                : item.shippedQuantity().toPlainString()))
+                                : String.valueOf(item.shippedQuantity())))
                 .toList());
         detail.put("result", row.result());
         detail.put("shipment_judgment", saved.getShipmentJudgment().name());

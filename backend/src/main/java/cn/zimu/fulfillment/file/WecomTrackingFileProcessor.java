@@ -140,6 +140,9 @@ public class WecomTrackingFileProcessor {
             throw new WecomTrackingFileException(
                     WecomTrackingFileFailureCode.WECOM_TRACKING_FILE_INVALID);
         }
+        // 导入成功必须当场收口任务（置 SUCCEEDED），否则租约到期被重领、attempts 耗尽后
+        // 会被兜底判成 WECOM_TRACKING_FILE_PROCESSING_FAILED——2026-08-31 中汇生产事故根因。
+        draftService.succeedSourceImport(task);
     }
 
     private SourceMessage source(long submissionId) {
