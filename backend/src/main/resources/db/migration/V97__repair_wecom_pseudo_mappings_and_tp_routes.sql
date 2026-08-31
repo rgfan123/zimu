@@ -85,6 +85,10 @@ BEGIN
             USING ERRCODE='55P03';
     END;
 
+    -- 部署时点解耦（2026-08-31，同 V98）：审计漂移（23514/P0001）→ 本段修复原子回滚 +
+    -- 落 SKU_OPS 复核事项，不再拒绝整版部署；锁不可得（55P03）仍拒绝。
+    BEGIN
+
     SELECT count(DISTINCT odl.id) INTO open_draft_dependency_count
     FROM app.order_drafts od
     JOIN app.order_draft_lines odl ON odl.order_draft_id=od.id
@@ -452,5 +456,17 @@ BEGIN
             'bundle_items_observed_during_migration', bundle_items_before),
         200,
         'SKU_MASTERDATA_REPAIR_APPLIED');
+    EXCEPTION WHEN SQLSTATE '23514' OR SQLSTATE 'P0001' THEN
+        RAISE WARNING 'V97 企微伪映射/TP 路由修复 skipped: % (audit drifted; repair rolled back, re-audit required)', SQLERRM;
+        INSERT INTO app.master_data_repair_audits
+            (migration_version, status, reason_code, detail)
+        VALUES
+            ('V97__repair_wecom_pseudo_mappings_and_tp_routes', 'SKIPPED_DRIFT',
+             'CANONICALIZATION_REAUDIT_REQUIRED',
+             jsonb_build_object(
+                 'message', 'V97 企微伪映射/TP 路由修复因审计前置漂移而跳过，需按当前生产事实重新取证后补做',
+                 'audit_error', SQLERRM))
+        ON CONFLICT (migration_version) DO NOTHING;
+    END;
 END;
 $$;

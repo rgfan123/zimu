@@ -1,7 +1,6 @@
 package cn.zimu.fulfillment.schema;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -14,7 +13,13 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** Ticket 08: canonical SKU repair is exact, soft-only, auditable and history preserving. */
+/**
+ * Ticket 08: canonical SKU repair is exact, soft-only, auditable and history preserving.
+ *
+ * <p>部署时点解耦（2026-08-31）：审计前置漂移（23514/P0001）不再让 V98 整笔失败——迁移成功、
+ * 修复段原子回滚（业务事实保持迁移前原样）、漂移事实落入 app.master_data_repair_audits
+ * 供重新取证后补做；只有锁不可得（55P03）仍然拒绝部署。
+ */
 @Testcontainers
 class SkuCanonicalizationMigrationTest {
 
@@ -95,42 +100,47 @@ class SkuCanonicalizationMigrationTest {
                 .contains("\"canonical_skus_updated\": 2")
                 .contains("\"aliases_inserted\": 2")
                 .contains("\"historical_snapshot_verified_unchanged\": true");
+        assertThat(intQuery(url, "SELECT count(*) FROM app.master_data_repair_audits"))
+                .as("修复完整落地时不得留下 SKIPPED_DRIFT 账目")
+                .isZero();
     }
 
     @Test
-    void anyTargetSkuFieldDriftFailsWithoutPartialRepair() throws Exception {
+    void anyTargetSkuFieldDriftSkipsRepairWithoutPartialWrite() throws Exception {
         String url = database(SKU_DRIFT_DB);
         execute(url, "UPDATE app.skus SET specification='301g' WHERE sku_code='SKU-JD-000019'");
 
-        assertThatThrownBy(() -> flyway(url, null).migrate())
-                .hasMessageContaining("canonical SKU audit precondition drifted");
+        // 部署时点解耦：目标 SKU 字段漂移（23514）不再拒绝部署——迁移成功、修复原子回滚、落账。
+        flyway(url, null).migrate();
 
         assertThat(singleQuery(url,
                         "SELECT concat_ws('|',specification,barcode,active::text) FROM app.skus "
                                 + "WHERE sku_code='SKU-JD-000019'"))
+                .as("漂移时业务事实一律不动：漂移后的规格保持迁移前原样，条码不得被补写")
                 .isEqualTo("301g|true");
-        assertNoRepair(url);
+        assertRepairSkippedWithAuditRow(url);
     }
 
     @Test
-    void anyProviderMappingMetadataDriftFailsWithoutPartialRepair() throws Exception {
+    void anyProviderMappingMetadataDriftSkipsRepairWithoutPartialWrite() throws Exception {
         String url = database(PROVIDER_DRIFT_DB);
         execute(url,
                 "UPDATE app.provider_skus SET external_codes=external_codes||'{\"unexpected\":true}'::jsonb "
                         + "WHERE provider_sku_code='EMG4418727167063'");
 
-        assertThatThrownBy(() -> flyway(url, null).migrate())
-                .hasMessageContaining("provider mapping audit precondition drifted");
+        // provider 映射元数据漂移（23514）：跳过修复、保留漂移事实、落账。
+        flyway(url, null).migrate();
 
         assertThat(intQuery(url,
                         "SELECT count(*) FROM app.provider_skus WHERE provider_sku_code='EMG4418727167063' "
                                 + "AND active AND external_codes->>'unexpected'='true'"))
+                .as("漂移时业务事实一律不动：外部补写的元数据与激活状态保持迁移前原样")
                 .isEqualTo(1);
-        assertNoRepair(url);
+        assertRepairSkippedWithAuditRow(url);
     }
 
     @Test
-    void anyReferenceCountDriftFailsAndPreservesTheUnexpectedReference() throws Exception {
+    void anyReferenceCountDriftSkipsRepairAndPreservesTheUnexpectedReference() throws Exception {
         String url = database(REFERENCE_DRIFT_DB);
         execute(url,
                 "INSERT INTO app.provider_stock_snapshots("
@@ -139,15 +149,15 @@ class SkuCanonicalizationMigrationTest {
                         + "FROM app.skus WHERE sku_code='SKU-JD-000043'");
         String protectedFactsBefore = protectedFacts(url);
 
-        assertThatThrownBy(() -> flyway(url, null).migrate())
-                .hasMessageContaining("reference-count audit precondition drifted");
+        // 引用计数漂移（23514）：跳过修复；意外引用与全部历史事实必须原样保留。
+        flyway(url, null).migrate();
 
         assertThat(protectedFacts(url)).isEqualTo(protectedFactsBefore);
-        assertNoRepair(url);
+        assertRepairSkippedWithAuditRow(url);
     }
 
     @Test
-    void twoWagyuLinesCollapsedOntoOneOrderFailsAndPreservesTheRelationshipDrift() throws Exception {
+    void twoWagyuLinesCollapsedOntoOneOrderSkipsRepairAndPreservesTheRelationshipDrift() throws Exception {
         String url = database(ORDER_RELATION_DRIFT_DB);
         // 生产约束会禁止履约后的分配关系改写；测试临时关闭该触发器，只为模拟外部/manual
         // 漂移已存在于迁移前的数据库，验证 V98 自己仍会 fail-closed，而不是依赖写入路径兜底。
@@ -164,32 +174,48 @@ class SkuCanonicalizationMigrationTest {
         }
         String protectedFactsBefore = protectedFacts(url);
 
-        assertThatThrownBy(() -> flyway(url, null).migrate())
-                .hasMessageContaining("reference-count audit precondition drifted");
+        // 迁移前已存在的关系漂移（23514）：跳过修复；漂移关系本身也是业务事实，必须原样保留。
+        flyway(url, null).migrate();
 
         assertThat(intQuery(url,
                         "SELECT count(DISTINCT ol.order_id) FROM app.order_lines ol "
                                 + "JOIN app.skus s ON s.id=ol.sku_id WHERE s.sku_code='SKU-JD-000048'"))
                 .isEqualTo(1);
         assertThat(protectedFacts(url)).isEqualTo(protectedFactsBefore);
-        assertNoRepair(url);
+        assertRepairSkippedWithAuditRow(url);
     }
 
-    private static void assertNoRepair(String url) throws Exception {
+    /**
+     * 部署时点解耦后的漂移判据（合并前该迁移编号为 V75；账本与历史判据都钉在新编号 V98 上）：
+     * 迁移成功入账、修复段（别名/软停用/ticket08 审计日志）原子回滚，且漂移审计账本恰有一行
+     * V98 的 SKIPPED_DRIFT 记录并保留原始审计错误。未修复的重复 SKU 由就绪门禁继续拦截，
+     * 不依赖本账本。
+     */
+    private static void assertRepairSkippedWithAuditRow(String url) throws Exception {
         assertThat(intQuery(url,
                         "SELECT count(*) FROM app.sku_aliases a JOIN app.skus s ON s.id=a.sku_id "
                                 + "WHERE s.sku_code IN ('SKU-JD-000019','SKU-JD-000048')"))
+                .as("跳过修复时不得留下半截别名写入")
                 .isZero();
         assertThat(intQuery(url,
                         "SELECT count(*) FROM app.audit_logs "
                                 + "WHERE operation='sku_masterdata_repair.ticket08'"))
+                .as("修复段回滚时，其 ticket08 审计日志也必须一并回滚")
                 .isZero();
-        // 合并前该迁移编号为 V75；合并链重编号为 V98，回滚判据钉在新编号上。
         assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='98'"))
-                .isZero();
+                .as("审计漂移只跳过修复段，V98 迁移本身必须成功")
+                .isEqualTo(1);
         assertThat(intQuery(url,
                         "SELECT count(*) FROM app.skus WHERE sku_code='SKU-JD-000043' AND active"))
+                .as("漂移时业务事实一律不动：重复 SKU 不得被软停用")
                 .isEqualTo(1);
+        assertThat(singleQuery(url,
+                        "SELECT migration_version||'|'||status||'|'||reason_code||'|'"
+                                + "||(coalesce(detail->>'audit_error','')<>'')::text "
+                                + "FROM app.master_data_repair_audits"))
+                .as("漂移审计账本必须恰有一行对应 V98 的 SKIPPED_DRIFT 记录")
+                .isEqualTo("V98__canonicalize_duplicate_skus_and_names|SKIPPED_DRIFT|"
+                        + "CANONICALIZATION_REAUDIT_REQUIRED|true");
     }
 
     private static String readinessSql() {

@@ -18,7 +18,13 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** Ticket 07: remove one-off WECOM mappings and add only the two approved TP internal routes. */
+/**
+ * Ticket 07: remove one-off WECOM mappings and add only the two approved TP internal routes.
+ *
+ * <p>部署时点解耦（2026-08-31，同 V98）：审计前置漂移（23514/P0001）不再让 V97 整笔失败——
+ * 迁移成功、修复段原子回滚、漂移事实落入 app.master_data_repair_audits 供重新取证后补做；
+ * 只有锁不可得（55P03）仍然拒绝部署。
+ */
 @Testcontainers
 class SkuWecomTpRoutingMigrationTest {
 
@@ -93,10 +99,13 @@ class SkuWecomTpRoutingMigrationTest {
                 .contains("\"order_line_rows_touched_by_migration\": 0")
                 .contains("\"inventory_snapshot_rows_touched_by_migration\": 0")
                 .contains("\"bundle_item_rows_touched_by_migration\": 0");
+        assertThat(intQuery(url, "SELECT count(*) FROM app.master_data_repair_audits"))
+                .as("修复完整落地时不得留下 SKIPPED_DRIFT 账目")
+                .isZero();
     }
 
     @Test
-    void anyPseudoMappingDriftRollsBackEveryRepair() throws Exception {
+    void anyPseudoMappingDriftSkipsEveryRepairAndRecordsAudit() throws Exception {
         createDatabase(DRIFT_DB);
         String url = jdbcUrl(DRIFT_DB);
         flyway(url, MigrationVersion.fromVersion("96")).migrate();
@@ -105,38 +114,37 @@ class SkuWecomTpRoutingMigrationTest {
                 "UPDATE app.source_channel_skus SET quantity_multiplier=2 "
                         + "WHERE source_channel='WECOM' AND source_sku_ref='WECOM-DRAFT-5-L1'");
 
-        assertThatThrownBy(() -> flyway(url, MigrationVersion.fromVersion("97")).migrate())
-                .hasMessageContaining("WECOM pseudo mapping audit precondition drifted");
-        assertThat(intQuery(url, pseudoMappingCountSql("TRUE"))).isEqualTo(7);
+        // 部署时点解耦：伪映射审计漂移（23514）不再拒绝部署——迁移成功、修复原子回滚、落账。
+        flyway(url, MigrationVersion.fromVersion("97")).migrate();
+        assertThat(intQuery(url, pseudoMappingCountSql("TRUE")))
+                .as("漂移时业务事实一律不动：七条伪映射保持迁移前的激活状态")
+                .isEqualTo(7);
         assertThat(intQuery(url,
                         "SELECT count(*) FROM app.provider_skus ps JOIN app.skus s ON s.id=ps.sku_id "
                                 + "WHERE s.sku_code IN ('SKU-TP-000062','SKU-TP-000093')"))
+                .as("跳过修复时不得留下半截 TP 内部路由")
                 .isZero();
-        assertThat(intQuery(url,
-                        "SELECT count(*) FROM app.audit_logs "
-                                + "WHERE operation='sku_masterdata_repair.ticket07'"))
-                .isZero();
-        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='74'"))
-                .isZero();
+        assertV97SkippedWithAuditRow(url);
     }
 
     @Test
-    void openDraftCandidateDependencyFailsBeforeAnyRepairWrite() throws Exception {
+    void openDraftCandidateDependencySkipsRepairBeforeAnyWrite() throws Exception {
         createDatabase(OPEN_DRAFT_DB);
         String url = jdbcUrl(OPEN_DRAFT_DB);
         flyway(url, MigrationVersion.fromVersion("96")).migrate();
         seedSnapshot(url);
         seedOpenDraftDependency(url);
 
-        assertThatThrownBy(() -> flyway(url, MigrationVersion.fromVersion("97")).migrate())
-                .hasMessageContaining("OPEN OrderDraft depends on WECOM pseudo mapping");
-        assertThat(intQuery(url, pseudoMappingCountSql("TRUE"))).isEqualTo(7);
+        // OPEN 草稿仍依赖伪映射属于审计前置漂移（23514）：跳过修复、保留依赖事实、落账。
+        flyway(url, MigrationVersion.fromVersion("97")).migrate();
+        assertThat(intQuery(url, pseudoMappingCountSql("TRUE")))
+                .as("在途草稿依赖的伪映射必须保持迁移前原样")
+                .isEqualTo(7);
         assertThat(intQuery(url,
                         "SELECT count(*) FROM app.provider_skus ps JOIN app.skus s ON s.id=ps.sku_id "
                                 + "WHERE s.sku_code IN ('SKU-TP-000062','SKU-TP-000093')"))
                 .isZero();
-        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='74'"))
-                .isZero();
+        assertV97SkippedWithAuditRow(url);
     }
 
     @Test
@@ -153,6 +161,7 @@ class SkuWecomTpRoutingMigrationTest {
             try (Statement statement = draftReader.createStatement()) {
                 statement.execute("SELECT pg_advisory_xact_lock_shared(756426269157)");
             }
+            // 锁不可得（55P03）不属于审计漂移：部署时点解耦后仍必须整笔失败并要求重试。
             Future<?> migration = pool.submit(
                     () -> flyway(url, MigrationVersion.fromVersion("97")).migrate());
             assertThatThrownBy(() -> migration.get(30, TimeUnit.SECONDS))
@@ -162,12 +171,16 @@ class SkuWecomTpRoutingMigrationTest {
             pool.shutdownNow();
         }
         assertThat(intQuery(url, pseudoMappingCountSql("TRUE"))).isEqualTo(7);
-        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='74'"))
+        // 合并前该迁移编号为 V74；判据钉在新编号 V97 上：锁失败时迁移不得入账，也不得落漂移账。
+        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='97'"))
+                .isZero();
+        assertThat(intQuery(url, "SELECT count(*) FROM app.master_data_repair_audits"))
+                .as("55P03 整笔失败时，漂移审计账本不得出现 V97 记录")
                 .isZero();
     }
 
     @Test
-    void existingTpStructuredIdentityDriftRollsBackEveryRepair() throws Exception {
+    void existingTpStructuredIdentityDriftSkipsEveryRepairAndRecordsAudit() throws Exception {
         createDatabase(TP_IDENTITY_DRIFT_DB);
         String url = jdbcUrl(TP_IDENTITY_DRIFT_DB);
         flyway(url, MigrationVersion.fromVersion("96")).migrate();
@@ -176,15 +189,16 @@ class SkuWecomTpRoutingMigrationTest {
                 "UPDATE app.skus SET net_content_value=80,net_content_unit='g',"
                         + "package_count=1,package_unit='件' WHERE sku_code='SKU-TP-000062'");
 
-        assertThatThrownBy(() -> flyway(url, MigrationVersion.fromVersion("97")).migrate())
-                .hasMessageContaining("WECOM/TP target SKU audit precondition drifted");
-        assertThat(intQuery(url, pseudoMappingCountSql("TRUE"))).isEqualTo(7);
+        // 目标 SKU 身份已被外部补齐同样是审计漂移（23514）：跳过修复、不动既有事实、落账。
+        flyway(url, MigrationVersion.fromVersion("97")).migrate();
+        assertThat(intQuery(url, pseudoMappingCountSql("TRUE")))
+                .as("漂移时业务事实一律不动：伪映射保持迁移前的激活状态")
+                .isEqualTo(7);
         assertThat(intQuery(url,
                         "SELECT count(*) FROM app.provider_skus ps JOIN app.skus s ON s.id=ps.sku_id "
                                 + "WHERE s.sku_code IN ('SKU-TP-000062','SKU-TP-000093')"))
                 .isZero();
-        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='74'"))
-                .isZero();
+        assertV97SkippedWithAuditRow(url);
     }
 
     private static void seedSnapshot(String jdbcUrl) throws Exception {
@@ -451,6 +465,29 @@ class SkuWecomTpRoutingMigrationTest {
                     'trackings', (SELECT jsonb_agg(to_jsonb(t) ORDER BY t.id) FROM app.trackings t)
                 )::text
                 """);
+    }
+
+    /**
+     * 部署时点解耦后的漂移判据（合并前该迁移编号为 V74；账本与历史判据都钉在新编号 V97 上）：
+     * 迁移成功入账、修复段（含 ticket07 审计日志）原子回滚，且漂移审计账本恰有一行
+     * V97 的 SKIPPED_DRIFT 记录并保留原始审计错误。
+     */
+    private static void assertV97SkippedWithAuditRow(String url) throws Exception {
+        assertThat(intQuery(url,
+                        "SELECT count(*) FROM app.audit_logs "
+                                + "WHERE operation='sku_masterdata_repair.ticket07'"))
+                .as("修复段回滚时，其 ticket07 审计日志也必须一并回滚")
+                .isZero();
+        assertThat(intQuery(url, "SELECT count(*) FROM flyway_schema_history WHERE version='97'"))
+                .as("审计漂移只跳过修复段，V97 迁移本身必须成功")
+                .isEqualTo(1);
+        assertThat(singleQuery(url,
+                        "SELECT migration_version||'|'||status||'|'||reason_code||'|'"
+                                + "||(coalesce(detail->>'audit_error','')<>'')::text "
+                                + "FROM app.master_data_repair_audits"))
+                .as("漂移审计账本必须恰有一行对应 V97 的 SKIPPED_DRIFT 记录")
+                .isEqualTo("V97__repair_wecom_pseudo_mappings_and_tp_routes|SKIPPED_DRIFT|"
+                        + "CANONICALIZATION_REAUDIT_REQUIRED|true");
     }
 
     private static String pseudoMappingCountSql(String active) {

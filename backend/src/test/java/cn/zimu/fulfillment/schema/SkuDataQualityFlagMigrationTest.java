@@ -19,7 +19,13 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** V96 installs the shared barcode boundary and records only the audited unresolved facts. */
+/**
+ * V96 installs the shared barcode boundary and records only the audited unresolved facts.
+ *
+ * <p>部署时点解耦（2026-08-31）：审计前置漂移（23514/P0001）不再让 V96 整笔失败——迁移成功、
+ * 修复段原子回滚、漂移事实落入 app.master_data_repair_audits 供重新取证后补做；
+ * 只有锁不可得（55P03）仍然拒绝部署。
+ */
 @Testcontainers
 class SkuDataQualityFlagMigrationTest {
 
@@ -36,7 +42,7 @@ class SkuDataQualityFlagMigrationTest {
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Test
-    void auditedV72SnapshotCreatesFiveFlagsWhileAnyPreconditionDriftRollsBackTheWholeMigration()
+    void auditedSnapshotCreatesFiveFlagsWhileAnyPreconditionDriftSkipsRepairIntoAuditLedger()
             throws Exception {
         createDatabase(EXACT_DB);
         createDatabase(DRIFT_DB);
@@ -75,39 +81,34 @@ class SkuDataQualityFlagMigrationTest {
                                     + "AND t.tgname IN ('trg_skus_active_barcode_unique',"
                                     + "'trg_sku_aliases_active_barcode_unique')")))
                     .isEqualTo(2);
+            assertThat(intValue(statement.executeQuery(
+                            "SELECT count(*) FROM app.master_data_repair_audits")))
+                    .as("干净路径下漂移审计账本必须存在且为空")
+                    .isZero();
         }
 
         String driftUrl = jdbcUrl(DRIFT_DB);
         flyway(driftUrl, MigrationVersion.fromVersion("95")).migrate();
         seedAuditedSnapshot(driftUrl, true);
-        assertThatThrownBy(() -> flyway(driftUrl, null).migrate())
-                .hasMessageContaining("羊小腿来源乘数审计前置条件漂移");
+        // 部署时点解耦：审计漂移不再拒绝整版部署——V96 必须成功，修复段原子回滚并落账。
+        // 钉在 96 号位迁移，避免后续迁移（如 V99 数量整数化）干扰本用例的业务事实断言。
+        flyway(driftUrl, MigrationVersion.fromVersion("96")).migrate();
 
         try (Connection connection = DriverManager.getConnection(
                         driftUrl, postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
-            assertThat(intValue(statement.executeQuery("SELECT count(*) FROM app.sku_data_quality_flags")))
-                    .as("V96 任一前置条件漂移时，前面已尝试插入的牛肋条标记也必须回滚")
-                    .isZero();
             assertThat(single(statement.executeQuery(
                             "SELECT quantity_multiplier::text FROM app.source_channel_skus "
                                     + "WHERE source_channel='DAZHE' "
                                     + "AND source_sku_ref='EMG4418691851778'")))
+                    .as("漂移时业务事实一律不动：漂移后的乘数保持迁移前原样")
                     .isEqualTo("3.000");
-            assertThat(intValue(statement.executeQuery(
-                            "SELECT count(*) FROM flyway_schema_history WHERE version='96'")))
-                    .isZero();
-            assertThat(intValue(statement.executeQuery(
-                            "SELECT count(*) FROM pg_trigger WHERE tgname IN "
-                                    + "('trg_skus_active_barcode_unique',"
-                                    + "'trg_sku_aliases_active_barcode_unique')")))
-                    .as("同一事务内安装的 V96 DDL 也必须回滚")
-                    .isZero();
         }
+        assertV96SkippedWithAuditRow(driftUrl);
     }
 
     @Test
-    void sourceEvidenceTextDriftAndMissingCohortBothFailClosed() throws Exception {
+    void sourceEvidenceTextDriftAndMissingCohortBothSkipRepairAndRecordAudit() throws Exception {
         createDatabase(TEXT_DRIFT_DB);
         String textDriftUrl = jdbcUrl(TEXT_DRIFT_DB);
         flyway(textDriftUrl, MigrationVersion.fromVersion("95")).migrate();
@@ -115,9 +116,14 @@ class SkuDataQualityFlagMigrationTest {
         execute(textDriftUrl,
                 "UPDATE app.source_channel_skus SET source_product_name='已漂移的鸵鸟蛋来源名称' "
                         + "WHERE source_channel='JUFUBAO' AND source_sku_ref='66487969'");
-        assertThatThrownBy(() -> flyway(textDriftUrl, null).migrate())
-                .hasMessageContaining("鸵鸟蛋变重差异审计前置条件漂移");
-        assertV96RolledBack(textDriftUrl);
+        // 来源证据文本漂移（23514）：修复跳过并落账，迁移本身成功。
+        flyway(textDriftUrl, MigrationVersion.fromVersion("96")).migrate();
+        assertThat(singleQuery(textDriftUrl,
+                        "SELECT source_product_name FROM app.source_channel_skus "
+                                + "WHERE source_channel='JUFUBAO' AND source_sku_ref='66487969'"))
+                .as("漂移时业务事实一律不动：漂移后的来源名称保持迁移前原样")
+                .isEqualTo("已漂移的鸵鸟蛋来源名称");
+        assertV96SkippedWithAuditRow(textDriftUrl);
 
         createDatabase(MISSING_COHORT_DB);
         String missingUrl = jdbcUrl(MISSING_COHORT_DB);
@@ -127,9 +133,9 @@ class SkuDataQualityFlagMigrationTest {
                 "DELETE FROM app.source_channel_skus WHERE source_channel='JUFUBAO' "
                         + "AND source_sku_ref='66487969'");
         execute(missingUrl, "DELETE FROM app.skus WHERE sku_code='SKU-JD-000085'");
-        assertThatThrownBy(() -> flyway(missingUrl, null).migrate())
-                .hasMessageContaining("audit cohort incomplete: expected 5, found 4");
-        assertV96RolledBack(missingUrl);
+        // cohort 不完整同样属于审计漂移（23514）：不再拒绝部署，落账等重新取证。
+        flyway(missingUrl, MigrationVersion.fromVersion("96")).migrate();
+        assertV96SkippedWithAuditRow(missingUrl);
 
         createDatabase(NO_COHORT_DB);
         String noCohortUrl = jdbcUrl(NO_COHORT_DB);
@@ -150,9 +156,9 @@ class SkuDataQualityFlagMigrationTest {
                         + "FROM app.products p "
                         + "CROSS JOIN app.fulfillment_providers fp "
                         + "WHERE p.product_code='PROD-JD-EMG4418861058751' AND fp.provider_code='JD'");
-        assertThatThrownBy(() -> flyway(noCohortUrl, null).migrate())
-                .hasMessageContaining("audit cohort incomplete: expected 5, found 0");
-        assertV96RolledBack(noCohortUrl);
+        // 命中生产锚点（SKU-JD-000021）但 cohort 为 0：同为审计漂移，跳过修复并落账。
+        flyway(noCohortUrl, MigrationVersion.fromVersion("96")).migrate();
+        assertV96SkippedWithAuditRow(noCohortUrl);
     }
 
     @Test
@@ -170,6 +176,8 @@ class SkuDataQualityFlagMigrationTest {
                 FROM app.skus WHERE sku_code='SKU-JD-000070'
                 """);
 
+        // 唯一键冲突是 23505，不属于部署时点解耦豁免的审计漂移（23514/P0001）：
+        // 占位证据吞掉真实证据仍必须让整笔迁移失败，禁止被静默降级为“跳过”。
         assertThatThrownBy(() -> flyway(url, null).migrate())
                 .hasStackTraceContaining("duplicate key value violates unique constraint");
         assertThat(intQuery(url, "SELECT count(*) FROM app.sku_data_quality_flags"))
@@ -183,7 +191,7 @@ class SkuDataQualityFlagMigrationTest {
     }
 
     @Test
-    void migrationFailsFastRatherThanReadingPastAnActiveCatalogWriter() throws Exception {
+    void migrationFailsFastOnActiveWriterThenSkipsDriftedRepairAfterCommit() throws Exception {
         createDatabase(LOCK_RACE_DB);
         String url = jdbcUrl(LOCK_RACE_DB);
         flyway(url, MigrationVersion.fromVersion("95")).migrate();
@@ -200,17 +208,19 @@ class SkuDataQualityFlagMigrationTest {
                                 + "WHERE source_channel='JUFUBAO' AND source_sku_ref='66487969'");
             }
 
+            // 锁不可得（55P03）不属于审计漂移：部署时点解耦后仍必须整笔失败并要求重试。
             Future<?> migration = pool.submit(() -> flyway(url, null).migrate());
             assertThatThrownBy(() -> migration.get(30, TimeUnit.SECONDS))
                     .hasStackTraceContaining("V96 requires a quiescent SKU catalog");
             writer.commit();
 
-            assertThatThrownBy(() -> flyway(url, null).migrate())
-                    .hasStackTraceContaining("鸵鸟蛋变重差异审计前置条件漂移");
+            // 写事务提交后重试：锁已可得，但并发写造成的审计漂移（23514）改走跳过——
+            // 迁移成功、修复回滚、落账等重新取证。
+            flyway(url, MigrationVersion.fromVersion("96")).migrate();
         } finally {
             pool.shutdownNow();
         }
-        assertV96RolledBack(url);
+        assertV96SkippedWithAuditRow(url);
     }
 
     @Test
@@ -254,6 +264,9 @@ class SkuDataQualityFlagMigrationTest {
                 .isEqualTo(1);
         assertThat(intQuery(url, "SELECT count(*) FROM app.sku_data_quality_flags"))
                 .isEqualTo(5);
+        assertThat(intQuery(url, "SELECT count(*) FROM app.master_data_repair_audits"))
+                .as("修复完整落地时不得留下 SKIPPED_DRIFT 账目")
+                .isZero();
     }
 
     private static void seedAuditedSnapshot(String jdbcUrl, boolean driftMultiplier) throws Exception {
@@ -374,17 +387,31 @@ class SkuDataQualityFlagMigrationTest {
         return flags;
     }
 
-    /** 合并前该迁移编号为 V73；合并链上 V73 另有其主，回滚判据必须钉在新编号 V96 上。 */
-    private static void assertV96RolledBack(String jdbcUrl) throws Exception {
+    /**
+     * 部署时点解耦后的漂移判据（合并前该迁移编号为 V73；账本与历史判据都钉在新编号 V96 上）：
+     * 迁移成功入账、修复段内的数据改动原子回滚、只管未来写入的触发器 DDL 照常安装，
+     * 且漂移审计账本恰有一行 V96 的 SKIPPED_DRIFT 记录并保留原始审计错误。
+     */
+    private static void assertV96SkippedWithAuditRow(String jdbcUrl) throws Exception {
         assertThat(intQuery(jdbcUrl, "SELECT count(*) FROM app.sku_data_quality_flags"))
+                .as("漂移跳过时，修复段内已尝试插入的质量标记必须整体回滚")
                 .isZero();
         assertThat(intQuery(jdbcUrl, "SELECT count(*) FROM flyway_schema_history WHERE version='96'"))
-                .isZero();
+                .as("审计漂移只跳过修复段，V96 迁移本身必须成功")
+                .isEqualTo(1);
         assertThat(intQuery(jdbcUrl,
                         "SELECT count(*) FROM pg_trigger WHERE tgname IN "
                                 + "('trg_skus_active_barcode_unique',"
                                 + "'trg_sku_aliases_active_barcode_unique')"))
-                .isZero();
+                .as("强约束触发器只管未来写入，修复跳过不影响其安装")
+                .isEqualTo(2);
+        assertThat(singleQuery(jdbcUrl,
+                        "SELECT migration_version||'|'||status||'|'||reason_code||'|'"
+                                + "||(coalesce(detail->>'audit_error','')<>'')::text "
+                                + "FROM app.master_data_repair_audits"))
+                .as("漂移审计账本必须恰有一行对应 V96 的 SKIPPED_DRIFT 记录")
+                .isEqualTo("V96__enforce_active_sku_barcode_uniqueness|SKIPPED_DRIFT|"
+                        + "CANONICALIZATION_REAUDIT_REQUIRED|true");
     }
 
     private static void execute(String jdbcUrl, String sql) throws Exception {

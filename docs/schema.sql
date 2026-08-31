@@ -7996,6 +7996,16 @@ CREATE INDEX idx_source_template_profiles_trusted_from_batch
 -- BEGIN V96__enforce_active_sku_barcode_uniqueness.sql (structural snapshot)
 -- V71 的 BEFORE STATEMENT 目录锁先串行相关写事务；两个 AFTER STATEMENT
 -- 触发器再对 SKU 主条码与 BARCODE 别名的规范化并集执行同一所有权校验。
+-- 迁移期主数据修复的漂移审计账本：V96–V98 数据修复段被跳过时在此落行（部署验收必查）。
+CREATE TABLE app.master_data_repair_audits (
+    id BIGSERIAL PRIMARY KEY,
+    migration_version TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('SKIPPED_DRIFT')),
+    reason_code TEXT NOT NULL,
+    detail JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX idx_skus_active_normalized_barcode
     ON app.skus (lower(btrim(barcode)))
     WHERE active = TRUE AND barcode IS NOT NULL AND btrim(barcode) <> '';

@@ -32,6 +32,18 @@ BEGIN
 END;
 $$;
 
+-- 迁移期主数据修复的漂移审计账本：V96–V98 的数据修复段若因审计前置漂移被跳过，
+-- 在此落一行可查询记录（部署验收必查）。运行期安全网独立存在：未修复的重复/冲突
+-- SKU 仍被就绪门禁以带主体的复核事项拦截，不依赖本表。
+CREATE TABLE app.master_data_repair_audits (
+    id BIGSERIAL PRIMARY KEY,
+    migration_version TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('SKIPPED_DRIFT')),
+    reason_code TEXT NOT NULL,
+    detail JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX idx_skus_active_normalized_barcode
     ON app.skus (lower(btrim(barcode)))
     WHERE active = TRUE AND barcode IS NOT NULL AND btrim(barcode) <> '';
@@ -135,6 +147,10 @@ BEGIN
     IF audited_sku_count = 0 AND audit_anchor_count = 0 THEN
         RETURN;
     END IF;
+
+    -- 部署时点解耦（2026-08-31，同 V98）：审计漂移（23514/P0001）→ 本段修复原子回滚 +
+    -- 落 SKU_OPS 复核事项，不再拒绝整版部署；锁不可得（55P03）仍拒绝。
+    BEGIN
     IF audited_sku_count <> 5 THEN
         RAISE EXCEPTION 'SKU data-quality audit cohort incomplete: expected 5, found %',
                         audited_sku_count
@@ -352,5 +368,17 @@ BEGIN
                 'source_form', '仔排',
                 'internal_form', '排骨'), TRUE);
     END IF;
+    EXCEPTION WHEN SQLSTATE '23514' OR SQLSTATE 'P0001' THEN
+        RAISE WARNING 'V96 条码质量修复 skipped: % (audit drifted; repair rolled back, re-audit required)', SQLERRM;
+        INSERT INTO app.master_data_repair_audits
+            (migration_version, status, reason_code, detail)
+        VALUES
+            ('V96__enforce_active_sku_barcode_uniqueness', 'SKIPPED_DRIFT',
+             'CANONICALIZATION_REAUDIT_REQUIRED',
+             jsonb_build_object(
+                 'message', 'V96 条码质量修复因审计前置漂移而跳过，需按当前生产事实重新取证后补做',
+                 'audit_error', SQLERRM))
+        ON CONFLICT (migration_version) DO NOTHING;
+    END;
 END;
 $$;

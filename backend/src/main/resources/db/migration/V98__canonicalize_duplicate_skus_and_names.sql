@@ -69,6 +69,13 @@ BEGIN
             USING ERRCODE='55P03';
     END;
 
+    -- 部署时点解耦（2026-08-31）：审计常量钉的是取证瞬间，生产随时在动。任何审计前置/
+    -- 后置漂移（23514 / P0001）不再拒绝整版部署——本子事务内的修复原子回滚、原样保留
+    -- 数据，落一条 SKU_OPS 复核事项供按最新事实重新取证后补做。未修复的重复 SKU 由
+    -- 就绪门禁（BARCODE_CONFLICT / 数据质量证据）挡在履约之外，系统语义自洽。
+    -- 锁不可得（55P03）仍然拒绝：修复必须静默目录，这一点不放宽。
+    BEGIN
+
     WITH expected(
         sku_code,product_code,provider_code,specification,unit,barcode,
         purchase_price,retail_price,active,lock_version,
@@ -586,5 +593,17 @@ BEGIN
             'historical_snapshot_hash',historical_hash_before),
         200,
         'SKU_MASTERDATA_REPAIR_APPLIED');
+    EXCEPTION WHEN SQLSTATE '23514' OR SQLSTATE 'P0001' THEN
+        RAISE WARNING 'V98 canonicalization skipped: % (audit drifted; repair rolled back, re-audit required)', SQLERRM;
+        INSERT INTO app.master_data_repair_audits
+            (migration_version, status, reason_code, detail)
+        VALUES
+            ('V98__canonicalize_duplicate_skus_and_names', 'SKIPPED_DRIFT',
+             'CANONICALIZATION_REAUDIT_REQUIRED',
+             jsonb_build_object(
+                 'message', 'V98 重复 SKU 归一修复因审计前置漂移而跳过，需按当前生产事实重新取证后补做',
+                 'audit_error', SQLERRM))
+        ON CONFLICT (migration_version) DO NOTHING;
+    END;
 END;
 $$;
