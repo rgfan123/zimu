@@ -181,7 +181,8 @@ export default function ReviewCaseDrawer({ selected, nextCase, queueRevision, on
   const [masterOptionsLoading, setMasterOptionsLoading] = useState(false);
   const [masterQuery, setMasterQuery] = useState('');
   const masterRequest = useRef(0);
-  const [multiplier, setMultiplier] = useState('1.000');
+  // V99 数量整数化：倍数是正整数文本，预填 '1.000' 会被后端按整数契约拒绝。
+  const [multiplier, setMultiplier] = useState('1');
   const [note, setNote] = useState('');
   const [submitError, setSubmitError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
@@ -192,7 +193,7 @@ export default function ReviewCaseDrawer({ selected, nextCase, queueRevision, on
 
   useEffect(() => {
     setMasterId(undefined);
-    setMultiplier('1.000');
+    setMultiplier('1');
     setNote('');
     setSubmitError(undefined);
     setMasterQuery('');
@@ -263,7 +264,7 @@ export default function ReviewCaseDrawer({ selected, nextCase, queueRevision, on
         await reviewCasesApi.resolveCustomer(selected.id, buildCustomerResolution(selected, masterId, note));
       } else if (action === 'SKU') {
         if (!masterId) throw new Error('请选择已确认的 SKU 主数据');
-        if (!Number.isFinite(Number(multiplier)) || Number(multiplier) <= 0) throw new Error('数量换算必须大于 0');
+        if (!/^[1-9][0-9]*$/.test(multiplier.trim())) throw new Error('数量换算必须为正整数');
         await reviewCasesApi.resolveSku(selected.id, buildSkuResolution(selected, masterId, multiplier, note));
       } else if (action === 'SOURCE_FOLLOWUP') {
         await reviewCasesApi.completeSourceFollowup(selected.id, buildSourceFollowupCompletion(selected, note));
@@ -673,7 +674,7 @@ export default function ReviewCaseDrawer({ selected, nextCase, queueRevision, on
                     </>
                   ) : null}
                   {selectedAction === 'SKU' ? (
-                    <Input addonBefore="数量换算" value={multiplier} onChange={(event) => setMultiplier(event.target.value)} placeholder="例如 2.000" />
+                    <Input addonBefore="数量换算" value={multiplier} onChange={(event) => setMultiplier(event.target.value)} placeholder="例如 2" />
                   ) : null}
                   <Input.TextArea
                     value={note}

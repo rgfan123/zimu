@@ -428,7 +428,7 @@ function SourceSkuMatrix() {
           quantity_multiplier: attr(cell.mapping, 'quantity_multiplier'),
           active: cell.mapping.active,
         }
-      : { quantity_multiplier: '1.000', active: true });
+      : { quantity_multiplier: '1', active: true });
   };
 
   const saveCell = async () => {
@@ -604,10 +604,11 @@ function SourceSkuMatrix() {
             label="数量乘数"
             rules={[
               { required: true, message: '请填写数量乘数' },
-              { pattern: /^(?:0*[1-9]\d*)(?:\.\d{1,3})?$|^0*\.\d{0,2}[1-9]$/, message: '数量乘数必须是正数，且最多三位小数' },
+              // V99 数量整数化：与后端 SourceSkuMappingWrite 的正整数契约同款
+              { pattern: /^[1-9][0-9]*$/, message: '数量乘数必须为正整数' },
             ]}
           >
-            <Input placeholder="例如 1 或 2.5" />
+            <Input placeholder="例如 1 或 2" />
           </Form.Item>
           <Form.Item name="active" label="启用" valuePropName="checked">
             <Switch />
