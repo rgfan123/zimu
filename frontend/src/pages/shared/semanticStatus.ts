@@ -123,6 +123,9 @@ export function jdConnectionSemantic(liveReady: boolean, mode?: string): Semanti
 /** 只读工具说明用品牌信息色（processing 跟随 colorInfo token），不占用语义异常色。 */
 export const READ_ONLY_TAG_COLOR: SemanticTagColor = 'processing';
 
+/** 导入行重复订单良性跳过（非失败也非等待）：中性色，不与「已拒绝」共用异常色。 */
+export const DUPLICATE_SKIP_TAG_COLOR: SemanticTagColor = 'default';
+
 /** 京东查询页的工具分类说明：普通分类，中性呈现。 */
 export const TOOL_CATEGORY_TAG_COLOR: SemanticTagColor = 'default';
 

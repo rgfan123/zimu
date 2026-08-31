@@ -109,6 +109,13 @@ export interface ImportRowView {
   fulfillmentType: 'JD_WAREHOUSE' | 'THIRD_PARTY' | null;
   reason: string;
   status: RawRowStatus;
+  /**
+   * 重复订单良性跳过（A12 预检：REJECTED + ORDER_ALREADY_EXISTS）。这类行没有复核事项
+   * 可办，展示层不得把它指向人工复核。注意这只覆盖后端确认闸门 BENIGN 口径两个码中的
+   * 重复单一支；另一支 SOURCE_ORDER_ALREADY_FULFILLED（来源侧已履约，落 NEED_REVIEW）
+   * 同样无复核事项，其呈现待后续单独处理。
+   */
+  duplicateSkipped: boolean;
   /** 系统订单关联仅用于「查看系统订单」操作链接，不再作为独立展示列 */
   orderId: string;
   orderLineId: string;
@@ -129,6 +136,8 @@ const SOURCE_PRODUCT_HEADERS = ['商品名称', '品名', '产品名称'];
  *
  * - 解析期拒绝码（`SourceFileParser` 直写 error_code）：IMPORT_VALIDATION、QUANTITY_SCALE、
  *   SOURCE_* 七个万齐来源行门禁码；
+ * - 重复订单预检码（`SourceImportService.markRejected` 直写 error_code，A12 整组跳过）：
+ *   ORDER_ALREADY_EXISTS；
  * - 订单行异常码（`order_line_exceptions[]` 原码，及 `SourceImportService.importErrorCode`
  *   映射后的 error_code）：SKU_MAPPING_REQUIRED→SKU_MATCH、SKU_MAPPING_CONFLICT→JD_CODE_CONFLICT；
  * - 结构化导入 Connector 的 `StructuredOrderRow.reviewRequired` code：JUFUBAO_*；
@@ -149,6 +158,8 @@ const IMPORT_REASON_BY_CODE: Record<string, string> = {
   SOURCE_ORDER_REFUND_BLOCKED: '来源行存在退款事实，已停止发货',
   SOURCE_ORDER_AFTER_SALES_BLOCKED: '来源行存在售后事实，已停止发货',
   SOURCE_LINE_REF_DUPLICATE: '同一来源订单内子订单 ID 重复，需在来源文件内去重',
+  // 重复订单整组跳过（良性非失败）：文案与后端 markRejected 落库 message 同句，两侧口径一致
+  ORDER_ALREADY_EXISTS: '相同来源渠道与来源单号的订单已存在，本行已跳过（非失败）',
   // 客户 / SKU 映射族（error_code 与 order_line_exceptions 两种口径同时登记）
   CUSTOMER_MATCH: '客户身份尚未建立明确映射',
   CUSTOMER_MATCH_REQUIRED: '客户身份尚未建立明确映射',
@@ -246,6 +257,7 @@ export function presentImportRow(row: RawImportRow): ImportRowView {
     fulfillmentType: row.sku_fulfillment?.provider_type ?? null,
     reason: importIssueReason(row),
     status: row.status,
+    duplicateSkipped: row.status === 'REJECTED' && row.error_code === 'ORDER_ALREADY_EXISTS',
     orderId: row.order_id ?? '—',
     orderLineId: row.order_line_id ?? '—',
     jdCargos: cargos.map((cargo) => ({
@@ -254,6 +266,46 @@ export function presentImportRow(row: RawImportRow): ImportRowView {
       planQuantity: cargo.plan_quantity,
     })),
   };
+}
+
+/** 确认明细「状态」列文案：重复跳过（良性）必须与真拒绝分开呈现，否则重复上传整批会被读成导入失败。 */
+export function importRowStatusLabel(row: Pick<ImportRowView, 'status' | 'duplicateSkipped'>): string {
+  if (row.duplicateSkipped) return '重复跳过';
+  if (row.status === 'ACCEPTED') return '已接收';
+  if (row.status === 'REJECTED') return '已拒绝';
+  return '待复核';
+}
+
+/**
+ * 确认明细「操作」列的行级动作投影。
+ *
+ * 2026-08-31 生产实证（中汇批次 66）：重复上传整批被 A12 置为 REJECTED/ORDER_ALREADY_EXISTS，
+ * 这类行没有复核事项（review_cases 为空），此前对所有非 ACCEPTED 行一律给「前往人工复核」，
+ * 点过去无事可办，用户把良性跳过误判成导入失败。重复跳过行给说明文案而非复核入口；
+ * 其余非接收行保持复核入口（fail-closed：未来出现未登记的 REJECTED 码时仍走复核）。
+ */
+export type ImportRowAction =
+  | { kind: 'VIEW_ORDER' }
+  | { kind: 'ORDER_LINK_MISSING' }
+  | { kind: 'DUPLICATE_SKIPPED'; text: string; tooltip: string }
+  | { kind: 'REVIEW' };
+
+export function importRowAction(
+  row: Pick<ImportRowView, 'status' | 'duplicateSkipped' | 'orderId' | 'sourceOrderRef'>,
+): ImportRowAction {
+  if (row.status === 'ACCEPTED') {
+    return row.orderId === '—' ? { kind: 'ORDER_LINK_MISSING' } : { kind: 'VIEW_ORDER' };
+  }
+  if (row.duplicateSkipped) {
+    // 已存在订单没有可直达的 ID（跳过发生在成单之前），指路方式是按来源单号去订单列表检索
+    const ref = row.sourceOrderRef === '—' ? '' : `（${row.sourceOrderRef}）`;
+    return {
+      kind: 'DUPLICATE_SKIPPED',
+      text: '重复订单已跳过',
+      tooltip: `该行与已存在订单同渠道同来源单号${ref}，本次导入已自动跳过，无需人工复核；可在订单列表按来源单号搜索查看已存在订单。`,
+    };
+  }
+  return { kind: 'REVIEW' };
 }
 
 /** 京东「发货数量」单元格文案：单货品直接「N 件」；多货品必须带商品名逐行列出；无京东货品为「—」。 */

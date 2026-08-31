@@ -19,7 +19,7 @@ import type { ExportUsageStatus, FulfillmentExport, FulfillmentExportDetail, Ful
 import { CHANNEL_LABELS, PROVIDER_TYPE_LABELS, SOURCE_ORDER_INTAKE_STATUS_LABELS } from '@/constants/labels';
 import { useAsync } from '@/hooks/useAsync';
 import { PageState } from '@/pages/shared/PageState';
-import { EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
+import { DUPLICATE_SKIP_TAG_COLOR, EXPORT_USAGE_SEMANTIC, importRowStatusSemantic } from '@/pages/shared/semanticStatus';
 import {
   FILE_JOB_BATCH_PARAM,
   FILE_JOB_INTAKE_PARAM,
@@ -31,6 +31,8 @@ import {
   canReceiveTracking,
   confirmGateOf,
   confirmScopeHint,
+  importRowAction,
+  importRowStatusLabel,
   presentImportRow,
   presentJdCargos,
   presentTrackingBatchRow,
@@ -577,9 +579,10 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                   title: '状态',
                   dataIndex: 'status',
                   width: 100,
-                  render: (status: ImportRowView['status']) => (
-                    <Tag color={importRowStatusSemantic(status)}>
-                      {status === 'ACCEPTED' ? '已接收' : status === 'REJECTED' ? '已拒绝' : '待复核'}
+                  // 重复跳过（良性）与真拒绝分开呈现：中性色 + 专属文案，不共用异常色
+                  render: (_: ImportRowView['status'], row) => (
+                    <Tag color={row.duplicateSkipped ? DUPLICATE_SKIP_TAG_COLOR : importRowStatusSemantic(row.status)}>
+                      {importRowStatusLabel(row)}
                     </Tag>
                   ),
                 },
@@ -599,11 +602,19 @@ function SourceImportPanel({ onCompleted }: { onCompleted: () => void }) {
                   key: 'action',
                   width: 110,
                   fixed: 'right',
-                  render: (_, row) => row.status === 'ACCEPTED'
-                    ? row.orderId === '—'
-                      ? <Typography.Text type="warning">未建立订单关联</Typography.Text>
-                      : <Link to={`/orders/${row.orderId}`}>查看系统订单</Link>
-                    : <Link to={reviewsUrlForBatch(result.id)}>前往人工复核</Link>,
+                  render: (_, row) => {
+                    const action = importRowAction(row);
+                    if (action.kind === 'VIEW_ORDER') return <Link to={`/orders/${row.orderId}`}>查看系统订单</Link>;
+                    if (action.kind === 'ORDER_LINK_MISSING') return <Typography.Text type="warning">未建立订单关联</Typography.Text>;
+                    if (action.kind === 'DUPLICATE_SKIPPED') {
+                      return (
+                        <Tooltip title={action.tooltip}>
+                          <Typography.Text type="secondary">{action.text}</Typography.Text>
+                        </Tooltip>
+                      );
+                    }
+                    return <Link to={reviewsUrlForBatch(result.id)}>前往人工复核</Link>;
+                  },
                 },
               ]}
             />

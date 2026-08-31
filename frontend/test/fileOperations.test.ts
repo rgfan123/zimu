@@ -7,6 +7,8 @@ import {
   confirmGateOf,
   confirmScopeHint,
   groupBlockedRows,
+  importRowAction,
+  importRowStatusLabel,
   presentImportRow,
   presentJdCargos,
   presentTrackingBatchRow,
@@ -75,6 +77,7 @@ test('import issue rows expose actionable source fields without dumping raw cell
     fulfillmentType: null,
     reason: '来源商品尚未建立 SKU 映射',
     status: 'NEED_REVIEW',
+    duplicateSkipped: false,
     orderId: '—',
     orderLineId: '—',
   });
@@ -338,9 +341,9 @@ test('unregistered line exception codes fail closed instead of leaking backend t
   assert.equal(leaked.reason, '来源商品尚未建立 SKU 映射');
   assert.doesNotMatch(JSON.stringify(leaked), /BRAND_NEW_BACKEND_CODE|PSQLException/);
 
-  // 后端解析期拒绝行一律写 NEED_REVIEW —— 全仓没有任何代码把 raw_import_rows.status
-  // 写成 REJECTED（只在 SourceImportService:636 的读侧过滤白名单里出现），
-  // 所以线上真正会被 operator 看到的兜底句是「该行需要人工复核」。
+  // 解析期拒绝行一律写 NEED_REVIEW；REJECTED 只由 SourceImportService.markRejected（A12
+  // 重复订单预检）写入且恒带已登记的 ORDER_ALREADY_EXISTS，所以未登记码搭配的
+  // 线上兜底句是「该行需要人工复核」。
   const noneKnown = presentImportRow({
     id: 'row-53',
     sheet_name: '待发货明细',
@@ -420,6 +423,96 @@ test('the safe-message allowlist still wins over the code map', () => {
     error_detail: { message: '数量必须大于 0' },
   });
   assert.equal(row.reason, '数量必须大于 0');
+});
+
+// ---------- 重复订单良性跳过（A12） ----------
+
+test('duplicate-order rejected rows read as benign skips, not review candidates', () => {
+  // 2026-08-31 生产实证（中汇批次 66）：重复上传整批 REJECTED/ORDER_ALREADY_EXISTS，
+  // review_cases 为空，「前往人工复核」点过去无事可办，用户把良性跳过读成导入失败。
+  const duplicate = presentImportRow({
+    id: 'row-66',
+    sheet_name: '待发货明细',
+    sheet_index: 0,
+    row_index: 3,
+    raw_cells: { '商品编号': '2047705', '商品名称': '子牧牛腱子500g*2' },
+    source_order_ref: 'ZH-ORDER-8801',
+    status: 'REJECTED',
+    error_code: 'ORDER_ALREADY_EXISTS',
+    error_detail: { message: '相同来源渠道与来源单号的订单已存在，本行已跳过（非失败）' },
+  });
+
+  assert.equal(duplicate.duplicateSkipped, true);
+  // 处理结果必须说清「已跳过（非失败）」，不得落到「请核对源文件后重新导入」兜底句
+  assert.equal(duplicate.reason, '相同来源渠道与来源单号的订单已存在，本行已跳过（非失败）');
+  assert.equal(importRowStatusLabel(duplicate), '重复跳过');
+
+  const action = importRowAction(duplicate);
+  assert.ok(action.kind === 'DUPLICATE_SKIPPED', '重复跳过行的操作列必须是说明而不是复核入口');
+  assert.equal(action.text, '重复订单已跳过');
+  // Tooltip 指向已存在订单：带来源单号并告知去订单列表检索，而不是留一个死复核链接
+  assert.match(action.tooltip, /ZH-ORDER-8801/);
+  assert.match(action.tooltip, /已存在订单/);
+  assert.match(action.tooltip, /无需人工复核/);
+});
+
+test('duplicate skip tooltip degrades gracefully when the source order ref is missing', () => {
+  const duplicate = presentImportRow({
+    id: 'row-67',
+    sheet_name: '待发货明细',
+    sheet_index: 0,
+    row_index: 4,
+    raw_cells: {},
+    status: 'REJECTED',
+    error_code: 'ORDER_ALREADY_EXISTS',
+    error_detail: { message: '相同来源渠道与来源单号的订单已存在，本行已跳过（非失败）' },
+  });
+  const action = importRowAction(duplicate);
+  assert.ok(action.kind === 'DUPLICATE_SKIPPED');
+  assert.doesNotMatch(action.tooltip, /—/);
+});
+
+test('benign-skip detection is fail-closed: only REJECTED + ORDER_ALREADY_EXISTS qualifies', () => {
+  const base = {
+    sheet_name: '待发货明细',
+    sheet_index: 0,
+    row_index: 5,
+    raw_cells: { '商品编号': '2047705' },
+    source_order_ref: 'ZH-ORDER-8802',
+  };
+
+  // 其他码的 REJECTED 行（未来若出现）仍按真拒绝呈现，保留复核入口
+  const trueReject = presentImportRow({
+    ...base, id: 'row-68', status: 'REJECTED',
+    error_code: 'IMPORT_VALIDATION', error_detail: { message: '数量必须大于 0' },
+  });
+  assert.equal(trueReject.duplicateSkipped, false);
+  assert.equal(importRowStatusLabel(trueReject), '已拒绝');
+  assert.equal(importRowAction(trueReject).kind, 'REVIEW');
+
+  // 状态与码只中一半不算良性跳过
+  const reviewWithCode = presentImportRow({
+    ...base, id: 'row-69', status: 'NEED_REVIEW',
+    error_code: 'ORDER_ALREADY_EXISTS', error_detail: {},
+  });
+  assert.equal(reviewWithCode.duplicateSkipped, false);
+  assert.equal(importRowStatusLabel(reviewWithCode), '待复核');
+  assert.equal(importRowAction(reviewWithCode).kind, 'REVIEW');
+});
+
+test('accepted rows keep their order-link action semantics through the action projection', () => {
+  const linked = presentImportRow({
+    id: 'row-70', sheet_name: '待发货明细', sheet_index: 0, row_index: 6,
+    raw_cells: {}, status: 'ACCEPTED', order_id: '101', order_line_id: '201',
+  });
+  assert.equal(importRowStatusLabel(linked), '已接收');
+  assert.equal(importRowAction(linked).kind, 'VIEW_ORDER');
+
+  const unlinked = presentImportRow({
+    id: 'row-71', sheet_name: '待发货明细', sheet_index: 0, row_index: 7,
+    raw_cells: {}, status: 'ACCEPTED',
+  });
+  assert.equal(importRowAction(unlinked).kind, 'ORDER_LINK_MISSING');
 });
 
 // ---------- 部分确认闸门 ----------

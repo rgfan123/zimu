@@ -441,3 +441,94 @@ test('tracking return requires a popconfirm and lists per-row failure reasons', 
   assert.match(bodyText(), /OUT-502/);
   assert.ok(requests.includes('POST /api/v1/fulfillment-exports/9/tracking-imports'));
 });
+
+test('duplicate-order skipped rows explain themselves instead of linking to manual review', async () => {
+  // 2026-08-31 生产实证（中汇批次 66）：重复上传的行被 A12 置为 REJECTED/ORDER_ALREADY_EXISTS
+  // 且没有复核事项，旧版操作列一律「前往人工复核」，用户点过去无事可办，误判导入失败。
+  // 契约：重复跳过行给非链接说明 + 状态「重复跳过」；真待复核行保留复核入口。
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.startsWith('/api/v1/fulfillment-providers')) return jsonResponse([]);
+    if (url.startsWith('/api/v1/fulfillment-exports')) {
+      return jsonResponse({ items: [], page: 0, size: 10, total_elements: 0, total_pages: 0 });
+    }
+    if (url === '/api/v1/import-batches/66') {
+      return jsonResponse({
+        id: '66', batch_no: 'IMP-ZH-66', batch_type: 'SOURCE_ORDER', import_mode: 'NEW',
+        revision_no: 1, source_channel: 'ZHONGHUI', source_channel_display_name: '中汇',
+        template_family: 'ZH_ORDER', template_version: '1', template_fingerprint: 'fixture',
+        original_file_name: 'zhonghui.xlsx', content_sha256: 'c'.repeat(64),
+        status: 'COMPLETED', confirmed_at: null,
+        row_counts: { total: 3, accepted: 1, need_review: 1, rejected: 1 },
+        confirm_readiness: {
+          ready_rows: 1, pending_rows: 1, blocked_rows: 1, benign_skipped_rows: 1,
+          confirmable: true, partial: true,
+          blockers: [{ row_id: '672', source_order_ref: 'ZH-ORDER-8802', status: 'NEED_REVIEW', error_code: 'SKU_MATCH', reason: '来源商品尚未建立 SKU 映射' }],
+        },
+        generated_fulfillment_export_ids: [], received_at: '2026-08-31T06:00:00Z',
+      });
+    }
+    if (url === '/api/v1/import-batches/66/rows?page=0&size=200&status=ACCEPTED') {
+      return jsonResponse({
+        items: [{
+          id: '671', sheet_name: '待发货明细', sheet_index: 0, row_index: 2,
+          raw_cells: { '商品编号': '2047705', '商品名称': '子牧牛腱子500g*2' },
+          source_order_ref: 'ZH-ORDER-8800', status: 'ACCEPTED', error_code: null, error_detail: {},
+          order_id: '101', order_line_id: '201',
+        }],
+        page: 0, size: 200, total_elements: 1, total_pages: 1,
+      });
+    }
+    if (url === '/api/v1/import-batches/66/rows?page=0&size=200&status=NEED_REVIEW') {
+      return jsonResponse({
+        items: [{
+          id: '672', sheet_name: '待发货明细', sheet_index: 0, row_index: 3,
+          raw_cells: { '商品编号': '2047706', '商品名称': '子牧羊小腿' },
+          source_order_ref: 'ZH-ORDER-8802', status: 'NEED_REVIEW', error_code: 'SKU_MATCH',
+          error_detail: { order_line_exceptions: ['SKU_MAPPING_REQUIRED'] },
+        }],
+        page: 0, size: 200, total_elements: 1, total_pages: 1,
+      });
+    }
+    if (url === '/api/v1/import-batches/66/rows?page=0&size=200&status=REJECTED') {
+      return jsonResponse({
+        items: [{
+          id: '673', sheet_name: '待发货明细', sheet_index: 0, row_index: 4,
+          raw_cells: { '商品编号': '2047705', '商品名称': '子牧牛腱子500g*2' },
+          source_order_ref: 'ZH-ORDER-8801', status: 'REJECTED', error_code: 'ORDER_ALREADY_EXISTS',
+          error_detail: { message: '相同来源渠道与来源单号的订单已存在，本行已跳过（非失败）' },
+        }],
+        page: 0, size: 200, total_elements: 1, total_pages: 1,
+      });
+    }
+    throw new Error(`unexpected request: ${init?.method ?? 'GET'} ${url}`);
+  };
+
+  const container = document.querySelector<HTMLDivElement>('#root');
+  assert.ok(container);
+  mountedRoot = createRoot(container);
+  await act(async () => {
+    mountedRoot?.render(createElement(
+      MemoryRouter,
+      { initialEntries: ['/fulfillment/sales-outbound?import_batch=66'], future: { v7_startTransition: true, v7_relativeSplatPath: true } },
+      createElement(App),
+    ));
+  });
+
+  await waitFor(() => assert.match(bodyText(), /IMP-ZH-66/));
+  await waitFor(() => assert.match(bodyText(), /重复订单已跳过/));
+
+  // 状态列：重复跳过与真拒绝分开；本批唯一的 REJECTED 行是良性跳过，页面不得出现「已拒绝」
+  assert.match(bodyText(), /重复跳过/);
+  assert.doesNotMatch(bodyText(), /已拒绝/);
+  // 处理结果列必须说清「非失败」，而不是兜底句「请核对源文件后重新导入」
+  assert.match(bodyText(), /相同来源渠道与来源单号的订单已存在，本行已跳过（非失败）/);
+  assert.doesNotMatch(bodyText(), /请核对源文件后重新导入/);
+
+  const reviewLinks = [...document.querySelectorAll('a')]
+    .filter((anchor) => anchor.textContent?.includes('前往人工复核'));
+  // 真待复核行保留复核入口；重复跳过行是纯说明文案，不渲染任何链接
+  assert.equal(reviewLinks.length, 1);
+  assert.ok(![...document.querySelectorAll('a')].some((anchor) => anchor.textContent?.includes('重复订单已跳过')));
+  assert.ok(control('查看系统订单'));
+});
