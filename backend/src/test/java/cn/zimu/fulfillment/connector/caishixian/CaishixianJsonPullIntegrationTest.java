@@ -62,6 +62,7 @@ class CaishixianJsonPullIntegrationTest {
     @Autowired CaishixianConnector connector;
     @Autowired CaishixianShipmentArtifactFactory artifactFactory;
     @Autowired TrackingFileService trackingFileService;
+    @Autowired cn.zimu.fulfillment.file.SourceImportService sourceImportService;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean CaishixianPullClient pullClient;
 
@@ -75,6 +76,44 @@ class CaishixianJsonPullIntegrationTest {
                             + "quantity_multiplier,sku_id,active) VALUES ('CAISHIXIAN',?,'羊小腿',1,?,true) "
                             + "ON CONFLICT DO NOTHING",
                     "G-" + sequence, skuId);
+        }
+        // 候选/放行流水线（2026-08-31）：断言订单前要走确认放行，京东导出路由需要租户标识。
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config = config || ?::jsonb
+                WHERE provider_type='JD_WAREHOUSE'
+                """,
+                """
+                {"sourceNo":"ISV0020000000079","ownerNo":"EBU4418056064528",
+                 "shopNo":"ESP0020008943717","customerCode":"010K5064550",
+                 "warehouseNo":"118085840","carrierNo":"CYS0000010",
+                 "pin":"京诚乾元01","salesPlatformSource":"6","townRequired":false}
+                """);
+    }
+
+    /**
+     * 候选/放行流水线移植：拉取只建候选批次（raw 行 RECEIVED），订单由确认放行事务创建。
+     * 断言 {@code app.orders} 前先把指定前缀下尚未确认的批次逐个放行。
+     */
+    private void confirmStagedBatches(String prefix) {
+        List<Long> batchIds = jdbc.queryForList(
+                """
+                SELECT DISTINCT rir.import_batch_id FROM app.raw_import_rows rir
+                JOIN app.import_batches ib ON ib.id=rir.import_batch_id
+                WHERE rir.source_order_ref LIKE ? AND ib.confirmed_at IS NULL
+                ORDER BY 1
+                """,
+                Long.class,
+                prefix + "-%");
+        for (Long batchId : batchIds) {
+            sourceImportService.confirmSourceBatch(
+                    batchId,
+                    "confirm-" + prefix + "-" + batchId,
+                    new cn.zimu.fulfillment.common.web.CommandContext(
+                            "req-confirm-" + prefix + "-" + batchId,
+                            "trace-confirm-" + prefix + "-" + batchId,
+                            "caishixian-pull-test"));
         }
     }
 
@@ -158,6 +197,7 @@ class CaishixianJsonPullIntegrationTest {
         assertThat(result.status()).isEqualTo(PullResult.PullStatus.OK);
         assertThat(result.pulledCount()).isEqualTo(11);
         assertThat(result.message()).contains("实取 12").contains("totalNum=12").contains("waitDepotNum=12");
+        confirmStagedBatches(prefix);
 
         // 11 单真实落库；detail 失败的第 12 单没有订单、只有 NEED_REVIEW 血缘
         Integer orders = jdbc.queryForObject(
@@ -210,6 +250,8 @@ class CaishixianJsonPullIntegrationTest {
         PullResult first = connector.pullOrders(windowCursor());
         assertThat(first.status()).isEqualTo(PullResult.PullStatus.OK);
         assertThat(first.pulledCount()).isEqualTo(1);
+        // 旧单先放行成单，第二次拉取的按单重复预检（orderExists）才有事实可查。
+        confirmStagedBatches(prefix);
 
         // 第二次拉取：旧单 + 新单混批（ea8fbb2 生产事故形态）——旧单逐单跳过，新单必须进来
         when(pullClient.pullOrderPage(eq("token-1"), anyString(), anyString(), eq(1), anyInt()))
@@ -218,6 +260,7 @@ class CaishixianJsonPullIntegrationTest {
 
         assertThat(second.status()).isEqualTo(PullResult.PullStatus.OK);
         assertThat(second.pulledCount()).isEqualTo(1);
+        confirmStagedBatches(prefix);
         Integer orders = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref LIKE ?",
                 Integer.class, prefix + "-%");
@@ -245,6 +288,7 @@ class CaishixianJsonPullIntegrationTest {
         when(pullClient.pullOrderDetail(eq("token-1"), anyString())).thenReturn(detail(1));
         PullResult pulled = connector.pullOrders(windowCursor());
         assertThat(pulled.pulledCount()).isEqualTo(1);
+        confirmStagedBatches(prefix);
 
         String sourceRef = prefix + "-1";
         String sourceLineRef = prefix + "-1-01";
@@ -268,28 +312,23 @@ class CaishixianJsonPullIntegrationTest {
                 orderLineId);
         long fulfillmentId = ((Number) allocation.get("fulfillment_id")).longValue();
         long providerId = ((Number) allocation.get("provider_id")).longValue();
-        assertThat((BigDecimal) allocation.get("requested_quantity")).isEqualByComparingTo("2");
-        assertThat((BigDecimal) allocation.get("source_quantity_snapshot")).isEqualByComparingTo("2");
-        assertThat((BigDecimal) allocation.get("mapping_multiplier_snapshot")).isEqualByComparingTo("1");
+        // V99 商品数量整数化：数量列已是 INTEGER，投影按数字比较。
+        assertThat(((Number) allocation.get("requested_quantity")).intValue()).isEqualTo(2);
+        assertThat(((Number) allocation.get("source_quantity_snapshot")).intValue()).isEqualTo(2);
+        assertThat(((Number) allocation.get("mapping_multiplier_snapshot")).intValue()).isEqualTo(1);
 
-        // 初始 Fulfillment 为 NOT_SHIPPED；从 CREATED Shipment 开始，让数据库按实发明细
-        // 重算累计量/进度，最后再把履约结果与 Shipment 状态收口。
+        // 候选流水线移植：确认放行已为该履约单元创建发货批次与全额指令明细
+        // （数据库禁止超发：再自建一份明细会撞 remaining 校验）。直接复用真实分配，
+        // 回填实发数量让数据库按实发明细重算累计量/进度，最后收口履约结果与批次状态。
         long shipmentId = jdbc.queryForObject(
                 """
-                INSERT INTO app.shipments
-                    (shipment_no, order_id, fulfillment_provider_id, shipment_sequence,
-                     receiver_name_snapshot, receiver_phone_snapshot, receiver_address_snapshot,
-                     shipment_status)
-                VALUES (?, ?, ?, 1, '收货人1', '13800000001', '河南省郑州市金水区测试路 1 号',
-                        'CREATED')
-                RETURNING id
+                SELECT s.id FROM app.shipments s
+                JOIN app.shipment_items si ON si.shipment_id=s.id
+                WHERE si.fulfillment_id=?
                 """,
-                Long.class, "SHP-" + prefix, orderId, providerId);
+                Long.class, fulfillmentId);
         jdbc.update(
-                """
-                INSERT INTO app.shipment_items(shipment_id, fulfillment_id, instructed_quantity, shipped_quantity)
-                VALUES (?, ?, 2, 2)
-                """,
+                "UPDATE app.shipment_items SET shipped_quantity=2 WHERE shipment_id=? AND fulfillment_id=?",
                 shipmentId, fulfillmentId);
         jdbc.update(
                 """

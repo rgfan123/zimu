@@ -106,18 +106,24 @@ class SourceBatchConfirmReadiness {
     }
 
     Readiness of(long batchId) {
+        // 候选流水线（2026-08-31 合入）里，干净 RECEIVED 行 = 已过就绪门禁、等放行事务成单的行：
+        // 对确认闸门而言它们与 ACCEPTED 同为「就绪」，且天然属于待处理量（确认动作会把它们成单）。
         return new Readiness(
-                countRows(batchId, "status='ACCEPTED'"),
-                countPendingRows(batchId),
+                countRows(batchId, "(status='ACCEPTED' OR " + READY_RECEIVED + ")"),
+                countPendingRows(batchId) + countRows(batchId, READY_RECEIVED),
                 countRows(batchId, blockedPredicate("")),
                 countRows(batchId, benignSkippedPredicate("")),
                 blockers(batchId));
     }
 
-    /** 阻断口径：非 ACCEPTED，且排除「定义上无事可做」的行。与确认闸门同一条判据。 */
+    /** 候选流水线的就绪行：已接收入候选、无任何错误标记、等待放行成单。 */
+    private static final String READY_RECEIVED = "(status='RECEIVED' AND error_code IS NULL)";
+
+    /** 阻断口径：非 ACCEPTED、非干净 RECEIVED（候选流水线的就绪行），且排除「定义上无事可做」的行。 */
     static String blockedPredicate(String tableAlias) {
         String alias = prefix(tableAlias);
-        return alias + "status<>'ACCEPTED' AND NOT " + benignPredicate(alias);
+        return alias + "status<>'ACCEPTED' AND NOT (" + alias + "status='RECEIVED' AND " + alias
+                + "error_code IS NULL) AND NOT " + benignPredicate(alias);
     }
 
     /** 良性跳过口径：非 ACCEPTED，且确实属于「定义上无事可做」。 */

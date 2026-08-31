@@ -69,6 +69,7 @@ class StructuredImportApiTest {
     @Autowired ReadySourceBatchExporter readySourceBatchExporter;
     @Autowired ReviewCaseResolutionService reviewCaseResolutionService;
     @MockitoSpyBean OrderCreateService orderCreateService;
+    @MockitoSpyBean SourceBatchSkuReadinessGate sourceBatchSkuReadinessGate;
 
     private static final java.util.concurrent.atomic.AtomicInteger SEQ =
             new java.util.concurrent.atomic.AtomicInteger(1000);
@@ -856,6 +857,13 @@ class StructuredImportApiTest {
         Map<String, Object> imported = sourceImportService.importStructured(
                 SourceChannel.CAISHIXIAN, List.of(row), batchNo(), ctx());
         long batchId = Long.parseLong(imported.get("id").toString());
+        // 候选流水线移植（2026-08-31）：raw_cells 不再是现代批次的确认判据（候选快照才是），
+        // legacy 行只可能出现在候选流水线之前已成单的历史批次上。先正常确认让批次成单，
+        // 再抹掉确认痕迹与候选快照，模拟升级前遗留的已成单未确认批次。
+        sourceImportService.confirm(batchId, "confirm-legacy-seed-" + ref, ctx());
+        jdbc.update(
+                "UPDATE app.import_batches SET confirmed_at=NULL, confirmed_by=NULL, error_detail=NULL WHERE id=?",
+                batchId);
         // 模拟 V67 之前已存在的结构化快照：测试夹具临时绕过 raw 证据不可变触发器，
         // 业务代码本身仍不能改写原始行。
         jdbc.execute("ALTER TABLE app.raw_import_rows DISABLE TRIGGER trg_raw_import_source_immutable");
@@ -1059,6 +1067,9 @@ class StructuredImportApiTest {
         CountDownLatch firstCreateEntered = new CountDownLatch(1);
         CountDownLatch releaseFirstCreate = new CountDownLatch(1);
 
+        // 候选流水线移植（2026-08-31）：上传期不再建订单，并发闩子从 createImported 挪到
+        // 候选快照阶段（snapshotCurrentMappings 在批次插入之后、事务提交之前被调用一次），
+        // 钉住的不变量不变：同内容并发导入必须串行在内容哈希锁上，两个调用方拿到同一个已提交批次。
         doAnswer(invocation -> {
                     firstCreateEntered.countDown();
                     if (!releaseFirstCreate.await(10, TimeUnit.SECONDS)) {
@@ -1066,15 +1077,15 @@ class StructuredImportApiTest {
                     }
                     return invocation.callRealMethod();
                 })
-                .when(orderCreateService)
-                .createImported(any(), anyLong(), anyString(), any(), any(AuditActorType.class));
+                .when(sourceBatchSkuReadinessGate)
+                .snapshotCurrentMappings(any(), any());
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             Future<Map<String, Object>> first = pool.submit(() -> sourceImportService.importStructured(
                     SourceChannel.CAISHIXIAN, List.of(row), batchNo(), ctx()));
             assertThat(firstCreateEntered.await(10, TimeUnit.SECONDS))
-                    .as("the first import reaches order creation while its batch is uncommitted")
+                    .as("the first import reaches candidate staging while its batch is uncommitted")
                     .isTrue();
 
             Future<Map<String, Object>> second = pool.submit(() -> sourceImportService.importStructured(
@@ -1105,12 +1116,19 @@ class StructuredImportApiTest {
                     """,
                     Integer.class,
                     firstResult.get("content_sha256"))).isEqualTo(1);
+            // 上传只建候选：并发窗口内不得出现任何正式订单；确认唯一批次后恰好一单。
+            assertThat(jdbc.queryForObject(
+                    "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
+                    Integer.class,
+                    ref)).isZero();
+            verify(orderCreateService, never()).createImported(
+                    any(), anyLong(), anyString(), any(), any(AuditActorType.class));
+            sourceImportService.confirm(
+                    Long.parseLong(firstResult.get("id").toString()), "confirm-concurrent-" + ref, ctx());
             assertThat(jdbc.queryForObject(
                     "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
                     Integer.class,
                     ref)).isEqualTo(1);
-            verify(orderCreateService, times(1)).createImported(
-                    any(), anyLong(), anyString(), any(), any(AuditActorType.class));
         } finally {
             releaseFirstCreate.countDown();
             pool.shutdownNow();
@@ -1166,17 +1184,26 @@ class StructuredImportApiTest {
                 WHERE import_batch_id=?
                 """,
                 batchId);
+        // 候选世界移植（2026-08-31）：阻断候选不建订单，行级阻断落在 raw 行
+        // （SKU_READINESS + SOURCE_SKU_MAPPING_REQUIRED 明细），readiness 级观测点
+        // 从订单行改为 SOURCE_ORDER_CANDIDATE 复核事项（按 raw_import_row_id 关联）。
         assertThat(raw)
                 .containsEntry("status", "NEED_REVIEW")
-                .containsEntry("error_code", "SKU_MATCH");
-        assertThat(raw.get("order_id")).isNotNull();
-        assertThat(raw.get("order_line_id")).isNotNull();
-        assertThat((String) raw.get("error_detail")).contains("SKU_MAPPING_REQUIRED");
+                .containsEntry("error_code", "SKU_READINESS");
+        assertThat(raw.get("order_id")).isNull();
+        assertThat(raw.get("order_line_id")).isNull();
+        assertThat((String) raw.get("error_detail")).contains("SOURCE_SKU_MAPPING_REQUIRED");
         assertThat(jdbc.queryForMap(
-                "SELECT processing_stage, exception_code FROM app.order_lines WHERE id=?",
-                raw.get("order_line_id")))
-                .containsEntry("processing_stage", "NEED_REVIEW")
-                .containsEntry("exception_code", "SKU_MAPPING_REQUIRED");
+                """
+                SELECT rc.status, rc.reason_code, rc.detail->>'source_sku_ref' source_sku_ref
+                FROM app.review_cases rc
+                JOIN app.raw_import_rows rir ON rir.id=rc.raw_import_row_id
+                WHERE rir.import_batch_id=? AND rc.case_type='SOURCE_ORDER_CANDIDATE'
+                """,
+                batchId))
+                .containsEntry("status", "OPEN")
+                .containsEntry("reason_code", "SKU_MAPPING_REQUIRED")
+                .containsEntry("source_sku_ref", missingSourceSkuRef);
 
         assertThatThrownBy(() -> sourceImportService.confirm(batchId, "confirm-" + ref, ctx()))
                 .isInstanceOfSatisfying(BusinessException.class, error ->

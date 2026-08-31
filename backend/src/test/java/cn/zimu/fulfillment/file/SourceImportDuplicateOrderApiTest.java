@@ -54,6 +54,23 @@ class SourceImportDuplicateOrderApiTest {
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     cn.zimu.fulfillment.connector.wecom.WecomConnectionManager ignoredWecomConnectionManager;
 
+    /** 确认放行会走京东导出路由，租户标识缺一个就失败关闭；与 SourcePartialConfirmApiTest 同一组测试值。 */
+    @org.junit.jupiter.api.BeforeEach
+    void seedJdProviderIdentifiers() {
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config = config || ?::jsonb
+                WHERE provider_type='JD_WAREHOUSE'
+                """,
+                """
+                {"sourceNo":"ISV0020000000079","ownerNo":"EBU4418056064528",
+                 "shopNo":"ESP0020008943717","customerCode":"010K5064550",
+                 "warehouseNo":"118085840","carrierNo":"CYS0000010",
+                 "pin":"京诚乾元01","salesPlatformSource":"6","townRequired":false}
+                """);
+    }
+
     @Test
     @SuppressWarnings("unchecked")
     void mixedBatchAcceptsNewOrderAndRejectsDuplicateInsteadOfAbortingWholeBatch() throws Exception {
@@ -71,6 +88,12 @@ class SourceImportDuplicateOrderApiTest {
         assertThat(first.getStatusCode())
                 .withFailMessage("seed upload body: %s", first.getBody())
                 .isEqualTo(HttpStatus.CREATED);
+        // 候选流水线（2026-08-31）：上传只建候选，订单在确认放行时创建。
+        ResponseEntity<Map> seedConfirmed = confirm(
+                String.valueOf(first.getBody().get("id")), "dup-seed-confirm-001");
+        assertThat(seedConfirmed.getStatusCode())
+                .withFailMessage("seed confirm body: %s", seedConfirmed.getBody())
+                .isEqualTo(HttpStatus.OK);
 
         // 第二次上传：同一渠道再次拉取「待发货」列表，这次列表里新旧订单混在一起——
         // TEST-DUP-0001 已存在，TEST-NEW-0001 是真正的新单。
@@ -82,11 +105,15 @@ class SourceImportDuplicateOrderApiTest {
         Map<String, Object> batch = second.getBody();
         Map<?, ?> counts = (Map<?, ?>) batch.get("row_counts");
         assertThat(counts.get("total")).isEqualTo(2);
-        assertThat(counts.get("accepted")).isEqualTo(1);
         assertThat(counts.get("rejected")).isEqualTo(1);
         assertThat(counts.get("need_review")).isEqualTo(0);
 
-        // 真正的新订单必须落库，不能因为同批次里有重复订单而被一并回滚掉。
+        // 上传阶段重复行已被挡下且未毒化批次；新单候选就绪，确认放行后必须落库。
+        ResponseEntity<Map> mixedConfirmed = confirm(
+                String.valueOf(batch.get("id")), "dup-mixed-confirm-002");
+        assertThat(mixedConfirmed.getStatusCode())
+                .withFailMessage("mixed confirm body: %s", mixedConfirmed.getBody())
+                .isEqualTo(HttpStatus.OK);
         Long newOrderCount = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM app.orders WHERE source_channel='DAZHE' AND source_ref='TEST-NEW-0001'",
                 Long.class);
@@ -112,6 +139,16 @@ class SourceImportDuplicateOrderApiTest {
                 .findFirst()
                 .orElseThrow();
         assertThat(newRow.get("status")).isEqualTo("ACCEPTED");
+    }
+
+    private ResponseEntity<Map> confirm(String batchId, String idempotencyKey) {
+        HttpHeaders headers = operatorHeaders();
+        headers.set("Idempotency-Key", idempotencyKey);
+        return http.exchange(
+                "/api/v1/import-batches/" + batchId + "/confirm",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), headers),
+                Map.class);
     }
 
     private ResponseEntity<Map> upload(byte[] bytes, String idempotencyKey) {

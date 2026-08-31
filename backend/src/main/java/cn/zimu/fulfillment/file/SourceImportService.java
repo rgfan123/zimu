@@ -212,27 +212,10 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     AuditActorType.AGENT));
         }
         candidates = sourceBatchSkuReadinessGate.snapshotCurrentMappings(parsed.sourceChannel(), candidates);
-        if (nonSkuBlocker) {
-            stageCandidates(batchId, candidates, null);
-        } else {
-            try {
-                sourceBatchSkuReadinessGate.requireReady(parsed.sourceChannel(), candidates);
-            } catch (BusinessException exception) {
-                if (!"IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())) {
-                    throw exception;
-                }
-                stageCandidates(batchId, candidates, exception);
-                return finalizeBatch(batchId, started, context, AuditActorType.HUMAN,
-                        "source-file-import", "source-orders.upload",
-                        Map.of(
-                                "idempotency_key", idempotencyKey,
-                                "original_file_name", safeFilename,
-                                "content_sha256", sha256,
-                                "import_mode", mode,
-                                "settlement_missing", parsed.sourceChannel() == SourceChannel.WANQI));
-            }
-            stageReadyCandidates(batchId, candidates);
-        }
+        // 部分确认（2026-08-28 生产痛点）× 候选放行流水线（SKU 主数据线）的合成语义：
+        // 就绪性按【候选=一张来源订单】逐个评估，阻断候选原地留批等补做，就绪候选不陪等。
+        // 文件级问题行（解析失败等）各自带着复核标记，不再连坐干净候选。
+        stageSplit(parsed.sourceChannel(), batchId, candidates);
         // 兼容已成单/重放路径：若 raw 行已有订单血缘，则补齐 SKU 映射复核事项的 sheet/行号与 raw_import_row_id。
         enrichReviewCasesWithSourceRow(batchId);
 
@@ -244,6 +227,100 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                         "content_sha256", sha256,
                         "import_mode", mode,
                         "settlement_missing", parsed.sourceChannel() == SourceChannel.WANQI));
+    }
+
+    /**
+     * 候选粒度的就绪分流：每个候选（=一张来源订单）独立过 SKU 就绪门禁。
+     *
+     * <p>与整批 requireReady 的差别是失败面：任一候选阻断只标记它自己的行
+     * （问题行 SKU_READINESS、同候选兄弟行 BATCH_ATOMIC_RELEASE_BLOCKED），
+     * 其余就绪候选保持干净 RECEIVED，等放行事务成单。整批仍共享同一个
+     * PENDING 候选快照，补做时 materializer 会重新逐候选评估。
+     */
+    private void stageSplit(SourceChannel channel, long batchId, List<SourceOrderCandidate> candidates) {
+        List<SourceOrderCandidate> ready = new ArrayList<>();
+        List<Map<String, Object>> readinessDetails = new ArrayList<>();
+        for (SourceOrderCandidate candidate : candidates) {
+            BusinessException block = null;
+            try {
+                sourceBatchSkuReadinessGate.requireReady(channel, List.of(candidate));
+            } catch (BusinessException exception) {
+                if (!"IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())) {
+                    throw exception;
+                }
+                block = exception;
+            }
+            if (block == null) {
+                ready.add(candidate);
+            } else {
+                markBlockedCandidateRows(batchId, candidate, block);
+                readinessDetails.add(Map.of(
+                        "candidate_key", candidate.candidateKey(),
+                        "details", block.getDetails()));
+            }
+        }
+        for (SourceOrderCandidate candidate : ready) {
+            for (SourceOrderCandidate.CandidateRow row : candidate.rows()) {
+                jdbc.update(
+                        """
+                        UPDATE app.raw_import_rows
+                        SET error_code=NULL, error_detail=NULL,
+                            order_id=NULL, order_line_id=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND import_batch_id=? AND status='RECEIVED'
+                        """,
+                        row.rawImportRowId(),
+                        batchId);
+            }
+        }
+        Map<String, Object> batchDetail = new LinkedHashMap<>();
+        batchDetail.put("candidate_status", "PENDING");
+        batchDetail.put("candidate_snapshot_version", SourceOrderCandidate.SNAPSHOT_VERSION);
+        batchDetail.put("source_order_candidates", candidates);
+        if (!readinessDetails.isEmpty()) {
+            batchDetail.put("readiness", Map.of("blocked_candidates", readinessDetails));
+        }
+        jdbc.update(
+                "UPDATE app.import_batches SET error_detail=?::jsonb WHERE id=?",
+                json(batchDetail),
+                batchId);
+    }
+
+    /** 阻断候选的行标记：问题行按门禁明细标 SKU_READINESS，其余兄弟行标整单联动阻断。 */
+    private void markBlockedCandidateRows(long batchId, SourceOrderCandidate candidate, BusinessException block) {
+        Map<Long, List<Map<String, Object>>> detailsByRawId = new LinkedHashMap<>();
+        if (block.getDetails().get("lines") instanceof List<?> lines) {
+            for (Object value : lines) {
+                if (!(value instanceof Map<?, ?> line) || line.get("raw_import_row_id") == null) {
+                    continue;
+                }
+                long rawId = Long.parseLong(line.get("raw_import_row_id").toString());
+                Map<String, Object> copy = new LinkedHashMap<>();
+                line.forEach((key, item) -> copy.put(String.valueOf(key), item));
+                detailsByRawId.computeIfAbsent(rawId, ignored -> new ArrayList<>()).add(Map.copyOf(copy));
+            }
+        }
+        for (SourceOrderCandidate.CandidateRow row : candidate.rows()) {
+            List<Map<String, Object>> blockedLines = detailsByRawId.getOrDefault(row.rawImportRowId(), List.of());
+            Map<String, Object> detail = blockedLines.isEmpty()
+                    ? Map.of(
+                            "message", "同一来源订单存在阻断项，候选已保留且未创建正式订单",
+                            "candidate_key", candidate.candidateKey())
+                    : blockedRowDetail(blockedLines);
+            jdbc.update(
+                    """
+                    UPDATE app.raw_import_rows
+                    SET status='NEED_REVIEW', error_code=?, error_detail=?::jsonb,
+                        order_id=NULL, order_line_id=NULL, updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND import_batch_id=? AND status<>'REJECTED'
+                    """,
+                    blockedLines.isEmpty() ? "BATCH_ATOMIC_RELEASE_BLOCKED" : "SKU_READINESS",
+                    json(detail),
+                    row.rawImportRowId(),
+                    batchId);
+            for (Map<String, Object> blocked : blockedLines) {
+                createCandidateReviewCase(batchId, row.rawImportRowId(), blocked);
+            }
+        }
     }
 
     private void stageCandidates(
@@ -574,22 +651,8 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     AuditActorType.SYSTEM));
         }
         candidates = sourceBatchSkuReadinessGate.snapshotCurrentMappings(channel, candidates);
-        if (nonSkuBlocker) {
-            stageCandidates(batchId, candidates, null);
-        } else {
-            try {
-                sourceBatchSkuReadinessGate.requireReady(channel, candidates);
-            } catch (BusinessException exception) {
-                if (!"IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())) {
-                    throw exception;
-                }
-                stageCandidates(batchId, candidates, exception);
-                return finalizeBatch(batchId, started, context, AuditActorType.SYSTEM,
-                        "source-order-structured-import", "source-orders.importStructured",
-                        Map.of("batch_no", batchNo, "content_sha256", contentSha));
-            }
-            stageReadyCandidates(batchId, candidates);
-        }
+        // 与文件导入同一条部分化规矩：候选粒度评估就绪性，阻断候选留批，就绪候选先行。
+        stageSplit(channel, batchId, candidates);
         // 兼容已成单/重放路径：若 raw 行已有订单血缘，则补齐 SKU 映射复核事项的 sheet/行号与 raw_import_row_id。
         enrichReviewCasesWithSourceRow(batchId);
 
@@ -1031,6 +1094,10 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     private List<OrderItemInput> canonicalItems(SourceChannel channel, ParsedSourceRow row) {
         SourceBundleResolver.Decision decision =
                 sourceBundleResolver.decide(channel, row.sourceSkuRef(), row.productName());
+        if (decision.kind() != SourceBundleResolver.Kind.SINGLE) {
+            // 三条路径同一判据（V99）：礼包行数量必须为正整数，拒绝而不是降级或静默取整。
+            SourceBundleResolver.requireIntegerQuantityForBundle(row.quantity());
+        }
         return switch (decision.kind()) {
             case STATIC_BUNDLE -> decision.componentGroups().stream()
                     .map(providerComponents -> new OrderItemInput(
@@ -1082,6 +1149,10 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         }
         SourceBundleResolver.Decision decision =
                 sourceBundleResolver.decide(channel, item.sourceSkuRef(), item.productName());
+        if (decision.kind() != SourceBundleResolver.Kind.SINGLE) {
+            // 三条路径同一判据（V99）：礼包行数量必须为正整数，拒绝而不是降级或静默取整。
+            SourceBundleResolver.requireIntegerQuantityForBundle(item.quantity());
+        }
         return switch (decision.kind()) {
             case STATIC_BUNDLE -> decision.componentGroups().stream()
                     .map(providerComponents -> new OrderItemInput(
@@ -1330,7 +1401,10 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 .requestId(context.requestId())
                 .traceId(context.traceId())
                 .operator(context.operator())
-                .actorType(AuditActorType.HUMAN)
+                // AutomaticRelease 走内部服务身份触发同一个确认入口：审计必须忠实记录为系统动作。
+                .actorType(context.authenticationKind() == AuthenticationKind.INTERNAL_SERVICE
+                        ? AuditActorType.SYSTEM
+                        : AuditActorType.HUMAN)
                 .service("source-file-import")
                 .operation("source-orders.confirm")
                 .requestPayload(payload)

@@ -131,9 +131,11 @@ class SourcePartialConfirmApiTest {
         assertThat(resolved.getStatusCode())
                 .withFailMessage("resolve-sku body: %s", resolved.getBody())
                 .isEqualTo(HttpStatus.OK);
+        // 候选流水线（2026-08-31）：复核解决把行放回干净 RECEIVED（就绪待放行），
+        // 正式订单与 ACCEPTED 血缘由补做确认的放行事务写入。
         assertThat(rowStatus(batchId, "TEST-PARTIAL-B"))
-                .withFailMessage("复核解决后该行应转为已接收")
-                .isEqualTo("ACCEPTED");
+                .withFailMessage("复核解决后该行应回到就绪待放行")
+                .isEqualTo("RECEIVED");
 
         // 补做必须用不同的幂等键：沿用首次确认的键会被判为重放，补做会静默变成空操作。
         Map<String, Object> beforeReconfirm = getBatch(batchId);
@@ -220,7 +222,7 @@ class SourcePartialConfirmApiTest {
                 """
                 SELECT DISTINCT rc.id
                 FROM app.review_cases rc
-                JOIN app.raw_import_rows rir ON rir.order_id=rc.order_id
+                JOIN app.raw_import_rows rir ON rir.id=rc.raw_import_row_id
                 WHERE rir.import_batch_id=? AND rc.status='OPEN'
                   AND rc.reason_code IN ('SKU_MAPPING_REQUIRED', 'SKU_MAPPING_CONFLICT')
                 ORDER BY rc.id

@@ -81,14 +81,27 @@ public abstract class AbstractHttpPullConnector implements PlatformConnector {
         return new CommandContext(id, id, "system:platform-pull");
     }
 
-    /** 从导入批次结果取 accepted 行数（row_counts.accepted），缺失按 0 计。 */
-    @SuppressWarnings("unchecked")
+    /**
+     * 从导入批次结果取本次进入批次的可发货行数。
+     *
+     * <p>候选/放行流水线（2026-08-31）下拉取只建候选：干净行停在 RECEIVED（row_counts
+     * 不单列），订单在确认放行时才转 ACCEPTED。拉取计数因此按
+     * {@code total - need_review - rejected} 计——涵盖已放行与待放行两种状态；
+     * 若仍按 accepted 计，拉取永远报 0 条，刷新界面会把「已拉到待确认」误报成「无新数据」。
+     */
     protected int acceptedCount(Map<String, Object> batch) {
         Object counts = batch == null ? null : batch.get("row_counts");
-        if (counts instanceof Map<?, ?> map && map.get("accepted") instanceof Number number) {
-            return number.intValue();
+        if (!(counts instanceof Map<?, ?> map)) {
+            return 0;
         }
-        return 0;
+        int total = intOf(map.get("total"));
+        int needReview = intOf(map.get("need_review"));
+        int rejected = intOf(map.get("rejected"));
+        return Math.max(total - needReview - rejected, 0);
+    }
+
+    private static int intOf(Object value) {
+        return value instanceof Number number ? number.intValue() : 0;
     }
 
     /**

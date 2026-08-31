@@ -257,7 +257,7 @@ public class ReviewCaseResolutionService {
             if (!sku.isActive()) {
                 throw BusinessException.unprocessable("SKU_INACTIVE", "只能引用已启用的 SKU 主数据");
             }
-            BigDecimal multiplier = new BigDecimal(command.quantityMultiplier()).setScale(3, RoundingMode.UNNECESSARY);
+            Integer multiplier = Integer.valueOf(command.quantityMultiplier());
             SourceSkuRefPolicy.requireReusable(command.sourceSkuRef());
 
             if (reviewCase.getOrderId() == null
@@ -271,6 +271,16 @@ public class ReviewCaseResolutionService {
                         Objects.toString(reviewCase.getDetail().get("source_specification"), null));
                 Map<String, Object> resolution = skuResolution(command, multiplier);
                 ReviewCaseDto result = resolve(reviewCase, resolution, context.operator());
+                // 候选行修复后回到干净 RECEIVED：确认闸门重新把它算作待发货，
+                // 放行事务（materializer）会按最新映射逐候选重评并成单（部分确认的补做闭环）。
+                jdbc.update(
+                        """
+                        UPDATE app.raw_import_rows
+                        SET status='RECEIVED', error_code=NULL, error_detail=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND import_batch_id=? AND status='NEED_REVIEW'
+                        """,
+                        reviewCase.getRawImportRowId(),
+                        reviewCase.getImportBatchId());
                 recordAudit("review_case.resolve_candidate_sku", null, payload, result, context);
                 return result;
             }
@@ -284,7 +294,7 @@ public class ReviewCaseResolutionService {
                     line.getProductNameSnapshot(),
                     line.getSpecificationSnapshot());
 
-            BigDecimal sourceQuantity = line.getSourceQuantitySnapshot() == null
+            Integer sourceQuantity = line.getSourceQuantitySnapshot() == null
                     ? line.getRequestedQuantity()
                     : line.getSourceQuantitySnapshot();
             line.setSkuId(skuId);
@@ -292,7 +302,7 @@ public class ReviewCaseResolutionService {
             line.setSkuCodeSnapshot(sku.getSkuCode());
             line.setSourceQuantitySnapshot(sourceQuantity);
             line.setMappingMultiplierSnapshot(multiplier);
-            line.setRequestedQuantity(sourceQuantity.multiply(multiplier).setScale(3, RoundingMode.HALF_UP));
+            line.setRequestedQuantity(Math.multiplyExact(sourceQuantity, multiplier));
             line.setExceptionCode(null);
             line.setExceptionReason(null);
             orderLines.save(line);
@@ -321,7 +331,7 @@ public class ReviewCaseResolutionService {
     private void upsertSourceSkuMapping(
             ResolveSkuReviewCommand command,
             long skuId,
-            BigDecimal multiplier,
+            Integer multiplier,
             String productName,
             String specification) {
         sourceSkuMappings
@@ -330,7 +340,7 @@ public class ReviewCaseResolutionService {
                     if (!existing.isActive()
                             || !Objects.equals(existing.getSkuId(), skuId)
                             || (existing.getQuantityMultiplier() != null
-                                    && existing.getQuantityMultiplier().compareTo(multiplier) != 0)) {
+                                    && !existing.getQuantityMultiplier().equals(multiplier))) {
                         throw BusinessException.conflict(
                                 "SOURCE_SKU_MAPPING_CONFLICT", "该来源 SKU 已存在不一致映射，请先处理主数据冲突");
                     }
@@ -352,13 +362,13 @@ public class ReviewCaseResolutionService {
     }
 
     private Map<String, Object> skuResolution(
-            ResolveSkuReviewCommand command, BigDecimal multiplier) {
+            ResolveSkuReviewCommand command, Integer multiplier) {
         Map<String, Object> resolution = new LinkedHashMap<>();
         resolution.put("resolution_type", "SKU_CONFIRMED");
         resolution.put("sku_id", command.skuId());
         resolution.put("source_channel", command.sourceChannel().name());
         resolution.put("source_sku_ref", command.sourceSkuRef());
-        resolution.put("quantity_multiplier", multiplier.toPlainString());
+        resolution.put("quantity_multiplier", multiplier);
         resolution.put("remark", command.remark());
         return resolution;
     }

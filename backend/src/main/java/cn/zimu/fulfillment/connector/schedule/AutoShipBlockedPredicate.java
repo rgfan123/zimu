@@ -43,9 +43,10 @@ public final class AutoShipBlockedPredicate {
         return "(" + alias + "order_line_id IS NULL AND " + alias + "error_code IN (" + BENIGN_CODES + "))";
     }
 
-    /** 阻断口径：非 ACCEPTED，且排除「定义上无事可做」的行。必须与原件逐字符一致。 */
+    /** 阻断口径：非 ACCEPTED、非干净 RECEIVED（候选流水线的就绪行），且排除「定义上无事可做」的行。必须与原件逐字符一致。 */
     public static String blockedPredicate(String tableAlias) {
         String alias = prefix(tableAlias);
-        return alias + "status<>'ACCEPTED' AND NOT " + benignPredicate(alias);
+        return alias + "status<>'ACCEPTED' AND NOT (" + alias + "status='RECEIVED' AND " + alias
+                + "error_code IS NULL) AND NOT " + benignPredicate(alias);
     }
 }

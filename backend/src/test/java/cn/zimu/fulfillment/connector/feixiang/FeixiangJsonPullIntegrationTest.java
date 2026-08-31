@@ -80,6 +80,44 @@ class FeixiangJsonPullIntegrationTest {
         mapSku("FX-SKU-0001");
         mapSku("FX-SKU-0002");
         mapSku("FX-SKU-0003");
+        // 候选/放行流水线（2026-08-31）：断言订单前要走确认放行，京东导出路由需要租户标识。
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config = config || ?::jsonb
+                WHERE provider_type='JD_WAREHOUSE'
+                """,
+                """
+                {"sourceNo":"ISV0020000000079","ownerNo":"EBU4418056064528",
+                 "shopNo":"ESP0020008943717","customerCode":"010K5064550",
+                 "warehouseNo":"118085840","carrierNo":"CYS0000010",
+                 "pin":"京诚乾元01","salesPlatformSource":"6","townRequired":false}
+                """);
+    }
+
+    /**
+     * 候选/放行流水线移植：拉取只建候选批次（raw 行 RECEIVED），订单由确认放行事务创建。
+     * 断言 {@code app.orders} 前先把本用例前缀下尚未确认的批次逐个放行。
+     */
+    private void confirmStagedBatches() {
+        List<Long> batchIds = jdbc.queryForList(
+                """
+                SELECT DISTINCT rir.import_batch_id FROM app.raw_import_rows rir
+                JOIN app.import_batches ib ON ib.id=rir.import_batch_id
+                WHERE rir.source_order_ref LIKE ? AND ib.confirmed_at IS NULL
+                ORDER BY 1
+                """,
+                Long.class,
+                prefix + "%");
+        for (Long batchId : batchIds) {
+            sourceImportService.confirmSourceBatch(
+                    batchId,
+                    "confirm-" + prefix + batchId,
+                    new cn.zimu.fulfillment.common.web.CommandContext(
+                            "req-confirm-" + prefix + batchId,
+                            "trace-confirm-" + prefix + batchId,
+                            "feixiang-pull-test"));
+        }
     }
 
     /** 本用例专属的来源单号（加前缀后与其他用例互不干扰）。 */
@@ -116,7 +154,8 @@ class FeixiangJsonPullIntegrationTest {
         assertThat(result.pulledCount()).isEqualTo(3);
         // 平台确实收到了真窗口参数（而不是旧的、会被忽略的 start_time/end_time）
         assertThat(platform.requestedWindows()).containsExactly(List.of("2026-08-24", "2026-08-26"));
-        // 三天的单都真的落库了
+        // 三天的单都真的落库了（候选流水线：确认放行后才建订单）
+        confirmStagedBatches();
         assertThat(sourceRefsInDb()).contains(ref("D-FX-0824"), ref("D-FX-0825"), ref("D-FX-0826"));
     }
 
@@ -136,6 +175,7 @@ class FeixiangJsonPullIntegrationTest {
         PullResult result = connector.pullOrders(window("2026-08-24", "2026-08-26"));
 
         assertThat(result.pulledCount()).isEqualTo(1);
+        confirmStagedBatches();
         assertThat(sourceRefsInDb()).containsOnly(ref("D-FX-0826"));
     }
 
@@ -146,6 +186,7 @@ class FeixiangJsonPullIntegrationTest {
         platform.order("1002", "D-FX-0826", "2026-08-26 23:59:59", "FX-SKU-0002", "1");
 
         connector.pullOrders(window("2026-08-24", "2026-08-26"));
+        confirmStagedBatches();
 
         assertThat(sourceRefsInDb()).contains(ref("D-FX-0824"), ref("D-FX-0826"));
     }
@@ -158,6 +199,7 @@ class FeixiangJsonPullIntegrationTest {
         platform.order("1003", "D-FX-0826", "2026-08-26 16:58:00", "FX-SKU-0001", "2");
 
         connector.pullOrders(window("2026-08-24", "2026-08-26"));
+        confirmStagedBatches();
 
         Instant orderedAt = jdbc.queryForObject(
                 "SELECT source_ordered_at FROM app.orders WHERE source_channel='FEIXIANG' AND source_ref=?",
@@ -174,6 +216,7 @@ class FeixiangJsonPullIntegrationTest {
         platform.order("1002", "D-FX-0825", "2026-08-25 12:30:00", "FX-SKU-0002", "1");
 
         connector.pullOrders(window("2026-08-24", "2026-08-26"));
+        confirmStagedBatches();
 
         assertThat(orderedAtOf("D-FX-0824"))
                 .isEqualTo(LocalDateTime.of(2026, 8, 24, 9, 0, 0).atZone(SHANGHAI).toInstant());
@@ -196,6 +239,8 @@ class FeixiangJsonPullIntegrationTest {
         platform.order("1001", "D-FX-OLD", "2026-08-24 09:00:00", "FX-SKU-0001", "1");
         PullResult first = connector.pullOrders(window("2026-08-24", "2026-08-26"));
         assertThat(first.pulledCount()).isEqualTo(1);
+        // 旧单必须先放行成单，第二次拉取的按单重复预检（orderExists）才有事实可查。
+        confirmStagedBatches();
 
         // 第二次拉取：列表里旧单还在（尚未发货），同时来了两张新单
         platform.order("1002", "D-FX-NEW-1", "2026-08-25 10:00:00", "FX-SKU-0002", "2");
@@ -205,6 +250,7 @@ class FeixiangJsonPullIntegrationTest {
         assertThat(second.status()).isEqualTo(PullResult.PullStatus.OK);
         // 只有两张新单被接受，旧单跳过——不是整批 0
         assertThat(second.pulledCount()).isEqualTo(2);
+        confirmStagedBatches();
         assertThat(sourceRefsInDb())
                 .containsExactlyInAnyOrder(ref("D-FX-OLD"), ref("D-FX-NEW-1"), ref("D-FX-NEW-2"));
         // 旧单没有被重复建单
@@ -223,6 +269,7 @@ class FeixiangJsonPullIntegrationTest {
     void replayingTheExactSamePullDoesNotDuplicateTheOrder() {
         platform.order("1001", "D-FX-OLD", "2026-08-24 09:00:00", "FX-SKU-0001", "1");
         connector.pullOrders(window("2026-08-24", "2026-08-26"));
+        confirmStagedBatches();
 
         PullResult again = connector.pullOrders(window("2026-08-24", "2026-08-26"));
 
@@ -248,6 +295,7 @@ class FeixiangJsonPullIntegrationTest {
         PullResult result = connector.pullOrders(window("2026-08-24", "2026-08-26"));
 
         assertThat(result.pulledCount()).isEqualTo(25);
+        confirmStagedBatches();
         assertThat(sourceRefsInDb()).hasSize(25);
     }
 
@@ -264,6 +312,7 @@ class FeixiangJsonPullIntegrationTest {
         platform.order("88881", "D2026826346818550490", "2026-08-26 16:58:00", "FX-SKU-0001", "2");
 
         connector.pullOrders(window("2026-08-24", "2026-08-26"));
+        confirmStagedBatches();
 
         // 来源单号只能是订单号（D…）
         assertThat(sourceRefsInDb()).containsExactly(ref("D2026826346818550490"));

@@ -71,6 +71,11 @@ class SourceOrderCandidateMaterializer {
                 .orElseThrow(() -> BusinessException.notFound("来源订单批次不存在: " + batchId));
         StagedPayload payload = stagedPayload(batch.errorDetail());
         if (payload == null) {
+            // 候选流水线（2026-08-31）之前的历史批次没有候选快照：正式订单已在上传期创建。
+            // 确认仍必须按原始行证据整批重跑 SKU 门禁——特别是 legacy 行 raw_cells 缺
+            // source_sku_ref 时失败关闭（SOURCE_SKU_MAPPING_REQUIRED），这是合并前确认
+            // 路径的既有语义；带快照的现代批次才改走下方候选门禁。
+            readinessGate.requireReady(batchId);
             return false;
         }
         if ("MATERIALIZED".equals(payload.status())) {
@@ -82,52 +87,119 @@ class SourceOrderCandidateMaterializer {
         if (!"PENDING".equals(payload.status())) {
             return false;
         }
-        Integer hardBlockers = jdbc.queryForObject(
+        // 部分放行（与人工「部分确认」同一条产品语义）：候选=一张来源订单，独立评估、独立成单。
+        // 原子性保持在候选内（一单的行要么全部成单要么全不成）；批次层面允许就绪候选先行，
+        // 阻断候选原地留批，行上带阻断原因，修复后再次确认由本方法重新逐候选评估（补做闭环）。
+        // 硬阻断（文件/数据问题）同样按候选算账：只有自己行上有问题的候选被跳过。
+        java.util.Set<Long> hardBlockedRowIds = new java.util.HashSet<>(jdbc.query(
                 """
-                SELECT count(*) FROM app.raw_import_rows
-                WHERE import_batch_id=? AND status IN ('NEED_REVIEW', 'REJECTED')
+                SELECT id FROM app.raw_import_rows
+                WHERE import_batch_id=?
+                  AND status IN ('NEED_REVIEW', 'REJECTED')
                   AND COALESCE(error_code, '')
                       NOT IN ('SKU_READINESS', 'BATCH_ATOMIC_RELEASE_BLOCKED', 'ORDER_ALREADY_EXISTS')
                 """,
-                Integer.class,
-                batchId);
-        if (hardBlockers != null && hardBlockers > 0) {
-            throw BusinessException.conflict("IMPORT_BATCH_BLOCKED", "批次仍有文件或数据问题，不能创建正式订单");
+                (resultSet, rowNumber) -> resultSet.getLong(1),
+                batchId));
+        List<SourceOrderCandidate> materialized = new ArrayList<>();
+        List<SourceOrderCandidate> remaining = new ArrayList<>();
+        List<Map<String, Object>> blockedLines = new ArrayList<>();
+        for (SourceOrderCandidate candidate : payload.candidates()) {
+            boolean hardBlocked = candidate.rows().stream()
+                    .map(SourceOrderCandidate.CandidateRow::rawImportRowId)
+                    .anyMatch(hardBlockedRowIds::contains);
+            if (hardBlocked) {
+                remaining.add(candidate);
+                continue;
+            }
+            try {
+                readinessGate.requireReady(batch.mappingChannel(), List.of(candidate));
+            } catch (BusinessException exception) {
+                if (!"IMPORT_BATCH_BLOCKED".equals(exception.getBusinessCode())) {
+                    throw exception;
+                }
+                collectBlockedLines(exception, blockedLines);
+                remaining.add(candidate);
+                continue;
+            }
+            materialize(batchId, List.of(candidate), context);
+            materialized.add(candidate);
         }
-        readinessGate.requireReady(batch.mappingChannel(), payload.candidates());
-        materialize(batchId, payload.candidates(), context);
+        if (materialized.isEmpty()) {
+            if (payload.candidates().isEmpty()) {
+                // 没有任何候选（例如仅表头的空文件，或全部行都是解析期硬阻断）：交回确认事务的
+                // 行级 readiness 闸门定夺——硬阻断行仍会被 confirm 的 blockedRows 判据挡下，
+                // 真正的空批次按既有语义空转放行。
+                return false;
+            }
+            // 一个候选都放不出去：维持既有失败面（含逐行阻断明细），让确认动作明确失败
+            // 而不是静默空转——运营要在响应里直接看到卡在哪个 SKU、哪个原因。
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("blocking_type", "SKU_READINESS");
+            if (!blockedLines.isEmpty()) {
+                details.put("lines", List.copyOf(blockedLines));
+            }
+            throw new BusinessException(
+                    409, "IMPORT_BATCH_BLOCKED", "批次仍有待处理的 SKU、文件或数据问题", List.of(), details);
+        }
         Map<String, Object> updated = new LinkedHashMap<>(payload.root());
-        updated.put("candidate_status", "MATERIALIZED");
-        updated.remove("readiness");
-        updated.remove("source_order_candidates");
-        updated.put("source_order_readiness_candidates", readinessCandidates(payload.candidates()));
-        jdbc.update(
-                """
-                UPDATE app.review_cases
-                SET status='RESOLVED',
-                    resolution=jsonb_build_object(
-                        'resolution_type', 'MASTER_DATA_REPAIRED',
-                        'candidate_status', 'MATERIALIZED'),
-                    resolved_by=?, resolved_at=CURRENT_TIMESTAMP,
-                    resolution_version=resolution_version+1, updated_at=CURRENT_TIMESTAMP
-                WHERE import_batch_id=? AND case_type='SOURCE_ORDER_CANDIDATE' AND status='OPEN'
-                """,
-                context.operator(),
-                batchId);
-        jdbc.update(
-                """
-                UPDATE app.import_batches
-                SET error_detail=?::jsonb, status='COMPLETED', processed_at=CURRENT_TIMESTAMP
-                WHERE id=?
-                """,
-                json(updated),
-                batchId);
+        List<SourceOrderReadinessCandidate> readinessSnapshots =
+                new ArrayList<>(payload.readinessCandidates());
+        readinessSnapshots.addAll(readinessCandidates(materialized));
+        updated.put("source_order_readiness_candidates", readinessSnapshots);
+        if (remaining.isEmpty()) {
+            updated.put("candidate_status", "MATERIALIZED");
+            updated.remove("readiness");
+            updated.remove("source_order_candidates");
+            jdbc.update(
+                    """
+                    UPDATE app.review_cases
+                    SET status='RESOLVED',
+                        resolution=jsonb_build_object(
+                            'resolution_type', 'MASTER_DATA_REPAIRED',
+                            'candidate_status', 'MATERIALIZED'),
+                        resolved_by=?, resolved_at=CURRENT_TIMESTAMP,
+                        resolution_version=resolution_version+1, updated_at=CURRENT_TIMESTAMP
+                    WHERE import_batch_id=? AND case_type='SOURCE_ORDER_CANDIDATE' AND status='OPEN'
+                    """,
+                    context.operator(),
+                    batchId);
+            jdbc.update(
+                    """
+                    UPDATE app.import_batches
+                    SET error_detail=?::jsonb, status='COMPLETED', processed_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    json(updated),
+                    batchId);
+        } else {
+            updated.put("candidate_status", "PENDING");
+            updated.put("source_order_candidates", remaining);
+            jdbc.update(
+                    "UPDATE app.import_batches SET error_detail=?::jsonb WHERE id=?",
+                    json(updated),
+                    batchId);
+        }
         return true;
     }
 
     private List<SourceOrderReadinessCandidate> readinessCandidates(
             List<SourceOrderCandidate> candidates) {
         return candidates.stream().map(SourceOrderReadinessCandidate::from).toList();
+    }
+
+    /** 汇总单候选门禁异常里的行级阻断明细，供全阻断确认失败时原样透出。 */
+    private void collectBlockedLines(BusinessException exception, List<Map<String, Object>> target) {
+        if (!(exception.getDetails().get("lines") instanceof List<?> lines)) {
+            return;
+        }
+        for (Object value : lines) {
+            if (value instanceof Map<?, ?> line) {
+                Map<String, Object> copy = new LinkedHashMap<>();
+                line.forEach((key, item) -> copy.put(String.valueOf(key), item));
+                target.add(Map.copyOf(copy));
+            }
+        }
     }
 
     private void materialize(

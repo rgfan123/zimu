@@ -63,6 +63,7 @@ class SourceBundleKeyUnificationApiTest {
     private static final String RECEIVER_PHONE = "13900000123";
 
     @Autowired SourceImportService sourceImportService;
+    @Autowired SourceOrderCandidateMaterializer candidateMaterializer;
     @Autowired OrderLineBundleResolutionService bundleResolution;
     @Autowired JdbcTemplate jdbc;
 
@@ -77,6 +78,28 @@ class SourceBundleKeyUnificationApiTest {
                 CUSTOMER_REF);
     }
 
+    /**
+     * 京东导单需要租户标识，缺一个就失败关闭；与 ExcelClosedLoopApiTest 用同一组测试值。
+     * 京东礼包行只支持 SDK 出库路由（candidateRows 的路由白名单），本类的确认路径
+     * 因此显式配置 outboundMode=SDK——确认事务只建本地发货批次，不外呼京东。
+     */
+    @BeforeEach
+    void seedJdProviderIdentifiers() {
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config = config || ?::jsonb
+                WHERE provider_type='JD_WAREHOUSE'
+                """,
+                """
+                {"sourceNo":"ISV0020000000079","ownerNo":"EBU4418056064528",
+                 "shopNo":"ESP0020008943717","customerCode":"010K5064550",
+                 "warehouseNo":"118085840","carrierNo":"CYS0000010",
+                 "pin":"京诚乾元01","salesPlatformSource":"6","townRequired":false,
+                 "outboundMode":"SDK"}
+                """);
+    }
+
     // ------------------------------------------------------------------
     // 用例
     // ------------------------------------------------------------------
@@ -88,8 +111,14 @@ class SourceBundleKeyUnificationApiTest {
         long bundleId = activeBundle("BUNDLE-KEY-ID-" + productId);
         bundleMapping(productId, bundleId);
 
-        List<Map<String, Object>> fileLines = linesOf(importFile(productId, productName));
-        List<Map<String, Object>> pullLines = linesOf(importPull(productId, productName));
+        // 候选/放行流水线（2026-08-31 合并）：upload/importStructured 只建候选，
+        // 正式订单行由确认事务的 materializer 创建，断言前必须先确认。
+        String fileRef = importFile(productId, productName);
+        confirmByOrderRef(fileRef);
+        String pullRef = importPull(productId, productName);
+        confirmByOrderRef(pullRef);
+        List<Map<String, Object>> fileLines = linesOf(fileRef);
+        List<Map<String, Object>> pullLines = linesOf(pullRef);
 
         assertThat(bundleFacts(fileLines))
                 .as("文件导入按商品ID命中礼包映射并展开")
@@ -130,17 +159,39 @@ class SourceBundleKeyUnificationApiTest {
         // 改造前文件导入按商品ID查不到 → 落待复核行，每来一单都要人工点一次 resolve-bundle。
         bundleMapping(productName, bundleId);
 
-        List<Map<String, Object>> fileLines = linesOf(importFile(productId, productName));
-        List<Map<String, Object>> pullLines = linesOf(importPull(productId, productName));
+        String fileRef = importFile(productId, productName);
+        String pullRef = importPull(productId, productName);
 
-        assertThat(bundleFacts(fileLines))
-                .as("平台给出稳定商品 ID 时，未命中的 ID 不能被同名礼包映射静默劫持")
-                .isEqualTo(List.of(unresolved()));
-        assertThat(boundBundleIds(fileLines)).isEmpty();
-        assertThat(boundBundleIds(pullLines)).isEmpty();
-        assertThat(sourceSkuRefs(fileLines)).containsOnly(productId);
-        assertThat(sourceSkuRefs(pullLines)).containsOnly(productId);
-        assertThat(bundleFacts(pullLines)).isEqualTo(bundleFacts(fileLines));
+        // 候选世界移植（2026-08-31）：未命中礼包映射的候选不再成单为 NEED_REVIEW 订单行，
+        // 而是整个候选停批。劫持成功会表现为候选就绪、确认放行并绑上同名礼包；
+        // 正确行为是两条链路都停在阻断候选：raw 行待复核 + 候选复核事项、无订单、确认被拒。
+        for (String orderRef : List.of(fileRef, pullRef)) {
+            assertThat(jdbc.queryForList(
+                            "SELECT status, error_code FROM app.raw_import_rows WHERE source_order_ref=?",
+                            orderRef))
+                    .as("平台给出稳定商品 ID 时，未命中的 ID 不能被同名礼包映射静默劫持: %s", orderRef)
+                    .singleElement()
+                    .satisfies(row -> {
+                        assertThat(row.get("status")).isEqualTo("NEED_REVIEW");
+                        assertThat(row.get("error_code")).isEqualTo("SKU_READINESS");
+                    });
+            assertThat(jdbc.queryForObject(
+                            """
+                            SELECT count(*) FROM app.review_cases rc
+                            JOIN app.raw_import_rows rir ON rir.id=rc.raw_import_row_id
+                            WHERE rir.source_order_ref=? AND rc.case_type='SOURCE_ORDER_CANDIDATE'
+                              AND rc.status='OPEN'
+                            """,
+                            Long.class,
+                            orderRef))
+                    .as("阻断候选必须留下 SOURCE_ORDER_CANDIDATE 复核事项: %s", orderRef)
+                    .isEqualTo(1L);
+            assertThat(linesOf(orderRef)).as("阻断候选不得提前成单: %s", orderRef).isEmpty();
+            assertThatThrownBy(() -> confirmByOrderRef(orderRef))
+                    .as("全阻断批次确认必须失败关闭: %s", orderRef)
+                    .isInstanceOfSatisfying(BusinessException.class, error ->
+                            assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED"));
+        }
     }
 
     @Test
@@ -149,7 +200,9 @@ class SourceBundleKeyUnificationApiTest {
         long bundleId = activeBundle("BUNDLE-KEY-LEGACY-" + productId());
         bundleMapping(productName, bundleId);
 
-        List<Map<String, Object>> pullLines = linesOf(importPull(productName, productName));
+        String pullRef = importPull(productName, productName);
+        confirmByOrderRef(pullRef);
+        List<Map<String, Object>> pullLines = linesOf(pullRef);
 
         assertThat(bundleFacts(pullLines)).containsExactly(expanded());
         assertThat(boundBundleIds(pullLines)).containsExactly(bundleId);
@@ -181,6 +234,7 @@ class SourceBundleKeyUnificationApiTest {
         skuMapping(singleRef, "普通商品-" + singleRef);
 
         String orderRef = importPullWithTwoItems(bundleRef, singleRef);
+        confirmByOrderRef(orderRef);
         long orderId = jdbc.queryForObject(
                 "SELECT id FROM app.orders WHERE source_channel='JUFUBAO' AND source_ref=?", Long.class, orderRef);
         List<Map<String, Object>> rawRows = jdbc.queryForList(
@@ -216,8 +270,9 @@ class SourceBundleKeyUnificationApiTest {
     void 人工补配混合履约礼包后resolve按provider分片并补齐原始血缘() {
         String productId = productId();
         String productName = "人工混合履约礼包-" + productId;
-        List<Map<String, Object>> blocked = linesOf(importPull(productId, productName));
-        long firstLineId = ((Number) blocked.getFirst().get("id")).longValue();
+        // 候选世界移植（2026-08-31）：未解析礼包候选不再成单，自动链路拿不到待复核礼包行；
+        // 本用例专测 OrderLineBundleResolutionService 的行级人工补配，改用夹具造出存量行。
+        long firstLineId = materializedUnresolvedBundleLine(productId, productName);
         long bundleId = activeMixedProviderBundle("BUNDLE-MANUAL-MIXED-" + productId);
         bundleMapping(productId, bundleId);
         // 模拟 V88 前存量行：source_sku_ref 尚未落列，但旧编码快照仍保存真实来源键。
@@ -279,8 +334,8 @@ class SourceBundleKeyUnificationApiTest {
                             assertThat(error.getBusinessCode()).isEqualTo("BUNDLE_BOM_INACTIVE"));
 
             String manualRef = productId();
-            List<Map<String, Object>> blocked = linesOf(importPull(manualRef, "人工停用组件礼包-" + manualRef));
-            long lineId = ((Number) blocked.getFirst().get("id")).longValue();
+            // 候选世界移植：人工路径的存量待复核礼包行由夹具造出（见助手注释）。
+            long lineId = materializedUnresolvedBundleLine(manualRef, "人工停用组件礼包-" + manualRef);
             bundleMapping(manualRef, bundleId);
             assertThatThrownBy(() -> bundleResolution.resolveBundle(
                             lineId, bundleId, "resolve-inactive-" + manualRef, ctx()))
@@ -300,8 +355,13 @@ class SourceBundleKeyUnificationApiTest {
         String productName = "子牧烧烤肉串组合-" + productId;
         skuMapping(productId, productName);
 
-        List<Map<String, Object>> fileLines = linesOf(importFile(productId, productName));
-        List<Map<String, Object>> pullLines = linesOf(importPull(productId, productName));
+        // 候选/放行流水线（2026-08-31 合并）：断言订单行前必须先确认放行。
+        String fileRef = importFile(productId, productName);
+        confirmByOrderRef(fileRef);
+        String pullRef = importPull(productId, productName);
+        confirmByOrderRef(pullRef);
+        List<Map<String, Object>> fileLines = linesOf(fileRef);
+        List<Map<String, Object>> pullLines = linesOf(pullRef);
 
         assertThat(bundleFacts(fileLines))
                 .as("判定顺序是礼包映射 → SKU 映射 → 名字启发式；名字带「组合」不得劫持已配好的 SKU 映射")
@@ -318,27 +378,40 @@ class SourceBundleKeyUnificationApiTest {
         String productId = productId();
         String productName = "子牧牛肉惠选礼盒3000g-" + productId;
 
-        List<Map<String, Object>> pullLines = linesOf(importPull(productId, productName));
+        // 候选世界移植（2026-08-31）：拉单未命中礼包映射不再落成 NEED_REVIEW 订单行（死行），
+        // 而是整个候选停批——raw 行待复核 + SOURCE_ORDER_CANDIDATE 复核事项，不建订单。
+        String pullRef = importPull(productId, productName);
+        assertThat(linesOf(pullRef)).as("阻断候选不得提前成单").isEmpty();
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.raw_import_rows WHERE source_order_ref=? AND status='NEED_REVIEW'",
+                        Long.class,
+                        pullRef))
+                .isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                        """
+                        SELECT count(*) FROM app.review_cases rc
+                        JOIN app.raw_import_rows rir ON rir.id=rc.raw_import_row_id
+                        WHERE rir.source_order_ref=? AND rc.case_type='SOURCE_ORDER_CANDIDATE'
+                          AND rc.status='OPEN'
+                        """,
+                        Long.class,
+                        pullRef))
+                .isEqualTo(1L);
 
-        assertThat(bundleFacts(pullLines))
-                .as("拉单进来的礼包行必须是 CUSTOM_BUNDLE 待复核行，否则 resolve-bundle 直接拒收（死行）")
-                .isEqualTo(List.of(Map.of(
-                        "line_type", "CUSTOM_BUNDLE",
-                        "bundle_id", "none",
-                        "processing_stage", "NEED_REVIEW",
-                        "exception_code", "SKU_MAPPING_REQUIRED")));
-
-        long lineId = ((Number) pullLines.getFirst().get("id")).longValue();
+        // 行级 resolveBundle 的救援语义保持不变：存量待复核礼包行（夹具造数）补配 ID 键映射后
+        // 仍能整行展开——行上必须留有与 SKU 映射同源的键，否则只能退回按商品名猜。
+        String legacyId = productId();
+        long lineId = materializedUnresolvedBundleLine(legacyId, "子牧牛肉惠选礼盒3000g-" + legacyId);
         assertThat(jdbc.queryForObject(
                         "SELECT source_sku_ref FROM app.order_lines WHERE id=?", String.class, lineId))
                 .as("行上必须留下与 SKU 映射同源的键，否则 resolve-bundle 只能退回按商品名猜")
-                .isEqualTo(productId);
+                .isEqualTo(legacyId);
 
         // 运营事后补配的是 ID 键映射（结构化 raw_cells 里根本没有商品ID，改造前这条路走不通）
-        long bundleId = activeBundle("BUNDLE-KEY-RESCUE-" + productId);
-        bundleMapping(productId, bundleId);
+        long bundleId = activeBundle("BUNDLE-KEY-RESCUE-" + legacyId);
+        bundleMapping(legacyId, bundleId);
 
-        bundleResolution.resolveBundle(lineId, bundleId, "resolve-bundle-" + productId, ctx());
+        bundleResolution.resolveBundle(lineId, bundleId, "resolve-bundle-" + legacyId, ctx());
 
         Map<String, Object> resolved = jdbc.queryForMap(
                 "SELECT line_type, bundle_id, processing_stage, exception_code FROM app.order_lines WHERE id=?",
@@ -360,9 +433,21 @@ class SourceBundleKeyUnificationApiTest {
         long bundleId = activeBundle("BUNDLE-KEY-FRACTIONAL-" + productId);
         bundleMapping(productId, bundleId);
 
-        assertThatThrownBy(() -> importFile(productId, productName, "1.5"))
-                .isInstanceOfSatisfying(BusinessException.class, error ->
-                        assertThat(error.getBusinessCode()).isEqualTo("BUNDLE_QUANTITY_NOT_INTEGER"));
+        // V99 商品数量整数化：两条链路拒绝形态各在自己的第一道门，但不变量一致——
+        // 非整数数量绝不降级成可发单品。文件链路由解析门拦下（行级 QUANTITY_SCALE 复核，
+        // 不产生候选、不建订单）；拉单链路在候选构建的统一礼包接缝抛错。
+        String fileOrderRef = importFile(productId, productName, "1.5");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.raw_import_rows WHERE source_order_ref=? "
+                                + "AND status='NEED_REVIEW' AND error_code='QUANTITY_SCALE'",
+                        Long.class,
+                        fileOrderRef))
+                .as("文件链路：非整数数量必须被解析门拦成待复核行")
+                .isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.orders WHERE source_ref=?", Long.class, fileOrderRef))
+                .as("文件链路：绝不能降级建出订单")
+                .isZero();
         assertThatThrownBy(() -> importPull(productId, productName, "1.5"))
                 .isInstanceOfSatisfying(BusinessException.class, error ->
                         assertThat(error.getBusinessCode()).isEqualTo("BUNDLE_QUANTITY_NOT_INTEGER"));
@@ -430,6 +515,56 @@ class SourceBundleKeyUnificationApiTest {
                 "PULL-" + productId,
                 ctx());
         return orderRef;
+    }
+
+    // ------------------------------------------------------------------
+    // 候选/放行流水线移植助手（2026-08-31 合并）
+    // ------------------------------------------------------------------
+
+    /** upload/importStructured 只建候选；正式订单与 ACCEPTED 血缘由确认事务的 materializer 写入。 */
+    private void confirmByOrderRef(String orderRef) {
+        Long batchId = jdbc.queryForObject(
+                "SELECT DISTINCT import_batch_id FROM app.raw_import_rows WHERE source_order_ref=?",
+                Long.class,
+                orderRef);
+        sourceImportService.confirmSourceBatch(
+                batchId, "confirm-" + orderRef + "-" + SEQ.incrementAndGet(), ctx());
+    }
+
+    /**
+     * 移植理由（候选流水线 2026-08-31）：未解析礼包候选不再成单，自动链路无法产出
+     * 「礼包映射缺失、尚未展开」的待复核订单行。需要行级人工补配语义的用例改用本夹具：
+     * 先借临时 SKU 映射把订单做实（SKU 映射优先于名字启发式，礼包名也会按单品成单），
+     * 再把行还原成存量形态——CUSTOM_BUNDLE、NEED_REVIEW、SKU_MAPPING_REQUIRED、
+     * 无组件、无履约单元，与升级前遗留在库里的未解析礼包行逐列一致。
+     */
+    private long materializedUnresolvedBundleLine(String productId, String productName) {
+        skuMapping(productId, productName);
+        String orderRef = importPull(productId, productName);
+        // 只成单不路由：materializer 建订单与 fulfillment，但不生成发货批次/导单文件
+        // （导单明细是 append-only 表，走完整确认后无法清理成存量形态）。
+        Long batchId = jdbc.queryForObject(
+                "SELECT DISTINCT import_batch_id FROM app.raw_import_rows WHERE source_order_ref=?",
+                Long.class,
+                orderRef);
+        candidateMaterializer.materializeStaged(batchId, ctx());
+        long lineId = ((Number) linesOf(orderRef).getFirst().get("id")).longValue();
+        jdbc.update("DELETE FROM app.fulfillments WHERE order_line_id=?", lineId);
+        jdbc.update(
+                """
+                UPDATE app.order_lines
+                SET line_type='CUSTOM_BUNDLE', bundle_id=NULL, sku_id=NULL,
+                    fulfillment_provider_id=NULL, processing_stage='NEED_REVIEW',
+                    exception_code='SKU_MAPPING_REQUIRED', exception_reason='待人工解析礼包映射',
+                    updated_at=now()
+                WHERE id=?
+                """,
+                lineId);
+        // 临时 SKU 映射退场：同一 ID 同时挂礼包映射与 SKU 映射会触发 fail-closed 冲突门禁。
+        jdbc.update(
+                "DELETE FROM app.source_channel_skus WHERE source_channel='JUFUBAO' AND source_sku_ref=?",
+                productId);
+        return lineId;
     }
 
     // ------------------------------------------------------------------
