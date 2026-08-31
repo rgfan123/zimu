@@ -1,6 +1,7 @@
 package cn.zimu.fulfillment.businessmodule;
 
 import cn.zimu.fulfillment.followup.KehuzxMcpProperties;
+import cn.zimu.fulfillment.rawmaterial.YuanliaokcGatewayProperties;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.stereotype.Service;
@@ -13,18 +14,21 @@ import org.springframework.stereotype.Service;
  * {@code KehuzxMcpReadClient} 抛 {@code KEHUZX_NOT_CONFIGURED} 的同一个判据，
  * 因此「菜单里有」与「点进去能用」不可能分叉。
  *
- * <p>{@link BusinessModule#RAW_MATERIAL_INVENTORY} 没有出现在下面：本仓还不存在原料库存的
- * 只读网关（上游 yuanliaokc 只有 stdio MCP 面，spec D7），因此**没有任何开关可取**，
- * 它恒为未开放。这不是「先写个 false 占位」——一旦票 08 落下网关，判据必须换成那个网关的
- * ready 判定（与客户中心同一形状），而不是在这里另立一个可能与真实链路不同步的标志位。
+ * <p>原料库存取 {@link YuanliaokcGatewayProperties#isReady()}——票 08 的只读网关落地后，
+ * 判据即网关自己的配置完备性（与客户中心同一形状），页面取数走
+ * {@code /api/v1/raw-material-inventory/stock}，同一份配置不完备时那条路挂
+ * RAW_MATERIAL_NOT_CONFIGURED，菜单与页面不可能分叉。
  */
 @Service
 public class BusinessModuleAvailabilityService {
 
     private final KehuzxMcpProperties kehuzxRead;
+    private final YuanliaokcGatewayProperties yuanliaokcRead;
 
-    public BusinessModuleAvailabilityService(KehuzxMcpProperties kehuzxRead) {
+    public BusinessModuleAvailabilityService(
+            KehuzxMcpProperties kehuzxRead, YuanliaokcGatewayProperties yuanliaokcRead) {
         this.kehuzxRead = kehuzxRead;
+        this.yuanliaokcRead = yuanliaokcRead;
     }
 
     /** 已开放模块标识，按 {@link BusinessModule} 声明顺序返回。 */
@@ -32,6 +36,9 @@ public class BusinessModuleAvailabilityService {
         List<String> open = new ArrayList<>();
         if (kehuzxRead.isReady()) {
             open.add(BusinessModule.CUSTOMER_CENTER.id());
+        }
+        if (yuanliaokcRead.isReady()) {
+            open.add(BusinessModule.RAW_MATERIAL_INVENTORY.id());
         }
         return List.copyOf(open);
     }

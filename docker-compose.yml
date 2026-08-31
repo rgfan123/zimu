@@ -180,6 +180,14 @@ services:
       KEHUZX_MCP_WRITE_ALLOWED_HOST: kehuzx-mcp
       KEHUZX_MCP_WRITE_ALLOWED_PORT: "9100"
       FOLLOWUP_ASSIGNMENT_WORKER_ENABLED: ${FOLLOWUP_ASSIGNMENT_WORKER_ENABLED:-false}
+      # 原料库存（yuanliaokc）只读网关（票 07/08）：默认关；配置不完备时
+      # raw-material-inventory 模块不下发、取数端点 fail-closed。
+      YUANLIAOKC_GATEWAY_ENABLED: ${YUANLIAOKC_GATEWAY_ENABLED:-false}
+      YUANLIAOKC_GATEWAY_ENDPOINT: ${YUANLIAOKC_GATEWAY_ENDPOINT:-http://yuanliaokc-api:9200}
+      YUANLIAOKC_GATEWAY_USERNAME: ${YUANLIAOKC_GATEWAY_USERNAME:-}
+      YUANLIAOKC_GATEWAY_PASSWORD: ${YUANLIAOKC_GATEWAY_PASSWORD:-}
+      YUANLIAOKC_GATEWAY_ALLOWED_HOST: yuanliaokc-api
+      YUANLIAOKC_GATEWAY_ALLOWED_PORT: "9200"
       # 平台拉取只做同渠道并发单飞，不设置次数或最小间隔。
       APP_PLATFORM_PULL_PUSH_STALE_TIMEOUT: ${APP_PLATFORM_PULL_PUSH_STALE_TIMEOUT:-PT15M}
       # 来源平台自动回传（默认关；未配 operator 即使 enabled=true 也不启动）
@@ -215,6 +223,7 @@ services:
     networks:
       default: {}
       kehuzx-integration: {}
+      yuanliaokc-integration: {}
 
   frontend:
     build:
@@ -352,3 +361,7 @@ networks:
   kehuzx-integration:
     external: true
     name: ${ZIMU_KEHUZX_NETWORK:-zimu-kehuzx-private}
+  # 原料库存栈的共享私网：与 kehuzx-integration 同一部署约定（外部预建）。
+  yuanliaokc-integration:
+    external: true
+    name: ${ZIMU_YUANLIAOKC_NETWORK:-zimu-yuanliaokc-private}

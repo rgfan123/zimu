@@ -114,6 +114,19 @@ app:
     lease-seconds: ${WECOM_CHAT_AGENT_WORKER_LEASE_SECONDS:330}
     backoff-seconds: ${WECOM_CHAT_AGENT_WORKER_BACKOFF_SECONDS:5}
     claim-error-suppress-seconds: ${WECOM_CHAT_AGENT_WORKER_CLAIM_ERROR_SUPPRESS_SECONDS:60}
+  raw-material:
+    yuanliaokc:
+      # 票 07/08：原料库存只读网关。配置不完备时 raw-material-inventory 模块不下发、
+      # 取数端点挂 RAW_MATERIAL_NOT_CONFIGURED——菜单与页面同一判据，fail-closed。
+      # 凭据必须是 yuanliaokc 侧 manager（只读）角色的专用账号，绝不复用管理员。
+      enabled: ${YUANLIAOKC_GATEWAY_ENABLED:false}
+      endpoint: ${YUANLIAOKC_GATEWAY_ENDPOINT:}
+      username: ${YUANLIAOKC_GATEWAY_USERNAME:}
+      password: ${YUANLIAOKC_GATEWAY_PASSWORD:}
+      allowed-host: ${YUANLIAOKC_GATEWAY_ALLOWED_HOST:yuanliaokc-api}
+      allowed-port: ${YUANLIAOKC_GATEWAY_ALLOWED_PORT:9200}
+      connect-timeout: ${YUANLIAOKC_GATEWAY_CONNECT_TIMEOUT:PT3S}
+      read-timeout: ${YUANLIAOKC_GATEWAY_READ_TIMEOUT:PT10S}
   kehuzx:
     mcp:
       # #130: dedicated read-token boundary. Missing configuration leaves Zimu healthy and the
