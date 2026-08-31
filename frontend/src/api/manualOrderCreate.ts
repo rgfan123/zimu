@@ -39,6 +39,8 @@ function fnv1aHex(text: string): string {
  * </ul>
  */
 export function manualOrderIdempotencyKey(draftNonce: string, body: ManualOrderCreateInput): string {
+  // customer_code 可选：undefined 会被 JSON.stringify 稳定地丢掉——「不带客户」
+  // 自成一种内容形态，与任何显式客户编码天然不同键。
   const canonical = JSON.stringify({
     customer_code: body.customer_code,
     receiver: body.receiver,
@@ -66,12 +68,13 @@ export interface ManualOrderFormValues {
 
 /**
  * 表单值 → 契约载荷：trim 一切字符串，空备注整个不发（发 "" 没有业务含义）。
- * 缺客户/缺收货三要素/行内空 SKU/非法数量在这里直接抛错——表单校验先挡，
- * 这里是提交前最后一道纯函数断言，抛出的消息可直接上屏。
+ * 客户可选：不选就整个不带 customer_code 字段（服务端自动归属「手工平台客户」
+ * MANUAL-PLATFORM），发 "" 会被契约当成显式绑定拒掉。缺收货三要素/行内空 SKU/
+ * 非法数量在这里直接抛错——表单校验先挡，这里是提交前最后一道纯函数断言，
+ * 抛出的消息可直接上屏。
  */
 export function manualOrderCreateBody(values: ManualOrderFormValues): ManualOrderCreateInput {
   const customerCode = values.customer_code?.trim() ?? '';
-  if (!customerCode) throw new Error('请选择客户');
   const name = values.receiver?.name?.trim() ?? '';
   const phone = values.receiver?.phone?.trim() ?? '';
   const address = values.receiver?.address?.trim() ?? '';
@@ -87,7 +90,7 @@ export function manualOrderCreateBody(values: ManualOrderFormValues): ManualOrde
   if (items.length === 0) throw new Error('至少需要一行商品');
   const remark = values.remark?.trim();
   return {
-    customer_code: customerCode,
+    ...(customerCode ? { customer_code: customerCode } : {}),
     receiver: { name, phone, address },
     items,
     ...(remark ? { remark } : {}),

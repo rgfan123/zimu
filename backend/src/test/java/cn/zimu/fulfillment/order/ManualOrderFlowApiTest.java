@@ -121,6 +121,41 @@ class ManualOrderFlowApiTest {
                 Integer.class, customerCode)).isEqualTo(1);
     }
 
+    /** 用户 2026-08-31 裁定：不传客户编码 → 自动归属专用「手工平台客户」（幂等自建）。 */
+    @Test
+    void manualOrderWithoutCustomerCodeBindsToThePlatformCustomer() {
+        Map<String, Object> request = new java.util.LinkedHashMap<>(manualRequest("ignored", "2"));
+        request.remove("customer_code");
+
+        ResponseEntity<Map> created = http.exchange(
+                "/api/v1/orders/manual",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders("manual-platform-001", "req-manual-platform-001")),
+                Map.class);
+
+        assertThat(created.getStatusCode())
+                .withFailMessage("platform-customer create response: %s", created.getBody())
+                .isEqualTo(HttpStatus.CREATED);
+        assertThat(created.getBody()).containsEntry("order_status", "SKU_MAPPED");
+        assertThat(created.getBody()).containsEntry("customer_name", "手工平台客户");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.customers WHERE customer_code='MANUAL-PLATFORM'",
+                Integer.class)).isEqualTo(1);
+
+        // 第二单仍归同一平台档案，不重复建档
+        Map<String, Object> second = new java.util.LinkedHashMap<>(manualRequest("ignored", "1"));
+        second.remove("customer_code");
+        ResponseEntity<Map> again = http.exchange(
+                "/api/v1/orders/manual",
+                HttpMethod.POST,
+                new HttpEntity<>(second, writeHeaders("manual-platform-002", "req-manual-platform-002")),
+                Map.class);
+        assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.customers WHERE customer_code='MANUAL-PLATFORM'",
+                Integer.class)).isEqualTo(1);
+    }
+
     @Test
     void unknownCustomerAndDecimalQuantityFailClosed() {
         ResponseEntity<Map> unknownCustomer = http.exchange(

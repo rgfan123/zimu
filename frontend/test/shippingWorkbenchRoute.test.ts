@@ -101,6 +101,13 @@ test('shipping workbench does not request or render a quota because platform pul
   assert.doesNotMatch(harness.bodyText(), /并逐渠道如实显示结果/, '旧 LEDE 解释句不得回归');
   assert.match(harness.bodyText(), /开始今日订单同步/);
   assert.match(harness.bodyText(), /手动导入 Excel/);
+  // 左上角手工建单入口（用户裁定）：真实 <a>（Button href）钉在页头标题同侧左区，
+  // 不进右侧 zs-ph-actions（ADR 0005：标题左、同步动作右）。
+  const manualCreateEntry = [...document.querySelectorAll<HTMLAnchorElement>('.zs-ph a')]
+    .find((link) => link.getAttribute('href') === '/orders/manual-create');
+  assert.ok(manualCreateEntry, '工作台页头必须有手工建单入口');
+  assert.match(manualCreateEntry.textContent ?? '', /手工建单/);
+  assert.equal(manualCreateEntry.closest('.zs-ph-actions'), null, '手工建单入口在标题旁左区，不得挤进右侧动作区');
   // ADR 0005：闲置态不再占版面（骨架即首屏），同步结果区仅在动作后出现。
   assert.doesNotMatch(harness.bodyText(), /尚未同步/, '闲置提示文案不得回归');
   // #115 口径：平台拉单本无每日次数与最小间隔，因此既不请求配额、也不呈现任何配额说法

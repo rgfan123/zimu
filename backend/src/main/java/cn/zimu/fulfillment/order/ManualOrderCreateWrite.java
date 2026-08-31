@@ -13,13 +13,14 @@ import java.util.List;
 /**
  * 手工建单输入（V100 MANUAL 渠道）：运营柜台直录，不经导入批次。
  *
- * <p>客户必须绑定既有档案（customer_code 精确命中 BUSINESS/ACTIVE）——手工单不是
- * 客户建档入口，新客户先在主数据建档再来建单；商品按系统 SKU 直选，天然全映射，
+ * <p>客户绑定可选（用户 2026-08-31 裁定：履约平台手工单不强制关联客户档案）：
+ * 不传 customer_code 时自动落到专用「手工平台客户」档案（MANUAL-PLATFORM，服务端
+ * 幂等保障存在）——orders.customer_id 语义保持完整，收货事实以本单 receiver 为准；
+ * 传了则精确绑定既有 BUSINESS/ACTIVE 档案。商品按系统 SKU 直选，天然全映射，
  * 建成即 SKU_MAPPED，可立即走 fulfillment-routing 生成发货单。
  */
 public record ManualOrderCreateWrite(
         @JsonProperty("customer_code")
-                @NotBlank(message = "客户编码不能为空")
                 @Size(max = 64, message = "客户编码超长")
                 String customerCode,
         @NotNull(message = "收货信息不能为空") @Valid ManualReceiver receiver,

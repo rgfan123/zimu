@@ -886,8 +886,8 @@ paths:
       operationId: createManualOrder
       summary: Create a manual (counter) order on the MANUAL source channel
       description: >-
-        手工建单（V100）：柜台/运营直录，不经导入批次。客户必须以 customer_code 精确绑定
-        既有 BUSINESS/ACTIVE 档案（手工单不是建档入口）；商品按系统 SKU 直选、数量为正整数
+        手工建单（V100）：柜台/运营直录，不经导入批次。客户绑定可选：缺省归属专用
+        「手工平台客户」，传 customer_code 则精确绑定既有档案；商品按系统 SKU 直选、数量为正整数
         （V99），建成即 SKU_MAPPED；随后调用 fulfillment-routing 生成发货单，京东仓行走
         既有「提交京东出库单」人工闸门。来源单号由服务端生成（MAN-yyyyMMdd-xxxxxxxx）。
       parameters:
@@ -5083,13 +5083,13 @@ components:
       enum: [CAISHIXIAN, JUFUBAO, FEIXIANG, ZHONGHUI, WANGQI, DAZHE, WANQI, WECOM, MANUAL]
     ManualOrderCreateWrite:
       type: object
-      description: 手工建单输入（V100 MANUAL 渠道）：绑定既有客户 + 系统 SKU 直选。
-      required: [customer_code, receiver, items]
+      description: 手工建单输入（V100 MANUAL 渠道）：系统 SKU 直选；客户绑定可选。
+      required: [receiver, items]
       properties:
         customer_code:
           type: string
           maxLength: 64
-          description: 既有 BUSINESS/ACTIVE 客户档案编码，精确绑定
+          description: 可选：既有 BUSINESS/ACTIVE 客户档案编码精确绑定；缺省自动归属专用「手工平台客户」（MANUAL-PLATFORM）
         receiver:
           type: object
           required: [name, phone, address]

@@ -63,10 +63,16 @@ public class ManualOrderCreateService {
         this.productRepository = productRepository;
     }
 
+    /** 专用平台客户编码：手工单不绑真实客户时的归属档案（幂等自建）。 */
+    static final String PLATFORM_CUSTOMER_CODE = "MANUAL-PLATFORM";
+
     @Transactional
     public IdempotentResult<OrderDetailDto> create(
             ManualOrderCreateWrite write, String idempotencyKey, CommandContext context) {
-        Customer customer = requireActiveCustomer(write.customerCode().trim());
+        String requestedCode = write.customerCode() == null ? "" : write.customerCode().trim();
+        Customer customer = requestedCode.isBlank()
+                ? ensurePlatformCustomer()
+                : requireActiveCustomer(requestedCode);
         ensureManualCustomerRef(customer);
         List<OrderItemInput> items = new ArrayList<>(write.items().size());
         List<ConfirmedDraftSku> confirmedSkus = new ArrayList<>(write.items().size());
@@ -103,6 +109,23 @@ public class ManualOrderCreateService {
                 write.remark(),
                 null);
         return orderCreateService.createConfirmedDraft(input, confirmedSkus, idempotencyKey, context);
+    }
+
+    /**
+     * 幂等确保「手工平台客户」档案存在：用户裁定手工单不强制关联客户档案，
+     * 但 orders.customer_id 的领域语义不因此打洞——所有未绑定单归属这一个显式的
+     * 平台档案，报表与检索仍能把手工单聚在一起。
+     */
+    private Customer ensurePlatformCustomer() {
+        return customerRepository.findByCustomerCode(PLATFORM_CUSTOMER_CODE)
+                .orElseGet(() -> {
+                    Customer platform = new Customer();
+                    platform.setCustomerCode(PLATFORM_CUSTOMER_CODE);
+                    platform.setCustomerName("手工平台客户");
+                    platform.setDataScope(DataScope.BUSINESS);
+                    platform.setStatus(CustomerStatus.ACTIVE);
+                    return customerRepository.save(platform);
+                });
     }
 
     private Customer requireActiveCustomer(String customerCode) {

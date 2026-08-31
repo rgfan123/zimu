@@ -181,7 +181,8 @@ test('手工建单页渲染两步表单：客户检索、收货三要素、商�
 
   await harness.waitFor(() => assert.match(harness.bodyText(), /手工建单/));
   const body = harness.bodyText();
-  assert.match(body, /客户编码/);
+  assert.match(body, /客户（可选）/, '客户选择器必须标明可选');
+  assert.match(body, /不选则归属『手工平台客户』——手工单默认不关联客户档案/, '不选客户的默认归属口径必须可见');
   assert.match(body, /收货人姓名/);
   assert.match(body, /收货电话/);
   assert.match(body, /收货地址/);
@@ -235,6 +236,39 @@ test('两步成功：建单 → 自动路由 → 呈现订单号与发货单数�
   await harness.dispatchEvent(control('前往发货单提交京东出库'), new MouseEvent('click', { bubbles: true }));
   await harness.waitFor(() => assert.match(harness.location(), /\/fulfillment\/shipments/));
   await harness.waitFor(() => assert.match(harness.bodyText(), /发货记录/));
+});
+
+test('客户可选：不选客户提交成功，建单载荷不带 customer_code 字段', async () => {
+  const requests: RecordedRequest[] = [];
+  globalThis.fetch = manualCreateFetch(requests, {
+    create: () => jsonResponse(createdOrderFixture, 201),
+    routing: () => jsonResponse({ order_id: '901', order_version: 3, shipment_ids: ['501'] }, 201),
+  });
+  await harness.mount(['/orders/manual-create']);
+
+  // 不碰客户选择器：收货三要素全手填（没有档案预填），SKU 照选。
+  await harness.waitFor(() => assert.match(harness.bodyText(), /建单并生成发货单/));
+  await fillInput('李四', '王五');
+  await fillInput('139...', '13700000000');
+  await fillInput('省市区 + 详细地址', '贵州省贵阳市云岩区 中华北路 2 号');
+  await pickSelectOption('搜索系统 SKU', 'SKU-15 · 雷山鸡 · 500g', '雷山');
+  await fillInput('数量（正整数）', '2');
+
+  await harness.dispatchEvent(control('建单并生成发货单'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /SO-M-20260831-01 已建单，生成 1 张发货单/));
+  const create = requests.find((request) => request.method === 'POST' && request.url === '/api/v1/orders/manual');
+  assert.ok(create, '必须发出建单请求');
+  assert.deepEqual(create.body, {
+    receiver: { name: '王五', phone: '13700000000', address: '贵州省贵阳市云岩区 中华北路 2 号' },
+    items: [{ sku_id: '15', quantity: '2' }],
+  });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(create.body as object, 'customer_code'),
+    false,
+    '不选客户时载荷不得带 customer_code 字段（服务端归属手工平台客户）',
+  );
+  assert.match(create.headers['Idempotency-Key'] ?? '', /^manual-order-/, '不带客户同样按草稿生成幂等键');
 });
 
 test('①成功②失败：路由失败原样呈现后端 message，订单不丢，可按最新版本重试', async () => {

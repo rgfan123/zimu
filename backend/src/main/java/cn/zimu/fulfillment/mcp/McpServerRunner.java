@@ -26,17 +26,36 @@ public class McpServerRunner implements ApplicationRunner {
     private final McpToolRegistry registry;
     private final McpAgentIdentity identity;
     private final ObjectMapper mapper;
+    private final boolean privileged;
+    private final String privilegedIdentity;
 
-    public McpServerRunner(McpToolRegistry registry, McpAgentIdentity identity, ObjectMapper mapper) {
+    public McpServerRunner(
+            McpToolRegistry registry,
+            McpAgentIdentity identity,
+            ObjectMapper mapper,
+            @org.springframework.beans.factory.annotation.Value("${app.mcp.stdio-privileged:false}")
+                    boolean privileged,
+            @org.springframework.beans.factory.annotation.Value("${app.mcp.agent-identity:}")
+                    String privilegedIdentity) {
         this.registry = registry;
         this.identity = identity;
         this.mapper = mapper;
+        this.privileged = privileged;
+        this.privilegedIdentity = privilegedIdentity;
     }
 
     @Override
     public void run(ApplicationArguments args) {
-        McpServer server = new McpServer(System.in, System.out, registry, identity, mapper);
-        log.info("MCP stdio server started");
+        if (privileged && (privilegedIdentity == null || privilegedIdentity.isBlank())) {
+            // 特权面（issue-181）：写调用必须可归因。开了特权却不报身份 = 配置错误，
+            // fail-fast 而不是静默降级——降级会让启动方以为拿到了全权限。
+            throw new IllegalStateException(
+                    "MCP_STDIO_PRIVILEGED=true 时必须设置 MCP_AGENT_IDENTITY（审计归因身份）");
+        }
+        McpServer server = new McpServer(System.in, System.out, registry, identity, mapper, privileged);
+        log.info(privileged
+                ? "MCP stdio server started (PRIVILEGED: Agent 全工具面，含写；identity=" + privilegedIdentity + ")"
+                : "MCP stdio server started");
         server.run();
     }
 }

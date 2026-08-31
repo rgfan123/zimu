@@ -8,7 +8,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { Button } from 'antd';
 import dayjs from 'dayjs';
-import { CloudSyncOutlined, FileExcelOutlined } from '@ant-design/icons';
+import { CloudSyncOutlined, FileExcelOutlined, PlusOutlined } from '@ant-design/icons';
 import { Link, useNavigate } from 'react-router-dom';
 import { ordersApi, platformOrdersApi } from '@/api/endpoints';
 import { useAsync } from '@/hooks/useAsync';
@@ -194,9 +194,22 @@ export default function ShippingWorkbenchPage() {
 
   return (
     <div>
-      {/* 页头即动作行（ADR 0005）：标题左、同步动作右，没有独立的按钮卡，没有闲置提示 */}
+      {/* 页头即动作行（ADR 0005）：标题+手工建单入口在左、同步动作在右，没有独立的按钮卡，没有闲置提示 */}
       <div className="zs-ph">
         <h1>今日发货工作台</h1>
+        {/* 左上角手工建单入口（用户裁定）。单一 <a>（Button href），不 Link 包 Button：
+            保留真实 href 与键盘可达性，点击经路由导航（同右侧 Excel 入口先例）。 */}
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          href="/orders/manual-create"
+          onClick={(event) => {
+            event.preventDefault();
+            navigate('/orders/manual-create');
+          }}
+        >
+          手工建单
+        </Button>
         <div className="zs-ph-actions">
           <Button type="primary" icon={<CloudSyncOutlined />} loading={syncing} disabled={syncing} onClick={sync}>
             开始今日订单同步

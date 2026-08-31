@@ -640,6 +640,64 @@ class McpProtocolAcceptanceTest {
     }
 
     // ------------------------------------------------------------------
+    // 特权 stdio 面（issue-181 收口）：内部工具（hermes 等）经显式双门拿 Agent 全工具面
+    // ------------------------------------------------------------------
+
+    /** 特权面 tools/list = Agent 全工具面（含写与内部专用），数量与注册表逐一对得上。 */
+    @Test
+    void privilegedStdioListsTheFullAgentSurfaceIncludingWriteAndInternalTools() throws Exception {
+        JsonNode response = privilegedRpc(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
+        List<String> names = new java.util.ArrayList<>();
+        response.get("result").get("tools").forEach(tool -> names.add(tool.get("name").asText()));
+
+        assertThat(names).hasSize(registry.agentTools().size());
+        assertThat(names).contains("submit_jd_outbound");
+        assertThat(names).contains("kehuzx_search_customers");
+    }
+
+    /** 特权面写工具可被调用（错误来自工具校验层，而不是「Unknown tool」投影）。 */
+    @Test
+    void privilegedStdioResolvesWriteToolsInsteadOfProjectingUnknown() throws Exception {
+        ObjectNode request = mapper.createObjectNode();
+        request.put("jsonrpc", "2.0");
+        request.put("id", 7);
+        request.put("method", "tools/call");
+        ObjectNode params = request.putObject("params");
+        params.put("name", "submit_jd_outbound");
+        params.putObject("arguments");
+        JsonNode response = privilegedRpc(mapper.writeValueAsString(request));
+
+        String rendered = response.toString();
+        assertThat(rendered).doesNotContain("Unknown tool");
+    }
+
+    /** 非特权构造保持既有边界：写工具在 stdio 面仍按「不存在」投影（回归钉）。 */
+    @Test
+    void nonPrivilegedStdioStillProjectsWriteToolsAsUnknown() throws Exception {
+        JsonNode response = rpc(AGENT,
+                "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\","
+                        + "\"params\":{\"name\":\"submit_jd_outbound\",\"arguments\":{}}}");
+        assertThat(response.get("error").get("message").asText()).contains("Unknown tool");
+    }
+
+    private JsonNode privilegedRpc(String requestLine) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        McpServer server = new McpServer(
+                new ByteArrayInputStream((requestLine + "\n").getBytes(StandardCharsets.UTF_8)),
+                out,
+                registry,
+                new McpAgentIdentity("hermes-privileged-test"),
+                mapper,
+                true);
+        server.run();
+        List<String> lines = out.toString(StandardCharsets.UTF_8)
+                .lines().filter(line -> !line.isBlank()).toList();
+        assertThat(lines).hasSize(1);
+        return mapper.readTree(lines.getFirst());
+    }
+
+    // ------------------------------------------------------------------
     // 协议级 JSON-RPC 助手
     // ------------------------------------------------------------------
 

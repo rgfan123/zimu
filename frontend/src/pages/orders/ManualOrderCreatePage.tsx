@@ -1,7 +1,8 @@
 /**
  * 手工建单（V100 MANUAL 渠道）：运营柜台直录订单并当场路由出发货单。
  *
- * 一个按钮两步走：① POST /api/v1/orders/manual 建单（绑定既有客户 + 系统 SKU 直选，
+ * 一个按钮两步走：① POST /api/v1/orders/manual 建单（客户可选——缺省服务端归属
+ * 「手工平台客户」MANUAL-PLATFORM，传了则精确绑定既有档案；系统 SKU 直选，
  * 建成即 SKU_MAPPED）→ ② 自动 POST /api/v1/orders/{id}/fulfillment-routing 生成发货单。
  * 两步进度可见；①成功②失败时如实呈现「订单已建 + 路由失败原因」，可用最新版本重试路由。
  * 京东出库单**不在这里提交**——发货单生成后前往发货记录，走既有的人工提交闸门
@@ -216,7 +217,7 @@ export default function ManualOrderCreatePage() {
   return (
     <PageShell
       title="手工建单"
-      description="运营直录 MANUAL 渠道订单：绑定既有客户档案 + 系统 SKU 直选，建单成功后自动生成发货单；京东出库单仍需前往发货单详情人工提交。"
+      description="运营直录 MANUAL 渠道订单：客户可选（默认手工平台客户）+ 系统 SKU 直选，建单成功后自动生成发货单；京东出库单仍需前往发货单详情人工提交。"
     >
       {flow.phase !== 'IDLE' ? (
         <Card size="small">
@@ -282,9 +283,8 @@ export default function ManualOrderCreatePage() {
             <Card size="small" title="客户">
               <Form.Item
                 name="customer_code"
-                label="客户编码"
-                extra="手工单不建档：客户必须已在主数据登记且启用，输入编码或名称检索。"
-                rules={[{ required: true, message: '请选择客户' }]}
+                label="客户（可选）"
+                extra="不选则归属『手工平台客户』——手工单默认不关联客户档案；选了则精确绑定该既有档案（须已登记且启用）。"
                 style={{ maxWidth: 480, marginBottom: 0 }}
               >
                 <Select

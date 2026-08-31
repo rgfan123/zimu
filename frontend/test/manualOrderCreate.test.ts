@@ -49,9 +49,18 @@ test('表单值装配成契约载荷：trim 一切字符串，空备注整个不
   );
 });
 
-test('装配是最后一道断言：缺客户/缺收货三要素/坏数量/空行直接抛可上屏的错误', () => {
+test('客户可选：不选（或全空白）整个不带 customer_code 字段，由服务端归属手工平台客户', () => {
   const receiver = { name: '李四', phone: '139', address: '地址' };
-  assert.throws(() => manualOrderCreateBody({ receiver, items: [{ sku_id: '15', quantity: '3' }] }), /请选择客户/);
+  const items = [{ sku_id: '15', quantity: '3' }];
+  for (const values of [{ receiver, items }, { customer_code: '  ', receiver, items }]) {
+    const body = manualOrderCreateBody(values);
+    assert.deepEqual(body, { receiver, items });
+    assert.equal(Object.prototype.hasOwnProperty.call(body, 'customer_code'), false, '空客户不得留下 customer_code 键');
+  }
+});
+
+test('装配是最后一道断言：缺收货三要素/坏数量/空行直接抛可上屏的错误', () => {
+  const receiver = { name: '李四', phone: '139', address: '地址' };
   assert.throws(
     () => manualOrderCreateBody({ customer_code: 'C001', receiver: { ...receiver, phone: ' ' }, items: [{ sku_id: '15', quantity: '3' }] }),
     /收货人姓名、电话、地址均为必填/,
@@ -86,6 +95,13 @@ test('建单幂等键：同草稿同内容重放，改内容或换草稿都换�
     manualOrderIdempotencyKey('draft-b', body),
     '新草稿必须换键——明天真实的第二张同内容订单不是重放',
   );
+
+  // 客户可选后的键语义：不带客户是自成一格的内容形态——键稳定，且与显式客户不同键。
+  const anonymous = { receiver: body.receiver, items: body.items };
+  const anonymousKey = manualOrderIdempotencyKey('draft-a', anonymous);
+  assert.match(anonymousKey, /^manual-order-draft-a-[0-9a-f]{8}$/);
+  assert.equal(anonymousKey, manualOrderIdempotencyKey('draft-a', anonymous), '不带客户的草稿同样稳定重放');
+  assert.notEqual(anonymousKey, key, '带不带客户是不同内容，必须不同键');
 });
 
 test('路由幂等键钉「订单 × 期望版本」，请求装配与契约一致', () => {

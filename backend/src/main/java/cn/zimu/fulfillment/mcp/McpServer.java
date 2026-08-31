@@ -44,14 +44,31 @@ public class McpServer {
     private final McpToolRegistry registry;
     private final McpAgentIdentity identity;
     private final ObjectMapper mapper;
+    /**
+     * 特权面（issue-181 收口）：true 时本进程服务 Agent 全工具面（含写与内部专用工具），
+     * 供本机内部工具（hermes 等）经 stdio 显式接入。只有 stdio 入口能把它置真——
+     * HTTP/SSE 传输的无流构造硬编码 false，外部协议面永远只读，不因任何配置分叉。
+     */
+    private final boolean privileged;
 
     public McpServer(
             InputStream in, OutputStream out, McpToolRegistry registry, McpAgentIdentity identity, ObjectMapper mapper) {
+        this(in, out, registry, identity, mapper, false);
+    }
+
+    public McpServer(
+            InputStream in,
+            OutputStream out,
+            McpToolRegistry registry,
+            McpAgentIdentity identity,
+            ObjectMapper mapper,
+            boolean privileged) {
         this.in = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
         this.out = new PrintWriter(new java.io.OutputStreamWriter(out, StandardCharsets.UTF_8), true);
         this.registry = registry;
         this.identity = identity;
         this.mapper = mapper;
+        this.privileged = privileged;
     }
 
     /**
@@ -66,6 +83,8 @@ public class McpServer {
         this.registry = registry;
         this.identity = identity;
         this.mapper = mapper;
+        // HTTP/SSE 面恒非特权：对外只读边界是架构承诺，不给任何配置口子。
+        this.privileged = false;
     }
 
     /** 阻塞处理 stdin 直到 EOF。 */
@@ -146,10 +165,10 @@ public class McpServer {
             return errorResponse(INVALID_PARAMS, "Invalid params: tools/call requires name", id);
         }
         String name = params.get("name").asText();
-        McpTool tool = registry.findProtocolTool(name).orElse(null);
-        // 协议面把未登记、内部专用与写工具统一投影为「不存在」，避免调用结果
+        McpTool tool = resolveVisibleTool(name);
+        // 非特权面把未登记、内部专用与写工具统一投影为「不存在」，避免调用结果
         // 泄露被隐藏工具的名称、类型或限制原因。tools/list 与 tools/call 使用同一可见边界。
-        if (tool == null || !tool.externallyDiscoverable() || !tool.readOnly()) {
+        if (tool == null) {
             return errorResponse(INVALID_PARAMS, "Unknown tool: " + name, id);
         }
         JsonNode arguments = params.get("arguments");
@@ -210,17 +229,34 @@ public class McpServer {
     private ObjectNode toolsList() {
         ObjectNode result = mapper.createObjectNode();
         ArrayNode tools = result.putArray("tools");
-        // 08 决策：stdio 面只暴露只读工具（readOnly=true），写工具不外露
-        for (McpTool tool : registry.protocolTools()) {
-            if (!tool.readOnly() || !tool.externallyDiscoverable()) {
-                continue;
-            }
+        // 08 决策：非特权面只暴露只读工具（readOnly=true），写工具不外露。
+        // 特权 stdio（issue-181）服务 Agent 全工具面：内部工具经显式双门（env 开关+身份）
+        // 获得与进程内 Agent 同一面，写权由启动方对宿主的控制权背书。
+        for (McpTool tool : visibleTools()) {
             ObjectNode item = tools.addObject();
             item.put("name", tool.name());
             item.put("description", tool.description());
             item.set("inputSchema", tool.inputSchema());
         }
         return result;
+    }
+
+    private java.util.List<McpTool> visibleTools() {
+        if (privileged) {
+            return registry.agentTools();
+        }
+        return registry.protocolTools().stream()
+                .filter(tool -> tool.readOnly() && tool.externallyDiscoverable())
+                .toList();
+    }
+
+    private McpTool resolveVisibleTool(String name) {
+        if (privileged) {
+            return registry.findAgentTool(name).orElse(null);
+        }
+        return registry.findProtocolTool(name)
+                .filter(tool -> tool.externallyDiscoverable() && tool.readOnly())
+                .orElse(null);
     }
 
     private static JsonNode id(JsonNode message) {

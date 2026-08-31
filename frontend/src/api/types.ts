@@ -238,9 +238,12 @@ export interface ManualOrderItemInput {
   quantity: string;
 }
 
-/** POST /api/v1/orders/manual 请求体：绑定既有客户 + 系统 SKU 直选，201 返回 OrderDetail。 */
+/**
+ * POST /api/v1/orders/manual 请求体：客户可选——缺省时服务端自动归属专用「手工平台客户」
+ * （MANUAL-PLATFORM，幂等自建），传了则精确绑定既有档案；系统 SKU 直选，201 返回 OrderDetail。
+ */
 export interface ManualOrderCreateInput {
-  customer_code: string;
+  customer_code?: string;
   receiver: ManualOrderReceiverInput;
   items: ManualOrderItemInput[];
   remark?: string;
