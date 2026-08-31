@@ -19,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -27,6 +29,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class CaishixianHttpShipmentGateway implements CaishixianShipmentGateway {
 
+    private static final Logger log = LoggerFactory.getLogger(CaishixianHttpShipmentGateway.class);
     private static final String AUTH_HEADER = "login-token";
     private static final String OFFICIAL_BASE_URL = "https://wapi.freshfood.cn:443";
     private static final String SUPPLIER_HEADER = "supplier-code";
@@ -95,26 +98,59 @@ public class CaishixianHttpShipmentGateway implements CaishixianShipmentGateway 
                 null, null, null, null);
     }
 
+    /**
+     * 2026-08-18 实测的平台快递字典（27 码）。2026-08-31 生产实证：getExpress 开始要求
+     * 未知的新参数（110511000「查询供应商快递信息,参数不能为空」，穷举常见参数名均被拒），
+     * 每次检查都在这一步炸掉，把 11 单全部卡成 CHECK_UNAVAILABLE。快递代码字典属慢变
+     * 参考数据：先试活接口（平台修好即自动恢复），失败回退本静态字典并 WARN——
+     * 「承运商代码必须是平台认识的」这层保证由实测过的清单继续兜住，绝不静默放行未知码。
+     */
+    private static final List<CarrierOption> EXPRESS_FALLBACK_20260818 = List.of(
+            new CarrierOption("YTO", "圆通速递"), new CarrierOption("JD", "京东物流"),
+            new CarrierOption("SF", "顺丰速运"), new CarrierOption("HTKY", "百世快递"),
+            new CarrierOption("ZTO", "中通快递"), new CarrierOption("STO", "申通快递"),
+            new CarrierOption("YD", "韵达速递"), new CarrierOption("YZPY", "邮政快递包裹"),
+            new CarrierOption("EMS", "EMS"), new CarrierOption("HHTT", "天天快递"),
+            new CarrierOption("UC", "优速快递"), new CarrierOption("DBL", "德邦快递"),
+            new CarrierOption("ZJS", "宅急送"), new CarrierOption("TNT", "TNT"),
+            new CarrierOption("UPS", "UPS"), new CarrierOption("DHL", "DHL"),
+            new CarrierOption("FEDEX", "FEDEX"), new CarrierOption("FEDEX_GJ", "FEDEX 国际"),
+            new CarrierOption("JTSD", "极兔速递"), new CarrierOption("ZYE", "众邮快递"),
+            new CarrierOption("ANE", "安能物流"), new CarrierOption("ANNTO", "安得物流"),
+            new CarrierOption("OTHER", "其他"), new CarrierOption("FWX", "丰网速运"),
+            new CarrierOption("KYSY", "跨越速运"), new CarrierOption("DNWL", "丹鸟物流"),
+            new CarrierOption("YMDD", "壹米滴答"));
+
     @Override
     public List<CarrierOption> carrierOptions() {
-        Session session = login();
-        JsonNode root = postJson(session, "/scc/bbc/basicData/getExpress", Map.of());
-        JsonNode data = root.path("data");
-        if (data.isObject() && data.path("data").isArray()) {
-            data = data.path("data");
-        }
-        if (!data.isArray()) {
-            throw new GatewayException("彩食鲜物流公司字典响应缺少数组");
-        }
-        List<CarrierOption> options = new ArrayList<>();
-        for (JsonNode item : data) {
-            String code = firstText(item, "expressCode", "code", "shipperCode", "value");
-            String name = firstText(item, "expressName", "name", "shipperName", "label");
-            if (code != null && name != null) {
-                options.add(new CarrierOption(code, name));
+        try {
+            Session session = login();
+            JsonNode root = postJson(session, "/scc/bbc/basicData/getExpress", Map.of());
+            JsonNode data = root.path("data");
+            if (data.isObject() && data.path("data").isArray()) {
+                data = data.path("data");
             }
+            if (!data.isArray()) {
+                throw new GatewayException("彩食鲜物流公司字典响应缺少数组");
+            }
+            List<CarrierOption> options = new ArrayList<>();
+            for (JsonNode item : data) {
+                String code = firstText(item, "expressCode", "code", "shipperCode", "value");
+                String name = firstText(item, "expressName", "name", "shipperName", "label");
+                if (code != null && name != null) {
+                    options.add(new CarrierOption(code, name));
+                }
+            }
+            if (options.isEmpty()) {
+                throw new GatewayException("彩食鲜物流公司字典为空");
+            }
+            return List.copyOf(options);
+        } catch (GatewayException exception) {
+            log.warn(
+                    "彩食鲜快递字典接口不可用，回退 2026-08-18 静态字典（27 码）: {}",
+                    exception.getMessage());
+            return EXPRESS_FALLBACK_20260818;
         }
-        return List.copyOf(options);
     }
 
     @Override

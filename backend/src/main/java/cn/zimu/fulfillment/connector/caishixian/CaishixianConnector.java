@@ -264,6 +264,15 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
                     snapshot == null ? null : snapshot.sendableQuantity(),
                     carrier(result.carrierOutputValue()) != null);
         } catch (RuntimeException exception) {
+            // 与聚福宝 2026-08-29 同款观测补洞：静默吞掉会让「每 10 分钟失败一次」在
+            // 日志里零痕迹（2026-08-31 生产实证：11 单卡 CHECK_UNAVAILABLE 三天无人知）。
+            // 类型+消息+来源单号必须留下，才能分清契约漂移/登录失效/平台风控。
+            log.warn(
+                    "彩食鲜 Shipment 事实读取失败 source_ref={} line_ref={} type={} message={}",
+                    result.sourceRef(),
+                    result.sourceLineRef(),
+                    exception.getClass().getSimpleName(),
+                    exception.getMessage());
             return SourcePlatformCheckResult.unavailable(
                     channel(), "CAISHIXIAN_PLATFORM_CHECK_UNAVAILABLE", "彩食鲜 Shipment 当前事实读取失败");
         }
