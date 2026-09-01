@@ -55,17 +55,21 @@ public class ShipmentJdOutboundCancelService {
     }
 
     public IdempotentResult<Map<String, Object>> cancel(
-            long shipmentId, String idempotencyKey, CommandContext context) {
+            long shipmentId, String orderType, String idempotencyKey, CommandContext context) {
         requireAuthorized(context);
         OutboundRow row = requireSubmittedRow(shipmentId);
+        // 京东 cancelOrder 要求 orderType；销售出库单默认 2，留可选入参兜住京东侧字典口径变化。
+        String effectiveOrderType = orderType == null || orderType.isBlank() ? "2" : orderType.trim();
         Map<String, Object> payload = Map.of(
                 "shipment_id", shipmentId,
                 "erp_delivery_no", row.erpDeliveryNo(),
-                "jd_delivery_no", row.jdDeliveryNo());
+                "jd_delivery_no", row.jdDeliveryNo(),
+                "order_type", effectiveOrderType);
         return idempotency.execute(SCOPE, idempotencyKey, payload, 200, () -> {
             Map<String, Object> command = new LinkedHashMap<>();
             command.put("erpOrderNo", row.erpDeliveryNo());
             command.put("orderNo", row.jdDeliveryNo());
+            command.put("orderType", effectiveOrderType);
             JdResult result = jdWarehouse.cancelOutboundOrder(command);
             if (!result.success()) {
                 audit(shipmentId, row, context, 502, "JD_OUTBOUND_CANCEL_REJECTED",

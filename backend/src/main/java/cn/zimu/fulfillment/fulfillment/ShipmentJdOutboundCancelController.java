@@ -19,13 +19,18 @@ public class ShipmentJdOutboundCancelController {
         this.service = service;
     }
 
+    /** body 可选：{"order_type": "..."}——京东取消要求单据类型，销售出库默认 2。 */
+    public record CancelCommand(@com.fasterxml.jackson.annotation.JsonProperty("order_type") String orderType) {}
+
     @PostMapping("/{id}/jd-so-order-cancel")
     public ResponseEntity<?> cancel(
             @PathVariable String id,
+            @org.springframework.web.bind.annotation.RequestBody(required = false) CancelCommand body,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestHeader("X-Operator") String operator) {
         return WriteCommands.respond(service.cancel(
                 WriteCommands.parseIdentifier(id),
+                body == null ? null : body.orderType(),
                 WriteCommands.requireIdempotencyKey(idempotencyKey),
                 WriteCommands.writeContext(operator)));
     }
