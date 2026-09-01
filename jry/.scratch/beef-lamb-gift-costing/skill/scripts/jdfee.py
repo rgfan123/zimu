@@ -256,23 +256,40 @@ def main():
     a = ap.parse_args()
 
     if a.list_dest is not None:
-        ks = sorted(k for k in DB["city"] if k.startswith(a.list_dest))
+        q = a.list_dest
+        # 子串匹配：城市键是「福建福州市」，用户常输「福州」，前缀匹配会给出假的 0 条
+        ks = sorted(k for k in DB["city"] if q in k)
         for k in ks:
             t = DB["city"][k]
             print(f"  {k:<16} {t['b']} + {t['s']}×重量")
-        print(f"\n  共 {len(ks)} 个城市有账单记录")
-        if not a.list_dest:
+        print(f"\n  共 {len(ks)} 个城市有账单记录" + (f"（含「{q}」）" if q else ""))
+        if not ks and q:
+            provs = [p for p in DB["province"] if q in p or p in q]
+            print(f"  ⚠ 没有城市名含「{q}」。注意城市键是「省+市」格式（如 福建福州市）。")
+            if provs:
+                pv = DB["province"][provs[0]]
+                print(f"  该省可用省级估算：--dest {provs[0]} → {pv['b']} + {pv['s']}×重量")
+            print("  也可以只输一个字（如 --list-dest 州）或不带参数看全部。")
+        if not q:
             print("  省级估算：" + "、".join(sorted(DB["province"])))
         return 0
 
     if a.list_goods is not None:
-        n = 0
-        for k, v in sorted(DB["catalog"].items()):
-            if a.list_goods in k:
-                flag = "  ⚠档案可疑" if v.get("suspect") else ""
-                print(f"  {k:<20} {v['vol']:>7.0f}cm³ {v['kg']:>5.2f}kg{flag}")
-                n += 1
-        print(f"\n  共 {n} 个商品")
+        q = a.list_goods
+        hits = [(k, v) for k, v in sorted(DB["catalog"].items()) if q in k]
+        for k, v in hits:
+            flag = "  ⚠档案可疑" if v.get("suspect") else ""
+            print(f"  {k:<20} {v['vol']:>7.0f}cm³ {v['kg']:>5.2f}kg{flag}")
+        print(f"\n  共 {len(hits)} 个商品")
+        if not hits and q:
+            # 逐字找，帮用户定位真名（成本表名与档案名常有出入）
+            loose = sorted({k for k, _ in DB["catalog"].items() if any(c in k for c in q)})
+            print(f"  ⚠ 没有商品名含「{q}」。档案名与成本表名常不一致"
+                  f"（成本表「原切牛腿肉」→ 档案「牛后腿肉」）。")
+            if loose:
+                print("  含相同字的有：" + "、".join(loose[:10])
+                      + (f" 等{len(loose)}个" if len(loose) > 10 else ""))
+            print("  也可以不带参数看全部 53 个。")
         return 0
 
     if not a.dest:
