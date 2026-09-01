@@ -193,6 +193,17 @@ app:
     enabled: ${WECOM_ORDER_DRAFT_CARD_ENABLED:${WECOM_ENABLED:false}}
     poll-ms: ${WECOM_ORDER_DRAFT_CARD_POLL_MS:1000}
     lease-seconds: ${WECOM_ORDER_DRAFT_CARD_LEASE_SECONDS:60}
+  wecom-reply:
+    # 机器人「会话回复」的接收者路由（与 wecom-business-card.routes 相对：那边是无原会话的
+    # 系统卡「未配不发」；这边的回复天然回原会话，配置是把它改投别处）。
+    # mode: ORIGIN（默认）=回原发送者/原会话，行为与未引入本配置时完全一致；
+    # mode: OVERRIDE + chat-id =该场景回复全部改发到指定接收者（单聊 userid 或群 chatid）。
+    # OVERRIDE 缺 chat-id 启动即失败（fail-fast）：半配置的改投比不配置更危险。
+    routes:
+      # 订单草稿确认/追问卡：入站消息解读出草稿后回给发送者的确认回复。
+      order-draft-card:
+        mode: ${WECOM_REPLY_ORDER_DRAFT_CARD_MODE:ORIGIN}
+        chat-id: ${WECOM_REPLY_ORDER_DRAFT_CARD_CHAT_ID:}
   wecom-business-card:
     # 通用业务卡（复核事项 / 运营告警 / 整批确认播报 / 京东出库失败）：默认跟随企微总开关。
     enabled: ${WECOM_BUSINESS_CARD_ENABLED:${WECOM_ENABLED:false}}

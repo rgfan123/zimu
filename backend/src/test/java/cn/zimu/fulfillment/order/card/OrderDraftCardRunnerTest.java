@@ -31,6 +31,7 @@ class OrderDraftCardRunnerTest {
     private WecomOutboundGateway gateway;
     private OrderDraftCardFailureCoordinator failures;
     private cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService replyPolicies;
+    private cn.zimu.fulfillment.connector.wecom.WecomReplyRouteProperties replyRoutes;
     private OrderDraftCardRunner runner;
 
     @BeforeEach
@@ -43,7 +44,10 @@ class OrderDraftCardRunnerTest {
         replyPolicies = mock(cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService.class);
         // 缺省 FULL：既有用例全部按「允许对话」跑，静默行为单独立用例
         when(replyPolicies.allowsConversational(org.mockito.ArgumentMatchers.any())).thenReturn(true);
-        runner = new OrderDraftCardRunner(cards, tasks, drafts, gateway, failures, replyPolicies);
+        // 缺省无路由配置 = ORIGIN：既有用例即「不配置零变化」的回归证据
+        replyRoutes = new cn.zimu.fulfillment.connector.wecom.WecomReplyRouteProperties();
+        runner = new OrderDraftCardRunner(
+                cards, tasks, drafts, gateway, failures, replyPolicies, replyRoutes);
     }
 
     @Test
@@ -97,6 +101,42 @@ class OrderDraftCardRunnerTest {
                 .contains("OD-41", "1 行", "资料完整")
                 .doesNotContain("13800000000", "上海市测试地址");
         verify(cards).recordSent(7L, "req-card-41", Instant.parse("2026-08-23T10:00:00Z"));
+        verify(tasks).succeed(task.id(), task.leaseOwner());
+    }
+
+    @Test
+    void 配置OVERRIDE后草稿卡改投指定接收者_静默策略按改投目标判定() {
+        AsyncTaskStore.AsyncTask task = task(1, 1);
+        OrderDraftCard card = new OrderDraftCard(
+                7L, 41L, 0L, "order-draft_41_v0", "SINGLE", "origin-user", "PENDING", 0);
+        cn.zimu.fulfillment.connector.wecom.WecomReplyRouteProperties.Route route =
+                new cn.zimu.fulfillment.connector.wecom.WecomReplyRouteProperties.Route();
+        route.setMode(cn.zimu.fulfillment.connector.wecom.WecomReplyRouteProperties.Mode.OVERRIDE);
+        route.setChatId("ops-review-group");
+        replyRoutes.setRoutes(Map.of(
+                cn.zimu.fulfillment.connector.wecom.WecomReplyRouteProperties.SCENARIO_ORDER_DRAFT_CARD,
+                route));
+        when(tasks.renewLease(task.id(), task.leaseOwner(), OrderDraftCardRunner.LEASE_EXTENSION))
+                .thenReturn(true);
+        when(cards.load(7L)).thenReturn(card);
+        when(cards.beginSend(7L)).thenReturn(new CardSendPermit(CardSendAction.SEND, 1));
+        when(drafts.detail(41L)).thenReturn(draft());
+        when(gateway.send(any())).thenReturn(new WecomSendResult(
+                WecomSendStatus.SUCCESS,
+                "req-card-41",
+                Instant.parse("2026-08-23T10:00:00Z"),
+                null,
+                null,
+                false));
+
+        runner.execute(task);
+
+        ArgumentCaptor<WecomOutboundMessage> outbound =
+                ArgumentCaptor.forClass(WecomOutboundMessage.class);
+        verify(gateway).send(outbound.capture());
+        assertThat(outbound.getValue().chatId()).isEqualTo("ops-review-group");
+        // 静默判定应针对实际投递目标而不是原会话
+        verify(replyPolicies).allowsConversational("ops-review-group");
         verify(tasks).succeed(task.id(), task.leaseOwner());
     }
 

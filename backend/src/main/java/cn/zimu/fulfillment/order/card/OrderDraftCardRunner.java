@@ -26,6 +26,7 @@ public class OrderDraftCardRunner {
     private final WecomOutboundGateway gateway;
     private final OrderDraftCardFailureCoordinator failures;
     private final cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService replyPolicies;
+    private final cn.zimu.fulfillment.connector.wecom.WecomReplyRouteProperties replyRoutes;
 
     public OrderDraftCardRunner(
             OrderDraftCardStore cards,
@@ -33,13 +34,15 @@ public class OrderDraftCardRunner {
             OrderDraftQueryService drafts,
             WecomOutboundGateway gateway,
             OrderDraftCardFailureCoordinator failures,
-            cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService replyPolicies) {
+            cn.zimu.fulfillment.connector.wecom.WecomChatReplyPolicyService replyPolicies,
+            cn.zimu.fulfillment.connector.wecom.WecomReplyRouteProperties replyRoutes) {
         this.cards = cards;
         this.tasks = tasks;
         this.drafts = drafts;
         this.gateway = gateway;
         this.failures = failures;
         this.replyPolicies = replyPolicies;
+        this.replyRoutes = replyRoutes;
     }
 
     public void execute(AsyncTaskStore.AsyncTask task) {
@@ -59,7 +62,14 @@ public class OrderDraftCardRunner {
             return;
         }
 
-        if (!replyPolicies.allowsConversational(card.chatId())) {
+        // 接收者可配置（app.wecom-reply.routes.order-draft-card）：缺省 ORIGIN 回原会话，
+        // OVERRIDE 改投配置的会话。在发送时解析而不是建卡时固化——配置变更对
+        // 已入队未发送的卡立即生效，且卡行 chat_id 仍保留「原会话」证据。
+        // 静默策略按实际投递目标判定：卡发到哪，哪的会话策略说了算。
+        String target = replyRoutes.resolveTarget(
+                cn.zimu.fulfillment.connector.wecom.WecomReplyRouteProperties.SCENARIO_ORDER_DRAFT_CARD,
+                card.chatId());
+        if (!replyPolicies.allowsConversational(target)) {
             // 静默会话（客户群）不追问：草稿仍在，缺失信息走工作台复核，不打扰群成员
             cards.recordSuperseded(cardId, "WECOM_CHAT_REPLY_SILENCED");
             tasks.succeed(task.id(), task.leaseOwner());
@@ -79,7 +89,7 @@ public class OrderDraftCardRunner {
                 return;
             }
             ObjectNode payload = card(currentDraft, card.taskId());
-            message = WecomOutboundMessage.templateCard(card.chatId(), payload);
+            message = WecomOutboundMessage.templateCard(target, payload);
         } catch (RuntimeException ex) {
             failures.recordRetryableFailure(
                     task, cardId, "WECOM_ORDER_DRAFT_CARD_BUILD_FAILED");
