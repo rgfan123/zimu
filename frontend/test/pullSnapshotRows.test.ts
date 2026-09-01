@@ -1,16 +1,6 @@
 /**
- * 批次快照弹窗的取数口径（2026-08-28 生产实证：整行破折号）。
- *
- * 现场：聚福宝新单在弹窗里只有渠道单号，收件人/电话/地址/商品/件数全是「—」，
- * 但 app.orders 里收件人「丁」、电话、地址俱全，app.order_lines 里商品名与数量也在。
- *
- * 根因：弹窗把 raw_import_rows.raw_cells 当唯一数据源，而那份快照**刻意不含 PII**
- * （它会被渲染进企微群卡片）。结构化拉取的 raw_cells 只有
- * {source_ref, source_line_ref, item_index, snapshot}，后端 projectionFor 只认顶层标量，
- * snapshot 是对象被整个丢掉 → parsed={} → 前端 firstText 回退 '—'。
- *
- * 本文件锁死：订单实体优先、快照退居证据、拿不到时给**原因**而不是破折号，
- * 以及「商品与件数必须同源」这个既有不变量。
+ * 批次快照弹窗的取数口径回归：确认前读取服务端候选白名单投影，确认后正式订单优先；
+ * raw_cells 始终只是脱敏证据。商品与件数必须同源。
  */
 
 import assert from 'node:assert/strict';
@@ -25,11 +15,7 @@ import {
   type SnapshotOrderSource,
 } from '../src/pages/workbench/pullSnapshotRows.ts';
 
-/**
- * 结构化平台拉取的真实行形状：`presentImportRow` 对着 {source_ref, source_line_ref,
- * item_index, snapshot} 这样的 raw_cells 跑出来的结果——除渠道单号外全是 '—' 占位。
- * 既有路由测试的夹具手工塞了 parsed，所以从来没覆盖到这个真实形状。
- */
+/** 没有候选投影也没有正式订单时的最小结构化行形状。 */
 function structuredRow(overrides: Partial<SnapshotImportRow> = {}): SnapshotImportRow {
   return {
     orderId: '31',
@@ -42,6 +28,21 @@ function structuredRow(overrides: Partial<SnapshotImportRow> = {}): SnapshotImpo
     specification: '—',
     ...overrides,
   };
+}
+
+/** 确认前由 rows API 返回的候选白名单投影；没有正式 order_id。 */
+function stagedCandidateRow(overrides: Partial<SnapshotImportRow> = {}): SnapshotImportRow {
+  return structuredRow({
+    orderId: '—',
+    orderLineId: '—',
+    receiverName: '丁小满',
+    receiverPhone: '13800001111',
+    receiverAddress: '上海市 上海市 浦东新区 张江镇 科苑路 88 号',
+    productName: '乔府大院金饭碗五常大米5kg',
+    quantity: '1',
+    specification: '5kg/袋',
+    ...overrides,
+  });
 }
 
 /** Excel 上传口径：解析投影里带了收件人与商品，raw_cells 有真表头。 */
@@ -93,6 +94,19 @@ test('没有订单实体时，结构化行如实说「未建单」，不是破�
   assert.equal(facts.receiverName, null);
   assert.equal(facts.productName, null);
   assert.equal(facts.receiverSource, 'NONE');
+  assert.equal(facts.hasOrder, false);
+  assert.equal(missingFactLabel(facts), '未建单');
+});
+
+test('确认前候选安全投影直接展示，同时保持“尚未建正式订单”语义', () => {
+  const facts = presentSnapshotRowFacts(stagedCandidateRow(), null);
+  assert.equal(facts.receiverName, '丁小满');
+  assert.equal(facts.receiverPhone, '13800001111');
+  assert.equal(facts.receiverAddress, '上海市 上海市 浦东新区 张江镇 科苑路 88 号');
+  assert.equal(facts.productName, '乔府大院金饭碗五常大米5kg');
+  assert.equal(facts.quantity, '1');
+  assert.equal(facts.receiverSource, 'SNAPSHOT');
+  assert.equal(facts.productSource, 'SNAPSHOT');
   assert.equal(facts.hasOrder, false);
   assert.equal(missingFactLabel(facts), '未建单');
 });

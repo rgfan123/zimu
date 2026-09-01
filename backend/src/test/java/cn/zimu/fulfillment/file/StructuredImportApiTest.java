@@ -267,6 +267,31 @@ class StructuredImportApiTest {
                         batchId))
                 .as("结构化导入也必须等到批次确认才创建正式订单")
                 .isZero();
+
+        List<Map<String, Object>> previews = sourceImportService.rows(batchId, 0, 20, null).items();
+        assertThat(previews).hasSize(2).allSatisfy(preview -> {
+            assertThat(preview.get("order_id")).isNull();
+            assertThat(preview.get("order_line_id")).isNull();
+            @SuppressWarnings("unchecked")
+            Map<String, String> parsed = (Map<String, String>) preview.get("parsed");
+            assertThat(parsed)
+                    .containsEntry("receiver_name", "测试收货人")
+                    .containsEntry("receiver_phone", "13800000001")
+                    .containsEntry("receiver_address", "北京 北京市 朝阳区 测试路 1 号")
+                    .containsEntry("product_name", "子牧羊小腿")
+                    .containsEntry("specification", "标准箱")
+                    .containsEntry("source_sku_ref", "CSX-PRODUCT-001");
+            assertThat(String.valueOf(preview.get("raw_cells")))
+                    .doesNotContain("测试收货人")
+                    .doesNotContain("13800000001");
+        });
+        assertThat(previews)
+                .extracting(preview -> (Object) ((Map<?, ?>) preview.get("parsed")).get("quantity"))
+                .containsExactly("2", "1");
+        assertThat(sourceImportService.get(batchId).get("error_detail"))
+                .as("公开批次详情不得透出包含 PII 的完整候选")
+                .isNull();
+
         sourceImportService.confirm(batchId, "confirm-structured-lineage-" + ref, ctx());
         // 一单两商品 → 两条 raw 行，均 ACCEPTED 且关联订单行
         Integer accepted = jdbc.queryForObject(

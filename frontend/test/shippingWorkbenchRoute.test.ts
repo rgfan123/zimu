@@ -625,16 +625,11 @@ test('a channel card opens its paged batch snapshot in place through the safe ro
 });
 
 /**
- * 2026-08-28 生产实证回归：结构化平台拉取的批次快照整行破折号。
- *
- * 真实 raw_cells 只有 {source_ref, source_line_ref, item_index, snapshot}——后端
- * projectionFor 只认顶层标量，snapshot 是对象被整个丢掉，于是 parsed={}；
- * 而 snapshot 里的收件人本就被 sanitizeSnapshot 脱敏（它会进企微卡片，这条边界不动）。
- * 弹窗必须改从订单实体取数，否则用户看到的就是「除单号外全是 —」。
- *
- * 既有那条 snapshot 用例的夹具手工塞了 parsed，所以从没覆盖到这个真实形状。
+ * 候选流水线回归：结构化平台拉取确认前不会创建正式订单，rows API 必须直接返回
+ * 服务端候选白名单投影；弹窗不得依赖一个尚不存在的 order_id。
  */
-test('structured pull snapshot reads facts from the order entity, not the PII-free raw_cells', async () => {
+test('structured pull snapshot reads staged candidate preview before order materialization', async () => {
+  let orderDetailCalls = 0;
   globalThis.fetch = async (input) => {
     const url = String(input);
     if (url === REFRESH_URL) {
@@ -651,7 +646,6 @@ test('structured pull snapshot reads facts from the order entity, not the PII-fr
           sheet_index: 0,
           row_index: 1,
           source_order_ref: 'm951890039794349980',
-          // 真实结构化形状：没有中文表头，收件人在 snapshot 里且已脱敏。
           raw_cells: {
             source_ref: 'm951890039794349980',
             source_line_ref: 'm951890039794349980-1',
@@ -664,45 +658,30 @@ test('structured pull snapshot reads facts from the order entity, not the PII-fr
               supplier_name: '京诚乾***',
             },
           },
-          parsed: {},
+          parsed: {
+            receiver_name: '丁小满',
+            receiver_phone: '13800001111',
+            receiver_address: '上海市 上海市 浦东新区 张江镇 科苑路 88 号',
+            product_name: '乔府大院金饭碗五常大米5kg',
+            quantity: '1',
+            specification: '5kg/袋',
+            source_sku_ref: '2047704',
+          },
           status: 'NEED_REVIEW',
           error_code: 'SKU_MATCH',
-          order_id: '31',
-          order_line_id: '6',
+          order_id: null,
+          order_line_id: null,
           jd_cargos: [],
         }],
         page: 0, size: 20, total_elements: 1, total_pages: 1,
       });
     }
-    if (url === '/api/v1/orders/31') {
-      return jsonResponse({
-        id: '31', order_no: 'SO-20260828-0007', source_channel: 'JUFUBAO',
-        order_status: 'NEED_REVIEW', processing_stage: 'NEED_REVIEW', processing_health: 'BLOCKED',
-        completed_count: 0, total_count: 1, created_at: '2026-08-28T11:00:00Z', version: 1,
-        receiver: {
-          name: '丁小满', phone: '13800001111',
-          province: '上海市', city: '上海市', district: '浦东新区', town: '张江镇',
-          address: '科苑路 88 号',
-        },
-        settlement: { method: null },
-        lines: [{
-          id: '6', line_no: 1, line_type: 'SINGLE',
-          product_name: '乔府大院金饭碗五常大米5kg', specification: '5kg/袋', unit: '袋',
-          source_quantity: '1', requested_quantity: '1', processing_stage: 'NEED_REVIEW',
-        }],
-        review_cases: [],
-      });
+    if (url.startsWith('/api/v1/orders/')) {
+      orderDetailCalls += 1;
+      throw new Error('确认前不得请求尚不存在的正式订单');
     }
     if (url.startsWith('/api/v1/review-cases?')) {
-      return jsonResponse({
-        items: [{
-          id: '77', case_no: 'RC-SKU-77', case_type: 'SKU_MAPPING',
-          responsible_team: 'SKU_OPS', reason_code: 'SKU_MAPPING_REQUIRED', status: 'OPEN',
-          order_id: '31', order_line_id: '6', detail: {}, version: 1,
-          created_at: '2026-08-28T11:00:00Z',
-        }],
-        page: 0, size: 200, total_elements: 1, total_pages: 1,
-      });
+      return jsonResponse({ items: [], page: 0, size: 200, total_elements: 0, total_pages: 0 });
     }
     throw new Error(`unexpected request: ${url}`);
   };
@@ -716,23 +695,18 @@ test('structured pull snapshot reads facts from the order entity, not the PII-fr
   await harness.dispatchEvent(channelCard, new MouseEvent('click', { bubbles: true }));
   await harness.waitFor(() => assert.match(harness.bodyText(), /聚福宝 · 批次快照/));
 
-  // 核心断言：收件人/电话/地址/商品/件数都来自订单实体，不再是破折号。
   await harness.waitFor(() => assert.match(harness.bodyText(), /丁小满/));
   assert.match(harness.bodyText(), /13800001111/);
   assert.match(harness.bodyText(), /上海市 上海市 浦东新区 张江镇 科苑路 88 号/);
   assert.match(harness.bodyText(), /乔府大院金饭碗五常大米5kg/);
-  assert.match(harness.bodyText(), /1袋/);
-  // 这一行「为什么」待复核，而不是只给一个状态计数（复核事项 reason_code 套全站单表文案）。
-  assert.match(harness.bodyText(), /SKU 映射待确认/);
-  assert.doesNotMatch(harness.bodyText(), /SKU_MAPPING_REQUIRED/, '原因码必须翻译成中文再上屏');
+  assert.match(harness.bodyText(), /来源商品尚未建立 SKU 映射/);
+  assert.equal(orderDetailCalls, 0, '确认前没有 order_id，不应调用订单详情接口');
 
   const cells = [...document.querySelectorAll<HTMLTableRowElement>('.ant-table-tbody tr.ant-table-row')]
     .flatMap((row) => [...row.querySelectorAll<HTMLTableCellElement>('td')])
     .map((cell) => cell.textContent?.trim());
-  assert.equal(cells.filter((text) => text === '—').length, 0, '拿得到订单实体时不得出现破折号占位');
-
-  // 快照仍是脱敏的，且脱敏值不得盖过真值上屏。
-  assert.doesNotMatch(harness.bodyText(), /京诚乾\*\*\*/, '脱敏快照值不上主表');
+  assert.equal(cells.filter((text) => text === '—').length, 0, '候选投影完整时主表不得出现破折号占位');
+  assert.doesNotMatch(harness.bodyText(), /京诚乾\*\*\*/, '脱敏 raw snapshot 值不上主表');
 });
 
 test('a failed snapshot row load has a retry and an empty page has an explicit empty state', async () => {

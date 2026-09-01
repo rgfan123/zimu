@@ -945,6 +945,30 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     return value;
                 },
                 pageArguments.toArray());
+        // 结构化拉取确认前没有正式订单；从服务端候选快照补白名单 read model。
+        // raw_cells 继续保持脱敏，完整 candidate 继续由 publicBatchErrorDetail 隐藏。
+        Map<Long, SourceOrderCandidateMaterializer.CandidateRowPreview> stagedPreviews =
+                candidateMaterializer.stagedPreviews(batchId);
+        for (Map<String, Object> item : items) {
+            SourceOrderCandidateMaterializer.CandidateRowPreview preview = stagedPreviews.get(
+                    Long.parseLong(String.valueOf(item.get("id"))));
+            if (preview == null) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, String> parsed =
+                    new LinkedHashMap<>((Map<String, String>) item.get("parsed"));
+            preview.asParsedProjection().forEach((key, value) -> {
+                String existing = parsed.get(key);
+                // 「来源未提供」是解析层的成文缺失占位（SourceFileParser fallback /
+                // CaishixianOrderTransform.SPEC_MISSING），预览合并视同空白。
+                if (existing == null || existing.isBlank() || "来源未提供".equals(existing)) {
+                    parsed.put(key, value);
+                }
+            });
+            item.put("parsed", Map.copyOf(parsed));
+        }
+
         // SKU 履约方归属（JD_WAREHOUSE / THIRD_PARTY）：按渠道来源 SKU 映射一次批量查询
         Map<String, SkuFulfillmentProjection> skuFulfillment = skuFulfillmentByRef(
                 sourceChannel,

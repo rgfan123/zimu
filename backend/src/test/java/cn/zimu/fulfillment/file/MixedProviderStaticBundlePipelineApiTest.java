@@ -134,6 +134,20 @@ class MixedProviderStaticBundlePipelineApiTest {
                 .containsEntry("total", 1);
         assertThat(uploaded.getBody()).containsEntry("error_detail", null);
 
+        long rawRowId = jdbc.queryForObject(
+                "SELECT id FROM app.raw_import_rows WHERE import_batch_id=?",
+                Long.class,
+                Long.parseLong(batchId));
+        Map<Long, SourceOrderCandidateMaterializer.CandidateRowPreview> stagedPreviews =
+                candidateMaterializer.stagedPreviews(Long.parseLong(batchId));
+        assertThat(stagedPreviews).containsOnlyKeys(rawRowId);
+        assertThat(stagedPreviews.get(rawRowId).asParsedProjection())
+                .as("一个原始礼包行即使展开为多个履约分片，也只能产生一个同源预览")
+                .containsEntry("product_name", "羊蝎子鸵鸟测试礼包")
+                // 预览忠实呈现来源数量形态（V99 整数化在成单闸口收敛，预览不提前改写）
+                .containsEntry("quantity", "1.000")
+                .containsEntry("source_sku_ref", SOURCE_BUNDLE_REF);
+
         ResponseEntity<Map> confirmed = confirm(batchId);
         assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
 
