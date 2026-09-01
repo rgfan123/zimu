@@ -17,7 +17,8 @@
 - P0「Excel 闭环」已通：三平台来源表导入 → SKU 映射确认 → 履约导出 → 运单回传 → 原格式回填，端到端可跑（有真实样本验证）；
 - 京东 **SDK 只读链路已实测可用**（querySellers/Owners/Warehouses/Shops 返回 1000），**真实建单（addSoOrder）已进入最后联调阶段**（见 §9 在途工作，`JD_LOP_WRITE_MODE` 默认 `OFF`）；
 - 企业微信消息接入（长连接 + AI 意图识别 + 订单草稿/运单草稿 + 人工复核）已完成主体，等待真实群消息验收；
-- Agent 决策层（LangChain4j + MCP 只读工具）已落地，业务写操作仍必须人工确认。
+- Agent 决策层（LangChain4j + MCP 工具）已落地：外部协议面（HTTP/SSE）与非特权 stdio 仍恒为只读；`MCP_STDIO_PRIVILEGED` 特权 stdio 面与 Agent 面（`AgentToolInvoker`，须 `allow_write=true` 白名单放行）现已开放写工具（含手工建单、路由履约、拉取平台订单等），业务写操作不再一律等待人工在界面点击确认，但仍强制幂等键、Agent 身份与审计留痕（详见 `CONTEXT.md` 企业微信一期实现边界一节）。
+- 新增 V100 手工建单渠道（`MANUAL`）与 V101 组包师 Agent（按售价/毛利/费用条件出组包方案）；原料仓出入库 MCP（`McpRawMaterialTools`，7 个工具）已上线。
 
 ---
 

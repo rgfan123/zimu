@@ -26,7 +26,7 @@
 | 请求/响应关系 | 一次 POST 一次 JSON 响应，简单直接 | POST 只回 202，真正的响应从 GET 建立的那条 SSE 流里以 `message` 事件推回来 |
 | 什么时候必须用老 SSE | 外部平台的下拉框里没有 Streamable HTTP 选项，只有 SSE 一种时 |
 
-两条路径背后是**同一个** JSON-RPC 分发实现（`McpServer.handleRequest`）——和现在生产在跑的 stdio 传输一模一样的协议行为：同样的 `initialize` / `tools/list` / `tools/call`，同样的只读收紧（写工具一律拒绝，见第 4 节),同样的工具集合。选哪种传输不影响能调用哪些工具、返回什么结果。
+两条路径背后是**同一个** JSON-RPC 分发实现（`McpServer.handleRequest`）——和非特权 stdio 传输一模一样的协议行为：同样的 `initialize` / `tools/list` / `tools/call`，同样的只读收紧（写工具一律拒绝，见第 4 节),同样的工具集合。选哪种传输不影响能调用哪些工具、返回什么结果。**注意**：stdio 传输本身另有一条特权分支（`MCP_STDIO_PRIVILEGED=true` + `MCP_AGENT_IDENTITY`，issue-181），仅供本机内部工具经 stdio 显式接入时开放全工具面（含写）；这条对外 HTTP/SSE 通道没有对应开关、恒为只读，不受该特权分支影响。
 
 ## 3. 鉴权：Bearer Token
 
@@ -44,7 +44,7 @@ Authorization: Bearer <MCP_HTTP_TOKEN 的值>
 
 ## 4. 通过这条通道能做什么、不能做什么
 
-- **只能调只读工具**。与现在生产在跑的 stdio 传输完全一致（08 决策）：`tools/list` 只列只读工具，`tools/call` 调写工具一律返回协议层错误（`-32602`，消息含 `read-only`），不会执行、不会产生任何审计记录或副作用。
+- **只能调只读工具**，且没有开关能改变这一点（08 决策，架构承诺）：`tools/list` 只列只读工具，`tools/call` 调写工具一律返回协议层错误（`-32602`，消息含 `read-only`），不会执行、不会产生任何审计记录或副作用。这与非特权 stdio 传输一致；stdio 传输另有仅供本机内部工具使用的特权分支（`MCP_STDIO_PRIVILEGED`，见上一节），该分支不适用于这条对外通道。
 - 具体有哪些只读工具、每个工具的参数 schema，用 `tools/list` 现场查（工具集合会随子牧迭代增减，不在这里手抄一份容易过期的清单）。
 - 想调写操作（下单确认、状态变更等），仍然只能走既有的 Agent 面（内部工具绑定 + 服务端注入身份），这条对外 HTTP/SSE 通道不提供。
 
