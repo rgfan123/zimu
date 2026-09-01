@@ -164,15 +164,26 @@ public class McpDomainReadTools {
                 new McpToolRegistry.SimpleTool(
                         "search_product_archive",
                         "组合查询商品成本档案：商品名模糊，69 码精确，或按品牌/肉类/状态/SKU 挂接状态过滤。"
-                                + "重复 69 码返回全部命中行；保留全部业务成本列，不返回文件名、指纹、行号或列字母。",
+                                + "重复 69 码返回全部命中行；不返回文件名、指纹、行号或列字母。"
+                                + "默认只列在售商品（剔除产品状态 停产/断货），且成本列只给关键 4 项："
+                                + "核算成本/份、含耗材成本/份、线下供货成本/份、售价——"
+                                + "线下供货成本即礼包核算用的供货成本，售价即零售价。"
+                                + "要看停产/断货商品传 include_discontinued=true（或直接传 status 指定状态）；"
+                                + "要全部成本列（人工费/扣点/物流/毛利率等 40 列）传 full_costing=true。",
                         schema(
                                 Map.of(
                                         "query", stringProperty("商品名模糊查询词"),
                                         "barcode", stringProperty("69 码精确匹配（相同码可返回多行）"),
                                         "brand", stringProperty("品牌精确匹配"),
                                         "meat_type", stringProperty("肉类精确匹配"),
-                                        "status", stringProperty("产品状态：在产/停产/研发/新品"),
+                                        "status", stringProperty(
+                                                "产品状态精确匹配：在产/停产/研发/新品/断货；"
+                                                        + "显式传入时不再叠加默认的在售过滤"),
                                         "linked", booleanProperty("是否已挂接 SKU（true/false）"),
+                                        "include_discontinued", booleanProperty(
+                                                "true 时连停产/断货商品一并返回，默认 false 只看在售"),
+                                        "full_costing", booleanProperty(
+                                                "true 时返回全部成本列，默认 false 只给关键 4 项"),
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
@@ -374,9 +385,14 @@ public class McpDomainReadTools {
         String meatType = optionalQuery(args, "meat_type");
         String status = optionalArchiveStatus(args);
         Boolean linked = optionalBoolean(args, "linked");
+        Boolean includeDiscontinued = optionalBoolean(args, "include_discontinued");
+        Boolean fullCosting = optionalBoolean(args, "full_costing");
         PageResponse<ProductArchiveSummary> result = productArchive.search(
-                query, barcode, brand, meatType, status, linked, page(args, 0), pageSize(args, 20));
-        return pageNode(result, McpDomainReadTools::archiveSummaryNode);
+                query, barcode, brand, meatType, status, linked,
+                Boolean.TRUE.equals(includeDiscontinued),
+                page(args, 0), pageSize(args, 20));
+        boolean allCostingColumns = Boolean.TRUE.equals(fullCosting);
+        return pageNode(result, summary -> archiveSummaryNode(summary, allCostingColumns));
     }
 
     // ------------------------------------------------------------------
@@ -640,7 +656,15 @@ public class McpDomainReadTools {
         return item;
     }
 
-    private static ObjectNode archiveSummaryNode(ProductArchiveSummary summary) {
+    /**
+     * 档案关键成本列白名单（顺序即业务阅读顺序）：成本构成三项 + 售价。
+     * 线下供货成本/份 与 app.skus.purchase_price 同源，售价与 retail_price 同源，
+     * 礼包核算读的就是这两项；其余 36 列（人工费/扣点/物流/毛利率等）按需 full_costing 取。
+     */
+    private static final List<String> KEY_COSTING_FIELDS = List.of(
+            "核算成本 /份", "含耗材 成本/份", "线下供货成本/份", "售价");
+
+    private static ObjectNode archiveSummaryNode(ProductArchiveSummary summary, boolean fullCosting) {
         ObjectNode item = node();
         item.put("product_name", summary.productName());
         item.put("brand", summary.brand());
@@ -654,6 +678,9 @@ public class McpDomainReadTools {
         item.put("sku_id", summary.skuId());
         ArrayNode costing = item.putArray("costing");
         for (ProductArchiveSummary.CostingField field : summary.costing()) {
+            if (!fullCosting && !KEY_COSTING_FIELDS.contains(field.name())) {
+                continue;
+            }
             ObjectNode fieldNode = costing.addObject();
             fieldNode.put("name", field.name());
             fieldNode.put("value", field.value());

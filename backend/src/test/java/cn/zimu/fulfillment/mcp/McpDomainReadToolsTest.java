@@ -576,13 +576,13 @@ class McpDomainReadToolsTest {
                 "其他品牌", "羊肉", "羔羊肉", null, null);
 
         JsonNode exactBarcode = callResult(
-                AGENT, "search_product_archive", Map.of("barcode", "06977872890432"));
+                AGENT, "search_product_archive", Map.of("barcode", "06977872890432", "full_costing", true));
         assertThat(exactBarcode.get("items")).hasSize(1);
         assertThat(exactBarcode.at("/items/0/product_name").asText()).isEqualTo("原切牛肉卷");
         assertThat(exactBarcode.at("/items/0/specification_g").asText()).isEqualTo("300g");
 
-        JsonNode duplicateBarcode = callResult(
-                AGENT, "search_product_archive", Map.of("barcode", "06977872890135"));
+        JsonNode duplicateBarcode = callResult(AGENT, "search_product_archive",
+                Map.of("barcode", "06977872890135", "include_discontinued", true));
         assertThat(duplicateBarcode.get("items")).hasSize(2);
         assertThat(duplicateBarcode.get("items")).extracting(item -> item.get("specification_g").asText())
                 .containsExactly("500g", "750g");
@@ -602,7 +602,8 @@ class McpDomainReadToolsTest {
         assertThat(linked.at("/items/0/linked").asBoolean()).isTrue();
         assertThat(linked.at("/items/0/sku_id").asText()).isEqualTo(String.valueOf(linkedSkuId));
         assertThat(linked.at("/items/0/sku_code").asText()).isEqualTo(linkedSkuCode);
-        JsonNode unlinked = callResult(AGENT, "search_product_archive", Map.of("linked", false));
+        JsonNode unlinked = callResult(AGENT, "search_product_archive",
+                Map.of("linked", false, "include_discontinued", true));
         assertThat(unlinked.get("items")).hasSize(3);
         assertThat(unlinked.get("items")).allSatisfy(item -> {
             assertThat(item.get("linked").asBoolean()).isFalse();
@@ -617,12 +618,12 @@ class McpDomainReadToolsTest {
                 "product_name", "brand", "specification_g", "barcode", "meat_type", "material", "status",
                 "linked", "sku_code", "sku_id", "costing");
         assertThat(item.get("costing")).hasSize(40);
-        assertThat(item.at("/costing/0/name").asText()).isEqualTo("成本列 H");
+        assertThat(item.at("/costing/0/name").asText()).isEqualTo("核算成本 /份");
         assertThat(item.at("/costing/39/name").asText()).isEqualTo("成本列 AU");
         assertThat(item.toString()).doesNotContain(
                 "source_file_name", "source_file_sha256", "sheet_name", "row_no", "\"column\"", "extra_cells");
 
-        JsonNode all = callResult(AGENT, "search_product_archive", Map.of());
+        JsonNode all = callResult(AGENT, "search_product_archive", Map.of("include_discontinued", true));
         assertThat(all.get("total_elements").asLong()).isEqualTo(4);
 
         JsonNode noMatch = callResult(AGENT, "search_product_archive", Map.of("query", "不存在的商品名"));
@@ -630,10 +631,55 @@ class McpDomainReadToolsTest {
         assertThat(noMatch.get("total_elements").asLong()).isZero();
 
         JsonNode paged = callResult(AGENT, "search_product_archive",
-                Map.of("barcode", "06977872890135", "page", 1, "size", 1));
+                Map.of("barcode", "06977872890135", "page", 1, "size", 1, "include_discontinued", true));
         assertThat(paged.get("items")).hasSize(1);
         assertThat(paged.at("/items/0/specification_g").asText()).isEqualTo("750g");
         assertThat(paged.get("total_pages").asInt()).isEqualTo(2);
+    }
+
+    @Test
+    void productArchiveDefaultsToInSaleRowsAndKeyCostingColumnsButStaysQueryableOnDemand()
+            throws Exception {
+        long categoryId = createCategory();
+        long providerId = createProvider("MCPARCHDEF", "档案默认口径履约方");
+        long productId = createProduct(categoryId, "MCP-PROD-ARCH-DEF", "默认口径商品");
+        long skuId = createSku(providerId, productId, "500g");
+
+        insertArchiveRow(ARCHIVE_SHA, 81, "默认口径在售品", "在产", "500g", "06977872891001",
+                "子牧", "牛肉", "牛腩", skuId, productId);
+        insertArchiveRow(ARCHIVE_SHA, 82, "默认口径停产品", "停产", "500g", "06977872891002",
+                "子牧", "牛肉", "牛腩", null, null);
+        insertArchiveRow(ARCHIVE_SHA, 83, "默认口径断货品", "断货", "500g", "06977872891003",
+                "子牧", "牛肉", "牛腩", null, null);
+        insertArchiveRow(ARCHIVE_SHA, 84, "默认口径空状态品", "", "500g", "06977872891004",
+                "子牧", "牛肉", "牛腩", null, null);
+
+        // 默认：只在售——停产/断货被剔除，状态为空的一律保留（档案里大量行没写状态）
+        JsonNode defaults = callResult(AGENT, "search_product_archive", Map.of("query", "默认口径"));
+        assertThat(defaults.get("items")).extracting(item -> item.get("product_name").asText())
+                .containsExactlyInAnyOrder("默认口径在售品", "默认口径空状态品");
+
+        // 默认：成本列只给关键 4 项，且顺序与业务阅读顺序一致
+        JsonNode item = defaults.get("items").get(0);
+        assertThat(item.get("costing")).hasSize(4);
+        assertThat(item.findValuesAsText("name"))
+                .containsExactly("核算成本 /份", "含耗材 成本/份", "线下供货成本/份", "售价");
+
+        // 显式要全量成本列：40 列全回
+        JsonNode full = callResult(AGENT, "search_product_archive",
+                Map.of("query", "默认口径在售", "full_costing", true));
+        assertThat(full.at("/items/0/costing")).hasSize(40);
+
+        // 显式要停产/断货：查得到
+        JsonNode withDiscontinued = callResult(AGENT, "search_product_archive",
+                Map.of("query", "默认口径", "include_discontinued", true));
+        assertThat(withDiscontinued.get("items")).hasSize(4);
+
+        // 显式点名状态：默认在售过滤让位，「我就要看停产的」必须查得到
+        JsonNode discontinuedOnly = callResult(AGENT, "search_product_archive",
+                Map.of("query", "默认口径", "status", "停产"));
+        assertThat(discontinuedOnly.get("items")).hasSize(1);
+        assertThat(discontinuedOnly.at("/items/0/product_name").asText()).isEqualTo("默认口径停产品");
     }
 
     @Test
@@ -671,9 +717,12 @@ class McpDomainReadToolsTest {
         addArchiveField(fields, "E", "品牌", brand);
         addArchiveField(fields, "F", "肉类", meatType);
         addArchiveField(fields, "G", "原料", material);
+        // 前四列用生产真实列名（关键成本列白名单按名字匹配），其余保持通用凑满 40 列
+        List<String> keyNames = List.of("核算成本 /份", "含耗材 成本/份", "线下供货成本/份", "售价");
         for (int index = 8; index <= 47; index++) {
             String column = excelColumn(index);
-            addArchiveField(fields, column, "成本列 " + column, String.valueOf(index));
+            String name = index <= 11 ? keyNames.get(index - 8) : "成本列 " + column;
+            addArchiveField(fields, column, name, String.valueOf(index));
         }
         jdbc.update(
                 """

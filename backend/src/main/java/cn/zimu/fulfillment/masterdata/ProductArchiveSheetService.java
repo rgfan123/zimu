@@ -122,7 +122,27 @@ public class ProductArchiveSheetService {
             Boolean linked,
             int page,
             int size) {
-        SearchFilter filter = searchFilter(query, barcode, brand, meatType, status, linked);
+        // 既有 REST 档案页维持全量口径（含停产/断货），行为不变。
+        return search(query, barcode, brand, meatType, status, linked, true, page, size);
+    }
+
+    /**
+     * @param includeDiscontinued false 时剔除明确不再销售的行（产品状态 停产/断货）。
+     *     显式传 status 时以 status 为准，本开关不再叠加——「我就要看停产的」必须能查到。
+     */
+    @Transactional(readOnly = true)
+    public PageResponse<ProductArchiveSummary> search(
+            String query,
+            String barcode,
+            String brand,
+            String meatType,
+            String status,
+            Boolean linked,
+            boolean includeDiscontinued,
+            int page,
+            int size) {
+        SearchFilter filter = searchFilter(
+                query, barcode, brand, meatType, status, linked, includeDiscontinued);
         long total = jdbc.queryForObject(
                 "SELECT count(*) FROM app.product_archive_sheets pas" + filter.sql(),
                 Long.class,
@@ -142,8 +162,14 @@ public class ProductArchiveSheetService {
         return new PageResponse<>(items, page, size, total, totalPages);
     }
 
+    /** 档案表 B 列固定是产品状态；D/E/F 等列义见 addFieldFilter 调用点。 */
+    private static final String STATUS_COLUMN = "B";
+    private static final String STATUS_DISCONTINUED = "停产";
+    private static final String STATUS_OUT_OF_STOCK = "断货";
+
     private static SearchFilter searchFilter(
-            String query, String barcode, String brand, String meatType, String status, Boolean linked) {
+            String query, String barcode, String brand, String meatType, String status, Boolean linked,
+            boolean includeDiscontinued) {
         // 每段都以换行结尾：调用方紧接着拼 "ORDER BY ..."，任何一段漏换行都会粘成
         // "…ORDER BY" 语法错。这里包括基串本身——不带任何过滤条件时它就是最后一段。
         StringBuilder sql = new StringBuilder(" WHERE 1=1\n");
@@ -159,6 +185,20 @@ public class ProductArchiveSheetService {
         addFieldFilter(sql, arguments, "B", status);
         if (linked != null) {
             sql.append(linked ? " AND pas.matched_sku_id IS NOT NULL\n" : " AND pas.matched_sku_id IS NULL\n");
+        }
+        if (!includeDiscontinued && blankToNull(status) == null) {
+            // 只剔除「明确不再销售」的两个状态；空状态/研发/新品一律保留——档案里 45 行状态为空，
+            // 按「没写状态就当不在售」会把在售商品也吞掉，宁可多给不可少给。
+            sql.append("""
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM jsonb_array_elements(pas.fields) field
+                         WHERE field->>'column' = ? AND field->>'value' IN (?, ?)
+                     )
+                    """);
+            arguments.add(STATUS_COLUMN);
+            arguments.add(STATUS_DISCONTINUED);
+            arguments.add(STATUS_OUT_OF_STOCK);
         }
         return new SearchFilter(sql.toString(), List.copyOf(arguments));
     }
