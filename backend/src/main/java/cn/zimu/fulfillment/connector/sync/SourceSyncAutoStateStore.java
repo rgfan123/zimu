@@ -34,6 +34,8 @@ public class SourceSyncAutoStateStore {
              AND ss.source_channel=COALESCE(source.effective_source_channel, o.source_channel)
             WHERE s.shipment_status='SHIPPED'
               AND (ss.shipment_id IS NULL OR ss.sync_status='SYNC_FAILED')
+              -- 手工单没有来源平台可回传，且本表渠道 CHECK 白名单不含 MANUAL（V100 设计）
+              AND COALESCE(source.effective_source_channel, o.source_channel) <> 'MANUAL'
             """;
 
     private final JdbcTemplate jdbc;

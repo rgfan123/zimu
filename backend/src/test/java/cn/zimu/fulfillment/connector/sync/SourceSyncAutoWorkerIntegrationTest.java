@@ -245,6 +245,74 @@ class SourceSyncAutoWorkerIntegrationTest {
         };
     }
 
+    @Test
+    void manualChannelShipmentsAreNeverSyncCandidatesAndDoNotPoisonTheBatch() {
+        long manual = seedManualCandidate();
+        long jufubao = seedCandidate(SourceChannel.JUFUBAO);
+
+        List<SourceSyncAutoStateStore.Claim> claims =
+                states.claimCandidates("manual-exclusion-owner", Duration.ofMinutes(10), 20);
+
+        assertThat(claims)
+                .as("MANUAL 无来源平台，绝不参与自动回传；JUFUBAO 候选不得被连坐")
+                .extracting(SourceSyncAutoStateStore.Claim::shipmentId)
+                .containsExactly(jufubao);
+        assertThat(states.find(manual, SourceChannel.MANUAL)).isEmpty();
+    }
+
+    /** 手工单形态：无导入批次（V100 反向禁挂），渠道 MANUAL，已发货已回单。 */
+    private long seedManualCandidate() {
+        String suffix = Long.toUnsignedString(System.nanoTime());
+        long customerId = jdbc.queryForObject(
+                "INSERT INTO app.customers(customer_code, customer_name) VALUES (?, '手工平台客户') RETURNING id",
+                Long.class,
+                "CUSTMAN" + suffix);
+        long providerId = jdbc.queryForObject(
+                """
+                INSERT INTO app.fulfillment_providers(provider_code, provider_name, provider_type)
+                VALUES (?, '手工单履约方', 'THIRD_PARTY') RETURNING id
+                """,
+                Long.class,
+                "MANP" + suffix);
+        long orderId = jdbc.queryForObject(
+                """
+                INSERT INTO app.orders
+                    (order_no, data_scope, source_channel, source_ref, source_ref_kind,
+                     customer_id, order_status, settlement_method,
+                     settlement_time, receiver_name, receiver_phone, receiver_address)
+                VALUES (?, 'BUSINESS', 'MANUAL', ?, 'PROVIDED', ?, 'SHIPPED', 'OTHER',
+                        CURRENT_TIMESTAMP, '李四', '13900000000', '河南省郑州市测试路2号')
+                RETURNING id
+                """,
+                Long.class,
+                "ORDER-MAN-" + suffix,
+                "MAN-" + suffix,
+                customerId);
+        long shipmentId = jdbc.queryForObject(
+                """
+                INSERT INTO app.shipments
+                    (shipment_no, order_id, fulfillment_provider_id, shipment_sequence,
+                     receiver_name_snapshot, receiver_phone_snapshot, receiver_address_snapshot,
+                     shipment_status, shipped_at)
+                VALUES (?, ?, ?, 1, '李四', '13900000000', '河南省郑州市测试路2号',
+                        'SHIPPED', CURRENT_TIMESTAMP)
+                RETURNING id
+                """,
+                Long.class,
+                "SHIP-MAN-" + suffix,
+                orderId,
+                providerId);
+        jdbc.update(
+                """
+                INSERT INTO app.trackings
+                    (shipment_id, logistics_company_code, logistics_company_name, tracking_number)
+                VALUES (?, 'JD', '京东物流', ?)
+                """,
+                shipmentId,
+                "TRACK-MAN-" + suffix);
+        return shipmentId;
+    }
+
     private long seedCandidate(SourceChannel channel) {
         String suffix = Long.toUnsignedString(System.nanoTime());
         long customerId = jdbc.queryForObject(
