@@ -1,7 +1,7 @@
 # PostgreSQL Schema V1
 
 状态：已通过 Standards / Spec 双轴审查
-依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
+依据：PRD V0.1（已删除，历史见 git）、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
 和 `V2`–`V101` 增量迁移（部分版本仅执行带前置断言的数据修复，不改结构）；两条路径必须得到等价的当前结构——

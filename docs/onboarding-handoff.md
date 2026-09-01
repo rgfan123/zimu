@@ -1,7 +1,7 @@
 # 新开发对接文档：子牧订单履约与仓储物流中台
 
 > 用途：给新加入的开发者快速建立系统全貌。读完本文 + 按「常用命令」跑起环境，即可开始改代码。
-> 权威文档链：`docs/prd-v0.1.md`（PRD）→ `docs/state-machine.md`（状态机）→ `docs/schema.md` + `docs/schema.sql`（库表）→ `docs/api-contract.md` + `docs/openapi.yaml`（API）→ `docs/excel-closed-loop-spec.md`（Excel 闭环规范）→ `CONTEXT.md`（领域词汇表，先读它再读代码）。
+> 权威文档链：`docs/state-machine.md`（状态机）→ `docs/schema.md` + `docs/schema.sql`（库表）→ `docs/api-contract.md` + `docs/openapi.yaml`（API）→ `docs/excel-closed-loop-spec.md`（Excel 闭环规范）→ `CONTEXT.md`（领域词汇表，先读它再读代码）。
 
 ---
 

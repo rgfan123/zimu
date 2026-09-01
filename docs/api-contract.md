@@ -3,7 +3,7 @@
 状态：Need Review  
 日期：2026-08-11  
 机器可读契约：`docs/openapi.yaml`  
-权威边界：`docs/prd-v0.1.md`、`docs/state-machine.md`、`docs/schema.md`、`docs/excel-closed-loop-spec.md`及已关闭 Wayfinder 决策票。
+权威边界：`docs/state-machine.md`、`docs/schema.md`、`docs/excel-closed-loop-spec.md`及已关闭 Wayfinder 决策票。
 
 ## 0. 两份契约的关系（工单 07）
 
