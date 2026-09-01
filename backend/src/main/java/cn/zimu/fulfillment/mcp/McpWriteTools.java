@@ -130,12 +130,19 @@ public class McpWriteTools {
                         this::confirmOrderDraft, false, "write"),
                 new McpToolRegistry.SimpleTool(
                         "submit_jd_outbound",
-                        "触发京东云仓建出库单（addSoOrder）：对一个已就绪的 Shipment 提交京东建单，请求由 Shipment 及其全部行派生。幂等，重复调用返回首次结果；写门闩关闭或操作人未授权时拒绝，不触网。",
+                        "触发京东云仓建出库单（addSoOrder）：对一个已就绪的 Shipment 提交京东建单，请求由 Shipment 及其全部行派生。"
+                                + "**这一步货真的会出仓**，受人类确认闸保护：必须先向用户复述本次出库内容，"
+                                + "拿到用户亲自输入的『确认』二字才可调用。"
+                                + "幂等，重复调用返回首次结果；写门闩关闭或操作人未授权时拒绝，不触网。",
                         schema(
                                 Map.of(
                                         "shipment_id", stringProperty("Shipment ID"),
-                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
-                                List.of("shipment_id", "idempotency_key")),
+                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符"),
+                                        McpHumanConfirmation.PARAMETER, McpHumanConfirmation.property()),
+                                List.of(
+                                        "shipment_id",
+                                        "idempotency_key",
+                                        McpHumanConfirmation.PARAMETER)),
                         this::submitJdOutbound, false, "write"),
                 new McpToolRegistry.SimpleTool(
                         "submit_supplementary_material",
@@ -269,10 +276,15 @@ public class McpWriteTools {
     }
 
     private JsonNode submitJdOutbound(McpRequestContext context, Map<String, Object> args) {
-        long shipmentId = identifier(args, "shipment_id");
-        String idempotencyKey = requireIdempotencyKey(args);
+        // 人类确认闸先于一切：货真的会出仓，用户没亲口说「确认」就不许往下走一步。
+        // confirmed 是剥掉确认参数后的入参，后续解析一律用它——用户输入不进下游命令与幂等载荷。
+        Map<String, Object> confirmed = McpHumanConfirmation.requireConfirmed(args);
+        long shipmentId = identifier(confirmed, "shipment_id");
+        String idempotencyKey = requireIdempotencyKey(confirmed);
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("shipment_id", shipmentId);
+        // 审计只留「人类确认过」这一事实，不落用户输入明文
+        payload.put(McpHumanConfirmation.AUDIT_FIELD, true);
         // 幂等与请求哈希由 ShipmentJdOutboundService.submit 负责（与 REST 共用同一 scope），这里只审计摘要。
         return executeWrite(
                 "submit_jd_outbound",
