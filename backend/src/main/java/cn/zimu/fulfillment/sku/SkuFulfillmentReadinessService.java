@@ -93,7 +93,7 @@ public class SkuFulfillmentReadinessService {
             if (product == null || !product.isActive()) reasons.add(SkuReadinessReason.PRODUCT_INACTIVE);
             if (!sku.isActive()) reasons.add(SkuReadinessReason.SKU_INACTIVE);
             if (provider == null || !provider.isActive()) reasons.add(SkuReadinessReason.PROVIDER_INACTIVE);
-            if (missingIdentityText(sku.getSpecification()) || missingPackagingIdentity(sku)) {
+            if (missingIdentityText(sku.getSpecification())) {
                 reasons.add(SkuReadinessReason.SPECIFICATION_REQUIRED);
             }
             if (missingIdentityText(sku.getUnit())) reasons.add(SkuReadinessReason.UNIT_REQUIRED);
@@ -167,13 +167,6 @@ public class SkuFulfillmentReadinessService {
 
     private static boolean missingIdentityText(String value) {
         return value == null || value.isBlank() || PLACEHOLDERS.contains(value.trim());
-    }
-
-    private static boolean missingPackagingIdentity(Sku sku) {
-        return sku.getNetContentValue() == null
-                || missingIdentityText(sku.getNetContentUnit())
-                || sku.getPackageCount() == null
-                || missingIdentityText(sku.getPackageUnit());
     }
 
     private static String normalizeBarcode(String value) {

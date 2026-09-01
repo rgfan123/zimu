@@ -146,15 +146,7 @@ class SkuFulfillmentReadinessApiTest {
         insertMapping(providerId, readySkuId, readySkuCode, true, "{}");
         long blockedSkuId = insertSku(productId, providerId, "1kg", "件", null, true);
 
-        Map<String, Object> missingStructuredIdentity =
-                http.getForObject("/api/v1/skus/" + readySkuId, Map.class);
-        assertThat(reasonCodes(missingStructuredIdentity)).containsExactly("SPECIFICATION_REQUIRED");
-        assertThat(issue(missingStructuredIdentity, "SPECIFICATION_REQUIRED").get("action").toString())
-                .contains("净含量", "包装件数");
-
-        completePackagingIdentity(readySkuId, "500", "g", 1, "件");
-        completePackagingIdentity(blockedSkuId, "1", "kg", 1, "件");
-
+        // 结构化包装身份（净含量/包装件数）缺省不再阻断就绪：真实规格 + 有效映射即就绪。
         Map<String, Object> readyDetail = http.getForObject("/api/v1/skus/" + readySkuId, Map.class);
         assertThat(readiness(readyDetail)).containsEntry("ready", true);
         assertThat(reasonCodes(readyDetail)).isEmpty();

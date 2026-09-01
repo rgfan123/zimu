@@ -7,9 +7,7 @@ public enum SkuReadinessReason {
     PRODUCT_INACTIVE("所属商品已停用", "启用所属商品，或改用其他有效商品"),
     SKU_INACTIVE("SKU 已停用", "启用 SKU，或改用其他有效 SKU"),
     PROVIDER_INACTIVE("履约方已停用", "启用履约方，或把业务改到有效履约方"),
-    SPECIFICATION_REQUIRED(
-            "SKU 规格或结构化包装身份缺失、仍为占位值",
-            "维护真实规格，并补齐净含量、净含量单位、包装件数和包装单位"),
+    SPECIFICATION_REQUIRED("SKU 规格缺失或仍为占位值", "维护真实规格"),
     UNIT_REQUIRED("SKU 库存计数单位缺失或仍为占位值", "维护真实库存计数单位"),
     PROVIDER_MAPPING_REQUIRED("缺少履约方商品映射", "维护该 SKU 对应履约方的有效商品编码"),
     PROVIDER_MAPPING_INACTIVE("履约方商品映射已停用", "复核后启用正确映射，或新建替代映射"),
