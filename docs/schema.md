@@ -4,7 +4,7 @@
 依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
-和 `V2`–`V75` 增量迁移（V74/V75 仅执行带前置断言的数据修复）；两条路径必须得到等价的当前结构——
+和 `V2`–`V101` 增量迁移（部分版本仅执行带前置断言的数据修复，不改结构）；两条路径必须得到等价的当前结构——
 [`SchemaSnapshotMigrationEquivalenceTest`](../backend/src/test/java/cn/zimu/fulfillment/schema/SchemaSnapshotMigrationEquivalenceTest.java)
 用 Testcontainers 分别以空库快照与 Flyway 全链建库，从 `pg_catalog` 比对表/视图/列
 （类型/可空/默认/identity）/主键/唯一键/check 约束/外键/普通索引/触发器/显式序列/
@@ -13,7 +13,7 @@
 ## 1. 设计结论
 
 - PostgreSQL 使用 `app` 业务 schema 与 `analytics` 分析 schema。
-- 当前权威快照共 81 张业务表、4 个分析视图和 2 个操作视图。
+- 当前权威快照共 87 张业务表、4 个分析视图和 2 个操作视图。
 - 有限且仍可能演进的状态值使用 `VARCHAR + CHECK`；可扩展的 OrderEvent 类型使用目录表。
 - 所有业务时间使用 `TIMESTAMPTZ`；Java 使用 `Instant`。来源 Excel 的无时区时间按 `Asia/Shanghai` 解释，分析视图也按上海自然日分桶。
 - 所有数量使用 `NUMERIC(18,3)`；应用写入前必须拒绝超过三位小数的输入，不能依赖数据库隐式舍入。
@@ -130,7 +130,7 @@ erDiagram
 |---|---|---|
 | `review_cases` | 阻断自动流程的人工复核 | 同主体+原因只能有一条 OPEN case；禁止关联 Demo 订单 |
 | `operational_alerts` | 不阻断但要求知晓的黄/红提醒 | 活跃同类提醒幂等；禁止关联 Demo 订单 |
-| `connector_configs` | 四个来源渠道的 Client 与传输模式、快递公司显式映射和最近拉取状态 | `mode=MOCK/REAL` 与 `transport_mode=EXCEL/API` 分轴；`config.carrier_mappings` 首批维护京东物流到彩食鲜 `JD`、聚福宝/飞象 `京东物流` 的映射；缺映射进入人工复核 |
+| `connector_configs` | 8 个来源渠道（V1 四渠道 + V31 中汇 + V40 网奇/WANGQI + V41 大者 + V42 万齐；`MANUAL` 无拉取/回传，不建行）的 Client 与传输模式、快递公司显式映射和最近拉取状态 | `mode=MOCK/REAL` 与 `transport_mode=EXCEL/API` 分轴；`config.carrier_mappings` 首批维护京东物流到彩食鲜 `JD`、聚福宝/飞象 `京东物流` 的映射；缺映射进入人工复核 |
 | `channel_messages` | 企业微信原始文字证据 | `(企微主体, 连接, 消息 ID)` 唯一；只保存通道证据与受控原始载荷，不解释意图、不创建订单或运单 |
 | `audit_logs` | 接口、Agent 和人工操作审计 | BUSINESS/DEMO 分域；只追加 |
 | `demo_runs` | 隔离 Mock DemoScenario 运行 | 只能引用 DEMO order；不进入业务文件、复核、提醒或 analytics |

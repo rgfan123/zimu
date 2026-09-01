@@ -9,7 +9,7 @@
 
 **业务定位**：公司 B 端订单从「进入公司」到「完成发货」的统一履约中台（非电商商城、非采购系统）。
 
-- 订单来源：**彩食鲜 / 聚福宝 / 飞象** 三个平台的表格/文件 + **企业微信**群消息（AI 识别）；
+- 订单来源：**彩食鲜 / 聚福宝 / 飞象** 三个平台的表格/文件 + **企业微信**群消息（AI 识别）+ **手工建单**（`MANUAL` 渠道，柜台/运营直录，V100）；
 - 履约方：**京东云仓（ISC 供应链，SDK 直连）** + 第三方供应商（Excel 指令文件）；
 - 产出：京东出库单/发货指令 → 实际发货数量+运单回收 → 按**平台原始格式**生成来源回填表。
 
@@ -170,13 +170,13 @@ wayfinder/         早期决策地图（历史票，已关闭的决策仍权威�
 
 主要端点分组：dashboard / orders(+timeline+versions+corrections) / import-batches(+confirm+rows+source-return-exports) / fulfillment-exports(+file+tracking-imports) / shipments(+jd-so-order) / review-cases(resolve-*、dismiss、complete-source-followup) / operational-alerts / procurement-tickets(+retry+cancel-remaining) / customers / products / categories / skus / source-sku-mappings / provider-sku-mappings / fulfillment-providers / connectors / audit-logs / analytics(channels|products|fulfillments) / inventory / jd-warehouse / jd-basicinfo / jd-stock / jd-serial / jd-order / jd-return / jd-write（写门闩）。
 
-**MCP / Agent 边界**：只读查询 + 创建内部订单 + 提交匹配建议/业务材料；**禁止**确认客户/SKU/快递映射、取消剩余量、重试采购、关闭复核。终局动作一律人工。
+**MCP / Agent 边界**：非特权 stdio 与外部 HTTP/SSE 面恒只读，只暴露查询工具。特权 stdio 面（`MCP_STDIO_PRIVILEGED`+`MCP_AGENT_IDENTITY`，仅供本机内部工具）与 Agent 面（`AgentToolInvoker`，须 `allow_write=true` 白名单放行）开放写工具：创建内部订单、提交匹配建议/业务材料，以及 f79e6fee 新增的拉取平台订单（`refresh_platform_orders`）、手工建单（`create_manual_order`）、履约路由（`route_order_fulfillment`）。**仍禁止**注册确认客户/SKU/快递映射、取消剩余量、重试采购、关闭复核一类工具；这些终局动作一律人工。
 
 ---
 
-## 6. 数据库要点（63 业务表 + 4 分析视图 + 2 操作视图）
+## 6. 数据库要点（业务表数以 `docs/schema.sql` 权威快照为准，另见 4 分析视图 + 2 操作视图）
 
-- Flyway 管理（V1 基线 + V2–V45 增量）；**禁 ddl-auto 改表**；枚举用 VARCHAR+CHECK，事件类型用目录表；
+- Flyway 管理（V1 基线 + V2–V101 增量）；**禁 ddl-auto 改表**；枚举用 VARCHAR+CHECK，事件类型用目录表；
 - 时间全 TIMESTAMPTZ / Java Instant；Excel 无时区时间按 Asia/Shanghai 解释；
 - 只追加表（order_versions、order_events、raw_import_rows、文件版本等）由触发器禁止 UPDATE/DELETE；
 - 核心关系链：`import_batches → orders → order_lines(+components) → fulfillments → shipment_items → shipments → trackings`；`shipment_jd_outbounds`（京东出库集成记录）；`fulfillment_exports(+items)`、`source_return_exports(+items)`；`procurement_tickets(+items) → procurement_receipts(+items)`；`order_versions / order_events / audit_logs`；

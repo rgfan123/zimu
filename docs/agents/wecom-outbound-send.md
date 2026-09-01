@@ -302,9 +302,12 @@ ACK + 60s 退避）+ 15s init ACK = 5×(15+60)+15 = **390s**，加 30 分钟会�
 **存量回填**：V49 按同一 export 的 identity `id` 线性顺序，选择 reminder 插入前已经存在的
 最新 INITIAL sequence；不用事务开始时刻 `created_at`，避免长事务时间反序把 gen1 老提醒误绑到 gen2。
 
-**迁移协调**：组合基线已经包含 #89 的 V48；本加固迁移连续使用 V49，只追加本功能自有的
-`deliveries` 列/约束且绝不修改 V46/V47。#90 尚未进入组合基线，后续集成时必须把其迁移改为
-下一空闲版本 V50，不能覆盖本 V49。
+**迁移协调（历史记录，V49 落地时的预留口径）**：组合基线已经包含 #89 的 V48；本加固迁移连续使用
+V49，只追加本功能自有的 `deliveries` 列/约束且绝不修改 V46/V47。#90 尚未进入组合基线，
+当时预留其迁移落到下一空闲版本 V50。**该预留已失效**：V50 实际被中汇稳定上传占用
+（`V50__zhonghui_pms_stable_upload_intent.sql`），#90（企微业务通知 outbox）改落 V51
+（`V51__wecom_business_notification_outbox.sql`）；后续版本演进见迁移目录本身，
+本节不再维护「下一空闲版本」预留声明。
 
 ## 11. 测试门禁
 
@@ -338,5 +341,7 @@ ACK + 60s 退避）+ 15s init ACK = 5×(15+60)+15 = **390s**，加 30 分钟会�
   next_reminder_at 不变、零告警；旧 INITIAL phase-2 恢复不误关更新代际 resend 失败的红告警。
 - 前端：`SalesOutboundPage` 按钮状态/确认弹窗/生产路由载荷；`FulfillmentProvidersPage`
   提醒间隔输入与 config 键共存。
-- `SchemaSnapshotMigrationEquivalenceTest`：V46/V47/V48/V49 与 docs/schema.sql 等价；
-  `ProductionMigrationHistoryCompatTest`：V1..V47 后只追加 V48（#89）与 V49（#84）。
+- `SchemaSnapshotMigrationEquivalenceTest`：V46/V47/V48/V49 与 docs/schema.sql 等价（本节新增用例的历史范围；
+  该测试实际逐版本覆盖全部迁移，现已推进到 V101，不止本节列出的四版）；
+  `ProductionMigrationHistoryCompatTest`：V1..V47 后只追加 V48（#89）与 V49（#84）（同上，历史记录，
+  该测试现钉住的生产迁移历史已远超 V49，含 V50 中汇稳定上传、V51 企微业务通知 outbox 等后续版本）。

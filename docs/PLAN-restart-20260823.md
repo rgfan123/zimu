@@ -84,4 +84,4 @@ payload 半，渲染半留给前端会话。
 - 8088：真实栈，保持现状（ADR 0003）
 - 18103：预览前端（本地 auth proxy 之后），基于 `codex/issue-103-prototype-refactor` 分支
 - 原型基线：`/private/tmp/zimu-scan/zimu-frontend-prototype.html`（SHA-256 `adca4a89…`，与票面一致）
-- frontend/ 在 iCloud 同步盘上，禁止递归 grep；文件已做过一轮实体化，见根目录卡顿修复记录
+- frontend/ 在 iCloud 同步盘上，禁止递归 grep；文件已做过一轮实体化，见根目录卡顿修复记录（**历史环境约束，现已失效**：当前仓库工作树位于本地盘 `/Users/jerry/zimu-work/convergence-final`，不在 iCloud 同步盘上，递归 grep 无此限制；本行按 2026-08-23 快照保留，供追溯当时的环境背景）

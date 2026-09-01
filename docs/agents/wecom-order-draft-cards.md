@@ -6,7 +6,7 @@
 
 ## 2. 发送与外部效果栅栏
 
-草稿与 `wecom_order_draft_cards`、`WECOM_ORDER_DRAFT_CARD` 异步任务在同一事务创建。卡片固定使用协议安全、带版本断言且不可猜的 `task_id=order-draft_{draft_id}_v{draft_revision}_{128-bit授权引用}`，实体与版本只从该持久化投递行取得；同时固化 `route_type` 与目标：群聊保存 `GROUP + chatid`，单聊保存 `SINGLE + 发送人 userid`，不能仅凭两类标识的字符串恰好相同跨路由授权。
+草稿与 `wecom_order_draft_cards`、`WECOM_ORDER_DRAFT_CARD` 异步任务在同一事务创建。卡片固定使用协议安全、带版本断言且不可猜的 `task_id=order-draft_{draft_id}_v{draft_revision}_{128-bit授权引用}`，实体与版本只从该持久化投递行取得；同时固化 `route_type` 与 `chatid`：群聊保存 `GROUP + chatid`，单聊保存 `SINGLE + 发送人 userid`，不能仅凭两类标识的字符串恰好相同跨路由授权。**注意（4bf6c837 起）**：这里固化的 `chatid` 是**来源会话**（回调校验基准），不等于**实际投递目标**——`OrderDraftCardRunner` 在真正发送时才经 `app.wecom-reply.routes.order-draft-card` 解析投递目标（缺省 `ORIGIN` 回来源会话，两者一致；`OVERRIDE` 时改投配置的会话，两者分裂，卡行 `chatid` 仍如实保留来源会话作为证据，不随投递目标变化）。
 
 发送状态为 `PENDING → SENDING → SENT`。只有外部调用明确尚未提交时才回到 `PENDING` 重试；平台非零 `errcode` ACK 是明确拒绝，进入 `FAILED`；ACK 超时、缺少合法 `errcode`、提交后断线或进程在 `SENDING` 崩溃都进入 `UNKNOWN`，禁止盲目重发，避免同一草稿重复卡片。真正触网前还会重新读取草稿：只有状态仍为 `OPEN` 且 revision 与卡片固化的 `draft_revision` 相同才发送；草稿已关闭或 revision 已变化时进入 `SUPERSEDED` 并成功终结异步任务，不发送一张点击必然过期的旧卡。
 
@@ -14,7 +14,9 @@
 
 回调按官方企微 AI Bot SDK 的 `body.event.template_card_event` 读取 `event_key/task_id`，并兼容官方旧示例中的扁平字段。`from.userid` 是唯一人工 actor 来源；缺失时事件以 `WECOM_CARD_ACTOR_REQUIRED` 拒绝。事件原始载荷与白名单投影按 `(event_type,msgid)` 幂等保存到 `wecom_events`。
 
-`confirm_order` 重新读取数据库当前事实并调用原人工确认用例，身份记为 `wecom:{userid}`；`supplement_order` 只返回当前缺失字段。回调只有在 `task_id` 能对应本系统已收到平台成功 ACK 的 `SENT` 卡片、草稿 ID 与持久化记录一致、且回调路由与原发送目标一致时才有业务权限：群聊必须匹配原 `chatid`，单聊必须匹配原接收 `userid`。未知、未 ACK 或跨路由卡片只留证并拒绝。卡片保存的 `draft_revision` 也是确认命令的版本栅栏；草稿在发卡后被修改时，旧卡片不能确认点击人未看见的新事实，须回到工作台复核。
+`confirm_order` 重新读取数据库当前事实并调用原人工确认用例，身份记为 `wecom:{userid}`；`supplement_order` 只返回当前缺失字段。回调只有在 `task_id` 能对应本系统已收到平台成功 ACK 的 `SENT` 卡片、草稿 ID 与持久化记录一致、且回调路由与卡片固化的**来源会话** `chatid` 一致时才有业务权限（`matchesRoute`）：群聊必须匹配原 `chatid`，单聊必须匹配原接收 `userid`。未知、未 ACK 或跨路由卡片只留证并拒绝。卡片保存的 `draft_revision` 也是确认命令的版本栅栏；草稿在发卡后被修改时，旧卡片不能确认点击人未看见的新事实，须回到工作台复核。
+
+**已知限制（issue #220，4bf6c837 引入 OVERRIDE 改投后暴露）**：`matchesRoute` 校验的基准是来源会话，而 OVERRIDE 模式下点击回调来自实际投递到的会话——两者按设计不同，因此 **OVERRIDE + 可点击卡片当前一律会被 `matchesRoute` 拒绝**（`WECOM_ORDER_DRAFT_CARD_ROUTE_MISMATCH`），无法在改投的会话里点击确认；OVERRIDE 只对纯播报/不需要点击确认的场景是安全的。修复方案（校验改用投递目标而非来源会话，或改投场景本就不支持可点击回调）留待 #220 裁定，本文档不代为决策。
 
 并发或重复点击不重复成单：同一事件先持久化带 UUID token 与 attempt 的 `PROCESSING` claim，业务确认另行事务提交；相同确认幂等键为 `wecom-card-confirm:{msgid}`。首次回调的 bot/chat/actor/create_time/event_key/task_id/order_draft_id/raw_payload 由数据库触发器保护为不可变，重投若用同一 msgid 指向另一草稿会被拒绝且不会更新原事件。若确认已提交但事件结果尚未收口，重放会获得一个新 token 的 fenced reconciliation attempt，并从草稿 `CONFIRMED` 终态恢复为 `ALREADY_CONFIRMED`；该次可收口一次 updateCard，此后的终态重投只读，不再发送卡片/文字，也不能覆盖首次 update/fallback 观测。若真实租户回调不提供 `from.userid`，替代路径是保留原 ReviewCase，由已认证运营人员在子牧工作台确认；系统不会用 chatid、昵称或配置值伪造人工 actor。
 
