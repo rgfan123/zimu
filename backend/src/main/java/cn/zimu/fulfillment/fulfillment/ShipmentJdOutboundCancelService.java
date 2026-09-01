@@ -58,8 +58,10 @@ public class ShipmentJdOutboundCancelService {
             long shipmentId, String orderType, String idempotencyKey, CommandContext context) {
         requireAuthorized(context);
         OutboundRow row = requireSubmittedRow(shipmentId);
-        // 京东 cancelOrder 要求 orderType；销售出库单默认 2，留可选入参兜住京东侧字典口径变化。
-        String effectiveOrderType = orderType == null || orderType.isBlank() ? "2" : orderType.trim();
+        // 京东 cancelOrder 的单据类型是助记码字典（JDL 开放平台 API#1552 实证 2026-09-01）：
+        // XSCK=销售出库/CGRK=采购入库/THRK=退货入库/TGCK=退供/ZKTZ=在库调整/ZTJG=组套加工/BFCK=报废出库。
+        // 本入口只服务销售出库单，默认 XSCK（生产实测取消成功）；入参兜住字典演化。
+        String effectiveOrderType = orderType == null || orderType.isBlank() ? "XSCK" : orderType.trim();
         Map<String, Object> payload = Map.of(
                 "shipment_id", shipmentId,
                 "erp_delivery_no", row.erpDeliveryNo(),
