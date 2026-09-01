@@ -1,6 +1,24 @@
-"""jd-fee-calc 回归断言。独立验算，不信脚本自己的输出。"""
-import subprocess, json, math, sys
-S = "/Users/jerry/.claude/skills/jd-fee-calc/scripts/jdfee.py"
+"""jd-fee-calc 回归断言。独立验算，不信脚本自己的输出。
+
+默认测**与本文件同目录的那份** scripts/jdfee.py——测试必须验证它旁边的代码，
+而不是某个已安装副本，否则仓库里改坏了测试照样绿。
+覆盖顺序：环境变量 JDFEE > 同目录 scripts/jdfee.py > ~/.claude/skills 安装位置。
+"""
+import subprocess, json, math, os, sys
+
+def _locate():
+    if os.environ.get("JDFEE"):
+        return os.path.abspath(os.environ["JDFEE"])
+    here = os.path.dirname(os.path.abspath(__file__))
+    for c in (os.path.join(here, "scripts", "jdfee.py"),
+              os.path.join(here, "jdfee.py"),
+              os.path.expanduser("~/.claude/skills/jd-fee-calc/scripts/jdfee.py")):
+        if os.path.isfile(c):
+            return c
+    sys.exit("✗ 找不到 jdfee.py。用 JDFEE=<路径> 指定。")
+
+S = _locate()
+print(f"被测脚本：{S}\n")
 P = F = 0
 def run(args):
     r = subprocess.run(["python3", S] + args, capture_output=True, text=True)
