@@ -215,6 +215,8 @@ def render(r, dest, tier, items, bundle_lines=None):
     print("─" * W)
     print(f"  {'额外费用合计':<16}{r['total']:>9.2f} 元")
     print("─" * W)
+    print(f"  ↑ 这不是最终价格。报价 = 货值成本 + {r['total']:.2f}")
+    print(f"    （货值取 skus.purchase_price / 成本表 AI 列，本脚本不含货值）")
     for n in r["notes"]:
         print(f"  · {n}")
     for w in r["warnings"]:
