@@ -1770,6 +1770,51 @@ paths:
             (JD_SHIPMENT_OUTBOUND_OPERATOR_UNAUTHORIZED). The rejected attempt is audited and
             neither an intent nor an external write is created.
         default: { $ref: '#/components/responses/ErrorResponse' }
+  /api/v1/shipments/{shipment_id}/jd-so-order-cancel:
+    parameters:
+      - $ref: '#/components/parameters/ShipmentId'
+    post:
+      tags: [Shipments]
+      operationId: cancelShipmentJdOutbound
+      description: >-
+        Cancels the Shipment's submitted JD outbound order (cancelOrder) while the warehouse has
+        not shipped it yet; the vertical entry for issue #213, created after a 2026-09-01
+        duplicate-shipment incident. Only a record in SUBMITTED state can be cancelled, and only by
+        an explicitly authorized outbound operator (same whitelist as submission, revalidated from
+        Basic Auth rather than trusting X-Operator alone). JD requires a document type; the default
+        XSCK (sales outbound) is proven in production and the optional order_type body field absorbs
+        dictionary drift. Once JD confirms, the shipment_jd_outbounds row is deleted rather than kept
+        in a lying SUBMITTED state — the table's CHECK has no CANCELLED terminal and migration
+        numbering is frozen — so the Shipment returns to an unsubmitted state and can be resubmitted;
+        the whole sequence is audited. Waybill and Shipment status rollback are out of scope here.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Operator'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShipmentJdOutboundCancelCommand' }
+      responses:
+        '200':
+          description: >-
+            JD confirmed the cancellation; the submission record is removed and the outcome
+            (erp/JD delivery references, cancelled, submission_record_deleted) is returned and audited.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShipmentJdOutboundCancelResult' }
+        '409':
+          description: >-
+            The Shipment has no SUBMITTED JD outbound order to cancel (JD_OUTBOUND_NOT_SUBMITTED).
+        '403':
+          description: >-
+            Authenticated principal is missing, does not match X-Operator, or is not authorized to
+            cancel JD outbound orders (JD_SHIPMENT_OUTBOUND_OPERATOR_UNAUTHORIZED).
+        '502':
+          description: >-
+            JD rejected the cancellation (JD_OUTBOUND_CANCEL_REJECTED); the submission record is kept
+            untouched and JD's business code and message are surfaced verbatim for diagnosis.
+        default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/shipments/{shipment_id}/jd-tracking-backfill:
     parameters:
       - $ref: '#/components/parameters/ShipmentId'
@@ -6978,6 +7023,25 @@ components:
           nullable: true
           description: Bounded JD request identifier when one was returned.
         updated_at: { type: string, format: date-time }
+    ShipmentJdOutboundCancelCommand:
+      type: object
+      additionalProperties: false
+      properties:
+        order_type:
+          type: string
+          description: >-
+            JD document-type mnemonic; defaults to XSCK (sales outbound). Present so a JD dictionary
+            change can be absorbed without a redeploy.
+    ShipmentJdOutboundCancelResult:
+      type: object
+      required: [shipment_id, erp_delivery_no, jd_delivery_no, cancelled, submission_record_deleted]
+      additionalProperties: false
+      properties:
+        shipment_id: { type: string }
+        erp_delivery_no: { type: string }
+        jd_delivery_no: { type: string }
+        cancelled: { type: boolean }
+        submission_record_deleted: { type: boolean }
     ShipmentJdOutboundCommand:
       type: object
       description: >-
