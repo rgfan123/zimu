@@ -150,12 +150,15 @@ public class McpRawMaterialTools {
                 new McpToolRegistry.SimpleTool(
                         "approve_raw_inbound_order",
                         "审批原料入库单：审批即入账（逐行生成采购批次与入库流水），不可逆。"
+                                + "受人类确认闸保护：必须先向用户复述本单入账内容，"
+                                + "拿到用户亲自输入的『确认』二字才可调用。"
                                 + "仅待审核（pending_approval）单据可审批；请先经 list_raw_inbound_orders 核对行明细。",
                         schema(
                                 Map.of(
                                         "order_id", stringProperty("入库单 ID"),
-                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
-                                List.of("order_id", "idempotency_key")),
+                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符"),
+                                        McpHumanConfirmation.PARAMETER, McpHumanConfirmation.property()),
+                                List.of("order_id", "idempotency_key", McpHumanConfirmation.PARAMETER)),
                         this::approveRawInboundOrder,
                         false,
                         MODULE),
@@ -179,12 +182,15 @@ public class McpRawMaterialTools {
                 new McpToolRegistry.SimpleTool(
                         "approve_raw_scrap_order",
                         "审批原料报废单：审批即出账（扣减批次结存并记报废流水），不可逆。"
+                                + "受人类确认闸保护：必须先向用户复述本单出账内容，"
+                                + "拿到用户亲自输入的『确认』二字才可调用。"
                                 + "仅待审核（pending_approval）单据可审批。",
                         schema(
                                 Map.of(
                                         "order_id", stringProperty("报废单 ID"),
-                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
-                                List.of("order_id", "idempotency_key")),
+                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符"),
+                                        McpHumanConfirmation.PARAMETER, McpHumanConfirmation.property()),
+                                List.of("order_id", "idempotency_key", McpHumanConfirmation.PARAMETER)),
                         this::approveRawScrapOrder,
                         false,
                         MODULE));
@@ -297,10 +303,18 @@ public class McpRawMaterialTools {
     }
 
     private JsonNode approveRawInboundOrder(McpRequestContext context, Map<String, Object> args) {
-        long orderId = identifier(args, "order_id");
-        String idempotencyKey = requireIdempotencyKey(args);
-        Map<String, Object> auditPayload = new LinkedHashMap<>();
-        auditPayload.put("order_id", orderId);
+        // 鉴权先于确认闸：未认证调用只该看到鉴权错误，不该探知闸的存在。
+        context.requireCommandContext();
+        // 人类确认闸：审批即入账、不可逆，用户没亲口说「确认」就不许往下走一步。
+        Map<String, Object> confirmed = McpHumanConfirmation.requireConfirmed(args);
+        long orderId = identifier(confirmed, "order_id");
+        String idempotencyKey = requireIdempotencyKey(confirmed);
+        // 幂等载荷保持与加闸前逐字节相同：同一动作确认两次不该派生出两个不同的幂等请求。
+        Map<String, Object> idempotencyPayload = new LinkedHashMap<>();
+        idempotencyPayload.put("order_id", orderId);
+        // 审计另建一份，只多记「人类确认过」这一事实，不落用户输入明文。
+        Map<String, Object> auditPayload = new LinkedHashMap<>(idempotencyPayload);
+        auditPayload.put(McpHumanConfirmation.AUDIT_FIELD, true);
         return executeWrite(
                 "approve_raw_inbound_order",
                 auditPayload,
@@ -309,7 +323,7 @@ public class McpRawMaterialTools {
                 () -> idempotency.execute(
                         "mcp.rawmaterial.approve_inbound_order",
                         idempotencyKey,
-                        auditPayload,
+                        idempotencyPayload,
                         200,
                         () -> inboundOrderNode(callWrite(() -> writes.approveInboundOrder(orderId)))));
     }
@@ -333,10 +347,16 @@ public class McpRawMaterialTools {
     }
 
     private JsonNode approveRawScrapOrder(McpRequestContext context, Map<String, Object> args) {
-        long orderId = identifier(args, "order_id");
-        String idempotencyKey = requireIdempotencyKey(args);
-        Map<String, Object> auditPayload = new LinkedHashMap<>();
-        auditPayload.put("order_id", orderId);
+        // 鉴权先于确认闸：未认证调用只该看到鉴权错误，不该探知闸的存在。
+        context.requireCommandContext();
+        // 人类确认闸：审批即出账、不可逆，用户没亲口说「确认」就不许往下走一步。
+        Map<String, Object> confirmed = McpHumanConfirmation.requireConfirmed(args);
+        long orderId = identifier(confirmed, "order_id");
+        String idempotencyKey = requireIdempotencyKey(confirmed);
+        Map<String, Object> idempotencyPayload = new LinkedHashMap<>();
+        idempotencyPayload.put("order_id", orderId);
+        Map<String, Object> auditPayload = new LinkedHashMap<>(idempotencyPayload);
+        auditPayload.put(McpHumanConfirmation.AUDIT_FIELD, true);
         return executeWrite(
                 "approve_raw_scrap_order",
                 auditPayload,
@@ -345,7 +365,7 @@ public class McpRawMaterialTools {
                 () -> idempotency.execute(
                         "mcp.rawmaterial.approve_scrap_order",
                         idempotencyKey,
-                        auditPayload,
+                        idempotencyPayload,
                         200,
                         () -> scrapOrderNode(callWrite(() -> writes.approveScrapOrder(orderId)))));
     }

@@ -49,6 +49,9 @@ class McpRawMaterialToolsTest {
             "approve_raw_inbound_order",
             "create_raw_scrap_order",
             "approve_raw_scrap_order");
+    /** 受人类确认闸保护的两个工具：审批即入账/出账，货与账真实变动。 */
+    private static final List<String> APPROVE_TOOLS =
+            List.of("approve_raw_inbound_order", "approve_raw_scrap_order");
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final YuanliaokcReadGateway reads = mock(YuanliaokcReadGateway.class);
@@ -234,8 +237,10 @@ class McpRawMaterialToolsTest {
         idempotencyPassthrough();
         when(writes.approveInboundOrder(11L)).thenReturn(inboundOrder("posted"));
 
-        JsonNode result = toolByName("approve_raw_inbound_order").invoke(
-                context(), Map.of("order_id", "11", "idempotency_key", "raw-approve-0001"));
+        JsonNode result = toolByName("approve_raw_inbound_order").invoke(context(), Map.of(
+                "order_id", "11",
+                "idempotency_key", "raw-approve-0001",
+                McpHumanConfirmation.PARAMETER, "确认"));
 
         assertThat(result.path("order_no").asText()).isEqualTo("RK20260831001");
         assertThat(result.path("status").asText()).isEqualTo("posted");
@@ -284,8 +289,10 @@ class McpRawMaterialToolsTest {
         when(writes.approveScrapOrder(9L)).thenThrow(new RawMaterialWriteException(
                 RawMaterialWriteException.Code.RAW_MATERIAL_WRITE_DISABLED, "未开写"));
 
-        assertThatThrownBy(() -> toolByName("approve_raw_scrap_order").invoke(
-                        context(), Map.of("order_id", "9", "idempotency_key", "raw-scrap-0001")))
+        assertThatThrownBy(() -> toolByName("approve_raw_scrap_order").invoke(context(), Map.of(
+                        "order_id", "9",
+                        "idempotency_key", "raw-scrap-0001",
+                        McpHumanConfirmation.PARAMETER, "确认")))
                 .isInstanceOf(BusinessException.class)
                 .satisfies(e -> {
                     assertThat(((BusinessException) e).getBusinessCode())
@@ -316,9 +323,9 @@ class McpRawMaterialToolsTest {
 
     @Test
     void writeToolsValidateArgumentsBeforeAnyGatewayCall() {
-        // 缺幂等键
-        assertThatThrownBy(() -> toolByName("approve_raw_inbound_order")
-                        .invoke(context(), Map.of("order_id", "11")))
+        // 缺幂等键（确认闸已过，错误仍归位到参数校验）
+        assertThatThrownBy(() -> toolByName("approve_raw_inbound_order").invoke(context(), Map.of(
+                        "order_id", "11", McpHumanConfirmation.PARAMETER, "确认")))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).getBusinessCode())
                 .isEqualTo("INVALID_PARAMETERS");
@@ -342,6 +349,10 @@ class McpRawMaterialToolsTest {
         verify(writes, org.mockito.Mockito.never()).createScrapOrder(any());
     }
 
+    /**
+     * 鉴权先于确认闸：入参连确认词都没带，返回的仍必须是鉴权错误——未认证调用不得
+     * 从错误码里探知「这个工具背后还有一道确认闸」。
+     */
     @Test
     void writeWithoutAgentIdentityFailsWithAuthErrorBeforeIdempotency() {
         assertThatThrownBy(() -> toolByName("approve_raw_inbound_order").invoke(
@@ -352,6 +363,103 @@ class McpRawMaterialToolsTest {
                 .isEqualTo("MCP_AUTH_REQUIRED");
         verify(idempotency, org.mockito.Mockito.never())
                 .execute(anyString(), anyString(), any(), anyInt(), any());
+    }
+
+    // ------------------------------------------------------------------
+    // 人类确认闸（2026-09-01 需求）：审批即入账/出账，必须有人亲口说「确认」
+    // ------------------------------------------------------------------
+
+    @Test
+    void bothApproveToolsDeclareHumanConfirmationAsARequiredParameter() {
+        for (String approveTool : APPROVE_TOOLS) {
+            JsonNode schema = toolByName(approveTool).inputSchema();
+            assertThat(schema.path("required").toString())
+                    .as("%s 必填确认参数", approveTool)
+                    .contains(McpHumanConfirmation.PARAMETER);
+            assertThat(schema.path("properties").path(McpHumanConfirmation.PARAMETER)
+                            .path("description").asText())
+                    .contains("人类确认闸")
+                    .contains("『确认』")
+                    .contains("不得代填");
+            assertThat(toolByName(approveTool).description()).contains("人类确认闸");
+        }
+        // 建单只落待审核单据、不动账，不受闸——闸只装在真正入账/出账那一步
+        for (String createTool : List.of("create_raw_inbound_order", "create_raw_scrap_order")) {
+            assertThat(toolByName(createTool).inputSchema().path("properties")
+                            .has(McpHumanConfirmation.PARAMETER))
+                    .as("%s 不受闸", createTool)
+                    .isFalse();
+        }
+    }
+
+    @Test
+    void approveToolsWithoutConfirmationAreRejectedBeforeAnyGatewayCall() {
+        for (String approveTool : APPROVE_TOOLS) {
+            assertThatThrownBy(() -> toolByName(approveTool).invoke(
+                            context(), Map.of("order_id", "11", "idempotency_key", "raw-gate-0001")))
+                    .as("%s 缺确认参数必须拒", approveTool)
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(failure -> {
+                        BusinessException ex = (BusinessException) failure;
+                        assertThat(ex.getBusinessCode()).isEqualTo("HUMAN_CONFIRMATION_REQUIRED");
+                        assertThat(ex.getHttpStatus()).isEqualTo(422);
+                        assertThat(ex.getMessage()).contains("确认");
+                    });
+        }
+        verify(writes, org.mockito.Mockito.never()).approveInboundOrder(org.mockito.ArgumentMatchers.anyLong());
+        verify(writes, org.mockito.Mockito.never()).approveScrapOrder(org.mockito.ArgumentMatchers.anyLong());
+        verify(idempotency, org.mockito.Mockito.never())
+                .execute(anyString(), anyString(), any(), anyInt(), any());
+    }
+
+    @Test
+    void approveToolsRejectEveryValueThatIsNotTheExactWord() {
+        for (String approveTool : APPROVE_TOOLS) {
+            for (String wrong : List.of("ok", "yes", "确认。", "确认了", "已确认", "同意", "")) {
+                assertThatThrownBy(() -> toolByName(approveTool).invoke(context(), Map.of(
+                                "order_id", "11",
+                                "idempotency_key", "raw-gate-0002",
+                                McpHumanConfirmation.PARAMETER, wrong)))
+                        .as("%s 收到 %s 必须拒", approveTool, wrong)
+                        .isInstanceOf(BusinessException.class)
+                        .extracting(e -> ((BusinessException) e).getBusinessCode())
+                        .isEqualTo("HUMAN_CONFIRMATION_REQUIRED");
+            }
+        }
+        verify(writes, org.mockito.Mockito.never()).approveInboundOrder(org.mockito.ArgumentMatchers.anyLong());
+        verify(writes, org.mockito.Mockito.never()).approveScrapOrder(org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    /**
+     * 用户输入不进幂等载荷：同一动作确认两次（一次「确认」、一次「 确认 」）必须产出
+     * 逐字节相同的幂等载荷，否则第二次会被当成一个新请求。审计只留 confirmed=true。
+     */
+    @Test
+    void confirmationNeverEntersTheIdempotencyPayloadAndIsNotAuditedInPlaintext() {
+        idempotencyPassthrough();
+        when(writes.approveInboundOrder(11L)).thenReturn(inboundOrder("posted"));
+
+        toolByName("approve_raw_inbound_order").invoke(context(), Map.of(
+                "order_id", "11",
+                "idempotency_key", "raw-gate-0003",
+                McpHumanConfirmation.PARAMETER, "  确认  "));
+
+        ArgumentCaptor<Object> idempotencyPayload = ArgumentCaptor.forClass(Object.class);
+        verify(idempotency).execute(
+                anyString(), anyString(), idempotencyPayload.capture(), anyInt(), any());
+        assertThat(idempotencyPayload.getValue())
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsExactly(org.assertj.core.api.Assertions.entry("order_id", 11L));
+
+        ArgumentCaptor<AuditLogService.AuditCommand> audit =
+                ArgumentCaptor.forClass(AuditLogService.AuditCommand.class);
+        verify(audits).record(audit.capture());
+        assertThat(audit.getValue())
+                .extracting("requestPayload")
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .doesNotContainKey(McpHumanConfirmation.PARAMETER)
+                .containsEntry(McpHumanConfirmation.AUDIT_FIELD, true);
+        assertThat(audit.getValue()).extracting("requestPayload").asString().doesNotContain("确认");
     }
 
     // ------------------------------------------------------------------
