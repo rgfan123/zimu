@@ -32,12 +32,12 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * 原料库存（yuanliaokc）出入库 MCP 工具：3 个只读 + 4 个写。
+ * 原料库存（yuanliaokc）出入库 MCP 工具：4 个只读 + 4 个写。
  *
  * <p>全部工具委托 {@link YuanliaokcReadGateway}/{@link YuanliaokcWriteGateway}，本类不触网、
  * 不直写业务表。读写同属 {@value #MODULE} 模块，但写工具显式 {@code readOnly=false}——
  * 外部 MCP 协议面（{@link McpServer}）按只读元数据把写工具投影为「不存在」，即使部署把
- * rawmaterial 开进 {@code app.mcp.protocol-modules}，tools/list 也只见 3 个读工具；
+ * rawmaterial 开进 {@code app.mcp.protocol-modules}，tools/list 也只见 4 个读工具；
  * 写工具只能经 Agent 面（allow_write 绑定）调用。
  *
  * <p>写纪律与 {@link McpWriteTools} 同款：idempotency_key 必填 + 幂等注册表重放 +
@@ -49,6 +49,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class McpRawMaterialTools {
 
     public static final String MODULE = "rawmaterial";
+
+    /** 上游物料档案里成品的固定分类值；成品与原料同表靠它分野。 */
+    private static final String FINISHED_GOODS_CATEGORY = "成品";
 
     private static final int MAX_QUERY_LENGTH = 100;
     private static final int MAX_LINES = 50;
@@ -89,6 +92,20 @@ public class McpRawMaterialTools {
                                 Map.of("keyword", stringProperty("物料名/编码模糊词，可选")),
                                 List.of()),
                         this::searchRawMaterialStock,
+                        MODULE),
+                new McpToolRegistry.SimpleTool(
+                        "search_finished_goods_stock",
+                        "查询自有仓成品库存实时结存（category=成品）：在库/可用/冻结公斤数"
+                                + "（decimal-string）、件数、批次数与最早到期日，可按成品名/编码关键词过滤。"
+                                + "默认只列在库成品；include_out_of_stock=true 时连零库存成品一并返回"
+                                + "（回答「还有没有货」时 0 也是答案）。京东仓库存不在此，见库存总览。",
+                        schema(
+                                Map.of(
+                                        "keyword", stringProperty("成品名/编码模糊词，可选"),
+                                        "include_out_of_stock", stringProperty(
+                                                "传 true 时包含零库存成品，默认 false 只列在库，可选")),
+                                List.of()),
+                        this::searchFinishedGoodsStock,
                         MODULE),
                 new McpToolRegistry.SimpleTool(
                         "list_raw_inbound_orders",
@@ -182,9 +199,24 @@ public class McpRawMaterialTools {
     // 读工具
     // ------------------------------------------------------------------
 
+    private JsonNode searchFinishedGoodsStock(McpRequestContext context, Map<String, Object> args) {
+        String keyword = optionalQuery(args, "keyword");
+        // 只认字面 true：拿不准就按默认「只列在库」，宁少给一行也不误报有货。
+        boolean includeOutOfStock = "true".equalsIgnoreCase(
+                String.valueOf(optionalQuery(args, "include_out_of_stock")));
+        List<YuanliaokcStockRow> rows =
+                callRead(() -> reads.stock(keyword, FINISHED_GOODS_CATEGORY, !includeOutOfStock));
+        return stockEnvelope(rows);
+    }
+
     private JsonNode searchRawMaterialStock(McpRequestContext context, Map<String, Object> args) {
         String keyword = optionalQuery(args, "keyword");
         List<YuanliaokcStockRow> rows = callRead(() -> reads.stock(keyword));
+        return stockEnvelope(rows);
+    }
+
+    /** 结存白名单投影：原料与成品同形，kg 一律 decimal-string。 */
+    private ObjectNode stockEnvelope(List<YuanliaokcStockRow> rows) {
         ObjectNode body = sourceEnvelope();
         ArrayNode items = body.putArray("items");
         for (YuanliaokcStockRow row : rows) {

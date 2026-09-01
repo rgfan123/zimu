@@ -35,14 +35,15 @@ import org.springframework.transaction.PlatformTransactionManager;
 /**
  * rawmaterial 模块的 MCP 工具注册与协议面隔离验收。
  *
- * <p>钉死三件事：模块声明 3 读 + 4 写；协议面开 rawmaterial 时 tools/list 只见 3 个读工具、
+ * <p>钉死三件事：模块声明 4 读 + 4 写；协议面开 rawmaterial 时 tools/list 只见 4 个读工具、
  * 写工具连名字都不可见（tools/call 一律 Unknown tool）；写工具只在 Agent 面按模块开关可绑定。
  * 另覆盖读写失败到稳定 business_code 的翻译与写载荷构造。
  */
 class McpRawMaterialToolsTest {
 
     private static final Set<String> READ_TOOLS = Set.of(
-            "search_raw_material_stock", "list_raw_inbound_orders", "list_raw_stock_transactions");
+            "search_raw_material_stock", "search_finished_goods_stock",
+            "list_raw_inbound_orders", "list_raw_stock_transactions");
     private static final Set<String> WRITE_TOOLS = Set.of(
             "create_raw_inbound_order",
             "approve_raw_inbound_order",
@@ -68,9 +69,9 @@ class McpRawMaterialToolsTest {
     // ------------------------------------------------------------------
 
     @Test
-    void declaresThreeReadAndFourWriteToolsAllInTheRawmaterialModule() {
+    void declaresFourReadAndFourWriteToolsAllInTheRawmaterialModule() {
         List<McpTool> tools = provider.tools();
-        assertThat(tools).hasSize(7);
+        assertThat(tools).hasSize(8);
         assertThat(tools).allSatisfy(tool -> {
             assertThat(tool.module()).isEqualTo(McpRawMaterialTools.MODULE);
             assertThat(tool.externallyDiscoverable()).isTrue();
@@ -133,6 +134,38 @@ class McpRawMaterialToolsTest {
     // ------------------------------------------------------------------
     // 读工具：白名单投影 + 稳定错误码
     // ------------------------------------------------------------------
+
+    @Test
+    void searchFinishedGoodsStockPinsCategoryAndDefaultsToInStockOnly() {
+        // 成品与原料同住一套物料档案，靠 category=成品 分野；上游过滤，不在本地筛。
+        when(reads.stock("肥牛", "成品", true)).thenReturn(List.of(new YuanliaokcStockRow(
+                61L, "CP20260901001", "精选肥牛卷（300克）", "成品", "300g×30盒/箱", "kg", 380L,
+                new BigDecimal("114.000"), new BigDecimal("114.000"), new BigDecimal("0.000"),
+                2L, "2027-03-20", "normal")));
+
+        JsonNode result = toolByName("search_finished_goods_stock")
+                .invoke(context(), Map.of("keyword", "肥牛"));
+
+        assertThat(result.path("source").asText()).isEqualTo("YUANLIAOKC");
+        JsonNode item = result.path("items").path(0);
+        assertThat(item.path("material_code").asText()).isEqualTo("CP20260901001");
+        assertThat(item.path("category").asText()).isEqualTo("成品");
+        assertThat(item.path("current_kg").asText()).isEqualTo("114");
+        assertThat(item.path("piece_count").asLong()).isEqualTo(380L);
+        assertThat(item.path("earliest_expiry").asText()).isEqualTo("2027-03-20");
+    }
+
+    @Test
+    void searchFinishedGoodsStockCanIncludeSoldOutRows() {
+        // 「还有没有货」的答案可能是 0——显式要全量时把 only_in_stock 交给上游关掉。
+        when(reads.stock(null, "成品", false)).thenReturn(List.of());
+
+        JsonNode result = toolByName("search_finished_goods_stock")
+                .invoke(context(), Map.of("include_out_of_stock", "true"));
+
+        assertThat(result.path("items").isArray()).isTrue();
+        assertThat(result.path("items")).isEmpty();
+    }
 
     @Test
     void searchStockProjectsWhitelistedFieldsWithDecimalStringKg() {

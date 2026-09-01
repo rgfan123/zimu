@@ -62,9 +62,18 @@ public class YuanliaokcReadClient implements YuanliaokcReadGateway {
 
     @Override
     public List<YuanliaokcStockRow> stock(String keyword) {
-        StringBuilder path = new StringBuilder("/api/stock?only_in_stock=true");
+        return stock(keyword, null, true);
+    }
+
+    @Override
+    public List<YuanliaokcStockRow> stock(String keyword, String category, boolean onlyInStock) {
+        StringBuilder path = new StringBuilder("/api/stock?only_in_stock=")
+                .append(onlyInStock ? "true" : "false");
         if (keyword != null && !keyword.isBlank()) {
             path.append("&keyword=").append(URLEncoder.encode(keyword.trim(), StandardCharsets.UTF_8));
+        }
+        if (category != null && !category.isBlank()) {
+            path.append("&category=").append(URLEncoder.encode(category.trim(), StandardCharsets.UTF_8));
         }
         return parseRows(authorizedGetJson(path.toString(), "结存"));
     }

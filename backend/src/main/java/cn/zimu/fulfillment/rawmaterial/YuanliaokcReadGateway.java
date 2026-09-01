@@ -14,6 +14,14 @@ public interface YuanliaokcReadGateway {
     List<YuanliaokcStockRow> stock(String keyword);
 
     /**
+     * 按物料分类取结存。成品与原料同住上游一套物料档案，靠 {@code category} 分野
+     * （成品固定 "成品"）；过滤交给上游，本地不筛，避免分页语义与上游漂移。
+     *
+     * @param onlyInStock false 时连零库存行一并返回——「还有没有货」的答案可能是 0
+     */
+    List<YuanliaokcStockRow> stock(String keyword, String category, boolean onlyInStock);
+
+    /**
      * 入库单列表（上游上限 200 行，按 id 倒序）。
      *
      * @param status 可选：上游 SimpleDocStatus 枚举值原样传
