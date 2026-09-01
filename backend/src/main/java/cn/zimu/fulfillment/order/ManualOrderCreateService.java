@@ -39,6 +39,9 @@ import org.springframework.transaction.annotation.Transactional;
  *       orders_settlement_consistency 中与万齐同款豁免）；</li>
  *   <li>来源单号服务端生成（MAN-&lt;幂等键摘要&gt;）：手工单没有外部单号，
  *       让运营编号只会造出撞号与脏数据。</li>
+ *   <li>来源渠道声明（origin_channel）只进来源单号前缀，**不进** orders.source_channel：
+ *       手打单冒名 ZHONGHUI/DAZHE 会撞 orders_check2（这些渠道必须挂导入批次），
+ *       也会把回传/对账管线引到不存在的平台单上。见 {@link #sourceRefFor}。</li>
  * </ul>
  */
 @Service
@@ -69,6 +72,7 @@ public class ManualOrderCreateService {
     @Transactional
     public IdempotentResult<OrderDetailDto> create(
             ManualOrderCreateWrite write, String idempotencyKey, CommandContext context) {
+        String originChannel = requireArchivalOrigin(write.originChannel());
         String requestedCode = write.customerCode() == null ? "" : write.customerCode().trim();
         Customer customer = requestedCode.isBlank()
                 ? ensurePlatformCustomer()
@@ -87,7 +91,7 @@ public class ManualOrderCreateService {
         }
         CanonicalOrderInput input = new CanonicalOrderInput(
                 SourceChannel.MANUAL,
-                sourceRefFor(idempotencyKey),
+                sourceRefFor(idempotencyKey, originChannel),
                 null,
                 new CustomerInput(
                         customer.getCustomerCode(),
@@ -187,18 +191,58 @@ public class ManualOrderCreateService {
     }
 
     /**
-     * 来源单号 = 幂等键的确定性投影（MAN-<sha256 前 12 位>）：同键重放产生逐字节相同的
-     * 载荷（幂等重放才成立），不同键天然不同号；随机号或掺时间都会让重放变 409。
+     * 可声明的存档来源渠道 = {@link SourceChannel} 全集除 MANUAL，按枚举声明序。
+     *
+     * <p>校验与各调用面（HTTP / MCP 工具 schema 描述）共用这一份，新接一个渠道自动生效——
+     * 手抄清单的失败模式是「新渠道能建单却不能声明来源」，而且没人会立刻发现。
      */
-    private static String sourceRefFor(String idempotencyKey) {
+    public static List<String> archivalOriginChannels() {
+        return java.util.Arrays.stream(SourceChannel.values())
+                .filter(channel -> channel != SourceChannel.MANUAL)
+                .map(SourceChannel::name)
+                .toList();
+    }
+
+    /** 来源声明校验：未知值与 MANUAL 一律 400；空缺省表示「就是柜台直录，无外部来源」。 */
+    private static String requireArchivalOrigin(String declared) {
+        if (declared == null || declared.isBlank()) {
+            return null;
+        }
+        String normalized = declared.trim().toUpperCase(java.util.Locale.ROOT);
+        SourceChannel parsed;
+        try {
+            parsed = SourceChannel.valueOf(normalized);
+        } catch (IllegalArgumentException ex) {
+            throw BusinessException.badRequest(
+                    "INVALID_PARAMETERS", "origin_channel 必须是已知来源渠道之一: " + archivalOriginChannels());
+        }
+        if (parsed == SourceChannel.MANUAL) {
+            throw BusinessException.badRequest(
+                    "INVALID_PARAMETERS", "origin_channel 不能是 MANUAL：手工单本身即 MANUAL 渠道，"
+                            + "该字段用于声明「这单原本来自哪里」");
+        }
+        return parsed.name();
+    }
+
+    /**
+     * 来源单号 = 幂等键的确定性投影：无来源声明时 MAN-&lt;sha256 前 12 位&gt;，有声明时
+     * MAN-&lt;ORIGIN&gt;-&lt;sha256 前 12 位&gt;（如 MAN-ZHONGHUI-AB12CD34EF56），存档可按前缀检索。
+     *
+     * <p>同键重放产生逐字节相同的载荷（幂等重放才成立），不同键天然不同号；随机号或掺时间
+     * 都会让重放变 409。来源声明同时进摘要输入，因此「同键不同来源」既是不同单号也是不同摘要，
+     * 不会被误当成同一次录入；无声明时摘要输入仍逐字节等于幂等键本身，存量单号形状不变。
+     */
+    private static String sourceRefFor(String idempotencyKey, String originChannel) {
+        String seed = originChannel == null ? idempotencyKey : originChannel + ":" + idempotencyKey;
+        String prefix = originChannel == null ? "MAN-" : "MAN-" + originChannel + "-";
         try {
             byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(idempotencyKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    .digest(seed.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             StringBuilder hex = new StringBuilder(12);
             for (int i = 0; i < 6; i++) {
                 hex.append(String.format("%02X", digest[i]));
             }
-            return "MAN-" + hex;
+            return prefix + hex;
         } catch (java.security.NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
