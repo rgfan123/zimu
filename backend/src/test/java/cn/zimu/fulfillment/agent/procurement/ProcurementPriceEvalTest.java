@@ -42,11 +42,11 @@ import org.junit.jupiter.api.Test;
 
 /**
  * 05 — 采购比价 Agent 评测集与端到端（agent-decision-layer 05；meta-agent-platform-impl 03
- * 数据驱动化）：本地 JDK HttpServer stub 覆盖固定评测集（procurement-eval-v2，用例真源在 DB
+ * 数据驱动化）：本地 JDK HttpServer stub 覆盖固定评测集（procurement-eval-v3，用例真源在 DB
  * {@code agent_eval_cases}，Testcontainers 加载）、工具调用序列端到端、白名单只含只读工具、
  * 写工具永不暴露。不依赖真实网络与真实密钥。
  *
- * <p>用例 input/expected 来自 DB 的 procurement-eval-v2；stub 模型固定输出覆盖正常比价、
+ * <p>用例 input/expected 来自 DB 的 procurement-eval-v3；stub 模型固定输出覆盖正常比价、
  * 无候选、缺价格、低置信度、schema 负例、camelCase 兼容，以及不可比候选剔除五类场景。
  * 合法用例必须全部解析，负例稳定拒绝为 AGENT_OUTPUT_INVALID，所有人工门禁保持满召回。
  */
@@ -149,7 +149,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
     }
 
     // ------------------------------------------------------------------
-    // 固定评测集（procurement-eval-v2：用例真源 DB + stub 输出 AgentEvalStubData）
+    // 固定评测集（procurement-eval-v3：用例真源 DB + stub 输出 AgentEvalStubData）
     // ------------------------------------------------------------------
 
     @Test
@@ -209,7 +209,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
 
     @Test
     void happyPathOutputKeepsPricesAtScaleTwoAndEchoesInput() {
-        AgentEvalScorer.AgentEvalCase happyPath = caseByInput("{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}");
+        AgentEvalScorer.AgentEvalCase happyPath = caseByInput("{\"procurement_ticket_id\":\"9001\",\"quantity\":2}");
         hits.set(0);
         requestBodies.clear();
         invokedTools.clear();
@@ -221,10 +221,10 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
         ProcurementPriceRecommendation recommendation = result.recommendation();
         assertThat(recommendation.requiresHuman()).isFalse();
         assertThat(recommendation.targetSku()).isEqualTo("SKU-1001");
-        assertThat(recommendation.requestedQuantity()).isEqualTo("2");
+        assertThat(recommendation.requestedQuantity()).isEqualTo(2);
         assertThat(recommendation.inventory()).isNotNull();
-        assertThat(recommendation.inventory().available()).isEqualTo("0");
-        assertThat(recommendation.inventory().shortage()).isEqualTo("2");
+        assertThat(recommendation.inventory().available()).isZero();
+        assertThat(recommendation.inventory().shortage()).isEqualTo(2);
         assertThat(recommendation.candidates()).hasSize(2);
         assertThat(recommendation.candidates())
                 .allSatisfy(candidate -> assertThat(candidate.price()).matches(PRICE_SCALE2));
@@ -339,7 +339,7 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
         // 评审修复（T03）：fixture 时代两例同 input 仅输出形态不同；数据化后 stub 按 input 只返回
         // snake_case，camelCase 解析兼容需显式覆盖（LangChain4j 按 Java 字段名引导模型输出 camelCase）。
         String camelCaseOutput = "{\"targetSku\":\"SKU-1001\",\"requestedQuantity\":null,"
-                + "\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},"
+                + "\"inventory\":{\"available\":5,\"shortage\":0},"
                 + "\"candidates\":[{\"providerCode\":\"P003\",\"price\":\"8.50\","
                 + "\"priceBasis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"}],"
                 + "\"recommendation\":{\"providerCode\":\"P003\",\"reason\":\"唯一候选\"},"
@@ -373,11 +373,11 @@ class ProcurementPriceEvalTest extends AgentTestcontainersBase {
                 Step.toolCall("list_provider_skus", "{\"provider_id\":\"1\"}"),
                 Step.toolCall("get_inventory_overview", "{\"sku_id\":\"1001\"}"),
                 Step.finalAnswer(AgentEvalStubData.procurementModelOutput(
-                        "{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}")));
+                        "{\"procurement_ticket_id\":\"9001\",\"quantity\":2}")));
         ProcurementPriceAgent agent = agent(properties());
 
         ProcurementPriceRunResult result = agent.compare(
-                "{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}", null);
+                "{\"procurement_ticket_id\":\"9001\",\"quantity\":2}", null);
 
         assertThat(result.error()).isNull();
         assertThat(result.recommendation().requiresHuman()).isFalse();

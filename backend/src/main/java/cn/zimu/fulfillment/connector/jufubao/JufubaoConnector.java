@@ -19,7 +19,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
@@ -176,7 +175,7 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
             JufubaoShipmentGateway.AddressCheck address = shipmentGateway.checkShipmentAddress(subOrderId);
             JufubaoShipmentGateway.ShipmentDetail detail = shipmentGateway.shipmentDetail(subOrderId);
             List<ObjectNode> products = sanitizedProducts(detail);
-            BigDecimal sendable = totalAllowedQuantity(products);
+            long sendable = totalAllowedQuantity(products);
             JufubaoShipmentGateway.CarrierOption mappedCarrier = isBlank(result.carrierOutputValue())
                     ? null : carrier(result.carrierOutputValue());
             boolean carrierMapped = mappedCarrier != null;
@@ -372,7 +371,7 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
             if (products.isEmpty()) {
                 return SourceSyncResult.failed("JUFUBAO_SHIPMENT_DETAIL_INVALID", "聚福宝发货详情缺少可发商品");
             }
-            BigDecimal allowedQuantity;
+            long allowedQuantity;
             try {
                 allowedQuantity = totalAllowedQuantity(products);
             } catch (IllegalArgumentException exception) {
@@ -380,7 +379,7 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                         "JUFUBAO_SHIPMENT_DETAIL_INVALID",
                         "聚福宝发货详情的可发数量缺失或非正整数");
             }
-            if (allowedQuantity.compareTo(result.sourceUnitQuantity()) != 0) {
+            if (allowedQuantity != result.sourceUnitQuantity()) {
                 return SourceSyncResult.failed(
                         "JUFUBAO_SHIPMENT_QUANTITY_MISMATCH",
                         "聚福宝来源平台发货份数与可发数量不一致，未提交物流");
@@ -408,7 +407,7 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                         "JUFUBAO_SHIPMENT_DETAIL_INVALID",
                         "聚福宝提交前最新可发数量缺失或非正整数");
             }
-            if (products.isEmpty() || allowedQuantity.compareTo(result.sourceUnitQuantity()) != 0) {
+            if (products.isEmpty() || allowedQuantity != result.sourceUnitQuantity()) {
                 return SourceSyncResult.failed(
                         "JUFUBAO_SHIPMENT_QUANTITY_MISMATCH",
                         "聚福宝提交前最新可发数量已变化，未提交物流");
@@ -475,14 +474,10 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
         if (isBlank(result.sourceLineRef())) {
             return SourceSyncResult.failed("JUFUBAO_SUB_ORDER_REQUIRED", "聚福宝拆单号不能为空");
         }
-        if (result.actualShippedQuantity() == null
-                || result.actualShippedQuantity().stripTrailingZeros().scale() > 0
-                || result.actualShippedQuantity().signum() <= 0) {
+        if (result.actualShippedQuantity() <= 0) {
             return SourceSyncResult.failed("JUFUBAO_QUANTITY_INVALID", "聚福宝实发数量必须为正整数");
         }
-        if (result.sourceUnitQuantity() == null
-                || result.sourceUnitQuantity().stripTrailingZeros().scale() > 0
-                || result.sourceUnitQuantity().signum() <= 0) {
+        if (result.sourceUnitQuantity() == null || result.sourceUnitQuantity() <= 0) {
             return SourceSyncResult.failed(
                     "JUFUBAO_SOURCE_QUANTITY_INVALID",
                     "聚福宝来源平台发货份数必须为正整数");
@@ -529,24 +524,21 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
         return List.copyOf(products);
     }
 
-    private BigDecimal allowedQuantity(ObjectNode product) {
+    private int allowedQuantity(ObjectNode product) {
         JsonNode value = product.path("allow_send_num");
-        BigDecimal quantity;
         try {
-            quantity = value.isNumber() ? value.decimalValue() : new BigDecimal(value.asText());
-        } catch (RuntimeException exception) {
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromPositiveFileValue(value.asText());
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
             throw new IllegalArgumentException("invalid allow_send_num", exception);
         }
-        if (quantity.signum() <= 0 || quantity.stripTrailingZeros().scale() > 0) {
-            throw new IllegalArgumentException("invalid allow_send_num");
-        }
-        return quantity;
     }
 
-    private BigDecimal totalAllowedQuantity(List<ObjectNode> products) {
-        return products.stream()
-                .map(this::allowedQuantity)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    private long totalAllowedQuantity(List<ObjectNode> products) {
+        long total = 0;
+        for (ObjectNode product : products) {
+            total = Math.addExact(total, allowedQuantity(product));
+        }
+        return total;
     }
 
     private boolean sameReceiver(
@@ -571,7 +563,7 @@ public class JufubaoConnector extends AbstractHttpPullConnector {
                     submission.set(field, product.get(field).deepCopy());
                 }
             }
-            submission.put("send_num", allowedQuantity(product).toPlainString());
+            submission.put("send_num", Integer.toString(allowedQuantity(product)));
             submissions.add(submission);
         }
         return List.copyOf(submissions);

@@ -82,7 +82,7 @@ public class ProviderTrackingDraft extends AuditableEntity {
     private ShipmentJudgment shipmentJudgment = ShipmentJudgment.FULL;
 
     @Column(name = "actual_quantity")
-    private Integer actualQuantity;
+    private Long actualQuantity;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "validation_issues", nullable = false)
@@ -194,11 +194,11 @@ public class ProviderTrackingDraft extends AuditableEntity {
         this.shipmentJudgment = shipmentJudgment;
     }
 
-    public Integer getActualQuantity() {
+    public Long getActualQuantity() {
         return actualQuantity;
     }
 
-    public void setActualQuantity(Integer actualQuantity) {
+    public void setActualQuantity(Long actualQuantity) {
         this.actualQuantity = actualQuantity;
     }
 

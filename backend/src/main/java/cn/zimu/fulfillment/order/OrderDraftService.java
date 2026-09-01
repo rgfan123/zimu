@@ -42,7 +42,6 @@ import cn.zimu.fulfillment.sku.SkuFulfillmentReadinessService;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -244,7 +243,7 @@ public class OrderDraftService {
         for (OrderDraftLine draftLine : draftLines) {
             ConfirmOrderDraftCommand.ConfirmItem confirmedItem = confirmedItems.get(draftLine.getLineNo());
             draftLine.setSkuId(WriteCommands.parseIdentifier(confirmedItem.skuId()));
-            draftLine.setQuantity(Integer.valueOf(confirmedItem.quantity()));
+            draftLine.setQuantity(confirmedItem.quantity());
         }
         this.draftLines.saveAll(draftLines);
         drafts.save(draft);
@@ -365,7 +364,7 @@ public class OrderDraftService {
                         "DRAFT_LINE_NOT_FOUND", "补充命令引用了不存在的草稿行: " + supplement.lineNo());
             }
             if (supplement.quantity() != null) {
-                line.setQuantity(Integer.valueOf(supplement.quantity()));
+                line.setQuantity(supplement.quantity());
             }
             if (supplement.skuId() != null) {
                 String skuId = supplement.skuId();
@@ -577,7 +576,7 @@ public class OrderDraftService {
             if (isBlank(item.skuId())) {
                 missing.add("line_" + line.getLineNo() + "_sku");
             }
-            if (isBlank(item.quantity()) || !isPositiveQuantity(item.quantity())) {
+            if (item.quantity() == null || item.quantity() <= 0) {
                 missing.add("line_" + line.getLineNo() + "_quantity");
             }
         }
@@ -737,10 +736,6 @@ public class OrderDraftService {
 
     private static long parseId(String value) {
         return WriteCommands.parseIdentifier(value);
-    }
-
-    private static boolean isPositiveQuantity(String value) {
-        return value.matches("^(?!0(?:\\.0{1,3})?$)(0|[1-9][0-9]*)(\\.[0-9]{1,3})?$");
     }
 
     private static boolean isBlank(String value) {

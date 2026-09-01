@@ -1,7 +1,6 @@
 package cn.zimu.fulfillment.inventory;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
-import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -113,9 +112,9 @@ public class InventoryDetailsService {
         long ageSeconds = Math.max(0, queryTime.getEpochSecond() - row.observedAt().getEpochSecond());
         return new InventoryDetailObservation(
                 "OBSERVED",
-                decimal(row.totalQuantity()),
-                decimal(row.availableQuantity()),
-                decimal(row.totalQuantity().subtract(row.availableQuantity())),
+                row.totalQuantity(),
+                row.availableQuantity(),
+                row.totalQuantity() - row.availableQuantity(),
                 knownQuantityUnit(row.quantityUnit()),
                 row.observedAt(),
                 ageSeconds,
@@ -191,8 +190,8 @@ public class InventoryDetailsService {
                 resultSet.getString("unit"),
                 resultSet.getString("provider_sku_code"),
                 resultSet.getString("warehouse_code"),
-                resultSet.getBigDecimal("stock_num"),
-                resultSet.getBigDecimal("usable_num"),
+                resultSet.getInt("stock_num"),
+                resultSet.getInt("usable_num"),
                 resultSet.getString("quantity_unit"),
                 resultSet.getString("source_type"),
                 instant(resultSet, "synced_at"));
@@ -222,10 +221,6 @@ public class InventoryDetailsService {
         return "REAL".equals(normalized) || "MOCK".equals(normalized) ? normalized : "UNKNOWN";
     }
 
-    private static String decimal(BigDecimal value) {
-        return value == null ? null : value.toPlainString();
-    }
-
     private static String id(long value) {
         return String.valueOf(value);
     }
@@ -242,8 +237,8 @@ public class InventoryDetailsService {
             String unit,
             String providerSkuCode,
             String warehouseCode,
-            BigDecimal totalQuantity,
-            BigDecimal availableQuantity,
+            int totalQuantity,
+            int availableQuantity,
             String quantityUnit,
             String sourceType,
             Instant observedAt) {}

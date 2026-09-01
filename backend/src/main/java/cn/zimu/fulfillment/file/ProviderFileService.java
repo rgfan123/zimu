@@ -16,7 +16,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -302,8 +301,8 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                         resultSet.getString("unit_snapshot"),
                         resultSet.getLong("fulfillment_id"),
                         null,
-                        resultSet.getBigDecimal("fulfillment_quantity"),
-                        resultSet.getBigDecimal("requested_quantity"),
+                        resultSet.getInt("fulfillment_quantity"),
+                        resultSet.getInt("requested_quantity"),
                         resultSet.getLong("provider_id"),
                         resultSet.getString("provider_code"),
                         resultSet.getString("provider_name"),
@@ -524,7 +523,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
     @Transactional
     @Override
     public ContinuationExportGenerator.ContinuationExport generateContinuation(
-            long fulfillmentId, BigDecimal instructedQuantity, String remark, String operator) {
+            long fulfillmentId, int instructedQuantity, String remark, String operator) {
         exportReadiness.requireFulfillmentReady(fulfillmentId);
         ExportRow source = continuationRow(fulfillmentId, instructedQuantity, remark);
         ShipmentPlan shipment = createShipment(source);
@@ -804,7 +803,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         }
         cells.put("*京东商品编号", source.providerSkuCode());
         cells.put("*商品金额", 0);
-        cells.put("*商品的出库数量", source.requestedQuantity().intValueExact());
+        cells.put("*商品的出库数量", source.requestedQuantity());
         cells.put("仓配产品", "LL-HD-M");
         return cells;
     }
@@ -849,7 +848,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
     }
 
     private boolean jdQuantityIsPositiveInteger(ExportRow row) {
-        return row.requestedQuantity().signum() > 0 && row.requestedQuantity().stripTrailingZeros().scale() <= 0;
+        return row.requestedQuantity() > 0;
     }
 
     private void markJdQuantityReview(long sourceBatchId, ExportRow row) {
@@ -860,11 +859,11 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         // 全部为确定性快照与固定文案，不读取任何敏感字段。
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("reject_reason", "京东出库数量必须为正整数");
-        detail.put("source_quantity", toPlainString(lineFacts.get("source_quantity_snapshot")));
+        detail.put("source_quantity", countValue(lineFacts.get("source_quantity_snapshot")));
         detail.put("source_unit", row.unit());
-        detail.put("quantity_multiplier", toPlainString(lineFacts.get("mapping_multiplier_snapshot")));
-        detail.put("converted_quantity", row.requestedQuantity().toPlainString());
-        detail.put("requested_quantity", row.requestedQuantity().toPlainString());
+        detail.put("quantity_multiplier", countValue(lineFacts.get("mapping_multiplier_snapshot")));
+        detail.put("converted_quantity", row.requestedQuantity());
+        detail.put("requested_quantity", row.requestedQuantity());
         detail.put("provider_code", row.providerCode());
         jdbc.update(
                 """
@@ -893,8 +892,8 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 json(detail));
     }
 
-    private static String toPlainString(Object value) {
-        return value instanceof BigDecimal decimal ? decimal.toPlainString() : null;
+    private static Integer countValue(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
     }
 
     private ShipmentPlan createShipment(ExportRow row) {
@@ -924,7 +923,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 "SELECT shipment_sequence FROM app.shipments WHERE id=?", Integer.class, shipmentId);
     }
 
-    private ExportRow continuationRow(long fulfillmentId, BigDecimal instructedQuantity, String continuationRemark) {
+    private ExportRow continuationRow(long fulfillmentId, int instructedQuantity, String continuationRemark) {
         List<ExportRow> rows = jdbc.query(
                 """
                 SELECT rir.id raw_row_id, o.id order_id, o.order_no,
@@ -1058,8 +1057,8 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                         resultSet.getString("specification_snapshot"), resultSet.getString("unit_snapshot"),
                         resultSet.getLong("fulfillment_id"),
                         (Long) resultSet.getObject("order_line_component_id"),
-                        resultSet.getBigDecimal("fulfillment_quantity"),
-                        resultSet.getBigDecimal("requested_quantity"),
+                        resultSet.getInt("fulfillment_quantity"),
+                        resultSet.getInt("requested_quantity"),
                         resultSet.getLong("provider_id"), resultSet.getString("provider_code"),
                         resultSet.getString("provider_name"), resultSet.getString("provider_type"),
                         resultSet.getInt("tracking_sla_minutes"), resultSet.getString("sku_code"),
@@ -1084,7 +1083,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 xlsxRow.createCell(2).setCellValue(text(cells.get("电话")));
                 xlsxRow.createCell(3).setCellValue(text(cells.get("地址")));
                 xlsxRow.createCell(4).setCellValue(text(cells.get("品名")));
-                xlsxRow.createCell(5).setCellValue(text(cells.get("请求发货数量")));
+                xlsxRow.createCell(5).setCellValue(((Number) cells.get("请求发货数量")).intValue());
                 // 运单号 / 快递公司 留空：这两格就是发这份清单出去的目的
             }
             int[] widths = {18, 14, 16, 42, 38, 8, 20, 14};
@@ -1141,7 +1140,11 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                 Map<String, Object> cells = outputCells(batchNo, row);
                 for (int index = 0; index < THIRD_PARTY_HEADERS.size(); index++) {
                     Object value = cells.get(THIRD_PARTY_HEADERS.get(index));
-                    xlsxRow.createCell(index).setCellValue(value == null ? "" : value.toString());
+                    if ("请求发货数量".equals(THIRD_PARTY_HEADERS.get(index))) {
+                        xlsxRow.createCell(index).setCellValue(((Number) value).intValue());
+                    } else {
+                        xlsxRow.createCell(index).setCellValue(value == null ? "" : value.toString());
+                    }
                 }
             }
             workbook.write(output);
@@ -1175,7 +1178,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
         cells.put("品名", source.productName());
         cells.put("规格", source.specification());
         cells.put("单位", source.unit());
-        cells.put("请求发货数量", source.requestedQuantity().toPlainString());
+        cells.put("请求发货数量", source.requestedQuantity());
         return cells;
     }
 
@@ -1304,7 +1307,7 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
                     if (providerSkuCodeScope != null) {
                         row.put("provider_sku_code_scope", providerSkuCodeScope);
                     }
-                    row.put("instructed_quantity", resultSet.getBigDecimal("instructed_quantity").toPlainString());
+                    row.put("instructed_quantity", resultSet.getInt("instructed_quantity"));
                     row.put("unit", resultSet.getString("unit_snapshot"));
                     row.put("item_amount", resultSet.getBigDecimal("item_amount") == null
                             ? null : resultSet.getBigDecimal("item_amount").toPlainString());
@@ -1408,8 +1411,8 @@ public class ProviderFileService implements ContinuationExportGenerator, ReadySo
             Instant orderedAt, String remark,
             String receiverName, String receiverPhone, String receiverAddress,
             long orderLineId, int lineNo, String productName, String specification, String unit,
-            long fulfillmentId, Long orderLineComponentId, BigDecimal fulfillmentQuantity,
-            BigDecimal requestedQuantity, long providerId, String providerCode,
+            long fulfillmentId, Long orderLineComponentId, int fulfillmentQuantity,
+            int requestedQuantity, long providerId, String providerCode,
             String providerName, String providerType, int trackingSlaMinutes, String skuCode,
             String providerSkuCode) {}
 }

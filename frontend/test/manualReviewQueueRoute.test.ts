@@ -110,6 +110,86 @@ test('复核主队列支持行选择，运营提醒队列不传选择能力时�
   );
 });
 
+test('#204 SKU 复核保留小数原值并拒绝提交，只发送正整数 JSON number', async () => {
+  const item = {
+    ...reviewCaseFixture('1', {
+      reasonCode: 'SKU_MAPPING_REQUIRED',
+      team: 'SKU_OPS',
+      detail: {
+        source_channel: 'WECOM',
+        missing_source_sku_refs: ['WECOM-SKU-9'],
+      },
+    }),
+    allowed_actions: [],
+  };
+  let open = true;
+  const writes: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    if (url.startsWith('/api/v1/review-cases?') && method === 'GET') {
+      return jsonResponse(page(open ? [item] : []));
+    }
+    if (url.startsWith('/api/v1/skus?') && method === 'GET') {
+      return jsonResponse(page([{
+        id: '7',
+        code: 'SKU-7',
+        name: '羊棒骨',
+        active: true,
+        version: 0,
+        attributes: {},
+      }], 50));
+    }
+    if (url === '/api/v1/review-cases/1/resolve-sku' && method === 'POST') {
+      writes.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      open = false;
+      return jsonResponse({ ...item, status: 'RESOLVED' });
+    }
+    if (url === '/api/v1/business-modules' && method === 'GET') {
+      return jsonResponse({ modules: [] });
+    }
+    throw new Error(`unexpected request: ${method} ${url}`);
+  };
+
+  await harness.mount(['/workbench/reviews?status=OPEN']);
+  await harness.waitFor(() => assert.match(harness.bodyText(), /RC-FIXTURE-1/));
+  await harness.dispatchEvent(control('查看处理'), new MouseEvent('click', { bubbles: true }));
+  await harness.waitFor(() => assert.match(harness.bodyText(), /复核事项 RC-FIXTURE-1/));
+
+  const skuSelector = document.querySelector<HTMLElement>('.ant-drawer .ant-select-selector');
+  assert.ok(skuSelector, '缺少 SKU 主数据选择器');
+  await harness.dispatchEvent(skuSelector, new MouseEvent('mousedown', { bubbles: true }));
+  await harness.waitFor(() => assert.ok(
+    [...document.querySelectorAll<HTMLElement>('.ant-select-item-option-content')]
+      .some((candidate) => candidate.textContent?.includes('羊棒骨')),
+  ));
+  const skuOption = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option-content')]
+    .find((candidate) => candidate.textContent?.includes('羊棒骨'));
+  assert.ok(skuOption);
+  await harness.dispatchEvent(skuOption, new MouseEvent('click', { bubbles: true }));
+
+  const multiplierInput = document.querySelector<HTMLInputElement>('.ant-drawer input.ant-input-number-input');
+  assert.ok(multiplierInput, '缺少数量换算输入框');
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+  assert.ok(setter, '缺少原生 input value setter');
+  setter.call(multiplierInput, '3.5');
+  await harness.dispatchEvent(multiplierInput, new Event('input', { bubbles: true }));
+  await harness.dispatchEvent(multiplierInput, new Event('change', { bubbles: true }));
+  await harness.dispatchEvent(control('确认并解决'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.match(harness.bodyText(), /1 至 2147483647 的整数/));
+  assert.equal(writes.length, 0, '小数不得产生写请求');
+
+  setter.call(multiplierInput, '3');
+  await harness.dispatchEvent(multiplierInput, new Event('input', { bubbles: true }));
+  await harness.dispatchEvent(multiplierInput, new Event('change', { bubbles: true }));
+  await harness.dispatchEvent(control('确认并解决'), new MouseEvent('click', { bubbles: true }));
+
+  await harness.waitFor(() => assert.equal(writes.length, 1));
+  assert.equal(writes[0].quantity_multiplier, 3);
+  assert.equal(typeof writes[0].quantity_multiplier, 'number');
+});
+
 test('跨事项类型混选时禁用批量动作并明确说明同类限制', async () => {
   const rows = [
     batchReviewCase('1', 'SYNC_FAILED'),

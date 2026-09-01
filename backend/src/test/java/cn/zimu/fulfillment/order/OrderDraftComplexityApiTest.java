@@ -123,7 +123,7 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", Map.of("name", "张三"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿", "2")))));
+                "items", List.of(item("子牧羊小腿", 2)))));
         String messageId = "MSG-TICKET-06-INCOMPLETE-01";
         postMessage(messageId, 101, null);
 
@@ -171,9 +171,9 @@ class OrderDraftComplexityApiTest {
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
                 "items", List.of(
-                        item("子牧羊小腿", "2"),
-                        item("子牧羊小腿", "1"),
-                        item("子牧羊小腿", "3")))));
+                        item("子牧羊小腿", 2),
+                        item("子牧羊小腿", 1),
+                        item("子牧羊小腿", 3)))));
         String messageId = "MSG-TICKET-06-MULTI-LINE-01";
         postMessage(messageId, 103, null);
 
@@ -195,13 +195,13 @@ class OrderDraftComplexityApiTest {
                 "settlement_method", "MONTHLY",
                 "items", List.of(
                         withReceiver(
-                                item("子牧羊小腿", "2"),
+                                item("子牧羊小腿", 2),
                                 receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号")),
                         withReceiver(
-                                item("子牧羊小腿", "1"),
+                                item("子牧羊小腿", 1),
                                 receiverOf("李四", "13900000000", "北京市朝阳区测试街 2 号")),
                         withReceiver(
-                                item("子牧羊小腿", "1"),
+                                item("子牧羊小腿", 1),
                                 receiverOf("李四", "13900000000", "北京市朝阳区测试街 2 号"))))));
         String messageId = "MSG-TICKET-06-MULTI-RECEIVER-01";
         postMessage(messageId, 104, null);
@@ -237,8 +237,8 @@ class OrderDraftComplexityApiTest {
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
                 "items", List.of(
-                        withReceiver(item("子牧羊小腿", "2"), receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号")),
-                        withReceiver(item("子牧羊小腿", "1"), receiverOf("李四", "13900000000", "北京市朝阳区测试街 2 号"))))));
+                        withReceiver(item("子牧羊小腿", 2), receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号")),
+                        withReceiver(item("子牧羊小腿", 1), receiverOf("李四", "13900000000", "北京市朝阳区测试街 2 号"))))));
         String messageId = "MSG-TICKET-06-SEQ-01";
         postMessage(messageId, 105, null);
 
@@ -263,7 +263,7 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿", "2")))));
+                "items", List.of(item("子牧羊小腿", 2)))));
         String firstMessageId = "MSG-TICKET-06-APPEND-FIRST-01";
         postMessage(firstMessageId, 106, null);
         Map<String, Object> original = awaitSingleDraft(firstMessageId);
@@ -275,7 +275,7 @@ class OrderDraftComplexityApiTest {
                 "draft_no", draftNo,
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿", "3"), item("子牧羊小腿", "1")))));
+                "items", List.of(item("子牧羊小腿", 3), item("子牧羊小腿", 1)))));
         String secondMessageId = "MSG-TICKET-06-APPEND-SECOND-01";
         postMessage(secondMessageId, 107, null);
 
@@ -314,7 +314,7 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿", "2")))));
+                "items", List.of(item("子牧羊小腿", 2)))));
         String firstMessageId = "MSG-TICKET-06-DUP-FIRST-01";
         postMessage(firstMessageId, 108, null);
         Map<String, Object> first = awaitSingleDraft(firstMessageId);
@@ -324,7 +324,7 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿", "2")))));
+                "items", List.of(item("子牧羊小腿", 2)))));
         String secondMessageId = "MSG-TICKET-06-DUP-SECOND-01";
         postMessage(secondMessageId, 109, quote("text", "要两盒子牧羊小腿"));
 
@@ -343,7 +343,7 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号 \n"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿  ", "2")))));
+                "items", List.of(item("子牧羊小腿  ", 2)))));
         String thirdMessageId = "MSG-TICKET-06-DUP-THIRD-01";
         postMessage(thirdMessageId, 110, null);
 
@@ -361,7 +361,7 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿", "2")))));
+                "items", List.of(item("子牧羊小腿", 2)))));
         String parentMessageId = "MSG-TICKET-06-PARENT-01";
         postMessage(parentMessageId, 111, null);
         Map<String, Object> parent = awaitSingleDraft(parentMessageId);
@@ -370,7 +370,7 @@ class OrderDraftComplexityApiTest {
                 "parent_message_id", parentMessageId,
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿", "4")))));
+                "items", List.of(item("子牧羊小腿", 4)))));
         String childMessageId = "MSG-TICKET-06-PARENT-CHILD-01";
         postMessage(childMessageId, 112, null);
 
@@ -388,7 +388,7 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿", "2")))));
+                "items", List.of(item("子牧羊小腿", 2)))));
         String messageId = "MSG-TICKET-06-FORGED-01";
         postMessage(messageId, 113, null);
         Map<String, Object> original = awaitSingleDraft(messageId);
@@ -397,7 +397,7 @@ class OrderDraftComplexityApiTest {
                 "draft_no", "OD-FORGED-MUST-NOT-APPEND",
                 "receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"),
                 "settlement_method", "MONTHLY",
-                "items", List.of(item("子牧羊小腿", "5")))));
+                "items", List.of(item("子牧羊小腿", 5)))));
         String forgedMessageId = "MSG-TICKET-06-FORGED-02";
         postMessage(forgedMessageId, 114, null);
 
@@ -415,7 +415,7 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", Map.of("name", "张三"),
                 "settlement_method", " ",
-                "items", List.of(item("子牧羊小腿", "2")))));
+                "items", List.of(item("子牧羊小腿", 2)))));
         String messageId = "MSG-TICKET-06-SUPPLEMENT-01";
         postMessage(messageId, 115, null);
         Map<String, Object> draft = awaitSingleDraft(messageId);
@@ -433,7 +433,7 @@ class OrderDraftComplexityApiTest {
                 "phone", "13800000000",
                 "address", "上海市浦东新区测试路 1 号"));
         command.put("settlement_method", "MONTHLY");
-        command.put("items", List.of(Map.of("line_no", 1, "quantity", "6")));
+        command.put("items", List.of(Map.of("line_no", 1, "quantity", 6)));
 
         ResponseEntity<Map> response = postCommand(
                 "/api/v1/order-drafts/" + draft.get("id") + "/supplement",
@@ -486,7 +486,7 @@ class OrderDraftComplexityApiTest {
                 .getFirst()
                 .get("sku_id")
                 .toString();
-        confirmCommand.put("items", List.of(Map.of("line_no", 1, "sku_id", skuId, "quantity", "6")));
+        confirmCommand.put("items", List.of(Map.of("line_no", 1, "sku_id", skuId, "quantity", 6)));
         ResponseEntity<Map> confirmed = postCommand(
                 "/api/v1/order-drafts/" + draft.get("id") + "/confirm",
                 confirmCommand,
@@ -504,14 +504,14 @@ class OrderDraftComplexityApiTest {
         InterpreterControl.queue(orderResult(Map.of(
                 "receiver", Map.of("name", "张三"),
                 "settlement_method", " ",
-                "items", List.of(item("子牧羊小腿", "2")))));
+                "items", List.of(item("子牧羊小腿", 2)))));
         String messageId = "MSG-TICKET-06-SUPPLEMENT-02";
         postMessage(messageId, 116, null);
         Map<String, Object> draft = awaitSingleDraft(messageId);
 
         Map<String, Object> unknownLine = new LinkedHashMap<>();
         unknownLine.put("expected_revision", draft.get("revision"));
-        unknownLine.put("items", List.of(Map.of("line_no", 99, "quantity", "1")));
+        unknownLine.put("items", List.of(Map.of("line_no", 99, "quantity", 1)));
         ResponseEntity<Map> unknown = postCommand(
                 "/api/v1/order-drafts/" + draft.get("id") + "/supplement",
                 unknownLine,
@@ -542,10 +542,10 @@ class OrderDraftComplexityApiTest {
                 "settlement_method", "MONTHLY",
                 "items", List.of(
                         withReceiver(
-                                item("子牧羊小腿", "2"),
+                                item("子牧羊小腿", 2),
                                 receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号")),
                         withReceiver(
-                                item("子牧羊小腿", "1"),
+                                item("子牧羊小腿", 1),
                                 receiverOf("李四", "13900000000", "北京市朝阳区测试街 2 号"))))));
         String messageId = "MSG-TICKET-06-INDEPENDENT-01";
         postMessage(messageId, 117, null);
@@ -615,7 +615,7 @@ class OrderDraftComplexityApiTest {
         output.put("receiver", receiverOf("张三", "13800000000", "上海市浦东新区测试路 1 号"));
         output.put("settlement_method", "MONTHLY");
         output.put("settlement_time", "2026-08-31T16:00:00Z");
-        output.put("items", List.of(item("子牧羊小腿", "2")));
+        output.put("items", List.of(item("子牧羊小腿", 2)));
         output.putAll(overrides);
         return new InterpretationResult(
                 MessageIntent.CUSTOMER_ORDER,
@@ -634,7 +634,7 @@ class OrderDraftComplexityApiTest {
         return receiver;
     }
 
-    private static Map<String, Object> item(String product, String quantity) {
+    private static Map<String, Object> item(String product, int quantity) {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("product", product);
         item.put("spec", "500g/盒");

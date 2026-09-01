@@ -119,9 +119,9 @@ class AgentReadEndpointsApiTest {
         assertThat(draft.get("current_version")).isNull();
         assertThat(((Number) draft.get("draft_count")).longValue()).isEqualTo(1);
 
-        // V45 激活采购 Agent v2；列表必须返回当前 active 版本。
+        // V105 激活整数计数契约的采购 Agent v3；列表必须返回当前 active 版本。
         Map<String, Object> procurement = itemBySlug(items, "procurement-price-agent");
-        assertThat(procurement).containsEntry("state", "RUNNING").containsEntry("current_version", 2);
+        assertThat(procurement).containsEntry("state", "RUNNING").containsEntry("current_version", 3);
     }
 
     @Test
@@ -171,14 +171,14 @@ class AgentReadEndpointsApiTest {
         Map<String, Object> body = response.getBody();
         assertThat(body).containsEntry("slug", "procurement-price-agent")
                 .containsEntry("name", "采购比价 Agent")
-                .containsEntry("prompt_version", "procurement-price-v2")
+                .containsEntry("prompt_version", "procurement-price-v3")
                 .containsEntry("model_ref", "app.agent")
-                .containsEntry("version", 2)
+                .containsEntry("version", 3)
                 .containsEntry("status", "ACTIVE")
                 .containsEntry("enabled", true)
                 .containsEntry("allow_write", false)
                 .containsEntry("input_format", "STRUCTURED_JSON")
-                .containsEntry("activated_by", "system:v45-seed");
+                .containsEntry("activated_by", "system:v105-count-contract");
         assertThat((String) body.get("system_prompt")).isNotBlank();
         assertThat(body.get("activated_at")).isNotNull();
         assertThat(body.get("output_schema")).isInstanceOf(Map.class);

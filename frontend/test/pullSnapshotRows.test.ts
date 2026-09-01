@@ -71,7 +71,7 @@ function order(overrides: Partial<SnapshotOrderSource> = {}): SnapshotOrderSourc
     lines: [{
       id: '6',
       product_name: '乔府大院金饭碗五常大米5kg',
-      specification: '5kg/袋', unit: '袋', requested_quantity: '1',
+      specification: '5kg/袋', unit: '袋', requested_quantity: 1,
     }],
     ...overrides,
   };
@@ -109,6 +109,12 @@ test('Excel 口径（无订单）保留原有快照展示，不因这次改动�
   assert.equal(facts.productName, '来源苹果');
   assert.equal(facts.quantity, '2');
   assert.equal(facts.receiverSource, 'SNAPSHOT');
+  assert.equal(facts.productSource, 'SNAPSHOT');
+});
+
+test('未建单行的后端整数投影不会被字符串读取器丢掉', () => {
+  const facts = presentSnapshotRowFacts(excelRow({ quantity: 3 }), null);
+  assert.equal(facts.quantity, '3');
   assert.equal(facts.productSource, 'SNAPSHOT');
 });
 

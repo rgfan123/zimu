@@ -12,6 +12,7 @@ import cn.zimu.fulfillment.common.audit.AuditLog;
 import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
+import cn.zimu.fulfillment.fulfillment.PreparedJdSalesOutbound;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.EntityManager;
 import java.util.List;
@@ -109,6 +110,14 @@ class JdWriteOpsGateTest {
         assertThat(audit.getBusinessCode()).isEqualTo("MOCK_SUCCESS");
         assertThat(audit.getRequestId()).isEqualTo("mock-orderPurchaseCreate");
         assertThat(audit.getRequestPayload()).containsEntry("erpPurchaseNo", "PO-20260813-001");
+    }
+
+    @Test
+    void genericWriteSeamDoesNotExposeSalesOutboundCreation() {
+        assertThat(java.util.Arrays.stream(JdWriteOpsService.class.getMethods())
+                .map(java.lang.reflect.Method::getName))
+                .doesNotContain("orderSoCreate");
+        assertThat(PreparedJdSalesOutbound.class.getConstructors()).isEmpty();
     }
 
     @Test

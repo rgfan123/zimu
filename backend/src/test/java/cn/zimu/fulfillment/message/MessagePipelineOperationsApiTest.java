@@ -682,7 +682,7 @@ class MessagePipelineOperationsApiTest {
         output.put("settlement_method", "MONTHLY");
         output.put("items", List.of(Map.of(
                 "product", "保留门禁测试商品",
-                "quantity", "1")));
+                "quantity", 1)));
         return new InterpretationResult(
                 MessageIntent.CUSTOMER_ORDER,
                 output,

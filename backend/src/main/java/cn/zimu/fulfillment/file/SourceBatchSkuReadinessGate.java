@@ -1,5 +1,7 @@
 package cn.zimu.fulfillment.file;
 
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.fulfillment.JdCargoPlanner;
@@ -17,7 +19,6 @@ import cn.zimu.fulfillment.sku.SourceChannelSkuRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -409,7 +410,7 @@ class SourceBatchSkuReadinessGate {
     }
 
     private ComponentIdentity candidateComponents(List<OrderItemInput> items) {
-        Map<String, String> values = new LinkedHashMap<>();
+        Map<String, Integer> values = new LinkedHashMap<>();
         boolean valid = true;
         for (OrderItemInput item : items) {
             if (item.components() == null) {
@@ -418,7 +419,7 @@ class SourceBatchSkuReadinessGate {
             }
             for (var component : item.components()) {
                 String code = component.skuCode();
-                String quantity = quantityIdentity(component.quantityPerBundle());
+                Integer quantity = component.quantityPerBundle();
                 if (code == null || code.isBlank() || quantity == null || values.putIfAbsent(code, quantity) != null) {
                     valid = false;
                 }
@@ -429,10 +430,10 @@ class SourceBatchSkuReadinessGate {
 
     private ComponentIdentity snapshotComponents(
             List<SourceOrderCandidate.BundleComponentSnapshot> components) {
-        Map<String, String> values = new LinkedHashMap<>();
+        Map<String, Integer> values = new LinkedHashMap<>();
         boolean valid = true;
         for (SourceOrderCandidate.BundleComponentSnapshot component : components) {
-            String quantity = quantityIdentity(component.quantityPerBundle());
+            Integer quantity = component.quantityPerBundle();
             if (component.skuCode() == null
                     || component.skuCode().isBlank()
                     || quantity == null
@@ -441,17 +442,6 @@ class SourceBatchSkuReadinessGate {
             }
         }
         return new ComponentIdentity(Map.copyOf(values), valid);
-    }
-
-    private String quantityIdentity(Object raw) {
-        if (raw == null) {
-            return null;
-        }
-        try {
-            return new BigDecimal(raw.toString()).stripTrailingZeros().toPlainString();
-        } catch (NumberFormatException exception) {
-            return null;
-        }
     }
 
     private Map<String, SourceBundleFact> sourceBundleFacts(
@@ -570,7 +560,14 @@ class SourceBatchSkuReadinessGate {
                     ? skuByCode.get(line.declaredSkuCode())
                     : mapping == null ? null : skuById.get(mapping.getSkuId());
             List<Map<String, String>> issues = candidateMappingIssues(line, mapping, sku);
-            Integer convertedQuantity = candidateRequestedQuantity(line, mapping);
+            CountConversion conversion = candidateRequestedQuantity(line, mapping);
+            Integer convertedQuantity = conversion.value();
+            if (conversion.overflow()) {
+                issues.add(issue(
+                        "QUANTITY_SCALE",
+                        "来源数量乘包装乘数后超出 int32 件数范围",
+                        "核对来源数量和包装乘数后重新导入批次"));
+            }
             if (sku != null && jdProviderIds.contains(sku.getFulfillmentProviderId())) {
                 Map<String, String> quantityIssue = candidateJdQuantityIssue(
                         line, sku, providerMappingBySkuId.get(sku.getId()), convertedQuantity);
@@ -710,14 +707,14 @@ class SourceBatchSkuReadinessGate {
         return List.copyOf(lines);
     }
 
-    private Integer candidateRequestedQuantity(CandidateLine line, SourceChannelSku mapping) {
+    private CountConversion candidateRequestedQuantity(CandidateLine line, SourceChannelSku mapping) {
         if (line.sourceQuantity() == null) {
-            return null;
+            return new CountConversion(null, false);
         }
         // 礼包组件的 quantityPerBundle 已经是内部 SKU 数量口径；只有普通来源单品
         // 仍需再乘来源包装换算，保持与 JdCargoPlanner 的实际出站数量一致。
         if (!line.applySourceMultiplier()) {
-            return line.sourceQuantity();
+            return new CountConversion(line.sourceQuantity(), false);
         }
         Integer multiplier;
         if (line.directInternalSku()) {
@@ -727,7 +724,14 @@ class SourceBatchSkuReadinessGate {
         } else {
             multiplier = mapping == null ? null : mapping.getQuantityMultiplier();
         }
-        return multiplier == null ? null : Math.multiplyExact(line.sourceQuantity(), multiplier);
+        if (multiplier == null) {
+            return new CountConversion(null, false);
+        }
+        try {
+            return new CountConversion(CountQuantity.multiplyPositive(line.sourceQuantity(), multiplier), false);
+        } catch (InvalidCountQuantityException exception) {
+            return new CountConversion(null, true);
+        }
     }
 
     private Map<String, String> candidateJdQuantityIssue(
@@ -744,7 +748,7 @@ class SourceBatchSkuReadinessGate {
                 Integer.toString(line.lineNo()),
                 sku.getSkuCode(),
                 sku.getUnit(),
-                convertedQuantity == null ? null : BigDecimal.valueOf(convertedQuantity),
+                convertedQuantity == null ? null : convertedQuantity.longValue(),
                 "来源数量 × 来源包装乘数 × 京东件数换算",
                 null,
                 goods);
@@ -763,8 +767,8 @@ class SourceBatchSkuReadinessGate {
     private static Integer integerQuantity(Object raw) {
         if (raw == null) return null;
         try {
-            return new BigDecimal(raw.toString()).intValueExact();
-        } catch (ArithmeticException | NumberFormatException exception) {
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromPositiveFileValue(raw.toString());
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
             return null;
         }
     }
@@ -772,7 +776,14 @@ class SourceBatchSkuReadinessGate {
     private static Integer integerProduct(Object left, Object right) {
         Integer leftValue = integerQuantity(left);
         Integer rightValue = integerQuantity(right);
-        return leftValue == null || rightValue == null ? null : Math.multiplyExact(leftValue, rightValue);
+        if (leftValue == null || rightValue == null) {
+            return null;
+        }
+        try {
+            return CountQuantity.multiplyPositive(leftValue, rightValue);
+        } catch (InvalidCountQuantityException exception) {
+            return null;
+        }
     }
 
     private static Integer getInteger(java.sql.ResultSet resultSet, String column) throws java.sql.SQLException {
@@ -780,26 +791,15 @@ class SourceBatchSkuReadinessGate {
         return resultSet.wasNull() ? null : value;
     }
 
-    private BigDecimal product(Object left, Object right) {
-        BigDecimal leftValue = decimal(left);
-        BigDecimal rightValue = decimal(right);
-        return leftValue == null || rightValue == null ? null : leftValue.multiply(rightValue);
-    }
-
-    private BigDecimal decimal(Object raw) {
-        if (raw == null) {
-            return null;
-        }
-        try {
-            return new BigDecimal(raw.toString());
-        } catch (NumberFormatException exception) {
-            return null;
-        }
-    }
-
     private List<Map<String, String>> candidateMappingIssues(
             CandidateLine line, SourceChannelSku mapping, Sku sku) {
         List<Map<String, String>> issues = new ArrayList<>();
+        if (line.sourceQuantity() == null) {
+            issues.add(issue(
+                    "QUANTITY_SCALE",
+                    "来源数量或礼包组件乘算不是有效的 int32 正整数",
+                    "核对来源数量和礼包组件件数后重新导入批次"));
+        }
         if (line.directInternalSku()) {
             if (sku == null) {
                 issues.add(issue(
@@ -1025,7 +1025,8 @@ class SourceBatchSkuReadinessGate {
                     flatCells.put(entry.getKey(), entry.getValue().asText());
                 }
             });
-            return parser.projection(recordedChannel, flatCells).get("source_sku_ref");
+            Object sourceSkuRef = parser.projection(recordedChannel, flatCells).get("source_sku_ref");
+            return sourceSkuRef == null ? null : sourceSkuRef.toString();
         } catch (JsonProcessingException | IllegalArgumentException exception) {
             return null;
         }
@@ -1072,6 +1073,8 @@ class SourceBatchSkuReadinessGate {
 
     private record MappingPosition(int itemIndex, Integer componentIndex) {}
 
+    private record CountConversion(Integer value, boolean overflow) {}
+
     private record CandidateBundle(
             long rawImportRowId,
             String candidateKey,
@@ -1083,7 +1086,7 @@ class SourceBatchSkuReadinessGate {
             ComponentIdentity components,
             SourceOrderCandidate.SourceBundleMappingSnapshot snapshot) {}
 
-    private record ComponentIdentity(Map<String, String> values, boolean valid) {}
+    private record ComponentIdentity(Map<String, Integer> values, boolean valid) {}
 
     private record SourceBundleFact(
             String sourceBundleRef,

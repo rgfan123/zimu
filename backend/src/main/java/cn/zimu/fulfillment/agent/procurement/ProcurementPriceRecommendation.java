@@ -23,7 +23,7 @@ import java.util.List;
  */
 public record ProcurementPriceRecommendation(
         @JsonProperty("target_sku") @JsonAlias("targetSku") String targetSku,
-        @JsonProperty("requested_quantity") @JsonAlias("requestedQuantity") String requestedQuantity,
+        @JsonProperty("requested_quantity") @JsonAlias("requestedQuantity") Integer requestedQuantity,
         @JsonProperty("inventory") Inventory inventory,
         @JsonProperty("candidates") List<Candidate> candidates,
         @JsonProperty("excluded_candidates") @JsonAlias("excludedCandidates") List<ExcludedCandidate> excludedCandidates,
@@ -38,9 +38,9 @@ public record ProcurementPriceRecommendation(
         excludedCandidates = excludedCandidates == null ? List.of() : List.copyOf(excludedCandidates);
     }
 
-    /** 库存上下文：可用量与缺口，decimal-string（SCALE=2）；无观测时整体为 null。 */
+    /** 库存上下文：可用量与缺口均为整数件数；无观测时整体为 null。 */
     public record Inventory(
-            @JsonProperty("available") String available, @JsonProperty("shortage") String shortage) {}
+            @JsonProperty("available") Integer available, @JsonProperty("shortage") Integer shortage) {}
 
     /** 一个可比比价候选；price 为 decimal-string（SCALE=2），priceBasis 只取两种取值。 */
     public record Candidate(

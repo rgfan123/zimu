@@ -1,6 +1,6 @@
 /**
  * API 类型定义 —— 严格对照 docs/openapi.yaml schemas（snake_case）。
- * 所有标识符为字符串（避免 BIGINT 精度丢失）；数量为十进制字符串。
+ * 所有标识符为字符串（避免 BIGINT 精度丢失）；件数、份数和乘数为整数 number。
  */
 
 // ---------- 枚举 ----------
@@ -232,10 +232,10 @@ export interface ManualOrderReceiverInput {
   address: string;
 }
 
-/** 一行 = 一个系统 SKU × 正整数数量字符串（V99 整数纪律）。 */
+/** 一行 = 一个系统 SKU × 正整数数量（V99 整数纪律）。 */
 export interface ManualOrderItemInput {
   sku_id: string;
-  quantity: string;
+  quantity: number;
 }
 
 /** POST /api/v1/orders/manual 请求体：绑定既有客户 + 系统 SKU 直选，201 返回 OrderDetail。 */
@@ -268,8 +268,8 @@ export interface ShipmentItem {
   fulfillment_id: string;
   order_line_id: string;
   product_name: string;
-  instructed_quantity: string;
-  shipped_quantity: string;
+  instructed_quantity: number;
+  shipped_quantity: number;
   unit: string;
 }
 
@@ -409,12 +409,12 @@ export interface DashboardSummary {
 export interface ChannelMetric {
   source_channel: SourceChannel;
   order_count: number;
-  canonical_quantity: string;
-  shipped_quantity: string;
+  canonical_quantity: number;
+  shipped_quantity: number;
   /** 自然日（Asia/Shanghai）；视图 v_channel_daily.metric_date */
   metric_date?: string;
   order_line_count?: number;
-  actual_shipped_quantity?: string;
+  actual_shipped_quantity?: number;
   shipment_count?: number;
   exception_order_count?: number;
   out_of_stock_order_count?: number;
@@ -429,8 +429,8 @@ export interface ProductMetric {
   sku_id: string;
   sku_code: string;
   sku_name: string;
-  canonical_quantity: string;
-  shipped_quantity: string;
+  canonical_quantity: number;
+  shipped_quantity: number;
   metric_date?: string;
   source_channel?: SourceChannel;
   product_id?: string;
@@ -441,12 +441,12 @@ export interface ProductMetric {
   category_name?: string;
   order_count?: number;
   shipment_count?: number;
-  actual_shipped_quantity?: string;
+  actual_shipped_quantity?: number;
   source_mappings?: Array<{
     source_sku_ref: string;
     source_product_name?: string;
     source_specification?: string;
-    quantity_multiplier?: string | number;
+    quantity_multiplier?: number;
   }>;
   jd_sku_codes?: string[];
 }
@@ -460,13 +460,13 @@ export interface FulfillmentMetric {
   provider_id: string;
   provider_code: string;
   shipment_count: number;
-  shipped_quantity: string;
+  shipped_quantity: number;
   average_tracking_hours: number;
   metric_date?: string;
   provider_name?: string;
   provider_type?: 'JD_WAREHOUSE' | 'THIRD_PARTY';
   fulfillment_count?: number;
-  fulfilled_quantity?: string;
+  fulfilled_quantity?: number;
   not_shipped_count?: number;
   partially_shipped_count?: number;
   fully_shipped_count?: number;
@@ -518,6 +518,14 @@ export interface SkuReadinessIssue {
   action: string;
 }
 
+export type SkuReadinessWarningCode = 'PACKAGING_METADATA_INCOMPLETE';
+
+export interface SkuReadinessWarning {
+  code: SkuReadinessWarningCode;
+  message: string;
+  action: string;
+}
+
 export interface SkuDataQualityFlag {
   flag_code: string;
   blocking_reason: SkuReadinessReason | null;
@@ -531,6 +539,7 @@ export interface SkuFulfillmentReadiness {
   ready: boolean;
   reason_codes: SkuReadinessReason[];
   issues: SkuReadinessIssue[];
+  warnings: SkuReadinessWarning[];
   data_quality_flags: SkuDataQualityFlag[];
 }
 
@@ -595,7 +604,7 @@ export type ProductBundleStatus = 'DRAFT' | 'ACTIVE' | 'INACTIVE';
 
 export interface ProductBundleItem {
   sku_id: string;
-  quantity_per_bundle: string;
+  quantity_per_bundle: number;
   sku_code?: string;
   product_name?: string;
   specification?: string;
@@ -622,7 +631,7 @@ export interface ProductBundlePage extends Omit<MasterDataPage, 'items'> {
 
 export interface ProductBundleItemInput {
   sku_id: string;
-  quantity_per_bundle: string;
+  quantity_per_bundle: number;
   emg_code_snapshot?: string;
 }
 
@@ -648,13 +657,13 @@ export interface JdPiecesCandidate {
   specification?: string | null;
   source_specification?: string | null;
   source_product_name?: string | null;
-  candidate?: string | null;
-  configured?: string | null;
+  candidate?: number | null;
+  configured?: number | null;
 }
 
 export interface JdPiecesImportRow {
   provider_sku_code: string;
-  jd_pieces_per_unit: string;
+  jd_pieces_per_unit: number;
   status: string;
 }
 
@@ -816,7 +825,7 @@ export interface ConnectionTestResult {
 
 export interface ProviderSkuReferenceComponent {
   provider_sku_code: string;
-  quantity_per_bundle: string | number;
+  quantity_per_bundle: number;
   provider_sku_name?: string;
 }
 
@@ -826,16 +835,16 @@ export interface ProviderSkuReferenceRow {
   row_index: number;
   source_sku_ref: string;
   source_product_name: string;
-  source_quantity: string | number;
+  source_quantity: number;
   match_status: 'MATCHED' | 'NEED_REVIEW' | 'CONFLICT';
   reason_code: string;
   reason: string;
-  quantity_multiplier?: string | number;
+  quantity_multiplier?: number;
   provider_sku_code?: string;
   provider_sku_name?: string;
   bundle_components: ProviderSkuReferenceComponent[];
   candidates?: Array<{
-    quantity_multiplier: string | number;
+    quantity_multiplier: number;
     provider_sku_code?: string;
     provider_sku_name?: string;
     bundle_components: ProviderSkuReferenceComponent[];
@@ -869,9 +878,9 @@ export interface Fulfillment {
   customer_name?: string;
   receiver_name?: string;
   provider_id: string;
-  requested_quantity: string;
-  cumulative_shipped_quantity: string;
-  cancelled_quantity: string;
+  requested_quantity: number;
+  cumulative_shipped_quantity: number;
+  cancelled_quantity: number;
   shipping_progress: ShippingProgress;
   outcome: FulfillmentOutcome;
   exception_code?: string;
@@ -890,7 +899,7 @@ export interface FulfillmentDetail extends Fulfillment {
 
 export interface ContinuationExportCommand {
   expected_version: number;
-  instructed_quantity: string;
+  instructed_quantity: number;
   remark: string;
 }
 
@@ -899,7 +908,7 @@ export interface ContinuationExportResult {
   shipment_id: string;
   shipment_sequence: number;
   fulfillment_export_id: string;
-  instructed_quantity: string;
+  instructed_quantity: number;
   fulfillment_version: number;
 }
 
@@ -913,7 +922,7 @@ export interface FulfillmentExportLine {
   outbound_order_no?: string;
   provider_sku_code: string;
   provider_sku_code_scope?: 'INTERNAL_ROUTING' | 'PROVIDER_EXTERNAL';
-  instructed_quantity: string;
+  instructed_quantity: number;
   unit: string;
   item_amount: string;
 }
@@ -1184,7 +1193,16 @@ export interface RawImportRow {
   order_id?: string | null;
   order_line_id?: string | null;
   /** 渠道模板解析投影（白名单：receiver_name/receiver_phone/receiver_address/product_name/quantity/specification/source_sku_ref），供确认明细核对解析是否正确。 */
-  parsed?: Record<string, string>;
+  parsed?: {
+    receiver_name?: string;
+    receiver_phone?: string;
+    receiver_address?: string;
+    product_name?: string;
+    quantity?: number;
+    specification?: string;
+    source_sku_ref?: string;
+    source_line_ref?: string;
+  };
   /** 来源 SKU 归属的履约方（白名单：provider_type JD_WAREHOUSE/THIRD_PARTY + provider_name + 内部 SKU 规格默认值）；无映射为 null。 */
   sku_fulfillment?: {
     provider_type: 'JD_WAREHOUSE' | 'THIRD_PARTY';
@@ -1250,9 +1268,9 @@ export interface InventoryOverviewItem {
   quantity_unit: InventoryQuantityUnit | null;
   warehouse_code: string | null;
   observation_status: InventoryObservationStatus;
-  total_quantity: string | null;
-  available_quantity: string | null;
-  unavailable_quantity: string | null;
+  total_quantity: number | null;
+  available_quantity: number | null;
+  unavailable_quantity: number | null;
   observed_at: string | null;
   observation_age_seconds: number | null;
   freshness_status: InventoryFreshnessStatus;
@@ -1302,9 +1320,9 @@ export interface InventoryDetailContext {
 
 export interface InventoryDetailObservation {
   observation_status: InventoryObservationStatus;
-  total_quantity: string | null;
-  available_quantity: string | null;
-  unavailable_quantity: string | null;
+  total_quantity: number | null;
+  available_quantity: number | null;
+  unavailable_quantity: number | null;
   quantity_unit: InventoryQuantityUnit | null;
   observed_at: string | null;
   observation_age_seconds: number | null;
@@ -1376,11 +1394,11 @@ export interface ShipmentJdStockObservation {
   sku_id: string;
   goods_no: string;
   warehouse_code: string;
-  required_quantity: string;
+  required_quantity: number;
   quantity_unit: 'JD_PIECE';
   observation_status: 'OBSERVED' | 'OBSERVED_ZERO' | 'NOT_OBSERVED';
-  stock_quantity?: string;
-  usable_quantity?: string;
+  stock_quantity?: number;
+  usable_quantity?: number;
 }
 
 export interface ShipmentJdStockCheckResult {
@@ -1416,9 +1434,9 @@ export interface ProcurementTicketItem {
   id: string;
   sku_id: string;
   component_sku_id?: string;
-  requested_quantity: string;
-  fulfilled_quantity: string;
-  remaining_quantity: string;
+  requested_quantity: number;
+  fulfilled_quantity: number;
+  remaining_quantity: number;
 }
 
 export interface ProcurementReceipt {
@@ -1431,7 +1449,7 @@ export interface ProcurementReceipt {
   remark?: string;
   received_by: string;
   received_at: string;
-  items: { ticket_item_id: string; available_quantity: string }[];
+  items: { ticket_item_id: string; available_quantity: number }[];
 }
 
 export interface ProcurementTicket {
@@ -1440,9 +1458,9 @@ export interface ProcurementTicket {
   fulfillment_id: string;
   retry_of_ticket_id?: string;
   status: ProcurementStatus;
-  requested_quantity: string;
-  fulfilled_quantity: string;
-  remaining_quantity: string;
+  requested_quantity: number;
+  fulfilled_quantity: number;
+  remaining_quantity: number;
   items: ProcurementTicketItem[];
   receipts: ProcurementReceipt[];
   version: number;
@@ -1473,13 +1491,13 @@ export interface ProcurementPriceExcludedCandidate extends ProcurementPriceCandi
 }
 
 export interface ProcurementPriceInventory {
-  available?: string | null;
-  shortage?: string | null;
+  available?: number | null;
+  shortage?: number | null;
 }
 
 export interface ProcurementPriceRecommendation {
   target_sku?: string;
-  requested_quantity?: string | null;
+  requested_quantity?: number | null;
   inventory?: ProcurementPriceInventory | null;
   /** 可比候选（参与推荐与「可比候选」组展示）。 */
   candidates: ProcurementPriceCandidate[];
@@ -1502,7 +1520,7 @@ export interface ProcurementPriceRunResult {
 export interface ProcurementPriceCompareCommand {
   procurement_ticket_id?: string;
   sku_id?: string;
-  quantity?: string;
+  quantity?: number;
 }
 
 // ---------- 复核队列 / 审计 ----------
@@ -1522,7 +1540,7 @@ export interface ResolveSkuReviewCommand {
   sku_id: string;
   source_channel: SourceChannel;
   source_sku_ref: string;
-  quantity_multiplier: string;
+  quantity_multiplier: number;
   remark: string;
 }
 
@@ -2056,7 +2074,7 @@ export interface DemoRun {
       product_name: string;
       sku_code?: string | null;
       specification: string;
-      quantity: string;
+      quantity: number;
       unit: string;
       processing_stage: 'COMPLETED';
     }>;
@@ -2081,7 +2099,7 @@ export interface OrderAssistantDraft {
     product_name?: string | null;
     sku_code?: string | null;
     specification?: string | null;
-    quantity?: string | number | null;
+    quantity?: number | null;
     unit?: string | null;
   }>;
   settlement: { settlement_method?: string | null; settlement_time?: string | null };

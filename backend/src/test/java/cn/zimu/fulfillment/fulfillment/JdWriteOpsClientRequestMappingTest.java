@@ -1,4 +1,4 @@
-package cn.zimu.fulfillment.connector.jd.write;
+package cn.zimu.fulfillment.fulfillment;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -11,6 +11,7 @@ import cn.zimu.fulfillment.common.audit.AuditLog;
 import cn.zimu.fulfillment.common.audit.AuditLogRepository;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
+import cn.zimu.fulfillment.connector.jd.write.JdWriteOpsClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.lop.open.api.sdk.JdlClient;
@@ -157,7 +158,7 @@ class JdWriteOpsClientRequestMappingTest {
         envelope.setRequestId("jd-so-request-001");
         var createResponse = new SoCreateResponse();
         createResponse.setDeliveryNo("JD-DELIVERY-20260813-001");
-        createResponse.setErpDeliveryNo("JDFLORDABC123");
+        createResponse.setErpDeliveryNo("ZIMU-SO-20260831-000000000001-ABCDEF12");
         envelope.setData(createResponse);
         var response = new IntegratedsupplychainOrderDeliveryCreateV1LopResponse();
         response.setCode("1000");
@@ -165,8 +166,8 @@ class JdWriteOpsClientRequestMappingTest {
 
         try (var clients = mockConstruction(JdlClient.class, (client, context) ->
                 when(client.execute(any())).thenReturn(response))) {
-            JdResult result = service.orderSoCreate(Map.of(
-                    "erpDeliveryNo", "JDFLORDABC123",
+            JdResult result = service.create(prepared(Map.of(
+                    "erpDeliveryNo", "ZIMU-SO-20260831-000000000001-ABCDEF12",
                     "warehouseNo", "WH-001",
                     "orderType", "1",
                     "channelInfo", Map.of("erpShopNo", "SHOP-001"),
@@ -176,12 +177,13 @@ class JdWriteOpsClientRequestMappingTest {
                             "goodsNo", "JD-SKU-000001",
                             "goodsLevel", "100",
                             "planQuantity", 3,
-                            "orderLine", "1"))));
+                            "orderLine", "1")))));
 
             ArgumentCaptor<DomainAbstractRequest<?>> requestCaptor = ArgumentCaptor.forClass(DomainAbstractRequest.class);
             verify(clients.constructed().getFirst()).execute(requestCaptor.capture());
             var request = (IntegratedsupplychainOrderDeliveryCreateV1LopRequest) requestCaptor.getValue();
-            assertThat(request.getRequest().getErpDeliveryNo()).isEqualTo("JDFLORDABC123");
+            assertThat(request.getRequest().getErpDeliveryNo())
+                    .isEqualTo("ZIMU-SO-20260831-000000000001-ABCDEF12");
             assertThat(request.getRequest().getWarehouseNo()).isEqualTo("WH-001");
             assertThat(request.getRequest().getOrderType()).isEqualTo("1");
             assertThat(request.getRequest().getPin()).isEqualTo("merchant-pin");
@@ -204,6 +206,26 @@ class JdWriteOpsClientRequestMappingTest {
         AuditLogRepository repository = mock(AuditLogRepository.class);
         when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         return repository;
+    }
+
+    private PreparedJdSalesOutbound prepared(Map<String, Object> request) {
+        return PreparedJdSalesOutbound.from(new JdShipmentSubmissionPlan(
+                1L,
+                1L,
+                1L,
+                1L,
+                ShipmentJdOutboundPreparer.JD_WAREHOUSE,
+                "202608310001",
+                String.valueOf(request.get("erpDeliveryNo")),
+                null,
+                List.of(),
+                request,
+                "0".repeat(64),
+                "1".repeat(64),
+                List.of(),
+                List.of(),
+                List.of(),
+                null));
     }
 
     private AuditLogService auditLogService() {

@@ -1,7 +1,6 @@
 package cn.zimu.fulfillment.connector;
 
 import cn.zimu.fulfillment.common.domain.SourceChannel;
-import java.math.BigDecimal;
 
 /** 平台最新来源子单事实；确定性差异裁决仍由 source-sync Policy 完成。 */
 public record SourcePlatformCheckResult(
@@ -14,7 +13,7 @@ public record SourcePlatformCheckResult(
         String receiverName,
         String receiverPhone,
         String receiverAddress,
-        BigDecimal sendableQuantity,
+        Long sendableQuantity,
         boolean carrierMapped,
         String effectHash) {
 
@@ -32,7 +31,7 @@ public record SourcePlatformCheckResult(
             String receiverName,
             String receiverPhone,
             String receiverAddress,
-            BigDecimal sendableQuantity,
+            Long sendableQuantity,
             boolean carrierMapped) {
         this(available, businessCode, message, platformState, acceptanceRequired, addressStatus,
                 receiverName, receiverPhone, receiverAddress, sendableQuantity, carrierMapped, null);

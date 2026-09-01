@@ -11,7 +11,6 @@ import cn.zimu.fulfillment.connector.jd.basicinfo.JDBasicInfoService;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingCommand;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingService;
 import cn.zimu.fulfillment.message.InterpretationWorker;
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -94,7 +93,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void checksEveryShipmentItemThroughJdReadOnlyFactsAndReplaysWithoutDuplicateFacts() {
-        Fact fact = shipment("PASS", "2");
+        Fact fact = shipment("PASS", 2);
 
         ResponseEntity<Map> checked = check(fact.shipmentId(), "jd-sku-gate-pass-001", "req-jd-sku-gate-pass-001");
 
@@ -116,7 +115,7 @@ class ShipmentJdSkuMappingGateApiTest {
                                 assertThat(mapping)
                                         .containsEntry("status", "PASS")
                                         .containsEntry("goods_no", "JD-SKU-000001")
-                                        .containsEntry("exact_plan_quantity", "2")
+                                        .containsEntry("exact_plan_quantity", 2)
                                         .containsEntry("unit_conversion_source", "provider_skus.external_codes.jd_pieces_per_unit");
                                 Map<String, Object> maintenance = castMap(mapping.get("maintenance_action"));
                                 assertThat(maintenance)
@@ -171,8 +170,8 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void rejectsSameIdempotencyKeyForAnotherShipmentBeforeQueryingJdAgain() {
-        Fact first = shipment("IDEMPOTENCY-PAYLOAD-FIRST", "1");
-        Fact second = shipment("IDEMPOTENCY-PAYLOAD-SECOND", "1");
+        Fact first = shipment("IDEMPOTENCY-PAYLOAD-FIRST", 1);
+        Fact second = shipment("IDEMPOTENCY-PAYLOAD-SECOND", 1);
         String key = "jd-sku-gate-payload-conflict-001";
 
         ResponseEntity<Map> accepted = check(first.shipmentId(), key, "req-jd-sku-gate-payload-first-001");
@@ -196,13 +195,13 @@ class ShipmentJdSkuMappingGateApiTest {
                 .containsEntry("gate_status", "PASSED")
                 .containsEntry("checked_mapping_count", 1);
         assertThat(firstSkuCheck(checked))
-                .containsEntry("source_quantity", "3")
-                .containsEntry("exact_plan_quantity", "3");
+                .containsEntry("source_quantity", 3)
+                .containsEntry("exact_plan_quantity", 3);
     }
 
     @Test
     void blocksMissingConversionAndResolvesTheSameReviewCaseAfterPublicMappingRepairAndRerun() {
-        Fact fact = shipment("REPAIR", "2");
+        Fact fact = shipment("REPAIR", 2);
         jdbc.update(
                 "UPDATE app.provider_skus SET external_codes=external_codes-'jd_pieces_per_unit' WHERE id=?",
                 fact.mappingId());
@@ -272,12 +271,12 @@ class ShipmentJdSkuMappingGateApiTest {
                 HttpMethod.PATCH,
                 new HttpEntity<>(Map.of(
                         "expected_version", ((Number) currentMapping.get("version")).longValue(),
-                        "jd_pieces_per_unit", "1"),
+                        "jd_pieces_per_unit", 1),
                         writeHeaders("jd-sku-gate-mapping-repair-001", "req-jd-sku-gate-mapping-repair-001")),
                 Map.class);
         assertThat(repaired.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(castMap(repaired.getBody().get("attributes")))
-                .containsEntry("jd_pieces_per_unit", "1");
+                .containsEntry("jd_pieces_per_unit", 1);
 
         ResponseEntity<Map> passed = check(
                 fact.shipmentId(), "jd-sku-gate-repair-passed-001", "req-jd-sku-gate-repair-passed-001");
@@ -317,7 +316,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void blocksAShipmentItemWhoseInternalSkuHasNoJdMapping() {
-        Fact fact = shipment("MISSING-MAPPING", "1");
+        Fact fact = shipment("MISSING-MAPPING", 1);
         jdbc.update("DELETE FROM app.provider_skus WHERE id=?", fact.mappingId());
 
         ResponseEntity<Map> blocked = check(
@@ -392,7 +391,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void repairsAnErpGoodsNumberConflictThroughThePublicMappingPatchAndRerun() {
-        Fact fact = shipment("ERP-CONFLICT", "1");
+        Fact fact = shipment("ERP-CONFLICT", 1);
         jdbc.update("UPDATE app.provider_skus SET merchant_sku_code='WRONG-ERP-CODE' WHERE id=?", fact.mappingId());
 
         ResponseEntity<Map> blocked = check(
@@ -430,7 +429,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void createsMerchantSkuCodeThroughThePublicProviderMappingWrite() {
-        Fact fact = shipment("MERCHANT-CREATE", "1");
+        Fact fact = shipment("MERCHANT-CREATE", 1);
         Map<String, Object> identity = jdbc.queryForMap(
                 "SELECT fulfillment_provider_id provider_id, sku_id FROM app.provider_skus WHERE id=?",
                 fact.mappingId());
@@ -445,7 +444,7 @@ class ShipmentJdSkuMappingGateApiTest {
                         "provider_sku_code", "JD-SKU-000001",
                         "merchant_sku_code", "ERP-JD-SKU-000001",
                         "provider_sku_name", "子牧羊小腿 500g/盒",
-                        "jd_pieces_per_unit", "1",
+                        "jd_pieces_per_unit", 1,
                         "active", true),
                         writeHeaders("jd-sku-gate-merchant-create-001", "req-jd-sku-gate-merchant-create-001")),
                 Map.class);
@@ -492,7 +491,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void skuGateAndShipmentTrackingCompleteWithoutDeadlockAndConserveFacts() throws Exception {
-        Fact fact = shipment("GATE-TRACKING-CONCURRENT", "1");
+        Fact fact = shipment("GATE-TRACKING-CONCURRENT", 1);
         long fulfillmentId = jdbc.queryForObject(
                 "SELECT fulfillment_id FROM app.shipment_items WHERE id=?",
                 Long.class,
@@ -603,7 +602,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void blocksTheAffectedShipmentItemWhenJdReportsTheMappedGoodsDisabled() {
-        Fact fact = shipment("DISABLED-GOODS", "1");
+        Fact fact = shipment("DISABLED-GOODS", 1);
         jdbc.update(
                 """
                 UPDATE app.provider_skus
@@ -640,7 +639,7 @@ class ShipmentJdSkuMappingGateApiTest {
 
     @Test
     void reportsNameMismatchAsWarningWithoutBlockingOrRewritingTheMapping() {
-        Fact fact = shipment("NAME-WARNING", "1");
+        Fact fact = shipment("NAME-WARNING", 1);
         jdbc.update(
                 "UPDATE app.order_lines SET product_name_snapshot='完全不同的系统展示名' WHERE id=?",
                 fact.orderLineId());
@@ -689,7 +688,7 @@ class ShipmentJdSkuMappingGateApiTest {
      */
     @Test
     void treatsSkuUnitAsAuthoritativeWhenOrderLineUnitSnapshotIsJustASourcePlaceholder() {
-        Fact fact = shipment("UNIT-PLACEHOLDER", "1");
+        Fact fact = shipment("UNIT-PLACEHOLDER", 1);
         long skuId = jdbc.queryForObject(
                 "SELECT sku_id FROM app.order_lines WHERE id=?", Long.class, fact.orderLineId());
         try {
@@ -729,11 +728,11 @@ class ShipmentJdSkuMappingGateApiTest {
         return castList(shipmentItem.get("sku_checks")).getFirst();
     }
 
-    private Fact shipment(String suffix, String quantity) {
+    private Fact shipment(String suffix, int quantity) {
         return shipment(suffix, quantity, quantity);
     }
 
-    private Fact shipment(String suffix, String orderQuantity, String instructedQuantity) {
+    private Fact shipment(String suffix, int orderQuantity, int instructedQuantity) {
         String token = suffix + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
         Map<String, Object> request = Map.of(
                 "source", "WECOM",
@@ -786,7 +785,7 @@ class ShipmentJdSkuMappingGateApiTest {
                 Long.class,
                 shipmentId,
                 ((Number) row.get("fulfillment_id")).longValue(),
-                new BigDecimal(instructedQuantity));
+                instructedQuantity);
         return new Fact(
                 orderId,
                 shipmentId,
@@ -796,7 +795,7 @@ class ShipmentJdSkuMappingGateApiTest {
     }
 
     private ShipmentPair twoShipmentsOfOneOrder(String suffix) {
-        Fact first = shipment(suffix, "2", "1");
+        Fact first = shipment(suffix, 2, 1);
         Map<String, Object> row = jdbc.queryForMap(
                 """
                 SELECT f.id fulfillment_id, f.fulfillment_provider_id provider_id
@@ -839,13 +838,13 @@ class ShipmentJdSkuMappingGateApiTest {
                         "product_name", "子牧定制礼包",
                         "specification", "礼包",
                         "unit", "份",
-                        "quantity", "2",
+                        "quantity", 2,
                         "components", List.of(Map.of(
                                 "source_sku_ref", "WECOM-SKU-JD-001",
                                 "product_name", "子牧羊小腿",
                                 "specification", "500g/盒",
                                 "unit", "盒",
-                                "quantity_per_bundle", "3")))),
+                                "quantity_per_bundle", 3)))),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-13T10:00:00+08:00"));
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/orders",

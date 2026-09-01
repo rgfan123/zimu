@@ -146,6 +146,29 @@ class DazheV2TemplateTest {
         assertThat(row.productName()).isEqualTo("子牧牛肉豪华大礼包6000g（BJ）");
         assertThat(row.receiverName()).isEqualTo("测试甲");
         assertThat(row.receiverPhone()).isEqualTo("13000000001");
-        assertThat(row.quantity()).isEqualTo("1");
+        assertThat(row.quantity()).isEqualTo(1);
+    }
+
+    @Test
+    void 来源文件边界精确归一数学整数但拒绝真实小数() throws Exception {
+        var exactInteger = new java.util.ArrayList<>(dazheV2Row());
+        exactInteger.set(3, "3.000");
+        ParsedSourceRow normalized = new SourceFileParser()
+                .parse(workbook(DAZHE_V2_HEADERS, List.of(exactInteger)))
+                .rows()
+                .getFirst();
+
+        assertThat(normalized.valid()).isTrue();
+        assertThat(normalized.quantity()).isEqualTo(3);
+
+        var fractional = new java.util.ArrayList<>(dazheV2Row());
+        fractional.set(3, "3.5");
+        ParsedSourceRow rejected = new SourceFileParser()
+                .parse(workbook(DAZHE_V2_HEADERS, List.of(fractional)))
+                .rows()
+                .getFirst();
+
+        assertThat(rejected.valid()).isFalse();
+        assertThat(rejected.errorCode()).isEqualTo("QUANTITY_SCALE");
     }
 }

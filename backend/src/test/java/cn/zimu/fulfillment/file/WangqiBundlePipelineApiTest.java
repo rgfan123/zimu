@@ -90,8 +90,13 @@ class WangqiBundlePipelineApiTest {
 
         @Override
         public JdResult queryOutboundOrder(Map<String, Object> request) {
+            if (Integer.valueOf(0).equals(request.get("deliveryItemFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryPackageFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryStatusFlag"))) {
+                return super.queryOutboundOrder(request);
+            }
             if (queryResult == null) {
-                throw new IllegalStateException("controlled JD query result missing");
+                return super.queryOutboundOrder(request);
             }
             return queryResult;
         }
@@ -99,6 +104,7 @@ class WangqiBundlePipelineApiTest {
 
     @BeforeEach
     void seedActiveJdBundleAndSourceMapping() {
+        jd.queryResult(null);
         long jdProviderId = jdbc.queryForObject(
                 "SELECT id FROM app.fulfillment_providers WHERE provider_code='JD'", Long.class);
         long firstSkuId = jdbc.queryForObject(
@@ -259,7 +265,7 @@ class WangqiBundlePipelineApiTest {
                 .containsEntry("shipment_status", "CREATED");
         assertThat(castList(shipment.get("items"))).singleElement().satisfies(item -> assertThat(item)
                 .containsEntry("order_line_id", line.get("id"))
-                .containsEntry("instructed_quantity", "2"));
+                .containsEntry("instructed_quantity", 2));
 
         jdbc.update(
                 "UPDATE app.customers SET profile=jsonb_set(COALESCE(profile,'{}'::jsonb),"

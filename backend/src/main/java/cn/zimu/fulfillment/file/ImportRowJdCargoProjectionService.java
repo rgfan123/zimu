@@ -4,7 +4,6 @@ import cn.zimu.fulfillment.fulfillment.JdCargoPlanner;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -120,7 +119,7 @@ public class ImportRowJdCargoProjectionService {
                         resultSet.getLong("order_line_id"),
                         resultSet.getInt("component_no"),
                         resultSet.getLong("sku_id"),
-                        resultSet.getBigDecimal("quantity_per_bundle"),
+                        resultSet.getInt("quantity_per_bundle"),
                         resultSet.getString("product_name_snapshot"),
                         resultSet.getString("unit_snapshot")),
                 orderLineIds.toArray());
@@ -142,8 +141,8 @@ public class ImportRowJdCargoProjectionService {
                         + " ORDER BY f.order_line_id, si.id",
                 (resultSet, rowNum) -> new LineQuantity(
                         resultSet.getLong("order_line_id"),
-                        resultSet.getBigDecimal("requested_quantity"),
-                        resultSet.getBigDecimal("instructed_quantity"),
+                        resultSet.getInt("requested_quantity"),
+                        resultSet.getObject("instructed_quantity", Integer.class),
                         resultSet.getObject("shipment_id", Long.class)),
                 orderLineIds.toArray());
     }
@@ -284,10 +283,10 @@ public class ImportRowJdCargoProjectionService {
                 if (quantity == null) {
                     continue;
                 }
-                BigDecimal systemQuantity = quantity.instructedQuantity() != null
+                Integer systemQuantity = quantity.instructedQuantity() != null
                         ? quantity.instructedQuantity()
                         : quantity.requestedQuantity();
-                if (systemQuantity == null || systemQuantity.signum() <= 0) {
+                if (systemQuantity == null || systemQuantity <= 0) {
                     continue;
                 }
                 Map<String, Map<String, Object>> snapshot = quantity.shipmentId() == null
@@ -328,7 +327,7 @@ public class ImportRowJdCargoProjectionService {
             String unit,
             Long skuId,
             long providerId,
-            BigDecimal systemQuantity,
+            long systemQuantity,
             Map<ProviderSkuKey, ProviderSkuFacts> goodsByKey) {
         if (snapshot != null && snapshot.containsKey(orderLineKey)) {
             Map<String, Object> frozen = snapshot.get(orderLineKey);
@@ -400,15 +399,15 @@ public class ImportRowJdCargoProjectionService {
             long orderLineId,
             int componentNo,
             long skuId,
-            BigDecimal quantityPerBundle,
+            int quantityPerBundle,
             String productName,
             String unit) {
     }
 
     private record LineQuantity(
             long orderLineId,
-            BigDecimal requestedQuantity,
-            BigDecimal instructedQuantity,
+            int requestedQuantity,
+            Integer instructedQuantity,
             Long shipmentId) {
     }
 

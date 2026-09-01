@@ -8,7 +8,6 @@ import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.file.SourceImportService;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -48,8 +47,8 @@ final class FeixiangShipmentTestSupport {
                 SourceChannel.FEIXIANG,
                 ORDER_SN,
                 SUB_ORDER_SN,
-                new BigDecimal("4"),
-                new BigDecimal("1"),
+                4L,
+                1L,
                 "SHIPPED",
                 CARRIER_DISPLAY,
                 TRACKING_NO,

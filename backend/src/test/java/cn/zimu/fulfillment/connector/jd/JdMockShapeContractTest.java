@@ -129,7 +129,6 @@ class JdMockShapeContractTest {
             client -> client.orderPurchaseClose(Map.of()),
             client -> client.orderReturntosupplierCreate(Map.of()),
             client -> client.orderReturntowarehouseCreate(Map.of()),
-            client -> client.orderSoCreate(Map.of()),
             client -> client.stockShopstockfixedSet(Map.of("shopNo", "S-001")));
 
     @Test

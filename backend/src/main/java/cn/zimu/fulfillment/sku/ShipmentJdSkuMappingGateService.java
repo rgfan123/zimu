@@ -14,7 +14,6 @@ import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -223,7 +222,7 @@ public class ShipmentJdSkuMappingGateService {
             Map<String, Object> itemValue = new LinkedHashMap<>();
             itemValue.put("shipment_item_id", item.shipmentItemId());
             itemValue.put("fulfillment_id", item.fulfillmentId());
-            itemValue.put("instructed_quantity", canonicalDecimal(item.instructedQuantity()));
+            itemValue.put("instructed_quantity", item.instructedQuantity());
             itemValue.put("shipment_item_updated_at", item.updatedAt().toString());
             itemValue.put("order_line_id", item.orderLineId());
             itemValue.put("line_no", item.lineNo());
@@ -240,7 +239,7 @@ public class ShipmentJdSkuMappingGateService {
                 sku.put("sku_active", subject.skuActive());
                 sku.put("sku_version", subject.skuVersion());
                 sku.put("unit", subject.unit());
-                sku.put("quantity", canonicalDecimal(subject.quantity()));
+                sku.put("quantity", subject.quantity());
                 if (mapping == null) {
                     sku.put("mapping", null);
                 } else {
@@ -267,10 +266,6 @@ public class ShipmentJdSkuMappingGateService {
         } catch (Exception exception) {
             throw new IllegalStateException("cannot fingerprint JD SKU local gate", exception);
         }
-    }
-
-    private static String canonicalDecimal(BigDecimal value) {
-        return value == null ? null : value.stripTrailingZeros().toPlainString();
     }
 
     private PreparedGate loadGate(long shipmentId, boolean lock) {
@@ -343,7 +338,7 @@ public class ShipmentJdSkuMappingGateService {
                         new ShipmentItemRow(
                                 rs.getLong("shipment_item_id"),
                                 rs.getLong("fulfillment_id"),
-                                rs.getBigDecimal("instructed_quantity"),
+                                rs.getInt("instructed_quantity"),
                                 rs.getTimestamp("updated_at").toInstant(),
                                 rs.getLong("order_line_id"),
                                 rs.getInt("line_no"),
@@ -399,7 +394,7 @@ public class ShipmentJdSkuMappingGateService {
                         rs.getString("sku_code"),
                         rs.getString("product_name_snapshot"),
                         rs.getString("unit_snapshot"),
-                        item.instructedQuantity().multiply(rs.getBigDecimal("quantity_per_bundle")),
+                        Math.multiplyExact((long) item.instructedQuantity(), rs.getInt("quantity_per_bundle")),
                         rs.getLong("component_id"),
                         rs.getInt("component_no"),
                         rs.getBoolean("active"),
@@ -450,9 +445,7 @@ public class ShipmentJdSkuMappingGateService {
         result.put("sku_code", subject.skuCode());
         result.put("product_name", subject.productName());
         result.put("unit", subject.unit());
-        result.put("source_quantity", subject.quantity() == null
-                ? null
-                : subject.quantity().stripTrailingZeros().toPlainString());
+        result.put("source_quantity", subject.quantity());
         List<Map<String, Object>> issues = new ArrayList<>();
         List<Map<String, Object>> warnings = new ArrayList<>();
 
@@ -473,36 +466,38 @@ public class ShipmentJdSkuMappingGateService {
             issues.add(issue("GOODS_NO_MISSING", "京东 goodsNo 为空", "provider_skus.provider_sku_code"));
         }
 
-        BigDecimal factor = null;
+        Integer factor = null;
         String conversionSource = null;
-        if (!mapping.externalCodes().containsKey(JdStockUnitConverter.FACTOR_CONFIG_KEY)) {
-            if (JdStockUnitConverter.PIECES_UNIT.equals(subject.unit())) {
-                factor = BigDecimal.ONE;
+        JdStockUnitConverter.OutboundFactorValidation conversion =
+                JdStockUnitConverter.validateOutboundFactor(subject.unit(), mapping.externalCodes());
+        switch (conversion.status()) {
+            case DEFAULT_ONE -> {
+                factor = conversion.factor();
                 conversionSource = "skus.unit=件 (deterministic factor 1)";
-            } else {
+            }
+            case EXPLICIT_VALID -> {
+                factor = conversion.factor();
+                conversionSource = "provider_skus.external_codes.jd_pieces_per_unit";
+            }
+            case MISSING ->
                 issues.add(issue(
                         "UNIT_CONVERSION_MISSING", "非‘件’单位必须配置显式京东件数换算",
                         "provider_skus.external_codes.jd_pieces_per_unit"));
-            }
-        } else {
-            factor = JdStockUnitConverter.explicitFactorOrNull(mapping.externalCodes());
-            conversionSource = "provider_skus.external_codes.jd_pieces_per_unit";
-            if (factor == null) {
+            case INVALID, NON_INTEGER ->
                 issues.add(issue(
-                        "UNIT_CONVERSION_INVALID", "京东件数换算必须是正数",
+                        "UNIT_CONVERSION_INVALID", "京东件数换算必须是正整数",
                         "provider_skus.external_codes.jd_pieces_per_unit"));
-            }
         }
         if (conversionSource != null) result.put("unit_conversion_source", conversionSource);
         if (factor != null) {
-            result.put("pieces_per_unit", factor.stripTrailingZeros().toPlainString());
-            BigDecimal exact = JdStockUnitConverter.exactPiecesOrNull(subject.quantity(), factor);
-            if (exact == null) {
+            result.put("pieces_per_unit", factor);
+            Long exact = JdStockUnitConverter.exactPiecesOrNull(subject.quantity(), factor);
+            if (exact == null || exact > Integer.MAX_VALUE) {
                 issues.add(issue(
                         "NON_INTEGRAL_QUANTITY", "数量与换算系数无法得到精确正整数件数，系统不取整",
                         "provider_skus.external_codes.jd_pieces_per_unit"));
             } else {
-                result.put("exact_plan_quantity", exact.toPlainString());
+                result.put("exact_plan_quantity", exact.intValue());
             }
         }
 
@@ -723,7 +718,7 @@ public class ShipmentJdSkuMappingGateService {
     private record ShipmentItemRow(
             long shipmentItemId,
             long fulfillmentId,
-            BigDecimal instructedQuantity,
+            int instructedQuantity,
             Instant updatedAt,
             long orderLineId,
             int lineNo,
@@ -740,7 +735,7 @@ public class ShipmentJdSkuMappingGateService {
             String skuCode,
             String productName,
             String unit,
-            BigDecimal quantity,
+            long quantity,
             Long componentId,
             Integer componentNo,
             boolean skuActive,

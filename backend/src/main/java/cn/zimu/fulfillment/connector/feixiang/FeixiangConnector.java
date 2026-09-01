@@ -12,7 +12,6 @@ import cn.zimu.fulfillment.connector.SourceShipmentResult;
 import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.file.SourceImportService;
 import cn.zimu.fulfillment.file.StructuredOrderRow;
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -509,7 +508,7 @@ public class FeixiangConnector extends AbstractHttpPullConnector {
                     "FEIXIANG_RECEIVER_MISMATCH", "Shipment 与飞象提交前最新收货信息不一致，未提交物流");
         }
         if (plan.sendableQuantity() == null
-                || plan.sendableQuantity().compareTo(result.sourceUnitQuantity()) != 0) {
+                || !plan.sendableQuantity().equals(result.sourceUnitQuantity())) {
             return SourceSyncResult.failed(
                     "FEIXIANG_SHIPMENT_QUANTITY_MISMATCH",
                     "飞象提交前最新可发份数与拟回传份数不一致，未提交物流");
@@ -532,9 +531,7 @@ public class FeixiangConnector extends AbstractHttpPullConnector {
         if (result.shipmentId() == null) {
             return SourceSyncResult.failed("FEIXIANG_SHIPMENT_ID_REQUIRED", "飞象在线回传缺少 Shipment 血缘");
         }
-        if (result.sourceUnitQuantity() == null
-                || result.sourceUnitQuantity().stripTrailingZeros().scale() > 0
-                || result.sourceUnitQuantity().signum() <= 0) {
+        if (result.sourceUnitQuantity() == null || result.sourceUnitQuantity() <= 0) {
             return SourceSyncResult.failed(
                     "FEIXIANG_SOURCE_QUANTITY_INVALID", "飞象来源平台发货份数必须为正整数");
         }

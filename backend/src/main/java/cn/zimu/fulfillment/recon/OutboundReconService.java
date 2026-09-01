@@ -11,7 +11,6 @@ import cn.zimu.fulfillment.connector.jd.JdResult;
 import cn.zimu.fulfillment.fulfillment.JdOutboundStatus;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -33,8 +32,10 @@ import org.springframework.stereotype.Service;
  * 收敛到同一笔出库（Shipment），把系统内部事实与京东 querySoOrder 返回按语义对齐，
  * 逐字段判定差异。只读、只标记不处置；每次查询写入既有审计通道。
  *
- * <p>对齐主键是系统出库单号（shipments.outbound_order_no = 京东 erpDeliveryNo）；
- * 京东单号经 shipment_jd_outbounds.jd_delivery_no、订单号经 orders.order_no 反向定位 Shipment。
+ * <p>系统出库单号 {@code shipments.outbound_order_no} 与京东商家引用
+ * {@code shipment_jd_outbounds.erp_delivery_no} 是两个独立事实；前者用于本地导出与检索，
+ * 后者用于 querySoOrder。京东单号经 shipment_jd_outbounds.jd_delivery_no、订单号经
+ * orders.order_no 反向定位 Shipment。
  *
  * <p>京东侧降级：查询失败/超时/未配置时 {@code jd.status=UNAVAILABLE}，内部事实照常返回；
  * 查询成功但京东无该出库时 {@code jd.status=NOT_FOUND}；两者都与「字段为空」明确区分。
@@ -82,7 +83,7 @@ public class OutboundReconService {
         String normalizedValue = normalizeValue(value);
         try {
             InternalSnapshot internal = resolveAndLoad(normalizedType, normalizedValue);
-            OutboundReconView.JdSide jd = queryJd(internal.outboundOrderNo());
+            OutboundReconView.JdSide jd = queryJd(internal);
             List<OutboundReconView.Comparison> comparisons = buildComparisons(internal, jd);
             int matched = (int) comparisons.stream().filter(row -> "MATCH".equals(row.state())).count();
             int mismatch = (int) comparisons.stream()
@@ -198,9 +199,10 @@ public class OutboundReconService {
                        o.order_no, o.source_channel, o.source_ref,
                        fp.id AS provider_id, fp.provider_name, fp.provider_type,
                        fp.config::text AS provider_config,
-                       j.sync_status, j.jd_delivery_no, j.submitted_at, j.retry_count,
+                       j.erp_delivery_no, j.sync_status, j.jd_delivery_no, j.submitted_at, j.retry_count,
                        j.last_error_code, j.last_error_message, j.client_mode, j.failure_phase,
-                       j.submitted_warehouse_no, j.submitted_cargo_snapshot
+                       j.submitted_warehouse_no, j.submitted_owner_no, j.submitted_pin,
+                       j.submitted_cargo_snapshot
                 FROM app.shipments s
                 JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
                 JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
@@ -230,8 +232,8 @@ public class OutboundReconService {
                                 item.put("order_line", String.valueOf(resultSet.getInt("line_no")));
                                 item.put("goods_no", resultSet.getString("provider_sku_code"));
                                 item.put("goods_name", resultSet.getString("product_name_snapshot"));
-                                item.put("plan_quantity", qtyText(resultSet.getBigDecimal("instructed_quantity")));
-                                item.put("shipped_quantity", qtyText(resultSet.getBigDecimal("shipped_quantity")));
+                                item.put("plan_quantity", resultSet.getInt("instructed_quantity"));
+                                item.put("shipped_quantity", resultSet.getObject("shipped_quantity", Integer.class));
                                 item.put("unit", resultSet.getString("unit_snapshot"));
                                 return item;
                             },
@@ -277,6 +279,7 @@ public class OutboundReconService {
                             rs.getString("provider_name"),
                             rs.getString("provider_type"),
                             parseProviderConfig(providerConfig),
+                            rs.getString("erp_delivery_no"),
                             syncStatus,
                             rs.getString("jd_delivery_no"),
                             instant(rs.getObject("submitted_at", OffsetDateTime.class)),
@@ -286,6 +289,8 @@ public class OutboundReconService {
                             rs.getString("client_mode"),
                             rs.getString("failure_phase"),
                             rs.getString("submitted_warehouse_no"),
+                            rs.getString("submitted_owner_no"),
+                            rs.getString("submitted_pin"),
                             submittedCargo,
                             List.copyOf(items),
                             tracking);
@@ -298,9 +303,23 @@ public class OutboundReconService {
     }
 
     /** 京东 querySoOrder 查询；调用失败/超时降级为 UNAVAILABLE，不向上抛。 */
-    private OutboundReconView.JdSide queryJd(String outboundOrderNo) {
+    private OutboundReconView.JdSide queryJd(InternalSnapshot internal) {
+        String outboundOrderNo = internal.jdQueryReference();
+        String pin = internal.jdPin();
+        String ownerNo = internal.jdOwnerNo();
+        if (pin == null || ownerNo == null) {
+            return new OutboundReconView.JdSide(
+                    JD_STATUS_UNAVAILABLE,
+                    "JD_PROVIDER_TENANT_REQUIRED",
+                    "京东履约方缺少本次查询所需的 pin 或 ownerNo，已禁止跨租户回退",
+                    clientMode,
+                    null,
+                    List.of());
+        }
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("erpDeliveryNo", outboundOrderNo);
+        request.put("ownerNo", ownerNo);
+        request.put("pin", pin);
         request.put("deliveryItemFlag", 1);
         request.put("deliveryPackageFlag", 1);
         request.put("deliveryStatusFlag", 1);
@@ -310,6 +329,15 @@ public class OutboundReconService {
         } catch (RuntimeException exception) {
             log.warn("outbound recon JD query failed for {}", outboundOrderNo, exception);
             return new OutboundReconView.JdSide(JD_STATUS_UNAVAILABLE, "SDK_CALL_FAILED", "京东侧查询调用失败或超时", clientMode, null, List.of());
+        }
+        if (result != null && !result.success() && "2342".equals(text(result.businessCode()))) {
+            return new OutboundReconView.JdSide(
+                    JD_STATUS_NOT_FOUND,
+                    "2342",
+                    text(result.message()),
+                    clientMode,
+                    null,
+                    List.of());
         }
         if (result == null || !result.success()) {
             String code = result == null || text(result.businessCode()) == null ? "UNKNOWN" : text(result.businessCode());
@@ -348,8 +376,8 @@ public class OutboundReconService {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("order_line", text(row.get("orderLine")));
             item.put("goods_no", text(row.get("goodsNo")));
-            item.put("plan_quantity", qtyText(row.get("planQuantity")));
-            item.put("real_quantity", qtyText(row.get("realQuantity")));
+            item.put("plan_quantity", countValue(row.get("planQuantity")));
+            item.put("real_quantity", countValue(row.get("realQuantity")));
             items.add(item);
         }
         return new OutboundReconView.JdSide(JD_STATUS_OK, text(result.businessCode()), text(result.message()), clientMode, summary, items);
@@ -362,8 +390,8 @@ public class OutboundReconService {
         boolean jdOk = JD_STATUS_OK.equals(jd.status());
         String jdStatus = jd.status();
 
-        rows.add(compare("outbound_order_no", "系统出库单号（商户出库引用）",
-                internal.outboundOrderNo(), jdOk ? text(jdSummary.get("erp_delivery_no")) : null, jdStatus));
+        rows.add(compare("erp_delivery_no", "京东商家出库引用",
+                internal.erpDeliveryNo(), jdOk ? text(jdSummary.get("erp_delivery_no")) : null, jdStatus));
 
         rows.add(compare("jd_delivery_no", "京东出库单号",
                 internal.jdDeliveryNo(), jdOk ? text(jdSummary.get("delivery_no")) : null, jdStatus));
@@ -670,6 +698,7 @@ public class OutboundReconService {
         private final String providerName;
         private final String providerType;
         private final Map<String, Object> providerConfig;
+        private final String erpDeliveryNo;
         private final String syncStatus;
         private final String jdDeliveryNo;
         private final Instant submittedAt;
@@ -679,6 +708,8 @@ public class OutboundReconService {
         private final String clientMode;
         private final String failurePhase;
         private final String submittedWarehouseNo;
+        private final String submittedOwnerNo;
+        private final String submittedPin;
         private final List<Map<String, Object>> submittedCargo;
         private final List<Map<String, Object>> items;
         private final Map<String, Object> tracking;
@@ -688,9 +719,12 @@ public class OutboundReconService {
                 long orderId, String orderNo, String sourceChannel, String sourceRef, String shipmentStatus,
                 Instant shippedAt, Instant createdAt, String receiverName, String receiverPhone,
                 String receiverAddress, long providerId, String providerName, String providerType,
-                Map<String, Object> providerConfig, String syncStatus, String jdDeliveryNo, Instant submittedAt,
+                Map<String, Object> providerConfig, String erpDeliveryNo, String syncStatus,
+                String jdDeliveryNo, Instant submittedAt,
                 int retryCount, String lastErrorCode, String lastErrorMessage, String clientMode,
-                String failurePhase, String submittedWarehouseNo, List<Map<String, Object>> submittedCargo,
+                String failurePhase, String submittedWarehouseNo, String submittedOwnerNo,
+                String submittedPin,
+                List<Map<String, Object>> submittedCargo,
                 List<Map<String, Object>> items, Map<String, Object> tracking) {
             this.shipmentId = shipmentId;
             this.shipmentNo = shipmentNo;
@@ -710,6 +744,7 @@ public class OutboundReconService {
             this.providerName = providerName;
             this.providerType = providerType;
             this.providerConfig = providerConfig;
+            this.erpDeliveryNo = erpDeliveryNo;
             this.syncStatus = syncStatus;
             this.jdDeliveryNo = jdDeliveryNo;
             this.submittedAt = submittedAt;
@@ -719,6 +754,8 @@ public class OutboundReconService {
             this.clientMode = clientMode;
             this.failurePhase = failurePhase;
             this.submittedWarehouseNo = submittedWarehouseNo;
+            this.submittedOwnerNo = submittedOwnerNo;
+            this.submittedPin = submittedPin;
             this.submittedCargo = submittedCargo;
             this.items = items;
             this.tracking = tracking;
@@ -730,6 +767,28 @@ public class OutboundReconService {
 
         String outboundOrderNo() {
             return outboundOrderNo;
+        }
+
+        String erpDeliveryNo() {
+            return erpDeliveryNo;
+        }
+
+        String jdQueryReference() {
+            return erpDeliveryNo == null ? outboundOrderNo : erpDeliveryNo;
+        }
+
+        String jdPin() {
+            if (jdOutboundPresent()) {
+                return text(submittedPin);
+            }
+            return configText("pin");
+        }
+
+        String jdOwnerNo() {
+            if (jdOutboundPresent()) {
+                return text(submittedOwnerNo);
+            }
+            return configText("ownerNo");
         }
 
         String orderNo() {
@@ -753,7 +812,7 @@ public class OutboundReconService {
         }
 
         boolean jdOutboundPresent() {
-            return syncStatus != null;
+            return syncStatus != null && !"NONE".equals(syncStatus);
         }
 
         /** 履约方配置中的京东仓库；优先使用建单提交快照仓库，其次配置值。 */
@@ -765,6 +824,10 @@ public class OutboundReconService {
             return config == null ? null : config.toString();
         }
 
+        private String configText(String key) {
+            return text(providerConfig.get(key));
+        }
+
         /** 用于与京东 deliveryItemList 对比的内部指令：提交快照优先，未提交回落 shipment_items。 */
         List<Map<String, Object>> compareItems() {
             if (submittedCargo != null && !submittedCargo.isEmpty()) {
@@ -773,7 +836,7 @@ public class OutboundReconService {
                     result.add(Map.of(
                             "order_line", text(row.get("orderLine")),
                             "goods_no", text(row.get("goodsNo")),
-                            "plan_quantity", qtyText(row.get("planQuantity"))));
+                            "plan_quantity", countValue(row.get("planQuantity"))));
                 }
                 return result;
             }
@@ -804,8 +867,9 @@ public class OutboundReconService {
             provider.put("name", providerName);
             provider.put("type", providerType);
             summary.put("provider", provider);
-            if (syncStatus != null) {
+            if (jdOutboundPresent()) {
                 Map<String, Object> jd = new LinkedHashMap<>();
+                jd.put("erp_delivery_no", erpDeliveryNo);
                 jd.put("sync_status", syncStatus);
                 jd.put("jd_delivery_no", jdDeliveryNo);
                 jd.put("submitted_at", submittedAt);
@@ -929,14 +993,14 @@ public class OutboundReconService {
         return value.toString();
     }
 
-    private static String qtyText(Object value) {
+    private static Integer countValue(Object value) {
         if (value == null) {
             return null;
         }
         try {
-            return new BigDecimal(value.toString()).stripTrailingZeros().toPlainString();
-        } catch (RuntimeException exception) {
-            return value.toString();
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromNonNegativeFileValue(value.toString());
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
+            return null;
         }
     }
 

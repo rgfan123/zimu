@@ -255,7 +255,7 @@ class FulfillmentExportWecomPipelineApiTest {
                 HttpMethod.POST,
                 new HttpEntity<>(Map.of(
                         "expected_version", version,
-                        "instructed_quantity", "2.000",
+                        "instructed_quantity", 2,
                         "remark", "续发"),
                         writeHeaders("continuation-pipeline-001")),
                 Map.class);

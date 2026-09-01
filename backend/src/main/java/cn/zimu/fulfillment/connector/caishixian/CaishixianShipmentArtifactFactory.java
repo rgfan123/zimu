@@ -1,16 +1,17 @@
 package cn.zimu.fulfillment.connector.caishixian;
 
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
 import cn.zimu.fulfillment.connector.sync.SourceShipmentArtifactFactory;
 import cn.zimu.fulfillment.connector.sync.SourceSyncFacts;
 import cn.zimu.fulfillment.file.ContentAddressedFileStore;
+import cn.zimu.fulfillment.file.ExcelCellValues;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.security.MessageDigest;
 import java.text.Normalizer;
 import java.time.Instant;
@@ -22,6 +23,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
@@ -123,8 +125,8 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                         rs.getString("file_ref"),
                         rs.getInt("sheet_index"),
                         rs.getInt("row_index"),
-                        rs.getBigDecimal("shipped_quantity"),
-                        rs.getBigDecimal("mapping_multiplier_snapshot"),
+                        rs.getInt("shipped_quantity"),
+                        rs.getInt("mapping_multiplier_snapshot"),
                         rs.getString("raw_cells")),
                 facts.shipmentId(),
                 facts.sourceLineRef());
@@ -184,7 +186,7 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                         "CAISHIXIAN_SHIPMENT_SNAPSHOT_INCOMPLETE",
                         "彩食鲜结构化来源快照缺少商品行，无法重建回填工作簿");
             }
-            String shippedSourceQuantity = sourceQuantity(row.shippedQuantity(), row.multiplier());
+            int shippedSourceQuantity = sourceQuantity(row.shippedQuantity(), row.multiplier());
             lines.add(List.of(
                     snapshot.path("主订单编号").asText(""),
                     snapshot.path("子订单编号").asText(""),
@@ -203,7 +205,7 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                     goods.path("商品名称").asText(""),
                     goods.path("下单数量").asText(""),
                     snapshot.path("订单备注").asText(""),
-                    shippedSourceQuantity,
+                    Integer.toString(shippedSourceQuantity),
                     blankTo(facts.carrierOutputValue()),
                     blankTo(facts.trackingNumber()),
                     snapshot.path("vip订单标识").asText(""),
@@ -244,7 +246,11 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                 }
                 Row target = sheet.createRow(rowIndex++);
                 for (int column = 0; column < line.size(); column++) {
-                    target.createCell(column).setCellValue(line.get(column));
+                    if (column == 15 || column == 17) {
+                        setCount(target, column, countValue(line.get(column)));
+                    } else {
+                        target.createCell(column).setCellValue(line.get(column));
+                    }
                 }
             }
             var coreProperties = outputWorkbook.getProperties().getCoreProperties();
@@ -295,7 +301,8 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
                     }
                     Row targetRow = targetSheet.createRow(targetRowIndex++);
                     copyRow(sourceRow, targetRow, outputWorkbook, copiedStyles);
-                    set(targetRow, columns.get("发货数量"), fill.shippedSourceQuantity());
+                    setCount(targetRow, columns.get("下单数量"), countValue(sourceRow, columns.get("下单数量")));
+                    setCount(targetRow, columns.get("发货数量"), fill.shippedSourceQuantity());
                     set(targetRow, columns.get("物流公司代码"), fill.carrierCode());
                     set(targetRow, columns.get("物流单号"), fill.trackingNumber());
                     set(targetRow, columns.get("错误原因"), "");
@@ -415,6 +422,31 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
         cell.setCellValue(value == null ? "" : value);
     }
 
+    private static void setCount(Row row, int column, int value) {
+        Cell cell = row.getCell(column);
+        if (cell == null) {
+            cell = row.createCell(column);
+        }
+        cell.setCellValue(value);
+    }
+
+    private static int countValue(Row row, int column) {
+        Cell cell = row.getCell(column);
+        String raw = ExcelCellValues.exactCount(
+                cell, new org.apache.poi.ss.usermodel.DataFormatter(Locale.ROOT));
+        return countValue(raw);
+    }
+
+    private static int countValue(String raw) {
+        try {
+            return CountQuantity.fromPositiveFileValue(raw);
+        } catch (InvalidCountQuantityException exception) {
+            throw BusinessException.unprocessable(
+                    "SOURCE_RETURN_QUANTITY_NOT_SOURCE_UNIT",
+                    "彩食鲜来源数量必须是 int32 正整数");
+        }
+    }
+
     private static void requirePassiveXlsx(Workbook workbook) {
         if (!(workbook instanceof XSSFWorkbook xssf)) {
             throw BusinessException.unprocessable(
@@ -428,19 +460,18 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
         }
     }
 
-    private static String sourceQuantity(BigDecimal shipped, BigDecimal multiplier) {
-        if (shipped == null || shipped.signum() <= 0 || multiplier == null || multiplier.signum() <= 0) {
+    private static int sourceQuantity(int shipped, int multiplier) {
+        if (shipped <= 0 || multiplier <= 0) {
             throw BusinessException.unprocessable(
                     "SOURCE_RETURN_QUANTITY_NOT_SOURCE_UNIT",
                     "彩食鲜 Shipment 缺少可精确换算的来源数量");
         }
-        try {
-            return shipped.divide(multiplier).setScale(0, RoundingMode.UNNECESSARY).toPlainString();
-        } catch (ArithmeticException exception) {
+        if (shipped % multiplier != 0) {
             throw BusinessException.unprocessable(
                     "SOURCE_RETURN_QUANTITY_NOT_SOURCE_UNIT",
                     "彩食鲜 Shipment 实发量不能精确换算为整数来源份数");
         }
+        return shipped / multiplier;
     }
 
     private static String sha256(byte[] content) {
@@ -454,7 +485,7 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
     record RowFill(
             int sheetIndex,
             int rowIndex,
-            String shippedSourceQuantity,
+            int shippedSourceQuantity,
             String carrierCode,
             String trackingNumber) {}
 
@@ -462,7 +493,7 @@ public class CaishixianShipmentArtifactFactory implements SourceShipmentArtifact
             String fileRef,
             int sheetIndex,
             int rowIndex,
-            BigDecimal shippedQuantity,
-            BigDecimal multiplier,
+            int shippedQuantity,
+            int multiplier,
             String rawCells) {}
 }

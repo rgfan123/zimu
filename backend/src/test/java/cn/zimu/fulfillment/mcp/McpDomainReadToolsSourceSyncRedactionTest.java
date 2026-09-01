@@ -21,7 +21,6 @@ import cn.zimu.fulfillment.inventory.InventoryOverviewService;
 import cn.zimu.fulfillment.masterdata.MasterDataService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -44,9 +43,9 @@ class McpDomainReadToolsSourceSyncRedactionTest {
                 RECEIVER_NAME,
                 RECEIVER_PHONE,
                 RECEIVER_ADDRESS,
-                new BigDecimal("3"),
-                new BigDecimal("3"),
-                new BigDecimal("30.000"),
+                3L,
+                3L,
+                30L,
                 "FULLY_FULFILLED",
                 "SF",
                 "顺丰速运",
@@ -62,7 +61,7 @@ class McpDomainReadToolsSourceSyncRedactionTest {
                 RECEIVER_NAME,
                 RECEIVER_PHONE,
                 RECEIVER_ADDRESS,
-                new BigDecimal("3"),
+                3L,
                 true);
         SourceSyncCheck check = new SourceSyncCheck(
                 42L,
@@ -161,9 +160,9 @@ class McpDomainReadToolsSourceSyncRedactionTest {
                 RECEIVER_NAME,
                 RECEIVER_PHONE,
                 RECEIVER_ADDRESS,
-                BigDecimal.ONE,
-                BigDecimal.ONE,
-                BigDecimal.ONE,
+                1L,
+                1L,
+                1L,
                 "FULLY_FULFILLED",
                 null,
                 null,
@@ -205,9 +204,9 @@ class McpDomainReadToolsSourceSyncRedactionTest {
                 RECEIVER_NAME,
                 RECEIVER_PHONE,
                 RECEIVER_ADDRESS,
-                BigDecimal.ONE,
-                BigDecimal.ONE,
-                BigDecimal.ONE,
+                1L,
+                1L,
+                1L,
                 "FULLY_FULFILLED",
                 "JD",
                 "京东物流",

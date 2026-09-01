@@ -332,7 +332,7 @@ class ShipmentJdReceiverAddressBatchApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "1")),
+                        "quantity", 1)),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-13T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders",

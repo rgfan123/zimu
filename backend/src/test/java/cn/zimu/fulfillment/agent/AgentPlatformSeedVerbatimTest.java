@@ -23,12 +23,12 @@ import org.springframework.dao.DataIntegrityViolationException;
  *   <li>DB 是定义唯一真源：上下文无代码定义 bean 残留（T02），active 种子恰为 8 个
  *       （procurement-price-agent / data-query-agent / intent-recognition / meta-agent /
  *       source-sync-reviewer / fulfillment-file-agent / customer-followup-agent），
- *       procurement-price-agent version=2、其余 version=1、status='active'、allow_write 仅 meta-agent 为 true、守卫豁免为空，
+ *       procurement-price-agent version=3、其余 version=1、status='active'、allow_write 仅 meta-agent 为 true、守卫豁免为空，
  *       注册表（holder 当前实例）按 status='active' AND enabled=true 可解析全部 slug；</li>
  *   <li>meta-agent 播种行：version=1、status='active'、allow_write=true、enabled=true、
  *       白名单 = [list_agent_tools, create_agent_draft, update_agent_draft]（06/08 决策）；</li>
- *   <li>历史与 active 共 26 例评测用例；active 集合为 procurement-eval-v2 12 例 +
- *       data-query-eval-v1 7 例，旧 procurement v1 七例继续冻结保留；</li>
+ *   <li>历史与 active 共 38 例评测用例；active 集合为 procurement-eval-v3 12 例 +
+ *       data-query-eval-v1 7 例，旧 procurement v1/v2 用例继续冻结保留；</li>
  *   <li>结构约束落地：部分唯一索引（每 slug 至多一个 active）、agent_runs 新列与默认值、
  *       agent_eval_cases 外键。</li>
  * </ul>
@@ -80,7 +80,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                         "source-sync-reviewer", "fulfillment-file-agent", "customer-followup-agent",
                         "bundle-composer-agent");
         assertThat(active).allSatisfy(row -> {
-            assertThat(row.version()).isEqualTo("procurement-price-agent".equals(row.slug()) ? 2 : 1);
+            assertThat(row.version()).isEqualTo("procurement-price-agent".equals(row.slug()) ? 3 : 1);
             assertThat(row.status()).isEqualTo("active");
             assertThat(row.enabled()).isTrue();
             assertThat(row.allowWrite()).as("仅 meta-agent 允许写（%s）", row.slug())
@@ -142,7 +142,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
     }
 
     // ------------------------------------------------------------------
-    // 26 例历史评测用例播种（INVARIANT / CONFIRMED）
+    // 38 例历史评测用例播种（INVARIANT / CONFIRMED）
     // ------------------------------------------------------------------
 
     @Test
@@ -157,7 +157,7 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                         rs.getString("status"),
                         parse(rs.getString("input")),
                         parse(rs.getString("expected"))));
-        assertThat(rows).hasSize(26);
+        assertThat(rows).hasSize(38);
         assertThat(rows).allSatisfy(row -> {
             assertThat(row.metricKind()).isEqualTo("INVARIANT");
             assertThat(row.status()).isEqualTo("CONFIRMED");
@@ -205,6 +205,30 @@ class AgentPlatformSeedVerbatimTest extends AgentTestcontainersBase {
                 .isEqualTo("get_procurement_ticket");
         assertThat(expectedByInput.get(DataQueryEvalInputs.Q_PII_RECEIVER).path("requires_human").asBoolean())
                 .isTrue();
+    }
+
+    @Test
+    void procurementV3UsesIntegerCountSchemaAndEvalInputs() {
+        JsonNode schema = parse(jdbc.queryForObject(
+                "SELECT output_schema::text FROM app.agent_definitions "
+                        + "WHERE agent_slug='procurement-price-agent' AND version=3",
+                String.class));
+        assertThat(schema.at("/properties/requested_quantity/type").toString()).contains("integer", "null");
+        assertThat(schema.at("/properties/inventory/properties/available/type").toString())
+                .contains("integer", "null");
+        assertThat(schema.at("/properties/inventory/properties/shortage/type").toString())
+                .contains("integer", "null");
+
+        List<JsonNode> inputs = jdbc.query(
+                "SELECT input::text FROM app.agent_eval_cases "
+                        + "WHERE agent_slug='procurement-price-agent' AND agent_version=3 ORDER BY id",
+                (rs, i) -> parse(rs.getString(1)));
+        assertThat(inputs).hasSize(12).allSatisfy(input -> {
+            JsonNode quantity = input.get("quantity");
+            if (quantity != null) {
+                assertThat(quantity.isIntegralNumber()).isTrue();
+            }
+        });
     }
 
     private static List<String> normalizedInputs(List<Map<String, Object>> rows, String slug) {

@@ -1,5 +1,7 @@
 package cn.zimu.fulfillment.connector.jufubao;
 
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.customer.ImportedCustomerIdentity;
 import cn.zimu.fulfillment.file.StructuredOrderRow;
@@ -175,8 +177,8 @@ public final class JufubaoOrderTransform {
             if (productName.isBlank()) {
                 productName = text(product, "product_sku_name");
             }
-            String quantity = quantityOf(product);
-            if (quantity.isBlank()) {
+            Integer quantity = quantityOf(product);
+            if (quantity == null) {
                 // F3：数量缺失/非正整数 → 不产生该行（见 QUANTITY_INVALID_MARKER 注释的取舍说明）。
                 continue;
             }
@@ -207,9 +209,8 @@ public final class JufubaoOrderTransform {
      * F3 严格化：数量只接受正整数（product_num 为件数语义）。缺失/0/负数/小数/非数字一律返回
      * 空串——不静默造数；原始值保留在 rawSnapshot 的 product_list 可追溯。
      */
-    private String quantityOf(Map<String, Object> product) {
-        Long quantity = positiveInteger(product.get("product_num"));
-        return quantity == null ? "" : String.valueOf(quantity);
+    private Integer quantityOf(Map<String, Object> product) {
+        return positiveInteger(product.get("product_num"));
     }
 
     /** 订单是否含数量非法的商品行（任一 product_num 非正整数即 true）。 */
@@ -235,24 +236,13 @@ public final class JufubaoOrderTransform {
         return null;
     }
 
-    /** product_num 合法值：正整数（Number 或数字字符串）；其余返回 null。 */
-    private static Long positiveInteger(Object value) {
-        if (value instanceof Number number) {
-            double raw = number.doubleValue();
-            if (raw > 0 && !Double.isInfinite(raw) && raw <= Long.MAX_VALUE && raw == Math.floor(raw)) {
-                return number.longValue();
-            }
+    /** product_num 合法值：正 int32 数学整数（Number 或数字字符串）；其余返回 null。 */
+    private static Integer positiveInteger(Object value) {
+        try {
+            return CountQuantity.fromPositiveFileValue(value == null ? null : value.toString());
+        } catch (InvalidCountQuantityException exception) {
             return null;
         }
-        if (value instanceof String text && !text.isBlank()) {
-            try {
-                long parsed = Long.parseLong(text.trim());
-                return parsed > 0 ? parsed : null;
-            } catch (NumberFormatException ignored) {
-                return null;
-            }
-        }
-        return null;
     }
 
     // ---------------------------------------------------------------- 脱敏

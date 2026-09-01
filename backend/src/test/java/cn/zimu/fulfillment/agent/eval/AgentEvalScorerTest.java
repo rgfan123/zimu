@@ -36,7 +36,7 @@ class AgentEvalScorerTest extends AgentTestcontainersBase {
         assertThat(json.path("environment").path("eval_case_source").asText())
                 .contains("agent_eval_cases");
         assertThat(json.path("procurement").path("eval_set_version").asText())
-                .isEqualTo("procurement-eval-v2");
+                .isEqualTo("procurement-eval-v3");
         assertThat(json.path("data_query").path("eval_set_version").asText())
                 .isEqualTo("data-query-eval-v1");
 

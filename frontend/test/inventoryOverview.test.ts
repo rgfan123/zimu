@@ -10,7 +10,7 @@ import {
 } from '../src/pages/inventory/inventoryOverviewView.ts';
 
 test('inventory quantities preserve explicit zero and never turn no observation into zero', () => {
-  assert.equal(inventoryQuantityLabel('0.000', '件'), '0 件');
+  assert.equal(inventoryQuantityLabel(0, '件'), '0 件');
   assert.equal(inventoryQuantityLabel(null, '件'), '—');
 
   assert.deepEqual(inventoryObservationPresentation({

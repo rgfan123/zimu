@@ -62,25 +62,48 @@ public class MockJdWarehouseClient implements JDWarehouseService {
 
     @Override
     public JdResult createOutboundOrder(Map<String, Object> request) {
-        return success("createOutboundOrder", request, Map.of(
-                "warehouse_order_no", "MOCK-SO-001",
-                "status", "CREATED"));
+        return new JdResult(
+                false,
+                "JD_SO_CREATE_REQUIRES_SHIPMENT_WORKFLOW",
+                "销售出库单只能通过受控 Shipment 建单流程创建",
+                null,
+                null);
     }
 
     @Override
     public JdResult queryOutboundOrder(Map<String, Object> request) {
+        if (Integer.valueOf(0).equals(request == null ? null : request.get("deliveryItemFlag"))
+                && Integer.valueOf(0).equals(request.get("deliveryPackageFlag"))
+                && Integer.valueOf(0).equals(request.get("deliveryStatusFlag"))) {
+            // Availability preflight: the default mock has no durable remote order registry.
+            // Use JD's documented 2342 not-found result so tests never infer availability from
+            // a transport/permission failure.
+            return new JdResult(
+                    false,
+                    "2342",
+                    "该订单不存在，请检查单号是否正确",
+                    "mock-queryOutboundOrder-not-found",
+                    null);
+        }
         Object erpDeliveryNo = value(request, "erpDeliveryNo", "MOCK-ERP-DELIVERY-001");
         Object warehouseNo = value(request, "warehouseNo", "MOCK-WH-001");
+        Object ownerNo = value(request, "ownerNo", "MOCK-OWNER-001");
+        Object pinAccount = value(request, "pin", "MOCK-PIN-001");
+        Object deliveryItems = value(request, "mockExpectedDeliveryItemList", java.util.List.of());
         // 默认 Mock 表示已建单但未出库，不凭空伪造实发量或运单。
-        // Ticket 06 的 full/partial/conflict/failure 由同一 JDWarehouseService 可控测试 seam 提供。
+        // Shipment 写后读回会通过 mockExpectedDeliveryItemList 传入已冻结的非 PII 货品事实；
+        // REAL 的严格 SoQueryRequest 永远不会接收这个本地专用字段。
+        // Ticket 06 的 full/partial/conflict/failure 仍由同一 JDWarehouseService 可控测试 seam 提供。
         return success("queryOutboundOrder", request, Map.of(
                 "warehouse_order_no", value(request, "warehouse_order_no", "MOCK-SO-001"),
                 "erpDeliveryNo", erpDeliveryNo,
                 "warehouseNo", warehouseNo,
-                "deliveryNo", "MOCK-DELIVERY-001",
+                "deliveryNo", value(request, "deliveryNo", "MOCK-DELIVERY-001"),
+                "customerInfo", Map.of("ownerNo", ownerNo),
+                "pinAccount", pinAccount,
                 "status", "10010",
                 "isSplit", "0",
-                "deliveryItemList", java.util.List.of()));
+                "deliveryItemList", deliveryItems));
     }
 
     @Override

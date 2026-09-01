@@ -491,7 +491,7 @@ export default function OrderDraftReviewPanel({ reviewCase, onCompleted }: Order
                   addonBefore="数量"
                   value={form.items[line.line_no]?.quantity ?? ''}
                   onChange={(event) => updateLine(line.line_no, 'quantity', event.target.value)}
-                  placeholder="最多三位小数"
+                  placeholder="正整数，例如 1"
                 />
               </div>
               <Typography.Text type="secondary">履约方由所选 SKU 的主数据关系在服务端派生，不接受模型或人工直接指定。</Typography.Text>

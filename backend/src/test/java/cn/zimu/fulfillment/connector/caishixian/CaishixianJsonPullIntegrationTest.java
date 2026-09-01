@@ -15,7 +15,6 @@ import cn.zimu.fulfillment.file.TrackingFileService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -354,9 +353,9 @@ class CaishixianJsonPullIntegrationTest {
                 "收货人1",
                 "13800000001",
                 "河南省郑州市金水区测试路 1 号",
-                new BigDecimal("2"),
-                new BigDecimal("2"),
-                new BigDecimal("2"),
+                2L,
+                2L,
+                2L,
                 "FULLY_FULFILLED",
                 "JD",
                 "京东物流",
@@ -380,8 +379,10 @@ class CaishixianJsonPullIntegrationTest {
             assertThat(line.getCell(7).getStringCellValue()).isEqualTo("河南省");
             assertThat(line.getCell(10).getStringCellValue()).isEqualTo("测试路 1 号");
             assertThat(line.getCell(13).getStringCellValue()).isEqualTo("G-1");
-            assertThat(line.getCell(15).getStringCellValue()).isEqualTo("2");
-            assertThat(line.getCell(17).getStringCellValue()).isEqualTo("2"); // 发货数量（实发/映射倍数）
+            assertThat(line.getCell(15).getCellType()).isEqualTo(org.apache.poi.ss.usermodel.CellType.NUMERIC);
+            assertThat(line.getCell(15).getNumericCellValue()).isEqualTo(2);
+            assertThat(line.getCell(17).getCellType()).isEqualTo(org.apache.poi.ss.usermodel.CellType.NUMERIC);
+            assertThat(line.getCell(17).getNumericCellValue()).isEqualTo(2); // 发货数量（实发/映射倍数）
             assertThat(line.getCell(18).getStringCellValue()).isEqualTo("JD");
             assertThat(line.getCell(19).getStringCellValue()).isEqualTo("JDVA-" + prefix);
             assertThat(line.getCell(21).getStringCellValue()).isEmpty(); // 错误原因：上传时留空

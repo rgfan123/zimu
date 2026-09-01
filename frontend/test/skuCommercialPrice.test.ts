@@ -75,9 +75,11 @@ test('OpenAPI 公开统一 SKU 履约就绪结果与原因筛选', () => {
     'utf8',
   );
   const readiness = openApiSchemaBlock(openApi, 'SkuFulfillmentReadiness');
-  for (const property of ['ready', 'reason_codes', 'issues', 'data_quality_flags']) {
+  for (const property of ['ready', 'reason_codes', 'issues', 'warnings', 'data_quality_flags']) {
     assert.match(readiness, new RegExp(`^        ${property}:`, 'm'), property);
   }
+  assert.match(readiness, /SkuReadinessWarning/);
+  assert.match(openApiSchemaBlock(openApi, 'SkuReadinessWarningCode'), /PACKAGING_METADATA_INCOMPLETE/);
   assert.match(readiness, /SkuDataQualityFlag/);
   assert.match(
     openApiPropertyBlock(openApiSchemaBlock(openApi, 'SkuAttributes'), 'readiness'),

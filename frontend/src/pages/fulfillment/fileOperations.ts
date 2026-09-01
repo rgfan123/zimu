@@ -85,10 +85,13 @@ export function canReceiveTracking(exportKind: string, status: ExportUsageStatus
 export function canConfirmReferenceRow(row: {
   match_status: string;
   provider_sku_code?: string;
-  quantity_multiplier?: string | number;
+  quantity_multiplier?: number;
 }): boolean {
-  const multiplier = Number(row.quantity_multiplier);
-  return row.match_status === 'MATCHED' && Boolean(row.provider_sku_code?.trim()) && Number.isFinite(multiplier) && multiplier > 0;
+  const multiplier = row.quantity_multiplier;
+  return row.match_status === 'MATCHED'
+    && Boolean(row.provider_sku_code?.trim())
+    && Number.isInteger(multiplier)
+    && multiplier! > 0;
 }
 
 export interface ImportRowView {
@@ -149,7 +152,7 @@ const SOURCE_PRODUCT_HEADERS = ['商品名称', '品名', '产品名称'];
 const IMPORT_REASON_BY_CODE: Record<string, string> = {
   // 解析期：必填值 / 数量格式
   IMPORT_VALIDATION: '来源文件的必填值或同单收货信息需要核对',
-  QUANTITY_SCALE: '商品数量最多支持三位小数',
+  QUANTITY_SCALE: '商品数量必须是 int32 正整数，且乘算结果不能越界',
   // 解析期：来源行门禁（不可发货的来源事实，需回源头处理而非改文件）
   SOURCE_LINE_REF_REQUIRED: '来源行缺少子订单 ID，无法定位到唯一来源行',
   SOURCE_ORDER_TYPE_BLOCKED: '来源行不是可发货的实体销售订单',
@@ -249,7 +252,9 @@ export function presentImportRow(row: RawImportRow): ImportRowView {
     receiverPhone: parsed.receiver_phone ?? firstText(cells, ['联系电话', '收货人电话', '收货人手机号']),
     receiverAddress: parsed.receiver_address ?? firstText(cells, ['收货人地址', '收货地址', '详细地址']),
     productName: parsed.product_name ?? firstText(cells, SOURCE_PRODUCT_HEADERS),
-    quantity: parsed.quantity ?? firstText(cells, ['下单数量', '数量', '可发货数量', '商品数量']),
+    quantity: parsed.quantity == null
+      ? firstText(cells, ['下单数量', '数量', '可发货数量', '商品数量'])
+      : String(parsed.quantity),
     // 规格：来源文件未提供（解析兜底"来源未提供"）时回退内部 SKU 主数据规格默认值
     specification: parsed.specification && parsed.specification !== '来源未提供'
       ? parsed.specification

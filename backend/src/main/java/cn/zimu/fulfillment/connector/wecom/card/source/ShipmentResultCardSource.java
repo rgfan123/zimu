@@ -273,7 +273,7 @@ public class ShipmentResultCardSource implements WecomBusinessCardSource {
                         rs.getString("product_name_snapshot"),
                         rs.getString("specification_snapshot"),
                         rs.getString("unit_snapshot"),
-                        PreShipConfirmCardSource.trimQuantity(rs.getBigDecimal("requested_quantity")),
+                        PreShipConfirmCardSource.countText(rs.getInt("requested_quantity")),
                         "CUSTOM_BUNDLE".equals(rs.getString("line_type")) ? "组合装" : "普通商品",
                         rs.getString("receiver_name") + " / " + rs.getString("receiver_phone")
                                 + " / " + rs.getString("receiver_address"),

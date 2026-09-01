@@ -16,6 +16,8 @@ import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
 import cn.zimu.fulfillment.connector.SourceSyncResult;
+import cn.zimu.fulfillment.connector.feixiang.FeixiangOrderDetail;
+import cn.zimu.fulfillment.connector.feixiang.FeixiangShipmentGateway;
 import cn.zimu.fulfillment.connector.jufubao.JufubaoShipmentAttemptStore;
 import cn.zimu.fulfillment.connector.jufubao.JufubaoShipmentGateway;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,6 +25,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,6 +44,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         properties = {
             "app.message-worker.enabled=false",
             "app.mcp.enabled=false",
+            "app.feixiang.shipment.write-mode=ON",
             "app.source-sync.recovery.enabled=false",
             "spring.data.redis.repositories.enabled=false"
         })
@@ -58,10 +62,12 @@ class SourceShipmentSyncServiceIntegrationTest {
     @Autowired private SourceSyncStore store;
 
     @MockitoBean private JufubaoShipmentGateway jufubaoGateway;
+    @MockitoBean private FeixiangShipmentGateway feixiangGateway;
 
     @BeforeEach
     void resetDatabase() {
         reset(jufubaoGateway);
+        reset(feixiangGateway);
         jdbc.execute("""
                 TRUNCATE app.audit_logs, app.order_events, app.review_cases,
                          app.source_return_export_invalidations,
@@ -79,6 +85,13 @@ class SourceShipmentSyncServiceIntegrationTest {
                     config='{"carrier_mappings":{"JD":"京东物流"}}'::jsonb,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE source_channel='JUFUBAO'
+                """);
+        jdbc.update("""
+                UPDATE app.connector_configs
+                SET enabled=TRUE, mode='REAL', transport_mode='EXCEL',
+                    config='{"carrier_mappings":{"JD":"京东物流"}}'::jsonb,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE source_channel='FEIXIANG'
                 """);
     }
 
@@ -127,6 +140,32 @@ class SourceShipmentSyncServiceIntegrationTest {
                 .doesNotContain("13800000000")
                 .doesNotContain("河南省郑州市金水区1号");
         assertThat(((Number) audit.get("latency_ms")).intValue()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void missingLocalCarrierTranslationFallsBackToCanonicalCarrierAndLivePlatformDictionary() {
+        long shipmentId = seedReadyShipmentWithoutTracking();
+        jdbc.update("""
+                INSERT INTO app.trackings
+                    (shipment_id, logistics_company_code, logistics_company_name, tracking_number)
+                VALUES (?, 'SF', '顺丰速运', 'SF123')
+                """, shipmentId);
+        jdbc.update("""
+                UPDATE app.connector_configs
+                SET config='{}'::jsonb, updated_at=CURRENT_TIMESTAMP
+                WHERE source_channel='JUFUBAO'
+                """);
+        stubReadyJufubaoClosure();
+        when(jufubaoGateway.carrierOptions())
+                .thenReturn(List.of(new JufubaoShipmentGateway.CarrierOption("顺丰速运", 23)));
+
+        SourceSyncCheck check = service.check(shipmentId);
+
+        assertThat(check.ready()).isTrue();
+        assertThat(check.internal().carrierCode()).isEqualTo("SF");
+        assertThat(check.internal().carrierOutputValue()).isEqualTo("顺丰速运");
+        assertThat(check.blockers()).extracting(SourceSyncBlocker::code)
+                .doesNotContain("SOURCE_SYNC_CARRIER_MAPPING_REQUIRED", "SOURCE_PLATFORM_CARRIER_UNMAPPED");
     }
 
     @Test
@@ -282,6 +321,99 @@ class SourceShipmentSyncServiceIntegrationTest {
     }
 
     @Test
+    void missingFeixiangPlatformCarrierCodeFailsOnlyTheRetryableSyncAndKeepsTracking() {
+        long shipmentId = seedReadyShipment(
+                true,
+                true,
+                SourceChannel.FEIXIANG,
+                "{\"source_ref\":\"main-1\",\"source_line_ref\":\"sub-1\","
+                        + "\"snapshot\":{\"order_son_id\":\"24126510\"}}");
+        jdbc.update("""
+                UPDATE app.connector_configs
+                SET transport_mode='API',
+                    config='{"carrier_mappings":{"JD":"京东物流"},
+                             "carrier_api_codes":{"JD":"jingdong"}}'::jsonb,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE source_channel='FEIXIANG'
+                """);
+        FeixiangOrderDetail detail = new FeixiangOrderDetail(
+                new FeixiangOrderDetail.ReceiveInfo(
+                        "9001", "24126510", "main-1", "sub-1", "2", "2", "0",
+                        "2026-08-31 10:00:00", "2026-08-31 10:01:00", "",
+                        "张三", "13800000000", "", "河南省郑州市金水区1号"),
+                List.of(new FeixiangOrderDetail.ProductLine(
+                        "9001", "24126510", "43231540", "P1", "同步商品", "2kg/箱",
+                        "2", "88.00", "", "", "", "待发货", "待发货", "", "供应商")));
+        AtomicInteger detailReads = new AtomicInteger();
+        AtomicBoolean apiCodeRemoved = new AtomicBoolean();
+        when(feixiangGateway.orderDetail("24126510")).thenAnswer(invocation -> {
+            if (detailReads.incrementAndGet() == 3 && apiCodeRemoved.compareAndSet(false, true)) {
+                jdbc.update("""
+                        UPDATE app.connector_configs
+                        SET config=config-'carrier_api_codes', updated_at=CURRENT_TIMESTAMP
+                        WHERE source_channel='FEIXIANG'
+                        """);
+            }
+            return detail;
+        });
+        CommandContext context = new CommandContext(
+                "req-feixiang-code", "trace-feixiang-code", "jry", "jry");
+        SourceSyncCheck checked = service.check(shipmentId, context, AuditActorType.HUMAN);
+
+        assertThat(checked.ready()).isTrue();
+        assertThatThrownBy(() -> service.execute(
+                        shipmentId,
+                        new SourceSyncExecuteCommand(checked.checkHash()),
+                        "source-sync-feixiang-code-0001",
+                        context))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getBusinessCode())
+                                .isEqualTo("FEIXIANG_CARRIER_API_CODE_MISSING"));
+        assertThat(jdbc.queryForMap("""
+                SELECT sync_status, attempt_count, last_error_code, effect_started_at
+                FROM app.shipment_syncs WHERE shipment_id=?
+                """, shipmentId))
+                .containsEntry("sync_status", "SYNC_FAILED")
+                .containsEntry("attempt_count", 1)
+                .containsEntry("last_error_code", "FEIXIANG_CARRIER_API_CODE_MISSING")
+                .containsEntry("effect_started_at", null);
+        assertThat(jdbc.queryForMap("""
+                SELECT logistics_company_code, logistics_company_name, tracking_number
+                FROM app.trackings WHERE shipment_id=?
+                """, shipmentId))
+                .containsEntry("logistics_company_code", "JD")
+                .containsEntry("logistics_company_name", "京东物流")
+                .containsEntry("tracking_number", "JDVA123");
+        verify(feixiangGateway, never()).submit(any(), any());
+
+        // 安全失败没有外部效果：补齐平台代码后允许使用新外层幂等键重试同一运单。
+        jdbc.update("""
+                UPDATE app.connector_configs
+                SET config=jsonb_set(config, '{carrier_api_codes}', '{"JD":"jingdong"}'::jsonb, true),
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE source_channel='FEIXIANG'
+                """);
+        when(feixiangGateway.submit(any(), any()))
+                .thenReturn(FeixiangShipmentGateway.SubmitResult.accepted());
+        when(feixiangGateway.awaitTrackingApplied(any(), any(), any()))
+                .thenReturn(FeixiangShipmentGateway.VerifyResult.confirmed());
+        SourceSyncCheck retry = service.check(shipmentId, context, AuditActorType.HUMAN);
+        IdempotentResult<SourceSyncOutcome> recovered = service.execute(
+                shipmentId,
+                new SourceSyncExecuteCommand(retry.checkHash()),
+                "source-sync-feixiang-code-0002",
+                context);
+
+        assertThat(retry.ready()).isTrue();
+        assertThat(recovered.result().status()).isEqualTo(SourceSyncStatus.SYNCED);
+        assertThat(jdbc.queryForObject(
+                "SELECT tracking_number FROM app.trackings WHERE shipment_id=?",
+                String.class,
+                shipmentId)).isEqualTo("JDVA123");
+        verify(feixiangGateway, times(1)).submit(any(), any());
+    }
+
+    @Test
     void excelImportedRowResolvesSubOrderRefFromThePlatformColumn() {
         // 2026-08-29 生产实证：Excel 链路的 raw_cells 就是平台原始列，没有 source_line_ref
         // 这个规范键（只有 API 拉单的结构化链路会写）。31 行已接受来源行里只有 1 行有，
@@ -382,7 +514,7 @@ class SourceShipmentSyncServiceIntegrationTest {
                 new JufubaoShipmentAttemptStore.ShipmentAttemptPayload(
                         "main-1",
                         "sub-1",
-                        new java.math.BigDecimal("2"),
+                        2L,
                         "京东物流",
                         "JDVA123",
                         check.platform().effectHash());

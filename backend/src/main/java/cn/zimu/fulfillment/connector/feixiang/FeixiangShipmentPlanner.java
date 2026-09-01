@@ -3,7 +3,6 @@ package cn.zimu.fulfillment.connector.feixiang;
 import cn.zimu.fulfillment.connector.SourceReceiverNormalizer;
 import cn.zimu.fulfillment.connector.SourceShipmentResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -61,7 +60,7 @@ public class FeixiangShipmentPlanner {
             String receiverName,
             String receiverPhone,
             String receiverAddress,
-            BigDecimal sendableQuantity,
+            Long sendableQuantity,
             boolean carrierMapped,
             String expressCode,
             FeixiangShipmentRequest request,
@@ -110,7 +109,7 @@ public class FeixiangShipmentPlanner {
         FeixiangOrderDetail.ReceiveInfo info = detail.receiveInfo();
         List<FeixiangOrderDetail.ProductLine> lines = detail.products();
         String platformState = platformState(lines);
-        BigDecimal sendable = sendableQuantity(lines);
+        Long sendable = sendableQuantity(lines);
 
         FeixiangCarrierCodeResolver.Resolution carrier = carriers.resolve(result.carrierOutputValue());
         FeixiangShipmentRequest request = null;
@@ -157,21 +156,20 @@ public class FeixiangShipmentPlanner {
     }
 
     /** 平台可发份数 = 各商品行 {@code pronum} 之和；任一行非正整数则返回 null（判定为未知）。 */
-    private static BigDecimal sendableQuantity(List<FeixiangOrderDetail.ProductLine> lines) {
+    private static Long sendableQuantity(List<FeixiangOrderDetail.ProductLine> lines) {
         if (lines == null || lines.isEmpty()) {
             return null;
         }
-        BigDecimal total = BigDecimal.ZERO;
+        long total = 0;
         for (FeixiangOrderDetail.ProductLine line : lines) {
             String raw = line.pronum() == null ? "" : line.pronum().trim();
-            if (raw.isEmpty() || !raw.chars().allMatch(Character::isDigit)) {
+            final int quantity;
+            try {
+                quantity = cn.zimu.fulfillment.common.domain.CountQuantity.fromPositiveFileValue(raw);
+            } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
                 return null;
             }
-            BigDecimal quantity = new BigDecimal(raw);
-            if (quantity.signum() <= 0) {
-                return null;
-            }
-            total = total.add(quantity);
+            total = Math.addExact(total, quantity);
         }
         return total;
     }

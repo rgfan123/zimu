@@ -59,7 +59,8 @@ function text(value?: string | null): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
-function quantityText(value?: string | null): string {
+function quantityText(value?: string | number | null): string {
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '—';
   return text(value) ?? '—';
 }
 
@@ -102,7 +103,9 @@ export function presentSuggestion(
   const comparable = quotes.filter((quote) => quote.excludedReason === null).length;
   const excluded = quotes.length - comparable;
   const missing = recommendation?.missing_fields ?? [];
-  const shortage = text(recommendation?.inventory?.shortage);
+  const shortage = recommendation?.inventory?.shortage == null
+    ? null
+    : String(recommendation.inventory.shortage);
 
   const whyParts: string[] = [];
   if (shortage && shortage !== '0') whyParts.push(`该 SKU 存在缺口 ${shortage}`);
@@ -125,7 +128,9 @@ export function presentSuggestion(
     ticketId: ticket.id,
     ticketNo: ticket.ticket_no,
     targetSku: text(recommendation?.target_sku) ?? '—',
-    quantity: text(recommendation?.requested_quantity),
+    quantity: recommendation?.requested_quantity == null
+      ? null
+      : String(recommendation.requested_quantity),
     inventory: recommendation?.inventory
       ? {
           available: quantityText(recommendation.inventory.available),

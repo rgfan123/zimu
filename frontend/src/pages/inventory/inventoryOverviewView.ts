@@ -15,15 +15,8 @@ export function inventoryTimeLabel(value: string | null): string {
   return formatDateTime(value);
 }
 
-function normalizedDecimal(value: string): string {
-  if (!/^\d+(?:\.\d+)?$/.test(value)) return value;
-  const [integer, fraction = ''] = value.split('.');
-  const significantFraction = fraction.replace(/0+$/, '');
-  return significantFraction ? `${integer}.${significantFraction}` : integer;
-}
-
-export function inventoryQuantityLabel(value: string | null, unit: string): string {
-  return value === null ? '—' : `${normalizedDecimal(value)} ${unit}`;
+export function inventoryQuantityLabel(value: number | null, unit: string): string {
+  return value === null ? '—' : `${value} ${unit}`;
 }
 
 export function inventorySourceLabel(sourceType: string | null): string {

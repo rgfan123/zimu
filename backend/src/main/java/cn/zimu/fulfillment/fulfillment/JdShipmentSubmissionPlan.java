@@ -20,11 +20,13 @@ record JdShipmentSubmissionPlan(
         long orderId,
         long providerId,
         String providerType,
+        String outboundOrderNo,
         String erpDeliveryNo,
         PriorSubmission priorSubmission,
         List<OrderLineState> orderLines,
         Map<String, Object> request,
         String requestHash,
+        String businessFactsHash,
         List<StockDemand> stockDemands,
         List<Validation> validations,
         List<Blocker> blockers,
@@ -40,6 +42,18 @@ record JdShipmentSubmissionPlan(
 
     boolean submittable() {
         return blockers.isEmpty();
+    }
+
+    String pin() {
+        return ShipmentJdOutboundPreparer.text(request.get("pin"));
+    }
+
+    String ownerNo() {
+        Object rawCustomerInfo = request.get("customerInfo");
+        if (!(rawCustomerInfo instanceof Map<?, ?> customerInfo)) {
+            return null;
+        }
+        return ShipmentJdOutboundPreparer.text(customerInfo.get("ownerNo"));
     }
 
     record Validation(String path, String status, String source, String message) {
@@ -60,7 +74,9 @@ record JdShipmentSubmissionPlan(
 
     record PriorSubmission(
             String syncStatus,
+            String failurePhase,
             String requestHash,
+            String businessFactsHash,
             int retryCount,
             String lastErrorCode,
             String clientMode) {
@@ -68,7 +84,10 @@ record JdShipmentSubmissionPlan(
         boolean requiresReconciliation() {
             return ShipmentJdOutboundPreparer.SYNC_STATUS_SUBMITTING.equals(syncStatus)
                     || (ShipmentJdOutboundPreparer.SYNC_STATUS_SYNC_FAILED.equals(syncStatus)
-                            && ShipmentJdOutboundPreparer.UNCERTAIN_EXTERNAL_RESULTS.contains(lastErrorCode));
+                            && ("RECONCILIATION_REQUIRED".equals(lastErrorCode)
+                                    || "SUBMIT".equals(failurePhase)
+                                            && ShipmentJdOutboundPreparer.UNCERTAIN_EXTERNAL_RESULTS.contains(
+                                                    lastErrorCode)));
         }
     }
 

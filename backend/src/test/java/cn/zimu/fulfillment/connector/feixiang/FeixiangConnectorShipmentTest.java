@@ -110,6 +110,24 @@ class FeixiangConnectorShipmentTest {
     }
 
     @Test
+    void equalSourceQuantitiesOutsideLongCacheDoNotLookLikeDrift() {
+        Fixture fixture = fixture("ON");
+        fixture.gateway.beforeDetail = FeixiangShipmentTestSupport.detail(
+                "", "", "200", FeixiangShipmentTestSupport.ORDER_PRODUCT_ID);
+        fixture.gateway.afterDetail = FeixiangShipmentTestSupport.detail(
+                FeixiangShipmentTestSupport.TRACKING_NO,
+                FeixiangShipmentTestSupport.EXPRESS_CODE,
+                "200",
+                FeixiangShipmentTestSupport.ORDER_PRODUCT_ID);
+
+        SourceSyncResult result = fixture.connector.pushShipmentResult(
+                withSourceQuantity(FeixiangShipmentTestSupport.shipmentResult(null), 200L),
+                () -> {});
+
+        assertThat(result.success()).isTrue();
+    }
+
+    @Test
     void acceptedButUnverifiedTrackingGoesToReconciliationNotSuccess() {
         Fixture fixture = fixture("ON");
         // 平台受理了，但写后读回来目标行仍没有我们的运单号。
@@ -296,7 +314,7 @@ class FeixiangConnectorShipmentTest {
         assertThat(check.available()).isTrue();
         assertThat(check.platformState()).isEqualTo("SHIPPABLE");
         assertThat(check.carrierMapped()).isTrue();
-        assertThat(check.sendableQuantity()).isEqualByComparingTo("1");
+        assertThat(check.sendableQuantity()).isEqualTo(1L);
         assertThat(check.addressStatus()).isEqualTo(SourcePlatformCheckResult.AddressStatus.CLEAR);
         assertThat(check.effectHash()).isNotBlank();
     }
@@ -356,6 +374,14 @@ class FeixiangConnectorShipmentTest {
         return new SourceShipmentResult(
                 base.channel(), base.sourceRef(), base.sourceLineRef(), base.actualShippedQuantity(),
                 base.sourceUnitQuantity(), base.outcome(), base.carrierOutputValue(), trackingNo,
+                base.exceptionReason(), base.receiverName(), base.receiverPhone(),
+                base.receiverAddress(), base.shipmentId(), base.artifact());
+    }
+
+    private static SourceShipmentResult withSourceQuantity(SourceShipmentResult base, long sourceQuantity) {
+        return new SourceShipmentResult(
+                base.channel(), base.sourceRef(), base.sourceLineRef(), base.actualShippedQuantity(),
+                sourceQuantity, base.outcome(), base.carrierOutputValue(), base.firstTrackingNo(),
                 base.exceptionReason(), base.receiverName(), base.receiverPhone(),
                 base.receiverAddress(), base.shipmentId(), base.artifact());
     }

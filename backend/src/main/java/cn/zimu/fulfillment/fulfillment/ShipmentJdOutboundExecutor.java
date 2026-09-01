@@ -2,13 +2,14 @@ package cn.zimu.fulfillment.fulfillment;
 
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
+import cn.zimu.fulfillment.common.idempotency.IdempotencyService.ExternalWriteClaim;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.jd.JDWarehouseService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
-import cn.zimu.fulfillment.connector.jd.write.JdWriteOpsService;
 import cn.zimu.fulfillment.fulfillment.JdShipmentSubmissionPlan.Blocker;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import org.slf4j.Logger;
@@ -30,7 +31,7 @@ public class ShipmentJdOutboundExecutor {
     private static final Logger log = LoggerFactory.getLogger(ShipmentJdOutboundExecutor.class);
 
     private final ShipmentJdStockCheckService stockChecks;
-    private final JdWriteOpsService jdWrite;
+    private final JdSalesOutboundWriter jdWrite;
     private final JDWarehouseService jdWarehouse;
     private final ShipmentJdOutboundPreparer preparer;
     private final ShipmentJdOutboundAuditService audits;
@@ -38,7 +39,7 @@ public class ShipmentJdOutboundExecutor {
 
     public ShipmentJdOutboundExecutor(
             ShipmentJdStockCheckService stockChecks,
-            JdWriteOpsService jdWrite,
+            JdSalesOutboundWriter jdWrite,
             JDWarehouseService jdWarehouse,
             ShipmentJdOutboundPreparer preparer,
             ShipmentJdOutboundAuditService audits,
@@ -53,7 +54,10 @@ public class ShipmentJdOutboundExecutor {
 
     /** 第二阶段：实时 SKU/库存门禁与 addSoOrder 全部发生在业务事务之外。 */
     public SubmitExternalResult executeSubmit(
-            SubmitIntent intent, String idempotencyKey, CommandContext context) {
+            SubmitIntent intent,
+            String idempotencyKey,
+            CommandContext context,
+            ExternalWriteClaim activeClaim) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("JD outbound external phase must run outside a database transaction");
         }
@@ -93,13 +97,40 @@ public class ShipmentJdOutboundExecutor {
                 return SubmitExternalResult.validationFailure(first.code(), first.message());
             }
             JdResult result;
+            // Stock/previews may take time. Fence the idempotency lease immediately before the
+            // irreversible call. Claim loss happens before addSoOrder and must remain a definite
+            // validation failure, outside the adapter's uncertain-result catch.
+            activeClaim.verifyActive();
             try {
-                result = jdWrite.orderSoCreate(intent.plan().request());
+                result = jdWrite.create(PreparedJdSalesOutbound.from(intent.plan()));
             } catch (RuntimeException exception) {
                 log.warn("JD orderSoCreate adapter failed for shipment {}", intent.plan().shipmentId());
                 result = new JdResult(false, "SDK_CALL_FAILED", "京东出库单提交调用失败", null, null);
             }
-            return SubmitExternalResult.submitted(result);
+            try {
+                if (result == null || !result.success()) {
+                    return SubmitExternalResult.submitted(result);
+                }
+                String jdDeliveryNo = extractDeliveryNo(result);
+                String responseErpDeliveryNo = extractErpDeliveryNo(result);
+                if (jdDeliveryNo == null
+                        || responseErpDeliveryNo == null
+                        || !Objects.equals(intent.frozenFacts().erpDeliveryNo(), responseErpDeliveryNo)) {
+                    // Completion keeps the existing success-response reference fence and records an
+                    // unresolved external write. Without stable references there is no safe query identity.
+                    return SubmitExternalResult.submitted(result);
+                }
+                return verifyRemoteFacts(intent, context, jdDeliveryNo, true);
+            } catch (RuntimeException exception) {
+                // Point of no return: addSoOrder was invoked. No parser, mapper, audit or programming
+                // exception after this line may be reclassified as a pre-submit validation failure,
+                // otherwise a later retry could allocate a new reference and create a duplicate order.
+                log.warn("JD outbound post-add verification failed for shipment {}",
+                        intent.plan().shipmentId());
+                return SubmitExternalResult.reconciliationRequired(
+                        result,
+                        "京东出库创建调用后本地核验异常，外部效果未决，禁止再次创建");
+            }
         } catch (BusinessException exception) {
             return SubmitExternalResult.validationFailure(exception.getBusinessCode(), exception.getMessage());
         } catch (RuntimeException exception) {
@@ -115,42 +146,88 @@ public class ShipmentJdOutboundExecutor {
      */
     private SubmitExternalResult reconcileUncertainSubmit(SubmitIntent intent, CommandContext context) {
         try {
-            Map<String, Object> reconciliationRequest = Map.of(
-                    "erpDeliveryNo", intent.plan().erpDeliveryNo(),
-                    "deliveryItemFlag", 1,
-                    "deliveryPackageFlag", 0,
-                    "deliveryStatusFlag", 1);
-            JdResult reconciliation;
-            try {
-                reconciliation = jdWarehouse.queryOutboundOrder(reconciliationRequest);
-            } catch (RuntimeException exception) {
-                reconciliation = null;
-            }
-            audits.recordReconciliationQuery(
-                    intent.plan().shipmentId(),
-                    intent.plan().orderId(),
-                    context,
-                    reconciliationRequest,
-                    reconciliation,
-                    reconciliation != null && extractDeliveryNo(reconciliation) != null,
-                    reconciliation != null && Objects.equals(
-                            intent.plan().erpDeliveryNo(), extractErpDeliveryNo(reconciliation)));
-            if (reconciliation != null
-                    && reconciliation.success()
-                    && extractDeliveryNo(reconciliation) != null
-                    && Objects.equals(
-                            intent.plan().erpDeliveryNo(), extractErpDeliveryNo(reconciliation))) {
-                return SubmitExternalResult.submitted(reconciliation);
-            }
-            return SubmitExternalResult.validationFailure(
-                    "RECONCILIATION_REQUIRED",
-                    "上次京东写结果不确定，按原 erpDeliveryNo 查询未确认结果，禁止再次创建");
+            return verifyRemoteFacts(intent, context, null, false);
         } catch (RuntimeException exception) {
             log.warn("JD outbound reconciliation failed for shipment {}", intent.plan().shipmentId());
-            return SubmitExternalResult.validationFailure(
-                    "RECONCILIATION_REQUIRED",
+            return SubmitExternalResult.reconciliationRequired(
+                    null,
                     "上次京东写结果不确定，对账查询或审计未完成，禁止再次创建");
         }
+    }
+
+    /**
+     * 新建成功与未决重试共用同一事实核验路径。expectedDeliveryNo 非空时同时围栏 create 返回的
+     * 京东引用；为空时允许未决对账从 querySoOrder 首次取得该引用，但其余租户/仓库/货品事实
+     * 仍必须与已冻结意图完全一致。
+     */
+    private SubmitExternalResult verifyRemoteFacts(
+            SubmitIntent intent,
+            CommandContext context,
+            String expectedDeliveryNo,
+            boolean postCreate) {
+        JdOutboundReadbackVerifier.Expected expected =
+                intent.frozenFacts().withJdDeliveryNo(expectedDeliveryNo);
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("erpDeliveryNo", expected.erpDeliveryNo());
+        if (expectedDeliveryNo != null) {
+            request.put("deliveryNo", expectedDeliveryNo);
+        }
+        request.put("ownerNo", expected.ownerNo());
+        request.put("pin", expected.pin());
+        request.put("deliveryItemFlag", 1);
+        request.put("deliveryPackageFlag", 0);
+        request.put("deliveryStatusFlag", 1);
+        if ("MOCK".equals(intent.clientMode())) {
+            // SoQueryRequest has no warehouse/cargo request fields.  The deterministic local Mock
+            // receives frozen expected facts under an explicit test-only key; REAL never sees them.
+            request.put("warehouseNo", expected.warehouseNo());
+            request.put("mockExpectedDeliveryItemList", expected.cargos().stream()
+                    .map(cargo -> Map.<String, Object>of(
+                            "orderLine", cargo.orderLine(),
+                            "goodsNo", cargo.goodsNo(),
+                            "planQuantity", cargo.planQuantity()))
+                    .toList());
+        }
+        JdResult readback = null;
+        if (expected.valid()) {
+            try {
+                readback = jdWarehouse.queryOutboundOrder(request);
+            } catch (RuntimeException exception) {
+                readback = null;
+            }
+        }
+        JdOutboundReadbackVerifier.Verification verification =
+                JdOutboundReadbackVerifier.verify(expected, readback);
+        try {
+            if (postCreate) {
+                audits.recordPostCreateReadback(
+                        intent.plan().shipmentId(), intent.plan().orderId(), context, readback, verification);
+            } else {
+                audits.recordReconciliationQuery(
+                        intent.plan().shipmentId(),
+                        intent.plan().orderId(),
+                        context,
+                        request,
+                        readback,
+                        readback != null && extractDeliveryNo(readback) != null,
+                        readback != null && Objects.equals(
+                                expected.erpDeliveryNo(), extractErpDeliveryNo(readback)));
+            }
+        } catch (RuntimeException exception) {
+            return SubmitExternalResult.reconciliationRequired(
+                    readback,
+                    "京东出库写入后的事实核验审计未完成，禁止标记已提交或再次创建");
+        }
+        if (verification.matched()) {
+            return SubmitExternalResult.submitted(readback);
+        }
+        String message = switch (verification.status()) {
+            case MISMATCHED -> "京东写后读回的租户、仓库或货品事实与冻结提交意图不一致，禁止归属或再次创建";
+            case MALFORMED -> "京东写后读回响应缺少可验证的租户、仓库或货品事实，禁止标记已提交";
+            case QUERY_FAILED -> "京东写后读回未成功，外部订单结果未决，禁止再次创建";
+            case MATCHED -> throw new IllegalStateException("matched readback must have returned above");
+        };
+        return SubmitExternalResult.reconciliationRequired(readback, message);
     }
 
     /** 兼容 Mock（data.response.deliveryNo）与 REAL（data.deliveryNo）两种响应形状提取京东出库单号。 */
@@ -187,10 +264,14 @@ public class ShipmentJdOutboundExecutor {
     public record SubmitIntent(
             JdShipmentSubmissionPlan plan,
             int retryCount,
-            String clientMode) {
+            String clientMode,
+            JdOutboundReadbackVerifier.Expected frozenFacts,
+            String frozenRequestHash,
+            String frozenBusinessFactsHash,
+            boolean reconciliationOnly) {
 
         public boolean requiresReconciliation() {
-            return plan.priorSubmission() != null && plan.priorSubmission().requiresReconciliation();
+            return reconciliationOnly;
         }
     }
 
@@ -208,6 +289,15 @@ public class ShipmentJdOutboundExecutor {
 
         public static SubmitExternalResult submitted(JdResult result) {
             return new SubmitExternalResult(true, null, null, null, result);
+        }
+
+        public static SubmitExternalResult reconciliationRequired(JdResult result, String message) {
+            return new SubmitExternalResult(
+                    false,
+                    "SUBMIT",
+                    "RECONCILIATION_REQUIRED",
+                    message,
+                    result);
         }
     }
 }

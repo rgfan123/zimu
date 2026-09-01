@@ -377,6 +377,48 @@ class IdempotencyServiceIntegrationTest {
         assertThat(intentTransaction).isTrue();
     }
 
+    @Test
+    void preparedExternalWriteRenewsLeaseAfterIntentTransactionCrossesOriginalExpiry() {
+        AtomicInteger externalWrites = new AtomicInteger();
+
+        IdempotentResult<Map<String, String>> result =
+                idempotencyService.executeWithPreparedExternalWriteIntent(
+                        "prepared-external-write-renewal-test",
+                        "prepared-external-write-renewal-001",
+                        Map.of("request", "same"),
+                        201,
+                        Duration.ofSeconds(1),
+                        () -> "read-only-platform-facts",
+                        prepared -> {
+                            java.util.concurrent.locks.LockSupport.parkNanos(
+                                    Duration.ofMillis(1200).toNanos());
+                            return "stable-intent:" + prepared;
+                        },
+                        (intent, claim) -> {
+                            claim.verifyActive();
+                            externalWrites.incrementAndGet();
+                            Double remaining = new JdbcTemplate(dataSource).queryForObject(
+                                    """
+                                    SELECT EXTRACT(EPOCH FROM (
+                                        lease_expires_at - clock_timestamp()
+                                    ))::double precision
+                                    FROM app.idempotency_registry
+                                    WHERE scope=? AND idempotency_key=?
+                                    """,
+                                    Double.class,
+                                    "prepared-external-write-renewal-test",
+                                    "prepared-external-write-renewal-001");
+                            assertThat(remaining).isPositive();
+                            return Map.of("external_ref", intent);
+                        },
+                        (intent, externalResult) ->
+                                IdempotencyService.ExternalCompletion.succeeded(externalResult));
+
+        assertThat(result.result()).containsEntry(
+                "external_ref", "stable-intent:read-only-platform-facts");
+        assertThat(externalWrites).hasValue(1);
+    }
+
     private IdempotencyService serviceWithLease(long leaseSeconds) {
         return new IdempotencyService(
                 new JdbcTemplate(dataSource), objectMapper, transactionManager, leaseSeconds);

@@ -9,6 +9,7 @@ import dev.langchain4j.model.chat.request.json.JsonEnumSchema;
 import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
 import dev.langchain4j.model.chat.request.json.JsonNumberSchema;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonRawSchema;
 import dev.langchain4j.model.chat.request.json.JsonSchemaElement;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 /**
@@ -54,6 +55,15 @@ public final class McpToolSchemaTestSupport {
             ArrayNode values = node.putArray("enum");
             schema.enumValues().forEach(values::add);
             return node;
+        }
+        if (element instanceof JsonRawSchema schema) {
+            try {
+                return com.fasterxml.jackson.databind.json.JsonMapper.builder()
+                        .build()
+                        .readTree(schema.schema());
+            } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+                throw new IllegalStateException("无法解析 JsonRawSchema", exception);
+            }
         }
         throw new IllegalStateException("测试不支持的元素类型: " + element.getClass());
     }

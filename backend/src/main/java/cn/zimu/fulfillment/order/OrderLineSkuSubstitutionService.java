@@ -10,7 +10,6 @@ import cn.zimu.fulfillment.fulfillment.InitialFulfillmentService;
 import cn.zimu.fulfillment.order.domain.Order;
 import cn.zimu.fulfillment.order.domain.OrderLine;
 import cn.zimu.fulfillment.order.domain.OrderStatus;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;

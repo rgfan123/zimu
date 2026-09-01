@@ -36,8 +36,8 @@ record AuthoritativeSkuCatalogManifest(
     record SourceRow(
             int row,
             String caishixianName,
-            String caishixianQuantity,
+            Integer caishixianQuantity,
             String jufubaoName,
-            String jufubaoQuantity,
+            Integer jufubaoQuantity,
             String jdName) {}
 }

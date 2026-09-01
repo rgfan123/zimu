@@ -10,7 +10,6 @@ import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.version.OrderVersionService;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.sku.SkuReadinessCatalogLock;
-import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -80,10 +79,10 @@ public class ContinuationExportService {
             throw BusinessException.unprocessable(
                     "CONTINUATION_PROVIDER_UNSUPPORTED", "当前仅支持第三方履约续发批次");
         }
-        BigDecimal instructed = new BigDecimal(command.instructedQuantity());
-        BigDecimal pending = pendingCreatedQuantity(fulfillmentId);
-        BigDecimal remaining = state.requested().subtract(state.shipped()).subtract(state.cancelled()).subtract(pending);
-        if (instructed.compareTo(remaining) > 0) {
+        int instructed = command.instructedQuantity();
+        int pending = pendingCreatedQuantity(fulfillmentId);
+        int remaining = state.requested() - state.shipped() - state.cancelled() - pending;
+        if (instructed > remaining) {
             throw BusinessException.unprocessable(
                     "CONTINUATION_QUANTITY_EXCEEDS_REMAINING", "续发数量不得超过尚未发货、取消或已指令的剩余数量");
         }
@@ -108,7 +107,7 @@ public class ContinuationExportService {
                 Map.of(
                         "shipment_sequence", generated.shipmentSequence(),
                         "fulfillment_export_id", String.valueOf(generated.fulfillmentExportId()),
-                        "instructed_quantity", instructed.toPlainString(),
+                        "instructed_quantity", instructed,
                         "remark", command.remark()),
                 context.operator());
         versions.append(
@@ -119,7 +118,7 @@ public class ContinuationExportService {
         response.put("shipment_id", String.valueOf(generated.shipmentId()));
         response.put("shipment_sequence", generated.shipmentSequence());
         response.put("fulfillment_export_id", String.valueOf(generated.fulfillmentExportId()));
-        response.put("instructed_quantity", instructed.toPlainString());
+        response.put("instructed_quantity", instructed);
         response.put("fulfillment_version", command.expectedVersion() + 1);
         audits.record(new AuditLogService.AuditCommand()
                 .dataScope(DataScope.BUSINESS).orderId(state.orderId())
@@ -143,8 +142,8 @@ public class ContinuationExportService {
                 WHERE f.id=? FOR UPDATE OF f
                 """,
                 rs -> rs.next() ? new Context(
-                        rs.getLong("lock_version"), rs.getBigDecimal("requested_quantity"),
-                        rs.getBigDecimal("cumulative_shipped_quantity"), rs.getBigDecimal("cancelled_quantity"),
+                        rs.getLong("lock_version"), rs.getInt("requested_quantity"),
+                        rs.getInt("cumulative_shipped_quantity"), rs.getInt("cancelled_quantity"),
                         rs.getString("shipping_progress"), rs.getLong("order_line_id"),
                         rs.getLong("order_id"), rs.getString("provider_type")) : null,
                 fulfillmentId);
@@ -154,14 +153,14 @@ public class ContinuationExportService {
         return value;
     }
 
-    private BigDecimal pendingCreatedQuantity(long fulfillmentId) {
+    private int pendingCreatedQuantity(long fulfillmentId) {
         return jdbc.queryForObject(
                 """
                 SELECT COALESCE(sum(si.instructed_quantity),0)
                 FROM app.shipment_items si JOIN app.shipments s ON s.id=si.shipment_id
                 WHERE si.fulfillment_id=? AND si.shipped_quantity IS NULL AND s.shipment_status='CREATED'
                 """,
-                BigDecimal.class,
+                Integer.class,
                 fulfillmentId);
     }
 
@@ -179,9 +178,9 @@ public class ContinuationExportService {
 
     private record Context(
             long version,
-            BigDecimal requested,
-            BigDecimal shipped,
-            BigDecimal cancelled,
+            int requested,
+            int shipped,
+            int cancelled,
             String shippingProgress,
             long orderLineId,
             long orderId,

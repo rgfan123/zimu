@@ -94,7 +94,7 @@ class FeixiangHttpShipmentGatewayTest {
             // 模拟第一次写已经打到平台并收口：效果已开始，且该次尝试已结束。
             FeixiangShipmentAttemptStore.ClaimResult claim = store.claim(
                     new FeixiangShipmentAttemptStore.ShipmentAttemptPayload(
-                            "D1", "S1", java.math.BigDecimal.ONE, "京东物流", "JDVA1", ""));
+                            "D1", "S1", 1L, "京东物流", "JDVA1", ""));
             store.markEffectStarted("S1", "JDVA1", claim.ownerToken());
             store.completeSuccess("S1", "JDVA1", claim.ownerToken(),
                     cn.zimu.fulfillment.connector.SourceSyncResult.ok("order_son_id:1"));

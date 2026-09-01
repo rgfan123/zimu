@@ -17,10 +17,9 @@ import org.springframework.stereotype.Component;
  * <b>代码</b> {@code jingdong}。就地把显示名改成代码会把 CSV 一起改坏，所以这里走一个
  * <b>平级新键</b> {@code carrier_api_codes}，两者并存、互不覆盖。
  *
- * <p>解析路径刻意绕了一步：{@code SourceShipmentResult} 只带得出
- * {@code carrierOutputValue}（显示名），不带内部 {@code carrier_code}。因此先在
- * {@code carrier_mappings} 里按值反查唯一的内部代码，再取 {@code carrier_api_codes}
- * 里同一个代码对应的平台代码。反查到 0 个或多于 1 个都判未映射——
+ * <p>来源展示翻译不是物流公司白名单。调用方优先传 {@code carrier_mappings} 的显示值；
+ * 没维护显示翻译时会传内部标准 {@code carrier_code}。前者按值反查唯一内部代码，后者
+ * 直接作为 {@code carrier_api_codes} 的键，再取平台代码。显示值反查到多于 1 个仍判歧义——
  * <b>绝不回落成显示名</b>，那会让一个平台看不懂的中文串被发出去。
  */
 @Component
@@ -54,13 +53,12 @@ public class FeixiangCarrierCodeResolver {
     }
 
     /**
-     * @param carrierOutputValue {@code connector_configs.carrier_mappings} 里配置的显示名，
-     *                           即 {@code SourceSyncFacts.carrierOutputValue}
+     * @param carrierOutputValue 渠道显示翻译，缺失时为内部标准物流公司代码
      */
     public Resolution resolve(String carrierOutputValue) {
         String display = carrierOutputValue == null ? "" : carrierOutputValue.trim();
         if (display.isEmpty()) {
-            return Resolution.failed("FEIXIANG_CARRIER_REQUIRED", "内部物流公司缺少来源平台输出映射");
+            return Resolution.failed("FEIXIANG_CARRIER_REQUIRED", "正式物流公司事实缺失");
         }
         JsonNode config;
         try {
@@ -83,18 +81,23 @@ public class FeixiangCarrierCodeResolver {
     static Resolution resolveFrom(JsonNode config, String carrierOutputValue) {
         String display = carrierOutputValue == null ? "" : carrierOutputValue.trim();
         JsonNode mappings = config == null ? null : config.path("carrier_mappings");
-        if (mappings == null || !mappings.isObject()) {
-            return Resolution.failed(
-                    "FEIXIANG_CARRIER_UNMAPPED", "飞象 Connector 未配置 carrier_mappings");
-        }
         List<String> internalCodes = new ArrayList<>();
-        java.util.Iterator<Map.Entry<String, JsonNode>> fields = mappings.fields();
-        while (fields.hasNext()) {
-            Map.Entry<String, JsonNode> entry = fields.next();
-            JsonNode value = entry.getValue();
-            if (value != null && value.isTextual() && display.equals(value.asText().trim())) {
-                internalCodes.add(entry.getKey());
+        if (mappings != null && mappings.isObject()) {
+            if (mappings.has(display)) {
+                internalCodes.add(display);
+            } else {
+                java.util.Iterator<Map.Entry<String, JsonNode>> fields = mappings.fields();
+                while (fields.hasNext()) {
+                    Map.Entry<String, JsonNode> entry = fields.next();
+                    JsonNode value = entry.getValue();
+                    if (value != null && value.isTextual() && display.equals(value.asText().trim())) {
+                        internalCodes.add(entry.getKey());
+                    }
+                }
             }
+        }
+        if (internalCodes.isEmpty() && display.matches("^[A-Z0-9_-]{1,64}$")) {
+            internalCodes.add(display);
         }
         if (internalCodes.isEmpty()) {
             return Resolution.failed(

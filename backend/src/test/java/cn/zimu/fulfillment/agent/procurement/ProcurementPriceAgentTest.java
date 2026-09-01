@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
  */
 class ProcurementPriceAgentTest {
 
-    private static final String INPUT = "{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}";
+    private static final String INPUT = "{\"procurement_ticket_id\":\"9001\",\"quantity\":2}";
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AgentRuntimeFacade facade = mock(AgentRuntimeFacade.class);
@@ -44,8 +44,8 @@ class ProcurementPriceAgentTest {
     /** 策略可通过的 happy 路径推荐（候选 + 推荐 + 高置信度，requires_human 保持 false）。 */
     private static ProcurementPriceRecommendation happyPathRecommendation() {
         return new ProcurementPriceRecommendation(
-                "SKU-1001", "2",
-                new ProcurementPriceRecommendation.Inventory("0", "2"),
+                "SKU-1001", 2,
+                new ProcurementPriceRecommendation.Inventory(0, 2),
                 java.util.List.of(new ProcurementPriceRecommendation.Candidate(
                         "P001", "12.34", ProcurementPriceRecommendation.PriceBasis.sku_commercial_price, null)),
                 java.util.List.of(),
@@ -56,8 +56,8 @@ class ProcurementPriceAgentTest {
     /** 低置信度推荐：模型声明 requires_human=false 但 confidence=0.2 → 策略强制转人工。 */
     private static ProcurementPriceRecommendation lowConfidenceRecommendation() {
         return new ProcurementPriceRecommendation(
-                "SKU-1001", "2",
-                new ProcurementPriceRecommendation.Inventory("0", "2"),
+                "SKU-1001", 2,
+                new ProcurementPriceRecommendation.Inventory(0, 2),
                 java.util.List.of(new ProcurementPriceRecommendation.Candidate(
                         "P001", "12.34", ProcurementPriceRecommendation.PriceBasis.sku_commercial_price, null)),
                 java.util.List.of(),
@@ -67,7 +67,7 @@ class ProcurementPriceAgentTest {
 
     private static AgentRunResult successWith(ProcurementPriceRecommendation recommendation) {
         ObjectNode output = MAPPER.valueToTree(recommendation);
-        return AgentRunResult.success(output, "deepseek", "deepseek-chat", "procurement-price-v2")
+        return AgentRunResult.success(output, "deepseek", "deepseek-chat", "procurement-price-v3")
                 .withRunMetadata("run_abcdef", 42);
     }
 
@@ -94,7 +94,7 @@ class ProcurementPriceAgentTest {
         assertThat(result.error()).isNull();
         assertThat(result.provider()).isEqualTo("deepseek");
         assertThat(result.model()).isEqualTo("deepseek-chat");
-        assertThat(result.promptVersion()).isEqualTo("procurement-price-v2");
+        assertThat(result.promptVersion()).isEqualTo("procurement-price-v3");
         assertThat(result.recommendation()).isNotNull();
         assertThat(result.recommendation().targetSku()).isEqualTo("SKU-1001");
         assertThat(result.recommendation().requiresHuman()).isFalse();

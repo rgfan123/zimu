@@ -35,7 +35,7 @@ test('表单值装配成契约载荷：trim 一切字符串，空备注整个不
     {
       customer_code: 'C001',
       receiver: { name: '李四', phone: '13900000000', address: '贵阳市观山湖区 1 号' },
-      items: [{ sku_id: '15', quantity: '3' }],
+      items: [{ sku_id: '15', quantity: 3 }],
     },
   );
   assert.equal(

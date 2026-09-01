@@ -22,7 +22,7 @@ record ParsedSourceRow(
         String productName,
         String specification,
         String unit,
-        String quantity,
+        Integer quantity,
         Instant orderedAt,
         String settlementMethod,
         String remark,

@@ -38,7 +38,7 @@ class ZhonghuiSourceFileParserTest {
         assertThat(parsed.rows().stream().map(ParsedSourceRow::sourceSkuRef))
                 .containsExactly("60043823", "60043825", "60043832", "60043849", "60043845");
         assertThat(parsed.rows().stream().map(ParsedSourceRow::quantity))
-                .containsExactly("4", "1", "1", "1", "1");
+                .containsExactly(4, 1, 1, 1, 1);
         assertThat(parsed.rows().stream().map(ParsedSourceRow::receiverName))
                 .containsExactly("李花花", "阿敏", "周老师", "周老师", "周老师");
     }

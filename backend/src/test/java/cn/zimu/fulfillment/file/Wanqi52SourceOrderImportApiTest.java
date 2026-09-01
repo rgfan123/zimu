@@ -112,7 +112,7 @@ class Wanqi52SourceOrderImportApiTest {
                 "receiver_address", "北京/丰台区/卢沟桥街道 测试地址1号",
                 "product_name", "子牧 子牧牛羊精选礼包 6000g 1套",
                 "specification", "规格:6000g;",
-                "quantity", "1",
+                "quantity", 1,
                 "source_sku_ref", "1161501915637485568"));
         assertThat((Map<String, Object>) rows.get(1).get("parsed")).containsAllEntriesOf(Map.of(
                 "source_line_ref", "1248941457073590274",

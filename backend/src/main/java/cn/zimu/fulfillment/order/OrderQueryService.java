@@ -41,7 +41,7 @@ public class OrderQueryService {
 
     /** v_order_progress_summary 视图投影。 */
     public record ViewProjection(
-            String stage, String health, int completedCount, int totalCount, String attentionReason) {
+            String stage, String health, long completedCount, long totalCount, String attentionReason) {
 
         static ViewProjection empty() {
             return new ViewProjection(ProcessingStage.NEED_REVIEW.name(), ProcessingHealth.BLUE.name(), 0, 0, null);
@@ -236,8 +236,8 @@ public class OrderQueryService {
                     return new ViewProjection(
                             rs.getString(1),
                             rs.getString(2),
-                            rs.getInt(3),
-                            rs.getInt(4),
+                            rs.getLong(3),
+                            rs.getLong(4),
                             rs.getString(5));
                 },
                 orderId);
@@ -313,8 +313,8 @@ public class OrderQueryService {
             rs.getString("order_status"),
             rs.getString("processing_stage"),
             rs.getString("processing_health"),
-            rs.getInt("completed_count"),
-            rs.getInt("total_count"),
+            rs.getLong("completed_count"),
+            rs.getLong("total_count"),
             rs.getString("attention_reason"),
             toInstant(rs, "created_at"),
             toInstant(rs, "updated_at"),

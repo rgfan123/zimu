@@ -3,8 +3,6 @@ package cn.zimu.fulfillment.connector.sync;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.fulfillment.ShipmentStatus;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
@@ -72,9 +70,6 @@ public final class SourceSyncFactsReader {
         if (!"API".equals(header.transportMode())) {
             block(blockers, "SOURCE_SYNC_ONLINE_TRANSPORT_REQUIRED", "connector.transport_mode", "来源 Connector 未启用 API 回传");
         }
-        if (blank(header.carrierOutputValue())) {
-            block(blockers, "SOURCE_SYNC_CARRIER_MAPPING_REQUIRED", "carrier", "内部物流公司缺少来源平台输出映射");
-        }
         switch (header.projection().status()) {
             case SYNCING -> block(blockers, "SOURCE_SYNC_IN_PROGRESS", "sync_status", "该 Shipment 正在回传");
             case SYNCED -> block(blockers, "SOURCE_SYNC_ALREADY_SYNCED", "sync_status", "该 Shipment 已完成来源回传");
@@ -86,33 +81,33 @@ public final class SourceSyncFactsReader {
         Map<Long, Integer> rawRowsByItem = new LinkedHashMap<>();
         Map<Long, Integer> itemsByRawRow = new LinkedHashMap<>();
         Set<String> sourceLines = new LinkedHashSet<>();
-        BigDecimal orderedSource = BigDecimal.ZERO;
-        BigDecimal shippedSource = BigDecimal.ZERO;
-        BigDecimal internalShipped = BigDecimal.ZERO;
+        long orderedSource = 0;
+        long shippedSource = 0;
+        long internalShipped = 0;
         boolean quantityValid = true;
         for (Item row : rows) {
             rawRowsByItem.merge(row.shipmentItemId(), 1, Integer::sum);
             itemsByRawRow.merge(row.rawRowId(), 1, Integer::sum);
             if (!blank(row.sourceLineRef())) sourceLines.add(row.sourceLineRef().trim());
-            if (row.shippedQuantity() == null || row.shippedQuantity().compareTo(row.instructedQuantity()) != 0) {
+            if (row.shippedQuantity() == null || !row.shippedQuantity().equals(row.instructedQuantity())) {
                 blockOnce(blockers, "SOURCE_SYNC_FULL_SHIPMENT_REQUIRED", "shipment_items", "P0 在线回传只支持全部实发的 Shipment");
             }
             if (!"FULLY_FULFILLED".equals(row.fulfillmentOutcome())) {
                 blockOnce(blockers, "SOURCE_SYNC_FULL_FULFILLMENT_REQUIRED", "fulfillment.outcome", "P0 在线回传只支持全部履约的来源子单");
             }
             if (row.cumulativeShippedQuantity() == null
-                    || row.cumulativeShippedQuantity().compareTo(row.requestedQuantity()) != 0) {
+                    || !row.cumulativeShippedQuantity().equals(row.requestedQuantity())) {
                 blockOnce(blockers, "SOURCE_SYNC_CUMULATIVE_QUANTITY_INCOMPLETE", "fulfillment.cumulative_shipped_quantity",
                         "履约累计实发数量尚未完整覆盖请求数量");
             }
-            if (row.cancelledQuantity() != null && row.cancelledQuantity().signum() != 0) {
+            if (row.cancelledQuantity() != null && row.cancelledQuantity() != 0) {
                 blockOnce(blockers, "SOURCE_SYNC_CANCELLED_REMAINING_UNSUPPORTED", "fulfillment.cancelled_quantity", "存在取消剩余量，必须走人工复核或文件降级");
             }
-            if (row.shippedQuantity() != null) internalShipped = internalShipped.add(row.shippedQuantity());
+            if (row.shippedQuantity() != null) internalShipped += row.shippedQuantity();
             try {
-                orderedSource = orderedSource.add(row.sourceQuantity() == null
-                        ? toSourceUnits(row.requestedQuantity(), row.multiplier()) : integer(row.sourceQuantity()));
-                shippedSource = shippedSource.add(toSourceUnits(row.shippedQuantity(), row.multiplier()));
+                orderedSource += row.sourceQuantity() == null
+                        ? toSourceUnits(row.requestedQuantity(), row.multiplier()) : row.sourceQuantity();
+                shippedSource += toSourceUnits(row.shippedQuantity(), row.multiplier());
             } catch (ArithmeticException exception) {
                 quantityValid = false;
                 blockOnce(blockers, "SOURCE_SYNC_QUANTITY_NOT_SOURCE_UNIT", "quantity", "内部数量无法精确还原为来源整数份数");
@@ -132,7 +127,7 @@ public final class SourceSyncFactsReader {
         if (sourceLine != null && shipmentCount(header.importBatchId(), header.channel(), sourceLine) != 1) {
             block(blockers, "SOURCE_SYNC_MULTI_SHIPMENT_UNSUPPORTED", "shipment_id", "同一来源子单存在多个 Shipment，必须走人工复核或文件降级");
         }
-        if (quantityValid && orderedSource.compareTo(shippedSource) != 0) {
+        if (quantityValid && orderedSource != shippedSource) {
             block(blockers, "SOURCE_SYNC_SOURCE_QUANTITY_INCOMPLETE", "source_quantity",
                     "来源下单份数与拟回传实发份数不一致，禁止 P0 在线回传");
         }
@@ -161,15 +156,11 @@ public final class SourceSyncFactsReader {
         return count == null ? 0 : count;
     }
 
-    private static BigDecimal toSourceUnits(BigDecimal internal, BigDecimal multiplier) {
-        if (internal == null || multiplier == null || multiplier.signum() <= 0) {
+    private static int toSourceUnits(Integer internal, Integer multiplier) {
+        if (internal == null || multiplier == null || multiplier <= 0 || internal % multiplier != 0) {
             throw new ArithmeticException("missing quantity or multiplier snapshot");
         }
-        return internal.divide(multiplier, 0, RoundingMode.UNNECESSARY);
-    }
-
-    private static BigDecimal integer(BigDecimal value) {
-        return value.setScale(0, RoundingMode.UNNECESSARY);
+        return internal / multiplier;
     }
 
     private static void block(List<SourceSyncBlocker> blockers, String code, String field, String message) {
@@ -202,11 +193,12 @@ public final class SourceSyncFactsReader {
 
     private static Item item(ResultSet rs) throws SQLException {
         return new Item(
-                rs.getLong("shipment_item_id"), rs.getLong("raw_row_id"), rs.getBigDecimal("instructed_quantity"),
-                rs.getBigDecimal("shipped_quantity"), rs.getBigDecimal("requested_quantity"),
-                rs.getBigDecimal("cumulative_shipped_quantity"), rs.getBigDecimal("cancelled_quantity"),
+                rs.getLong("shipment_item_id"), rs.getLong("raw_row_id"), rs.getInt("instructed_quantity"),
+                rs.getObject("shipped_quantity", Integer.class), rs.getInt("requested_quantity"),
+                rs.getInt("cumulative_shipped_quantity"), rs.getInt("cancelled_quantity"),
                 rs.getString("fulfillment_outcome"),
-                rs.getBigDecimal("source_quantity_snapshot"), rs.getBigDecimal("mapping_multiplier_snapshot"),
+                rs.getObject("source_quantity_snapshot", Integer.class),
+                rs.getObject("mapping_multiplier_snapshot", Integer.class),
                 rs.getString("source_line_ref"));
     }
 
@@ -229,10 +221,10 @@ public final class SourceSyncFactsReader {
             boolean connectorEnabled, String transportMode, String carrierOutputValue, SourceSyncProjection projection,
             String intentCheckHash, String intentSourceLineRef, String intentCarrierCode,
             String intentTrackingNumber) {}
-    private record Item(long shipmentItemId, long rawRowId, BigDecimal instructedQuantity, BigDecimal shippedQuantity,
-            BigDecimal requestedQuantity, BigDecimal cumulativeShippedQuantity,
-            BigDecimal cancelledQuantity, String fulfillmentOutcome,
-            BigDecimal sourceQuantity, BigDecimal multiplier, String sourceLineRef) {}
+    private record Item(long shipmentItemId, long rawRowId, Integer instructedQuantity, Integer shippedQuantity,
+            Integer requestedQuantity, Integer cumulativeShippedQuantity,
+            Integer cancelledQuantity, String fulfillmentOutcome,
+            Integer sourceQuantity, Integer multiplier, String sourceLineRef) {}
 
     private static final String HEADER_SQL = """
             SELECT s.id shipment_id, s.order_id, s.shipment_status,
@@ -242,7 +234,15 @@ public final class SourceSyncFactsReader {
                    source.effective_source_channel source_channel,
                    t.logistics_company_code carrier_code, t.logistics_company_name carrier_name, t.tracking_number,
                    COALESCE(cc.enabled, false) connector_enabled, cc.transport_mode,
-                   cc.config #>> ARRAY['carrier_mappings', t.logistics_company_code] carrier_output_value,
+                   CASE
+                       WHEN source.effective_source_channel = 'FEIXIANG' THEN COALESCE(
+                           NULLIF(btrim(cc.config #>> ARRAY['carrier_mappings', t.logistics_company_code]), ''),
+                           NULLIF(btrim(t.logistics_company_code), ''))
+                       ELSE COALESCE(
+                           NULLIF(btrim(cc.config #>> ARRAY['carrier_mappings', t.logistics_company_code]), ''),
+                           NULLIF(btrim(t.logistics_company_name), ''),
+                           NULLIF(btrim(t.logistics_company_code), ''))
+                   END carrier_output_value,
                    COALESCE(ss.sync_status, 'PENDING') sync_status,
                    COALESCE(ss.attempt_count, 0) attempt_count,
                    COALESCE(ss.lock_version, 0) sync_lock_version,

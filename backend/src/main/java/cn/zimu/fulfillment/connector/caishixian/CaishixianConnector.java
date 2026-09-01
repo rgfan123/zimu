@@ -14,7 +14,6 @@ import cn.zimu.fulfillment.connector.SourceSyncResult;
 import cn.zimu.fulfillment.file.SourceImportService;
 import cn.zimu.fulfillment.file.StructuredOrderRow;
 import com.fasterxml.jackson.databind.JsonNode;
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -309,7 +308,7 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
                         "Shipment 与彩食鲜当前收货信息不一致，未上传回填文件");
             }
             if (before.sendableQuantity() == null
-                    || before.sendableQuantity().compareTo(result.sourceUnitQuantity()) != 0) {
+                    || !before.sendableQuantity().equals(result.sourceUnitQuantity())) {
                 return SourceSyncResult.failed(
                         "CAISHIXIAN_SHIPMENT_QUANTITY_MISMATCH",
                         "Shipment 来源份数与彩食鲜当前可发数量不一致，未上传回填文件");
@@ -361,8 +360,8 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
                 || !nonBlank(result.sourceRef()) || !nonBlank(result.sourceLineRef())) {
             return SourceSyncResult.failed("CAISHIXIAN_SHIPMENT_LINEAGE_REQUIRED", "彩食鲜 Shipment 来源血缘不完整");
         }
-        BigDecimal quantity = result.sourceUnitQuantity();
-        if (quantity == null || quantity.signum() <= 0 || quantity.stripTrailingZeros().scale() > 0) {
+        Long quantity = result.sourceUnitQuantity();
+        if (quantity == null || quantity <= 0) {
             return SourceSyncResult.failed("CAISHIXIAN_QUANTITY_INVALID", "彩食鲜回填数量必须是正整数来源份数");
         }
         if (!"SHIPPED".equals(result.outcome())) {
@@ -377,14 +376,16 @@ public class CaishixianConnector extends AbstractHttpPullConnector {
         return null;
     }
 
-    private CaishixianShipmentGateway.CarrierOption carrier(String code) {
-        if (!nonBlank(code)) {
+    private CaishixianShipmentGateway.CarrierOption carrier(String lookupValue) {
+        if (!nonBlank(lookupValue)) {
             return null;
         }
-        return shipmentGateway.carrierOptions().stream()
-                .filter(option -> code.trim().equals(option.code()))
-                .findFirst()
-                .orElse(null);
+        String value = lookupValue.trim();
+        List<CaishixianShipmentGateway.CarrierOption> matches = shipmentGateway.carrierOptions().stream()
+                .filter(option -> value.equals(option.code()) || value.equals(option.name()))
+                .limit(2)
+                .toList();
+        return matches.size() == 1 ? matches.getFirst() : null;
     }
 
     private boolean sameReceiver(

@@ -44,6 +44,36 @@ public class AsyncTaskStore {
                 maxAttempts);
     }
 
+    /**
+     * 入队并返回稳定任务 ID；只有已经耗尽为 FAILED 的同键任务会被显式复活。
+     * PENDING/RUNNING/FINALIZING/SUCCEEDED 均保持原状态，避免重放制造并发任务或重复副作用。
+     */
+    @Transactional
+    public long enqueueOrReviveFailed(
+            String taskType, String payloadRef, String idempotencyKey, int maxAttempts) {
+        jdbc.update(
+                """
+                INSERT INTO app.async_tasks (task_type, payload_ref, idempotency_key, max_attempts)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (idempotency_key) DO UPDATE
+                SET task_type=EXCLUDED.task_type,
+                    payload_ref=EXCLUDED.payload_ref,
+                    status='PENDING', attempts=0, max_attempts=EXCLUDED.max_attempts,
+                    next_run_at=CURRENT_TIMESTAMP, lease_until=NULL, lease_owner=NULL,
+                    last_error=NULL, updated_at=CURRENT_TIMESTAMP
+                WHERE app.async_tasks.status='FAILED'
+                """,
+                taskType,
+                payloadRef,
+                idempotencyKey,
+                maxAttempts);
+        return jdbc.queryForObject(
+                "SELECT id FROM app.async_tasks WHERE idempotency_key=? AND task_type=?",
+                Long.class,
+                idempotencyKey,
+                taskType);
+    }
+
     /** 领取任意类型任务（仅测试/单 Worker 形态使用；多 Worker 共享队列必须用按类型领取）。 */
     @Transactional
     public Optional<AsyncTask> claim(String owner, Duration lease) {
@@ -90,6 +120,42 @@ public class AsyncTaskStore {
                 lease.toSeconds(),
                 owner,
                 taskType,
+                taskType);
+        return claimed.stream().findFirst();
+    }
+
+    /** 只领取调用方刚刚入队的指定任务；HTTP 快路不得顺带消费全局积压。 */
+    @Transactional
+    public Optional<AsyncTask> claimById(
+            long taskId, String taskType, String owner, Duration lease) {
+        List<AsyncTask> claimed = jdbc.query(
+                """
+                UPDATE app.async_tasks
+                SET status = CASE
+                                 WHEN status = 'FINALIZING' OR attempts >= max_attempts
+                                     THEN 'FINALIZING'
+                                 ELSE 'RUNNING'
+                             END,
+                    lease_until = statement_timestamp() + (? || ' seconds')::interval,
+                    lease_owner = ?,
+                    attempts = CASE
+                                   WHEN status = 'FINALIZING' OR attempts >= max_attempts
+                                       THEN attempts
+                                   ELSE attempts + 1
+                               END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id=? AND task_type=?
+                  AND ((status='PENDING' AND next_run_at<=CURRENT_TIMESTAMP)
+                    OR (status='RUNNING' AND lease_until<statement_timestamp())
+                    OR (status='FINALIZING' AND lease_until<statement_timestamp()))
+                RETURNING id, task_type, payload_ref, status, attempts, max_attempts,
+                          next_run_at, lease_until, lease_owner, last_error,
+                          idempotency_key, created_at, updated_at
+                """,
+                AsyncTaskStore::map,
+                lease.toSeconds(),
+                owner,
+                taskId,
                 taskType);
         return claimed.stream().findFirst();
     }

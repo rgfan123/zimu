@@ -2,7 +2,6 @@ package cn.zimu.fulfillment.seed;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -183,7 +182,7 @@ public class DemoSeedDataInitializer implements ApplicationRunner {
                      product_name_snapshot, sku_code_snapshot, specification_snapshot, unit_snapshot,
                      source_quantity_snapshot, mapping_multiplier_snapshot, requested_quantity,
                      processing_stage, exception_code, exception_reason, created_at, updated_at)
-                VALUES (?, 1, 'SINGLE', ?, ?, ?, ?, ?, ?, ?, 1.000, ?, ?, ?, ?, ?, ?)
+                VALUES (?, 1, 'SINGLE', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
                 Long.class,
@@ -194,8 +193,8 @@ public class DemoSeedDataInitializer implements ApplicationRunner {
                 seed.sku().skuCode(),
                 seed.sku().specification(),
                 seed.sku().unit(),
-                BigDecimal.valueOf(seed.quantity()),
-                BigDecimal.valueOf(seed.quantity()),
+                seed.quantity(),
+                seed.quantity(),
                 seed.scenario().processingStage,
                 exceptionCode,
                 exceptionReason,
@@ -225,7 +224,7 @@ public class DemoSeedDataInitializer implements ApplicationRunner {
                     "SEED-FUL-" + seed.ordinal(),
                     lineId,
                     seed.sku().providerId(),
-                    BigDecimal.valueOf(seed.quantity()),
+                    seed.quantity(),
                     fulfillmentExceptionCode,
                     fulfillmentExceptionCode == null ? null : "履约方拒绝演示订单",
                     seed.createdAt().plusMinutes(5),
@@ -302,8 +301,8 @@ public class DemoSeedDataInitializer implements ApplicationRunner {
                 """,
                 shipmentId,
                 fulfillmentId,
-                BigDecimal.valueOf(seed.quantity()),
-                BigDecimal.valueOf(seed.quantity()),
+                seed.quantity(),
+                seed.quantity(),
                 seed.createdAt().plusHours(1),
                 shippedAt);
         jdbc.update(
@@ -372,7 +371,7 @@ public class DemoSeedDataInitializer implements ApplicationRunner {
                 """,
                 ticketId,
                 seed.sku().id(),
-                BigDecimal.valueOf(seed.quantity()),
+                seed.quantity(),
                 seed.sku().unit(),
                 seed.createdAt().plusMinutes(10),
                 seed.createdAt().plusMinutes(10));

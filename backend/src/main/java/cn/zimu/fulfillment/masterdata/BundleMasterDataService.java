@@ -299,7 +299,7 @@ public class BundleMasterDataService {
             BundleItem item = new BundleItem();
             item.setSortNo(sortNo++);
             item.setSkuId(skuId);
-            item.setQuantityPerBundle(Integer.valueOf(input.quantityPerBundle()));
+            item.setQuantityPerBundle(input.quantityPerBundle());
             item.setEmgCodeSnapshot(blankToNull(input.emgCodeSnapshot()));
             item.setSourceTextSnapshot(blankToNull(input.sourceTextSnapshot()));
             result.add(item);

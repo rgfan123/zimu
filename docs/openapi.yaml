@@ -1393,9 +1393,12 @@ paths:
       responses:
         '201':
           description: >-
-            Whole provider batch accepted atomically and linked to this export. Replaying
-            identical bytes for the same export returns the first complete result, including
-            business_results and generated_source_return_export_ids, without a new source return.
+            Whole provider batch Tracking, shipped quantities, and Shipment facts are accepted
+            atomically and linked to this export. A durable source-return derivation task is
+            enqueued in that transaction and attempted only after commit; derivation failure
+            does not change this 201 or roll back accepted logistics facts. Replaying identical
+            bytes reuses the first Tracking batch and returns source-return IDs derived so far,
+            without creating duplicate versions.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TrackingImportBatch' }
@@ -1716,15 +1719,25 @@ paths:
       tags: [Shipments]
       operationId: createShipmentJdOutbound
       description: >-
-        Submits one aggregated JD outbound order (addSoOrder) for the whole Shipment batch;
-        all ShipmentItems share a single merchant-side reference (shipments.outbound_order_no).
+        Submits one aggregated JD outbound order (addSoOrder) for the whole Shipment batch.
+        All ShipmentItems share one ZIMU-SO namespaced erpDeliveryNo, reserved under a database
+        unique constraint and checked with the selected provider's exact pin and ownerNo before addSoOrder. A colliding historical
+        candidate is replaced before any create call. shipments.outbound_order_no remains the
+        independent, immutable 12-digit local/export reference.
+        Before addSoOrder, the intent freezes pin, ownerNo, warehouseNo, and the exact
+        goodsNo/orderLine/planQuantity cargo snapshot. A successful create response is immediately
+        read back with the same tenant authority. SUBMITTED is committed only when the merchant/JD
+        references, returned tenant, warehouse, and complete cargo set all match. A failed,
+        malformed, or mismatched readback becomes RECONCILIATION_REQUIRED; ordinary tracking polls
+        and any second create remain unreachable.
         At most one JD integration record exists per Shipment. Replaying the same
         Idempotency-Key returns the original result without a second call; a changed request
         under the same Shipment is rejected. Requires app.jd.write-mode=ON.
         The caller must also be an explicitly authorized outbound operator, derived from
         Basic Auth credentials that the backend revalidates instead of trusting X-Operator alone. The generic
-        /api/v1/jd-write/order/so-create route is fail-closed; this Shipment workflow is the
-        only supported addSoOrder entry because it enforces idempotency and a fresh stock gate.
+        /api/v1/jd-write/order/so-create route is fail-closed and the generic write seam exposes no
+        raw sales-outbound Map method; this Shipment workflow is the only supported addSoOrder entry
+        because it alone can issue the prepared adapter capability after idempotency and a fresh stock gate.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/Operator'
@@ -1736,8 +1749,9 @@ paths:
       responses:
         '201':
           description: >-
-            JD outbound order submitted; the Shipment's JD integration record is created with
-            SUBMITTED state, JD_OUTBOUND_SUBMITTED OrderEvent, version, and audit facts appended.
+            JD outbound order created and its frozen facts verified by immediate querySoOrder;
+            the Shipment's JD integration record is completed with SUBMITTED state,
+            JD_OUTBOUND_SUBMITTED OrderEvent, version, and audit facts appended.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ShipmentJdOutboundSubmitResult' }
@@ -1746,7 +1760,8 @@ paths:
             Write mode disabled (JD_SHIPMENT_OUTBOUND_WRITE_MODE_DISABLED), shipment already
             submitted, request drifted under the same Shipment, client mode differs from an
             unresolved prior attempt (JD_SHIPMENT_OUTBOUND_CLIENT_MODE_CHANGED), or shipment/line
-            stage is not submittable. Failure phase and diagnostic code are persisted on the
+            stage is not submittable. A successful create whose immediate readback fails or differs
+            also returns RECONCILIATION_REQUIRED. Failure phase and diagnostic code are persisted on the
             Shipment's JD integration record without advancing any business stage.
         '403':
           description: >-
@@ -1762,15 +1777,22 @@ paths:
       operationId: backfillShipmentJdTracking
       description: >-
         Queries JD querySoOrder by the Shipment's stable erpDeliveryNo and, only after the
-        persisted client mode, JD delivery reference, submitted warehouse, owner authority and cargo snapshots,
-        plus the provider's currently configured pin credential,
+        persisted client mode, JD delivery reference, submitted pin/owner tenant authority,
+        warehouse and cargo snapshots,
         exact shipped quantities, and single carrier/waybill all match, atomically accepts one
         Tracking for the complete Shipment. The JD call is read-only and runs outside the database transaction.
         Replaying the same Idempotency-Key returns the original result without another JD query.
+        Tracking is committed before the durable source-return derivation task is attempted;
+        template, file, or carrier-display derivation failures are retried independently and do
+        not roll back the accepted waybill or Shipment facts.
         Pending or partial results do not advance Shipment, OrderLine, or Order state; split or
         conflicting tracking opens/reuses MULTIPLE_TRACKINGS_FOR_OUTBOUND ReviewCase. Carrier
-        ambiguity and JD terminal exceptions open their own blocking ReviewCases. The submitted
-        owner is durable authority; the current pin is ephemeral and is never returned or audited.
+        ambiguity, JD terminal exceptions, and deterministic cargo mismatch open their own blocking
+        ReviewCases. JD_TRACKING_CARGO_MISMATCH stores only whitelisted local/JD cargo differences,
+        leaves no Tracking fact, and removes the Shipment from automatic polling until an operator
+        explicitly resolves the ReviewCase. The submitted
+        pin and owner are durable submit-time authority and are never returned or written into
+        business audit payloads.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/Operator'
@@ -1786,9 +1808,9 @@ paths:
           description: >-
             The local shipment/outbound facts changed, a prior claim is still in progress, the
             persisted submission client mode differs from the current JD client, historical data
-            lacks trustworthy submitted warehouse/owner/cargo snapshots, or the current provider
-            pin is missing, or the terminal exception was already closed by an operator
-            (JD_TRACKING_SUBMITTED_OWNER_MISSING / JD_TRACKING_PIN_CONFIG_MISSING /
+            lacks trustworthy submitted pin/owner/warehouse/cargo snapshots, or the terminal
+            exception was already closed by an operator
+            (JD_TRACKING_SUBMITTED_PIN_MISSING / JD_TRACKING_SUBMITTED_OWNER_MISSING /
             JD_TRACKING_TERMINAL_EXCEPTION_REVIEWED).
         default: { $ref: '#/components/responses/ErrorResponse' }
   /api/v1/shipments/{shipment_id}/jd-so-order-preview:
@@ -2130,7 +2152,7 @@ paths:
             schema: { $ref: '#/components/schemas/VersionedNoteCommand' }
       responses:
         '200':
-          description: Human review resolved the blocking JD tracking, Carrier-mapping, or terminal-exception conflict without creating or changing Tracking facts
+          description: Human review resolved the blocking JD tracking, Carrier-mapping, terminal-exception, or cargo-mismatch conflict without creating or changing Tracking facts
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ReviewCase' }
@@ -5052,15 +5074,21 @@ components:
       type: string
       pattern: '^[1-9][0-9]*$'
       example: '42'
-    # V99 商品数量整数化：数量域字符串一律整数文本；十进制形态仅保留给「含量」类字段。
-    DecimalQuantity:
-      type: string
-      pattern: '^(0|[1-9][0-9]*)$'
-      example: '6'
-    PositiveDecimalQuantity:
-      type: string
-      pattern: '^[1-9][0-9]*$'
-      example: '6'
+    CountQuantity:
+      type: integer
+      format: int32
+      minimum: 0
+      example: 6
+    PositiveCountQuantity:
+      type: integer
+      format: int32
+      minimum: 1
+      example: 6
+    CountQuantity64:
+      type: integer
+      format: int64
+      minimum: 0
+      example: 6000000000
     PositiveDecimalAmount:
       type: string
       pattern: '^(?!0(?:\.0{1,3})?$)(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
@@ -5105,7 +5133,7 @@ components:
             required: [sku_id, quantity]
             properties:
               sku_id: { $ref: '#/components/schemas/Identifier' }
-              quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+              quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
         remark: { type: string, maxLength: 2000 }
     ImportMode:
       type: string
@@ -5215,13 +5243,16 @@ components:
         receiver_name: { type: string, nullable: true }
         receiver_phone: { type: string, nullable: true }
         receiver_address: { type: string, nullable: true }
-        ordered_source_quantity: { type: number, nullable: true }
-        shipped_source_quantity: { type: number, nullable: true }
-        internal_shipped_quantity: { type: number, nullable: true }
+        ordered_source_quantity: { type: integer, format: int64, nullable: true }
+        shipped_source_quantity: { type: integer, format: int64, nullable: true }
+        internal_shipped_quantity: { type: integer, format: int64, nullable: true }
         fulfillment_outcome: { type: string }
         carrier_code: { type: string, nullable: true }
         carrier_name: { type: string, nullable: true }
-        carrier_output_value: { type: string, nullable: true }
+        carrier_output_value:
+          type: string
+          nullable: true
+          description: 渠道专用翻译；未维护时为正式 Tracking 的标准承运商名称或内部代码，不代表承运商白名单
         tracking_number: { type: string, nullable: true }
     SourcePlatformCheckResult:
       type: object
@@ -5245,8 +5276,10 @@ components:
         receiver_name: { type: string, nullable: true }
         receiver_phone: { type: string, nullable: true }
         receiver_address: { type: string, nullable: true }
-        sendable_quantity: { type: number, nullable: true }
-        carrier_mapped: { type: boolean }
+        sendable_quantity: { type: integer, format: int64, nullable: true }
+        carrier_mapped:
+          type: boolean
+          description: 正式承运商是否已唯一解析为来源平台接口所需代码；不是本地白名单命中标记
         effect_hash:
           allOf: [{ $ref: '#/components/schemas/Sha256' }]
           nullable: true
@@ -5763,7 +5796,10 @@ components:
               expected_case_version: { type: integer, minimum: 0 }
               task_id: { type: string, nullable: true }
               carrier_code: { type: string, nullable: true }
-              actual_quantity: { type: string, nullable: true, description: Required for partial/shortage/exception lines; validated against instructed quantity }
+              actual_quantity:
+                allOf: [{ $ref: '#/components/schemas/PositiveCountQuantity' }]
+                nullable: true
+                description: Required for partial/shortage/exception lines; validated against instructed quantity.
               remark: { type: string, nullable: true }
     ChannelMessageSummary:
       type: object
@@ -5907,7 +5943,7 @@ components:
         source_sku_ref: { type: string }
         quantity_multiplier:
           allOf:
-            - $ref: '#/components/schemas/DecimalQuantity'
+            - $ref: '#/components/schemas/CountQuantity'
           nullable: true
     OrderDraftLine:
       type: object
@@ -5929,7 +5965,7 @@ components:
         unit_raw: { type: string, nullable: true }
         quantity:
           allOf:
-            - $ref: '#/components/schemas/DecimalQuantity'
+            - $ref: '#/components/schemas/CountQuantity'
           nullable: true
     OrderDraftDetail:
       type: object
@@ -6027,7 +6063,7 @@ components:
       properties:
         line_no: { type: integer, minimum: 1 }
         sku_id: { $ref: '#/components/schemas/Identifier' }
-        quantity: { type: integer, nullable: true }
+        quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
     ConfirmOrderDraftCommand:
       type: object
       additionalProperties: false
@@ -6094,9 +6130,9 @@ components:
         order_line_id: { $ref: '#/components/schemas/Identifier' }
         shipment_id: { $ref: '#/components/schemas/Identifier' }
         receiver_name: { type: string }
-        requested_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        instructed_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        requested_quantity: { $ref: '#/components/schemas/CountQuantity' }
+        shipped_quantity: { $ref: '#/components/schemas/CountQuantity' }
+        instructed_quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
     TrackingDraftDetail:
       type: object
       additionalProperties: false
@@ -6161,7 +6197,7 @@ components:
         default_full_shipment: { type: boolean }
         actual_quantity:
           allOf:
-            - $ref: '#/components/schemas/DecimalQuantity'
+            - $ref: '#/components/schemas/CountQuantity64'
           nullable: true
         validation_issues:
           type: array
@@ -6209,7 +6245,7 @@ components:
         carrier_code: { type: string, nullable: true }
         actual_quantity:
           allOf:
-            - $ref: '#/components/schemas/PositiveDecimalQuantity'
+            - $ref: '#/components/schemas/PositiveCountQuantity'
           nullable: true
         remark: { type: string, maxLength: 2000, nullable: true }
     TrackingDraftRejectCommand:
@@ -6293,7 +6329,7 @@ components:
         product_name: { type: string, maxLength: 255 }
         specification: { type: string, maxLength: 255 }
         unit: { type: string, maxLength: 32 }
-        quantity_per_bundle: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        quantity_per_bundle: { $ref: '#/components/schemas/PositiveCountQuantity' }
     OrderItemInput:
       type: object
       required: [line_type, product_name, specification, unit, quantity]
@@ -6305,7 +6341,7 @@ components:
         product_name: { type: string, maxLength: 255 }
         specification: { type: string, maxLength: 255 }
         unit: { type: string, maxLength: 32 }
-        quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
         components:
           type: array
           minItems: 1
@@ -6362,9 +6398,13 @@ components:
         product_name: { type: string }
         specification: { type: string }
         unit: { type: string }
-        source_quantity: { type: integer, nullable: true }
-        mapping_multiplier: { type: integer, nullable: true }
-        requested_quantity: { type: integer }
+        source_quantity:
+          allOf: [{ $ref: '#/components/schemas/PositiveCountQuantity' }]
+          nullable: true
+        mapping_multiplier:
+          allOf: [{ $ref: '#/components/schemas/PositiveCountQuantity' }]
+          nullable: true
+        requested_quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
         processing_stage: { $ref: '#/components/schemas/ProcessingStage' }
         exception_code: { type: string }
         components:
@@ -6379,8 +6419,8 @@ components:
         product_name: { type: string }
         specification: { type: string }
         unit: { type: string }
-        quantity_per_bundle: { type: integer }
-        total_quantity: { type: integer }
+        quantity_per_bundle: { $ref: '#/components/schemas/PositiveCountQuantity' }
+        total_quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
     OrderSummary:
       type: object
       required: [id, order_no, source_channel, order_status, processing_stage, processing_health, completed_count, total_count, created_at, version]
@@ -6395,8 +6435,8 @@ components:
         order_status: { $ref: '#/components/schemas/OrderStatus' }
         processing_stage: { $ref: '#/components/schemas/ProcessingStage' }
         processing_health: { $ref: '#/components/schemas/ProcessingHealth' }
-        completed_count: { type: integer, minimum: 0 }
-        total_count: { type: integer, minimum: 1 }
+        completed_count: { $ref: '#/components/schemas/CountQuantity64' }
+        total_count: { type: integer, format: int64, minimum: 1 }
         attention_reason: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -6497,13 +6537,13 @@ components:
         row_index: { type: integer, minimum: 1 }
         source_sku_ref: { type: string }
         source_product_name: { type: string }
-        source_quantity: { type: string }
+        source_quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
         match_status: { type: string, enum: [MATCHED, NEED_REVIEW, CONFLICT] }
         reason_code:
           type: string
           enum: [EXACT_NAME_MATCH, NO_EXACT_NAME_MATCH, SOURCE_SKU_NAME_CONFLICT, REFERENCE_MAPPING_CONFLICT]
         reason: { type: string }
-        quantity_multiplier: { type: string, pattern: '^\\d+(\\.\\d{3})$' }
+        quantity_multiplier: { $ref: '#/components/schemas/PositiveCountQuantity' }
         provider_sku_code: { type: string }
         provider_sku_name: { type: string }
         bundle_components:
@@ -6514,7 +6554,7 @@ components:
             properties:
               provider_sku_code: { type: string }
               provider_sku_name: { type: string }
-              quantity_per_bundle: { type: string, pattern: '^\\d+(\\.\\d{3})$' }
+              quantity_per_bundle: { $ref: '#/components/schemas/PositiveCountQuantity' }
     ImportBatch:
       type: object
       required: [id, batch_no, batch_type, import_mode, template_family, template_version, original_file_name, content_sha256, status, settlement_missing, row_counts, received_at]
@@ -6555,6 +6595,9 @@ components:
           items: { $ref: '#/components/schemas/Identifier' }
         generated_source_return_export_ids:
           type: array
+          description: >-
+            已成功派生并仍有效的来源回填文件 ID。Tracking 已接受但派生任务仍在重试时可为空；
+            该空值不表示运单未落库。
           items: { $ref: '#/components/schemas/Identifier' }
         outbound_routing:
           type: object
@@ -6658,8 +6701,8 @@ components:
         erp_delivery_no: { type: string }
         jd_delivery_no: { type: string, nullable: true }
         retry_count: { type: integer, minimum: 0 }
-        plan_quantity: { type: integer, minimum: 0 }
-        goods_count: { type: integer, minimum: 0 }
+        plan_quantity: { $ref: '#/components/schemas/CountQuantity64' }
+        goods_count: { $ref: '#/components/schemas/CountQuantity64' }
         business_code: { type: string }
         message: { type: string }
     RawImportRow:
@@ -6683,7 +6726,16 @@ components:
         parsed:
           type: object
           description: 渠道模板解析投影（白名单：receiver_name/receiver_phone/receiver_address/product_name/quantity/specification/source_sku_ref），供确认明细核对解析是否正确。
-          additionalProperties: { type: string }
+          additionalProperties: false
+          properties:
+            receiver_name: { type: string }
+            receiver_phone: { type: string }
+            receiver_address: { type: string }
+            product_name: { type: string }
+            quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
+            specification: { type: string }
+            source_sku_ref: { type: string }
+            source_line_ref: { type: string }
         sku_fulfillment:
           type: object
           nullable: true
@@ -6710,7 +6762,7 @@ components:
             properties:
               product_name: { type: string }
               provider_sku_code: { type: string }
-              plan_quantity: { type: integer, minimum: 1 }
+              plan_quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
     RawImportRowPage:
       allOf:
         - $ref: '#/components/schemas/PageMeta'
@@ -6737,8 +6789,8 @@ components:
         fulfillment_id: { $ref: '#/components/schemas/Identifier' }
         order_line_id: { $ref: '#/components/schemas/Identifier' }
         product_name: { type: string }
-        instructed_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        instructed_quantity: { $ref: '#/components/schemas/CountQuantity' }
+        shipped_quantity: { $ref: '#/components/schemas/CountQuantity' }
         unit: { type: string }
     Shipment:
       type: object
@@ -6857,8 +6909,8 @@ components:
         erp_delivery_no:
           type: string
           description: >-
-            Stable merchant-side outbound reference (shipments.outbound_order_no) submitted to
-            JD as erpDeliveryNo; never replaced by the JD-returned identifier.
+            Stable ZIMU-SO namespaced merchant reference submitted to JD as erpDeliveryNo;
+            independent from shipments.outbound_order_no and never replaced by the JD-returned identifier.
         jd_delivery_no:
           type: string
           nullable: true
@@ -6956,17 +7008,20 @@ components:
           description: JD-returned delivery number when supplied by the successful response.
         outbound_order_no:
           type: string
-          description: Same stable merchant-side reference as erp_delivery_no.
+          pattern: '^[0-9]{12}$'
+          description: Independent immutable local/export outbound reference; never sent as erpDeliveryNo.
         sync_status:
           type: string
           enum: [SUBMITTED]
         retry_count: { type: integer, minimum: 1 }
         plan_quantity:
           type: integer
+          format: int64
           minimum: 1
           description: Total JD piece quantity submitted across all ShipmentItems.
         goods_count:
           type: integer
+          format: int64
           minimum: 1
           description: Number of aggregated JD cargo rows submitted for the Shipment.
     ShipmentJdTrackingBackfillResult:
@@ -6991,14 +7046,15 @@ components:
           allOf: [{ $ref: '#/components/schemas/Identifier' }]
           nullable: true
           description: >-
-            Present when split/conflicting tracking, Carrier mapping, or a JD terminal exception
-            requires human review.
+            Present when split/conflicting tracking, Carrier mapping, a JD terminal exception, or
+            cargo mismatch requires human review.
         business_code:
           type: string
           nullable: true
           description: >-
             Sanitized stable code for QUERY_FAILED or CONFLICT, including
-            JD_TRACKING_CARRIER_MAPPING_REQUIRED and JD_TRACKING_TERMINAL_EXCEPTION.
+            JD_TRACKING_CARRIER_MAPPING_REQUIRED, JD_TRACKING_TERMINAL_EXCEPTION, and
+            JD_TRACKING_CARGO_MISMATCH.
     ShipmentJdReceiverAddressCommand:
       type: object
       required: [expected_version, province, city, county, detail_address]
@@ -7108,7 +7164,10 @@ components:
           description: Version required by the structured receiver-address confirmation command.
         erp_delivery_no:
           type: string
-          description: Stable shipments.outbound_order_no; previewing never allocates a new number.
+          description: >-
+            Stable ZIMU-SO namespaced JD candidate reserved locally on first planning/preview.
+            Repeated previews reuse it; submit may replace it only when same-tenant querySoOrder
+            proves a historical collision before any addSoOrder call.
         request_hash:
           type: string
           pattern: '^[0-9a-f]{64}$'
@@ -7139,9 +7198,9 @@ components:
         fulfillment_no: { type: string }
         order_line_id: { $ref: '#/components/schemas/Identifier' }
         provider_id: { $ref: '#/components/schemas/Identifier' }
-        requested_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        cumulative_shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        cancelled_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        requested_quantity: { $ref: '#/components/schemas/CountQuantity' }
+        cumulative_shipped_quantity: { $ref: '#/components/schemas/CountQuantity' }
+        cancelled_quantity: { $ref: '#/components/schemas/CountQuantity' }
         shipping_progress: { $ref: '#/components/schemas/ShippingProgress' }
         outcome: { $ref: '#/components/schemas/FulfillmentOutcome' }
         exception_code: { type: string }
@@ -7164,7 +7223,7 @@ components:
       required: [expected_version, instructed_quantity, remark]
       properties:
         expected_version: { type: integer, format: int64, minimum: 0 }
-        instructed_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        instructed_quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
         remark: { type: string, minLength: 1, maxLength: 1000 }
     ContinuationExport:
       type: object
@@ -7174,7 +7233,7 @@ components:
         shipment_id: { $ref: '#/components/schemas/Identifier' }
         shipment_sequence: { type: integer, minimum: 2 }
         fulfillment_export_id: { $ref: '#/components/schemas/Identifier' }
-        instructed_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        instructed_quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
         fulfillment_version: { type: integer, format: int64, minimum: 1 }
     FulfillmentPage:
       allOf:
@@ -7201,7 +7260,7 @@ components:
           type: string
           enum: [INTERNAL_ROUTING, PROVIDER_EXTERNAL]
           description: INTERNAL_ROUTING 表示仅供本系统确定性路由，不代表第三方外部编码已核验。
-        instructed_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        instructed_quantity: { $ref: '#/components/schemas/CountQuantity' }
         unit: { type: string }
         item_amount: { type: string, enum: ['0.00'] }
     DownloadAudit:
@@ -7431,7 +7490,7 @@ components:
         sku_id: { $ref: '#/components/schemas/Identifier' }
         source_channel: { $ref: '#/components/schemas/SourceChannel' }
         source_sku_ref: { type: string, minLength: 1 }
-        quantity_multiplier: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        quantity_multiplier: { $ref: '#/components/schemas/PositiveCountQuantity' }
         remark: { type: string, minLength: 1, maxLength: 1000 }
     CompleteSourceFollowupCommand:
       type: object
@@ -7567,7 +7626,7 @@ components:
             required: [ticket_item_id, available_quantity]
             properties:
               ticket_item_id: { $ref: '#/components/schemas/Identifier' }
-              available_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+              available_quantity: { $ref: '#/components/schemas/CountQuantity' }
     ProcurementReceiptInput:
       type: object
       required: [result, items]
@@ -7584,7 +7643,7 @@ components:
             required: [ticket_item_id, available_quantity]
             properties:
               ticket_item_id: { $ref: '#/components/schemas/Identifier' }
-              available_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+              available_quantity: { $ref: '#/components/schemas/CountQuantity' }
     ProcurementTicket:
       type: object
       required: [id, ticket_no, fulfillment_id, status, requested_quantity, fulfilled_quantity, remaining_quantity, items, receipts, version, created_at]
@@ -7594,9 +7653,9 @@ components:
         fulfillment_id: { $ref: '#/components/schemas/Identifier' }
         retry_of_ticket_id: { $ref: '#/components/schemas/Identifier' }
         status: { $ref: '#/components/schemas/ProcurementStatus' }
-        requested_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
-        fulfilled_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        remaining_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        requested_quantity: { $ref: '#/components/schemas/CountQuantity64' }
+        fulfilled_quantity: { $ref: '#/components/schemas/CountQuantity64' }
+        remaining_quantity: { $ref: '#/components/schemas/CountQuantity64' }
         items:
           type: array
           items:
@@ -7606,9 +7665,9 @@ components:
               id: { $ref: '#/components/schemas/Identifier' }
               sku_id: { $ref: '#/components/schemas/Identifier' }
               component_sku_id: { $ref: '#/components/schemas/Identifier' }
-              requested_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
-              fulfilled_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-              remaining_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+              requested_quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
+              fulfilled_quantity: { $ref: '#/components/schemas/CountQuantity' }
+              remaining_quantity: { $ref: '#/components/schemas/CountQuantity' }
         receipts:
           type: array
           items: { $ref: '#/components/schemas/ProcurementReceipt' }
@@ -7707,11 +7766,13 @@ components:
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32 }
         net_content_value:
-          allOf: [{ $ref: '#/components/schemas/PositiveDecimalQuantity' }]
+          allOf: [{ $ref: '#/components/schemas/PositiveDecimalAmount' }]
           nullable: true
           description: 单个内包装的净含量；与其余包装身份字段同时存在或同时为空。
         net_content_unit: { type: string, minLength: 1, maxLength: 16, nullable: true }
-        package_count: { type: integer, minimum: 1, nullable: true }
+        package_count:
+          allOf: [{ $ref: '#/components/schemas/PositiveCountQuantity' }]
+          nullable: true
         package_unit: { type: string, minLength: 1, maxLength: 32, nullable: true }
         barcode: { type: string, minLength: 1, maxLength: 64, nullable: true }
         purchase_price:
@@ -7751,9 +7812,19 @@ components:
         code: { $ref: '#/components/schemas/SkuReadinessReason' }
         message: { type: string, minLength: 1 }
         action: { type: string, minLength: 1 }
+    SkuReadinessWarningCode:
+      type: string
+      enum: [PACKAGING_METADATA_INCOMPLETE]
+    SkuReadinessWarning:
+      type: object
+      required: [code, message, action]
+      properties:
+        code: { $ref: '#/components/schemas/SkuReadinessWarningCode' }
+        message: { type: string, minLength: 1 }
+        action: { type: string, minLength: 1 }
     SkuFulfillmentReadiness:
       type: object
-      required: [ready, reason_codes, issues, data_quality_flags]
+      required: [ready, reason_codes, issues, warnings, data_quality_flags]
       properties:
         ready:
           type: boolean
@@ -7765,6 +7836,10 @@ components:
         issues:
           type: array
           items: { $ref: '#/components/schemas/SkuReadinessIssue' }
+        warnings:
+          type: array
+          description: 不改变 ready 的资料完善提示；不得被成单、导出或发货门禁当作阻断。
+          items: { $ref: '#/components/schemas/SkuReadinessWarning' }
         data_quality_flags:
           type: array
           description: 当前有效的数据质量与档案证据；currently_blocking=false 的参考证据不会改变 active 或 ready。
@@ -7999,7 +8074,7 @@ components:
         unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
         net_content_value: { $ref: '#/components/schemas/PositiveDecimalAmount' }
         net_content_unit: { type: string, minLength: 1, maxLength: 16, example: g }
-        package_count: { type: integer, minimum: 1 }
+        package_count: { $ref: '#/components/schemas/PositiveCountQuantity' }
         package_unit: { type: string, minLength: 1, maxLength: 32, example: 袋 }
         barcode: { type: string, minLength: 1, maxLength: 64 }
         purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
@@ -8074,7 +8149,7 @@ components:
         unit: { type: string, minLength: 1, maxLength: 32, example: 盒 }
         net_content_value: { $ref: '#/components/schemas/PositiveDecimalAmount' }
         net_content_unit: { type: string, minLength: 1, maxLength: 16, example: g }
-        package_count: { type: integer, minimum: 1 }
+        package_count: { $ref: '#/components/schemas/PositiveCountQuantity' }
         package_unit: { type: string, minLength: 1, maxLength: 32, example: 袋 }
         barcode: { type: string, minLength: 1, maxLength: 64 }
         purchase_price: { $ref: '#/components/schemas/NullableCommercialPrice' }
@@ -8087,8 +8162,7 @@ components:
       properties:
         sku_id: { $ref: '#/components/schemas/Identifier' }
         quantity_per_bundle:
-          type: string
-          pattern: '^[1-9][0-9]*$'
+          $ref: '#/components/schemas/PositiveCountQuantity'
           description: 每份礼包所需的正整数 SKU 件数。
         emg_code_snapshot: { type: string, maxLength: 64, nullable: true }
         source_text_snapshot: { type: string, maxLength: 255, nullable: true }
@@ -8108,8 +8182,10 @@ components:
         source_bundle_name: { type: string, maxLength: 255, nullable: true }
         source_barcode: { type: string, maxLength: 128, nullable: true }
         quantity_multiplier:
-          type: string
-          pattern: '^1$'
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 1
           nullable: true
           description: 礼包来源包装乘数；一期必须为 1。
         bundle_id: { $ref: '#/components/schemas/Identifier' }
@@ -8212,11 +8288,13 @@ components:
         specification: { type: string, minLength: 1, maxLength: 200 }
         unit: { type: string, minLength: 1, maxLength: 32 }
         net_content_value:
-          allOf: [{ $ref: '#/components/schemas/PositiveDecimalQuantity' }]
+          allOf: [{ $ref: '#/components/schemas/PositiveDecimalAmount' }]
           nullable: true
           description: 显式 null 与其余三个包装字段同时传入可清空结构化包装身份。
         net_content_unit: { type: string, minLength: 1, maxLength: 16, nullable: true }
-        package_count: { type: integer, minimum: 1, nullable: true }
+        package_count:
+          allOf: [{ $ref: '#/components/schemas/PositiveCountQuantity' }]
+          nullable: true
         package_unit: { type: string, minLength: 1, maxLength: 32, nullable: true }
         barcode: { type: string, minLength: 1, maxLength: 64, nullable: true }
         purchase_price:
@@ -8235,7 +8313,7 @@ components:
         source_sku_ref: { type: string, minLength: 1 }
         source_sku_name: { type: string }
         sku_id: { $ref: '#/components/schemas/Identifier' }
-        quantity_multiplier: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        quantity_multiplier: { $ref: '#/components/schemas/PositiveCountQuantity' }
         active: { type: boolean, default: true }
     SourceSkuMappingPatch:
       type: object
@@ -8243,7 +8321,7 @@ components:
       properties:
         expected_version: { type: integer, minimum: 0 }
         sku_id: { $ref: '#/components/schemas/Identifier' }
-        quantity_multiplier: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        quantity_multiplier: { $ref: '#/components/schemas/PositiveCountQuantity' }
         active: { type: boolean }
       minProperties: 2
     ProviderSkuMappingWrite:
@@ -8259,7 +8337,7 @@ components:
           minLength: 1
           description: 商家侧 SKU 标识；京东商品事实中的 erpGoodsNo 与此字段精确核对。
         jd_pieces_per_unit:
-          allOf: [{ $ref: '#/components/schemas/PositiveDecimalQuantity' }]
+          allOf: [{ $ref: '#/components/schemas/PositiveCountQuantity' }]
           description: 1 个内部 SKU 销售单位对应的京东库存件数；未配置时不得默认为 1。
         active: { type: boolean, default: true }
     ProviderSkuMappingPatch:
@@ -8274,7 +8352,7 @@ components:
           minLength: 1
           description: 商家侧 SKU 标识；用于修复 erpGoodsNo 冲突。
         jd_pieces_per_unit:
-          allOf: [{ $ref: '#/components/schemas/PositiveDecimalQuantity' }]
+          allOf: [{ $ref: '#/components/schemas/PositiveCountQuantity' }]
           description: 1 个内部 SKU 销售单位对应的京东库存件数。
         active: { type: boolean }
       minProperties: 2
@@ -8304,7 +8382,7 @@ components:
         sku_code: { type: string, nullable: true }
         unit: { type: string, nullable: true }
         source_quantity:
-          allOf: [{ $ref: '#/components/schemas/PositiveDecimalQuantity' }]
+          allOf: [{ $ref: '#/components/schemas/PositiveCountQuantity' }]
           nullable: true
         status: { type: string, enum: [PASS, BLOCKED] }
         issues:
@@ -8316,8 +8394,8 @@ components:
         maintenance_action: { $ref: '#/components/schemas/ShipmentJdSkuMappingMaintenanceAction' }
         mapping_id: { $ref: '#/components/schemas/Identifier' }
         goods_no: { type: string }
-        pieces_per_unit: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
-        exact_plan_quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        pieces_per_unit: { $ref: '#/components/schemas/PositiveCountQuantity' }
+        exact_plan_quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
         unit_conversion_source: { type: string }
         jd_goods_query_request_id: { type: string }
     ShipmentJdSkuMappingItem:
@@ -8416,13 +8494,12 @@ components:
         goods_no: { type: string, minLength: 1 }
         warehouse_code: { type: string, minLength: 1 }
         required_quantity:
-          type: string
-          pattern: '^[1-9][0-9]*$'
+          $ref: '#/components/schemas/PositiveCountQuantity'
           description: 当前出库预览所需的精确京东件数。
         quantity_unit: { type: string, enum: [JD_PIECE] }
         observation_status: { type: string, enum: [OBSERVED, OBSERVED_ZERO, NOT_OBSERVED] }
-        stock_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        usable_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        stock_quantity: { $ref: '#/components/schemas/CountQuantity' }
+        usable_quantity: { $ref: '#/components/schemas/CountQuantity' }
     ShipmentJdStockReviewCase:
       type: object
       additionalProperties: false
@@ -8466,10 +8543,11 @@ components:
           type: array
           items: { $ref: '#/components/schemas/ShipmentJdStockObservation' }
         review_case: { $ref: '#/components/schemas/ShipmentJdStockReviewCase' }
-    NullableInventoryDecimal:
-      type: string
+    NullableCountQuantity:
+      type: integer
+      format: int32
+      minimum: 0
       nullable: true
-      pattern: '^(0|[1-9][0-9]*)(\.[0-9]{1,3})?$'
     InventoryOverviewItem:
       type: object
       additionalProperties: false
@@ -8509,9 +8587,9 @@ components:
           enum: [JD_PIECE, INTERNAL_UNIT, UNKNOWN]
         warehouse_code: { type: string, nullable: true }
         observation_status: { type: string, enum: [OBSERVED, NOT_OBSERVED] }
-        total_quantity: { $ref: '#/components/schemas/NullableInventoryDecimal' }
-        available_quantity: { $ref: '#/components/schemas/NullableInventoryDecimal' }
-        unavailable_quantity: { $ref: '#/components/schemas/NullableInventoryDecimal' }
+        total_quantity: { $ref: '#/components/schemas/NullableCountQuantity' }
+        available_quantity: { $ref: '#/components/schemas/NullableCountQuantity' }
+        unavailable_quantity: { $ref: '#/components/schemas/NullableCountQuantity' }
         observed_at: { type: string, format: date-time, nullable: true }
         observation_age_seconds: { type: integer, format: int64, minimum: 0, nullable: true }
         freshness_status: { type: string, enum: [CURRENT, STALE, NOT_OBSERVED] }
@@ -8612,9 +8690,9 @@ components:
         - data_mode
       properties:
         observation_status: { type: string, enum: [OBSERVED, NOT_OBSERVED] }
-        total_quantity: { $ref: '#/components/schemas/NullableInventoryDecimal' }
-        available_quantity: { $ref: '#/components/schemas/NullableInventoryDecimal' }
-        unavailable_quantity: { $ref: '#/components/schemas/NullableInventoryDecimal' }
+        total_quantity: { $ref: '#/components/schemas/NullableCountQuantity' }
+        available_quantity: { $ref: '#/components/schemas/NullableCountQuantity' }
+        unavailable_quantity: { $ref: '#/components/schemas/NullableCountQuantity' }
         quantity_unit:
           type: string
           nullable: true
@@ -8979,9 +9057,9 @@ components:
         source_channel: { $ref: '#/components/schemas/SourceChannel' }
         order_count: { type: integer, minimum: 0 }
         order_line_count: { type: integer, minimum: 0 }
-        actual_shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        canonical_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        actual_shipped_quantity: { $ref: '#/components/schemas/CountQuantity64' }
+        canonical_quantity: { $ref: '#/components/schemas/CountQuantity64' }
+        shipped_quantity: { $ref: '#/components/schemas/CountQuantity64' }
         shipment_count: { type: integer, minimum: 0 }
         exception_order_count: { type: integer, minimum: 0 }
         out_of_stock_order_count: { type: integer, minimum: 0 }
@@ -9003,9 +9081,9 @@ components:
         sku_name: { type: string }
         order_count: { type: integer, minimum: 0 }
         shipment_count: { type: integer, minimum: 0 }
-        actual_shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        canonical_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
-        shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        actual_shipped_quantity: { $ref: '#/components/schemas/CountQuantity64' }
+        canonical_quantity: { $ref: '#/components/schemas/CountQuantity64' }
+        shipped_quantity: { $ref: '#/components/schemas/CountQuantity64' }
         source_mappings:
           type: array
           description: Active source SKU and package multipliers for this channel and Canonical SKU.
@@ -9016,7 +9094,7 @@ components:
               source_sku_ref: { type: string }
               source_product_name: { type: string }
               source_specification: { type: string }
-              quantity_multiplier: { $ref: '#/components/schemas/DecimalQuantity' }
+              quantity_multiplier: { $ref: '#/components/schemas/CountQuantity' }
         jd_sku_codes:
           type: array
           items: { type: string }
@@ -9031,7 +9109,7 @@ components:
         provider_name: { type: string }
         provider_type: { type: string, enum: [JD_WAREHOUSE, THIRD_PARTY] }
         fulfillment_count: { type: integer, minimum: 0 }
-        fulfilled_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        fulfilled_quantity: { $ref: '#/components/schemas/CountQuantity64' }
         not_shipped_count: { type: integer, minimum: 0 }
         partially_shipped_count: { type: integer, minimum: 0 }
         fully_shipped_count: { type: integer, minimum: 0 }
@@ -9045,7 +9123,7 @@ components:
         sync_failed_count: { type: integer, minimum: 0 }
         synced_count: { type: integer, minimum: 0 }
         shipment_count: { type: integer, minimum: 0 }
-        shipped_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        shipped_quantity: { $ref: '#/components/schemas/CountQuantity64' }
         average_tracking_hours: { type: number, format: double, minimum: 0 }
     DemoScenario:
       type: object
@@ -9089,7 +9167,7 @@ components:
               product_name: { type: string, minLength: 1, maxLength: 255 }
               sku_code: { type: string, maxLength: 64, nullable: true }
               specification: { type: string, minLength: 1, maxLength: 255 }
-              quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+              quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
               unit: { type: string, minLength: 1, maxLength: 32 }
         settlement:
           type: object
@@ -9134,7 +9212,7 @@ components:
                   product_name: { type: string }
                   sku_code: { type: string, nullable: true }
                   specification: { type: string }
-                  quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+                  quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
                   unit: { type: string }
                   processing_stage: { type: string, enum: [COMPLETED] }
     # ---- 工单 07 补录：结构取自 springdoc 生成物，描述经评审；新增端点见对应 paths 条目 ----
@@ -9143,7 +9221,7 @@ components:
       required: [lineNo]
       properties:
         lineNo: { type: integer, minimum: 1, description: 被补充的原草稿行号 }
-        quantity: { $ref: '#/components/schemas/PositiveDecimalQuantity' }
+        quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
         skuId: { type: string, pattern: '^[1-9][0-9]*$' }
     OrderDraftSupplementCommand:
       type: object
@@ -9172,7 +9250,7 @@ components:
       required: [providerSkuCode, jdPiecesPerUnit]
       properties:
         providerSkuCode: { type: string, description: 供应商 SKU 编码 }
-        jdPiecesPerUnit: { $ref: '#/components/schemas/DecimalQuantity' }
+        jdPiecesPerUnit: { $ref: '#/components/schemas/PositiveCountQuantity' }
     ProviderSkuJdFactorImport:
       type: object
       required: [rows]
@@ -9290,8 +9368,8 @@ components:
       type: object
       description: 采购比价用库存投影。
       properties:
-        available: { $ref: '#/components/schemas/DecimalQuantity' }
-        shortage: { $ref: '#/components/schemas/DecimalQuantity' }
+        available: { $ref: '#/components/schemas/CountQuantity' }
+        shortage: { $ref: '#/components/schemas/CountQuantity' }
     Candidate:
       type: object
       description: 可比候选供应商报价。
@@ -9324,7 +9402,7 @@ components:
       required: [target_sku]
       properties:
         target_sku: { type: string }
-        requested_quantity: { $ref: '#/components/schemas/DecimalQuantity' }
+        requested_quantity: { $ref: '#/components/schemas/CountQuantity' }
         inventory: { $ref: '#/components/schemas/Inventory' }
         candidates:
           type: array

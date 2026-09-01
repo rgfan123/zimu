@@ -90,13 +90,19 @@ class MixedProviderStaticBundlePipelineApiTest {
 
         @Override
         public JdResult queryOutboundOrder(Map<String, Object> request) {
-            if (queryResult == null) throw new IllegalStateException("controlled JD query result missing");
+            if (Integer.valueOf(0).equals(request.get("deliveryItemFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryPackageFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryStatusFlag"))) {
+                return super.queryOutboundOrder(request);
+            }
+            if (queryResult == null) return super.queryOutboundOrder(request);
             return queryResult;
         }
     }
 
     @BeforeEach
     void configureJdSdkRoute() {
+        jd.queryResult(null);
         jdbc.update(
                 "UPDATE app.fulfillment_providers SET config=config||"
                         + "'{\"sourceNo\":\"ISV-MIX-001\",\"warehouseNo\":\"WH-MIX-001\","
@@ -116,6 +122,12 @@ class MixedProviderStaticBundlePipelineApiTest {
         Map<String, Object> jdSku = firstSkuForProvider("JD_WAREHOUSE");
         Map<String, Object> tpSku = createThirdPartySkuFixture();
         Map<String, Object> secondTpSku = createSecondThirdPartySkuFixture();
+        for (Map<String, Object> component : List.of(jdSku, tpSku, secondTpSku)) {
+            jdbc.update(
+                    "UPDATE app.skus SET net_content_value=NULL, net_content_unit=NULL, "
+                            + "package_count=NULL, package_unit=NULL WHERE id=?",
+                    Long.parseLong(component.get("id").toString()));
+        }
         String bundleId = createMixedBundle(
                 "BUNDLE-MIXED-PROVIDER-001",
                 "羊蝎子鸵鸟测试礼包",
@@ -917,7 +929,7 @@ class MixedProviderStaticBundlePipelineApiTest {
                 "bundle_name", bundleName,
                 "status", "ACTIVE",
                 "items", skuIds.stream()
-                        .map(skuId -> Map.of("sku_id", skuId, "quantity_per_bundle", "1"))
+                        .map(skuId -> Map.of("sku_id", skuId, "quantity_per_bundle", 1))
                         .toList());
         ResponseEntity<Map> response = http.exchange(
                 "/api/v1/product-bundles",
@@ -941,7 +953,7 @@ class MixedProviderStaticBundlePipelineApiTest {
                 "source_channel", "WANQI",
                 "source_bundle_ref", sourceBundleRef,
                 "source_bundle_name", sourceBundleName,
-                "quantity_multiplier", "1",
+                "quantity_multiplier", 1,
                 "bundle_id", bundleId,
                 "active", true);
         ResponseEntity<Map> response = http.exchange(

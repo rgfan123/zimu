@@ -1,5 +1,7 @@
 package cn.zimu.fulfillment.connector.caishixian;
 
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.customer.ImportedCustomerIdentity;
 import cn.zimu.fulfillment.file.StructuredOrderRow;
@@ -11,7 +13,6 @@ import cn.zimu.fulfillment.order.dto.OrderItemInput;
 import cn.zimu.fulfillment.order.dto.Receiver;
 import cn.zimu.fulfillment.order.dto.Settlement;
 import com.fasterxml.jackson.databind.JsonNode;
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -76,9 +77,6 @@ public final class CaishixianOrderTransform {
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final DateTimeFormatter DATE_TIME_MINUTE = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
-    private static final String QUANTITY_PATTERN =
-            cn.zimu.fulfillment.common.dto.Patterns.POSITIVE_INTEGER_QUANTITY;
-
     /**
      * @param listItem orderList 的订单对象（必有）
      * @param detail   orderDetail 的 data 节点；拉取失败时传 null → 整单转人工复核
@@ -186,8 +184,8 @@ public final class CaishixianOrderTransform {
         for (JsonNode goods : detail.path("supplierOrderGoodsVo")) {
             String goodsCode = text(goods, "goodsCode");
             String goodsName = text(goods, "goodsName");
-            String quantity = quantityOf(goods);
-            if (goodsCode.isBlank() || goodsName.isBlank() || quantity.isBlank()) {
+            Integer quantity = quantityOf(goods);
+            if (goodsCode.isBlank() || goodsName.isBlank() || quantity == null) {
                 // 数量/编号/名称缺失的行不造数、不产生该行；订单级 reviewRequired 由
                 // hasInvalidQuantity 统一判定，原始值保留在快照 goods 里可追溯。
                 continue;
@@ -208,18 +206,13 @@ public final class CaishixianOrderTransform {
         return List.copyOf(items);
     }
 
-    /** count 只接受正整数（canonical 数量门禁同款正则）；其余一律空串（不造数）。 */
-    private String quantityOf(JsonNode goods) {
+    /** count 接受数学整数（兼容 3.000）并在边界归一为 int32；其余一律不造数。 */
+    private Integer quantityOf(JsonNode goods) {
         JsonNode count = goods.path("count");
-        String raw = count.isNumber() ? count.decimalValue().stripTrailingZeros().toPlainString()
-                : count.asText("").trim();
-        if (raw.isBlank() || !raw.matches(QUANTITY_PATTERN)) {
-            return "";
-        }
         try {
-            return new BigDecimal(raw).stripTrailingZeros().toPlainString();
-        } catch (NumberFormatException exception) {
-            return "";
+            return CountQuantity.fromPositiveFileValue(count.asText(""));
+        } catch (InvalidCountQuantityException exception) {
+            return null;
         }
     }
 
@@ -228,7 +221,7 @@ public final class CaishixianOrderTransform {
             return false;
         }
         for (JsonNode goods : detail.path("supplierOrderGoodsVo")) {
-            if (quantityOf(goods).isBlank()
+            if (quantityOf(goods) == null
                     || text(goods, "goodsCode").isBlank()
                     || text(goods, "goodsName").isBlank()) {
                 return true;

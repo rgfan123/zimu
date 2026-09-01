@@ -41,7 +41,7 @@ function draft(): OrderDraftDetail {
         product_name_raw: '羊小腿原始描述',
         spec_raw: '500g/盒',
         unit_raw: '盒',
-        quantity: '2',
+        quantity: 2,
       },
     ],
     review_case_id: '99',
@@ -121,7 +121,7 @@ test('confirm command carries visible draft/case versions and explicit human cho
       address: '上海市浦东新区测试路 1 号',
     },
     settlement: { method: 'MONTHLY', settlement_time: '2026-08-31T16:00:00.000Z' },
-    items: [{ line_no: 1, sku_id: '45', quantity: '3' }],
+    items: [{ line_no: 1, sku_id: '45', quantity: 3 }],
     remark: '已与原始消息核对',
   });
   assert.equal('fulfillment_provider_id' in command, false);

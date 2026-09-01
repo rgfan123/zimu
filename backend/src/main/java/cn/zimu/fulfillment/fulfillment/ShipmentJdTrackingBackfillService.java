@@ -11,10 +11,11 @@ import cn.zimu.fulfillment.common.web.RequestContext;
 import cn.zimu.fulfillment.common.web.WriteCommands;
 import cn.zimu.fulfillment.connector.jd.JDWarehouseService;
 import cn.zimu.fulfillment.connector.jd.JdResult;
+import cn.zimu.fulfillment.file.SourceReturnDerivationQueue;
+import cn.zimu.fulfillment.file.SourceReturnDerivationRunner;
 import cn.zimu.fulfillment.file.TrackingFileService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -27,6 +28,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -41,6 +44,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 public class ShipmentJdTrackingBackfillService {
 
     static final String SCOPE = "shipment.jd_tracking.backfill";
+    private static final Logger log = LoggerFactory.getLogger(ShipmentJdTrackingBackfillService.class);
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -50,6 +54,8 @@ public class ShipmentJdTrackingBackfillService {
     private final CarrierPrefixMatcher carrierMatcher;
     private final AuditLogService audits;
     private final TrackingFileService trackingFiles;
+    private final SourceReturnDerivationQueue sourceReturnDerivations;
+    private final SourceReturnDerivationRunner sourceReturnDerivationRunner;
     private final String clientMode;
 
     public ShipmentJdTrackingBackfillService(
@@ -61,6 +67,8 @@ public class ShipmentJdTrackingBackfillService {
             CarrierPrefixMatcher carrierMatcher,
             AuditLogService audits,
             TrackingFileService trackingFiles,
+            SourceReturnDerivationQueue sourceReturnDerivations,
+            SourceReturnDerivationRunner sourceReturnDerivationRunner,
             @Value("${app.jd.client-mode:MOCK}") String clientMode) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
@@ -70,6 +78,8 @@ public class ShipmentJdTrackingBackfillService {
         this.carrierMatcher = carrierMatcher;
         this.audits = audits;
         this.trackingFiles = trackingFiles;
+        this.sourceReturnDerivations = sourceReturnDerivations;
+        this.sourceReturnDerivationRunner = sourceReturnDerivationRunner;
         this.clientMode = "REAL".equalsIgnoreCase(clientMode == null ? "" : clientMode.trim())
                 ? "REAL" : "MOCK";
     }
@@ -99,7 +109,8 @@ public class ShipmentJdTrackingBackfillService {
                         shipmentId, context, 200,
                         "JD_TRACKING_IDEMPOTENT_REPLAY", "幂等重放首次京东运单查询结果");
             }
-            return result;
+            return completeSourceReturnDerivations(
+                    shipmentId, context.operator(), result);
         } catch (BusinessException exception) {
             auditOutOfBandOutcome(
                     shipmentId, context, exception.getHttpStatus(),
@@ -140,12 +151,22 @@ public class ShipmentJdTrackingBackfillService {
                 SELECT s.id, s.order_id, s.outbound_order_no, s.shipment_status, s.lock_version,
                        fp.provider_type, j.erp_delivery_no, j.jd_delivery_no, j.sync_status,
                        j.client_mode, j.submitted_warehouse_no, j.submitted_owner_no,
-                       NULLIF(btrim(fp.config->>'pin'), '') current_pin, j.tracking_query_status,
+                       j.submitted_pin, j.tracking_query_status,
+                       COALESCE(cargo_review.id, 0) cargo_review_case_id,
+                       COALESCE(cargo_review.resolution_version, 0) cargo_review_version,
                        j.submitted_cargo_snapshot::text cargo_snapshot
                 FROM app.shipments s
                 JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
                 JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
                 JOIN app.shipment_jd_outbounds j ON j.shipment_id=s.id
+                LEFT JOIN LATERAL (
+                    SELECT rc.id, rc.resolution_version
+                    FROM app.review_cases rc
+                    WHERE rc.shipment_id=s.id
+                      AND rc.reason_code='JD_TRACKING_CARGO_MISMATCH'
+                    ORDER BY rc.id DESC
+                    LIMIT 1
+                ) cargo_review ON TRUE
                 WHERE s.id=?
                 FOR NO KEY UPDATE OF s
                 """,
@@ -170,8 +191,10 @@ public class ShipmentJdTrackingBackfillService {
                             rs.getLong("lock_version"), rs.getString("provider_type"),
                             rs.getString("sync_status"), rs.getString("client_mode"),
                             rs.getString("submitted_warehouse_no"), rs.getString("submitted_owner_no"),
-                            rs.getString("current_pin"),
+                            rs.getString("submitted_pin"),
                             rs.getString("tracking_query_status"),
+                            rs.getLong("cargo_review_case_id"),
+                            rs.getLong("cargo_review_version"),
                             parseCargoSnapshot(rs.getString("cargo_snapshot")), items);
                 },
                 shipmentId);
@@ -189,7 +212,7 @@ public class ShipmentJdTrackingBackfillService {
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("erpDeliveryNo", prepared.erpDeliveryNo());
         request.put("ownerNo", prepared.submittedOwnerNo());
-        request.put("pin", prepared.currentPin());
+        request.put("pin", prepared.submittedPin());
         request.put("deliveryItemFlag", 1);
         request.put("deliveryPackageFlag", 1);
         request.put("deliveryStatusFlag", 1);
@@ -198,6 +221,12 @@ public class ShipmentJdTrackingBackfillService {
         // the official strict request shape and validates warehouseNo from the response.
         if ("MOCK".equals(prepared.clientMode())) {
             request.put("warehouseNo", prepared.submittedWarehouseNo());
+            request.put("mockExpectedDeliveryItemList", prepared.cargos().stream()
+                    .map(cargo -> Map.<String, Object>of(
+                            "orderLine", cargo.orderLine(),
+                            "goodsNo", cargo.goodsNo(),
+                            "planQuantity", cargo.planQuantity()))
+                    .toList());
         }
         try {
             return jdWarehouse.queryOutboundOrder(request);
@@ -229,6 +258,8 @@ public class ShipmentJdTrackingBackfillService {
                 || !Objects.equals(current.clientMode(), prepared.clientMode())
                 || !Objects.equals(current.submittedWarehouseNo(), prepared.submittedWarehouseNo())
                 || !Objects.equals(current.submittedOwnerNo(), prepared.submittedOwnerNo())
+                || current.cargoReviewCaseId() != prepared.cargoReviewCaseId()
+                || current.cargoReviewVersion() != prepared.cargoReviewVersion()
                 || !Objects.equals(current.cargos(), prepared.cargos())
                 || !Objects.equals(current.items(), prepared.items())) {
             throw BusinessException.conflict(
@@ -299,15 +330,7 @@ public class ShipmentJdTrackingBackfillService {
                 200,
                 "JD_TRACKING_TERMINAL_ABSORBED");
         Map<String, Object> response = response(current, "TRACKED", trackingNumber, false, null);
-        // 已 TRACKED 的人工复查也尝试收口批次回填表（轮询器跳过 TRACKED，只有人工入口
-        // 走本路径；批次未就绪时产出非最终版本，就绪时返回既有最终版，不重复生成）。
-        response.put(
-                "generated_source_return_export_ids",
-                trackingFiles.finalizeReadySourceReturnsForShipment(
-                                current.shipmentId(), context.operator())
-                        .stream()
-                        .map(String::valueOf)
-                        .toList());
+        enqueueSourceReturnDerivation(current.shipmentId(), context.operator(), response);
         return response;
     }
 
@@ -386,14 +409,49 @@ public class ShipmentJdTrackingBackfillService {
             openBackfilledPendingReviewCase(current, parsed);
         }
         Map<String, Object> response = response(current, "TRACKED", parsed.waybillNo(), false, null);
-        response.put(
-                "generated_source_return_export_ids",
-                trackingFiles.finalizeReadySourceReturnsForShipment(
-                                current.shipmentId(), context.operator())
-                        .stream()
-                        .map(String::valueOf)
-                        .toList());
+        enqueueSourceReturnDerivation(current.shipmentId(), context.operator(), response);
         return response;
+    }
+
+    /** Tracking 完成事务内只写持久派生任务，不读取或生成来源文件。 */
+    private void enqueueSourceReturnDerivation(
+            long shipmentId, String operator, Map<String, Object> response) {
+        sourceReturnDerivations.enqueue(shipmentId, null, operator);
+        response.put("generated_source_return_export_ids", List.of());
+    }
+
+    /** 幂等完成事务提交后执行快路；失败任务留在队列重试，不能改写已接受的运单事实。 */
+    private IdempotentResult<Map<String, Object>> completeSourceReturnDerivations(
+            long shipmentId,
+            String operator,
+            IdempotentResult<Map<String, Object>> result) {
+        String pollStatus = result.replayed()
+                ? result.replayedBody().path("poll_status").asText()
+                : Objects.toString(result.result().get("poll_status"), "");
+        if (!"TRACKED".equals(pollStatus)) {
+            return result;
+        }
+        List<String> sourceReturnIds;
+        try {
+            long taskId = sourceReturnDerivations.enqueue(shipmentId, null, operator);
+            sourceReturnDerivationRunner.runDue(List.of(taskId));
+            sourceReturnIds = trackingFiles.sourceReturnIdsForShipment(shipmentId);
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "Source return derivation fast path deferred after JD tracking commit ({})",
+                    exception.getClass().getSimpleName());
+            log.debug("JD tracking source return fast path failed", exception);
+            return result;
+        }
+        if (result.replayed()) {
+            Map<String, Object> replayed = objectMapper.convertValue(
+                    result.replayedBody(), new TypeReference<>() {});
+            replayed.put("generated_source_return_export_ids", sourceReturnIds);
+            return IdempotentResult.replayed(result.httpStatus(), objectMapper.valueToTree(replayed));
+        }
+        Map<String, Object> executed = new LinkedHashMap<>(result.result());
+        executed.put("generated_source_return_export_ids", sourceReturnIds);
+        return IdempotentResult.executed(executed, result.httpStatus());
     }
 
     private void openBackfilledPendingReviewCase(Prepared current, Parsed parsed) {
@@ -428,6 +486,7 @@ public class ShipmentJdTrackingBackfillService {
         String reviewReason = switch (nullToEmpty(parsed.businessCode())) {
             case "JD_TRACKING_CARRIER_MAPPING_REQUIRED" -> "JD_TRACKING_CARRIER_MAPPING_REQUIRED";
             case "JD_TRACKING_TERMINAL_EXCEPTION" -> "JD_TRACKING_TERMINAL_EXCEPTION";
+            case "JD_TRACKING_CARGO_MISMATCH" -> "JD_TRACKING_CARGO_MISMATCH";
             default -> "MULTIPLE_TRACKINGS_FOR_OUTBOUND";
         };
         String reviewMessage = switch (reviewReason) {
@@ -435,14 +494,18 @@ public class ShipmentJdTrackingBackfillService {
                     "京东承运商无法唯一匹配启用的内部 Carrier 主数据，禁止自动回填";
             case "JD_TRACKING_TERMINAL_EXCEPTION" ->
                     "京东出库单已进入取消、拉回或拒收等异常终态，需人工复核";
+            case "JD_TRACKING_CARGO_MISMATCH" ->
+                    "京东货品与本次建单冻结快照不一致，禁止自动归属运单，需人工核对";
             default -> "京东返回多个或与本地冲突的运单，P0 不自动拆单";
         };
-        String detail = json(Map.of(
-                "message", reviewMessage,
-                "erp_delivery_no", current.erpDeliveryNo(),
-                "tracking_candidates", parsed.candidates(),
-                "jd_status", nullToEmpty(parsed.jdStatus()),
-                "carrier_mapping", parsed.carrierMappingDiagnostic()));
+        Map<String, Object> detailData = new LinkedHashMap<>();
+        detailData.put("message", reviewMessage);
+        detailData.put("erp_delivery_no", current.erpDeliveryNo());
+        detailData.put("tracking_candidates", parsed.candidates());
+        detailData.put("jd_status", nullToEmpty(parsed.jdStatus()));
+        detailData.put("carrier_mapping", parsed.carrierMappingDiagnostic());
+        detailData.putAll(parsed.cargoDiagnostic());
+        String detail = json(detailData);
         // case_no 自身全局唯一：旧 Case 终结后的新冲突应创建新 Case，
         // 并发的当前冲突则由 open-subject 唯一索引收敛并复用。
         String caseNo = "RC-JD-TRACK-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
@@ -485,7 +548,8 @@ public class ShipmentJdTrackingBackfillService {
                           AND reason_code IN (
                               'MULTIPLE_TRACKINGS_FOR_OUTBOUND',
                               'JD_TRACKING_CARRIER_MAPPING_REQUIRED',
-                              'JD_TRACKING_TERMINAL_EXCEPTION')
+                              'JD_TRACKING_TERMINAL_EXCEPTION',
+                              'JD_TRACKING_CARGO_MISMATCH')
                         ORDER BY id
                         """,
                         (rs, row) -> new OpenConflictCase(
@@ -580,10 +644,14 @@ public class ShipmentJdTrackingBackfillService {
                         canonicalByCode == null ? "" : canonicalByCode.code(),
                         canonicalByName == null ? "" : canonicalByName.code());
             }
-            QuantityCheck quantities = compareQuantities(
-                    prepared.cargos(), remoteListOfMaps(data.get("deliveryItemList")));
-            if (quantities.malformed()) {
-                return Parsed.failed("JD_TRACKING_CARGO_MISMATCH", "京东实发明细与建单快照不一致");
+            List<RemoteCargo> remoteCargos = normalizeRemoteCargos(
+                    remoteListOfMaps(data.get("deliveryItemList")));
+            QuantityCheck quantities = compareQuantities(prepared.cargos(), remoteCargos);
+            if (quantities.mismatch()) {
+                return Parsed.cargoMismatch(
+                        jdStatus,
+                        waybillNo,
+                        cargoMismatchDiagnostic(prepared.cargos(), remoteCargos));
             }
             if (!quantities.complete()) {
                 return Parsed.partial(jdStatus);
@@ -595,7 +663,27 @@ public class ShipmentJdTrackingBackfillService {
         }
     }
 
-    private QuantityCheck compareQuantities(List<Cargo> expected, List<Map<String, Object>> actual) {
+    /** 先严格规范化全部远端行；结构畸形必须进入 RESPONSE_MALFORMED，不能永久停轮询。 */
+    private List<RemoteCargo> normalizeRemoteCargos(List<Map<String, Object>> rows) {
+        List<RemoteCargo> result = new ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            String orderLine = remoteRequiredText(row.get("orderLine"), 128);
+            String goodsNo = remoteRequiredText(row.get("goodsNo"), 128);
+            Integer planQuantity = exactInt(row.get("planQuantity"));
+            if (planQuantity == null) {
+                throw MalformedRemoteResponse.INSTANCE;
+            }
+            Object rawRealQuantity = row.get("realQuantity");
+            Integer realQuantity = exactInt(rawRealQuantity);
+            if (rawRealQuantity != null && realQuantity == null) {
+                throw MalformedRemoteResponse.INSTANCE;
+            }
+            result.add(new RemoteCargo(orderLine, goodsNo, planQuantity, realQuantity));
+        }
+        return List.copyOf(result);
+    }
+
+    private QuantityCheck compareQuantities(List<Cargo> expected, List<RemoteCargo> actual) {
         if (expected.size() != actual.size()) return new QuantityCheck(false, true);
         Map<String, Cargo> byKey = new LinkedHashMap<>();
         for (Cargo cargo : expected) {
@@ -603,15 +691,11 @@ public class ShipmentJdTrackingBackfillService {
         }
         boolean complete = true;
         Set<String> seen = new LinkedHashSet<>();
-        for (Map<String, Object> row : actual) {
-            String orderLine = remoteRequiredText(row.get("orderLine"), 128);
-            String goodsNo = remoteRequiredText(row.get("goodsNo"), 128);
-            Cargo cargo = byKey.get(Cargo.key(orderLine, goodsNo));
-            Integer plan = exactInt(row.get("planQuantity"));
-            Object rawReal = row.get("realQuantity");
-            Integer real = exactInt(rawReal);
-            if (rawReal != null && real == null) throw MalformedRemoteResponse.INSTANCE;
-            if (cargo == null || !seen.add(cargo.key()) || plan == null || plan != cargo.planQuantity()) {
+        for (RemoteCargo row : actual) {
+            Cargo cargo = byKey.get(Cargo.key(row.orderLine(), row.goodsNo()));
+            int plan = row.planQuantity();
+            Integer real = row.realQuantity();
+            if (cargo == null || !seen.add(cargo.key()) || plan != cargo.planQuantity()) {
                 return new QuantityCheck(false, true);
             }
             if (real == null) {
@@ -626,6 +710,72 @@ public class ShipmentJdTrackingBackfillService {
             }
         }
         return new QuantityCheck(complete, false);
+    }
+
+    /**
+     * 只保留人工判断货品归属所需的白名单字段；绝不复制 querySoOrder 原始响应、收件人或凭据。
+     */
+    private Map<String, Object> cargoMismatchDiagnostic(
+            List<Cargo> expected,
+            List<RemoteCargo> actual) {
+        List<Map<String, Object>> local = expected.stream().map(cargo -> Map.<String, Object>of(
+                "order_line", cargo.orderLine(),
+                "goods_no", cargo.goodsNo(),
+                "plan_quantity", cargo.planQuantity())).toList();
+        List<Map<String, Object>> remote = new ArrayList<>();
+        LinkedHashSet<String> mismatchFields = new LinkedHashSet<>();
+        if (expected.size() != actual.size()) {
+            mismatchFields.add("item_count");
+        }
+
+        Map<String, Cargo> localByKey = new LinkedHashMap<>();
+        for (Cargo cargo : expected) {
+            if (localByKey.putIfAbsent(cargo.key(), cargo) != null) {
+                mismatchFields.add("duplicate_local_cargo");
+            }
+        }
+        Set<String> remoteKeys = new LinkedHashSet<>();
+        for (RemoteCargo row : actual) {
+            String orderLine = row.orderLine();
+            String goodsNo = row.goodsNo();
+            int planQuantity = row.planQuantity();
+            Integer realQuantity = row.realQuantity();
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("order_line", orderLine);
+            item.put("goods_no", goodsNo);
+            item.put("plan_quantity", planQuantity);
+            if (realQuantity != null) item.put("real_quantity", realQuantity);
+            remote.add(item);
+
+            String key = Cargo.key(orderLine, goodsNo);
+            if (!remoteKeys.add(key)) {
+                mismatchFields.add("duplicate_jd_cargo");
+            }
+            Cargo localCargo = localByKey.get(key);
+            if (localCargo == null) {
+                mismatchFields.add("unexpected_jd_cargo");
+            } else if (planQuantity != localCargo.planQuantity()) {
+                mismatchFields.add("plan_quantity");
+            } else if (realQuantity != null
+                    && (realQuantity < 0 || realQuantity > planQuantity)) {
+                mismatchFields.add("real_quantity");
+            }
+        }
+        if (!remoteKeys.containsAll(localByKey.keySet())) {
+            mismatchFields.add("missing_jd_cargo");
+        }
+        if (mismatchFields.isEmpty()) {
+            mismatchFields.add("cargo");
+        }
+        remote.sort(Comparator.comparing(item ->
+                Objects.toString(item.get("order_line"), "") + "\u0000"
+                        + Objects.toString(item.get("goods_no"), "")));
+
+        Map<String, Object> diagnostic = new LinkedHashMap<>();
+        diagnostic.put("mismatch_fields", List.copyOf(mismatchFields));
+        diagnostic.put("local_cargo", local);
+        diagnostic.put("jd_cargo", List.copyOf(remote));
+        return diagnostic;
     }
 
     private void persistDiagnostic(
@@ -718,10 +868,6 @@ public class ShipmentJdTrackingBackfillService {
             throw BusinessException.conflict(
                     "JD_TRACKING_OUTBOUND_NOT_SUBMITTED", "京东出库单尚未成功提交");
         }
-        if (!Objects.equals(prepared.outboundOrderNo(), prepared.erpDeliveryNo())) {
-            throw BusinessException.conflict(
-                    "JD_TRACKING_ERP_REFERENCE_MISMATCH", "Shipment 稳定出库引用与提交记录不一致");
-        }
         if (!clientMode.equals(prepared.clientMode())) {
             throw BusinessException.conflict(
                     "JD_TRACKING_CLIENT_MODE_CHANGED",
@@ -744,9 +890,9 @@ public class ShipmentJdTrackingBackfillService {
             throw BusinessException.conflict(
                     "JD_TRACKING_SUBMITTED_OWNER_MISSING", "历史建单缺少可验证的货主快照，禁止自动回填");
         }
-        if (prepared.currentPin() == null) {
+        if (prepared.submittedPin() == null) {
             throw BusinessException.conflict(
-                    "JD_TRACKING_PIN_CONFIG_MISSING", "当前京东履约方缺少可用 pin 配置，禁止自动回填");
+                    "JD_TRACKING_SUBMITTED_PIN_MISSING", "历史建单缺少可验证的 pin 快照，禁止自动回填");
         }
         if (!ShipmentStatus.acceptsTrackingBackfill(prepared.shipmentStatus())) {
             throw BusinessException.conflict(
@@ -847,8 +993,8 @@ public class ShipmentJdTrackingBackfillService {
     private Integer exactInt(Object value) {
         if (value == null) return null;
         try {
-            return new BigDecimal(value.toString()).intValueExact();
-        } catch (RuntimeException exception) {
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromNonNegativeFileValue(value.toString());
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
             return null;
         }
     }
@@ -906,12 +1052,13 @@ public class ShipmentJdTrackingBackfillService {
                     AND rc.reason_code IN (
                         'MULTIPLE_TRACKINGS_FOR_OUTBOUND',
                         'JD_TRACKING_CARRIER_MAPPING_REQUIRED',
-                        'JD_TRACKING_TERMINAL_EXCEPTION')
+                        'JD_TRACKING_TERMINAL_EXCEPTION',
+                        'JD_TRACKING_CARGO_MISMATCH')
                 WHERE j.sync_status='SUBMITTED' AND j.client_mode=?
                   AND j.submitted_cargo_snapshot IS NOT NULL
                   AND j.submitted_warehouse_no IS NOT NULL
                   AND j.submitted_owner_no IS NOT NULL
-                  AND NULLIF(btrim(fp.config->>'pin'), '') IS NOT NULL
+                  AND j.submitted_pin IS NOT NULL
                   AND j.tracking_query_status NOT IN ('TRACKED', 'TERMINAL_REVIEWED')
                   AND s.shipment_status='CREATED'
                   AND t.id IS NULL AND rc.id IS NULL
@@ -940,8 +1087,10 @@ public class ShipmentJdTrackingBackfillService {
             String clientMode,
             String submittedWarehouseNo,
             String submittedOwnerNo,
-            String currentPin,
+            String submittedPin,
             String trackingQueryStatus,
+            long cargoReviewCaseId,
+            long cargoReviewVersion,
             List<Cargo> cargos,
             List<Item> items) {
 
@@ -961,10 +1110,17 @@ public class ShipmentJdTrackingBackfillService {
         }
     }
 
+    private record RemoteCargo(
+            String orderLine,
+            String goodsNo,
+            int planQuantity,
+            Integer realQuantity) {
+    }
+
     public record Item(long fulfillmentId, long orderLineId, int instructedQuantity) {
     }
 
-    private record QuantityCheck(boolean complete, boolean malformed) {
+    private record QuantityCheck(boolean complete, boolean mismatch) {
     }
 
     private record TrackingFact(String carrierCode, String carrierName, String trackingNumber) {
@@ -982,22 +1138,31 @@ public class ShipmentJdTrackingBackfillService {
             List<String> candidates,
             String businessCode,
             String message,
-            Map<String, String> carrierMappingDiagnostic) {
+            Map<String, String> carrierMappingDiagnostic,
+            Map<String, Object> cargoDiagnostic) {
 
         static Parsed tracked(String status, String code, String name, String waybill) {
-            return new Parsed("TRACKED", status, code, name, waybill, List.of(waybill), null, null, Map.of());
+            return new Parsed(
+                    "TRACKED", status, code, name, waybill, List.of(waybill), null, null,
+                    Map.of(), Map.of());
         }
 
         static Parsed pending(String status) {
-            return new Parsed("PENDING", status, null, null, null, List.of(), null, null, Map.of());
+            return new Parsed(
+                    "PENDING", status, null, null, null, List.of(), null, null,
+                    Map.of(), Map.of());
         }
 
         static Parsed partial(String status) {
-            return new Parsed("PARTIAL", status, null, null, null, List.of(), null, null, Map.of());
+            return new Parsed(
+                    "PARTIAL", status, null, null, null, List.of(), null, null,
+                    Map.of(), Map.of());
         }
 
         static Parsed conflict(String status, List<String> candidates) {
-            return new Parsed("CONFLICT", status, null, null, null, List.copyOf(candidates), null, null, Map.of());
+            return new Parsed(
+                    "CONFLICT", status, null, null, null, List.copyOf(candidates), null, null,
+                    Map.of(), Map.of());
         }
 
         static Parsed carrierMappingRequired(
@@ -1020,7 +1185,8 @@ public class ShipmentJdTrackingBackfillService {
                             "external_code", externalCode,
                             "external_name", externalName,
                             "code_match", codeMatch,
-                            "name_match", nameMatch));
+                            "name_match", nameMatch),
+                    Map.of());
         }
 
         static Parsed terminalException(String status) {
@@ -1033,20 +1199,43 @@ public class ShipmentJdTrackingBackfillService {
                     List.of(),
                     "JD_TRACKING_TERMINAL_EXCEPTION",
                     "京东出库单已进入异常终态，需人工复核",
+                    Map.of(),
                     Map.of());
         }
 
+        static Parsed cargoMismatch(
+                String status,
+                String waybill,
+                Map<String, Object> diagnostic) {
+            return new Parsed(
+                    "CONFLICT",
+                    status,
+                    null,
+                    null,
+                    null,
+                    waybill == null ? List.of() : List.of(waybill),
+                    "JD_TRACKING_CARGO_MISMATCH",
+                    "京东货品与建单冻结快照不一致，需人工核对归属",
+                    Map.of(),
+                    Map.copyOf(diagnostic));
+        }
+
         static Parsed failed(String code, String message) {
-            return new Parsed("QUERY_FAILED", null, null, null, null, List.of(), code, message, Map.of());
+            return new Parsed(
+                    "QUERY_FAILED", null, null, null, null, List.of(), code, message,
+                    Map.of(), Map.of());
         }
 
         static Parsed absorbed(String waybill) {
-            return new Parsed("TRACKED", null, null, null, waybill, List.of(waybill), null, null, Map.of());
+            return new Parsed(
+                    "TRACKED", null, null, null, waybill, List.of(waybill), null, null,
+                    Map.of(), Map.of());
         }
 
         Parsed asLocalConflict() {
             return new Parsed("CONFLICT", jdStatus, carrierCode, carrierName, waybillNo,
-                    waybillNo == null ? List.of() : List.of(waybillNo), null, null, Map.of());
+                    waybillNo == null ? List.of() : List.of(waybillNo), null, null,
+                    Map.of(), Map.of());
         }
     }
 }

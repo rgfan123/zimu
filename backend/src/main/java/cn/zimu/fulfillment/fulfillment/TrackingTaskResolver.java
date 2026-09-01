@@ -1,6 +1,5 @@
 package cn.zimu.fulfillment.fulfillment;
 
-import java.math.BigDecimal;
 import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
@@ -29,15 +28,15 @@ public class TrackingTaskResolver {
             String receiverName,
             String receiverPhone,
             String receiverAddress,
-            BigDecimal requestedQuantity,
-            BigDecimal shippedQuantity,
-            BigDecimal cancelledQuantity,
+            int requestedQuantity,
+            int shippedQuantity,
+            int cancelledQuantity,
             long shipmentId,
-            BigDecimal instructedQuantity) {
+            int instructedQuantity) {
 
         /** 当前仍待回传的剩余数量。 */
-        public BigDecimal remaining() {
-            return requestedQuantity.subtract(shippedQuantity).subtract(cancelledQuantity);
+        public int remaining() {
+            return requestedQuantity - shippedQuantity - cancelledQuantity;
         }
     }
 
@@ -146,11 +145,11 @@ public class TrackingTaskResolver {
                 resultSet.getString("receiver_name"),
                 resultSet.getString("receiver_phone"),
                 resultSet.getString("receiver_address"),
-                resultSet.getBigDecimal("requested_quantity"),
-                resultSet.getBigDecimal("cumulative_shipped_quantity"),
-                resultSet.getBigDecimal("cancelled_quantity"),
+                resultSet.getInt("requested_quantity"),
+                resultSet.getInt("cumulative_shipped_quantity"),
+                resultSet.getInt("cancelled_quantity"),
                 resultSet.getLong("shipment_id"),
-                resultSet.getBigDecimal("instructed_quantity"));
+                resultSet.getInt("instructed_quantity"));
     }
 
     /** 通配转换：* → %，其余字符按字面转义（反斜杠、%、_）。 */

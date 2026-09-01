@@ -320,8 +320,9 @@ public class BusinessFollowUpDraftApplicationService {
                                 putNullable(item, "product_name", line.getString("product_name_raw"));
                                 putNullable(item, "spec", line.getString("spec_raw"));
                                 putNullable(item, "unit", line.getString("unit_raw"));
-                                if (line.getBigDecimal("quantity") != null) {
-                                    item.put("quantity", line.getBigDecimal("quantity"));
+                                Integer quantity = line.getObject("quantity", Integer.class);
+                                if (quantity != null) {
+                                    item.put("quantity", quantity);
                                 }
                                 return index;
                             },

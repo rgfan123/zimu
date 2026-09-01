@@ -291,6 +291,43 @@ class TrackingDraftApiTest {
     }
 
     @Test
+    void historicalTaskCandidateDecimalStringsAreProjectedAsJsonIntegers() throws Exception {
+        createThirdPartyOrder("TRK-TASK-HISTORY-001", "历史草稿客户", "2.000");
+        Map<String, Object> facts = fulfillmentFacts("TRK-TASK-HISTORY-001");
+        String taskNo = (String) facts.get("fulfillment_no");
+        Map<String, Object> draft = singleDraft(sendTracking(
+                "MSG-TASK-HISTORY-01",
+                1,
+                lines(line("历史草稿客户", "SF123456009", taskNo, "顺丰速运", null))));
+        long draftId = Long.parseLong(draft.get("id").toString());
+        jdbc.update(
+                """
+                UPDATE app.provider_tracking_drafts
+                SET task_candidates=(
+                    SELECT jsonb_agg(
+                        jsonb_set(
+                            jsonb_set(
+                                jsonb_set(candidate, '{requested_quantity}',
+                                    to_jsonb((candidate->>'requested_quantity') || '.000')),
+                                '{shipped_quantity}',
+                                to_jsonb((candidate->>'shipped_quantity') || '.000')),
+                            '{instructed_quantity}',
+                            to_jsonb((candidate->>'instructed_quantity') || '.000'))
+                        ORDER BY ordinal)
+                    FROM jsonb_array_elements(task_candidates)
+                         WITH ORDINALITY AS legacy(candidate, ordinal))
+                WHERE id=?
+                """,
+                draftId);
+
+        Map<?, ?> candidate = (Map<?, ?>) ((List<?>) detail(Long.toString(draftId)).get("task_candidates"))
+                .getFirst();
+        assertThat(candidate.get("requested_quantity")).isEqualTo(2).isInstanceOf(Integer.class);
+        assertThat(candidate.get("shipped_quantity")).isEqualTo(0).isInstanceOf(Integer.class);
+        assertThat(candidate.get("instructed_quantity")).isEqualTo(2).isInstanceOf(Integer.class);
+    }
+
+    @Test
     void invalidOrNotApplicableTaskNumberGoesToManualProcessing() throws Exception {
         createThirdPartyOrder("TRK-TASK-INVALID-001", "李四", "2.000");
         Map<String, Object> jdOrder = createJdOrder("TRK-TASK-JD-002", "钱七", "1");
@@ -1124,12 +1161,12 @@ class TrackingDraftApiTest {
         assertThat(withoutQuantity.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(withoutQuantity.getBody().get("business_code")).isEqualTo("ACTUAL_QUANTITY_REQUIRED");
 
-        ResponseEntity<Map> excessive = confirm(partialDraft, "confirm-qty-excessive-001", Map.of("actual_quantity", "5.000"));
+        ResponseEntity<Map> excessive = confirm(partialDraft, "confirm-qty-excessive-001", Map.of("actual_quantity", 5));
         assertThat(excessive.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(excessive.getBody().get("business_code")).isEqualTo("ACTUAL_QUANTITY_INVALID");
 
         // 人工录入实际数量后确认：履约进入部分发货
-        ResponseEntity<Map> confirmed = confirm(partialDraft, "confirm-qty-001", Map.of("actual_quantity", "1.000"));
+        ResponseEntity<Map> confirmed = confirm(partialDraft, "confirm-qty-001", Map.of("actual_quantity", 1));
         assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);
         Map<String, Object> fulfillment = get("/api/v1/fulfillments/" + facts.get("fulfillment_id"));
         assertThat(fulfillment)
@@ -1538,7 +1575,7 @@ class TrackingDraftApiTest {
                                 "product", "子牧羊小腿",
                                 "spec", "500g/盒",
                                 "unit", "盒",
-                                "quantity", "1",
+                                "quantity", 1,
                                 "source_sku_ref", "WECOM-SKU-JD-001"))),
                 "test-provider",
                 "test-model",
@@ -1611,7 +1648,7 @@ class TrackingDraftApiTest {
                 "items", List.of(Map.of(
                         "line_no", line.get("line_no"),
                         "sku_id", sku.get("sku_id"),
-                        "quantity", "1")));
+                        "quantity", 1)));
     }
 
     private ResponseEntity<Map> postOrderCommand(
@@ -1802,7 +1839,7 @@ class TrackingDraftApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", sourceSkuRef.endsWith("JD") ? "500g/盒" : "标准箱",
                         "unit", sourceSkuRef.endsWith("JD") ? "盒" : "箱",
-                        "quantity", quantity)),
+                        "quantity", Integer.parseInt(quantity))),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-11T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders",

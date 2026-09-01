@@ -15,9 +15,13 @@ export function buildContinuationExportCommand(
   instructedQuantity: string,
   remark: string,
 ): ContinuationExportCommand {
+  const normalizedQuantity = Number(instructedQuantity.trim());
+  if (!Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0 || normalizedQuantity > 2_147_483_647) {
+    throw new Error('续发数量必须为 int32 正整数');
+  }
   return {
     expected_version: expectedVersion,
-    instructed_quantity: instructedQuantity.trim(),
+    instructed_quantity: normalizedQuantity,
     remark: remark.trim(),
   };
 }

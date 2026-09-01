@@ -279,6 +279,7 @@ test('product archive shows JD EMG and opens a new-product form without an exist
                 action: '维护该 SKU 对应履约方的有效商品编码',
               },
             ],
+            warnings: [],
             data_quality_flags: [
               {
                 flag_code: 'PRODUCT_ARCHIVE_STATUS_REFERENCE',
@@ -299,6 +300,49 @@ test('product archive shows JD EMG and opens a new-product form without an exist
             ],
           },
         },
+      }, {
+        id: '502',
+        code: 'SKU-TP-000502',
+        name: '包装待完善 SKU',
+        active: true,
+        version: 0,
+        attributes: {
+          category_id: '9',
+          provider_id: '11',
+          specification: '500g/件',
+          unit: '件',
+          readiness: {
+            ready: true,
+            reason_codes: [],
+            issues: [],
+            warnings: [
+              {
+                code: 'PACKAGING_METADATA_INCOMPLETE',
+                message: 'SKU 包装资料未完整维护，不影响成单、导出或发货',
+                action: '可选完善净含量与包装件数',
+              },
+            ],
+            data_quality_flags: [],
+          },
+        },
+      }, {
+        id: '503',
+        code: 'SKU-TP-000503',
+        name: '旧版无告警 SKU',
+        active: true,
+        version: 0,
+        attributes: {
+          category_id: '9',
+          provider_id: '11',
+          specification: '1kg/件',
+          unit: '件',
+          readiness: {
+            ready: true,
+            reason_codes: [],
+            issues: [],
+            data_quality_flags: [],
+          },
+        },
       }]));
     }
     // 外壳基线请求不是本页发的，按生产的保守默认给空开放集（见 routeHarness 的说明）。
@@ -313,6 +357,12 @@ test('product archive shows JD EMG and opens a new-product form without an exist
   assert.match(bodyText(), /阻断/);
   assert.match(bodyText(), /所属商品已停用/);
   assert.match(bodyText(), /缺少履约方商品映射/);
+  assert.match(bodyText(), /包装待完善 SKU/);
+  assert.match(bodyText(), /旧版无告警 SKU/);
+  assert.match(bodyText(), /可履约/);
+  assert.match(bodyText(), /资料提醒/);
+  assert.match(bodyText(), /包装资料未完整维护/);
+  assert.match(bodyText(), /建议：可选完善净含量与包装件数/);
   assert.match(bodyText(), /数据质量 \/ 档案证据/);
   assert.match(bodyText(), /商品档案状态：停产（仅作为参考证据）/);
   assert.match(bodyText(), /来源品牌子牧与内部品牌卓宸不一致/);
@@ -372,8 +422,8 @@ test('static bundle route lists static bundles and expands the component list in
             barcode: '9250000000041',
             status: 'DRAFT',
             items: [
-              { sku_id: '501', sku_code: 'SKU-BEEF', product_name: '牛腩块', specification: '500g', unit: '袋', quantity_per_bundle: '2' },
-              { sku_id: '502', sku_code: 'SKU-LAMB', product_name: '羊蝎子', specification: '500g', unit: '袋', quantity_per_bundle: '1' },
+              { sku_id: '501', sku_code: 'SKU-BEEF', product_name: '牛腩块', specification: '500g', unit: '袋', quantity_per_bundle: 2 },
+              { sku_id: '502', sku_code: 'SKU-LAMB', product_name: '羊蝎子', specification: '500g', unit: '袋', quantity_per_bundle: 1 },
             ],
           },
         }],
@@ -541,8 +591,8 @@ test('static bundle create keeps the component list and uses the trusted write b
     description: '春季固定清单',
     status: 'DRAFT',
     items: [
-      { sku_id: '501', quantity_per_bundle: '2', emg_code_snapshot: 'EMG-501' },
-      { sku_id: '502', quantity_per_bundle: '1' },
+      { sku_id: '501', quantity_per_bundle: 2, emg_code_snapshot: 'EMG-501' },
+      { sku_id: '502', quantity_per_bundle: 1 },
     ],
   });
 
@@ -555,8 +605,8 @@ test('static bundle create keeps the component list and uses the trusted write b
     description: '春季固定清单',
     status: 'DRAFT',
     items: [
-      { sku_id: '501', quantity_per_bundle: '2', emg_code_snapshot: 'EMG-501' },
-      { sku_id: '502', quantity_per_bundle: '1' },
+      { sku_id: '501', quantity_per_bundle: 2, emg_code_snapshot: 'EMG-501' },
+      { sku_id: '502', quantity_per_bundle: 1 },
     ],
   });
   const headers = capturedInit?.headers as Record<string, string>;

@@ -92,7 +92,7 @@ class ProductionMigrationHistoryCompatTest {
             "wecom export alert scoping", 3193798455L);
 
     @Test
-    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV101() throws Exception {
+    void v47DatabaseUpgradesByAppendingOnlyV48ThroughV105() throws Exception {
         // 阶段一：模拟当前真实库——只迁移到 V47（V40–V47 与生产已应用历史逐字节一致）。
         flyway(MigrationVersion.fromVersion("47")).migrate();
 
@@ -119,8 +119,8 @@ class ProductionMigrationHistoryCompatTest {
 
         List<HistoryRow> historyAfter = readHistory();
         assertThat(historyAfter)
-                .as("完整升级后应恰有 93 条历史（…V99 整数化 + V100 手工渠道 + V101 组包师）")
-                .hasSize(93);
+                .as("完整升级后应恰有 97 条历史（…V102–V104 履约修复 + V105 整数数量收口）")
+                .hasSize(97);
         assertThat(historyAfter.subList(0, 47))
                 .as("完整升级不得改写/repair 任何已应用历史")
                 .isEqualTo(historyBefore);
@@ -129,8 +129,8 @@ class ProductionMigrationHistoryCompatTest {
         // 两条并行开发线在 2026-08-27 合流：V59–V64 为已上线的企微/档案/订单线
         //（生产已执行，号位不可动），客户跟进线原 V59–V66 八个迁移整体顺延为 V65–V72
         //（其中 V71 冻结结构化执行意图、V72 新增来源订单附件任务）。
-        assertThat(historyAfter.subList(47, 93))
-                .as("升级只追加到 V101；V90–V98 SKU 线重编号，V99 整数化，V100 手工渠道，V101 组包师")
+        assertThat(historyAfter.subList(47, 97))
+                .as("升级只追加到 V105；V102–V104 履约修复后由 V105 收口整数数量契约")
                 .containsExactly(
                         new HistoryRow("48", "V48__internal_operators.sql",
                                 "internal operators",
@@ -269,11 +269,23 @@ class ProductionMigrationHistoryCompatTest {
                                 crc32Of("V100__manual_source_channel.sql")),
                         new HistoryRow("101", "V101__bundle_composer_agent.sql",
                                 "bundle composer agent",
-                                crc32Of("V101__bundle_composer_agent.sql")));
+                                crc32Of("V101__bundle_composer_agent.sql")),
+                        new HistoryRow("102", "V102__source_return_carrier_name_fallback.sql",
+                                "source return carrier name fallback",
+                                crc32Of("V102__source_return_carrier_name_fallback.sql")),
+                        new HistoryRow("103", "V103__jd_erp_delivery_number_namespace.sql",
+                                "jd erp delivery number namespace",
+                                crc32Of("V103__jd_erp_delivery_number_namespace.sql")),
+                        new HistoryRow("104", "V104__freeze_jd_outbound_tenant_for_readback.sql",
+                                "freeze jd outbound tenant for readback",
+                                crc32Of("V104__freeze_jd_outbound_tenant_for_readback.sql")),
+                        new HistoryRow("105", "V105__finish_integer_count_contract.sql",
+                                "finish integer count contract",
+                                crc32Of("V105__finish_integer_count_contract.sql")));
 
         // 结构事实：V44/V45 沿用既有断言；V46/V47 用真实结构（非仅同文件 crc）证明生效；
         // 后续断言覆盖内部运营人员、delivery 代际、中汇稳定意图、业务通知、草稿卡片、
-        // Shipment 来源同步状态机与客户跟进结构；完整 V48–V99 顺序由上方历史断言锁定。
+        // Shipment 来源同步状态机与客户跟进结构；完整 V48–V105 顺序由上方历史断言锁定。
         try (Connection connection = DriverManager.getConnection(
                 postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
                 Statement statement = connection.createStatement()) {
@@ -292,7 +304,7 @@ class ProductionMigrationHistoryCompatTest {
                     """)))
                     .as("V88 生效后 order_lines.source_sku_ref 必须为 varchar")
                     .isEqualTo("character varying");
-            // V45：procurement-price-agent v1 退役、v2 生效、冻结 12 例 CONFIRMED 评测用例。
+            // V45 冻结 v2；V105 以 append-only 新建整数计数契约 v3，历史 v1/v2 均保留。
             assertThat(single(statement.executeQuery(
                     "SELECT status FROM app.agent_definitions "
                             + "WHERE agent_slug='procurement-price-agent' AND version=1")))
@@ -301,14 +313,38 @@ class ProductionMigrationHistoryCompatTest {
             assertThat(single(statement.executeQuery(
                     "SELECT status FROM app.agent_definitions "
                             + "WHERE agent_slug='procurement-price-agent' AND version=2")))
-                    .as("V45：procurement-price-agent v2 为当前生效版本")
-                    .isEqualTo("active");
+                    .as("V105：procurement-price-agent v2 已退役但历史定义仍保留")
+                    .isEqualTo("retired");
             assertThat(single(statement.executeQuery(
                     "SELECT count(*) FROM app.agent_eval_cases "
                             + "WHERE agent_slug='procurement-price-agent' AND agent_version=2 "
                             + "AND status='CONFIRMED'")))
                     .as("V45：procurement-price-agent v2 冻结 12 例 CONFIRMED 评测用例")
                     .isEqualTo("12");
+            assertThat(single(statement.executeQuery(
+                    "SELECT status FROM app.agent_definitions "
+                            + "WHERE agent_slug='procurement-price-agent' AND version=3")))
+                    .as("V105：procurement-price-agent v3 为当前生效版本")
+                    .isEqualTo("active");
+            assertThat(single(statement.executeQuery(
+                    "SELECT count(*) FROM app.agent_eval_cases "
+                            + "WHERE agent_slug='procurement-price-agent' AND agent_version=3 "
+                            + "AND status='CONFIRMED' "
+                            + "AND (NOT input ? 'quantity' OR jsonb_typeof(input->'quantity')='number')")))
+                    .as("V105：procurement-price-agent v3 冻结 12 例且 quantity 不再是字符串")
+                    .isEqualTo("12");
+            assertThat(single(statement.executeQuery(
+                    "SELECT data_type FROM information_schema.columns "
+                            + "WHERE table_schema='analytics' AND table_name='v_channel_daily' "
+                            + "AND column_name='actual_shipped_quantity'")))
+                    .as("V105：商品实发聚合公开类型必须是 bigint，不得残留 numeric")
+                    .isEqualTo("bigint");
+            assertThat(single(statement.executeQuery(
+                    "SELECT data_type FROM information_schema.columns "
+                            + "WHERE table_schema='app' AND table_name='provider_tracking_drafts' "
+                            + "AND column_name='actual_quantity'")))
+                    .as("V105：多明细运单草稿的聚合实发数量必须使用 bigint")
+                    .isEqualTo("bigint");
             // V46：两张企微导出表必须存在（状态表 + delivery 证据表）。
             assertThat(single(statement.executeQuery(
                     """

@@ -1,12 +1,15 @@
 package cn.zimu.fulfillment.order;
 
 import cn.zimu.fulfillment.common.dto.Patterns;
+import cn.zimu.fulfillment.common.dto.PositiveCountQuantityDeserializer;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 
@@ -38,7 +41,7 @@ public record ManualOrderCreateWrite(
                     @NotBlank(message = "SKU 不能为空")
                     @Pattern(regexp = Patterns.IDENTIFIER, message = "SKU 标识符无效")
                     String skuId,
-            @NotBlank(message = "数量不能为空")
-                    @Pattern(regexp = Patterns.POSITIVE_INTEGER_QUANTITY, message = "数量必须为正整数")
-                    String quantity) {}
+            @NotNull(message = "数量不能为空") @Positive(message = "数量必须为正整数")
+                    @JsonDeserialize(using = PositiveCountQuantityDeserializer.class)
+                    Integer quantity) {}
 }

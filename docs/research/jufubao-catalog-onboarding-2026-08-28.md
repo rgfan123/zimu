@@ -169,28 +169,28 @@ while IFS='|' read -r ref sku mult name; do
     -H 'Content-Type: application/json' \
     -H "Idempotency-Key: jfb-scs-${ref}-20260828" \
     -w '\n  HTTP %{http_code}\n' \
-    -d "{\"source_channel\":\"JUFUBAO\",\"source_sku_ref\":\"${ref}\",\"source_sku_name\":\"${name}\",\"sku_id\":\"${sku}\",\"quantity_multiplier\":\"${mult}\",\"active\":true}"
+    -d "{\"source_channel\":\"JUFUBAO\",\"source_sku_ref\":\"${ref}\",\"source_sku_name\":\"${name}\",\"sku_id\":\"${sku}\",\"quantity_multiplier\":${mult},\"active\":true}"
 done <<'ROWS'
-65992754|22|2.000|【京东配送】子牧牛腩块500g*2袋
-65992894|37|2.000|【京东配送】子牧谷饲安格斯牛腱子肉500g*2袋
-65992900|26|2.000|【京东配送】子牧筋头巴脑500g*2袋
-65992994|35|2.000|【京东配送】子牧牛后腿肉500g*2袋
-65993155|30|2.000|【京东配送】子牧牛肉馅500g*2袋
-65993209|20|4.000|【京东配送】子牧澳洲原切谷饲上脑牛排150g*4袋
-65993237|32|4.000|【京东配送】子牧原切眼肉牛排150g*4袋
-65993370|28|2.000|【京东配送】子牧澳洲谷饲牛蝎子400g*2袋
-65993381|5|2.000|【京东配送】子牧生鲜羊蝎子500g*2袋
-65998050|9|2.000|【京东配送】子牧原切纯肉羊腿肉500g*2袋
-65998054|8|2.000|【京东配送】子牧原切纯肉羊肉块500g*2袋
-65998070|3|2.000|【京东配送】子牧原切带骨羊肉块500g*2袋
-65998078|4|2.000|【京东配送】子牧羊寸排块500g*2袋
-65998272|10|2.000|【京东配送】子牧法式羊排400g*2袋
-66683887|76|2.000|子牧澳洲谷饲肥牛涮烤片150g*2盒
-66693946|48|3.000|子牧A5澳洲和牛霜降肥牛卷200g*3盒
-66902619|61|1.000|【京东配送】牛羊烧烤肉串组合
-66902622|60|1.000|【京东配送】子牧鸡肉烧烤肉串组合
-66811280|63|1.000|【京东/顺丰配送】子牧雷山高海拔农家散养土黑猪五花肉450g*2
-66811301|68|1.000|【京东/顺丰配送】子牧雷山高海拔农家散养土黑猪里脊450g*2
+65992754|22|2|【京东配送】子牧牛腩块500g*2袋
+65992894|37|2|【京东配送】子牧谷饲安格斯牛腱子肉500g*2袋
+65992900|26|2|【京东配送】子牧筋头巴脑500g*2袋
+65992994|35|2|【京东配送】子牧牛后腿肉500g*2袋
+65993155|30|2|【京东配送】子牧牛肉馅500g*2袋
+65993209|20|4|【京东配送】子牧澳洲原切谷饲上脑牛排150g*4袋
+65993237|32|4|【京东配送】子牧原切眼肉牛排150g*4袋
+65993370|28|2|【京东配送】子牧澳洲谷饲牛蝎子400g*2袋
+65993381|5|2|【京东配送】子牧生鲜羊蝎子500g*2袋
+65998050|9|2|【京东配送】子牧原切纯肉羊腿肉500g*2袋
+65998054|8|2|【京东配送】子牧原切纯肉羊肉块500g*2袋
+65998070|3|2|【京东配送】子牧原切带骨羊肉块500g*2袋
+65998078|4|2|【京东配送】子牧羊寸排块500g*2袋
+65998272|10|2|【京东配送】子牧法式羊排400g*2袋
+66683887|76|2|子牧澳洲谷饲肥牛涮烤片150g*2盒
+66693946|48|3|子牧A5澳洲和牛霜降肥牛卷200g*3盒
+66902619|61|1|【京东配送】牛羊烧烤肉串组合
+66902622|60|1|【京东配送】子牧鸡肉烧烤肉串组合
+66811280|63|1|【京东/顺丰配送】子牧雷山高海拔农家散养土黑猪五花肉450g*2
+66811301|68|1|【京东/顺丰配送】子牧雷山高海拔农家散养土黑猪里脊450g*2
 ROWS
 
 # ---- 1 条礼包别名映射（66500527 → bundle 33）----
@@ -198,10 +198,10 @@ curl -sS -u "$AUTH" -X POST "$BASE/api/v1/source-bundle-mappings" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: jfb-scb-66500527-20260828' \
   -w '\n  HTTP %{http_code}\n' \
-  -d '{"source_channel":"JUFUBAO","source_bundle_ref":"66500527","source_bundle_name":"【京东配送】子牧牛肉惠选礼包1400g","quantity_multiplier":"1","bundle_id":"33","active":true}'
+  -d '{"source_channel":"JUFUBAO","source_bundle_ref":"66500527","source_bundle_name":"【京东配送】子牧牛肉惠选礼包1400g","quantity_multiplier":1,"bundle_id":"33","active":true}'
 ```
 
-字段依据：`SourceSkuMappingWrite`（required `source_channel/source_sku_ref/sku_id/quantity_multiplier`；`quantity_multiplier` 是 `PositiveDecimalQuantity` 十进制**字符串**）、`SourceBundleMappingWrite`（required `source_channel/source_bundle_ref/bundle_id`；`quantity_multiplier` 正则 **`^1$`**——写 `"1.000"` 会被拒）。
+字段依据（已按 2026-09-01 整数契约更新示例）：`SourceSkuMappingWrite.quantity_multiplier` 与 `SourceBundleMappingWrite.quantity_multiplier` 都是 JSON 正整数；字符串和小数 token 均拒绝。
 
 **执行后自查：**
 ```bash
@@ -259,12 +259,12 @@ new_product '子牧新疆库尔勒香梨全母梨王'       '约14斤/箱'  ''  
 # 有了 EMG 码之后（每个品各一次）
 curl -sS -u "$AUTH" -X POST "$BASE/api/v1/provider-sku-mappings" \
   -H 'Content-Type: application/json' -H "Idempotency-Key: jfb-ps-<商品ID>-20260828" \
-  -d '{"provider_id":"1","sku_id":"<新sku_id>","provider_sku_code":"EMG<...>","provider_sku_name":"<名称>","jd_pieces_per_unit":"1.000","active":true}'
+  -d '{"provider_id":"1","sku_id":"<新sku_id>","provider_sku_code":"EMG<...>","provider_sku_name":"<名称>","jd_pieces_per_unit":1,"active":true}'
 
-# 然后建渠道映射（倍率：整箱/整袋按「1 个平台单位 = 几个系统 SKU 单位」填；unit=件+规格写整箱 → 1.000）
+# 然后建渠道映射（倍率：整箱/整袋按「1 个平台单位 = 几个系统 SKU 单位」填；unit=件+规格写整箱 → 整数 1）
 curl -sS -u "$AUTH" -X POST "$BASE/api/v1/source-sku-mappings" \
   -H 'Content-Type: application/json' -H "Idempotency-Key: jfb-scs-<商品ID>-20260828" \
-  -d '{"source_channel":"JUFUBAO","source_sku_ref":"<商品ID>","source_sku_name":"<平台全名>","sku_id":"<新sku_id>","quantity_multiplier":"1.000","active":true}'
+  -d '{"source_channel":"JUFUBAO","source_sku_ref":"<商品ID>","source_sku_name":"<平台全名>","sku_id":"<新sku_id>","quantity_multiplier":1,"active":true}'
 ```
 
 **注意价格字段：** 表里价格是浮点文本（`"96.0"`），`NullableCommercialPrice` 正则是 `^(0|[1-9][0-9]{0,11})(\.[0-9]{1,2})?$`，要写成两位小数（`96.00`），别直接透传。另外这 5 个的「进价/零售」是**平台侧**价格，不是我方成本；`purchase_price` 的口径按成本表为准（见 `docs/research/jd-code-cost-mapping-2026-08-27.md`），此处先落平台值只是占位，请业务确认。
@@ -293,24 +293,24 @@ curl -sS -u "$AUTH" -X POST "$BASE/api/v1/product-bundles" \
   -d '{"bundle_code":"BUNDLE-9260828000002",
        "bundle_name":"子牧羊蝎子牛肋排组合1800g",
        "status":"ACTIVE",
-       "items":[{"sku_id":"5","quantity_per_bundle":"2"},
-                {"sku_id":"25","quantity_per_bundle":"2"}]}'
+       "items":[{"sku_id":"5","quantity_per_bundle":2},
+                {"sku_id":"25","quantity_per_bundle":2}]}'
 # 记下响应里的 id，下面记作 <NEW_BUNDLE_ID>
 
 # ② 商品ID 键（部署后导入期自动展开靠这条）
 curl -sS -u "$AUTH" -X POST "$BASE/api/v1/source-bundle-mappings" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: jfb-scb-66526478-id-20260828' \
-  -d '{"source_channel":"JUFUBAO","source_bundle_ref":"66526478","source_bundle_name":"【京东配送】子牧羊蝎子牛肋排组合1800g","quantity_multiplier":"1","bundle_id":"<NEW_BUNDLE_ID>","active":true}'
+  -d '{"source_channel":"JUFUBAO","source_bundle_ref":"66526478","source_bundle_name":"【京东配送】子牧羊蝎子牛肋排组合1800g","quantity_multiplier":1,"bundle_id":"<NEW_BUNDLE_ID>","active":true}'
 
 # ③ 商品全名键（人工 resolve-bundle 兜底靠这条）
 curl -sS -u "$AUTH" -X POST "$BASE/api/v1/source-bundle-mappings" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: jfb-scb-66526478-name-20260828' \
-  -d '{"source_channel":"JUFUBAO","source_bundle_ref":"【京东配送】子牧羊蝎子牛肋排组合1800g","source_bundle_name":"【京东配送】子牧羊蝎子牛肋排组合1800g","quantity_multiplier":"1","bundle_id":"<NEW_BUNDLE_ID>","active":true}'
+  -d '{"source_channel":"JUFUBAO","source_bundle_ref":"【京东配送】子牧羊蝎子牛肋排组合1800g","source_bundle_name":"【京东配送】子牧羊蝎子牛肋排组合1800g","quantity_multiplier":1,"bundle_id":"<NEW_BUNDLE_ID>","active":true}'
 ```
 
-**字段说明（对齐 `BundleWrite`）**：required 只有 `bundle_code / bundle_name / items`；`category_id`、`barcode`、`tax_rate`、`settlement_cost` 全部可省——生产现存 33 个礼包这四列**全是 NULL**，本方案照现有惯例留空。`bundle_code` 有唯一索引，`BUNDLE-9<yyMMdd><6位序>` 是既有格式，`BUNDLE-9260828000001` 已被 bundle 33 占用，故取 `...000002`。`quantity_per_bundle` 正则 `^[1-9][0-9]*$`（正整数字符串，不能写 `2.000`）。
+**字段说明（对齐 `BundleWrite`）**：required 只有 `bundle_code / bundle_name / items`；`category_id`、`barcode`、`tax_rate`、`settlement_cost` 全部可省——生产现存 33 个礼包这四列**全是 NULL**，本方案照现有惯例留空。`bundle_code` 有唯一索引，`BUNDLE-9<yyMMdd><6位序>` 是既有格式，`BUNDLE-9260828000001` 已被 bundle 33 占用，故取 `...000002`。`quantity_per_bundle` 必须发送 int32 正整数 JSON 值（例如 `2`），不能发送字符串或 `2.000`。
 
 > ⏳ **建完不会立刻生效**：在 2.4 说的那次部署之前，含 66526478 的聚福宝订单仍会以 SINGLE 落库并卡住。今天建它是零副作用的提前量。
 

@@ -4,6 +4,9 @@ import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.web.RequestContext;
 import cn.zimu.fulfillment.connector.jd.JdResult;
+import cn.zimu.fulfillment.connector.jd.JdErpDeliveryNoNamespace;
+import cn.zimu.fulfillment.fulfillment.JdSalesOutboundWriter;
+import cn.zimu.fulfillment.fulfillment.PreparedJdSalesOutbound;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
@@ -47,7 +50,7 @@ import org.springframework.stereotype.Service;
  */
 @Service
 @ConditionalOnProperty(name = "app.jd.client-mode", havingValue = "REAL")
-public class JdWriteOpsClient implements JdWriteOpsService {
+public class JdWriteOpsClient implements JdWriteOpsService, JdSalesOutboundWriter {
 
     private static final Set<String> SUCCESS_CODES = Set.of("0", "200", "1000", "10000", "SUCCESS");
 
@@ -282,7 +285,18 @@ public class JdWriteOpsClient implements JdWriteOpsService {
     }
 
     @Override
-    public JdResult orderSoCreate(Map<String, Object> command) {
+    public JdResult create(PreparedJdSalesOutbound outbound) {
+        Map<String, Object> command = outbound.request();
+        if (writeEnabled() && !JdErpDeliveryNoNamespace.owns(command)) {
+            JdResult rejected = new JdResult(
+                    false,
+                    JdErpDeliveryNoNamespace.BUSINESS_CODE,
+                    JdErpDeliveryNoNamespace.MESSAGE,
+                    null,
+                    null);
+            audit("orderSoCreate", command, rejected, Instant.now());
+            return rejected;
+        }
         var request = new IntegratedsupplychainOrderDeliveryCreateV1LopRequest();
         request.setRequest(sdkMapper.convertValue(withDefaults(command,
                 com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformSoService

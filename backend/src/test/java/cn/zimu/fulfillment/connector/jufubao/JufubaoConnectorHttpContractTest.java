@@ -13,7 +13,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -285,7 +284,7 @@ class JufubaoConnectorHttpContractTest {
                 SourceChannel.JUFUBAO,
                 "main-1",
                 "sub-1",
-                BigDecimal.ONE,
+                1L,
                 "SHIPPED",
                 "京东物流",
                 "JDVA123",

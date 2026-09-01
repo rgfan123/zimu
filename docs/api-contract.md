@@ -50,7 +50,9 @@
 
 - JSON 字段使用 `snake_case`。
 - 所有标识符在 JSON 中用字符串，避免 JavaScript 丢失 `BIGINT` 精度。
-- `NUMERIC(18,3)` / BigDecimal 数量使用十进制字符串，例如 `"6.000"`，不使用 JSON 浮点数。
+- 商品件数、来源份数、包装乘数、礼包/组件件数及请求、指令、实发、取消、剩余等 `CountQuantity` 在 JSON 中使用 integer；单项使用 int32，聚合计数使用 int64。写命令不接受字符串 `"3"`、小数表示 `3.000` 或真实小数 `3.5`。
+- 来源 Excel/CSV 等文件适配器可以把数学上恰为整数的旧表示（如数值单元格 `3.000`）精确归一为整数 `3`；非整数进入稳定校验错误或人工复核，禁止四舍五入、截断或向上取整。所有数量导出写整数数值单元格，不附加 `.000`。
+- 重量、净含量、体积、金额和价格等连续量继续使用十进制字符串，不使用 JSON 浮点数；原料 kg 库存不属于 `CountQuantity`。
 - 时间使用带偏移的 ISO-8601 `date-time`；业务日按 `Asia/Shanghai` 自然日。
 - 所有请求和响应使用 UTF-8；文件容器/编码依 Excel 规范单独处理。
 
@@ -164,11 +166,11 @@
 | GET | `/api/v1/fulfillment-exports` | 按 provider、生成日期、使用状态查导出批次 |
 | GET | `/api/v1/fulfillment-exports/{export_id}` | 导出批次、行、Shipment、下载审计和回传关联 |
 | GET | `/api/v1/fulfillment-exports/{export_id}/file` | 下载京东/第三方履约文件，记录首次/最近时间、操作人与次数 |
-| POST | `/api/v1/fulfillment-exports/{export_id}/tracking-imports` | 上传单一 provider 的运单回传文件；整批校验后单事务接收 |
+| POST | `/api/v1/fulfillment-exports/{export_id}/tracking-imports` | 上传单一 provider 的运单回传文件；整批校验后单事务提交 Tracking/实发/Shipment 事实，并在同事务写入来源回填派生任务 |
 | GET | `/api/v1/tracking-imports/{batch_id}` | 回传批次、行结果、业务结果与关联导出 |
 | GET | `/api/v1/shipments` | Shipment 列表 |
 | GET | `/api/v1/shipments/{shipment_id}` | 出库单号、分批序号、收货快照、行、Tracking 与 Shipment 级京东出库集成状态（只暴露诊断字段，不暴露凭据/PII） |
-| POST | `/api/v1/shipments/{shipment_id}/jd-so-order` | 将整个 Shipment 批次聚合为一张京东出库单（addSoOrder），Idempotency-Key 幂等重放；`app.jd.write-mode=OFF` 时拒绝，失败阶段与诊断码落 Shipment 级集成记录 |
+| POST | `/api/v1/shipments/{shipment_id}/jd-so-order` | 将整个 Shipment 批次聚合为一张京东出库单（addSoOrder）；京东 `erpDeliveryNo` 使用 `ZIMU-SO-*` 独占命名空间，与本地 12 位 `outbound_order_no` 分离，先受本库唯一键保护、再按所选履约方同一组 `pin + ownerNo` 调 querySoOrder 查重，碰撞换号且旧号绝不进入 addSoOrder；写意图先冻结 pin、owner、仓库和货品快照，addSoOrder 成功后立即按同租户读回，只有京东引用、租户、仓库及每条 goodsNo/orderLine/planQuantity 完全一致才进入 SUBMITTED，否则进入 RECONCILIATION_REQUIRED 且禁止普通轮询/再次创建；Idempotency-Key 的摘要只表达稳定 Shipment 命令身份，派生事实由冻结意图防漂移，因此同键未决重试即使当前 Provider 配置变化也只能按原事实 query-only；`app.jd.write-mode=OFF` 时拒绝，失败阶段与诊断码落 Shipment 级集成记录 |
 | GET | `/api/v1/shipments/{shipment_id}/source-sync/check` | 聚福宝/彩食鲜来源回传前的完整即时事实核对；仅认证人工可读，响应 `Cache-Control: no-store`，不产生平台写 |
 | POST | `/api/v1/shipments/{shipment_id}/source-sync/execute` | 以刚查看的 `check_hash` 确认并执行一次 Shipment 级回传；每次外部写前复验租约，只有平台终态已验证才成功 |
 | POST | `/api/v1/shipments/source-sync/batch-execute` | 最多 100 张 Shipment 的逐单回传；每项独立携带 `shipment_id`、`expected_check_hash` 与 `idempotency_key`，逐项返回成功/失败且互不回滚 |
@@ -189,7 +191,9 @@
 
 续发命令仅对 `BUSINESS + THIRD_PARTY + PARTIALLY_SHIPPED` 履约开放，必须携带 `expected_version`、正数 `instructed_quantity`、必填 `remark`、`Idempotency-Key` 和网关覆盖的操作人。可分配剩余量为请求量减已发、已取消和已有 `CREATED` 续发指令；命令在锁定 Fulfillment 后做版本 CAS，成功时一次性创建新 Shipment、新出库单号和新 FulfillmentExport，并写事件、版本与审计。
 
-Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipment 行，不拿整个 Fulfillment 请求量误判续发批次。相同导出与相同文件内容重放返回首次完整响应，包括原 `business_results` 和 `generated_source_return_export_ids`，也不重复生成来源回填版本。
+Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipment 行，不拿整个 Fulfillment 请求量误判续发批次。Tracking 事务提交后，接口只尝试本次入队的来源回填任务；任务领取、派生或结果查询失败不改写成功接收的 201、Tracking、实发数量或 Shipment 状态，而是独立退避重试。相同导出与相同文件内容重放复用首次 Tracking 批次和稳定的 `business_results`，`generated_source_return_export_ids` 返回查询时已经成功派生的版本，不重复生成来源回填文件；自动尝试已耗尽的同键派生任务会被该显式重放安全复活，进行中/已成功任务不重置。
+
+京东 `jd-tracking-backfill` 使用同一边界：查询结果通过货品与承运商校验后先提交 Tracking，再由独立持久任务生成来源回填。确定性的 `JD_TRACKING_CARGO_MISMATCH` 首次出现即进入稳定人工冲突，只保存本地/京东行号、货号和整数数量差异，并让该 Shipment 退出自动轮询；操作员显式关闭对应 ReviewCase 后才恢复候选资格。来源模板、文件或承运商展示翻译故障不得回滚京东运单；文件渠道缺少专用翻译时使用内部标准承运商名称。严格在线渠道缺少平台接口代码时，只把该来源同步尝试置为可重试的 `SYNC_FAILED`，不得删除或回退 Tracking。
 
 #### 京东出库单号与回传定位
 
@@ -249,7 +253,7 @@ Provider tracking 的 `business_results` 只统计本次回传文件中的 Shipm
 
 SKU 列表与候选搜索的 `query` 同时匹配商品名称、active SKU 别名、规格和内部 SKU 编码；规范名称变更后，历史 NAME 别名仍可定位 canonical SKU，但不会恢复或改写已停用的重复 SKU。
 
-主数据不提供硬删除端点。已被订单快照引用的 Product/SKU/provider 不能改写历史。来源 SKU 映射的 `quantity_multiplier` 必须为正数；空值只能作为待复核主数据，不能进入自动履约。
+主数据不提供硬删除端点。已被订单快照引用的 Product/SKU/provider 不能改写历史。来源 SKU 映射的 `quantity_multiplier` 必须为 int32 正整数；空值只能作为待复核主数据，不能进入自动履约。
 
 商品价格的唯一系统真源是 `app.skus.purchase_price / retail_price`，分别由成本核算表 AI「线下供货成本/份」与 AJ「售价」供数并允许人工覆盖；`app.product_archive_sheets` 只保留不可变导入快照。Product 的写入与读取投影不再包含 `purchase_price / retail_price / other_cost / margin`，因此 MCP `list_products` 同步少这四项。SKU 投影保留两价并返回 `margin = retail_price - purchase_price`，缺任一价格时 `margin=null`；SKU PATCH 可更新 `unit`，`expected_version` 乐观锁语义不变。
 
@@ -360,7 +364,7 @@ public interface PlatformConnector {
 
 - 彩食鲜、聚福宝、飞象各自实现一个 Connector；`channel()` 必须固定，禁止运行时混用渠道。
 - 三平台真实接口契约（登录/认证/订单获取/发货回传）已通过抓包确认，见 `docs/research/platform-apis-overview.md` 及三份平台契约文档；在线 API 接入评估见 `docs/research/platform-api-integration-plan.md`。
-- `checkShipmentResult` 只读查询来源平台的最新状态、收货信息、可发来源份数和承运商字典；不能接单、上传或发货。
+- `checkShipmentResult` 只读查询来源平台的最新状态、收货信息、可发来源份数和承运商字典；不能接单、上传或发货。本地 `carrier_mappings` 只是可选翻译覆盖，不是允许承运商白名单；缺失时以正式 Tracking 的标准名称/内部代码匹配平台实时字典。
 - 生产在线写只能从 Shipment source-sync `execute` 进入；无 `ExternalWritePermit` 的旧调用在聚福宝和彩食鲜均失败关闭。
 - `pushShipmentResult` 输入只使用内部标准字段：Shipment/来源血缘、Canonical 实发件数、来源份数、履约结果、承运商输出值、正式运单与 receiver 快照；彩食鲜工作簿封装在 artifact seam 内，不把表格列名泄露到领域层。
 - 聚福宝的接单与发货是两次不可逆写，每次都要分别复验外层执行租约和平台内层 owner/lease；彩食鲜在登录和 multipart 构造完成后、真正 `http.send` 前复验一次。
@@ -379,10 +383,10 @@ public interface PlatformConnector {
 
 ### 6.3 京东 ISC 写接口收口
 
-京东 ISC SDK 的全部写类接口（建档、创建、修改、关闭、设置、绑定类，共 20 个）通过 `JdWriteOpsService` seam 接入，统一由 `/api/v1/jd-write` 控制器暴露为 HTTP 端点，但默认锁死：
+京东 ISC SDK 除 addSoOrder 外的写类接口（建档、创建、修改、关闭、设置、绑定类，共 19 个）通过 `JdWriteOpsService` seam 接入，由 `/api/v1/jd-write` 控制器暴露为默认锁死的遗留 HTTP 端点。addSoOrder 独立使用只接受 prepared capability 的 `JdSalesOutboundWriter`：
 
 - **默认拒绝**：`app.jd.write-mode` 未配置或为 `OFF` 时，所有写端点返回 HTTP 403 + 业务码 `WRITE_MODE_DISABLED` + 消息「写模式未启用」；请求不触达 seam、不产生任何外部调用，Mock 环境同样拒绝。被拦截的写尝试同样落审计（操作人、请求摘要、结果）。
-- **显式放行**：Shipment 建单只消费 `app.jd.write-mode: ON`；通用 `/api/v1/jd-write` 的其他写端点还要求独立 `app.jd.generic-http-write-mode: ON`，Compose 不暴露该开关并始终保持 OFF，且只允许 Mock 契约验证。`client_mode=REAL` 时这组遗留 HTTP 入口永久返回 403；真实写操作必须逐项建设授权、幂等、恢复策略完备的业务纵切。通用 `order/so-create` 无论总闸如何都永久拒绝，只能走 Shipment 业务入口。
+- **显式放行**：Shipment 建单只消费 `app.jd.write-mode: ON`；通用 `/api/v1/jd-write` 的其他写端点还要求独立 `app.jd.generic-http-write-mode: ON`，Compose 不暴露该开关并始终保持 OFF，且只允许 Mock 契约验证。`client_mode=REAL` 时这组遗留 HTTP 入口永久返回 403；真实写操作必须逐项建设授权、幂等、恢复策略完备的业务纵切。通用 `order/so-create` 无论总闸如何都永久拒绝，且通用 seam 不再暴露其 Map 写方法；只能走 Shipment 业务入口生成不可伪造的 prepared capability。
 - **审计与脱敏**：放行与被拦截的写尝试都记 AuditLog（service `jd.isc`）；HTTP 边界剔除负责人、电话、邮箱、地址。`pin`/`ownerNo` 等固定租户字段由 Connector 配置注入，业务用例不接触密钥。
 - **调用方**：前端仅提供 Shipment 受控建单入口；通用写控制器没有页面入口，不注册为 Agent 工具。
 
@@ -406,7 +410,7 @@ public interface PlatformConnector {
 | `/order/purchase-close` | `orderPurchaseClose` | `/integratedsupplychain/order/purchase/close/v1` | `closePoOrder` | 采购单关闭 |
 | `/order/returntosupplier-create` | `orderReturntosupplierCreate` | `/integratedsupplychain/order/returntosupplier/create/v1` | `addRtsOrder` | 退货供应商单新增 |
 | `/order/returntowarehouse-create` | `orderReturntowarehouseCreate` | `/integratedsupplychain/order/returntowarehouse/create/v1` | `addRtwOrder` | 退货入库单新增 |
-| `/order/so-create` | `orderSoCreate` | `/integratedsupplychain/order/delivery/create/v1` | `addSoOrder` | 出库单新增 |
+| `/order/so-create` | 无（HTTP 永久拒绝；受控端口为 `JdSalesOutboundWriter.create`） | `/integratedsupplychain/order/delivery/create/v1` | `addSoOrder` | 出库单新增，仅 Shipment 编排可生成 prepared capability |
 | `/stock/shopstockfixed-set` | `stockShopstockfixedSet` | `/integratedsupplychain/stock/shopstockfixed/set/v1` | `setShopStockFixed` | 店铺库存固定值设置 |
 
 上表 LOP API 路径由对应 `Integratedsupplychain<域><动作>V<版本>LopRequest` 请求类名推导，与 §6.1 同源；登记开通时以京东开放平台后台展示为准。
@@ -472,7 +476,7 @@ Agent 可以提建议，但上述终局动作必须由管理后台人员确认�
 | `suggest_sku_match` | `idempotency_key`, `review_case_id`, `expected_version`, `sku_id?`, `quantity_multiplier?`, `reason` | 追加建议后的 ReviewCase | 只追加建议，不确认映射 |
 | `submit_business_material` | `idempotency_key`, `review_case_id`, `expected_version`, `evidence_refs`, `note` | 追加材料后的 ReviewCase | 只追加证据，不关闭复核 |
 
-MCP 标识符和数量沿用 OpenAPI 的字符串规则。`operator`/Agent 身份来自 MCP 认证上下文，不能由工具参数冒充；写工具使用与 REST 相同的幂等注册表、乐观版本和审计切面。服务端不得注册 `resolve_*`、`cancel_remaining`、`retry_procurement` 或 `complete_source_followup` 一类 Agent 工具；未来若改变该权限边界，必须新开业务决策票。
+MCP 沿用 OpenAPI 契约：标识符使用字符串，`CountQuantity` 使用 JSON integer。`operator`/Agent 身份来自 MCP 认证上下文，不能由工具参数冒充；写工具使用与 REST 相同的幂等注册表、乐观版本和审计切面。服务端不得注册 `resolve_*`、`cancel_remaining`、`retry_procurement` 或 `complete_source_followup` 一类 Agent 工具；未来若改变该权限边界，必须新开业务决策票。
 
 静态礼包读取工具属于独立 `bundles-read` 模块：进程内 Agent 与公共 MCP 协议面分别配置，
 公共面只有显式加入该模块才可发现。投影不返回履约方连接配置、库存原始载荷或任何写操作；

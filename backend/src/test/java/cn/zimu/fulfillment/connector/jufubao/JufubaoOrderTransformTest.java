@@ -12,6 +12,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * 聚福宝 transform 测试：用真实抓包订单 JSON（data-local/supplier-apis.jufubao.cn.har 的
@@ -73,7 +75,7 @@ class JufubaoOrderTransformTest {
         OrderItemInput item = canonical.items().get(0);
         assertThat(item.productName()).isEqualTo("yosibaby/羊小贝山羊奶整箱200ml*10盒");
         assertThat(item.sourceSkuRef()).isEqualTo("66662134");
-        assertThat(item.quantity()).isEqualTo("1");
+        assertThat(item.quantity()).isEqualTo(1);
         assertThat(item.unit()).isEqualTo(JufubaoOrderTransform.UNIT_DEFAULT);
         assertThat(item.specification()).isEqualTo(JufubaoOrderTransform.SPEC_MISSING);
 
@@ -167,7 +169,7 @@ class JufubaoOrderTransformTest {
 
         assertThat(row.rawSnapshot().get("supplier_name")).isEqualTo("***");
         assertThat(row.canonicalInput().customer().name()).isEqualTo("待匹配客户");
-        assertThat(row.canonicalInput().items().get(0).quantity()).isEqualTo("2");
+        assertThat(row.canonicalInput().items().get(0).quantity()).isEqualTo(2);
     }
 
     @Test
@@ -223,8 +225,27 @@ class JufubaoOrderTransformTest {
         StructuredOrderRow row = transform.toRow(order);
 
         assertThat(row.canonicalInput().items()).hasSize(1);
-        assertThat(row.canonicalInput().items().get(0).quantity()).isEqualTo("2");
+        assertThat(row.canonicalInput().items().get(0).quantity()).isEqualTo(2);
         assertThat(row.rawSnapshot().get("quantity_invalid")).isEqualTo(true);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"3", "3.000"})
+    void jsonCountAdapterNormalizesMathematicalIntegers(String rawQuantity) {
+        StructuredOrderRow row = rowWithQuantity(rawQuantity);
+
+        assertThat(row.reviewRequired()).isNull();
+        assertThat(row.canonicalInput().items()).singleElement()
+                .satisfies(item -> assertThat(item.quantity()).isEqualTo(3));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"3.5", "-1", "2147483648"})
+    void jsonCountAdapterRejectsFractionalNegativeAndOverflowCounts(String rawQuantity) {
+        StructuredOrderRow row = rowWithQuantity(rawQuantity);
+
+        assertThat(row.reviewRequired().code()).isEqualTo("JUFUBAO_QUANTITY_INVALID");
+        assertThat(row.canonicalInput().items()).isEmpty();
     }
 
     @Test
@@ -254,5 +275,21 @@ class JufubaoOrderTransformTest {
                 .doesNotContain("13800000001")
                 .doesNotContain("access_token")
                 .doesNotContain("buyer_phone");
+    }
+
+    private StructuredOrderRow rowWithQuantity(Object rawQuantity) {
+        Map<String, Object> order = Map.of(
+                "main_order_id", "main-count-contract",
+                "sub_order_id", "sub-count-contract",
+                "created_time", 1786929554,
+                "product_list", List.of(Map.of(
+                        "product_id", 1,
+                        "product_name", "羊棒骨",
+                        "product_num", rawQuantity)));
+        return transform.toRow(order, new JufubaoShipmentGateway.ShipmentDetail(
+                List.of(),
+                new JufubaoShipmentGateway.ReceiverSnapshot(
+                        "张三", "13800000000", "河南省郑州市测试路1号"),
+                "logistics"));
     }
 }

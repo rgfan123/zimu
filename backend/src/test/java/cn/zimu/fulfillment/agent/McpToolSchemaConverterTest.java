@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import cn.zimu.fulfillment.mcp.McpToolRegistry;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonRawSchema;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,19 @@ class McpToolSchemaConverterTest {
         JsonObjectSchema converted = McpToolSchemaConverter.toObjectSchema(schema);
 
         McpToolSchemaTestSupport.assertSchemaEquals(schema, converted);
+    }
+
+    @Test
+    void boundedIntegerConstraintRoundTripsWithoutConstraintLoss() {
+        ObjectNode count = McpToolRegistry.integerProperty("int32 正整数数量（JSON integer）");
+        count.put("minimum", 1);
+        count.put("maximum", Integer.MAX_VALUE);
+        ObjectNode schema = McpToolRegistry.schema(Map.of("quantity", count), List.of("quantity"));
+
+        JsonObjectSchema converted = McpToolSchemaConverter.toObjectSchema(schema);
+
+        McpToolSchemaTestSupport.assertSchemaEquals(schema, converted);
+        assertThat(converted.properties().get("quantity")).isInstanceOf(JsonRawSchema.class);
     }
 
     @Test

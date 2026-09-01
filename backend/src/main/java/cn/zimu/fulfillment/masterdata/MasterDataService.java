@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.masterdata;
 
 import cn.zimu.fulfillment.catalog.CatalogMasterDataLock;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
+import cn.zimu.fulfillment.common.domain.CountQuantity;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
@@ -270,9 +271,9 @@ public class MasterDataService {
                         .orElseThrow(() -> BusinessException.unprocessable(
                                 "PROVIDER_SKU_FACTOR_IMPORT_PROVIDER_SKU_UNKNOWN",
                                 "京东履约方不存在该 SKU 映射: " + row.providerSkuCode()));
-                BigDecimal current = decimalOf(mapping.getExternalCodes().get("jd_pieces_per_unit"));
-                BigDecimal incoming = new BigDecimal(row.jdPiecesPerUnit());
-                if (current != null && current.compareTo(incoming) == 0) {
+                Integer current = positiveCountOrNull(mapping.getExternalCodes().get("jd_pieces_per_unit"));
+                Integer incoming = row.jdPiecesPerUnit();
+                if (current != null && current.equals(incoming)) {
                     outcomes.add(factorImportedRow(row, "SKIPPED"));
                     continue;
                 }
@@ -280,7 +281,7 @@ public class MasterDataService {
                     throw BusinessException.unprocessable(
                             "PROVIDER_SKU_FACTOR_IMPORT_CONFLICT",
                             "SKU " + row.providerSkuCode() + " 已配置京东件数换算 "
-                                    + current.toPlainString() + "，导入值 " + row.jdPiecesPerUnit()
+                                    + current + "，导入值 " + row.jdPiecesPerUnit()
                                     + " 不静默覆盖；请先显式修改");
                 }
                 Map<String, Object> externalCodes = new LinkedHashMap<>(mapping.getExternalCodes());
@@ -330,7 +331,7 @@ public class MasterDataService {
             row.put("source_product_name", sourceName);
             row.put("candidate", JdPiecesCandidateParser.candidateOrNull(
                     sourceSpecification, sourceName, specification));
-            row.put("configured", decimalText(mapping.getExternalCodes().get("jd_pieces_per_unit")));
+            row.put("configured", positiveCountOrNull(mapping.getExternalCodes().get("jd_pieces_per_unit")));
             candidates.add(row);
         }
         return candidates;
@@ -341,8 +342,8 @@ public class MasterDataService {
         for (int i = 0; i < rows.size(); i++) {
             ProviderSkuJdFactorImport.ProviderSkuJdFactorRow row = rows.get(i);
             boolean shapeInvalid = !hasText(row.providerSkuCode()) || row.providerSkuCode().length() > 128
-                    || !hasText(row.jdPiecesPerUnit())
-                    || !row.jdPiecesPerUnit().matches(Patterns.POSITIVE_INTEGER_QUANTITY);
+                    || row.jdPiecesPerUnit() == null
+                    || row.jdPiecesPerUnit() <= 0;
             if (shapeInvalid) {
                 throw BusinessException.unprocessable(
                         "PROVIDER_SKU_FACTOR_IMPORT_INVALID_ROW",
@@ -384,14 +385,13 @@ public class MasterDataService {
                 .orElseThrow(() -> BusinessException.notFound("京东履约方不存在"));
     }
 
-    private static BigDecimal decimalOf(Object value) {
-        if (value instanceof BigDecimal decimal) {
-            return decimal;
+    private static Integer positiveCountOrNull(Object value) {
+        if (value == null) return null;
+        try {
+            return CountQuantity.fromPositiveFileValue(String.valueOf(value));
+        } catch (CountQuantity.InvalidCountQuantityException exception) {
+            return null;
         }
-        if (value instanceof Number number) {
-            return new BigDecimal(number.toString());
-        }
-        return value == null ? null : new BigDecimal(value.toString());
     }
 
     private static ProviderSkuJdFactorImportResult.ImportedRow factorImportedRow(
@@ -786,7 +786,7 @@ public class MasterDataService {
             value.setSourceSkuRef(input.sourceSkuRef());
             value.setSourceProductName(input.sourceSkuName());
             value.setSkuId(skuId);
-            value.setQuantityMultiplier(Integer.valueOf(input.quantityMultiplier()));
+            value.setQuantityMultiplier(input.quantityMultiplier());
             value.setActive(!Boolean.FALSE.equals(input.active()));
             return sourceMapping(refresh(sourceMappings.saveAndFlush(value)));
         });
@@ -811,7 +811,7 @@ public class MasterDataService {
                 requireSku(skuId);
                 value.setSkuId(skuId);
             }
-            if (input.quantityMultiplier() != null) value.setQuantityMultiplier(Integer.valueOf(input.quantityMultiplier()));
+            if (input.quantityMultiplier() != null) value.setQuantityMultiplier(input.quantityMultiplier());
             if (input.active() != null) value.setActive(input.active());
             return sourceMapping(refresh(sourceMappings.saveAndFlush(value)));
         });
@@ -905,7 +905,7 @@ public class MasterDataService {
             }
             if (input.jdPiecesPerUnit() != null) {
                 Map<String, Object> externalCodes = new LinkedHashMap<>(value.getExternalCodes());
-                externalCodes.put("jd_pieces_per_unit", new BigDecimal(input.jdPiecesPerUnit()));
+                externalCodes.put("jd_pieces_per_unit", input.jdPiecesPerUnit());
                 value.setExternalCodes(externalCodes);
             }
             if (input.active() != null) value.setActive(input.active());
@@ -1108,7 +1108,7 @@ public class MasterDataService {
                                 sku == null ? null : sku.getSkuCode(),
                                 value.getProviderSkuCode()).name(),
                         "merchant_sku_code", value.getMerchantSkuCode(), "jd_pieces_per_unit",
-                        decimalText(value.getExternalCodes().get("jd_pieces_per_unit"))), value);
+                        positiveCountOrNull(value.getExternalCodes().get("jd_pieces_per_unit"))), value);
     }
 
     private FulfillmentProviderDto provider(FulfillmentProvider value) {
@@ -1174,7 +1174,7 @@ public class MasterDataService {
                 value.getMerchantSkuCode(),
                 value.isActive(),
                 name,
-                decimalText(external.get("jd_pieces_per_unit")));
+                positiveCountOrNull(external.get("jd_pieces_per_unit")));
     }
 
     private Map<Long, Sku> providerMappingSkus(Collection<ProviderSku> values) {
@@ -1356,10 +1356,10 @@ public class MasterDataService {
         return map("department_code", departmentCode, "contact_name", contactName, "contact_phone", contactPhone);
     }
 
-    private static Map<String, Object> providerMappingDetails(String name, String jdPiecesPerUnit) {
+    private static Map<String, Object> providerMappingDetails(String name, Integer jdPiecesPerUnit) {
         return map(
                 "provider_sku_name", name,
-                "jd_pieces_per_unit", jdPiecesPerUnit == null ? null : new BigDecimal(jdPiecesPerUnit));
+                "jd_pieces_per_unit", jdPiecesPerUnit);
     }
 
     private static Map<String, Object> skuPatchPayload(long id, SkuPatch input) {

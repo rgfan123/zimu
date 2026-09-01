@@ -26,7 +26,7 @@ export interface OrderDraftLineDetail {
   product_name_raw?: string | null;
   spec_raw?: string | null;
   unit_raw?: string | null;
-  quantity?: string | null;
+  quantity?: number | null;
 }
 
 export interface OrderDraftDetail {
@@ -89,7 +89,7 @@ export interface ConfirmOrderDraftCommand {
   customer: { customer_id: string };
   receiver: OrderDraftReviewForm['receiver'];
   settlement: { method: string; settlement_time: string };
-  items: Array<{ line_no: number; sku_id: string; quantity: string }>;
+  items: Array<{ line_no: number; sku_id: string; quantity: number }>;
   remark: string;
 }
 
@@ -145,7 +145,7 @@ export function initialOrderDraftReviewForm(draft: OrderDraftDetail): OrderDraft
       line.line_no,
       {
         sku_id: line.sku_id ?? uniqueCandidateId(line.sku_candidates, 'sku_id'),
-        quantity: text(line.quantity),
+        quantity: line.quantity == null ? '' : String(line.quantity),
       },
     ])),
     remark: '',
@@ -203,7 +203,7 @@ export function buildOrderDraftConfirmCommand(
     items: draft.lines.map((line) => ({
       line_no: line.line_no,
       sku_id: text(form.items[line.line_no]!.sku_id),
-      quantity: text(form.items[line.line_no]!.quantity),
+      quantity: Number(text(form.items[line.line_no]!.quantity)),
     })),
     remark: text(form.remark),
   };
@@ -227,5 +227,8 @@ export function buildOrderDraftRejectCommand(
 
 function isPositiveQuantity(value: string): boolean {
   const normalized = text(value);
-  return /^(?!0(?:\.0{1,3})?$)(0|[1-9][0-9]*)(\.[0-9]{1,3})?$/.test(normalized);
+  const parsed = Number(normalized);
+  return /^[1-9][0-9]*$/.test(normalized)
+    && Number.isSafeInteger(parsed)
+    && parsed <= 2_147_483_647;
 }

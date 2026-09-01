@@ -126,10 +126,6 @@ public class OrderSearchReadService {
         return !rs.wasNull();
     }
 
-    private static String decimal(Object value) {
-        return value == null ? null : new java.math.BigDecimal(value.toString()).toPlainString();
-    }
-
     private static Instant toInstant(ResultSet rs, String column) throws SQLException {
         OffsetDateTime value = rs.getObject(column, OffsetDateTime.class);
         return value == null ? null : value.toInstant();

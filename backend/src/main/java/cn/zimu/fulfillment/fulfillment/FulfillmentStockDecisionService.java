@@ -17,7 +17,6 @@ import cn.zimu.fulfillment.order.OrderQueryService;
 import cn.zimu.fulfillment.sku.ProviderType;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -138,9 +137,9 @@ public class FulfillmentStockDecisionService {
         List<Shortage> shortages = new ArrayList<>();
         for (ExpectedItem item : expected) {
             StockDecisionCommand.Item observation = provided.get(item.skuId());
-            BigDecimal stock = quantity(observation.stockQuantity(), "stock_quantity");
-            BigDecimal usable = quantity(observation.usableQuantity(), "usable_quantity");
-            if (usable.compareTo(stock) > 0) {
+            int stock = observation.stockQuantity();
+            int usable = observation.usableQuantity();
+            if (usable > stock) {
                 throw BusinessException.unprocessable(
                         "USABLE_STOCK_EXCEEDS_STOCK", "可用库存不得超过总库存");
             }
@@ -159,8 +158,8 @@ public class FulfillmentStockDecisionService {
                     OffsetDateTime.ofInstant(command.observedAt(), ZoneOffset.UTC),
                     blankToNull(observation.sourceRef()),
                     json(Map.of("normalized", true, "fulfillment_id", String.valueOf(fulfillment.id()))));
-            BigDecimal shortage = item.requiredQuantity().subtract(usable).max(BigDecimal.ZERO);
-            if (shortage.signum() > 0) {
+            int shortage = Math.max(item.requiredQuantity() - usable, 0);
+            if (shortage > 0) {
                 shortages.add(new Shortage(item, shortage, item.unit()));
             }
         }
@@ -202,18 +201,19 @@ public class FulfillmentStockDecisionService {
         }
 
         List<Shortage> shortages = new ArrayList<>();
-        Map<Long, BigDecimal> availablePiecesBySku = new LinkedHashMap<>();
+        Map<Long, Long> availablePiecesBySku = new LinkedHashMap<>();
         for (ExpectedItem item : expected) {
             JdGoodsRef ref = goodsRefs.get(item.skuId());
             JdWarehouseStock stock = stockByGoodsNo.getOrDefault(ref.goodsNo(), JdWarehouseStock.empty());
-            BigDecimal requiredPieces =
+            long requiredPieces =
                     JdStockUnitConverter.requiredPieces(item.requiredQuantity(), ref.piecesPerUnit());
-            BigDecimal availablePieces = stock.availablePieces();
+            long availablePieces = stock.availablePieces();
             availablePiecesBySku.put(item.skuId(), availablePieces);
             insertJdSnapshot(fulfillment, item, ref.goodsNo(), stock, command, query);
-            BigDecimal shortage = requiredPieces.subtract(availablePieces).max(BigDecimal.ZERO);
-            if (shortage.signum() > 0) {
-                shortages.add(new Shortage(item, shortage.setScale(3), JdStockUnitConverter.PIECES_UNIT));
+            long shortage = Math.max(requiredPieces - availablePieces, 0);
+            if (shortage > 0) {
+                shortages.add(new Shortage(
+                        item, Math.toIntExact(shortage), JdStockUnitConverter.PIECES_UNIT));
             }
         }
 
@@ -331,7 +331,7 @@ public class FulfillmentStockDecisionService {
             }
             Map<String, Object> row = rows.getFirst();
             String goodsNo = (String) row.get("provider_sku_code");
-            BigDecimal factor = JdStockUnitConverter.factorOrNull(parseJsonMap((String) row.get("external_codes")));
+            Integer factor = JdStockUnitConverter.factorOrNull(parseJsonMap((String) row.get("external_codes")));
             if (factor == null) {
                 recordRejectionAudit(
                         "JD_STOCK_UNIT_CONFIG_INVALID", command, "SKU 单位换算系数非法，无法判定库存", context, 422);
@@ -376,13 +376,13 @@ public class FulfillmentStockDecisionService {
             }
             String goodsNo = text(row.get("goodsNo"));
             String warehouseNo = text(row.get("warehouseNo"));
-            BigDecimal available = number(row.get("availableQuantity"));
-            if (goodsNo == null || warehouseNo == null || available == null || available.signum() < 0) {
+            Integer available = count(row.get("availableQuantity"));
+            if (goodsNo == null || warehouseNo == null || available == null) {
                 return null;
             }
-            BigDecimal occupied = number(row.get("occupiedQuantity"));
+            Integer occupied = count(row.get("occupiedQuantity"));
             if (occupied == null) {
-                occupied = BigDecimal.ZERO;
+                occupied = 0;
             }
             result.computeIfAbsent(goodsNo, ignored -> new JdWarehouseStock())
                     .add(warehouseNo, available, occupied);
@@ -399,8 +399,8 @@ public class FulfillmentStockDecisionService {
             StockDecisionCommand command,
             JdResult query) {
         for (String warehouseNo : stock.warehouses()) {
-            BigDecimal usable = stock.availableAt(warehouseNo);
-            BigDecimal onHand = usable.add(stock.occupiedAt(warehouseNo));
+            long usable = stock.availableAt(warehouseNo);
+            long onHand = Math.addExact(usable, stock.occupiedAt(warehouseNo));
             jdbc.update(
                     """
                     INSERT INTO app.provider_stock_snapshots
@@ -515,7 +515,7 @@ public class FulfillmentStockDecisionService {
                 """,
                 rs -> rs.next() ? new FulfillmentContext(
                         rs.getLong("id"), rs.getLong("order_id"), rs.getLong("order_line_id"),
-                        rs.getLong("fulfillment_provider_id"), rs.getBigDecimal("requested_quantity"),
+                        rs.getLong("fulfillment_provider_id"), rs.getInt("requested_quantity"),
                         rs.getString("line_type"), rs.getObject("sku_id", Long.class),
                         rs.getString("processing_stage"), rs.getString("receiver_address"),
                         rs.getBoolean("inventory_managed_by_us"), rs.getString("provider_type")) : null,
@@ -537,7 +537,7 @@ public class FulfillmentStockDecisionService {
                 FROM app.order_line_components WHERE order_line_id=? ORDER BY component_no
                 """,
                 (rs, row) -> new ExpectedItem(
-                        rs.getLong("sku_id"), rs.getLong("id"), rs.getBigDecimal("total_quantity"),
+                        rs.getLong("sku_id"), rs.getLong("id"), rs.getInt("total_quantity"),
                         rs.getString("unit_snapshot")),
                 fulfillment.orderLineId());
     }
@@ -586,28 +586,15 @@ public class FulfillmentStockDecisionService {
         }
     }
 
-    private static BigDecimal quantity(String value, String field) {
+    private static Integer count(Object value) {
+        if (value == null) {
+            return null;
+        }
         try {
-            BigDecimal quantity = new BigDecimal(value);
-            if (quantity.signum() < 0 || quantity.scale() > 3) throw new NumberFormatException();
-            return quantity.setScale(3);
-        } catch (RuntimeException ex) {
-            throw BusinessException.unprocessable("STOCK_QUANTITY_INVALID", field + " 必须是非负三位小数");
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromNonNegativeFileValue(value.toString());
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException ignored) {
+            return null;
         }
-    }
-
-    private static BigDecimal number(Object value) {
-        if (value instanceof Number number) {
-            return new BigDecimal(number.toString());
-        }
-        if (value instanceof String text && !text.isBlank()) {
-            try {
-                return new BigDecimal(text.trim());
-            } catch (NumberFormatException ignored) {
-                return null;
-            }
-        }
-        return null;
     }
 
     private static String text(Object value) {
@@ -651,7 +638,7 @@ public class FulfillmentStockDecisionService {
             long orderId,
             long orderLineId,
             long providerId,
-            BigDecimal requestedQuantity,
+            int requestedQuantity,
             String lineType,
             Long skuId,
             String processingStage,
@@ -659,41 +646,41 @@ public class FulfillmentStockDecisionService {
             boolean inventoryManagedByUs,
             String providerType) {}
 
-    private record ExpectedItem(long skuId, Long componentId, BigDecimal requiredQuantity, String unit) {}
+    private record ExpectedItem(long skuId, Long componentId, int requiredQuantity, String unit) {}
 
-    private record Shortage(ExpectedItem item, BigDecimal quantity, String unit) {}
+    private record Shortage(ExpectedItem item, int quantity, String unit) {}
 
-    private record JdGoodsRef(String goodsNo, BigDecimal piecesPerUnit) {}
+    private record JdGoodsRef(String goodsNo, int piecesPerUnit) {}
 
     /** 单个京东商品（goodsNo）按仓聚合的可用/占用件数。 */
     private static final class JdWarehouseStock {
 
-        private final Map<String, BigDecimal> availableByWarehouse = new LinkedHashMap<>();
-        private final Map<String, BigDecimal> occupiedByWarehouse = new LinkedHashMap<>();
+        private final Map<String, Long> availableByWarehouse = new LinkedHashMap<>();
+        private final Map<String, Long> occupiedByWarehouse = new LinkedHashMap<>();
 
         static JdWarehouseStock empty() {
             return new JdWarehouseStock();
         }
 
-        void add(String warehouseNo, BigDecimal available, BigDecimal occupied) {
-            availableByWarehouse.merge(warehouseNo, available, BigDecimal::add);
-            occupiedByWarehouse.merge(warehouseNo, occupied, BigDecimal::add);
+        void add(String warehouseNo, long available, long occupied) {
+            availableByWarehouse.merge(warehouseNo, available, Math::addExact);
+            occupiedByWarehouse.merge(warehouseNo, occupied, Math::addExact);
         }
 
         Set<String> warehouses() {
             return availableByWarehouse.keySet();
         }
 
-        BigDecimal availableAt(String warehouseNo) {
-            return availableByWarehouse.getOrDefault(warehouseNo, BigDecimal.ZERO);
+        long availableAt(String warehouseNo) {
+            return availableByWarehouse.getOrDefault(warehouseNo, 0L);
         }
 
-        BigDecimal occupiedAt(String warehouseNo) {
-            return occupiedByWarehouse.getOrDefault(warehouseNo, BigDecimal.ZERO);
+        long occupiedAt(String warehouseNo) {
+            return occupiedByWarehouse.getOrDefault(warehouseNo, 0L);
         }
 
-        BigDecimal availablePieces() {
-            return availableByWarehouse.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        long availablePieces() {
+            return availableByWarehouse.values().stream().reduce(0L, Math::addExact);
         }
     }
 }

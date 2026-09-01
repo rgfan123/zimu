@@ -3,6 +3,8 @@ package cn.zimu.fulfillment.order;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
@@ -35,7 +37,6 @@ import jakarta.persistence.EntityManager;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
-import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -112,7 +113,8 @@ public class ReviewCaseResolutionService {
                 "WECOM_TRACKING_DRAFT",
                 "WECOM_NEED_REVIEW",
                 "WECOM_ORDER_CHANGE",
-                "WECOM_ORDER_CANCEL"));
+                "WECOM_ORDER_CANCEL",
+                "JD_TRACKING_CARGO_MISMATCH"));
         return Set.copyOf(reasons);
     }
 
@@ -257,7 +259,7 @@ public class ReviewCaseResolutionService {
             if (!sku.isActive()) {
                 throw BusinessException.unprocessable("SKU_INACTIVE", "只能引用已启用的 SKU 主数据");
             }
-            Integer multiplier = Integer.valueOf(command.quantityMultiplier());
+            Integer multiplier = command.quantityMultiplier();
             SourceSkuRefPolicy.requireReusable(command.sourceSkuRef());
 
             if (reviewCase.getOrderId() == null
@@ -302,7 +304,12 @@ public class ReviewCaseResolutionService {
             line.setSkuCodeSnapshot(sku.getSkuCode());
             line.setSourceQuantitySnapshot(sourceQuantity);
             line.setMappingMultiplierSnapshot(multiplier);
-            line.setRequestedQuantity(Math.multiplyExact(sourceQuantity, multiplier));
+            try {
+                line.setRequestedQuantity(CountQuantity.multiplyPositive(sourceQuantity, multiplier));
+            } catch (InvalidCountQuantityException exception) {
+                throw BusinessException.unprocessable(
+                        "QUANTITY_SCALE", "来源数量乘包装乘数后超出 int32 件数范围，复核事项保持开放");
+            }
             line.setExceptionCode(null);
             line.setExceptionReason(null);
             orderLines.save(line);
@@ -493,12 +500,17 @@ public class ReviewCaseResolutionService {
             CommandContext context) {
         Map<String, Object> payload = Map.of("case_id", caseId, "command", command);
         return idempotency.execute(
-                "review_case.resolve_jd_tracking_conflict", idempotencyKey, payload, 200, () -> {            ReviewCase reviewCase = requireOpenCase(
+                "review_case.resolve_jd_tracking_conflict", idempotencyKey, payload, 200, () -> {
+            // 与运单查询 completion 统一先锁 Shipment、再锁 ReviewCase。这样人工解决与
+            // 在途查询归档严格串行，且不会形成 Case -> Shipment / Shipment -> Case 的死锁环。
+            lockTrackingConflictShipment(caseId);
+            ReviewCase reviewCase = requireOpenCase(
                     caseId,
                     command.expectedVersion(),
                     "MULTIPLE_TRACKINGS_FOR_OUTBOUND",
                     "JD_TRACKING_CARRIER_MAPPING_REQUIRED",
-                    "JD_TRACKING_TERMINAL_EXCEPTION");
+                    "JD_TRACKING_TERMINAL_EXCEPTION",
+                    "JD_TRACKING_CARGO_MISMATCH");
             Order order = requireBusinessOrder(reviewCase.getOrderId());
             requireTrackingConflictEvidence(reviewCase, order);
 
@@ -536,6 +548,23 @@ public class ReviewCaseResolutionService {
                     resolutionType);
             return result;
         });
+    }
+
+    private void lockTrackingConflictShipment(long caseId) {
+        Long shipmentId = jdbc.query(
+                        "SELECT shipment_id FROM app.review_cases WHERE id=? AND shipment_id IS NOT NULL",
+                        (resultSet, rowNum) -> resultSet.getLong("shipment_id"),
+                        caseId)
+                .stream()
+                .findFirst()
+                .orElse(null);
+        if (shipmentId == null) {
+            return;
+        }
+        jdbc.queryForObject(
+                "SELECT id FROM app.shipments WHERE id=? FOR NO KEY UPDATE",
+                Long.class,
+                shipmentId);
     }
 
     private ReviewCase requireOpenCase(long caseId, long expectedVersion, String... requiredReasons) {

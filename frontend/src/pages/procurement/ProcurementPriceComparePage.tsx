@@ -72,10 +72,16 @@ export default function ProcurementPriceComparePage() {
     setError(null);
     setResult(null);
     try {
+      const quantityText = quantity.trim();
+      const normalizedQuantity = quantityText === '' ? undefined : Number(quantityText);
+      if (normalizedQuantity !== undefined
+          && (!Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0 || normalizedQuantity > 2_147_483_647)) {
+        throw new Error('数量必须为 int32 正整数');
+      }
       setResult(await procurementPriceAgentApi.compare({
         sku_id: skuId.trim() || undefined,
         procurement_ticket_id: ticketId.trim() || undefined,
-        quantity: quantity.trim() || undefined,
+        quantity: normalizedQuantity,
       }));
     } catch (cause) {
       setError(cause);

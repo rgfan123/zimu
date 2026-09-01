@@ -1,11 +1,14 @@
 package cn.zimu.fulfillment.fulfillment;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import cn.zimu.fulfillment.connector.jd.JdResult;
 import cn.zimu.fulfillment.connector.jd.MockJdWarehouseClient;
 import cn.zimu.fulfillment.common.web.RequestContext;
 import java.math.BigDecimal;
+import java.nio.file.Path;
+import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,6 +19,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
@@ -145,6 +149,16 @@ class ShipmentJdTrackingBackfillApiTest {
 
         @Override
         public JdResult queryOutboundOrder(Map<String, Object> request) {
+            if (Integer.valueOf(0).equals(request.get("deliveryItemFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryPackageFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryStatusFlag"))) {
+                return super.queryOutboundOrder(request);
+            }
+            if (Integer.valueOf(0).equals(request.get("deliveryPackageFlag"))
+                    && request.containsKey("mockExpectedDeliveryItemList")) {
+                // Shipment 建单的强制写后读回属于建单夹具，不占运单轮询查询计数/队列。
+                return super.queryOutboundOrder(request);
+            }
             queries.incrementAndGet();
             lastQueryRequest = Map.copyOf(request);
             observedRequestContext = RequestContext.current();
@@ -233,7 +247,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void successfulSubmitPersistsTheExactNonPiiCargoSnapshotNeededForLaterBackfill() {
         Fixture fixture = submittedShipment("CARGO-SNAPSHOT", List.of(
-                singleItem("1"), singleItem("2")));
+                singleItem(1), singleItem(2)));
 
         String snapshot = jdbc.queryForObject(
                 "SELECT submitted_cargo_snapshot::text FROM app.shipment_jd_outbounds WHERE shipment_id=?",
@@ -251,8 +265,8 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void submittedWarehouseSnapshotSurvivesConfigDriftAndRejectsWrongRemoteWarehouse() {
-        Fixture stable = submittedShipment("WAREHOUSE-STABLE", List.of(singleItem("1")));
-        Fixture mismatch = submittedShipment("WAREHOUSE-MISMATCH", List.of(singleItem("1")));
+        Fixture stable = submittedShipment("WAREHOUSE-STABLE", List.of(singleItem(1)));
+        Fixture mismatch = submittedShipment("WAREHOUSE-MISMATCH", List.of(singleItem(1)));
 
         assertThat(jdbc.queryForObject(
                 "SELECT submitted_warehouse_no FROM app.shipment_jd_outbounds WHERE shipment_id=?",
@@ -280,13 +294,14 @@ class ShipmentJdTrackingBackfillApiTest {
     }
 
     @Test
-    void submittedOwnerAuthoritySurvivesConfigDriftWhileCurrentPinRemainsEphemeral() throws Exception {
-        Fixture fixture = submittedShipment("OWNER-AUTHORITY", List.of(singleItem("1")));
+    void submittedTenantAuthoritySurvivesConfigDriftWithoutSwitchingPinOrOwner() throws Exception {
+        Fixture fixture = submittedShipment("OWNER-AUTHORITY", List.of(singleItem(1)));
 
         assertThat(jdbc.queryForObject(
-                "SELECT submitted_owner_no FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                "SELECT submitted_owner_no || ':' || submitted_pin "
+                        + "FROM app.shipment_jd_outbounds WHERE shipment_id=?",
                 String.class,
-                fixture.shipmentId())).isEqualTo("OWNER-API-001");
+                fixture.shipmentId())).isEqualTo("OWNER-API-001:PIN-API-001");
         jdbc.update(
                 "UPDATE app.fulfillment_providers "
                         + "SET config=jsonb_set(jsonb_set(config, '{ownerNo}', "
@@ -303,8 +318,9 @@ class ShipmentJdTrackingBackfillApiTest {
         assertThat(first.getBody()).containsEntry("poll_status", "TRACKED");
         assertThat(jd.lastQueryRequest)
                 .containsEntry("ownerNo", "OWNER-API-001")
-                .containsEntry("pin", "PIN-ROTATED-SENSITIVE-001")
-                .doesNotContainEntry("ownerNo", "OWNER-CONFIG-DRIFT");
+                .containsEntry("pin", "PIN-API-001")
+                .doesNotContainEntry("ownerNo", "OWNER-CONFIG-DRIFT")
+                .doesNotContainEntry("pin", "PIN-ROTATED-SENSITIVE-001");
 
         jdbc.update(
                 "UPDATE app.fulfillment_providers SET config=jsonb_set(config, '{pin}', "
@@ -320,6 +336,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 """
                 SELECT jsonb_build_object(
                     'submitted_owner_no', submitted_owner_no,
+                    'submitted_pin', submitted_pin,
                     'submitted_warehouse_no', submitted_warehouse_no,
                     'submitted_cargo_snapshot', submitted_cargo_snapshot
                 )::text
@@ -345,7 +362,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 """,
                 String.class);
         assertThat(localSnapshot)
-                .contains("OWNER-API-001")
+                .contains("OWNER-API-001", "PIN-API-001")
                 .doesNotContain("PIN-ROTATED-SENSITIVE-001", "PIN-ROTATED-SENSITIVE-002");
         assertThat(idempotencySnapshot)
                 .doesNotContain("PIN-ROTATED-SENSITIVE-001", "PIN-ROTATED-SENSITIVE-002");
@@ -357,7 +374,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void defaultMockUsesSubmittedWarehouseAndStaysPendingWithoutInventingTracking() {
-        Fixture fixture = submittedShipment("DEFAULT-MOCK-PENDING", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("DEFAULT-MOCK-PENDING", List.of(singleItem(1)));
         jd.useDefaultMockForNextQuery();
 
         ResponseEntity<Map> response = backfill(
@@ -372,7 +389,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void multiLineFullResultUsesStableMerchantReferenceAndAcceptsOneTrackingAtomically() {
         Fixture fixture = submittedShipment("MULTI-FULL", List.of(
-                singleItem("1"), singleItem("2")));
+                singleItem(1), singleItem(2)));
         jd.enqueue(fullResult(fixture, "JD-WAYBILL-MULTI-001"));
 
         ResponseEntity<Map> response = backfill(
@@ -410,8 +427,39 @@ class ShipmentJdTrackingBackfillApiTest {
     }
 
     @Test
+    void sourceReturnDerivationFailureCannotRollbackJdTrackingFacts() {
+        Fixture fixture = submittedShipment("SOURCE-RETURN-FAIL", List.of(singleItem(1)));
+        attachMissingSourceArtifact(fixture);
+        jd.enqueue(fullResult(fixture, "JD-WAYBILL-DERIVE-FAIL-001"));
+
+        ResponseEntity<Map> response = backfill(
+                fixture.shipmentId(),
+                "jd-tracking-source-return-fail-001",
+                "req-jd-tracking-source-return-fail-001");
+
+        assertThat(response.getStatusCode())
+                .as("response body: %s", response.getBody())
+                .isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody())
+                .containsEntry("poll_status", "TRACKED")
+                .containsEntry("tracking_number", "JD-WAYBILL-DERIVE-FAIL-001");
+        assertThat((List<?>) response.getBody().get("generated_source_return_export_ids")).isEmpty();
+        assertSingleAcceptedFacts(fixture);
+        assertThat(jdbc.queryForMap(
+                        """
+                        SELECT status, last_error FROM app.async_tasks
+                        WHERE task_type='SOURCE_RETURN_DERIVATION'
+                          AND (payload_ref::jsonb->>'shipment_id')::bigint=?
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        fixture.shipmentId()))
+                .containsEntry("status", "PENDING")
+                .containsEntry("last_error", "SOURCE_RETURN_DERIVATION_FAILED");
+    }
+
+    @Test
     void sameKeyReplaysBeforeRemoteAndNewKeyWithSameFactAddsNoTrackingEventOrVersion() {
-        Fixture fixture = submittedShipment("REPLAY", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("REPLAY", List.of(singleItem(1)));
         JdResult result = fullResult(fixture, "JD-WAYBILL-REPLAY-001");
         jd.enqueue(result);
         jd.enqueue(result);
@@ -458,7 +506,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void shipmentItemDriftDuringTheRemoteReadFailsClosedWithoutPersistingPartialFacts() throws Exception {
         Fixture fixture = submittedShipment("ITEM-DRIFT", List.of(
-                singleItem("1"), singleItem("1")));
+                singleItem(1), singleItem(1)));
         jd.enqueue(fullResult(fixture, "JD-WAYBILL-ITEM-DRIFT-001"));
         jd.pauseNextQuery();
 
@@ -497,7 +545,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void prepareAndCompletionRejectionsEachPersistAnIndependentSanitizedAudit() throws Exception {
-        Fixture prepareRejected = submittedShipment("AUDIT-PREPARE-REJECT", List.of(singleItem("1")));
+        Fixture prepareRejected = submittedShipment("AUDIT-PREPARE-REJECT", List.of(singleItem(1)));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET submitted_cargo_snapshot=NULL WHERE shipment_id=?",
                 prepareRejected.shipmentId());
@@ -509,7 +557,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 "business_code", "JD_TRACKING_SUBMITTED_CARGO_MISSING");
 
         Fixture completionRejected = submittedShipment(
-                "AUDIT-COMPLETION-REJECT", List.of(singleItem("1"), singleItem("1")));
+                "AUDIT-COMPLETION-REJECT", List.of(singleItem(1), singleItem(1)));
         jd.enqueue(fullResult(completionRejected, "JD-WAYBILL-AUDIT-COMPLETION"));
         jd.pauseNextQuery();
         var completionRequest = executor.submit(() -> backfill(
@@ -548,8 +596,8 @@ class ShipmentJdTrackingBackfillApiTest {
     }
 
     @Test
-    void pendingPartialAndMissingCargoRowsFailClosedWithoutAdvancingShipmentOrLines() {
-        Fixture pending = submittedShipment("PENDING", List.of(singleItem("1")));
+    void pendingAndPartialRowsRemainWaitingWithoutAdvancingShipmentOrLines() {
+        Fixture pending = submittedShipment("PENDING", List.of(singleItem(1)));
         jd.enqueue(pendingResult(pending));
 
         ResponseEntity<Map> pendingResponse = backfill(
@@ -559,7 +607,7 @@ class ShipmentJdTrackingBackfillApiTest {
         assertThat(pendingResponse.getBody()).containsEntry("poll_status", "PENDING");
         assertWaitingFacts(pending, "PENDING");
 
-        Fixture partial = submittedShipment("PARTIAL", List.of(singleItem("2")));
+        Fixture partial = submittedShipment("PARTIAL", List.of(singleItem(2)));
         jd.enqueue(partialResult(partial));
 
         ResponseEntity<Map> partialResponse = backfill(
@@ -568,26 +616,254 @@ class ShipmentJdTrackingBackfillApiTest {
         assertThat(partialResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(partialResponse.getBody()).containsEntry("poll_status", "PARTIAL");
         assertWaitingFacts(partial, "PARTIAL");
+    }
 
+    @Test
+    void cargoMismatchStopsPollingAndOpensSanitizedReviewUntilHumanResolution() {
         Fixture missing = submittedShipment("MISSING-CARGO", List.of(
-                singleItem("1"), singleItem("1")));
-        jd.enqueue(fullResultWithItems(
+                singleItem(1), singleItem(1)));
+        JdResult mismatched = fullResultWithItems(
                 missing,
                 "JD-WAYBILL-MISSING-001",
-                List.of(remoteItem(missing.cargos().getFirst(), true, null))));
+                List.of(remoteItem(missing.cargos().getFirst(), true, null)));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> remoteData = new LinkedHashMap<>((Map<String, Object>) mismatched.data());
+        remoteData.put("receiverInfo", Map.of(
+                "name", "罗先生",
+                "mobile", "13800000000",
+                "detailAddress", "测试地址1号"));
+        remoteData.put("accessToken", "secret-token-value");
+        jd.enqueue(new JdResult(
+                mismatched.success(),
+                mismatched.businessCode(),
+                mismatched.message(),
+                mismatched.requestId(),
+                remoteData));
 
         ResponseEntity<Map> missingResponse = backfill(
                 missing.shipmentId(), "jd-tracking-missing-001", "req-jd-tracking-missing-001");
 
         assertThat(missingResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(missingResponse.getBody()).containsEntry("poll_status", "QUERY_FAILED");
-        assertWaitingFacts(missing, "QUERY_FAILED");
+        assertThat(missingResponse.getBody())
+                .containsEntry("poll_status", "CONFLICT")
+                .containsEntry("retryable", false)
+                .containsEntry("business_code", "JD_TRACKING_CARGO_MISMATCH")
+                .containsKey("review_case_id");
+        assertWaitingFacts(missing, "CONFLICT");
+
+        int queriesAfterFirstMismatch = jd.queries.get();
+        ResponseEntity<Map> replayed = backfill(
+                missing.shipmentId(), "jd-tracking-missing-001", "req-jd-tracking-missing-replay-001");
+        assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(replayed.getBody())
+                .containsEntry("poll_status", "CONFLICT")
+                .containsEntry("business_code", "JD_TRACKING_CARGO_MISMATCH")
+                .containsEntry("review_case_id", missingResponse.getBody().get("review_case_id"));
+        assertThat(jd.queries).hasValue(queriesAfterFirstMismatch);
+
+        Map<String, Object> review = jdbc.queryForMap(
+                """
+                SELECT id, resolution_version, reason_code, detail::text detail
+                FROM app.review_cases
+                WHERE shipment_id=? AND status='OPEN'
+                """,
+                missing.shipmentId());
+        assertThat(review).containsEntry("reason_code", "JD_TRACKING_CARGO_MISMATCH");
+        assertThat(review.get("detail").toString())
+                .contains("local_cargo", "jd_cargo", "mismatch_fields", "item_count", "order_line")
+                .contains("JD-SKU-000001")
+                .doesNotContain("罗先生", "13800000000", "测试地址1号", "secret-token-value",
+                        "receiverInfo", "accessToken");
+
+        assertThat(backfillService.pollingCandidates(20))
+                .extracting(ShipmentJdTrackingBackfillService.Candidate::shipmentId)
+                .doesNotContain(missing.shipmentId());
+        int queriesAfterMismatch = jd.queries.get();
+        new ShipmentJdTrackingPoller(
+                backfillService, true, 20, java.time.Duration.ZERO).poll();
+        assertThat(jd.queries).hasValue(queriesAfterMismatch);
+
+        ResponseEntity<Map> detail = http.getForEntity(
+                "/api/v1/review-cases/" + review.get("id"), Map.class);
+        assertThat((List<?>) detail.getBody().get("allowed_actions"))
+                .extracting(String::valueOf)
+                .containsExactly("RESOLVE_JD_TRACKING_CONFLICT");
+        ResponseEntity<Map> dismissed = http.exchange(
+                "/api/v1/review-cases/" + review.get("id") + "/dismiss",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "expected_version", ((Number) review.get("resolution_version")).longValue(),
+                        "note", "不能用通用忽略恢复货品冲突"),
+                        writeHeaders("jd-cargo-review-dismiss-001", "req-jd-cargo-review-dismiss-001")),
+                Map.class);
+        assertThat(dismissed.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(dismissed.getBody()).containsEntry("business_code", "REVIEW_DISMISS_NOT_ALLOWED");
+        assertThat(backfillService.pollingCandidates(20))
+                .extracting(ShipmentJdTrackingBackfillService.Candidate::shipmentId)
+                .doesNotContain(missing.shipmentId());
+
+        ResponseEntity<Map> resolved = http.exchange(
+                "/api/v1/review-cases/" + review.get("id") + "/resolve-jd-tracking-conflict",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "expected_version", ((Number) review.get("resolution_version")).longValue(),
+                        "note", "已核对京东货品并完成外部修正，恢复查询"),
+                        writeHeaders("jd-cargo-review-resolve-001", "req-jd-cargo-review-resolve-001")),
+                Map.class);
+        assertThat(resolved.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(backfillService.pollingCandidates(20))
+                .extracting(ShipmentJdTrackingBackfillService.Candidate::shipmentId)
+                .contains(missing.shipmentId());
+    }
+
+    @Test
+    void malformedCargoRowsRemainRetryableAndNeverOpenCargoMismatchReview() {
+        for (int index = 0; index < 2; index++) {
+            Fixture fixture = submittedShipment(
+                    "MALFORMED-CARGO-" + index, List.of(singleItem(1)));
+            Map<String, Object> malformed = new LinkedHashMap<>(
+                    remoteItem(fixture.cargos().getFirst(), true, null));
+            malformed.put("planQuantity", index == 0 ? "not-an-integer" : Map.of("value", 1));
+            List<Map<String, Object>> remote = index == 0
+                    ? List.of(malformed)
+                    : List.of(
+                            remoteItem(fixture.cargos().getFirst(), true, null),
+                            malformed);
+            jd.enqueue(fullResultWithItems(
+                    fixture, "JD-WAYBILL-MALFORMED-CARGO-" + index, remote));
+
+            ResponseEntity<Map> response = backfill(
+                    fixture.shipmentId(),
+                    "jd-tracking-malformed-cargo-" + index,
+                    "req-jd-tracking-malformed-cargo-" + index);
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(response.getBody())
+                    .containsEntry("poll_status", "QUERY_FAILED")
+                    .containsEntry("retryable", true)
+                    .containsEntry("business_code", "JD_TRACKING_RESPONSE_MALFORMED");
+            assertThat(jdbc.queryForObject(
+                    "SELECT count(*) FROM app.review_cases WHERE shipment_id=? AND status='OPEN' "
+                            + "AND reason_code='JD_TRACKING_CARGO_MISMATCH'",
+                    Long.class,
+                    fixture.shipmentId())).isZero();
+            assertThat(backfillService.pollingCandidates(20))
+                    .extracting(ShipmentJdTrackingBackfillService.Candidate::shipmentId)
+                    .contains(fixture.shipmentId());
+        }
+    }
+
+    @Test
+    void queryPreparedBeforeCargoReviewCannotCreateTrackingAfterHumanResolution() throws Exception {
+        Fixture fixture = submittedShipment(
+                "STALE-AFTER-CARGO-REVIEW", List.of(singleItem(1), singleItem(1)));
+        jd.enqueue(fullResult(fixture, "JD-WAYBILL-STALE-VALID"));
+        jd.enqueue(fullResultWithItems(
+                fixture,
+                "JD-WAYBILL-CARGO-MISMATCH",
+                List.of(remoteItem(fixture.cargos().getFirst(), true, null))));
+        jd.pauseNextQuery();
+
+        var stale = executor.submit(() -> backfill(
+                fixture.shipmentId(),
+                "jd-tracking-stale-before-review-001",
+                "req-jd-tracking-stale-before-review-001"));
+        assertThat(jd.awaitQueryEntered()).isTrue();
+
+        ResponseEntity<Map> conflict = backfill(
+                fixture.shipmentId(),
+                "jd-tracking-create-cargo-review-001",
+                "req-jd-tracking-create-cargo-review-001");
+        assertThat(conflict.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(conflict.getBody())
+                .containsEntry("poll_status", "CONFLICT")
+                .containsEntry("business_code", "JD_TRACKING_CARGO_MISMATCH");
+        Map<String, Object> review = jdbc.queryForMap(
+                """
+                SELECT id, resolution_version FROM app.review_cases
+                WHERE shipment_id=? AND status='OPEN'
+                  AND reason_code='JD_TRACKING_CARGO_MISMATCH'
+                """,
+                fixture.shipmentId());
+        ResponseEntity<Map> resolved = http.exchange(
+                "/api/v1/review-cases/" + review.get("id") + "/resolve-jd-tracking-conflict",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "expected_version", ((Number) review.get("resolution_version")).longValue(),
+                        "note", "已完成外部核对，允许新一代查询"),
+                        writeHeaders("jd-cargo-stale-resolve-001", "req-jd-cargo-stale-resolve-001")),
+                Map.class);
+        assertThat(resolved.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        jd.releaseQuery();
+        ResponseEntity<Map> staleResponse = stale.get(40, TimeUnit.SECONDS);
+        assertThat(staleResponse.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(staleResponse.getBody()).containsEntry(
+                "business_code", "JD_TRACKING_BACKFILL_FACTS_CHANGED");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.trackings WHERE shipment_id=?",
+                Long.class,
+                fixture.shipmentId())).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.order_events WHERE order_id=? AND shipment_id=? "
+                        + "AND event_type_code='TRACKING_RECEIVED'",
+                Long.class,
+                fixture.orderId(),
+                fixture.shipmentId())).isZero();
+        assertThat(backfillService.pollingCandidates(20))
+                .extracting(ShipmentJdTrackingBackfillService.Candidate::shipmentId)
+                .contains(fixture.shipmentId());
+    }
+
+    @Test
+    void cargoReviewResolutionUsesTheSameShipmentMutexAsTrackingCompletion() throws Exception {
+        Fixture fixture = submittedShipment(
+                "CARGO-REVIEW-SHIPMENT-MUTEX", List.of(singleItem(1), singleItem(1)));
+        jd.enqueue(fullResultWithItems(
+                fixture,
+                "JD-WAYBILL-CARGO-REVIEW-MUTEX",
+                List.of(remoteItem(fixture.cargos().getFirst(), true, null))));
+        ResponseEntity<Map> conflict = backfill(
+                fixture.shipmentId(),
+                "jd-tracking-cargo-review-mutex-conflict-001",
+                "req-jd-tracking-cargo-review-mutex-conflict-001");
+        assertThat(conflict.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        Map<String, Object> review = jdbc.queryForMap(
+                "SELECT id, resolution_version FROM app.review_cases "
+                        + "WHERE shipment_id=? AND status='OPEN' "
+                        + "AND reason_code='JD_TRACKING_CARGO_MISMATCH'",
+                fixture.shipmentId());
+        try (Connection completionMutex = java.util.Objects.requireNonNull(jdbc.getDataSource()).getConnection()) {
+            completionMutex.setAutoCommit(false);
+            try (var statement = completionMutex.prepareStatement(
+                    "SELECT id FROM app.shipments WHERE id=? FOR NO KEY UPDATE")) {
+                statement.setLong(1, fixture.shipmentId());
+                assertThat(statement.executeQuery().next()).isTrue();
+            }
+
+            var resolution = executor.submit(() -> http.exchange(
+                    "/api/v1/review-cases/" + review.get("id") + "/resolve-jd-tracking-conflict",
+                    HttpMethod.POST,
+                    new HttpEntity<>(Map.of(
+                            "expected_version", ((Number) review.get("resolution_version")).longValue(),
+                            "note", "与轮询完成使用同一 Shipment 互斥锁"),
+                            writeHeaders(
+                                    "jd-cargo-review-shipment-mutex-001",
+                                    "req-jd-cargo-review-shipment-mutex-001")),
+                    Map.class));
+
+            assertThatThrownBy(() -> resolution.get(750, TimeUnit.MILLISECONDS))
+                    .isInstanceOf(TimeoutException.class);
+            completionMutex.commit();
+            assertThat(resolution.get(30, TimeUnit.SECONDS).getStatusCode()).isEqualTo(HttpStatus.OK);
+        }
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"OBJECT", "LIST", "NON_NUMERIC"})
     void malformedRealQuantityFailsClosedInsteadOfBeingTreatedAsPartial(String shape) {
-        Fixture fixture = submittedShipment("MALFORMED-REAL-" + shape, List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("MALFORMED-REAL-" + shape, List.of(singleItem(1)));
         Map<String, Object> item = new LinkedHashMap<>(remoteItems(fixture, true).getFirst());
         item.put("realQuantity", switch (shape) {
             case "OBJECT" -> Map.of("value", 1);
@@ -621,7 +897,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @ParameterizedTest
     @ValueSource(strings = {"UNKNOWN", "CODE_NAME_MISMATCH", "AMBIGUOUS_NAME"})
     void carrierMustResolveToOneConsistentEnabledInternalMasterRecord(String shape) {
-        Fixture fixture = submittedShipment("CARRIER-MASTER-" + shape, List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("CARRIER-MASTER-" + shape, List.of(singleItem(1)));
         JdResult valid = fullResult(fixture, "XY-WAYBILL-CARRIER-MASTER-" + shape);
         Map<String, Object> data = new LinkedHashMap<>((Map<String, Object>) valid.data());
         // 运单前缀用 XY-（无前缀映射），确保 stated 解析失败时不会经前缀兜底命中 JD。
@@ -695,7 +971,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void jdStatedCarrierFallsBackToWaybillPrefixMapping() {
-        Fixture fixture = submittedShipment("PREFIX-FALLBACK", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("PREFIX-FALLBACK", List.of(singleItem(1)));
         JdResult valid = fullResult(fixture, "JDVA46541368239");
         Map<String, Object> data = new LinkedHashMap<>((Map<String, Object>) valid.data());
         // 真实京东形态（2026-08-18 探针实测）：carrierNo=CYS0000010、carrierName=京东配送
@@ -724,7 +1000,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void historicalAuthorityGapsAndCrossClientModeFailBeforeTheRemoteQuery() {
-        Fixture history = submittedShipment("HISTORY-NO-CARGO", List.of(singleItem("1")));
+        Fixture history = submittedShipment("HISTORY-NO-CARGO", List.of(singleItem(1)));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET submitted_cargo_snapshot=NULL WHERE shipment_id=?",
                 history.shipmentId());
@@ -737,7 +1013,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 "business_code", "JD_TRACKING_SUBMITTED_CARGO_MISSING");
         assertThat(jd.queries).hasValue(0);
 
-        Fixture wrongMode = submittedShipment("CLIENT-MODE", List.of(singleItem("1")));
+        Fixture wrongMode = submittedShipment("CLIENT-MODE", List.of(singleItem(1)));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET client_mode='REAL' WHERE shipment_id=?",
                 wrongMode.shipmentId());
@@ -750,7 +1026,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 "business_code", "JD_TRACKING_CLIENT_MODE_CHANGED");
         assertThat(jd.queries).hasValue(0);
 
-        Fixture missingOwner = submittedShipment("HISTORY-NO-OWNER", List.of(singleItem("1")));
+        Fixture missingOwner = submittedShipment("HISTORY-NO-OWNER", List.of(singleItem(1)));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET submitted_owner_no=NULL WHERE shipment_id=?",
                 missingOwner.shipmentId());
@@ -763,22 +1039,23 @@ class ShipmentJdTrackingBackfillApiTest {
                 "business_code", "JD_TRACKING_SUBMITTED_OWNER_MISSING");
         assertThat(jd.queries).hasValue(0);
 
-        Fixture missingPin = submittedShipment("CURRENT-NO-PIN", List.of(singleItem("1")));
+        Fixture missingPin = submittedShipment("HISTORY-NO-PIN", List.of(singleItem(1)));
         jdbc.update(
-                "UPDATE app.fulfillment_providers SET config=config - 'pin' WHERE provider_code='JD'");
+                "UPDATE app.shipment_jd_outbounds SET submitted_pin=NULL WHERE shipment_id=?",
+                missingPin.shipmentId());
 
         ResponseEntity<Map> missingPinResponse = backfill(
                 missingPin.shipmentId(), "jd-tracking-pin-001", "req-jd-tracking-pin-001");
 
         assertThat(missingPinResponse.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(missingPinResponse.getBody()).containsEntry(
-                "business_code", "JD_TRACKING_PIN_CONFIG_MISSING");
+                "business_code", "JD_TRACKING_SUBMITTED_PIN_MISSING");
         assertThat(jd.queries).hasValue(0);
     }
 
     @Test
     void queryFailurePersistsSanitizedDiagnosticsAndA_newKeyCanRetrySuccessfully() {
-        Fixture fixture = submittedShipment("QUERY-RETRY", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("QUERY-RETRY", List.of(singleItem(1)));
         jd.enqueue(new JdResult(
                 false,
                 "SYNTHETIC_QUERY_FAILURE",
@@ -830,7 +1107,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void thrownConnectorFailureBecomesRetryableSanitizedDiagnosticAndAudit() {
-        Fixture fixture = submittedShipment("QUERY-THROWS", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("QUERY-THROWS", List.of(singleItem(1)));
 
         ResponseEntity<Map> response = backfill(
                 fixture.shipmentId(), "jd-tracking-query-throws", "req-jd-tracking-query-throws");
@@ -860,7 +1137,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @ParameterizedTest
     @ValueSource(strings = {"OBJECT_WAYBILL", "LIST_STATUS", "OVERSIZE_CARRIER", "EXCESS_CANDIDATES"})
     void malformedRemoteShapesFailClosedWithoutAuthoritativeOrSensitiveFacts(String shape) {
-        Fixture fixture = submittedShipment("MALFORMED-" + shape, List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("MALFORMED-" + shape, List.of(singleItem(1)));
         JdResult valid = fullResult(fixture, "JD-WAYBILL-MALFORMED");
         @SuppressWarnings("unchecked")
         Map<String, Object> data = new LinkedHashMap<>((Map<String, Object>) valid.data());
@@ -913,7 +1190,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void splitOrConflictingWaybillCreatesAndReusesOneBlockingReviewCase() {
-        Fixture fixture = submittedShipment("SPLIT", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("SPLIT", List.of(singleItem(1)));
         JdResult split = splitResult(fixture);
         jd.enqueue(split);
         jd.enqueue(split);
@@ -943,7 +1220,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 .contains("JD-SPLIT-001", "JD-SPLIT-002")
                 .doesNotContain("receiver", "phone", "address", "token", "secret");
 
-        Fixture localConflict = submittedShipment("LOCAL-CONFLICT", List.of(singleItem("1")));
+        Fixture localConflict = submittedShipment("LOCAL-CONFLICT", List.of(singleItem(1)));
         jdbc.update(
                 "UPDATE app.shipment_items SET shipped_quantity=instructed_quantity WHERE shipment_id=?",
                 localConflict.shipmentId());
@@ -977,7 +1254,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void operatorCanResolveJdTrackingConflictWithVersionedIdempotentAuditedAction() {
-        Fixture fixture = submittedShipment("RESOLVE-CONFLICT", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("RESOLVE-CONFLICT", List.of(singleItem(1)));
         jd.enqueue(splitResult(fixture));
 
         ResponseEntity<Map> conflict = backfill(
@@ -1050,7 +1327,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void terminalExceptionCaseStopsPollingUntilAVersionedSafeHumanResolution() {
-        Fixture fixture = submittedShipment("RESOLVE-TERMINAL-EXCEPTION", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("RESOLVE-TERMINAL-EXCEPTION", List.of(singleItem(1)));
         jd.enqueue(statusResult(fixture, "10028"));
 
         ResponseEntity<Map> conflict = backfill(
@@ -1103,7 +1380,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void reviewedTerminalExceptionAfterTrackingCannotQueryOrReopenTheCase() {
         Fixture fixture = submittedShipment(
-                "RESOLVE-TERMINAL-AFTER-TRACKING", List.of(singleItem("1")));
+                "RESOLVE-TERMINAL-AFTER-TRACKING", List.of(singleItem(1)));
         jd.enqueue(fullResult(fixture, "JD-WAYBILL-BEFORE-TERMINAL-REVIEW"));
         assertThat(backfill(
                 fixture.shipmentId(),
@@ -1159,7 +1436,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void wrongMerchantReferenceAndPiiRichPayloadAreRejectedWithoutRawPersistence() {
-        Fixture fixture = submittedShipment("WRONG-REFERENCE", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("WRONG-REFERENCE", List.of(singleItem(1)));
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("erpDeliveryNo", "ANOTHER-MERCHANT-REFERENCE");
         data.put("deliveryNo", fixture.jdDeliveryNo());
@@ -1193,7 +1470,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @Test
     void concurrentDifferentKeysForTheSameFactConserveOneTrackingEventAndVersion() throws Exception {
         Fixture fixture = submittedShipment("CONCURRENT", List.of(
-                singleItem("1"), singleItem("1")));
+                singleItem(1), singleItem(1)));
         JdResult full = fullResult(fixture, "JD-WAYBILL-CONCURRENT-001");
         jd.enqueue(full);
         jd.enqueue(full);
@@ -1220,7 +1497,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @ValueSource(strings = {"PENDING", "PARTIAL"})
     void trackedTerminalAbsorbsOnlyLateNonAuthoritativeProgressWithoutRegression(
             String lateResultKind) throws Exception {
-        Fixture fixture = submittedShipment("TERMINAL-" + lateResultKind, List.of(singleItem("2")));
+        Fixture fixture = submittedShipment("TERMINAL-" + lateResultKind, List.of(singleItem(2)));
         JdResult late = switch (lateResultKind) {
             case "PENDING" -> pendingResult(fixture);
             case "PARTIAL" -> partialResult(fixture);
@@ -1270,7 +1547,7 @@ class ShipmentJdTrackingBackfillApiTest {
     @ValueSource(strings = {"DIFFERENT_WAYBILL", "SPLIT", "QUERY_FAILED"})
     void trackedTerminalPreservesAcceptedFactButSurfacesLateConflictOrFailure(
             String lateResultKind) throws Exception {
-        Fixture fixture = submittedShipment("TRACKED-EVIDENCE-" + lateResultKind, List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("TRACKED-EVIDENCE-" + lateResultKind, List.of(singleItem(1)));
         JdResult late = switch (lateResultKind) {
             case "DIFFERENT_WAYBILL" -> fullResult(fixture, "JD-WAYBILL-DIFFERENT-LATE");
             case "SPLIT" -> splitResult(fixture);
@@ -1364,7 +1641,7 @@ class ShipmentJdTrackingBackfillApiTest {
             String jdStatus, boolean alreadyTracked) {
         Fixture fixture = submittedShipment(
                 "TERMINAL-EXCEPTION-" + jdStatus + "-" + alreadyTracked,
-                List.of(singleItem("1")));
+                List.of(singleItem(1)));
         String acceptedWaybill = "JD-WAYBILL-ACCEPTED-" + jdStatus;
         if (alreadyTracked) {
             jd.enqueue(fullResult(fixture, acceptedWaybill));
@@ -1432,7 +1709,7 @@ class ShipmentJdTrackingBackfillApiTest {
     // 真正的发货前状态是 10010（见 pendingResult fixture）。
     @ValueSource(strings = {"10027", "10029"})
     void nonTerminalStatusesRemainPendingWithoutReviewCase(String jdStatus) {
-        Fixture fixture = submittedShipment("NON-TERMINAL-" + jdStatus, List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("NON-TERMINAL-" + jdStatus, List.of(singleItem(1)));
         jd.enqueue(statusResult(fixture, jdStatus));
 
         ResponseEntity<Map> response = backfill(
@@ -1454,7 +1731,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void openConflictCaseBlocksALateFullResultWithoutCreatingContradictoryTracking() throws Exception {
-        Fixture fixture = submittedShipment("CONFLICT-BEFORE-FULL", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("CONFLICT-BEFORE-FULL", List.of(singleItem(1)));
         jd.enqueue(fullResult(fixture, "JD-WAYBILL-LATE-FULL"));
         jd.enqueue(splitResult(fixture));
         jd.pauseNextQuery();
@@ -1499,7 +1776,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void disabledSchedulerDoesNotPollSubmittedShipments() {
-        submittedShipment("SCHEDULER-OFF", List.of(singleItem("1")));
+        submittedShipment("SCHEDULER-OFF", List.of(singleItem(1)));
 
         poller.poll();
 
@@ -1508,7 +1785,7 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void enabledSchedulerUsesTheSameBackfillServiceAndHonorsPendingFacts() {
-        Fixture fixture = submittedShipment("SCHEDULER-ON", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("SCHEDULER-ON", List.of(singleItem(1)));
         jd.enqueue(pendingResult(fixture));
 
         new ShipmentJdTrackingPoller(backfillService, true, 20, java.time.Duration.ZERO).poll();
@@ -1523,11 +1800,11 @@ class ShipmentJdTrackingBackfillApiTest {
 
     @Test
     void schedulerFiltersCandidatesByCurrentClientModeBeforeApplyingBatchLimit() {
-        Fixture wrongMode = submittedShipment("SCHEDULER-WRONG-MODE", List.of(singleItem("1")));
+        Fixture wrongMode = submittedShipment("SCHEDULER-WRONG-MODE", List.of(singleItem(1)));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET client_mode='REAL' WHERE shipment_id=?",
                 wrongMode.shipmentId());
-        Fixture currentMode = submittedShipment("SCHEDULER-CURRENT-MODE", List.of(singleItem("1")));
+        Fixture currentMode = submittedShipment("SCHEDULER-CURRENT-MODE", List.of(singleItem(1)));
         jd.enqueue(pendingResult(currentMode));
 
         new ShipmentJdTrackingPoller(backfillService, true, 1, java.time.Duration.ZERO).poll();
@@ -1545,28 +1822,29 @@ class ShipmentJdTrackingBackfillApiTest {
     }
 
     @Test
-    void schedulerSkipsPermanentlyIneligibleOwnerAndCurrentPinRowsBeforeApplyingBatchLimit() {
+    void schedulerSkipsPermanentlyIneligibleOwnerAndFrozenPinRowsBeforeApplyingBatchLimit() {
         Fixture missingOwner = submittedShipment(
-                "SCHEDULER-MISSING-OWNER", List.of(singleItem("1")));
+                "SCHEDULER-MISSING-OWNER", List.of(singleItem(1)));
         jdbc.update(
                 "UPDATE app.shipment_jd_outbounds SET submitted_owner_no=NULL WHERE shipment_id=?",
                 missingOwner.shipmentId());
         Fixture eligible = submittedShipment(
-                "SCHEDULER-ELIGIBLE-AFTER-MISSING-OWNER", List.of(singleItem("1")));
+                "SCHEDULER-ELIGIBLE-AFTER-MISSING-OWNER", List.of(singleItem(1)));
 
         assertThat(backfillService.pollingCandidates(1))
                 .extracting(ShipmentJdTrackingBackfillService.Candidate::shipmentId)
                 .containsExactly(eligible.shipmentId());
 
         jdbc.update(
-                "UPDATE app.fulfillment_providers SET config=config - 'pin' WHERE provider_code='JD'");
+                "UPDATE app.shipment_jd_outbounds SET submitted_pin=NULL WHERE shipment_id=?",
+                eligible.shipmentId());
 
         assertThat(backfillService.pollingCandidates(20)).isEmpty();
     }
 
     @Test
     void concurrentSchedulersUsePersistedCandidateGenerationAcrossConfigDrift() throws Exception {
-        Fixture fixture = submittedShipment("SCHEDULER-GENERATION", List.of(singleItem("1")));
+        Fixture fixture = submittedShipment("SCHEDULER-GENERATION", List.of(singleItem(1)));
         jd.enqueue(pendingResult(fixture));
         jd.enqueue(pendingResult(fixture));
         jd.pauseNextQuery();
@@ -1618,6 +1896,49 @@ class ShipmentJdTrackingBackfillApiTest {
                 String.valueOf(submitted.getBody().get("jd_delivery_no")),
                 fact.orderLineIds(),
                 cargos);
+    }
+
+    private void attachMissingSourceArtifact(Fixture fixture) {
+        String token = UUID.randomUUID().toString().replace("-", "");
+        String missingFile = Path.of(
+                        System.getProperty("java.io.tmpdir"),
+                        "zimu-jd-source-return-missing-" + token + ".csv")
+                .toString();
+        long batchId = jdbc.queryForObject(
+                """
+                INSERT INTO app.import_batches
+                    (batch_no, batch_type, source_channel, template_family, template_version,
+                     template_fingerprint, original_file_name, content_sha256, file_ref,
+                     status, uploaded_by, confirmed_at, confirmed_by)
+                VALUES (?, 'SOURCE_ORDER', 'FEIXIANG', 'FEIXIANG', 'v1-csv',
+                        'feixiang-v1-csv', 'missing-source.csv', repeat('d', 64), ?,
+                        'COMPLETED', 'shipment-jd-test', CURRENT_TIMESTAMP, 'shipment-jd-test')
+                RETURNING id
+                """,
+                Long.class,
+                "JD-DERIVE-FAIL-" + token.substring(0, 16),
+                missingFile);
+        long rawRowId = jdbc.queryForObject(
+                """
+                INSERT INTO app.raw_import_rows
+                    (import_batch_id, sheet_name, sheet_index, row_index, raw_cells,
+                     source_order_ref, status, order_id, order_line_id)
+                VALUES (?, '发货清单', 0, 1, '{}'::jsonb, ?, 'ACCEPTED', ?, ?)
+                RETURNING id
+                """,
+                Long.class,
+                batchId,
+                "JD-DERIVE-FAIL-" + token.substring(0, 12),
+                fixture.orderId(),
+                fixture.orderLineIds().getFirst());
+        jdbc.update(
+                """
+                INSERT INTO app.raw_import_row_order_lines
+                    (raw_import_row_id, order_line_id, partition_no)
+                VALUES (?, ?, 1)
+                """,
+                rawRowId,
+                fixture.orderLineIds().getFirst());
     }
 
     private Map<String, Object> cargoSnapshot(Map<String, Object> cargo) {
@@ -1808,7 +2129,7 @@ class ShipmentJdTrackingBackfillApiTest {
                 lines.stream().map(row -> ((Number) row.get("order_line_id")).longValue()).toList());
     }
 
-    private Map<String, Object> singleItem(String quantity) {
+    private Map<String, Object> singleItem(int quantity) {
         return Map.of(
                 "line_type", "SINGLE",
                 "source_sku_ref", "WECOM-SKU-JD-001",

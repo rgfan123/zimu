@@ -5,6 +5,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -20,12 +22,19 @@ import org.springframework.web.multipart.MultipartFile;
 @RestController
 class TrackingFileController {
 
+    private static final Logger log = LoggerFactory.getLogger(TrackingFileController.class);
+
     private final TrackingFileService service;
     private final SourceReturnPushService pushService;
+    private final SourceReturnDerivationRunner sourceReturnDerivations;
 
-    TrackingFileController(TrackingFileService service, SourceReturnPushService pushService) {
+    TrackingFileController(
+            TrackingFileService service,
+            SourceReturnPushService pushService,
+            SourceReturnDerivationRunner sourceReturnDerivations) {
         this.service = service;
         this.pushService = pushService;
+        this.sourceReturnDerivations = sourceReturnDerivations;
     }
 
     @PostMapping(path = "/api/v1/fulfillment-exports/{export_id}/tracking-imports", consumes = "multipart/form-data")
@@ -36,10 +45,25 @@ class TrackingFileController {
             @RequestParam(value = "parent_import_batch_id", required = false) String parentBatchId,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestHeader(value = "X-Operator", required = false) String operator) throws IOException {
-        return ResponseEntity.status(201).body(service.upload(
+        TrackingFileService.TrackingUploadResult uploaded = service.upload(
                 WriteCommands.parseIdentifier(exportId), file.getBytes(), file.getOriginalFilename(), importMode,
                 parentBatchId == null ? null : WriteCommands.parseIdentifier(parentBatchId),
-                WriteCommands.requireIdempotencyKey(idempotencyKey), WriteCommands.writeContext(operator)));
+                WriteCommands.requireIdempotencyKey(idempotencyKey), WriteCommands.writeContext(operator));
+        Map<String, Object> result = uploaded.body();
+        // upload 返回即表示 Tracking 事实已提交；回填派生失败只留任务重试，不改写 201。
+        try {
+            sourceReturnDerivations.runDue(uploaded.sourceReturnTaskIds());
+            long batchId = Long.parseLong(result.get("id").toString());
+            result.put(
+                    "generated_source_return_export_ids",
+                    service.generatedSourceReturnIdsForTrackingBatch(batchId));
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "Source return derivation fast path deferred after tracking batch commit ({})",
+                    exception.getClass().getSimpleName());
+            log.debug("Tracking upload source return fast path failed", exception);
+        }
+        return ResponseEntity.status(201).body(result);
     }
 
     @GetMapping("/api/v1/tracking-imports/{batch_id}")

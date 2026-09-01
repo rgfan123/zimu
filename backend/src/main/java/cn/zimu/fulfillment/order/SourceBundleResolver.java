@@ -220,7 +220,7 @@ public class SourceBundleResolver {
                                 resultSet.getString("product_name"),
                                 resultSet.getString("specification"),
                                 resultSet.getString("unit"),
-                                resultSet.getBigDecimal("quantity_per_bundle").toPlainString())),
+                                resultSet.getInt("quantity_per_bundle"))),
                 bundleId);
         if (components.isEmpty()) {
             throw BusinessException.unprocessable("BUNDLE_BOM_EMPTY", "礼包档案无 BOM，不能展开");
@@ -275,13 +275,9 @@ public class SourceBundleResolver {
     }
 
     /** 礼包行数量必须为正整数：三条导入路径共用同一判据与错误码，拒绝而不是降级。 */
-    public static void requireIntegerQuantityForBundle(String quantity) {
-        try {
-            if (quantity == null || new java.math.BigDecimal(quantity).intValueExact() <= 0) {
-                throw BusinessException.unprocessable("BUNDLE_QUANTITY_NOT_INTEGER", "礼包行数量必须为正整数");
-            }
-        } catch (ArithmeticException | NumberFormatException exception) {
-            throw BusinessException.unprocessable("BUNDLE_QUANTITY_NOT_INTEGER", "礼包行数量必须为整数");
+    public static void requireIntegerQuantityForBundle(Integer quantity) {
+        if (quantity == null || quantity <= 0) {
+            throw BusinessException.unprocessable("BUNDLE_QUANTITY_NOT_INTEGER", "礼包行数量必须为正整数");
         }
     }
 

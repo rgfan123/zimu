@@ -142,7 +142,7 @@ public interface FeixiangShipmentAttemptStore {
     record ShipmentAttemptPayload(
             String sourceRef,
             String subOrderRef,
-            BigDecimal sourceUnitQuantity,
+            long sourceUnitQuantity,
             String carrierOutputValue,
             String trackingNo,
             String expectedPlatformEffectHash) {
@@ -151,7 +151,7 @@ public interface FeixiangShipmentAttemptStore {
             sourceRef = sourceRef == null ? "" : sourceRef;
             subOrderRef = requireNonBlank(subOrderRef, "subOrderRef");
             trackingNo = requireNonBlank(trackingNo, "trackingNo");
-            sourceUnitQuantity = Objects.requireNonNull(sourceUnitQuantity, "sourceUnitQuantity");
+            if (sourceUnitQuantity <= 0) throw new IllegalArgumentException("sourceUnitQuantity 必须为正整数");
             carrierOutputValue = requireNonBlank(carrierOutputValue, "carrierOutputValue");
             expectedPlatformEffectHash =
                     expectedPlatformEffectHash == null ? "" : expectedPlatformEffectHash;

@@ -116,10 +116,15 @@ class SourceReturnHeldWhileRowsUndecidedApiTest {
 
         @Override
         public JdResult queryOutboundOrder(Map<String, Object> request) {
+            if (Integer.valueOf(0).equals(request.get("deliveryItemFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryPackageFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryStatusFlag"))) {
+                return super.queryOutboundOrder(request);
+            }
             outboundQueryCalls.incrementAndGet();
             JdResult value = outboundResult;
             if (value == null) {
-                return new JdResult(false, "3003", "出库单不存在", "jd-query-hold-empty", Map.of());
+                return super.queryOutboundOrder(request);
             }
             return value;
         }

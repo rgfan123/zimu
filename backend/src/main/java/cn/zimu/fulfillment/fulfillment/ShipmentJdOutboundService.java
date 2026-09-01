@@ -16,6 +16,7 @@ import cn.zimu.fulfillment.fulfillment.JdShipmentSubmissionPlan.Blocker;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -37,9 +38,10 @@ import org.springframework.transaction.annotation.Transactional;
  * 一个 Shipment 及其全部 ShipmentItems 聚合为唯一一张京东出库单请求（addSoOrder），
  * 同一发货批次内的多个 Fulfillment 共享一个京东出库引用。
  *
- * <p>商户侧出库引用（erpDeliveryNo = {@code shipments.outbound_order_no}，系统生成的稳定出库单号）、
- * 同步状态、失败阶段与重试信息由 Shipment 级京东出库集成记录（app.shipment_jd_outbounds，1:1）
- * 承载，不写入 Fulfillment，也不写入或扩展 OrderLine {@code processing_stage}（权威业务阶段保持原值集合）。
+ * <p>京东商家出库引用（{@code shipment_jd_outbounds.erp_delivery_no}，ZIMU-SO 独占命名空间）
+ * 与本地导出号（{@code shipments.outbound_order_no}）分离；同步状态、失败阶段与重试信息由
+ * Shipment 级京东出库集成记录（app.shipment_jd_outbounds，1:1）承载，不写入 Fulfillment，
+ * 也不写入或扩展 OrderLine {@code processing_stage}（权威业务阶段保持原值集合）。
  *
  * <p>防重复建单：集成记录对 shipment_id / erp_delivery_no 的唯一约束 + 业务校验（已 SUBMITTED 拒绝、
  * 请求哈希漂移拒绝）；失败后同一 Shipment 可重试，重试只更新同一条记录，不产生第二张京东出库单。
@@ -63,10 +65,12 @@ public class ShipmentJdOutboundService {
     private final AuditLogService audits;
     private final ShipmentJdOutboundPreparer preparer;
     private final ShipmentJdOutboundExecutor executor;
+    private final ShipmentJdErpDeliveryNoPreflight erpDeliveryNoPreflight;
     private final ShipmentJdOutboundAuditService auditService;
     private final JdReceiverAddressNormalizer addressNormalizer;
     private final Set<String> authorizedOperators;
     private final String clientMode;
+    private final Duration outboundIdempotencyLease;
 
     public ShipmentJdOutboundService(
             JdbcTemplate jdbc,
@@ -77,10 +81,12 @@ public class ShipmentJdOutboundService {
             AuditLogService audits,
             ShipmentJdOutboundPreparer preparer,
             ShipmentJdOutboundExecutor executor,
+            ShipmentJdErpDeliveryNoPreflight erpDeliveryNoPreflight,
             ShipmentJdOutboundAuditService auditService,
             JdReceiverAddressNormalizer addressNormalizer,
             @Value("${app.jd.outbound-authorized-operators:}") String authorizedOperators,
-            @Value("${app.jd.client-mode:MOCK}") String clientMode) {
+            @Value("${app.jd.client-mode:MOCK}") String clientMode,
+            @Value("${app.jd.outbound-idempotency-lease:PT5M}") Duration outboundIdempotencyLease) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.idempotency = idempotency;
@@ -89,6 +95,7 @@ public class ShipmentJdOutboundService {
         this.audits = audits;
         this.preparer = preparer;
         this.executor = executor;
+        this.erpDeliveryNoPreflight = erpDeliveryNoPreflight;
         this.auditService = auditService;
         this.addressNormalizer = addressNormalizer;
         this.authorizedOperators = java.util.Arrays.stream(authorizedOperators.split(","))
@@ -97,6 +104,7 @@ public class ShipmentJdOutboundService {
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         this.clientMode = "REAL".equalsIgnoreCase(clientMode == null ? "" : clientMode.trim())
                 ? "REAL" : "MOCK";
+        this.outboundIdempotencyLease = outboundIdempotencyLease;
     }
 
     public IdempotentResult<Map<String, Object>> submit(
@@ -104,19 +112,18 @@ public class ShipmentJdOutboundService {
         requireAuthorized(shipmentId, context);
         JdShipmentSubmissionPlan prepared = preparer.planInNewTransaction(shipmentId);
         try {
-            IdempotentResult<Map<String, Object>> result = idempotency.executeWithExternalWriteIntent(
+            IdempotentResult<Map<String, Object>> result = idempotency.executeWithPreparedExternalWriteIntent(
                     ShipmentJdOutboundAuditService.SCOPE,
                     WriteCommands.requireIdempotencyKey(idempotencyKey),
                     Map.of(
                             "shipment_id", shipmentId,
-                            "shipment_version", prepared.shipmentVersion(),
-                            "request_hash", prepared.requestHash(),
-                            "client_mode", clientMode,
                             "command", command),
                     201,
-                    () -> persistSubmitIntent(prepared, context),
-                    (ShipmentJdOutboundExecutor.SubmitIntent intent) ->
-                            executor.executeSubmit(intent, idempotencyKey, context),
+                    outboundIdempotencyLease,
+                    () -> erpDeliveryNoPreflight.prepare(prepared),
+                    (JdShipmentSubmissionPlan available) -> persistSubmitIntent(available, context),
+                    (intent, activeClaim) ->
+                            executor.executeSubmit(intent, idempotencyKey, context, activeClaim),
                     (ShipmentJdOutboundExecutor.SubmitIntent intent,
                      ShipmentJdOutboundExecutor.SubmitExternalResult external) ->
                             completeSubmit(intent, external, context));
@@ -138,7 +145,7 @@ public class ShipmentJdOutboundService {
 
     /**
      * 京东出库请求预览：返回脱敏展示请求、逐字段来源与所有可诊断阻断项。
-     * 该方法不依赖也不调用 {@link JdWriteOpsService}，因此不可能触发 addSoOrder。
+     * 该方法不依赖也不调用 {@link JdSalesOutboundWriter}，因此不可能触发 addSoOrder。
      */
     @Transactional
     public Map<String, Object> preview(long shipmentId, CommandContext context) {
@@ -368,52 +375,167 @@ public class ShipmentJdOutboundService {
     private ShipmentJdOutboundExecutor.SubmitIntent persistSubmitIntent(
             JdShipmentSubmissionPlan prepared, CommandContext context) {
         JdShipmentSubmissionPlan current = preparer.plan(prepared.shipmentId());
-        if (current.shipmentVersion() != prepared.shipmentVersion()
-                || !Objects.equals(current.requestHash(), prepared.requestHash())) {
-            throw BusinessException.conflict(
-                    "JD_SHIPMENT_OUTBOUND_PREVIEW_CHANGED",
-                    "发货批次在提交意图落盘前已变化，请刷新预览后重试");
-        }
-        rejectBlockedPlan(current, context);
-        if (current.priorSubmission() != null
-                && current.priorSubmission().requestHash() != null
-                && !current.priorSubmission().requestHash().equals(current.requestHash())) {
-            throw BusinessException.conflict(
-                    "JD_SHIPMENT_OUTBOUND_REQUEST_CHANGED",
-                    "同一发货批次的出库请求已发生变化（数量/商品/收货信息），禁止在失败记录上以不同请求重试");
-        }
         JdShipmentSubmissionPlan.PriorSubmission previous = current.priorSubmission();
-        if (previous != null
-                && previous.requiresReconciliation()
-                && !clientMode.equals(previous.clientMode())) {
-            String code = "JD_SHIPMENT_OUTBOUND_CLIENT_MODE_CHANGED";
-            String message = "未决京东写入只能在原客户端模式下对账，禁止跨 MOCK/REAL 模式重试";
-            auditService.auditRejectedSubmit(
-                    current.shipmentId(), current.orderId(), context, 409, code, message, List.of(code));
-            throw BusinessException.conflict(code, message);
+        boolean reconciliationOnly = previous != null && previous.requiresReconciliation();
+        FrozenSubmission frozen;
+        int attempt;
+        if (reconciliationOnly) {
+            // Point-in-time Provider/SKU/Shipment facts may have drifted since the uncertain write.
+            // Reconciliation must consume only the row-locked durable intent and must never backfill
+            // missing historical authority from today's configuration.
+            frozen = loadFrozenSubmissionForUpdate(current.shipmentId());
+            if (!clientMode.equals(frozen.clientMode())) {
+                String code = "JD_SHIPMENT_OUTBOUND_CLIENT_MODE_CHANGED";
+                String message = "未决京东写入只能在原客户端模式下对账，禁止跨 MOCK/REAL 模式重试";
+                auditService.auditRejectedSubmit(
+                        current.shipmentId(), current.orderId(), context, 409, code, message, List.of(code));
+                throw BusinessException.conflict(code, message);
+            }
+            requireFrozenReconciliationFacts(current, frozen, context);
+            if (ShipmentJdOutboundPreparer.SYNC_STATUS_SUBMITTED.equals(frozen.syncStatus())) {
+                throw BusinessException.conflict(
+                        "JD_SHIPMENT_OUTBOUND_ALREADY_SUBMITTED", "该发货批次已提交京东出库单，禁止重复提交");
+            }
+            attempt = frozen.retryCount() + 1;
+            int updated = jdbc.update(
+                    """
+                    UPDATE app.shipment_jd_outbounds
+                    SET sync_status='SUBMITTING', failure_phase=NULL, retry_count=?,
+                        last_error_code=NULL, last_error_message=NULL, updated_at=CURRENT_TIMESTAMP
+                    WHERE shipment_id=? AND sync_status IN ('SUBMITTING', 'SYNC_FAILED')
+                    """,
+                    attempt,
+                    current.shipmentId());
+            if (updated != 1) {
+                throw BusinessException.conflict(
+                        "JD_SHIPMENT_OUTBOUND_STATE_CHANGED",
+                        "京东未决记录已被其他请求更新，请刷新后查看最新状态");
+            }
+        } else {
+            if (current.shipmentVersion() != prepared.shipmentVersion()
+                    || !Objects.equals(current.requestHash(), prepared.requestHash())) {
+                throw BusinessException.conflict(
+                        "JD_SHIPMENT_OUTBOUND_PREVIEW_CHANGED",
+                        "发货批次在提交意图落盘前已变化，请刷新预览后重试");
+            }
+            rejectBlockedPlan(current, context);
+            if (previous != null && retryFactsChanged(previous, current)) {
+                throw BusinessException.conflict(
+                        "JD_SHIPMENT_OUTBOUND_REQUEST_CHANGED",
+                        "同一发货批次的出库请求已发生变化（数量/商品/收货信息），禁止在失败记录上以不同请求重试");
+            }
+            if (!JdErpDeliveryNoAllocator.belongsToOwnedNamespace(current.erpDeliveryNo())) {
+                throw BusinessException.conflict(
+                        "JD_ERP_DELIVERY_NO_NAMESPACE_REQUIRED",
+                        "京东外部单号不在 ZIMU-SO 独占命名空间，禁止创建出库单");
+            }
+            attempt = (previous == null ? 0 : previous.retryCount()) + 1;
+            List<Map<String, Object>> frozenCargos = submittedCargoSnapshot(cargosOf(current.request()));
+            jdbc.update(
+                    """
+                    INSERT INTO app.shipment_jd_outbounds
+                        (shipment_id, erp_delivery_no, sync_status, failure_phase,
+                         retry_count, last_error_code, last_error_message, request_hash,
+                         business_facts_hash, client_mode, submitted_pin, submitted_owner_no,
+                         submitted_warehouse_no, submitted_cargo_snapshot)
+                    VALUES (?, ?, 'SUBMITTING', NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?::jsonb)
+                    ON CONFLICT (shipment_id) DO UPDATE SET
+                        erp_delivery_no = EXCLUDED.erp_delivery_no,
+                        sync_status = 'SUBMITTING', failure_phase = NULL,
+                        retry_count = EXCLUDED.retry_count,
+                        last_error_code = NULL, last_error_message = NULL,
+                        request_hash = EXCLUDED.request_hash,
+                        business_facts_hash = EXCLUDED.business_facts_hash,
+                        client_mode = EXCLUDED.client_mode,
+                        submitted_pin = COALESCE(shipment_jd_outbounds.submitted_pin, EXCLUDED.submitted_pin),
+                        submitted_owner_no = COALESCE(
+                            shipment_jd_outbounds.submitted_owner_no, EXCLUDED.submitted_owner_no),
+                        submitted_warehouse_no = COALESCE(
+                            shipment_jd_outbounds.submitted_warehouse_no, EXCLUDED.submitted_warehouse_no),
+                        submitted_cargo_snapshot = COALESCE(
+                            shipment_jd_outbounds.submitted_cargo_snapshot,
+                            EXCLUDED.submitted_cargo_snapshot),
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    current.shipmentId(), current.erpDeliveryNo(), attempt,
+                    current.requestHash(), current.businessFactsHash(), clientMode,
+                    current.pin(), current.ownerNo(),
+                    ShipmentJdOutboundPreparer.text(current.request().get("warehouseNo")),
+                    json(frozenCargos));
+            frozen = loadFrozenSubmissionForUpdate(current.shipmentId());
+            if (!frozen.facts().valid()) {
+                throw new IllegalStateException("new JD outbound intent did not persist complete frozen facts");
+            }
         }
-        int attempt = (previous == null ? 0 : previous.retryCount()) + 1;
-        jdbc.update(
-                """
-                INSERT INTO app.shipment_jd_outbounds
-                    (shipment_id, erp_delivery_no, sync_status, failure_phase,
-                     retry_count, last_error_code, last_error_message, request_hash, client_mode)
-                VALUES (?, ?, 'SUBMITTING', NULL, ?, NULL, NULL, ?, ?)
-                ON CONFLICT (shipment_id) DO UPDATE SET
-                    erp_delivery_no = EXCLUDED.erp_delivery_no,
-                    sync_status = 'SUBMITTING', failure_phase = NULL,
-                    retry_count = EXCLUDED.retry_count,
-                    last_error_code = NULL, last_error_message = NULL,
-                    request_hash = EXCLUDED.request_hash,
-                    client_mode = EXCLUDED.client_mode,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                current.shipmentId(), current.erpDeliveryNo(), attempt, current.requestHash(), clientMode);
         auditService.recordSubmitIntent(current, context, attempt);
         return new ShipmentJdOutboundExecutor.SubmitIntent(
                 current,
                 attempt,
-                clientMode);
+                frozen.clientMode(),
+                frozen.facts(),
+                frozen.requestHash(),
+                frozen.businessFactsHash(),
+                reconciliationOnly);
+    }
+
+    private FrozenSubmission loadFrozenSubmissionForUpdate(long shipmentId) {
+        FrozenSubmission frozen = jdbc.query(
+                """
+                SELECT erp_delivery_no, jd_delivery_no, sync_status, retry_count, client_mode,
+                       request_hash, business_facts_hash, submitted_pin, submitted_owner_no,
+                       submitted_warehouse_no, submitted_cargo_snapshot::text cargo_snapshot
+                FROM app.shipment_jd_outbounds
+                WHERE shipment_id=?
+                FOR UPDATE
+                """,
+                rs -> {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    Object cargos;
+                    try {
+                        String json = rs.getString("cargo_snapshot");
+                        cargos = json == null
+                                ? List.of()
+                                : objectMapper.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+                    } catch (Exception exception) {
+                        cargos = List.of();
+                    }
+                    return new FrozenSubmission(
+                            JdOutboundReadbackVerifier.frozen(
+                                    rs.getString("erp_delivery_no"),
+                                    rs.getString("jd_delivery_no"),
+                                    rs.getString("submitted_pin"),
+                                    rs.getString("submitted_owner_no"),
+                                    rs.getString("submitted_warehouse_no"),
+                                    cargos),
+                            rs.getString("request_hash"),
+                            rs.getString("business_facts_hash"),
+                            rs.getString("client_mode"),
+                            rs.getString("sync_status"),
+                            rs.getString("jd_delivery_no"),
+                            rs.getInt("retry_count"));
+                },
+                shipmentId);
+        if (frozen == null) {
+            throw BusinessException.conflict(
+                    "JD_SHIPMENT_OUTBOUND_INTENT_MISSING", "京东出库提交意图不存在，请刷新后重试");
+        }
+        return frozen;
+    }
+
+    private void requireFrozenReconciliationFacts(
+            JdShipmentSubmissionPlan current,
+            FrozenSubmission frozen,
+            CommandContext context) {
+        if (frozen.facts().valid()) {
+            return;
+        }
+        String code = "JD_SHIPMENT_OUTBOUND_FROZEN_FACTS_MISSING";
+        String message = "历史未决京东写入缺少冻结的 pin、owner、仓库或货品快照，禁止使用当前配置猜测对账";
+        auditService.auditRejectedSubmit(
+                current.shipmentId(), current.orderId(), context, 409, code, message, List.of(code));
+        throw BusinessException.conflict(code, message);
     }
 
     /** 第三阶段：重新锁定本地事实，将外部结果、业务状态、事件、版本与响应原子归档。 */
@@ -422,9 +544,29 @@ public class ShipmentJdOutboundService {
             ShipmentJdOutboundExecutor.SubmitExternalResult external,
             CommandContext context) {
         JdShipmentSubmissionPlan current = preparer.plan(intent.plan().shipmentId());
-        boolean localEligibilityChanged = current.shipmentVersion() != intent.plan().shipmentVersion()
-                || !Objects.equals(current.requestHash(), intent.plan().requestHash())
-                || !current.submittable();
+        FrozenSubmission durable = loadFrozenSubmissionForUpdate(current.shipmentId());
+        if (ShipmentJdOutboundPreparer.SYNC_STATUS_SUBMITTED.equals(durable.syncStatus())) {
+            if (!submittedMatchesIntent(durable, intent)) {
+                return ExternalCompletion.failed(BusinessException.conflict(
+                        "JD_SHIPMENT_OUTBOUND_SUBMITTED_FACTS_MISMATCH",
+                        "京东出库记录已由不同冻结事实确认成功，禁止覆盖或重新归属"));
+            }
+            return ExternalCompletion.succeeded(submittedResponse(
+                    current,
+                    durable.facts().erpDeliveryNo(),
+                    durable.jdDeliveryNo(),
+                    durable.retryCount(),
+                    durable.facts()));
+        }
+        if (!sameFrozenIntent(durable, intent)) {
+            return ExternalCompletion.failed(BusinessException.conflict(
+                    "JD_SHIPMENT_OUTBOUND_STATE_CHANGED",
+                    "京东出库提交意图已被其他请求更新，禁止归档迟到结果"));
+        }
+        boolean localEligibilityChanged = !intent.requiresReconciliation()
+                && (current.shipmentVersion() != intent.plan().shipmentVersion()
+                        || !Objects.equals(current.requestHash(), intent.plan().requestHash())
+                        || !current.submittable());
         boolean externalReportedSuccess = external.accepted()
                 && external.jdResult() != null
                 && external.jdResult().success();
@@ -436,7 +578,15 @@ public class ShipmentJdOutboundService {
         }
         if (!external.accepted()) {
             persistSubmitFailure(
-                    current, intent, context, external.businessCode(), external.message(), external.failurePhase(), null);
+                    current,
+                    intent,
+                    context,
+                    external.businessCode(),
+                    external.message(),
+                    external.failurePhase(),
+                    external.jdResult() == null
+                            ? null
+                            : ShipmentJdOutboundPreparer.text(external.jdResult().requestId()));
             return ExternalCompletion.failed(submitFailure(external.businessCode()));
         }
         JdResult result = external.jdResult();
@@ -454,7 +604,7 @@ public class ShipmentJdOutboundService {
         String responseErpDeliveryNo = ShipmentJdOutboundExecutor.extractErpDeliveryNo(result);
         if (jdDeliveryNo == null
                 || responseErpDeliveryNo == null
-                || !Objects.equals(current.erpDeliveryNo(), responseErpDeliveryNo)) {
+                || !Objects.equals(intent.frozenFacts().erpDeliveryNo(), responseErpDeliveryNo)) {
             persistSubmitFailure(
                     current,
                     intent,
@@ -467,38 +617,43 @@ public class ShipmentJdOutboundService {
                     "RECONCILIATION_REQUIRED",
                     "京东成功响应无法确认 deliveryNo 与 erpDeliveryNo 映射，禁止标记已提交"));
         }
-        List<Map<String, Object>> cargos = cargosOf(intent.plan().request());
-        String submittedOwnerNo = submittedOwnerNo(intent.plan().request());
-        int planQuantity = cargos.stream()
-                .mapToInt(cargo -> ((Number) cargo.get("planQuantity")).intValue())
-                .sum();
+        JdOutboundReadbackVerifier.Expected frozenFacts = intent.frozenFacts();
+        List<Map<String, Object>> cargos = cargoSnapshot(frozenFacts);
+        long planQuantity = planQuantity(frozenFacts);
+        int effectiveRetryCount = Math.max(durable.retryCount(), intent.retryCount());
 
         jdbc.update(
                 """
                 INSERT INTO app.shipment_jd_outbounds
                     (shipment_id, erp_delivery_no, jd_delivery_no, sync_status, failure_phase,
-                     retry_count, last_error_code, last_error_message, request_hash, submitted_at, client_mode,
-                     submitted_cargo_snapshot, submitted_warehouse_no, submitted_owner_no)
-                VALUES (?, ?, ?, 'SUBMITTED', NULL, ?, NULL, NULL, ?, CURRENT_TIMESTAMP, ?, ?::jsonb, ?, ?)
+                     retry_count, last_error_code, last_error_message, request_hash,
+                     business_facts_hash, submitted_at, client_mode,
+                     submitted_cargo_snapshot, submitted_warehouse_no, submitted_owner_no, submitted_pin)
+                VALUES (?, ?, ?, 'SUBMITTED', NULL, ?, NULL, NULL, ?, ?, CURRENT_TIMESTAMP, ?, ?::jsonb, ?, ?, ?)
                 ON CONFLICT (shipment_id) DO UPDATE SET
                     erp_delivery_no = EXCLUDED.erp_delivery_no,
                     jd_delivery_no = EXCLUDED.jd_delivery_no,
                     sync_status = 'SUBMITTED',
                     failure_phase = NULL,
-                    retry_count = EXCLUDED.retry_count,
+                    retry_count = GREATEST(shipment_jd_outbounds.retry_count, EXCLUDED.retry_count),
                     last_error_code = NULL,
                     last_error_message = NULL,
                     request_hash = EXCLUDED.request_hash,
+                    business_facts_hash = EXCLUDED.business_facts_hash,
                     client_mode = EXCLUDED.client_mode,
                     submitted_cargo_snapshot = EXCLUDED.submitted_cargo_snapshot,
                     submitted_warehouse_no = EXCLUDED.submitted_warehouse_no,
                     submitted_owner_no = EXCLUDED.submitted_owner_no,
+                    submitted_pin = EXCLUDED.submitted_pin,
                     submitted_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                current.shipmentId(), current.erpDeliveryNo(), jdDeliveryNo, intent.retryCount(),
-                intent.plan().requestHash(), intent.clientMode(), json(submittedCargoSnapshot(cargos)),
-                ShipmentJdOutboundPreparer.text(intent.plan().request().get("warehouseNo")), submittedOwnerNo);
+                current.shipmentId(), frozenFacts.erpDeliveryNo(), jdDeliveryNo, effectiveRetryCount,
+                intent.frozenRequestHash(), intent.frozenBusinessFactsHash(), intent.clientMode(),
+                json(cargos),
+                frozenFacts.warehouseNo(),
+                frozenFacts.ownerNo(),
+                frozenFacts.pin());
 
         for (JdShipmentSubmissionPlan.OrderLineState line : current.orderLines()) {
             if (ShipmentJdOutboundPreparer.READY_TO_EXPORT.equals(line.processingStage())) {
@@ -512,12 +667,12 @@ public class ShipmentJdOutboundService {
                 ShipmentJdOutboundPreparer.FULFILLING, current.orderId());
 
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("erp_delivery_no", current.erpDeliveryNo());
+        payload.put("erp_delivery_no", frozenFacts.erpDeliveryNo());
         if (jdDeliveryNo != null) {
             payload.put("jd_delivery_no", jdDeliveryNo);
         }
         payload.put("shipment_id", String.valueOf(current.shipmentId()));
-        payload.put("outbound_order_no", current.erpDeliveryNo());
+        payload.put("outbound_order_no", current.outboundOrderNo());
         payload.put("plan_quantity", planQuantity);
         payload.put("goods_count", cargos.size());
         events.append(
@@ -525,17 +680,12 @@ public class ShipmentJdOutboundService {
                 null, DataScope.BUSINESS, payload, context.operator());
         versions.append(current.orderId(), null, "京东云仓建出库单", context.operator(), snapshot(current.orderId()));
 
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put("shipment_id", String.valueOf(current.shipmentId()));
-        response.put("erp_delivery_no", current.erpDeliveryNo());
-        if (jdDeliveryNo != null) {
-            response.put("jd_delivery_no", jdDeliveryNo);
-        }
-        response.put("outbound_order_no", current.erpDeliveryNo());
-        response.put("sync_status", ShipmentJdOutboundPreparer.SYNC_STATUS_SUBMITTED);
-        response.put("retry_count", intent.retryCount());
-        response.put("plan_quantity", planQuantity);
-        response.put("goods_count", cargos.size());
+        Map<String, Object> response = submittedResponse(
+                current,
+                frozenFacts.erpDeliveryNo(),
+                jdDeliveryNo,
+                effectiveRetryCount,
+                frozenFacts);
         audits.record(new AuditLogService.AuditCommand()
                 .dataScope(DataScope.BUSINESS).orderId(current.orderId())
                 .requestId(context.requestId()).traceId(context.traceId()).operator(context.operator())
@@ -543,7 +693,7 @@ public class ShipmentJdOutboundService {
                 .service("fulfillment").operation(ShipmentJdOutboundAuditService.SCOPE)
                 .requestPayload(Map.of(
                         "shipment_id", String.valueOf(current.shipmentId()),
-                        "erp_delivery_no", current.erpDeliveryNo()))
+                        "erp_delivery_no", frozenFacts.erpDeliveryNo()))
                 .responsePayload(response).httpStatus(201).businessCode("JD_SHIPMENT_OUTBOUND_SUBMITTED"));
         return ExternalCompletion.succeeded(response);
     }
@@ -562,15 +712,17 @@ public class ShipmentJdOutboundService {
         String safeMessage = ShipmentJdOutboundPreparer.text(message) == null
                 ? "京东出库单提交失败" : ShipmentJdOutboundPreparer.text(message);
         boolean writeModeDisabled = WRITE_MODE_DISABLED.equals(businessCode);
-        jdbc.update(
+        int updated = jdbc.update(
                 """
                 UPDATE app.shipment_jd_outbounds
                 SET sync_status='SYNC_FAILED', failure_phase=?, retry_count=?,
-                    last_error_code=?, last_error_message=?, request_hash=?, updated_at=CURRENT_TIMESTAMP
-                WHERE shipment_id=?
+                    last_error_code=?, last_error_message=?, updated_at=CURRENT_TIMESTAMP
+                WHERE shipment_id=? AND sync_status<>'SUBMITTED'
                 """,
-                failurePhase, intent.retryCount(), safeCode, safeMessage,
-                intent.plan().requestHash(), current.shipmentId());
+                failurePhase, intent.retryCount(), safeCode, safeMessage, current.shipmentId());
+        if (updated != 1) {
+            return;
+        }
         jdbc.update(
                 """
                 INSERT INTO app.operational_alerts
@@ -587,7 +739,7 @@ public class ShipmentJdOutboundService {
                 DataScope.BUSINESS,
                 Map.of(
                         "shipment_id", String.valueOf(current.shipmentId()),
-                        "erp_delivery_no", current.erpDeliveryNo(),
+                        "erp_delivery_no", intent.frozenFacts().erpDeliveryNo(),
                         "failure_phase", failurePhase,
                         "business_code", safeCode,
                         "retryable", !"RECONCILIATION_REQUIRED".equals(safeCode)),
@@ -599,10 +751,7 @@ public class ShipmentJdOutboundService {
                 .requestId(context.requestId()).traceId(context.traceId()).operator(context.operator())
                 .actorType(ShipmentJdOutboundAuditService.actorType(context))
                 .service("fulfillment").operation(ShipmentJdOutboundAuditService.SCOPE)
-                .requestPayload(Map.of(
-                        "shipment_id", String.valueOf(current.shipmentId()),
-                        "erp_delivery_no", current.erpDeliveryNo(),
-                        "request_hash", intent.plan().requestHash()))
+                .requestPayload(failureRequestPayload(current, intent))
                 .responsePayload(Map.of(
                         "business_code", safeCode,
                         "request_id", requestId == null ? "" : requestId,
@@ -611,6 +760,70 @@ public class ShipmentJdOutboundService {
                 .businessCode(writeModeDisabled
                         ? "JD_SHIPMENT_OUTBOUND_WRITE_MODE_DISABLED"
                         : "JD_SHIPMENT_OUTBOUND_REJECTED"));
+    }
+
+    private boolean sameFrozenIntent(
+            FrozenSubmission durable,
+            ShipmentJdOutboundExecutor.SubmitIntent intent) {
+        return durable.facts().sameFrozenFacts(intent.frozenFacts())
+                && Objects.equals(durable.clientMode(), intent.clientMode())
+                && Objects.equals(durable.requestHash(), intent.frozenRequestHash())
+                && Objects.equals(durable.businessFactsHash(), intent.frozenBusinessFactsHash());
+    }
+
+    private boolean submittedMatchesIntent(
+            FrozenSubmission durable,
+            ShipmentJdOutboundExecutor.SubmitIntent intent) {
+        return ShipmentJdOutboundPreparer.hasText(durable.jdDeliveryNo())
+                && sameFrozenIntent(durable, intent);
+    }
+
+    private List<Map<String, Object>> cargoSnapshot(JdOutboundReadbackVerifier.Expected facts) {
+        return facts.cargos().stream().map(cargo -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("orderLine", cargo.orderLine());
+            item.put("goodsNo", cargo.goodsNo());
+            item.put("planQuantity", cargo.planQuantity());
+            return item;
+        }).toList();
+    }
+
+    static long planQuantity(JdOutboundReadbackVerifier.Expected facts) {
+        return facts.cargos().stream()
+                .mapToLong(JdOutboundReadbackVerifier.Cargo::planQuantity)
+                .sum();
+    }
+
+    private Map<String, Object> submittedResponse(
+            JdShipmentSubmissionPlan current,
+            String erpDeliveryNo,
+            String jdDeliveryNo,
+            int retryCount,
+            JdOutboundReadbackVerifier.Expected facts) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("shipment_id", String.valueOf(current.shipmentId()));
+        response.put("erp_delivery_no", erpDeliveryNo);
+        if (jdDeliveryNo != null) {
+            response.put("jd_delivery_no", jdDeliveryNo);
+        }
+        response.put("outbound_order_no", current.outboundOrderNo());
+        response.put("sync_status", ShipmentJdOutboundPreparer.SYNC_STATUS_SUBMITTED);
+        response.put("retry_count", retryCount);
+        response.put("plan_quantity", planQuantity(facts));
+        response.put("goods_count", facts.cargos().size());
+        return response;
+    }
+
+    private Map<String, Object> failureRequestPayload(
+            JdShipmentSubmissionPlan current,
+            ShipmentJdOutboundExecutor.SubmitIntent intent) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("shipment_id", String.valueOf(current.shipmentId()));
+        payload.put("erp_delivery_no", intent.frozenFacts().erpDeliveryNo());
+        if (intent.frozenRequestHash() != null) {
+            payload.put("request_hash", intent.frozenRequestHash());
+        }
+        return payload;
     }
 
     private RuntimeException submitFailure(String businessCode) {
@@ -673,12 +886,16 @@ public class ShipmentJdOutboundService {
         return (List<Map<String, Object>>) request.get("cargoInfos");
     }
 
-    private String submittedOwnerNo(Map<String, Object> request) {
-        Object rawCustomerInfo = request.get("customerInfo");
-        if (!(rawCustomerInfo instanceof Map<?, ?> customerInfo)) {
-            return null;
+    private boolean retryFactsChanged(
+            JdShipmentSubmissionPlan.PriorSubmission previous,
+            JdShipmentSubmissionPlan current) {
+        if (previous.businessFactsHash() != null) {
+            return !Objects.equals(previous.businessFactsHash(), current.businessFactsHash());
         }
-        return ShipmentJdOutboundPreparer.text(customerInfo.get("ownerNo"));
+        if (previous.requestHash() == null) {
+            return false;
+        }
+        return !Objects.equals(previous.requestHash(), current.requestHash());
     }
 
     private Map<String, Object> snapshot(long orderId) {
@@ -700,6 +917,16 @@ public class ShipmentJdOutboundService {
                 """,
                 orderId));
         return result;
+    }
+
+    private record FrozenSubmission(
+            JdOutboundReadbackVerifier.Expected facts,
+            String requestHash,
+            String businessFactsHash,
+            String clientMode,
+            String syncStatus,
+            String jdDeliveryNo,
+            int retryCount) {
     }
 
     private String json(Object value) {

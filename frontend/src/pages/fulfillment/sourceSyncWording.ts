@@ -38,7 +38,7 @@ const REASONS: Record<string, string> = {
   SOURCE_SYNC_CHANNEL_UNSUPPORTED: '这个来源平台还不支持在线回传，要走回填文件人工上传',
   SOURCE_SYNC_ONLINE_TRANSPORT_REQUIRED: '这个来源平台的在线回传还没开启（连接配置里还是文件模式）',
   SOURCE_SYNC_CONNECTOR_DISABLED: '这个来源平台的连接被停用了',
-  SOURCE_SYNC_CARRIER_MAPPING_REQUIRED: '我们的物流公司在这个平台上没有对应名称，要先配好映射',
+  SOURCE_PLATFORM_CARRIER_UNMAPPED: '来源平台无法唯一识别这家物流公司，需要核对平台承运商字典或专用接口代码',
   SOURCE_SYNC_SINGLE_SOURCE_LINE_REQUIRED: '这批发货对应了不止一个来源子单，目前只支持一单对一单',
   SOURCE_SYNC_MULTI_SHIPMENT_UNSUPPORTED: '同一个来源子单被拆成了多批发货，要人工处理',
   SOURCE_SYNC_LINEAGE_AMBIGUOUS: '发货明细和来源行对不上一一对应，血缘存疑',

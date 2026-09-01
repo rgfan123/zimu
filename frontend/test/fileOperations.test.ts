@@ -31,10 +31,10 @@ test('tracking can only be returned after the fulfillment file was downloaded', 
 });
 
 test('mapping confirmation requires an unambiguous provider code and positive multiplier', () => {
-  assert.equal(canConfirmReferenceRow({ match_status: 'MATCHED', provider_sku_code: 'EMG1', quantity_multiplier: '2' }), true);
-  assert.equal(canConfirmReferenceRow({ match_status: 'NEED_REVIEW', provider_sku_code: 'EMG1', quantity_multiplier: '2' }), false);
-  assert.equal(canConfirmReferenceRow({ match_status: 'MATCHED', provider_sku_code: '', quantity_multiplier: '2' }), false);
-  assert.equal(canConfirmReferenceRow({ match_status: 'MATCHED', provider_sku_code: 'EMG1', quantity_multiplier: '0' }), false);
+  assert.equal(canConfirmReferenceRow({ match_status: 'MATCHED', provider_sku_code: 'EMG1', quantity_multiplier: 2 }), true);
+  assert.equal(canConfirmReferenceRow({ match_status: 'NEED_REVIEW', provider_sku_code: 'EMG1', quantity_multiplier: 2 }), false);
+  assert.equal(canConfirmReferenceRow({ match_status: 'MATCHED', provider_sku_code: '', quantity_multiplier: 2 }), false);
+  assert.equal(canConfirmReferenceRow({ match_status: 'MATCHED', provider_sku_code: 'EMG1', quantity_multiplier: 0 }), false);
 });
 
 test('import issue rows expose actionable source fields without dumping raw cells or internal details', () => {
@@ -379,7 +379,7 @@ test('every source-file rejection code names its own blocker instead of the gene
   // 任何一条落到兜底句 = operator 分不清退款单、售后单还是行号重复。
   const expected: Array<[string, string]> = [
     ['IMPORT_VALIDATION', '来源文件的必填值或同单收货信息需要核对'],
-    ['QUANTITY_SCALE', '商品数量最多支持三位小数'],
+    ['QUANTITY_SCALE', '商品数量必须是 int32 正整数，且乘算结果不能越界'],
     ['SOURCE_LINE_REF_REQUIRED', '来源行缺少子订单 ID，无法定位到唯一来源行'],
     ['SOURCE_ORDER_TYPE_BLOCKED', '来源行不是可发货的实体销售订单'],
     ['SOURCE_ORDER_STATUS_BLOCKED', '来源子订单状态不是明确的待发货状态'],

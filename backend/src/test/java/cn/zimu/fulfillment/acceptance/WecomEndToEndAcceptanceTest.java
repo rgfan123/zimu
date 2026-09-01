@@ -389,7 +389,7 @@ class WecomEndToEndAcceptanceTest {
                                 "town", "测试街道",
                                 "address", "测试路 1 号"),
                         "settlement_method", "MONTHLY",
-                        "items", List.of(Map.of("line_no", 1, "quantity", "3"))),
+                        "items", List.of(Map.of("line_no", 1, "quantity", 3))),
                 "supplement-" + messageId,
                 "req-supplement-" + messageId);
         assertThat(supplemented.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -892,7 +892,7 @@ class WecomEndToEndAcceptanceTest {
                                 "product", "子牧羊小腿",
                                 "spec", "500g/盒",
                                 "unit", "盒",
-                                "quantity", "2",
+                                "quantity", 2,
                                 "source_sku_ref", "WECOM-SKU-JD-001"))),
                 "test-provider",
                 "test-model",
@@ -957,7 +957,7 @@ class WecomEndToEndAcceptanceTest {
         command.put("items", List.of(Map.of(
                 "line_no", line.get("line_no"),
                 "sku_id", sku.get("sku_id"),
-                "quantity", "3")));
+                "quantity", 3)));
         command.put("remark", "已对照企微原始消息和主数据（一期整链验收）");
         return command;
     }

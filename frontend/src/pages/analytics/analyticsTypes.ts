@@ -70,7 +70,7 @@ export interface SourceMappingBrief {
   source_sku_ref: string;
   source_product_name?: string;
   source_specification?: string;
-  quantity_multiplier?: string | number;
+  quantity_multiplier?: number;
 }
 
 /** 热力图 / Top 商品行：按商品聚合（可上钻 SKU），无 product_id 时退化为 SKU 行。 */

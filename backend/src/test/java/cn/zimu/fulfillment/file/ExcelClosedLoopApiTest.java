@@ -92,6 +92,7 @@ class ExcelClosedLoopApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired DataSource dataSource;
     @Autowired TrackingFileService trackingFileService;
+    @Autowired SourceReturnDerivationRunner sourceReturnDerivationRunner;
     @Autowired SourceImportService sourceImportService;
     @Autowired SourceBatchConfirmer sourceBatchConfirmer;
     @Autowired ShipmentTrackingService shipmentTrackingService;
@@ -265,6 +266,8 @@ class ExcelClosedLoopApiTest {
             }
             assertThat(formatter.formatCellValue(row.getCell(columns.get("发货状态"))))
                     .isEqualTo("已发货");
+            assertThat(row.getCell(columns.get("件数")).getCellType()).isEqualTo(CellType.NUMERIC);
+            assertThat(row.getCell(columns.get("件数")).getNumericCellValue()).isEqualTo(1);
             assertThat(formatter.formatCellValue(row.getCell(columns.get("物流单号"))))
                     .isEqualTo(waybillNo);
         }
@@ -348,8 +351,12 @@ class ExcelClosedLoopApiTest {
     }
 
     @Test
-    void zhonghui60043831OneSourceUnitDeterministicallyReleasesTwoCanonicalPieces() throws Exception {
+    void zhonghui60043831ReleasesWithoutPackagingMetadata() throws Exception {
         long skuId = upsertZhonghuiMapping("60043831", "中汇牛肋条500g", "2.000");
+        jdbc.update(
+                "UPDATE app.skus SET net_content_value=NULL, net_content_unit=NULL, "
+                        + "package_count=NULL, package_unit=NULL WHERE id=?",
+                skuId);
         String orderNo = "S-ZHONGHUI-60043831-001";
 
         ResponseEntity<Map> uploaded = uploadRaw(
@@ -923,7 +930,7 @@ class ExcelClosedLoopApiTest {
                         "sku_id", skuId,
                         "source_channel", "FEIXIANG",
                         "source_sku_ref", "FX-PRODUCT-REVIEW-001",
-                        "quantity_multiplier", "2",
+                        "quantity_multiplier", 2,
                         "remark", "核对包装倍率后确认 SKU"),
                 "resolve-import-sku-001");
         ResponseEntity<Map> skuResolvedReplay = resolveReview(
@@ -934,7 +941,7 @@ class ExcelClosedLoopApiTest {
                         "sku_id", skuId,
                         "source_channel", "FEIXIANG",
                         "source_sku_ref", "FX-PRODUCT-REVIEW-001",
-                        "quantity_multiplier", "2",
+                        "quantity_multiplier", 2,
                         "remark", "核对包装倍率后确认 SKU"),
                 "resolve-import-sku-001");
         assertThat(skuResolved.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -960,7 +967,7 @@ class ExcelClosedLoopApiTest {
 
     @Test
     void thirdPartyExportTrackingImportAndTrueCsvSourceReturnFormAClosedLoop() throws Exception {
-        byte[] source = feixiangSingleCsv("FX-CLOSED-LOOP-001");
+        byte[] source = feixiangSingleCsv("FX-CLOSED-LOOP-001", "FX-PRODUCT-001", "1.000");
         Map<String, Object> imported = upload("closed-loop.csv", source, "source-import-closed-001");
         List<?> generated = (List<?>) imported.get("generated_fulfillment_export_ids");
         assertThat(generated).hasSize(1);
@@ -994,6 +1001,10 @@ class ExcelClosedLoopApiTest {
                     .containsExactlyElementsOf(ProviderFileService.HUMAN_THIRD_PARTY_HEADERS);
             assertThat(formatter.formatCellValue(sheet.getRow(1).getCell(columns.get("收件人姓名"))))
                     .isNotBlank();
+            assertThat(sheet.getRow(1).getCell(columns.get("数量")).getCellType())
+                    .isEqualTo(CellType.NUMERIC);
+            assertThat(sheet.getRow(1).getCell(columns.get("数量")).getNumericCellValue())
+                    .isEqualTo(3);
         }
 
         byte[] returned = fillThirdPartyTracking(instruction, "SHIPPED", null, "JDVAFX-CLOSED-LOOP-001", null);
@@ -1030,7 +1041,10 @@ class ExcelClosedLoopApiTest {
         byte[] csv = csvResponse.getBody();
         assertThat(csv.length >= 2 && csv[0] == 'P' && csv[1] == 'K').isFalse();
         String text = new String(csv, StandardCharsets.UTF_8);
-        assertThat(text).contains("已发货", "京东物流", "JDVAFX-CLOSED-LOOP-001");
+        assertThat(text)
+                .contains("已发货", "京东物流", "JDVAFX-CLOSED-LOOP-001")
+                .contains(",1,")
+                .doesNotContain("1.000");
     }
 
     @Test
@@ -1065,7 +1079,7 @@ class ExcelClosedLoopApiTest {
                         "子牧羊小腿",
                         "标准箱",
                         "箱",
-                        "2",
+                        2,
                         null)),
                 new Settlement(SettlementMethod.MONTHLY, java.time.Instant.now()),
                 null,
@@ -1195,6 +1209,23 @@ class ExcelClosedLoopApiTest {
     }
 
     @Test
+    void trackingNumericCellCannotRoundFractionIntoTheExpectedInteger() throws Exception {
+        Map<String, Object> imported = upload(
+                "tracking-rounded-fraction.csv",
+                feixiangSingleCsv("FX-TRACKING-ROUNDED-FRACTION-001"),
+                "source-import-tracking-rounded-fraction-001");
+        String exportId = ((List<?>) imported.get("generated_fulfillment_export_ids"))
+                .getFirst()
+                .toString();
+        byte[] returned = fillRoundedNumericThirdPartyTracking(
+                downloadExport(exportId), 2.5, "0", "JDVA-TRACKING-ROUNDED-FRACTION-001");
+
+        assertThatThrownBy(() -> trackingFileService.parseForDraft(returned))
+                .isInstanceOfSatisfying(BusinessException.class, exception ->
+                        assertThat(exception.getBusinessCode()).isEqualTo("TRACKING_QUANTITY_INVALID"));
+    }
+
+    @Test
     void thirdPartyTrackingCanConfirmShipmentWithoutAnActualShipmentTime() throws Exception {
         Map<String, Object> imported = upload(
                 "unknown-shipped-at.csv",
@@ -1219,7 +1250,9 @@ class ExcelClosedLoopApiTest {
                 "tracking-import-unknown-shipped-at-001",
                 "req-unknown-shipped-at-001");
 
-        assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(accepted.getStatusCode())
+                .as("tracking body: %s", accepted.getBody())
+                .isEqualTo(HttpStatus.CREATED);
         Map<String, Object> shipment = get("/api/v1/shipments/" + shipmentId);
         assertThat(shipment)
                 .containsEntry("shipment_status", "SHIPPED")
@@ -1237,6 +1270,198 @@ class ExcelClosedLoopApiTest {
                 .isEqualByComparingTo(channelActualQuantityBefore);
         assertThat(actualShippedQuantity(productAnalyticsPath))
                 .isEqualByComparingTo(productActualQuantityBefore);
+    }
+
+    @Test
+    void sourceReturnDerivationFailureCannotRollbackAcceptedTrackingFacts() throws Exception {
+        Map<String, Object> imported = upload(
+                "derive-failure.csv",
+                feixiangSingleCsv("FX-DERIVE-FAIL-001"),
+                "source-import-derive-failure-001");
+        String sourceBatchId = imported.get("id").toString();
+        String exportId = ((List<?>) imported.get("generated_fulfillment_export_ids")).getFirst().toString();
+        Map<?, ?> exportLine = (Map<?, ?>) ((List<?>) get(
+                "/api/v1/fulfillment-exports/" + exportId).get("lines")).getFirst();
+        String shipmentId = exportLine.get("shipment_id").toString();
+        String sourceFileRef = jdbc.queryForObject(
+                "SELECT file_ref FROM app.import_batches WHERE id=?",
+                String.class,
+                Long.parseLong(sourceBatchId));
+        java.nio.file.Files.delete(java.nio.file.Path.of(sourceFileRef));
+
+        ResponseEntity<Map> accepted = uploadTracking(
+                exportId,
+                fillThirdPartyTracking(
+                        downloadExport(exportId), "SHIPPED", "3", "SF-DERIVE-FAIL-001", ""),
+                "tracking-import-derive-failure-001");
+
+        assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat((List<?>) accepted.getBody().get("generated_source_return_export_ids")).isEmpty();
+        assertThat(get("/api/v1/shipments/" + shipmentId))
+                .containsEntry("shipment_status", "SHIPPED");
+        assertThat(jdbc.queryForMap(
+                        "SELECT logistics_company_code, logistics_company_name, tracking_number "
+                                + "FROM app.trackings WHERE shipment_id=?",
+                        Long.parseLong(shipmentId)))
+                .containsEntry("logistics_company_code", "JD")
+                .containsEntry("logistics_company_name", "京东物流")
+                .containsEntry("tracking_number", "SF-DERIVE-FAIL-001");
+        assertThat(jdbc.queryForMap(
+                        "SELECT status, last_error FROM app.async_tasks "
+                                + "WHERE task_type='SOURCE_RETURN_DERIVATION' ORDER BY id DESC LIMIT 1"))
+                .containsEntry("status", "PENDING")
+                .containsEntry("last_error", "SOURCE_RETURN_DERIVATION_FAILED");
+    }
+
+    @Test
+    void mixedJdAndSfTrackingFactsSurviveTheSameSourceReturnDerivationFailure() throws Exception {
+        Map<String, Object> imported = upload(
+                "mixed-carriers-derive-failure.csv",
+                feixiangTwoOrderCsv("FX-MIXED-JD-001", "FX-MIXED-SF-001"),
+                "source-import-mixed-carriers-derive-failure-001");
+        String sourceBatchId = imported.get("id").toString();
+        String exportId = ((List<?>) imported.get("generated_fulfillment_export_ids"))
+                .getFirst()
+                .toString();
+        List<?> exportLines = (List<?>) get("/api/v1/fulfillment-exports/" + exportId).get("lines");
+        assertThat(exportLines).hasSize(2);
+        List<Long> shipmentIds = exportLines.stream()
+                .map(item -> Long.parseLong(((Map<?, ?>) item).get("shipment_id").toString()))
+                .toList();
+        // 只让 SF 这一行的来源派生写入失败；JD 行本身完全可派生。来源回填是整批原表
+        // 的原子产物，所以该行失败会回滚本次派生事务，但不得回滚此前已提交的两条 Tracking。
+        jdbc.execute("""
+                CREATE OR REPLACE FUNCTION app.test_reject_one_sf_source_return_item()
+                RETURNS TRIGGER LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF NEW.tracking_number='SF-MIXED-001' THEN
+                        RAISE EXCEPTION 'test-only SF row derivation failure';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$
+                """);
+        jdbc.execute("""
+                CREATE TRIGGER trg_test_reject_one_sf_source_return_item
+                BEFORE INSERT ON app.source_return_export_items
+                FOR EACH ROW EXECUTE FUNCTION app.test_reject_one_sf_source_return_item()
+                """);
+        ResponseEntity<Map> accepted;
+        byte[] trackingFile = fillMixedCarrierTracking(downloadExport(exportId));
+        List<Long> taskIds;
+        try {
+            accepted = uploadTracking(
+                    exportId,
+                    trackingFile,
+                    "tracking-import-mixed-carriers-derive-failure-001");
+            taskIds = jdbc.queryForList(
+                    """
+                    SELECT id FROM app.async_tasks
+                    WHERE task_type='SOURCE_RETURN_DERIVATION'
+                      AND (payload_ref::jsonb->>'shipment_id')::bigint IN (?, ?)
+                    ORDER BY id
+                    """,
+                    Long.class,
+                    shipmentIds.get(0),
+                    shipmentIds.get(1));
+            assertThat(taskIds).hasSize(2);
+            jdbc.update(
+                    """
+                    UPDATE app.async_tasks
+                    SET attempts=max_attempts-1, next_run_at=CURRENT_TIMESTAMP
+                    WHERE id IN (?, ?)
+                    """,
+                    taskIds.get(0),
+                    taskIds.get(1));
+            sourceReturnDerivationRunner.runDue(taskIds);
+            assertThat(jdbc.queryForList(
+                            "SELECT status FROM app.async_tasks WHERE id IN (?, ?) ORDER BY id",
+                            String.class,
+                            taskIds.get(0),
+                            taskIds.get(1)))
+                    .containsOnly("FAILED");
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS trg_test_reject_one_sf_source_return_item "
+                    + "ON app.source_return_export_items");
+            jdbc.execute("DROP FUNCTION IF EXISTS app.test_reject_one_sf_source_return_item()");
+        }
+
+        assertThat(accepted.getStatusCode())
+                .as("tracking body: %s", accepted.getBody())
+                .isEqualTo(HttpStatus.CREATED);
+        assertThat((List<?>) accepted.getBody().get("generated_source_return_export_ids")).isEmpty();
+        assertThat(jdbc.queryForList(
+                        """
+                        SELECT shipment_id, logistics_company_code, logistics_company_name, tracking_number
+                        FROM app.trackings WHERE shipment_id IN (?, ?) ORDER BY shipment_id
+                        """,
+                        shipmentIds.get(0),
+                        shipmentIds.get(1)))
+                .hasSize(2)
+                .extracting(row -> row.get("logistics_company_code"))
+                .containsExactlyInAnyOrder("JD", "SF_EXPRESS");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.source_return_exports WHERE import_batch_id=?",
+                Integer.class,
+                Long.parseLong(sourceBatchId))).isZero();
+        assertThat(jdbc.queryForList(
+                        "SELECT shipment_status FROM app.shipments WHERE id IN (?, ?) ORDER BY id",
+                        String.class,
+                        shipmentIds.get(0),
+                        shipmentIds.get(1)))
+                .containsOnly("SHIPPED");
+        assertThat(jdbc.queryForObject(
+                """
+                SELECT count(*) FROM app.async_tasks
+                WHERE task_type='SOURCE_RETURN_DERIVATION'
+                  AND status='FAILED' AND last_error='SOURCE_RETURN_DERIVATION_FAILED'
+                  AND (payload_ref::jsonb->>'shipment_id')::bigint IN (?, ?)
+                """,
+                Integer.class,
+                shipmentIds.get(0),
+                shipmentIds.get(1))).isEqualTo(2);
+
+        ResponseEntity<Map> replayed = uploadTracking(
+                exportId,
+                trackingFile,
+                "tracking-import-mixed-carriers-derive-failure-001");
+        assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        List<?> recoveredReturnIds = (List<?>) replayed.getBody().get("generated_source_return_export_ids");
+        assertThat(recoveredReturnIds).singleElement();
+        assertThat(jdbc.queryForList(
+                        "SELECT status FROM app.async_tasks WHERE id IN (?, ?) ORDER BY id",
+                        String.class,
+                        taskIds.get(0),
+                        taskIds.get(1)))
+                .containsOnly("SUCCEEDED");
+        assertThat(new String(
+                        downloadSourceReturn(recoveredReturnIds.getFirst().toString()),
+                        StandardCharsets.UTF_8))
+                .contains("JDVA-MIXED-001", "SF-MIXED-001", "京东物流", "顺丰速运");
+    }
+
+    @Test
+    void fileSourceReturnFallsBackToInternalCarrierNameWhenChannelTranslationIsMissing() throws Exception {
+        Map<String, Object> imported = upload(
+                "carrier-fallback.csv",
+                feixiangSingleCsv("FX-CARRIER-FALLBACK-001"),
+                "source-import-carrier-fallback-001");
+        String exportId = ((List<?>) imported.get("generated_fulfillment_export_ids")).getFirst().toString();
+        jdbc.update(
+                "UPDATE app.connector_configs SET config=config-'carrier_mappings' WHERE source_channel='FEIXIANG'");
+
+        ResponseEntity<Map> accepted = uploadTracking(
+                exportId,
+                fillThirdPartyTracking(
+                        downloadExport(exportId), "SHIPPED", "3", "JDVA-CARRIER-FALLBACK-001", ""),
+                "tracking-import-carrier-fallback-001");
+
+        assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        List<?> returnIds = (List<?>) accepted.getBody().get("generated_source_return_export_ids");
+        assertThat(returnIds).singleElement();
+        String returned = new String(
+                downloadSourceReturn(returnIds.getFirst().toString()), StandardCharsets.UTF_8);
+        assertThat(returned).contains("京东物流", "JDVA-CARRIER-FALLBACK-001");
     }
 
     @Test
@@ -1299,14 +1524,14 @@ class ExcelClosedLoopApiTest {
                 "tracking-import-multi-cancel-001");
         assertThat(firstTracking.getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
-        long procurementTicketId = createCancellationFixture(fulfillmentId, "PROC-MULTI-CANCEL-001", "2.000");
+        long procurementTicketId = createCancellationFixture(fulfillmentId, "PROC-MULTI-CANCEL-001", 2);
         ResponseEntity<Map> cancelled = cancelRemaining(procurementTicketId, 0, "客户确认不再续发剩余数量");
         assertThat(cancelled.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         Map<String, Object> fulfillment = get("/api/v1/fulfillments/" + fulfillmentId);
         assertThat(fulfillment)
                 .containsEntry("outcome", "PARTIALLY_FULFILLED")
-                .containsEntry("cancelled_quantity", "2");
+                .containsEntry("cancelled_quantity", 2);
         Map<String, Object> orders = get("/api/v1/orders?query=FX-MULTI-CANCEL-001&page=0&size=20");
         String orderId = ((Map<?, ?>) ((List<?>) orders.get("items")).getFirst()).get("id").toString();
         Map<String, Object> order = get("/api/v1/orders/" + orderId);
@@ -1334,9 +1559,9 @@ class ExcelClosedLoopApiTest {
         long version = ((Number) fulfillment.get("version")).longValue();
 
         ResponseEntity<Map> overAllocated = createContinuation(
-                fulfillmentId, version, "2.001", "超量门禁", "continuation-over-allocation-001");
+                fulfillmentId, version, 3, "超量门禁", "continuation-over-allocation-001");
         ResponseEntity<Map> stale = createContinuation(
-                fulfillmentId, version + 1, "2.000", "版本门禁", "continuation-stale-version-001");
+                fulfillmentId, version + 1, 2, "版本门禁", "continuation-stale-version-001");
 
         assertThat(overAllocated.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(overAllocated.getBody()).containsEntry("business_code", "CONTINUATION_QUANTITY_EXCEEDS_REMAINING");
@@ -1345,7 +1570,7 @@ class ExcelClosedLoopApiTest {
 
         String demoFulfillmentId = createDemoFulfillmentFixture();
         ResponseEntity<Map> demo = createContinuation(
-                demoFulfillmentId, 0, "1.000", "不得跨数据域", "continuation-demo-scope-001");
+                demoFulfillmentId, 0, 1, "不得跨数据域", "continuation-demo-scope-001");
         assertThat(demo.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
@@ -1369,13 +1594,13 @@ class ExcelClosedLoopApiTest {
         ResponseEntity<Map> continuation = createContinuation(
                 fulfillmentId,
                 ((Number) partial.get("version")).longValue(),
-                "2.000",
+                2,
                 "首批少发，创建续发批次",
                 "continuation-multi-complete-001");
         ResponseEntity<Map> continuationReplay = createContinuation(
                 fulfillmentId,
                 ((Number) partial.get("version")).longValue(),
-                "2.000",
+                2,
                 "首批少发，创建续发批次",
                 "continuation-multi-complete-001");
         assertThat(continuation.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -1471,7 +1696,7 @@ class ExcelClosedLoopApiTest {
             assertThat(row.get("source_sku_ref")).isEqualTo("2047705");
             assertThat(row.get("provider_sku_code")).isEqualTo("EMG4418824976893");
             assertThat(row.get("provider_sku_name")).isEqualTo("牛腱子(谷饲牛腱子)");
-            assertThat(row.get("quantity_multiplier")).isEqualTo("2.000");
+            assertThat(row.get("quantity_multiplier")).isEqualTo(2);
             assertThat(row.get("match_status")).isEqualTo("MATCHED");
         });
         assertThat(csxRows).anySatisfy(item -> {
@@ -2016,6 +2241,17 @@ class ExcelClosedLoopApiTest {
         return (all + row).getBytes(StandardCharsets.UTF_8);
     }
 
+    private byte[] feixiangTwoOrderCsv(String firstOrderRef, String secondOrderRef) {
+        String header = new String(feixiangCsv(false), StandardCharsets.UTF_8);
+        String first = firstOrderRef + ",FX-MEMBER-001,子牧羊小腿,FX-PRODUCT-001,"
+                + firstOrderRef + "-LINE,1,张三,13800000000,上海市浦东新区测试路1号,"
+                + "2026-08-11 10:00:00,,,\r\n";
+        String second = secondOrderRef + ",FX-MEMBER-001,子牧羊小腿,FX-PRODUCT-001,"
+                + secondOrderRef + "-LINE,1,李四,13800000001,上海市浦东新区测试路2号,"
+                + "2026-08-11 10:01:00,,,\r\n";
+        return (header + first + second).getBytes(StandardCharsets.UTF_8);
+    }
+
     private byte[] feixiangV2Csv(String orderRef) {
         List<String> headers = List.of(
                 "订单号", "会员名称", "商品名称", "发货方式", "自提点", "商品ID", "商品规格", "订单商品ID", "商品货号", "skuID",
@@ -2107,7 +2343,7 @@ class ExcelClosedLoopApiTest {
     private ResponseEntity<Map> createContinuation(
             String fulfillmentId,
             long expectedVersion,
-            String instructedQuantity,
+            int instructedQuantity,
             String remark,
             String idempotencyKey) {
         HttpHeaders headers = new HttpHeaders();
@@ -2149,7 +2385,7 @@ class ExcelClosedLoopApiTest {
                 Map.class);
     }
 
-    private long createCancellationFixture(String fulfillmentId, String ticketNo, String quantity) {
+    private long createCancellationFixture(String fulfillmentId, String ticketNo, int quantity) {
         long id = Long.parseLong(fulfillmentId);
         long providerId = jdbc.queryForObject(
                 "SELECT fulfillment_provider_id FROM app.fulfillments WHERE id=?", Long.class, id);
@@ -2174,7 +2410,7 @@ class ExcelClosedLoopApiTest {
                     """
                     INSERT INTO app.procurement_ticket_items
                         (procurement_ticket_id, sku_id, requested_quantity, unit_snapshot)
-                    SELECT ?, ol.sku_id, ?::numeric, ol.unit_snapshot
+                    SELECT ?, ol.sku_id, ?, ol.unit_snapshot
                     FROM app.fulfillments f JOIN app.order_lines ol ON ol.id=f.order_line_id
                     WHERE f.id=?
                     """,
@@ -2284,6 +2520,57 @@ class ExcelClosedLoopApiTest {
                 writeCell(row, columns.get("快递公司"), "京东物流");
                 writeCell(row, columns.get("物流单号"), waybill);
                 writeCell(row, columns.get("发货时间"), shippedAt);
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] fillMixedCarrierTracking(byte[] instruction) throws Exception {
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(instruction));
+                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.getSheetAt(0);
+            Map<String, Integer> columns = headerColumns(sheet);
+            assertThat(sheet.getLastRowNum()).isEqualTo(2);
+            boolean human = columns.containsKey("运单号");
+            for (int rowIndex = 1; rowIndex <= 2; rowIndex++) {
+                var row = sheet.getRow(rowIndex);
+                boolean jd = rowIndex == 1;
+                writeCell(row, columns.get("快递公司"), jd ? "京东物流" : "顺丰速运");
+                if (human) {
+                    writeCell(row, columns.get("数量"), "3");
+                    writeCell(row, columns.get("运单号"), jd ? "JDVA-MIXED-001" : "SF-MIXED-001");
+                } else {
+                    writeCell(row, columns.get("结果"), "SHIPPED");
+                    writeCell(row, columns.get("实际发货数量"), "3");
+                    writeCell(row, columns.get("物流单号"), jd ? "JDVA-MIXED-001" : "SF-MIXED-001");
+                    writeCell(row, columns.get("发货时间"), "2026-08-31 12:00:00");
+                }
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] fillRoundedNumericThirdPartyTracking(
+            byte[] instruction, double quantity, String format, String trackingNumber) throws Exception {
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(instruction));
+                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.getSheetAt(0);
+            Map<String, Integer> columns = headerColumns(sheet);
+            var row = sheet.getRow(1);
+            boolean human = columns.containsKey("运单号");
+            Integer quantityColumn = columns.get(human ? "数量" : "实际发货数量");
+            var quantityCell = row.getCell(quantityColumn);
+            quantityCell.setCellValue(quantity);
+            var style = workbook.createCellStyle();
+            style.setDataFormat(workbook.createDataFormat().getFormat(format));
+            quantityCell.setCellStyle(style);
+            assertThat(new DataFormatter().formatCellValue(quantityCell)).isEqualTo("3");
+            writeCell(row, columns.get("快递公司"), "京东物流");
+            writeCell(row, columns.get(human ? "运单号" : "物流单号"), trackingNumber);
+            if (!human) {
+                writeCell(row, columns.get("结果"), "SHIPPED");
             }
             workbook.write(output);
             return output.toByteArray();

@@ -273,6 +273,10 @@ class McpDomainReadToolsTest {
                 providerId,
                 internalRouteSkuId,
                 internalSkuCode);
+        jdbc.update(
+                "UPDATE app.skus SET net_content_value=NULL, net_content_unit=NULL, "
+                        + "package_count=NULL, package_unit=NULL WHERE id=?",
+                skuId);
 
         JsonNode byName = callResult(AGENT, "search_skus", Map.of("query", "羊小腿"));
         assertThat(byName.get("total_elements").asLong()).isEqualTo(3);
@@ -289,6 +293,11 @@ class McpDomainReadToolsTest {
         assertThat(first.get("purchase_price")).isNotNull();
         assertThat(first.path("readiness").path("ready").asBoolean()).isTrue();
         assertThat(first.path("readiness").path("reason_codes")).isEmpty();
+        assertThat(first.path("readiness").path("warnings")).singleElement().satisfies(warning -> {
+            assertThat(warning.path("code").asText()).isEqualTo("PACKAGING_METADATA_INCOMPLETE");
+            assertThat(warning.path("message").asText()).contains("不影响成单、导出或发货");
+            assertThat(warning.path("action").asText()).contains("可选完善");
+        });
 
         JsonNode sku = callResult(AGENT, "get_sku", Map.of("sku_id", String.valueOf(skuId)));
         assertThat(sku.get("id").asText()).isEqualTo(String.valueOf(skuId));
@@ -302,6 +311,8 @@ class McpDomainReadToolsTest {
         assertThat(sku.get("provider_type").asText()).isEqualTo("THIRD_PARTY");
         assertThat(sku.path("readiness").path("ready").asBoolean()).isTrue();
         assertThat(sku.path("readiness").path("reason_codes")).isEmpty();
+        assertThat(sku.path("readiness").path("warnings")).singleElement().satisfies(warning ->
+                assertThat(warning.path("code").asText()).isEqualTo("PACKAGING_METADATA_INCOMPLETE"));
 
         JsonNode mappings = callResult(AGENT, "list_provider_skus",
                 Map.of("provider_id", String.valueOf(providerId)));
@@ -484,8 +495,8 @@ class McpDomainReadToolsTest {
         assertThat(overview.get("total_elements").asLong()).isEqualTo(2);
         JsonNode observed = firstItem(overview, "MCPINV", String.valueOf(observedSkuId));
         assertThat(observed.get("observation_status").asText()).isEqualTo("OBSERVED");
-        assertThat(observed.get("total_quantity").asText()).isEqualTo("10.000");
-        assertThat(observed.get("available_quantity").asText()).isEqualTo("8.000");
+        assertThat(observed.get("total_quantity").asInt()).isEqualTo(10);
+        assertThat(observed.get("available_quantity").asInt()).isEqualTo(8);
         assertThat(observed.get("warehouse_code").asText()).isEqualTo("WH-01");
         JsonNode unobserved = firstItem(overview, "MCPINV", String.valueOf(unobservedSkuId));
         assertThat(unobserved.get("observation_status").asText()).isEqualTo("NOT_OBSERVED");
@@ -497,7 +508,7 @@ class McpDomainReadToolsTest {
                 Map.of("provider_id", String.valueOf(providerId), "sku_id", String.valueOf(observedSkuId)));
         assertThat(detail.get("context").get("sku_code")).isNotNull();
         assertThat(detail.get("observation").get("observation_status").asText()).isEqualTo("OBSERVED");
-        assertThat(detail.get("observation").get("total_quantity").asText()).isEqualTo("10.000");
+        assertThat(detail.get("observation").get("total_quantity").asInt()).isEqualTo(10);
         assertThat(detail.get("capabilities")).isNotEmpty();
         assertThat(detail.toString()).doesNotContain("secret", "raw_payload", "source_ref");
 

@@ -4,6 +4,9 @@ import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.web.RequestContext;
 import cn.zimu.fulfillment.connector.jd.JdResult;
+import cn.zimu.fulfillment.connector.jd.JdErpDeliveryNoNamespace;
+import cn.zimu.fulfillment.fulfillment.JdSalesOutboundWriter;
+import cn.zimu.fulfillment.fulfillment.PreparedJdSalesOutbound;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -21,7 +24,7 @@ import org.springframework.stereotype.Service;
  */
 @Service
 @ConditionalOnProperty(name = "app.jd.client-mode", havingValue = "MOCK", matchIfMissing = true)
-public class MockJdWriteOpsClient implements JdWriteOpsService {
+public class MockJdWriteOpsClient implements JdWriteOpsService, JdSalesOutboundWriter {
 
     private final AuditLogService auditLogService;
     private final String writeMode;
@@ -123,7 +126,19 @@ public class MockJdWriteOpsClient implements JdWriteOpsService {
     }
 
     @Override
-    public JdResult orderSoCreate(Map<String, Object> request) {
+    public JdResult create(PreparedJdSalesOutbound outbound) {
+        Map<String, Object> request = outbound.request();
+        if (writeEnabled() && !JdErpDeliveryNoNamespace.owns(request)) {
+            Instant startedAt = Instant.now();
+            JdResult rejected = new JdResult(
+                    false,
+                    JdErpDeliveryNoNamespace.BUSINESS_CODE,
+                    JdErpDeliveryNoNamespace.MESSAGE,
+                    null,
+                    null);
+            audit("orderSoCreate", request, rejected, startedAt);
+            return rejected;
+        }
         return success("orderSoCreate", request, Map.of(
                 "deliveryNo", "MOCK-DELIVERY-001",
                 "erpDeliveryNo", value(request, "erpDeliveryNo", "MOCK-ERP-DELIVERY-001"),

@@ -226,9 +226,9 @@ class StructuredImportApiTest {
                 new Receiver("测试收货人", "13800000001", "北京", "北京市", "朝阳区", null, "测试路 1 号"),
                 List.of(
                         new OrderItemInput(lineRefA, LineType.SINGLE, null, "CSX-PRODUCT-001",
-                                "子牧羊小腿", "标准箱", "套", "2", null),
+                                "子牧羊小腿", "标准箱", "套", 2, null),
                         new OrderItemInput(lineRefB, LineType.SINGLE, null, "CSX-PRODUCT-001",
-                                "子牧羊小腿", "标准箱", "套", "1", null)),
+                                "子牧羊小腿", "标准箱", "套", 1, null)),
                 new Settlement(SettlementMethod.MONTHLY, Instant.now()),
                 null,
                 "ticket02-test",
@@ -284,7 +284,7 @@ class StructuredImportApiTest {
     }
 
     @Test
-    void fractionalJdBundleComponentQuantityIsBlockedBeforeCreatingAnOrder() {
+    void nonPositiveJdBundleComponentQuantityIsRejectedAtTheDomainBoundary() {
         Map<String, Object> jdSku = jdbc.queryForMap(
                 """
                 SELECT s.id, s.sku_code, p.product_name, s.specification, s.unit
@@ -311,54 +311,19 @@ class StructuredImportApiTest {
                 jdSku.get("product_name"),
                 jdSku.get("specification"),
                 ((Number) jdSku.get("id")).longValue());
-        OrderItemInput bundle = new OrderItemInput(
-                ref + "-L1",
-                LineType.CUSTOM_BUNDLE,
-                null,
-                null,
-                "京东小数件当单礼包",
-                "1份",
-                "份",
-                "1",
-                List.of(new BundleComponentInput(
+        assertThatThrownBy(() -> new BundleComponentInput(
                         jdSku.get("sku_code").toString(),
                         componentRef,
                         jdSku.get("product_name").toString(),
                         jdSku.get("specification").toString(),
                         jdSku.get("unit").toString(),
-                        "0.5")));
-        CanonicalOrderInput input = new CanonicalOrderInput(
-                SourceChannel.CAISHIXIAN,
-                ref,
-                "v1",
-                new CustomerInput(null, "CSX-MEMBER-001", "测试客户"),
-                new Receiver("测试收货人", "13800000001", "北京", "北京市", "朝阳区", null, "测试路 1 号"),
-                List.of(bundle),
-                new Settlement(SettlementMethod.MONTHLY, Instant.now()),
-                null,
-                "ticket04-jd-component-quantity",
-                List.of());
-
-        Map<String, Object> imported = sourceImportService.importStructured(
-                SourceChannel.CAISHIXIAN,
-                List.of(new StructuredOrderRow(ref, null, input, Map.of("source_ref", ref))),
-                batchNo(),
-                ctx());
-        long batchId = Long.parseLong(imported.get("id").toString());
-
-        assertThat(imported.get("status")).isEqualTo("COMPLETED_WITH_REVIEW");
+                        0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("正整数");
         assertThat(jdbc.queryForObject(
-                "SELECT (error_detail->'reason_codes') @> '[\"QUANTITY_SCALE\"]'::jsonb "
-                        + "FROM app.raw_import_rows WHERE import_batch_id=?",
-                Boolean.class,
-                batchId)).isTrue();
-        assertThat(jdbc.queryForObject(
-                "SELECT count(*) FROM app.orders WHERE source_import_batch_id=?",
+                "SELECT count(*) FROM app.orders WHERE source_channel='CAISHIXIAN' AND source_ref=?",
                 Integer.class,
-                batchId)).isZero();
-        assertThatThrownBy(() -> sourceImportService.confirm(batchId, "confirm-" + ref, ctx()))
-                .isInstanceOfSatisfying(BusinessException.class, error ->
-                        assertThat(error.getBusinessCode()).isEqualTo("IMPORT_BATCH_BLOCKED"));
+                ref)).isZero();
     }
 
     @Test
@@ -399,7 +364,7 @@ class StructuredImportApiTest {
                 jdSku.get("product_name").toString(),
                 jdSku.get("specification").toString(),
                 jdSku.get("unit").toString(),
-                "2000000000",
+                2_000_000_000,
                 null);
         CanonicalOrderInput input = new CanonicalOrderInput(
                 SourceChannel.CAISHIXIAN,
@@ -484,14 +449,14 @@ class StructuredImportApiTest {
                 "来源映射与显式 SKU 冲突当单礼包",
                 "1份",
                 "份",
-                "1",
+                1,
                 List.of(new BundleComponentInput(
                         declared.get("sku_code").toString(),
                         componentRef,
                         mapped.get("product_name").toString(),
                         mapped.get("specification").toString(),
                         mapped.get("unit").toString(),
-                        "1")));
+                        1)));
         CanonicalOrderInput input = new CanonicalOrderInput(
                 SourceChannel.CAISHIXIAN,
                 ref,
@@ -561,14 +526,14 @@ class StructuredImportApiTest {
                 "来源映射漂移当单礼包",
                 "1份",
                 "份",
-                "1",
+                1,
                 List.of(new BundleComponentInput(
                         null,
                         componentRef,
                         original.get("product_name").toString(),
                         original.get("specification").toString(),
                         original.get("unit").toString(),
-                        "1")));
+                        1)));
         CanonicalOrderInput input = new CanonicalOrderInput(
                 SourceChannel.CAISHIXIAN,
                 ref,
@@ -935,7 +900,7 @@ class StructuredImportApiTest {
                         "子牧羊小腿",
                         "标准箱",
                         "箱",
-                        "2",
+                        2,
                         null)),
                 new Settlement(SettlementMethod.MONTHLY, Instant.now()),
                 null,
@@ -1153,7 +1118,7 @@ class StructuredImportApiTest {
                         "待配置来源商品",
                         "标准箱",
                         "箱",
-                        "1",
+                        1,
                         null)),
                 new Settlement(SettlementMethod.MONTHLY, Instant.now()),
                 null,

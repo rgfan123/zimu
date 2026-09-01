@@ -1,9 +1,10 @@
 package cn.zimu.fulfillment.file;
 
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import java.io.ByteArrayInputStream;
-import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.text.Normalizer;
 import java.util.ArrayList;
@@ -189,13 +190,12 @@ class ProviderSkuMappingReferenceService {
         if (code.isBlank()) {
             return 1;
         }
-        BigDecimal multiplier = positiveDecimal(value(row, multiplierColumn));
+        Integer multiplier = positiveCount(countValue(row, multiplierColumn));
         if (multiplier == null) {
             return 0;
         }
         String providerName = providerNames.getOrDefault(code, value(row, fallbackProviderNameColumn));
-        Candidate candidate = new Candidate(
-                code, providerName, multiplier.setScale(3).toPlainString(), List.of());
+        Candidate candidate = new Candidate(code, providerName, multiplier, List.of());
         aliases.computeIfAbsent(normalize(sourceName), ignored -> new ArrayList<>()).add(candidate);
         return 0;
     }
@@ -208,12 +208,12 @@ class ProviderSkuMappingReferenceService {
             Row row = sheet.getRow(index);
             String bundleName = value(row, 0);
             String code = value(row, 1);
-            BigDecimal quantity = positiveDecimal(value(row, 2));
+            Integer quantity = positiveCount(countValue(row, 2));
             if (bundleName.isBlank() || code.isBlank() || quantity == null) {
                 continue;
             }
             result.computeIfAbsent(normalize(bundleName), ignored -> new ArrayList<>())
-                    .add(new BundleComponent(code, providerNames.get(code), quantity.setScale(3).toPlainString()));
+                    .add(new BundleComponent(code, providerNames.get(code), quantity));
         }
         // E:G 存在两个并排 BOM 块；礼包名只在块首行，需安全地向下填充到空行。
         String currentBundle = null;
@@ -221,7 +221,7 @@ class ProviderSkuMappingReferenceService {
             Row row = sheet.getRow(index);
             String bundleCell = value(row, 4);
             String code = value(row, 5);
-            String quantityText = value(row, 6);
+            String quantityText = countValue(row, 6);
             if (bundleCell.isBlank() && code.isBlank() && quantityText.isBlank()) {
                 currentBundle = null;
                 continue;
@@ -229,10 +229,10 @@ class ProviderSkuMappingReferenceService {
             if (!bundleCell.isBlank() && !bundleCell.startsWith("EMG") && !code.isBlank()) {
                 currentBundle = bundleCell;
             }
-            BigDecimal quantity = positiveDecimal(quantityText);
+            Integer quantity = positiveCount(quantityText);
             if (currentBundle != null && !code.isBlank() && quantity != null) {
                 result.computeIfAbsent(normalize(currentBundle), ignored -> new ArrayList<>())
-                        .add(new BundleComponent(code, providerNames.get(code), quantity.setScale(3).toPlainString()));
+                        .add(new BundleComponent(code, providerNames.get(code), quantity));
             }
         }
         return result;
@@ -292,11 +292,14 @@ class ProviderSkuMappingReferenceService {
         return row == null ? "" : normalize(formatter.formatCellValue(row.getCell(column)));
     }
 
-    private BigDecimal positiveDecimal(String value) {
+    private String countValue(Row row, int column) {
+        return row == null ? "" : normalize(ExcelCellValues.exactCount(row.getCell(column), formatter));
+    }
+
+    private Integer positiveCount(String value) {
         try {
-            BigDecimal parsed = new BigDecimal(value);
-            return parsed.signum() > 0 && parsed.stripTrailingZeros().scale() <= 3 ? parsed : null;
-        } catch (NumberFormatException exception) {
+            return CountQuantity.fromPositiveFileValue(value);
+        } catch (InvalidCountQuantityException exception) {
             return null;
         }
     }
@@ -321,7 +324,7 @@ class ProviderSkuMappingReferenceService {
     private record Candidate(
             String providerSkuCode,
             String providerSkuName,
-            String quantityMultiplier,
+            Integer quantityMultiplier,
             List<BundleComponent> bundleComponents) {
 
         String conflictKey() {
@@ -333,7 +336,7 @@ class ProviderSkuMappingReferenceService {
         }
     }
 
-    private record BundleComponent(String providerSkuCode, String providerSkuName, String quantityPerBundle) {}
+    private record BundleComponent(String providerSkuCode, String providerSkuName, Integer quantityPerBundle) {}
 
     private record ReferenceData(
             Map<SourceChannel, Map<String, List<Candidate>>> aliases,
@@ -351,7 +354,7 @@ class ProviderSkuMappingReferenceService {
             if (components == null || components.isEmpty()) {
                 return List.of();
             }
-            return List.of(new Candidate(null, null, "1.000", List.copyOf(components)));
+            return List.of(new Candidate(null, null, 1, List.copyOf(components)));
         }
     }
 }

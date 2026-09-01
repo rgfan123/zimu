@@ -3,6 +3,8 @@ package cn.zimu.fulfillment.order;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.event.OrderEventRepository;
@@ -46,7 +48,6 @@ import cn.zimu.fulfillment.sku.SkuFulfillmentReadiness;
 import cn.zimu.fulfillment.sku.SkuFulfillmentReadinessService;
 import cn.zimu.fulfillment.sku.SkuRepository;
 import cn.zimu.fulfillment.sku.SourceChannelSku;
-import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -585,7 +586,7 @@ public class OrderCreateService {
             int lineNo,
             Map<Long, String> skuCodes,
             Sku confirmedSku) {
-        int quantity = parseQuantity(item.quantity());
+        int quantity = item.quantity();
         OrderLine line = baseLine(item, lineNo, quantity);
         if (confirmedSku != null) {
             return createConfirmedSkuLine(item, quantity, line, skuCodes, confirmedSku);
@@ -623,9 +624,22 @@ public class OrderCreateService {
         line.setSkuCodeSnapshot(sku.getSkuCode());
         Integer multiplier = mapping.getQuantityMultiplier();
         if (multiplier != null) {
-            line.setSourceQuantitySnapshot(quantity);
-            line.setMappingMultiplierSnapshot(multiplier);
-            line.setRequestedQuantity(Math.multiplyExact(quantity, multiplier));
+            try {
+                int requestedQuantity = CountQuantity.multiplyPositive(quantity, multiplier);
+                line.setSourceQuantitySnapshot(quantity);
+                line.setMappingMultiplierSnapshot(multiplier);
+                line.setRequestedQuantity(requestedQuantity);
+            } catch (InvalidCountQuantityException exception) {
+                line.setProcessingStage(ProcessingStage.NEED_REVIEW);
+                line.setExceptionCode("QUANTITY_SCALE");
+                line.setExceptionReason("来源数量乘包装乘数后超出 int32 件数范围");
+                return new LineResult(
+                        line,
+                        List.of(),
+                        List.of(blankToEmpty(item.sourceSkuRef())),
+                        List.of(),
+                        "QUANTITY_SCALE");
+            }
         }
         line.setProcessingStage(ProcessingStage.READY_TO_EXPORT);
         return new LineResult(line, List.of(), List.of(), List.of(), null);
@@ -745,7 +759,7 @@ public class OrderCreateService {
 
     private LineResult createBundleLine(SourceChannel channel, OrderItemInput item, int lineNo, Map<Long, String> skuCodes) {
         SourceBundleResolver.requireIntegerQuantityForBundle(item.quantity());
-        int requested = parseQuantity(item.quantity());
+        int requested = item.quantity();
         List<BundleComponentInput> inputs = item.components() == null ? List.of() : item.components();
         if (inputs.isEmpty()) {
             throw BusinessException.badRequest("BUNDLE_COMPONENTS_REQUIRED", "礼包行必须携带当单明确组件清单");
@@ -795,9 +809,16 @@ public class OrderCreateService {
             OrderLineComponent component = new OrderLineComponent();
             component.setComponentNo(componentNo++);
             component.setSkuId(resolution.sku().getId());
-            component.setQuantityPerBundle(parseQuantity(resolution.input().quantityPerBundle()));
-            component.setTotalQuantity(
-                    Math.multiplyExact(requested, component.getQuantityPerBundle()));
+            component.setQuantityPerBundle(resolution.input().quantityPerBundle());
+            try {
+                component.setTotalQuantity(
+                        CountQuantity.multiplyPositive(requested, component.getQuantityPerBundle()));
+            } catch (InvalidCountQuantityException exception) {
+                line.setProcessingStage(ProcessingStage.NEED_REVIEW);
+                line.setExceptionCode("QUANTITY_SCALE");
+                line.setExceptionReason("礼包份数乘组件件数后超出 int32 件数范围");
+                return new LineResult(line, List.of(), List.of(), List.of(), "QUANTITY_SCALE");
+            }
             component.setProductNameSnapshot(resolution.input().productName());
             component.setSpecificationSnapshot(resolution.input().specification());
             component.setUnitSnapshot(resolution.input().unit());
@@ -819,7 +840,7 @@ public class OrderCreateService {
         }
         for (ComponentResolution resolution : resolutions) {
             Integer expectedQuantity = expectedQuantities.remove(resolution.sku().getId());
-            Integer actualQuantity = parseQuantity(resolution.input().quantityPerBundle());
+            Integer actualQuantity = resolution.input().quantityPerBundle();
             if (expectedQuantity == null || expectedQuantity.compareTo(actualQuantity) != 0) {
                 throw BusinessException.unprocessable(
                         "STATIC_BUNDLE_SNAPSHOT_MISMATCH", "静态礼包组件与主数据 BOM 不一致");
@@ -1036,7 +1057,7 @@ public class OrderCreateService {
                         previous.getSourceQuantitySnapshot() == null
                                 ? String.valueOf(previous.getRequestedQuantity())
                                 : String.valueOf(previous.getSourceQuantitySnapshot()),
-                        item.quantity());
+                        String.valueOf(item.quantity()));
                 appendChange(changes, changedFields, "product_name", lineNo,
                         previous.getProductNameSnapshot(), item.productName());
                 appendChange(changes, changedFields, "specification", lineNo,
@@ -1144,7 +1165,7 @@ public class OrderCreateService {
                 item.put("product_name", blankToEmpty(input.productName()));
                 item.put("specification", blankToEmpty(input.specification()));
                 item.put("unit", blankToEmpty(input.unit()));
-                item.put("quantity", blankToEmpty(input.quantityPerBundle()));
+                item.put("quantity", input.quantityPerBundle());
                 return item;
             }).toList();
         }
@@ -1166,15 +1187,6 @@ public class OrderCreateService {
         }).toList();
     }
 
-    /** 商品数量域一律正整数（V99）；容忍 "2.000" 形态但拒绝真实小数与非法输入。 */
-    private static int parseQuantity(String quantity) {
-        try {
-            return new java.math.BigDecimal(quantity).intValueExact();
-        } catch (ArithmeticException | NumberFormatException exception) {
-            throw BusinessException.unprocessable("QUANTITY_NOT_INTEGER", "商品数量必须为整数: " + quantity);
-        }
-    }
-
     private static String blankToEmpty(String value) {
         return value == null ? "" : value;
     }
@@ -1185,7 +1197,7 @@ public class OrderCreateService {
                 && !inputSkuCode.equals(mappedSku.getSkuCode());
     }
 
-    /** 单行解析结果：components 仅礼包行非空；missingSourceSkuRefs 为空表示该行完全映射。 */
+    /** 单行解析结果：components 仅礼包行非空；无复核原因且无缺失来源 SKU 才表示完全映射。 */
     private record LineResult(
             OrderLine line,
             List<OrderLineComponent> components,
@@ -1194,7 +1206,7 @@ public class OrderCreateService {
             String reviewReasonCode) {
 
         boolean mapped() {
-            return missingSourceSkuRefs.isEmpty();
+            return reviewReasonCode == null && missingSourceSkuRefs.isEmpty();
         }
     }
 

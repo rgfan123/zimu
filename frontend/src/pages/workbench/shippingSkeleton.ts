@@ -22,6 +22,7 @@ export const JD_GATE_REASON_CODES: readonly string[] = [
   'MULTIPLE_TRACKINGS_FOR_OUTBOUND',
   'JD_TRACKING_CARRIER_MAPPING_REQUIRED',
   'JD_TRACKING_TERMINAL_EXCEPTION',
+  'JD_TRACKING_CARGO_MISMATCH',
 ];
 
 export const JD_GATE_ZERO_COPY = '今天没有。这一类保留是因为它出现时必须第一时间看见。';

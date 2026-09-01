@@ -13,6 +13,7 @@ public interface JDWarehouseService {
 
     JdResult queryStock(Map<String, Object> request);
 
+    /** Legacy read-client surface; implementations fail closed. Use the controlled Shipment workflow. */
     JdResult createOutboundOrder(Map<String, Object> request);
 
     JdResult queryOutboundOrder(Map<String, Object> request);

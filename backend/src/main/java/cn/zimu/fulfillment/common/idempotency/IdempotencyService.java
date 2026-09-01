@@ -375,11 +375,23 @@ public class IdempotencyService {
             if (prepared == null) {
                 throw new IllegalStateException("external write preparation must not be null");
             }
-            I intent = requiresNew.execute(status -> intentWork.persist(prepared));
-            if (intent == null) {
-                throw new IllegalStateException("external write intent must not be null");
-            }
             ExternalWriteClaim activeClaim = () -> verifyActiveClaim(scope, idempotencyKey, ownerToken);
+            I intent = requiresNew.execute(status -> {
+                // The preparation phase may contain slow, read-only external checks. Lock and
+                // verify the claim inside the same transaction that persists the durable intent,
+                // so an expired claimant can never leave a no-write SUBMITTING record behind.
+                verifyActiveClaimInCurrentTransaction(scope, idempotencyKey, ownerToken);
+                I persisted = intentWork.persist(prepared);
+                if (persisted == null) {
+                    throw new IllegalStateException("external write intent must not be null");
+                }
+                // The intent transaction may itself cross the old expiry. The locked owner is
+                // still exclusive, so renew from the database clock immediately before commit;
+                // the post-commit fence then receives one complete scope lease.
+                renewActiveClaimInCurrentTransaction(
+                        scope, idempotencyKey, ownerToken, scopeLease);
+                return persisted;
+            });
             activeClaim.verifyActive();
             E externalResult = externalWork.execute(intent, activeClaim);
             ExternalCompletion<T> outcome = required.execute(status -> {
@@ -415,6 +427,52 @@ public class IdempotencyService {
                 """,
                 Boolean.class, scope, key, ownerToken));
         if (!Boolean.TRUE.equals(active)) {
+            throw BusinessException.conflict(
+                    "IDEMPOTENCY_CLAIM_LOST", "幂等执行租约已失效，禁止继续产生外部写入");
+        }
+    }
+
+    private void verifyActiveClaimInCurrentTransaction(String scope, String key, String ownerToken) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("claim and external-write intent must share one transaction");
+        }
+        Boolean active = jdbc.query(
+                """
+                SELECT owner_token = ?
+                       AND status = 'IN_PROGRESS'
+                       AND lease_expires_at > clock_timestamp()
+                FROM app.idempotency_registry
+                WHERE scope = ? AND idempotency_key = ?
+                FOR UPDATE
+                """,
+                resultSet -> resultSet.next() && resultSet.getBoolean(1),
+                ownerToken,
+                scope,
+                key);
+        if (!Boolean.TRUE.equals(active)) {
+            throw BusinessException.conflict(
+                    "IDEMPOTENCY_CLAIM_LOST", "幂等执行租约已失效，禁止继续产生外部写入");
+        }
+    }
+
+    private void renewActiveClaimInCurrentTransaction(
+            String scope,
+            String key,
+            String ownerToken,
+            Duration scopeLease) {
+        int updated = jdbc.update(
+                """
+                UPDATE app.idempotency_registry
+                SET lease_expires_at = clock_timestamp() + (? * INTERVAL '1 second'),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE scope = ? AND idempotency_key = ?
+                  AND owner_token = ? AND status = 'IN_PROGRESS'
+                """,
+                scopeLease.toSeconds(),
+                scope,
+                key,
+                ownerToken);
+        if (updated != 1) {
             throw BusinessException.conflict(
                     "IDEMPOTENCY_CLAIM_LOST", "幂等执行租约已失效，禁止继续产生外部写入");
         }

@@ -1,6 +1,9 @@
 package cn.zimu.fulfillment.fulfillment.dto;
 
+import cn.zimu.fulfillment.common.dto.PositiveCountQuantityDeserializer;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -17,5 +20,6 @@ public record TrackingDraftConfirmCommand(
         String taskId,
         @Size(max = 64, message = "系统任务号最长64个字符") String taskNo,
         String carrierCode,
-        String actualQuantity,
+        @Positive(message = "实际发货数量必须为正整数")
+                @JsonDeserialize(using = PositiveCountQuantityDeserializer.class) Integer actualQuantity,
         String remark) {}

@@ -88,7 +88,7 @@ class WangqiSourceOrderImportApiTest {
                 "receiver_phone", "13800000001",
                 "receiver_address", "北京市朝阳区测试路1号",
                 "product_name", "子牧原切羊肉礼包6300g（BJ）",
-                "quantity", "1",
+                "quantity", 1,
                 "source_sku_ref", "P26011900044"));
         assertThat((Map<String, Object>) first.get("raw_cells")).containsAllEntriesOf(Map.of(
                 "供应商商品名称", "北京大者国风科技有限公司",
@@ -103,7 +103,7 @@ class WangqiSourceOrderImportApiTest {
                 "receiver_phone", "13800000002",
                 "receiver_address", "北京市海淀区测试路2号",
                 "product_name", "精选内蒙原切牛羊肉大礼包3100g（BJ）",
-                "quantity", "1",
+                "quantity", 1,
                 "source_sku_ref", "P26012100060"));
     }
 

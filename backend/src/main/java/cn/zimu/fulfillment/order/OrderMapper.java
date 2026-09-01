@@ -331,6 +331,7 @@ public class OrderMapper {
             case "JD_SKU_MAPPING_BLOCKED" ->
                 List.of("OPEN_SKU_MAPPING", "RERUN_JD_SKU_MAPPING_CHECK", "DISMISS");
             case "JD_STOCK_BLOCKED" -> List.of("RERUN_JD_STOCK_CHECK", "RESOLVE_MANUALLY", "DISMISS");
+            case "JD_TRACKING_CARGO_MISMATCH" -> List.of("RESOLVE_JD_TRACKING_CONFLICT");
             case "MULTIPLE_TRACKINGS_FOR_OUTBOUND", "JD_TRACKING_CARRIER_MAPPING_REQUIRED",
                     "JD_TRACKING_TERMINAL_EXCEPTION" ->
                 List.of("RESOLVE_JD_TRACKING_CONFLICT", "DISMISS");

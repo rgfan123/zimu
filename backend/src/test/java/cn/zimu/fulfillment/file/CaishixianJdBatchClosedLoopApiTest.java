@@ -88,13 +88,19 @@ class CaishixianJdBatchClosedLoopApiTest {
 
         @Override
         public JdResult queryOutboundOrder(Map<String, Object> request) {
-            if (queryResult == null) throw new IllegalStateException("controlled JD query result missing");
+            if (Integer.valueOf(0).equals(request.get("deliveryItemFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryPackageFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryStatusFlag"))) {
+                return super.queryOutboundOrder(request);
+            }
+            if (queryResult == null) return super.queryOutboundOrder(request);
             return queryResult;
         }
     }
 
     @BeforeEach
     void configureCatalogAndJd() {
+        jd.queryResult(null);
         jdbc.update(
                 """
                 UPDATE app.fulfillment_providers

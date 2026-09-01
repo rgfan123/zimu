@@ -51,7 +51,7 @@ class BundleMasterDataApiTest {
         request.put("items", List.of(
                 Map.of(
                         "sku_id", jdSkus.get(0).get("id"),
-                        "quantity_per_bundle", "3",
+                        "quantity_per_bundle", 3,
                         "emg_code_snapshot", "EMG4418691851778",
                         "source_text_snapshot", "原切羊小腿500g*3")));
 
@@ -101,7 +101,7 @@ class BundleMasterDataApiTest {
                 "status", "ACTIVE",
                 "items", List.of(Map.of(
                         "sku_id", jdSku.get("id"),
-                        "quantity_per_bundle", "1")));
+                        "quantity_per_bundle", 1)));
         ResponseEntity<Map> created = http.exchange(
                 "/api/v1/product-bundles",
                 HttpMethod.POST,
@@ -122,7 +122,7 @@ class BundleMasterDataApiTest {
         patchRequest.put("status", "ACTIVE");
         patchRequest.put("items", List.of(Map.of(
                 "sku_id", jdSku.get("id"),
-                "quantity_per_bundle", "2",
+                "quantity_per_bundle", 2,
                 "emg_code_snapshot", "EMG-PATCH-001",
                 "source_text_snapshot", "修改后的内配")));
         HttpHeaders headers = writeHeaders("bundle-patch-001", "req-bundle-patch-001");
@@ -177,14 +177,14 @@ class BundleMasterDataApiTest {
                         "status", "DRAFT",
                         "items", List.of(Map.of(
                                 "sku_id", jdSku.get("id"),
-                                "quantity_per_bundle", "1"))),
+                                "quantity_per_bundle", 1))),
                         writeHeaders("bundle-item-version-parent-001", "req-bundle-item-version-parent-001")),
                 Map.class);
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
         List<Map<String, Object>> replacement = List.of(Map.of(
                 "sku_id", jdSku.get("id"),
-                "quantity_per_bundle", "2"));
+                "quantity_per_bundle", 2));
         ResponseEntity<Map> missingVersion = http.exchange(
                 "/api/v1/product-bundles/" + created.getBody().get("id"),
                 HttpMethod.PATCH,
@@ -241,7 +241,7 @@ class BundleMasterDataApiTest {
                 "status", "ACTIVE",
                 "items", List.of(Map.of(
                         "sku_id", jdSku.get("id"),
-                        "quantity_per_bundle", "1",
+                        "quantity_per_bundle", 1,
                         "emg_code_snapshot", "EMG-WANGQI-MAPPING-001")));
         ResponseEntity<Map> bundle = http.exchange(
                 "/api/v1/product-bundles",
@@ -255,7 +255,7 @@ class BundleMasterDataApiTest {
                 "source_channel", "WANGQI",
                 "source_bundle_ref", "P26011900044",
                 "source_bundle_name", "子牧原切羊肉礼包6300g（BJ）",
-                "quantity_multiplier", "1",
+                "quantity_multiplier", 1,
                 "bundle_id", bundle.getBody().get("id"),
                 "active", true);
         HttpHeaders headers = writeHeaders("source-bundle-create-001", "req-source-bundle-create-001");
@@ -301,7 +301,7 @@ class BundleMasterDataApiTest {
                 "status", "DRAFT",
                 "items", List.of(Map.of(
                         "sku_id", jdSku.get("id"),
-                        "quantity_per_bundle", "1")));
+                        "quantity_per_bundle", 1)));
         ResponseEntity<Map> bundle = http.exchange(
                 "/api/v1/product-bundles",
                 HttpMethod.POST,
@@ -314,7 +314,7 @@ class BundleMasterDataApiTest {
                 "source_channel", "WANGQI",
                 "source_bundle_ref", "P-WANGQI-DRAFT-001",
                 "source_bundle_name", "尚未上架的万齐测试礼包",
-                "quantity_multiplier", "1",
+                "quantity_multiplier", 1,
                 "bundle_id", bundle.getBody().get("id"),
                 "active", true);
         ResponseEntity<Map> response = http.exchange(
@@ -333,7 +333,7 @@ class BundleMasterDataApiTest {
         Map<String, Object> jdSku = firstSkuForProvider("1");
         Map<String, Object> item = Map.of(
                 "sku_id", jdSku.get("id"),
-                "quantity_per_bundle", "1");
+                "quantity_per_bundle", 1);
         Map<String, Object> request = Map.of(
                 "bundle_code", "BUNDLE-DUPLICATE-SKU-001",
                 "bundle_name", "重复组件测试礼包",
@@ -360,8 +360,8 @@ class BundleMasterDataApiTest {
                 "bundle_name", "跨履约方测试礼包",
                 "status", "ACTIVE",
                 "items", List.of(
-                        Map.of("sku_id", jdSku.get("id"), "quantity_per_bundle", "1"),
-                        Map.of("sku_id", thirdPartySku.get("id"), "quantity_per_bundle", "1")));
+                        Map.of("sku_id", jdSku.get("id"), "quantity_per_bundle", 1),
+                        Map.of("sku_id", thirdPartySku.get("id"), "quantity_per_bundle", 1)));
 
         ResponseEntity<Map> response = http.exchange(
                 "/api/v1/product-bundles",

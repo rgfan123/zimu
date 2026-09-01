@@ -6,5 +6,5 @@ import java.util.List;
 public record ProviderSkuJdFactorImportResult(
         int acceptedCount, int skippedCount, List<ImportedRow> rows) {
 
-    public record ImportedRow(String providerSkuCode, String jdPiecesPerUnit, String status) {}
+    public record ImportedRow(String providerSkuCode, Integer jdPiecesPerUnit, String status) {}
 }

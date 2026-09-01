@@ -115,10 +115,15 @@ class SourceBatchJdAutoBackfillE2EApiTest {
 
         @Override
         public JdResult queryOutboundOrder(Map<String, Object> request) {
+            if (Integer.valueOf(0).equals(request.get("deliveryItemFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryPackageFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryStatusFlag"))) {
+                return super.queryOutboundOrder(request);
+            }
             outboundQueryCalls.incrementAndGet();
             JdResult value = outboundResult;
             if (value == null) {
-                throw new IllegalStateException("controlled JD outbound query result missing");
+                return super.queryOutboundOrder(request);
             }
             return value;
         }

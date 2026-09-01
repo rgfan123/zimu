@@ -69,7 +69,7 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "2")},
+                        "quantity", 2)},
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-11T10:00:00+08:00"));
@@ -105,6 +105,45 @@ class InternalOrderApiTest {
     }
 
     @Test
+    void mappedOrderTurnsCountMultiplicationOverflowIntoAReviewCase() {
+        try {
+            jdbc.update(
+                    """
+                    UPDATE app.source_channel_skus
+                    SET quantity_multiplier=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-JD-001'
+                    """,
+                    Integer.MAX_VALUE);
+            Map<String, Object> request = baseRequest(
+                    "WECOM-ORDER-COUNT-OVERFLOW-001",
+                    Map.of(
+                            "line_type", "SINGLE",
+                            "source_sku_ref", "WECOM-SKU-JD-001",
+                            "product_name", "子牧羊小腿",
+                            "specification", "500g/盒",
+                            "unit", "盒",
+                            "quantity", 2));
+
+            ResponseEntity<Map> created = http.exchange(
+                    "/internal/v1/orders",
+                    HttpMethod.POST,
+                    new HttpEntity<>(request, writeHeaders("order-count-overflow-001", "req-order-count-overflow-001")),
+                    Map.class);
+
+            assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+            Map<?, ?> review = (Map<?, ?>) ((List<?>) created.getBody().get("review_cases")).getFirst();
+            assertThat(review.get("reason_code")).isEqualTo("QUANTITY_SCALE");
+        } finally {
+            jdbc.update(
+                    """
+                    UPDATE app.source_channel_skus
+                    SET quantity_multiplier=1, updated_at=CURRENT_TIMESTAMP
+                    WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-JD-001'
+                    """);
+        }
+    }
+
+    @Test
     void correctionCreatesANewLinkedOrderWithoutOverwritingTheOriginal() {
         ResponseEntity<Map> original = createMappedOrder(
                 "order-correction-original-001", "req-order-correction-original-001", "WECOM-CORRECTION-ORIGINAL-001");
@@ -113,7 +152,7 @@ class InternalOrderApiTest {
                 "WECOM-CORRECTION-NEW-001",
                 Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "3"));
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", 3));
         Map<String, Object> command = Map.of(
                 "expected_version", original.getBody().get("version"),
                 "reason", "客户追加一盒",
@@ -147,7 +186,7 @@ class InternalOrderApiTest {
                 "WECOM-REVISION-001",
                 Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2")));
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", 2)));
         revision.put("source_version", "revision-2");
         revision.put("expected_version", original.getBody().get("version"));
         revision.put("change_reason", "客户修改数量");
@@ -194,14 +233,14 @@ class InternalOrderApiTest {
                             "product_name", "子牧羊小腿",
                             "specification", "标准箱",
                             "unit", "箱",
-                            "quantity", "1"),
+                            "quantity", 1),
                     Map.of(
                             "line_type", "SINGLE",
                             "source_sku_ref", "WECOM-SKU-JD-001",
                             "product_name", "子牧羊小腿",
                             "specification", "500g/盒",
                             "unit", "盒",
-                            "quantity", "1")
+                            "quantity", 1)
                 },
                 "settlement", Map.of(
                         "method", "MONTHLY",
@@ -432,13 +471,13 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊腿礼盒",
                         "specification", "2盒/份",
                         "unit", "份",
-                        "quantity", "2",
+                        "quantity", 2,
                         "components", new Object[] {Map.of(
                                 "source_sku_ref", "WECOM-SKU-JD-001",
                                 "product_name", "子牧羊小腿",
                                 "specification", "500g/盒",
                                 "unit", "盒",
-                                "quantity_per_bundle", "2")}));
+                                "quantity_per_bundle", 2)}));
 
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST, new HttpEntity<>(request, headers), Map.class);
@@ -448,6 +487,43 @@ class InternalOrderApiTest {
         assertThat(created.getBody().get("order_status")).isEqualTo("SKU_MAPPED");
         Map<?, ?> line = (Map<?, ?>) ((java.util.List<?>) created.getBody().get("lines")).getFirst();
         assertThat((Iterable<?>) line.get("components")).hasSize(1);
+    }
+
+    @Test
+    void customBundleCountOverflowCreatesAReviewWithoutFulfillment() {
+        Map<String, Object> request = baseRequest(
+                "WECOM-ORDER-CUSTOM-BUNDLE-OVERFLOW-001",
+                Map.of(
+                        "line_type", "CUSTOM_BUNDLE",
+                        "product_name", "超大组件测试礼包",
+                        "specification", "测试",
+                        "unit", "份",
+                        "quantity", 2,
+                        "components", new Object[] {Map.of(
+                                "source_sku_ref", "WECOM-SKU-JD-001",
+                                "product_name", "子牧羊小腿",
+                                "specification", "500g/盒",
+                                "unit", "盒",
+                                "quantity_per_bundle", Integer.MAX_VALUE)}));
+
+        ResponseEntity<Map> created = http.exchange(
+                "/internal/v1/orders",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders(
+                        "order-custom-bundle-overflow-001", "req-order-custom-bundle-overflow-001")),
+                Map.class);
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(created.getBody()).containsEntry("order_status", "NEED_REVIEW");
+        long orderId = Long.parseLong(created.getBody().get("id").toString());
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.fulfillments f "
+                                + "JOIN app.order_lines ol ON ol.id=f.order_line_id WHERE ol.order_id=?",
+                        Long.class,
+                        orderId))
+                .isZero();
+        Map<?, ?> review = (Map<?, ?>) ((List<?>) created.getBody().get("review_cases")).getFirst();
+        assertThat(review.get("reason_code")).isEqualTo("QUANTITY_SCALE");
     }
 
     @Test
@@ -466,7 +542,7 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "1"));
+                        "quantity", 1));
 
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST, new HttpEntity<>(request, headers), Map.class);
@@ -505,20 +581,20 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊腿礼盒",
                         "specification", "2盒/份",
                         "unit", "份",
-                        "quantity", "2",
+                        "quantity", 2,
                         "components", new Object[] {
                                 Map.of(
                                         "source_sku_ref", "WECOM-SKU-JD-001",
                                         "product_name", "子牧羊小腿",
                                         "specification", "500g/盒",
                                         "unit", "盒",
-                                        "quantity_per_bundle", "1"),
+                                        "quantity_per_bundle", 1),
                                 Map.of(
                                         "source_sku_ref", "WECOM-SKU-UNMAPPED-001",
                                         "product_name", "未映射礼盒组件",
                                         "specification", "300g/袋",
                                         "unit", "袋",
-                                        "quantity_per_bundle", "2")}));
+                                        "quantity_per_bundle", 2)}));
 
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST, new HttpEntity<>(request, headers), Map.class);
@@ -537,7 +613,7 @@ class InternalOrderApiTest {
             assertThat(evidence.get("product_name")).isEqualTo("未映射礼盒组件");
             assertThat(evidence.get("specification")).isEqualTo("300g/袋");
             assertThat(evidence.get("unit")).isEqualTo("袋");
-            assertThat(evidence.get("quantity")).isEqualTo("2");
+            assertThat(evidence.get("quantity")).isEqualTo(2);
         });
     }
 
@@ -652,7 +728,7 @@ class InternalOrderApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "标准箱",
                         "unit", "箱",
-                        "quantity", "1"));
+                        "quantity", 1));
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST, new HttpEntity<>(request, headers), Map.class);
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -949,7 +1025,7 @@ class InternalOrderApiTest {
                         "product_name", productName,
                         "specification", specification,
                         "unit", unit,
-                        "quantity", "1")},
+                        "quantity", 1)},
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-11T10:00:00+08:00"));

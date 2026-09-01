@@ -1,10 +1,10 @@
 package cn.zimu.fulfillment.connector.jufubao;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import cn.zimu.fulfillment.connector.jufubao.JufubaoShipmentAttemptStore.ShipmentAttemptPayload;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -17,11 +17,11 @@ class JufubaoShipmentAttemptStorePayloadHashTest {
     @Test
     void sameContentHashesStablyRegardlessOfConstructionAndFieldOrder() {
         ShipmentAttemptPayload recordPayload = new ShipmentAttemptPayload(
-                "main-1", "sub-1", new BigDecimal("1.0"), "京东物流", "JDVA123");
+                "main-1", "sub-1", 1L, "京东物流", "JDVA123");
         Map<String, Object> mapPayload = new LinkedHashMap<>();
         mapPayload.put("trackingNo", "JDVA123");
         mapPayload.put("carrierOutputValue", "京东物流");
-        mapPayload.put("actualShippedQuantity", new BigDecimal("1"));
+        mapPayload.put("actualShippedQuantity", 1L);
         mapPayload.put("subOrderId", "sub-1");
         mapPayload.put("sourceRef", "main-1");
         mapPayload.put("expectedPlatformEffectHash", "");
@@ -30,23 +30,21 @@ class JufubaoShipmentAttemptStorePayloadHashTest {
     }
 
     @Test
-    void quantityTrailingZeroesHashIdentically() {
-        ShipmentAttemptPayload withTrailingZeroes =
-                new ShipmentAttemptPayload("main-1", "sub-1", new BigDecimal("1.0"), "京东物流", "JDVA123");
-        ShipmentAttemptPayload plain =
-                new ShipmentAttemptPayload("main-1", "sub-1", new BigDecimal("1"), "京东物流", "JDVA123");
-
-        assertThat(hash(withTrailingZeroes)).isEqualTo(hash(plain));
+    void nonPositiveCountIsRejected() {
+        assertThatThrownBy(() ->
+                        new ShipmentAttemptPayload("main-1", "sub-1", 0L, "京东物流", "JDVA123"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("正整数");
     }
 
     @Test
     void differentContentHashesDifferently() {
         ShipmentAttemptPayload original =
-                new ShipmentAttemptPayload("main-1", "sub-1", BigDecimal.ONE, "京东物流", "JDVA123");
+                new ShipmentAttemptPayload("main-1", "sub-1", 1L, "京东物流", "JDVA123");
         ShipmentAttemptPayload differentCarrier =
-                new ShipmentAttemptPayload("main-1", "sub-1", BigDecimal.ONE, "顺丰速运", "JDVA123");
+                new ShipmentAttemptPayload("main-1", "sub-1", 1L, "顺丰速运", "JDVA123");
         ShipmentAttemptPayload differentQuantity =
-                new ShipmentAttemptPayload("main-1", "sub-1", BigDecimal.TWO, "京东物流", "JDVA123");
+                new ShipmentAttemptPayload("main-1", "sub-1", 2L, "京东物流", "JDVA123");
 
         assertThat(hash(differentCarrier)).isNotEqualTo(hash(original));
         assertThat(hash(differentQuantity)).isNotEqualTo(hash(original));

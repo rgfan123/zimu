@@ -137,10 +137,11 @@ export default function SkusPage() {
       render: (_, r) => {
         const readiness = skuReadiness(r);
         if (!readiness) return '未评估';
-        if (readiness.ready) return <Tag color="success">可履约</Tag>;
         return (
           <Space direction="vertical" size={2}>
-            <Tag color="warning">阻断 · {readiness.issues.length} 项</Tag>
+            {readiness.ready
+              ? <Tag color="success">可履约</Tag>
+              : <Tag color="error">阻断 · {readiness.issues.length} 项</Tag>}
             {readiness.issues.map((issue) => (
               <div key={issue.code}>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -148,6 +149,17 @@ export default function SkusPage() {
                 </Typography.Text>
                 <Typography.Text type="secondary" style={{ display: 'block', fontSize: 11 }}>
                   处理：{issue.action}
+                </Typography.Text>
+              </div>
+            ))}
+            {(readiness.warnings ?? []).map((warning) => (
+              <div key={warning.code}>
+                <Tag color="warning">资料提醒</Tag>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {warning.message}
+                </Typography.Text>
+                <Typography.Text type="secondary" style={{ display: 'block', fontSize: 11 }}>
+                  建议：{warning.action}
                 </Typography.Text>
               </div>
             ))}

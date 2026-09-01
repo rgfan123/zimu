@@ -864,7 +864,7 @@ class MessageInterpretationApiTest {
         output.put("settlement_method", "MONTHLY");
         output.put("items", List.of(Map.of(
                 "product", "边界测试商品",
-                "quantity", "1")));
+                "quantity", 1)));
         output.putAll(extra);
         return output;
     }

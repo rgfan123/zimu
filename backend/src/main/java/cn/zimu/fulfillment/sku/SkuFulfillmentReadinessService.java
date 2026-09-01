@@ -83,6 +83,7 @@ public class SkuFulfillmentReadinessService {
         Map<Long, SkuFulfillmentReadiness> result = new HashMap<>();
         for (Sku sku : values) {
             EnumSet<SkuReadinessReason> reasons = EnumSet.noneOf(SkuReadinessReason.class);
+            EnumSet<SkuReadinessWarningCode> warningCodes = EnumSet.noneOf(SkuReadinessWarningCode.class);
             Map<SkuReadinessReason, SkuDataQualityFlag> explicitIssueByReason =
                     new EnumMap<>(SkuReadinessReason.class);
             Product product = productById.get(sku.getProductId());
@@ -93,8 +94,11 @@ public class SkuFulfillmentReadinessService {
             if (product == null || !product.isActive()) reasons.add(SkuReadinessReason.PRODUCT_INACTIVE);
             if (!sku.isActive()) reasons.add(SkuReadinessReason.SKU_INACTIVE);
             if (provider == null || !provider.isActive()) reasons.add(SkuReadinessReason.PROVIDER_INACTIVE);
-            if (missingIdentityText(sku.getSpecification()) || missingPackagingIdentity(sku)) {
+            if (missingIdentityText(sku.getSpecification())) {
                 reasons.add(SkuReadinessReason.SPECIFICATION_REQUIRED);
+            }
+            if (missingPackagingIdentity(sku)) {
+                warningCodes.add(SkuReadinessWarningCode.PACKAGING_METADATA_INCOMPLETE);
             }
             if (missingIdentityText(sku.getUnit())) reasons.add(SkuReadinessReason.UNIT_REQUIRED);
 
@@ -130,6 +134,10 @@ public class SkuFulfillmentReadinessService {
                                 explicit == null ? reason.action() : explicit.getAction());
                     })
                     .toList();
+            List<SkuFulfillmentReadiness.SkuReadinessWarning> warnings = warningCodes.stream()
+                    .map(warning -> new SkuFulfillmentReadiness.SkuReadinessWarning(
+                            warning.name(), warning.message(), warning.action()))
+                    .toList();
             List<SkuFulfillmentReadiness.SkuDataQualityFlagView> qualityFlags = skuFlags.stream()
                     .map(flag -> new SkuFulfillmentReadiness.SkuDataQualityFlagView(
                             flag.getFlagCode(),
@@ -139,7 +147,7 @@ public class SkuFulfillmentReadinessService {
                             flag.getAction(),
                             flag.getEvidence()))
                     .toList();
-            result.put(sku.getId(), new SkuFulfillmentReadiness(issues, qualityFlags));
+            result.put(sku.getId(), new SkuFulfillmentReadiness(issues, warnings, qualityFlags));
         }
         return Map.copyOf(result);
     }

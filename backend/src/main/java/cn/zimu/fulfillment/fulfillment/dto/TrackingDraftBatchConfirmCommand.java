@@ -1,8 +1,11 @@
 package cn.zimu.fulfillment.fulfillment.dto;
 
+import cn.zimu.fulfillment.common.dto.PositiveCountQuantityDeserializer;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import java.util.List;
 
 /**
@@ -21,6 +24,7 @@ public record TrackingDraftBatchConfirmCommand(
             @NotNull(message = "必须提供复核事项期望版本") Long expectedCaseVersion,
             String taskId,
             String carrierCode,
-            String actualQuantity,
+            @Positive(message = "实际发货数量必须为正整数")
+                    @JsonDeserialize(using = PositiveCountQuantityDeserializer.class) Integer actualQuantity,
             String remark) {}
 }

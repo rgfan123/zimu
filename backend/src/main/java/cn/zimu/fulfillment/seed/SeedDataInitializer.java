@@ -221,7 +221,7 @@ public class SeedDataInitializer implements ApplicationRunner {
                     && mapping.getSkuId().equals(sku.getId())
                     && !mapping.getExternalCodes().containsKey("jd_pieces_per_unit")) {
                 Map<String, Object> externalCodes = new LinkedHashMap<>(mapping.getExternalCodes());
-                externalCodes.put("jd_pieces_per_unit", BigDecimal.ONE);
+                externalCodes.put("jd_pieces_per_unit", 1);
                 mapping.setExternalCodes(externalCodes);
                 providerSkuRepository.save(mapping);
             }
@@ -233,7 +233,7 @@ public class SeedDataInitializer implements ApplicationRunner {
         providerSku.setProviderSkuCode(providerSkuCode);
         Map<String, Object> externalCodes = new LinkedHashMap<>();
         if (provider.getProviderType() == ProviderType.JD_WAREHOUSE) {
-            externalCodes.put("jd_pieces_per_unit", BigDecimal.ONE);
+            externalCodes.put("jd_pieces_per_unit", 1);
         }
         providerSku.setExternalCodes(externalCodes);
         providerSkuRepository.save(providerSku);

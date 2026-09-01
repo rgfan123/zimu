@@ -4,6 +4,8 @@ import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.idempotency.IdempotencyService;
 import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.event.OrderEventService;
 import cn.zimu.fulfillment.common.web.CommandContext;
@@ -11,8 +13,6 @@ import cn.zimu.fulfillment.fulfillment.FulfillmentRepository;
 import cn.zimu.fulfillment.fulfillment.InitialFulfillmentService;
 import cn.zimu.fulfillment.order.domain.Order;
 import cn.zimu.fulfillment.order.domain.OrderLine;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -90,10 +90,7 @@ public class OrderLineBundleResolutionService {
             List<Long> partitionLineIds;
 
             if (!alreadyExpanded) {
-                BigDecimal requested = (BigDecimal) line.get("requested_quantity");
-                if (requested.stripTrailingZeros().scale() > 0) {
-                    throw BusinessException.unprocessable("BUNDLE_QUANTITY_NOT_INTEGER", "礼包行数量必须为整数");
-                }
+                int requested = ((Number) line.get("requested_quantity")).intValue();
 
                 partitionLineIds = expandByProvider(
                         line, orderLineId, orderId, bundleId, requested, providerGroups);
@@ -201,7 +198,7 @@ public class OrderLineBundleResolutionService {
                     row.put("source_sku_ref", rs.getString("source_sku_ref"));
                     row.put("source_bundle_ref", rs.getString("source_bundle_ref"));
                     row.put("product_name_snapshot", rs.getString("product_name_snapshot"));
-                    row.put("requested_quantity", rs.getBigDecimal("requested_quantity"));
+                    row.put("requested_quantity", rs.getInt("requested_quantity"));
                     row.put("source_channel", rs.getString("source_channel"));
                     row.put("components", rs.getInt("components"));
                     return row;
@@ -414,7 +411,7 @@ public class OrderLineBundleResolutionService {
                 (rs, n) -> {
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("sku_id", rs.getLong("sku_id"));
-                    row.put("quantity_per_bundle", rs.getBigDecimal("quantity_per_bundle"));
+                    row.put("quantity_per_bundle", rs.getInt("quantity_per_bundle"));
                     row.put("fulfillment_provider_id", rs.getLong("fulfillment_provider_id"));
                     row.put("sku_active", rs.getBoolean("active"));
                     row.put("product_name", rs.getString("product_name"));
@@ -452,7 +449,7 @@ public class OrderLineBundleResolutionService {
             long primaryLineId,
             long orderId,
             long bundleId,
-            BigDecimal requested,
+            int requested,
             List<List<Map<String, Object>>> providerGroups) {
         int additional = providerGroups.size() - 1;
         int originalLineNo = ((Number) sourceLine.get("line_no")).intValue();
@@ -522,10 +519,10 @@ public class OrderLineBundleResolutionService {
         return List.copyOf(lineIds);
     }
 
-    private void insertComponents(long lineId, BigDecimal requested, List<Map<String, Object>> group) {
+    private void insertComponents(long lineId, int requested, List<Map<String, Object>> group) {
         int componentNo = 1;
         for (Map<String, Object> item : group) {
-            BigDecimal perBundle = (BigDecimal) item.get("quantity_per_bundle");
+            int perBundle = ((Number) item.get("quantity_per_bundle")).intValue();
             jdbc.update(
                     """
                     INSERT INTO app.order_line_components
@@ -537,10 +534,19 @@ public class OrderLineBundleResolutionService {
                     componentNo++,
                     ((Number) item.get("sku_id")).longValue(),
                     perBundle,
-                    requested.multiply(perBundle).setScale(3, RoundingMode.HALF_UP),
+                    multiplyComponentCount(requested, perBundle),
                     item.get("product_name"),
                     item.get("specification"),
                     item.get("unit"));
+        }
+    }
+
+    private static int multiplyComponentCount(int requested, int perBundle) {
+        try {
+            return CountQuantity.multiplyPositive(requested, perBundle);
+        } catch (InvalidCountQuantityException exception) {
+            throw BusinessException.unprocessable(
+                    "QUANTITY_SCALE", "礼包份数乘组件件数后超出 int32 件数范围，复核事项保持开放");
         }
     }
 
