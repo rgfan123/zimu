@@ -42,18 +42,46 @@ description: Use when 组礼包、给礼包定价、核算礼包成本、比较�
 
 本 skill 只算**从京东仓发出去**的额外费用。要算礼包毛利，还需要货值成本和售价。
 
-### 优先从数据库取（已落库，不用翻 Excel）
+### 第一步永远是调 MCP 拿价格，不要翻 Excel、不要凭记忆
 
-| 要什么 | 取哪里 | 对应成本表列 |
+**什么时候必须调 MCP**：只要需要商品的**货值成本、售价、规格、是否在售**——也就是几乎每次礼包核算。
+
+**调哪个工具**：`search_skus`（`masterdata` 模块）。它直接返回：
+
+| 字段 | 含义 | 等价于成本表 |
 |---|---|---|
-| **礼包货值成本** | **`app.skus.purchase_price`** | AI 列「线下供货成本/份」 |
-| **对外售价** | **`app.skus.retail_price`** | AJ 列「售价」 |
-| 40 个成本构成明细 | `app.product_archive_sheets.fields`（JSONB 数组 `{name,value}`） | 成本表全部列 |
+| `purchase_price` | **礼包货值成本** | AI 列「线下供货成本/份」 |
+| `retail_price` | **对外售价** | AJ 列「售价」 |
+| `active` | 是否在售 | —— |
+| `specification` | 规格（与成本表 C 列 1:1，无需换算） | C 列 |
 
-MCP 工具 `search_skus` 直接返回这两个价格字段，`estimate_bundle_economics` 可做礼包测算。
+**走哪个面**：成本核算只需要读，用**协议面**就够：
 
-> 注：`product_archive_sheets` 是 2026-08-27 的**一次性冻结快照**，之后新建的 SKU 不在里面，
-> 且其「经营状态」列不可信（标"停产"的 42 行里有 23 行实际在售）。判断在售看 `skus.active`，不要看档案。
+```
+http://127.0.0.1:30000/mcp     Authorization: Bearer <MCP_HTTP_TOKEN>
+模块：masterdata, inventory, orders-read, followup, rawmaterial
+```
+
+协议面是**硬只读**——写工具在 `tools/list` 里根本不存在，不可能误触发写操作。
+做成本估算**不要**去申请特权 stdio 面，没必要，也别调任何写工具。
+
+> `estimate_bundle_economics`（`bundles-read` 模块）**不在协议面**，只在 Agent 内面/特权面。
+> 如果你只有协议面，用 `search_skus` 取价 + 本 skill 算额外费用，两步拼出来即可。
+
+**取不到怎么办**：MCP 连不上时（服务未起 / token 缺失 / 发现超时），回退顺序是
+① 本 skill 的 `--list-goods`（53 个 SKU 的体积重量，**但没有价格**）
+② 成本表 `A产品成本核算26.3.29.xlsx` 的 AI / AJ 列。
+**回退时必须在结论里注明数据来源和时点**，因为 Excel 是快照、可能过期。
+
+### 三条容易踩的坑
+
+1. **判断在售看 `skus.active`，不要看商品档案的「经营状态」**——
+   `app.product_archive_sheets` 是 2026-08-27 的一次性冻结快照，标"停产"的 42 行里有 23 行实际在售，
+   之后新建的 27 个 SKU 更是根本不在里面。
+2. **40 个成本构成明细**在 `app.product_archive_sheets.fields`（JSONB 数组 `{name,value}`），
+   **不是独立列**，别去 `skus` 表找人工费/损耗率这些。
+3. **别为了取价去调写工具**。`submit_jd_outbound` 等三个动货工具有人类确认闸
+   （必须用户亲自输入「确认」二字），成本估算场景永远用不到它们。
 
 ### 成本表列号对照（需要看构成时）
 
@@ -234,6 +262,10 @@ python3 $S/jdfee.py --dest 上海浦东新区 --bundle "羊小腿×2" --json
 **6. 忘了运费折扣是月度促销、不是合同价** —— 默认 `--freight-discount 0` 算的是合同价（不打折）。
 历史上 5月30%/6月40%/7月20%，但**未来月份未知**。对外报价用 0 留余量；复盘实际支出才填当月实际值。
 新疆不参与折扣。
+
+**0. 不查 MCP 就报价** —— 价格在库里（`search_skus` 的 `purchase_price`/`retail_price`），
+不要翻 Excel、不要凭印象、不要用旧对话里的数字。Excel 是快照会过期，
+skill 自带的商品档案只有体积重量、**没有价格**。回退用 Excel 时必须注明来源与时点。
 
 **7. 凭列名断定重复计算** —— AI 列里有「耗材」「物流」，看着像会和本 skill 撞车，
 **实际不撞**：那个耗材是商品自己的内包装（X列盒/袋），真正会撞的 AB 列「泡沫箱+冰袋」值为 0；
