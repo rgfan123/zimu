@@ -347,7 +347,20 @@ public interface FeixiangPullClient {
         }
 
         /**
-         * 平台自报的区间订单数（{@code ajaxOrderNum}，2026-08-18 抓包实据）。
+         * 计数接口的状态过滤：与枚举同一「待发货」口径。
+         *
+         * <p><b>2026-09-01 生产只读实测</b>：{@code ajaxOrderNum} 的 {@code order_state}
+         * 传空串时返回的是<b>窗口内全部状态</b>的订单数（当日实测 8 = 待发货 1 + 已发货 4
+         * + 其他 3），传 {@code "2,7"} 被平台接受且恰等于 state=2 与 state=7 计数之和。
+         * 此前这里传空串，交叉核对拿「全状态计数」对「仅待发货枚举」，口径错配——
+         * 一旦窗口内待发货为 0 而存在任何其他状态订单（30 天窗口下几乎必然），
+         * 空列表判定就会把「真没单」误报成 FEIXIANG_ORDER_LIST_UNPARSEABLE，长期误报警。</p>
+         */
+        private static final String COUNT_PENDING_ORDER_STATES = "2,7";
+
+        /**
+         * 平台自报的区间<b>待发货</b>订单数（{@code ajaxOrderNum}，2026-08-18 抓包实据；
+         * 状态口径 2026-09-01 生产实测校准，见 {@link #COUNT_PENDING_ORDER_STATES}）。
          *
          * <p>只作<b>交叉核对</b>用：拿它和我们实际枚举到的条数比对，就能发现「HTML 选择器
          * 失效」或「翻页截断」这类静默丢单。任何失败都返回 {@code -1}（未知），绝不让一个
@@ -357,7 +370,7 @@ public interface FeixiangPullClient {
             try {
                 String form = "start_create_time=" + encode(start)
                         + "&end_create_time=" + encode(end)
-                        + "&order_state="
+                        + "&order_state=" + encode(COUNT_PENDING_ORDER_STATES)
                         + "&sel_type=1"
                         + "&keyword="
                         + "&start_finish_time="

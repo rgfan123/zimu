@@ -47,14 +47,17 @@ public final class FeixiangListPageFingerprint {
     /**
      * 平台自己的 AJAX 接口路径。
      *
-     * <p>2026-08-30 实测：这个列表页是 Vue 壳子（属性名里有 el-pagination 的
-     * {@code current-change / page-size / layout / total}），{@code <div id="order_list">} 是空容器，
-     * HTML 里<b>根本没有订单行</b> —— 所以 {@link FeixiangOrderListParser} 换什么正则都捞不到，
-     * 订单数据走的是另一个 JSON 接口。
+     * <p>2026-08-30 曾据指纹推断「列表页是 Vue 壳子、订单行走 JSON 接口」——
+     * <b>2026-09-01 生产容器内只读重放已证伪</b>：订单行就是服务端渲染在 HTML 里的
+     * {@code <table>}，只有分页器 {@code el-pagination} 是 Vue 组件（所以属性名里有
+     * {@code current-change / page-size / layout / total}）。真正的失配原因是 ID 承载方式：
+     * 页面上没有任何 {@code order_son_id=} 字样，ID 在发货按钮 {@code idata="…"} /
+     * 继续下单按钮 {@code iddata="…"} 属性里（平台页内 JS {@code $(this).attr('idata')} 为证），
+     * 已在 {@link FeixiangOrderListParser} 补上针对性模式。
      *
-     * <p>平台的接口命名有固定法（已知 {@code /order/ajaxOrderNum}、
-     * {@code /order/ajaxGetSendBeforePro}），列表那个大概率同名法。把页面里所有
-     * {@code /xxx/ajaxYyy} 捞出来，就能定位它，不必再让人手工抓一次包。
+     * <p>仍保留 AJAX 路径采集：平台接口命名有固定法（已知 {@code /order/ajaxOrderNum}、
+     * {@code /order/ajaxGetSendBeforePro}），若日后真的改成 JSON 渲染，把页面里所有
+     * {@code /xxx/ajaxYyy} 捞出来就能定位数据接口，不必再让人手工抓一次包。
      */
     private static final Pattern AJAX_PATH = Pattern.compile(
             "(/[A-Za-z][A-Za-z0-9_]{0,20}/ajax[A-Za-z0-9_]{1,40})");

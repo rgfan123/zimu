@@ -2,17 +2,82 @@ package cn.zimu.fulfillment.connector.feixiang;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
  * 列表页 HTML → order_son_id 抽取。
  *
- * <p>被测对象是全链路里唯一没有抓包实据的环节（HAR 只给了路径与查询参数，没给页面 HTML），
- * 所以这里覆盖 ThinkPHP 后台常见的四种承载写法，并把「不许误抓别的 ID」钉死——标识符
- * 混用正是 HAR 分析明确警告过的坑。</p>
+ * <p>2026-09-01 前被测对象没有抓包实据（HAR 只给了路径与查询参数，没给页面 HTML），四种
+ * {@code order_son_id=} 承载写法全是推断——生产连续两天「自报 7/8 单、解析 0 单」证明推断
+ * 落空。2026-09-01 只读重放拿到真实页面：ID 实际藏在发货按钮 {@code idata="…"} 与继续下单
+ * 按钮 {@code iddata="…"} 属性里（平台页内 JS {@code $(this).attr('idata')} 为证）。
+ * 本类现在同时钉死三件事：新版结构解析得出、旧版写法回滚可兜、别的 ID 一个不许误抓。</p>
  */
 class FeixiangOrderListParserTest {
+
+    /** 新版结构 fixture：按 2026-09-01 生产真实页面结构复刻（已脱敏），见文件头注释。 */
+    private static final String NEW_STRUCTURE_FIXTURE = "/feixiang/esorder-list-v20260901.html";
+
+    // ------------------------------------------------------------ 新版结构（2026-09-01 实据）
+
+    @Test
+    void extractsIdFromSendButtonIdataAttribute() {
+        String html = "<button class=\"btn btn-primary btn-82 send_btns sendProduct\" idata=\"24150997\">发货</button>";
+
+        assertThat(FeixiangOrderListParser.extractOrderSonIds(html)).containsExactly("24150997");
+    }
+
+    @Test
+    void extractsIdFromContinueOrderIddataAttribute() {
+        String html = "<button class=\"xiadan\" iddata='24151003'>继续下单</button>";
+
+        assertThat(FeixiangOrderListParser.extractOrderSonIds(html)).containsExactly("24151003");
+    }
+
+    /** 以 idata 结尾的普通单词（validata/candidata 之类）不许当成属性误抓。 */
+    @Test
+    void ignoresWordsThatMerelyEndWithIdata() {
+        String html = "<div class=\"validata\">candidata=123</div><span>lidata=456</span>";
+
+        assertThat(FeixiangOrderListParser.extractOrderSonIds(html)).isEmpty();
+    }
+
+    /** idata 值不是纯数字（或为空）时不产出 ID——宁可空转触发 fail-loud，不吞垃圾值。 */
+    @Test
+    void ignoresIdataWithNonNumericValue() {
+        String html = "<button idata=\"\">发货</button><button idata=\"S2026900001\">发货</button>";
+
+        assertThat(FeixiangOrderListParser.extractOrderSonIds(html)).isEmpty();
+    }
+
+    /**
+     * 整页 fixture：解析出且只解析出四个 order_son_id（三个发货按钮 + 一个继续下单按钮），
+     * 订单头行 {@code /order/orderDetail/99999001} 这类<b>订单级</b> ID 绝不允许混进来——
+     * 一单多商品时它与子单 ID 是否同值未经验证，抓它就是标识符混用。
+     */
+    @Test
+    void extractsExactlyTheSubOrderIdsFromRealPageStructureFixture() {
+        List<String> ids = FeixiangOrderListParser.extractOrderSonIds(fixture(NEW_STRUCTURE_FIXTURE));
+
+        assertThat(ids).containsExactly("24150997", "24151001", "24151002", "24151003");
+        assertThat(ids).doesNotContain("99999001", "99999002");
+    }
+
+    private static String fixture(String resource) {
+        try (InputStream in = FeixiangOrderListParserTest.class.getResourceAsStream(resource)) {
+            assertThat(in).as("fixture 资源必须存在: " + resource).isNotNull();
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException exception) {
+            throw new UncheckedIOException(exception);
+        }
+    }
+
+    // ------------------------------------------------------------ 旧版写法（回滚兜底，保持通过）
 
     @Test
     void extractsIdFromHtmlAttribute() {

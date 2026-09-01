@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<!--
+  飞象 GET /esOrder/index 列表页「新版结构」fixture。
+
+  来源：2026-09-01 在生产 backend 容器内以只读方式重放登录 + 列表请求抓到的真实页面
+  （window=2026-08-25~2026-09-01, order_state=2），按真实标记结构复刻并做了脱敏：
+  订单号 / order_son_id / 商品名 / 图片地址全部替换为假值，行数扩充为「单商品订单 +
+  双商品订单 + 已关闭订单（继续下单按钮）」以覆盖三种 ID 承载位置。
+
+  结构要点（与生产页面一致）：
+  - 订单行是服务端渲染的 <table>，不是 Vue 动态数据（只有分页器 el-pagination 是 Vue 组件）；
+  - 页面上不存在任何 "order_son_id=" 字样；
+  - order_son_id 藏在发货按钮 idata="…" 与继续下单按钮 iddata="…" 属性里，
+    平台页内 JS $(this).attr('idata') / $(this).attr('iddata') 即为实据；
+  - 订单头行的 /order/orderDetail/{id} 链接刻意保留：解析器不得抓它（标识符混用风险）。
+-->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>订单列表</title>
+</head>
+<body>
+<div class="wrapper animated fadeInRight ibox-content" id="order_list">
+
+    <div class="tab">
+        <ul class="nav nav-tabs order_state_nav">
+            <li><a href="https://ziyousupplier.wowcarp.com/esOrder/index/?order_state=0">全部订单</a></li>
+            <li><a href="https://ziyousupplier.wowcarp.com/esOrder/index/?order_state=2,7">待发货</a></li>
+            <li><a href="https://ziyousupplier.wowcarp.com/esOrder/index/?order_state=8">已发货</a></li>
+        </ul>
+    </div>
+
+    <div class="form_div_containe m-t-lg">
+        <form action="" method="get">
+            <input type="text" class="form-control m-b" value="2026-08-25" name="start_create_time" id="start3"/>
+            <input type="text" class="form-control m-b" name="end_create_time" value="2026-09-01" id="end3"/>
+            <input type="text" value="" name="keyword" class="form-control m-b" placeholder="请输入关键字"/>
+            <input type="text" name="order_state" value="2" hidden/>
+            <button type="submit" class="btn btn-primary btn-82 m-b">查询</button>
+            <a class="btn btn-primary m-b" id="importReport" data-id="order">订单导出</a>
+            <a class="btn btn-primary m-b" onclick="plfh()">批量发货</a>
+        </form>
+    </div>
+
+    <!--列表开始-->
+    <div class="table-responsive">
+        <table class="table m-t-md my-total-table all-order">
+            <thead>
+            <tr>
+                <th class="none">商品名称&nbsp;&nbsp;规格</th>
+                <th class="none">结算价</th>
+                <th class="none">数量</th>
+                <th class="none">售后状态</th>
+                <th class="none">物流状态</th>
+                <th class="none">状态/操作</th>
+                <th class="none">用户账号</th>
+            </tr>
+            </thead>
+            <tbody>
+            <!-- 订单一：单商品，待发货 -->
+            <tr>
+                <td colspan="5" class="bg_assist_blue">订单编号：D2026900000000000001&nbsp;&nbsp;&nbsp;&nbsp;下单时间：2026-08-31 09:58:05&nbsp;&nbsp;共1件商品</td>
+                <td colspan="2" class="bg_assist_blue cbo">
+                    <a href="https://ziyousupplier.wowcarp.com/order/orderDetail/24150997" class="color-blue-font seek_detail">查看详情</a>
+                    <span class="fr"> 订单总价：￥99 </span>
+                </td>
+            </tr>
+            <tr>
+                <td>
+                    <a class="media color-n">
+                        <i class="vertical"><img src="https://example.invalid/p1.jpg" class="media-object"></i>
+                        <div class="media-body inline vertical">
+                            <p>测试商品甲 500g*2</p>
+                            <div class="color-gr"></div>
+                        </div>
+                    </a>
+                </td>
+                <td>99.00</td>
+                <td>1</td>
+                <td>未申请</td>
+                <td>待发货</td>
+                <td rowspan="1" class="my-border-r">
+                    待发货
+                    <button class="btn btn-primary btn-82 send_btns sendProduct" idata="24150997">发货</button>
+                </td>
+                <td rowspan="1" class="my-border-r"></td>
+            </tr>
+
+            <!-- 订单二：双商品（两条子单各自带发货按钮），订单头 orderDetail 的 ID 与子单 ID 不同值 -->
+            <tr>
+                <td colspan="5" class="bg_assist_blue">订单编号：D2026900000000000002&nbsp;&nbsp;&nbsp;&nbsp;下单时间：2026-08-30 18:12:44&nbsp;&nbsp;共2件商品</td>
+                <td colspan="2" class="bg_assist_blue cbo">
+                    <a href="https://ziyousupplier.wowcarp.com/order/orderDetail/99999001" class="color-blue-font seek_detail">查看详情</a>
+                    <span class="fr"> 订单总价：￥188 </span>
+                </td>
+            </tr>
+            <tr>
+                <td>
+                    <a class="media color-n">
+                        <div class="media-body inline vertical"><p>测试商品乙</p></div>
+                    </a>
+                </td>
+                <td>89.00</td>
+                <td>1</td>
+                <td>未申请</td>
+                <td>待发货</td>
+                <td rowspan="1" class="my-border-r">
+                    待发货
+                    <button class="btn btn-primary btn-82 send_btns sendProduct" idata="24151001">发货</button>
+                </td>
+                <td rowspan="1" class="my-border-r"></td>
+            </tr>
+            <tr>
+                <td>
+                    <a class="media color-n">
+                        <div class="media-body inline vertical"><p>测试商品丙</p></div>
+                    </a>
+                </td>
+                <td>99.00</td>
+                <td>1</td>
+                <td>未申请</td>
+                <td>待发货</td>
+                <td rowspan="1" class="my-border-r">
+                    待发货
+                    <button class="btn btn-primary btn-82 send_btns sendProduct" idata='24151002'>发货</button>
+                </td>
+                <td rowspan="1" class="my-border-r"></td>
+            </tr>
+
+            <!-- 订单三：已关闭订单的「继续下单」按钮（iddata 变体） -->
+            <tr>
+                <td colspan="5" class="bg_assist_blue">订单编号：D2026900000000000003&nbsp;&nbsp;&nbsp;&nbsp;下单时间：2026-08-29 10:00:00&nbsp;&nbsp;共1件商品</td>
+                <td colspan="2" class="bg_assist_blue cbo">
+                    <a href="https://ziyousupplier.wowcarp.com/order/orderDetail/99999002" class="color-blue-font seek_detail">查看详情</a>
+                </td>
+            </tr>
+            <tr>
+                <td>
+                    <a class="media color-n">
+                        <div class="media-body inline vertical"><p>测试商品丁</p></div>
+                    </a>
+                </td>
+                <td>59.00</td>
+                <td>1</td>
+                <td>未申请</td>
+                <td>已关闭</td>
+                <td rowspan="1" class="my-border-r">
+                    <button class="btn btn-primary btn-82 xiadan" iddata="24151003">继续下单</button>
+                </td>
+                <td rowspan="1" class="my-border-r"></td>
+            </tr>
+            </tbody>
+        </table>
+        <div class="order_page">
+            <el-pagination
+                    @current-change="handleCurrentChange"
+                    :current-page.sync="currentPage"
+                    :page-size="20"
+                    layout="prev, pager, next"
+                    :total='4'>
+            </el-pagination>
+        </div>
+    </div>
+    <!--列表结束-->
+</div>
+
+<script>
+    $(function () {
+        // 平台页内 JS 原样结构：idata / iddata 属性值即 order_son_id 的实据。
+        $(".sendProduct").click(function () {
+            var order_son_id = $(this).attr('idata');
+            $.ajax({
+                url: 'https://ziyousupplier.wowcarp.com/order/ajaxCheckSend',
+                type: 'post',
+                dataType: 'json',
+                data: {'order_son_id': order_son_id}
+            });
+            return false;
+        });
+        $(".xiadan").click(function () {
+            var order_son_id = $(this).attr('iddata');
+            $.ajax({
+                url: 'https://ziyousupplier.wowcarp.com/order/ajaxContinueOrder',
+                type: 'post',
+                dataType: 'json',
+                data: {'order_son_id': order_son_id}
+            });
+        });
+    });
+    new Vue({
+        el: "#order_list",
+        methods: {
+            handleCurrentChange: function (val) {
+                window.location.href = "https://ziyousupplier.wowcarp.com/esOrder/index/" + val;
+            }
+        }
+    });
+</script>
+</body>
+</html>

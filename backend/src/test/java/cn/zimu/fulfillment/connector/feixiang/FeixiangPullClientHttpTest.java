@@ -146,6 +146,29 @@ class FeixiangPullClientHttpTest {
                 .contains("2", "7");
     }
 
+    /**
+     * 交叉核对计数必须与枚举同口径：{@code ajaxOrderNum} 的 {@code order_state} 传
+     * 待发货状态 {@code 2,7}，不许传空串。
+     *
+     * <p>2026-09-01 生产只读实测：空串返回的是窗口内<b>全部状态</b>的订单数（当日 8 =
+     * 待发货 1 + 已发货 4 + 其他 3），而 {@code "2,7"} 被平台接受且等于两状态之和。
+     * 口径错配的后果是：窗口内待发货为 0 而存在任何其他状态订单时（30 天窗口下几乎必然），
+     * 空列表判定会把「真没单」长期误报成 FEIXIANG_ORDER_LIST_UNPARSEABLE。</p>
+     */
+    @Test
+    void crossCheckCountsOnlyPendingStatesNotAllStates() throws Exception {
+        StubPlatform platform = new StubPlatform();
+        platform.ordersForState("2", List.of("1001"));
+        platform.orderCount(1);
+
+        platform.run(http -> http.listPendingOrders("2026-08-24", "2026-08-26"));
+
+        assertThat(platform.countBodies()).isNotEmpty();
+        assertThat(platform.countBodies().getFirst())
+                .contains("order_state=" + java.net.URLEncoder.encode("2,7", StandardCharsets.UTF_8))
+                .doesNotContain("order_state=&");
+    }
+
     // ================================================================ 翻页
 
     /** 超过单页容量（20）必须继续翻页取全，不静默截断。 */
@@ -339,6 +362,7 @@ class FeixiangPullClientHttpTest {
         private final ConcurrentLinkedQueue<Map<String, String>> listQueries = new ConcurrentLinkedQueue<>();
         private final ConcurrentLinkedQueue<String> listPaths = new ConcurrentLinkedQueue<>();
         private final ConcurrentLinkedQueue<String> detailBodies = new ConcurrentLinkedQueue<>();
+        private final ConcurrentLinkedQueue<String> countBodies = new ConcurrentLinkedQueue<>();
         private List<String> everyPage;
         private int orderCount = 0;
         private boolean countBroken;
@@ -389,6 +413,10 @@ class FeixiangPullClientHttpTest {
             return List.copyOf(detailBodies);
         }
 
+        List<String> countBodies() {
+            return List.copyOf(countBodies);
+        }
+
         <T> T run(java.util.function.Function<FeixiangPullClient.Http, T> action) throws Exception {
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             server.createContext("/esOrder/index", exchange -> {
@@ -406,7 +434,7 @@ class FeixiangPullClientHttpTest {
                 respondBody(exchange, 200, "application/json; charset=utf-8", detailBody);
             });
             server.createContext("/order/ajaxOrderNum", exchange -> {
-                exchange.getRequestBody().readAllBytes();
+                countBodies.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 if (countBroken) {
                     respondBody(exchange, 500, "text/plain", "boom");
                     return;

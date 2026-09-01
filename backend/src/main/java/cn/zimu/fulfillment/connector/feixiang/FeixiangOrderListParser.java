@@ -9,26 +9,35 @@ import java.util.regex.Pattern;
 /**
  * 飞象待发货列表页 HTML → {@code order_son_id} 清单。
  *
- * <p><b>诚实声明：本类是全链路里唯一没有抓包实据的环节。</b>2026-08-28 的 HAR 线索给出了
- * {@code GET /esOrder/index/{page}} 的<b>路径与查询参数</b>，以及详情接口的<b>响应字段</b>，
- * 但<b>没有</b>给出列表页 HTML 的标记结构。因此「order_son_id 长什么样地出现在 HTML 里」
- * 是推断，不是事实，必须拿真实页面验证后再收紧。</p>
+ * <p><b>2026-09-01 起本类有了抓包实据。</b>此前（2026-08-28 交付时）HAR 线索只给了
+ * {@code GET /esOrder/index/{page}} 的路径与查询参数，「order_son_id 长什么样地出现在 HTML 里」
+ * 全靠推断——生产随即连续两天证明推断落空：平台自报窗口内 7/8 单，四种
+ * {@code order_son_id=} 形状一个都没命中，解析出 0 单（fail-loud 生效，未静默丢单）。
+ * 2026-09-01 在生产容器内只读重放登录 + 列表请求拿到真实页面，事实是：</p>
  *
- * <p>面对这个不确定性的设计取舍：
+ * <ul>
+ *   <li>列表页是<b>服务端渲染</b>的表格（此前指纹一度怀疑是 Vue 空壳，已证伪——只有分页器
+ *       {@code el-pagination} 是 Vue 组件，订单行就在 HTML 里）；</li>
+ *   <li>页面上<b>不存在</b>任何 {@code order_son_id=} 字样；ID 由平台自己的 jQuery 处理器从
+ *       按钮属性里取：{@code <button class="… sendProduct" idata="24150997">发货</button>} 配
+ *       {@code var order_son_id = $(this).attr('idata')}，以及继续下单按钮
+ *       {@code class="xiadan" iddata="…"} 配 {@code $(this).attr('iddata')}。
+ *       即 {@code idata}/{@code iddata} 属性值<b>就是</b> order_son_id（平台 JS 为证）。</li>
+ * </ul>
+ *
+ * <p>设计取舍（原则不变，只是证据升级了）：
  * <ol>
- *   <li><b>宽进</b>——用一条容忍多种写法的正则去捞 {@code order_son_id} 后面的数字，覆盖
- *       ThinkPHP 后台常见的四种承载方式：HTML 属性 {@code order_son_id="123"}、
- *       kebab 变体 {@code data-order-son-id="123"}、链接查询串 {@code ?order_son_id=123}、
- *       内联 JS/JSON {@code "order_son_id":123}；</li>
+ *   <li><b>双版本并存</b>——新结构 {@code idata}/{@code iddata} 模式与旧的四种
+ *       {@code order_son_id=} 形状同时启用取并集：新页面上旧模式必然空转（页面里没有该字样），
+ *       旧结构若回滚也仍被兜住；两边都捞不到才返回空。</li>
  *   <li><b>绝不静默返回空</b>——解析不到任何 ID 时返回空列表，由调用方结合平台自己的订单
- *       计数判断这是「本区间真的没单」还是「选择器失效」，并显式报错。<b>这正是本票要修的
- *       故障模式</b>：拉不到单却报「成功，0 条新数据」，订单就此永久丢失。</li>
+ *       计数判断这是「本区间真的没单」还是「选择器失效」，并显式报错（连同
+ *       {@code FeixiangListPageFingerprint} 结构指纹）。<b>这正是本票要修的故障模式</b>：
+ *       拉不到单却报「成功，0 条新数据」，订单就此永久丢失。</li>
+ *   <li><b>刻意不抓</b> {@code /order/orderDetail/{id}} 链接里的数字：详情链接挂在订单头行，
+ *       一单多商品时它与各商品行的子单 ID 是否同值<b>未经验证</b>，抓它就是在赌标识符不混用；
+ *       {@code idata}/{@code iddata} 已覆盖每一条可发货的商品行，不需要这份风险。</li>
  * </ol>
- *
- * <p>若真实页面把 ID 只藏在 {@code onclick="sendBefore(123)"} 这类<b>不含字段名</b>的调用里，
- * 本正则会捞不到——那时必须补抓一次页面 HTML 并在这里补一条针对性的模式，而不是放宽成
- * 「抓页面上所有数字」（那会把商品 ID、金额、订单号一起当成 order_son_id，正是标识符混用
- * 事故的温床）。</p>
  */
 public final class FeixiangOrderListParser {
 
@@ -60,6 +69,19 @@ public final class FeixiangOrderListParser {
             "name\\s*=\\s*[\"']order[_-]son[_-]id[\"'][^>]{0,40}?value\\s*=\\s*[\"']?(\\d{1,20})",
             Pattern.CASE_INSENSITIVE);
 
+    /**
+     * 2026-09-01 生产实据的新版结构：{@code idata="123"}（发货按钮）与 {@code iddata="123"}
+     * （继续下单按钮），属性值即 order_son_id——平台自己的页内 JS
+     * {@code $(this).attr('idata')} / {@code $(this).attr('iddata')} 就是这么取的。
+     *
+     * <p>形状收紧到「属性写法」：属性名前必须是词边界（{@code validata}、{@code candidata}
+     * 这类以 idata 结尾的单词不命中），后面必须紧跟 {@code =} 与可选引号的纯数字值。
+     * 不匹配 {@code data-idata} 之外的变体拼法——真实页面就这两种写法，宽了才是风险。</p>
+     */
+    private static final Pattern SEND_BUTTON_IDATA = Pattern.compile(
+            "\\bid{1,2}ata\\s*=\\s*[\"']?(\\d{1,20})",
+            Pattern.CASE_INSENSITIVE);
+
     private FeixiangOrderListParser() {}
 
     /**
@@ -75,6 +97,8 @@ public final class FeixiangOrderListParser {
         // LinkedHashSet：同一行可能同时以属性、内联 JS 和隐藏表单域出现同一个 ID，
         // 去重但保留页面顺序。
         LinkedHashSet<String> ids = new LinkedHashSet<>();
+        // 新结构在前（当前生产页面），旧结构在后（回滚兜底）；LinkedHashSet 并集去重。
+        collectInto(ids, SEND_BUTTON_IDATA, html);
         collectInto(ids, ORDER_SON_ID, html);
         collectInto(ids, ORDER_SON_ID_INPUT, html);
         return List.copyOf(new ArrayList<>(ids));
