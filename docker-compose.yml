@@ -333,6 +333,9 @@ services:
       # those upstreams unconditionally makes nginx's resolver retry the
       # missing hostnames forever. Set true only where those containers exist.
       KEHUZX_ENABLED: "${KEHUZX_ENABLED:-false}"
+      # Clawbot (hermes gateway) routes: true only where the gateway listens on
+      # the Docker host's 9121 (see docker/nginx/entrypoint.sh).
+      CLAWBOT_ENABLED: "${CLAWBOT_ENABLED:-false}"
     ports:
       # Edge Basic Auth is on by default (single shared admin credential), and the
       # gateway stays loopback-bound. Remote deployments require real user auth and HTTPS first.

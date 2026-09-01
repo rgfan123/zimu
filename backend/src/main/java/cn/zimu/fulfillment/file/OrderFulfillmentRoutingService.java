@@ -16,7 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** 运营人员把已确认的企业微信订单显式、可审计地接回既有京东 Shipment pipeline。 */
 @Service
-class OrderFulfillmentRoutingService {
+public class OrderFulfillmentRoutingService {
 
     private static final String SCOPE = "order.fulfillment.route";
 
@@ -40,6 +40,19 @@ class OrderFulfillmentRoutingService {
         this.versions = versions;
         this.audits = audits;
         this.jdbc = jdbc;
+    }
+
+    /**
+     * 跨包写面接缝（MCP 履约路由工具）：命令 record 是包私有的，外部包构造不出来，
+     * 但必须走**同一个** {@link #route} ——就绪门禁、乐观锁、事件、版本快照与审计全长在那条
+     * 路径上，另造一条等于同一件事有两套判据（与 {@code PlatformOrderRefreshService.refreshChannels}
+     * 同一处理方式）。
+     */
+    @Transactional
+    public IdempotentResult<Map<String, Object>> route(
+            long orderId, long expectedOrderVersion, String idempotencyKey, CommandContext context) {
+        return route(
+                orderId, new OrderFulfillmentRoutingCommand(expectedOrderVersion), idempotencyKey, context);
     }
 
     @Transactional

@@ -66,6 +66,7 @@ public class McpToolRegistry {
                 null,
                 null,
                 null,
+                null,
                 modulesProperty,
                 modulesProperty,
                 false,
@@ -90,6 +91,7 @@ public class McpToolRegistry {
                 null,
                 null,
                 null,
+                null,
                 false,
                 false,
                 true);
@@ -105,6 +107,7 @@ public class McpToolRegistry {
             KehuzxRemoteReadTools kehuzxReadTools,
             McpBundleReadTools bundleReadTools,
             McpRawMaterialTools rawMaterialTools,
+            McpFulfillmentWriteTools fulfillmentWriteTools,
             @Value("${app.agent.tool-modules:}") String agentModulesProperty,
             @Value("${app.mcp.protocol-modules:}") String protocolModulesProperty,
             @Value("${app.mcp.enabled:false}") boolean mcpEnabled,
@@ -118,6 +121,7 @@ public class McpToolRegistry {
                 kehuzxReadTools,
                 bundleReadTools,
                 rawMaterialTools,
+                fulfillmentWriteTools,
                 agentModulesProperty,
                 protocolModulesProperty,
                 mcpEnabled,
@@ -141,6 +145,7 @@ public class McpToolRegistry {
                 controlReadTools,
                 ordersReadTools,
                 kehuzxReadTools,
+                null,
                 null,
                 null,
                 agentModulesProperty,
@@ -171,6 +176,7 @@ public class McpToolRegistry {
                 kehuzxReadTools,
                 null,
                 null,
+                null,
                 agentModulesProperty,
                 protocolModulesProperty,
                 mcpEnabled,
@@ -197,6 +203,7 @@ public class McpToolRegistry {
                 ordersReadTools,
                 kehuzxReadTools,
                 bundleReadTools,
+                null,
                 null,
                 agentModulesProperty,
                 protocolModulesProperty,
@@ -226,6 +233,37 @@ public class McpToolRegistry {
                 kehuzxReadTools,
                 bundleReadTools,
                 rawMaterialTools,
+                null,
+                agentModulesProperty,
+                protocolModulesProperty,
+                false,
+                false,
+                false);
+    }
+
+    /** 测试/组合装配入口：额外注入履约域写 provider（平台拉取 / 手工建单 / 履约路由）。 */
+    public McpToolRegistry(
+            McpReadTools readTools,
+            McpWriteTools writeTools,
+            McpDomainReadTools domainReadTools,
+            McpControlReadTools controlReadTools,
+            McpOrdersReadTools ordersReadTools,
+            KehuzxRemoteReadTools kehuzxReadTools,
+            McpBundleReadTools bundleReadTools,
+            McpRawMaterialTools rawMaterialTools,
+            McpFulfillmentWriteTools fulfillmentWriteTools,
+            String agentModulesProperty,
+            String protocolModulesProperty) {
+        this(
+                readTools,
+                writeTools,
+                domainReadTools,
+                controlReadTools,
+                ordersReadTools,
+                kehuzxReadTools,
+                bundleReadTools,
+                rawMaterialTools,
+                fulfillmentWriteTools,
                 agentModulesProperty,
                 protocolModulesProperty,
                 false,
@@ -242,6 +280,7 @@ public class McpToolRegistry {
             KehuzxRemoteReadTools kehuzxReadTools,
             McpBundleReadTools bundleReadTools,
             McpRawMaterialTools rawMaterialTools,
+            McpFulfillmentWriteTools fulfillmentWriteTools,
             String agentModulesProperty,
             String protocolModulesProperty,
             boolean mcpEnabled,
@@ -265,6 +304,10 @@ public class McpToolRegistry {
             // rawmaterial 模块（读 3 + 写 4）：写工具靠 readOnly=false 被协议面挡住，
             // 模块开关只决定两个工具面「是否装载」，不放松只读门禁。
             tools.addAll(rawMaterialTools.tools());
+        }
+        if (fulfillmentWriteTools != null) {
+            // 履约域写工具与 McpWriteTools 同属 write 模块：provider 按内聚拆开，模块开关不拆。
+            tools.addAll(fulfillmentWriteTools.tools());
         }
 
         // 重名检测在两个工具面过滤之前进行：注册冲突与当前启用哪些模块无关，不能因配置隐藏。

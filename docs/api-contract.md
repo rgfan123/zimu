@@ -443,13 +443,17 @@ public interface PlatformConnector {
 
 ## 8. MCP / Agent 权限边界
 
-MCP Adapter 与 REST/UI 共用应用层 Interface，预留：
+MCP Adapter 与 REST/UI 共用应用层 Interface。权限边界按传输面分层（issue-181 收口，与 `CONTEXT.md` 企业微信一期实现边界一节口径一致）：
 
-- 查询：客户、订单、订单时间线、Shipment/Tracking、ReviewCase、SKU 候选；
-- 输入：创建内部订单、提交客户/SKU 匹配建议、提交业务材料；
-- 禁止：确认客户/SKU/快递映射、取消剩余量、重试采购、关闭 ReviewCase、执行「已完成后续回传」。
+- **非特权 stdio 与外部 HTTP/SSE 面恒为只读**，且不因任何配置分叉：`tools/list` 只列只读工具，`tools/call` 调写工具一律返回协议层错误，不执行、不留副作用；
+- **特权 stdio 面**（`MCP_STDIO_PRIVILEGED=true` 且必须同时提供 `MCP_AGENT_IDENTITY` 作审计归因身份，否则启动即拒；仅供本机内部工具如 hermes 经 stdio 显式接入）与 **Agent 面**（`AgentToolInvoker`，须 `allow_write=true` 白名单显式放行）开放全工具面，含：
+  - 查询：客户、订单、订单时间线、Shipment/Tracking、ReviewCase、SKU 候选、原料库存与出入库单/流水；
+  - 写入：创建内部订单、提交客户/SKU 匹配建议、提交业务材料、拉取平台订单（`refresh_platform_orders`）、手工建单（`create_manual_order`）、履约路由（`route_order_fulfillment`）、原料入库/报废建单与审批（§8.1 rawmaterial 小节）；
+  - 禁止：确认客户/SKU/快递映射、取消剩余量、重试采购、关闭 ReviewCase、执行「已完成后续回传」——服务端不为这些终局动作注册工具，与传输面/权限模式无关。
 
-Agent 可以提建议，但上述终局动作必须由管理后台人员确认。任何 Agent 写入都需幂等键、operator/agent 身份和 AuditLog。
+Agent 可以提建议或执行上表已开放的写工具，但上述终局动作必须由管理后台人员确认。任何 Agent 写入都需幂等键、operator/agent 身份和 AuditLog。
+
+工具总量以代码为准，不在文档手抄清单（易漂移）：现全仓注册 53 个 `McpTool`（`McpToolRegistry` 聚合各模块 `SimpleTool` 声明），具体开放面用 `GET /api/v1/mcp-exposure`（票 05）或 `tools/list` 现场查。
 
 企微订单草稿卡片属于另一条人工入口，不是 Agent 自动确认：新草稿通过持久化卡片 outbox 异步发送到原会话，`task_id=order-draft_{draft_id}_v{draft_revision}_{128-bit授权引用}`。`template_card_event` 回调只接受该协议安全、持久化且不可猜的 task id 与 `confirm_order`/`supplement_order` 键；实体和版本只从 SENT 投递记录取得，不信任回调字符串自述。actor 只能取回调 `from.userid`，缺失时 fail closed，不能从卡片内容或请求参数冒充。确认按钮重新读取当前草稿并调用既有 `OrderDraftService.confirm`，所有缺失字段、唯一 Customer/SKU 候选、草稿版本与开放复核事项仍按原门禁校验。
 
@@ -475,12 +479,31 @@ Agent 可以提建议，但上述终局动作必须由管理后台人员确认�
 | `suggest_customer_match` | `idempotency_key`, `review_case_id`, `expected_version`, `customer_id?`, `create_customer_suggestion?`, `reason` | 追加建议后的 ReviewCase | 只追加建议，不确认映射 |
 | `suggest_sku_match` | `idempotency_key`, `review_case_id`, `expected_version`, `sku_id?`, `quantity_multiplier?`, `reason` | 追加建议后的 ReviewCase | 只追加建议，不确认映射 |
 | `submit_business_material` | `idempotency_key`, `review_case_id`, `expected_version`, `evidence_refs`, `note` | 追加材料后的 ReviewCase | 只追加证据，不关闭复核 |
+| `refresh_platform_orders`（`McpFulfillmentWriteTools`，f79e6fee） | `channel`, `idempotency_key` | 触发平台真实外呼拉单结果；同渠道已有拉取在途返回 `SKIPPED` | 是，产生新导入批次；幂等键只做格式校验，不入注册表重放（外呼不可重放，重复由批次内容哈希兜底） |
+| `create_manual_order`（同上） | `receiver`, `items`（`{sku_id, quantity}[]`）, `idempotency_key`；`customer_code?`、`origin_channel?`、`remark?` 可选 | `{order_id, order_no, source_ref, version}` 四字段投影，不回吐收货人 PII | 是，创建 MANUAL 渠道订单；`customer_code` 缺省归属「手工平台客户」MANUAL-PLATFORM |
+| `route_order_fulfillment`（同上） | `order_id`, `expected_version`, `idempotency_key` | 路由后的订单/Shipment 事实 | 是，生成 Shipment（不触发外部履约方出库）；版本冲突需重读最新版本重试 |
 
-MCP 沿用 OpenAPI 契约：标识符使用字符串，`CountQuantity` 使用 JSON integer。`operator`/Agent 身份来自 MCP 认证上下文，不能由工具参数冒充；写工具使用与 REST 相同的幂等注册表、乐观版本和审计切面。服务端不得注册 `resolve_*`、`cancel_remaining`、`retry_procurement` 或 `complete_source_followup` 一类 Agent 工具；未来若改变该权限边界，必须新开业务决策票。
+MCP 沿用 OpenAPI 契约：标识符使用字符串，`CountQuantity` 使用 JSON integer。`operator`/Agent 身份来自 MCP 认证上下文，不能由工具参数冒充；写工具使用与 REST 相同的幂等注册表、乐观版本和审计切面（`refresh_platform_orders` 除外，见上表说明）。服务端不得注册 `resolve_*`、`cancel_remaining`、`retry_procurement` 或 `complete_source_followup` 一类 Agent 工具；未来若改变该权限边界，必须新开业务决策票。
 
 静态礼包读取工具属于独立 `bundles-read` 模块：进程内 Agent 与公共 MCP 协议面分别配置，
 公共面只有显式加入该模块才可发现。投影不返回履约方连接配置、库存原始载荷或任何写操作；
 没有库存观测时返回 `NOT_OBSERVED`，不得伪造为零库存。
+
+### 8.2 原料库存（rawmaterial）7 工具
+
+独立 `rawmaterial` 模块（`McpRawMaterialTools`），全部委托 yuanliaokc 网关、不直写业务表：
+
+| Tool | 最小输入 | 是否写业务事实 |
+|---|---|---|
+| `search_raw_material_stock` | `keyword?` | 否 |
+| `list_raw_inbound_orders` | `status?` | 否 |
+| `list_raw_stock_transactions` | `material_id?`, `transaction_type?`, `limit?` | 否 |
+| `create_raw_inbound_order` | `warehouse_id`, `lines`, `idempotency_key` | 是，建单为 `pending_approval`，不入账 |
+| `approve_raw_inbound_order` | `order_id`, `idempotency_key` | 是，审批即入账，不可逆 |
+| `create_raw_scrap_order` | `batch_id`, `quantity_kg`, `reason`, `idempotency_key` | 是，建单冻结报废量，不出账 |
+| `approve_raw_scrap_order` | `order_id`, `idempotency_key` | 是，审批即出账，不可逆 |
+
+只读工具在公共 MCP 协议面即使开进 `app.mcp.protocol-modules` 也只投影 3 个读工具；写工具恒不对外，只经 Agent 面 `allow_write` 绑定调用。
 
 ## 9. 自动生成与副作用
 

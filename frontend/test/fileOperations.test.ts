@@ -291,6 +291,20 @@ test('import row specification falls back to internal SKU default when source om
   assert.equal(unmapped.specification, '—');
 });
 
+test('import row renders an integer parsed quantity without widening the API contract to strings', () => {
+  const row = presentImportRow({
+    id: 'row-count-1',
+    sheet_name: 'STRUCTURED',
+    sheet_index: 0,
+    row_index: 1,
+    raw_cells: {},
+    status: 'ACCEPTED',
+    parsed: { quantity: 3 },
+  });
+
+  assert.equal(row.quantity, '3');
+});
+
 test('rejection reason reads the plural order_line_exceptions array the backend actually writes', () => {
   // 后端 SourceImportService 写的是复数数组；旧代码读单数字符串键，该分支恒为空。
   const row = (exceptions: unknown, errorCode: string | null = null) => presentImportRow({

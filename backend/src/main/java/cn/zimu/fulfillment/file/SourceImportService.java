@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.file;
 
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
+import cn.zimu.fulfillment.common.domain.CountQuantity;
 import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
@@ -25,6 +26,7 @@ import cn.zimu.fulfillment.order.dto.Receiver;
 import cn.zimu.fulfillment.order.dto.Settlement;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -796,10 +798,12 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         if (order.canonicalInput() != null
                 && itemIndex >= 0
                 && itemIndex < order.canonicalInput().items().size()) {
-            String sourceSkuRef = order.canonicalInput().items().get(itemIndex).sourceSkuRef();
+            OrderItemInput item = order.canonicalInput().items().get(itemIndex);
+            String sourceSkuRef = item.sourceSkuRef();
             if (sourceSkuRef != null && !sourceSkuRef.isBlank()) {
                 cells.put("source_sku_ref", sourceSkuRef);
             }
+            cells.put("parsed_quantity", item.quantity());
         }
         cells.put("snapshot", sanitizeSnapshot(order.rawSnapshot()));
         return cells;
@@ -945,6 +949,32 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     return value;
                 },
                 pageArguments.toArray());
+        // 结构化拉取确认前没有正式订单；从服务端候选快照补白名单 read model。
+        // raw_cells 继续保持脱敏，完整 candidate 继续由 publicBatchErrorDetail 隐藏。
+        Map<Long, SourceOrderCandidateMaterializer.CandidateRowPreview> stagedPreviews =
+                candidateMaterializer.stagedPreviews(batchId);
+        for (Map<String, Object> item : items) {
+            SourceOrderCandidateMaterializer.CandidateRowPreview preview = stagedPreviews.get(
+                    Long.parseLong(String.valueOf(item.get("id"))));
+            if (preview == null) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> parsed =
+                    new LinkedHashMap<>((Map<String, Object>) item.get("parsed"));
+            preview.asParsedProjection().forEach((key, value) -> {
+                Object existing = parsed.get(key);
+                // 「来源未提供」是解析层的成文缺失占位（SourceFileParser fallback /
+                // CaishixianOrderTransform.SPEC_MISSING），预览合并视同空白。
+                if (existing == null
+                        || (existing instanceof String text
+                                && (text.isBlank() || "来源未提供".equals(text)))) {
+                    parsed.put(key, value);
+                }
+            });
+            item.put("parsed", Map.copyOf(parsed));
+        }
+
         // SKU 履约方归属（JD_WAREHOUSE / THIRD_PARTY）：按渠道来源 SKU 映射一次批量查询
         Map<String, SkuFulfillmentProjection> skuFulfillment = skuFulfillmentByRef(
                 sourceChannel,
@@ -1038,7 +1068,14 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                     stringCells.put(entry.getKey(), entry.getValue().asText());
                 }
             });
-            return parser.projection(channel, stringCells);
+            Map<String, Object> projection = new LinkedHashMap<>(parser.projection(channel, stringCells));
+            JsonNode structuredQuantity = cells.get("parsed_quantity");
+            if (structuredQuantity != null && structuredQuantity.isIntegralNumber()) {
+                projection.put(
+                        "quantity",
+                        CountQuantity.fromPositiveJsonInteger(structuredQuantity.bigIntegerValue()));
+            }
+            return Map.copyOf(projection);
         } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
             return Map.of();
         }

@@ -652,7 +652,7 @@ public class McpWriteTools {
         return positiveCount(lineNo, "line_no");
     }
 
-    private static int positiveCount(Object value, String field) {
+    static int positiveCount(Object value, String field) {
         if (!(value instanceof Byte || value instanceof Short || value instanceof Integer
                 || value instanceof Long || value instanceof java.math.BigInteger)) {
             throw BusinessException.badRequest("INVALID_PARAMETERS", field + " 必须是正整数 JSON 值");

@@ -23,7 +23,7 @@
 | 5 | A+B | `frontend/src/pages/orders/OrderDetailPage.tsx:216-222` | ```${case_no}（${reason}）：${JSON.stringify(c.detail)}``` | 订单详情重复直出复核 detail JSON；当前真实数据会显示 `{"message":"来源回传失败","scenario":"SYNC_FAILED"}`，暴露枚举且没有下一步。 | 复用人工复核的领域化摘要，并提供“前往人工复核”动作；内部 detail 仅供审计/调试。 | 🔴 |
 | 6 | A+B | `frontend/src/components/OrderTimeline.tsx:56-70,127-148` | `JSON.stringify(raw)`、`event.operator || 'system'`、`按 sequence_no 升序` | 时间线把未知 payload 键和值原样显示；当前数据中的 `line_count`、`seed-runner` 会直接出现，Demo 还会显示 `scenario_code/mock_step`。`sequence_no` 是内部字段，不是用户语义。 | 事件类型按白名单定义标题、字段与动作；未知 payload 隐藏并记录日志。把 `system`/seed 操作员映射为业务角色，把页脚改为“按发生时间排序”。 | 🔴 |
 | 7 | A+B | `frontend/src/pages/system/AuditLogsPage.tsx:166-186` | `request_id`、`trace_id`、`请求快照`/`响应快照` + 原始 JSON | 页面整块展示审计 JSON；订单创建会把含收货人、电话、地址的 input/detail 写入审计，而当前脱敏器只处理 password/token/secret 等键，因此会违反“不暴露 PII”红线。界面还直接暴露追踪字段。 | 在服务端落库和返回前按角色做 PII 脱敏；页面只展示白名单业务摘要。追踪编号折叠到“技术详情”，并限制审计详情权限。 | 🔴 |
-| 8 | A+C+D | `frontend/src/api/endpoints.ts:48-54,265-303` | `X-Operator: ops-admin`；`X-Operator: demo-admin` | 所有浏览器写操作固定冒充同一运营账号，文件下载还写成 Demo 管理员；这些值会出现在审计与时间线，破坏“所有人工操作可审计”的核心承诺。 | 从已认证会话由服务端确定真实操作人；身份未建立时禁用正式写操作。Demo 身份只能用于 `/demo` 数据域，不能用于 BUSINESS。 | 🔴 |
+| 8 | A+C+D | `frontend/src/api/endpoints.ts:48-54,265-303`（原审计时点） | `X-Operator: ops-admin`；`X-Operator: demo-admin` | 所有浏览器写操作固定冒充同一运营账号，文件下载还写成 Demo 管理员；这些值会出现在审计与时间线，破坏“所有人工操作可审计”的核心承诺。 | 从已认证会话由服务端确定真实操作人；身份未建立时禁用正式写操作。Demo 身份只能用于 `/demo` 数据域，不能用于 BUSINESS。 | ✅ **已解决（2026-08-31 前）**：`ops-admin`/`demo-admin` 硬编码已从 `frontend/src/api/endpoints.ts`/`client.ts` 移除（复核零命中），`client.ts` 现明确声明浏览器不得提供 `X-Operator`、操作人身份由受信网关覆盖注入 |
 | 9 | A+D | `docker-compose.yml:128-129` | `demo@zimu.local` / `zimu-demo-2026` | 管理驾驶舱经 `/metabase` 对外可达，Compose 与 README 公开可预测的默认管理员账号和密码；若部署者未覆盖即可直接登录。 | 取消默认值并在缺失环境变量时让初始化失败；首次启动生成/注入独立凭据，轮换已有账号，README 只说明配置方式。 | 🔴 |
 | 10 | B | `backend/src/main/java/cn/zimu/fulfillment/common/error/GlobalExceptionHandler.java:36-72,80-94` | `请求参数校验失败`、`请求体不是合法 JSON 或字段类型不匹配`、`接口不存在: …`、`唯一性约束冲突` | 这些错误经 #1 可到达 UI，使用 JSON、接口、字段类型、约束等开发语言；多数只有“发生了什么”，没有用户可执行动作。 | 按业务码返回稳定用户消息，例如“提交内容无法识别，请检查必填项和格式后重试”；资源/方法/SQL 细节仅写日志。 | 🟠 |
 | 11 | B | `backend/src/main/java/cn/zimu/fulfillment/file/TrackingFileService.java:79-85,225-256` | `当前缺少京东官方回传 golden 样表`、`结果必须为 SHIPPED/PARTIAL/FAILED`、`FAILED 必须填异常原因` | 上传 Toast 会显示 golden、英文枚举与固定格式，用户不知道应下载哪个模板或修改哪一行。 | 返回行号/列名和中文允许值，并给动作：“请重新下载本批次模板，按‘已发货/部分发货/失败’填写后重新上传”；京东 gate 说明联系管理员补充官方模板。 | 🟠 |
@@ -40,7 +40,7 @@
 
 1. 封住错误透传链：先修 `errorMessage` 的状态/业务码映射，再移除文件解析异常原文；否则所有页面会持续泄露技术消息。
 2. 取消动态对象直出：京东 SDK、人工复核、订单详情、时间线和审计必须采用白名单视图；审计 PII 需先在服务端脱敏。
-3. 恢复身份与管理入口可信度：正式写操作不能固定为 `ops-admin/demo-admin`，Metabase 不能保留公开默认管理员密码。
+3. ~~恢复身份与管理入口可信度：正式写操作不能固定为 `ops-admin/demo-admin`~~（#8 已解决，见对账表；`X-Operator` 硬编码已移除）。Metabase 仍不能保留公开默认管理员密码（#9，未复核，留待确认）。
 
 ## 改法示例
 
@@ -58,7 +58,7 @@
 - #5：公共 HTTP seam 的 `/api/v1/orders/120` 当前复核 detail 含 `scenario=SYNC_FAILED`；页面对整段 detail 执行 `JSON.stringify`。
 - #6：公共 HTTP seam 的 `/api/v1/orders/120/timeline` 当前 payload 含未映射的 `line_count`，operator 为 `seed-runner`；组件还固定显示 `sequence_no`。
 - #7：`OrderCreateService:450-460` 把含收货信息的 input/detail 写入审计；`SecretRedactor:11-38` 未覆盖 name/phone/address；审计详情页整块输出 JSON。
-- #8：`writeHeaders`、履约文件下载和通用下载分别硬编码 `ops-admin` / `demo-admin`，且这些操作人会进入审计与事件。
+- #8（原审计时点证据，现已解决）：`writeHeaders`、履约文件下载和通用下载分别硬编码 `ops-admin` / `demo-admin`，且这些操作人会进入审计与事件；2026-08-31 前已改为服务端网关覆盖身份，`endpoints.ts`/`client.ts` 复核零命中。
 - #9：相同默认账号由 Compose 注入、Metabase provisioner 使用，并在 README 公开；不是仅存在于测试代码的样例。
 
 ## 验证

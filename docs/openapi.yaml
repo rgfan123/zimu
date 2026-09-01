@@ -889,7 +889,8 @@ paths:
         手工建单（V100）：柜台/运营直录，不经导入批次。客户绑定可选：缺省归属专用
         「手工平台客户」，传 customer_code 则精确绑定既有档案；商品按系统 SKU 直选、数量为正整数
         （V99），建成即 SKU_MAPPED；随后调用 fulfillment-routing 生成发货单，京东仓行走
-        既有「提交京东出库单」人工闸门。来源单号由服务端生成（MAN-yyyyMMdd-xxxxxxxx）。
+        既有「提交京东出库单」人工闸门。来源单号由服务端按幂等键确定性生成
+        （MAN-&lt;摘要12位&gt;；声明了 origin_channel 时为 MAN-&lt;ORIGIN&gt;-&lt;摘要12位&gt;）。
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/Operator'
@@ -5135,6 +5136,14 @@ components:
               sku_id: { $ref: '#/components/schemas/Identifier' }
               quantity: { $ref: '#/components/schemas/PositiveCountQuantity' }
         remark: { type: string, maxLength: 2000 }
+        origin_channel:
+          type: string
+          maxLength: 32
+          description: >-
+            可选：声明这单原本来自哪里（中汇/大者等订单常经微信文字转发后手工录入）。**仅存档用，
+            不改变履约语义**——orders.source_channel 恒为 MANUAL（非手工渠道必须挂导入批次，
+            见 orders_check2），声明值只投影进来源单号前缀 MAN-&lt;ORIGIN&gt;-&lt;摘要&gt;。
+            取值为 SourceChannel 枚举除 MANUAL 之外的值，未知值与 MANUAL 一律 400。
     ImportMode:
       type: string
       enum: [NEW, REVISION]

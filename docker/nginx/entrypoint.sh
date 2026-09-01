@@ -175,4 +175,49 @@ else
 fi
 chmod 644 /etc/nginx/kehuzx-upstream.inc /etc/nginx/kehuzx.inc
 
+# Clawbot (hermes gateway on the Docker host, 127.0.0.1:9121) routing toggle.
+# 2026-08-30 this route was hand-patched into the running container and every
+# nginx recreate silently dropped it; CLAWBOT_ENABLED (default off) makes it a
+# deployment fact instead. host.docker.internal resolves via the container's
+# /etc/hosts on Docker Desktop, so no upstream/resolver block is needed.
+clawbot_enabled="${CLAWBOT_ENABLED:-false}"
+case "$clawbot_enabled" in
+  true|TRUE|True) clawbot_enabled=true ;;
+  false|FALSE|False) clawbot_enabled=false ;;
+  *)
+    echo "CLAWBOT_ENABLED must be 'true' or 'false' (got '$clawbot_enabled')" >&2
+    exit 1
+    ;;
+esac
+if [ "$clawbot_enabled" = "true" ]; then
+  cat > /etc/nginx/clawbot.inc <<'EOF'
+    location = /clawbot {
+        auth_basic off;
+        return 302 /clawbot/;
+    }
+
+    # The hermes gateway does its own onboarding auth; edge Basic Auth must
+    # stay off or its clients would need two Authorization schemes at once.
+    location /clawbot/ {
+        auth_basic off;
+        proxy_pass http://host.docker.internal:9121/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection '';
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 660s;
+        proxy_send_timeout 30s;
+    }
+EOF
+  echo "[zimu-nginx] clawbot routing: ENABLED"
+else
+  : > /etc/nginx/clawbot.inc
+  echo "[zimu-nginx] clawbot routing: DISABLED (CLAWBOT_ENABLED=${CLAWBOT_ENABLED:-<unset, default false>}) -- set CLAWBOT_ENABLED=true where the hermes gateway listens on the Docker host's 9121."
+fi
+chmod 644 /etc/nginx/clawbot.inc
+
 exec /docker-entrypoint.sh nginx -g 'daemon off;'

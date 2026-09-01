@@ -70,6 +70,7 @@ class MixedProviderStaticBundlePipelineApiTest {
     @Autowired ObjectMapper objectMapper;
     @Autowired ControlledJdClient jd;
     @Autowired SourceOrderCandidateMaterializer candidateMaterializer;
+    @Autowired SourceImportService sourceImportService;
     @Autowired ProviderFileService providerFileService;
 
     @TestConfiguration
@@ -145,6 +146,25 @@ class MixedProviderStaticBundlePipelineApiTest {
                 .containsEntry("accepted", 0)
                 .containsEntry("total", 1);
         assertThat(uploaded.getBody()).containsEntry("error_detail", null);
+
+        long rawRowId = jdbc.queryForObject(
+                "SELECT id FROM app.raw_import_rows WHERE import_batch_id=?",
+                Long.class,
+                Long.parseLong(batchId));
+        Map<Long, SourceOrderCandidateMaterializer.CandidateRowPreview> stagedPreviews =
+                candidateMaterializer.stagedPreviews(Long.parseLong(batchId));
+        assertThat(stagedPreviews).containsOnlyKeys(rawRowId);
+        assertThat(stagedPreviews.get(rawRowId).asParsedProjection())
+                .as("一个原始礼包行即使展开为多个履约分片，也只能产生一个同源预览")
+                .containsEntry("product_name", "羊蝎子鸵鸟测试礼包")
+                .containsEntry("source_sku_ref", SOURCE_BUNDLE_REF);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> parsed = (Map<String, Object>) sourceImportService
+                .rows(Long.parseLong(batchId), 0, 20, null)
+                .items()
+                .getFirst()
+                .get("parsed");
+        assertThat(parsed).containsEntry("quantity", 1);
 
         ResponseEntity<Map> confirmed = confirm(batchId);
         assertThat(confirmed.getStatusCode()).isEqualTo(HttpStatus.OK);

@@ -90,15 +90,42 @@ PII 边界：**不写 `receiver_phone`**；候选档案不读取 profile 等档�
 PII 边界：diff **不含收货电话**（不新增完整电话泄露面）；`before`/`after` 只承载白名单
 字段的值；未知字段键的改动条目在前端被 fail-closed 丢弃。
 
+### 6. WECOM_TRACKING_FILE_REVIEW（企微运单文件处理结果）
+
+Issue #72 原五家族之后新增（`publicReady.ts` `REVIEW_FACT_GROUPS`）。
+
+| 事实组 | 字段（detail 键） | 展示标签 | 事实来源 |
+|---|---|---|---|
+| 运单文件处理结果 | `source` | 处理类型 | 固定判据：`detail.source === 'WECOM_TRACKING_FILE'` 时显示「企微运单文件」，否则不展示（不回显原文） |
+| 运单文件处理结果 | `error_code` | 失败代码 | `trackingFileFailureCode(detail)`：确定性失败码，非自由文本 |
+| 运单文件处理结果 | `message` | 处理说明 | `WECOM_TRACKING_FILE_FAILURE_MESSAGES` 白名单常量表按失败码查文案，不读取后端原始 message |
+
+PII 边界：只读固定枚举/常量派生值，不读取文件原文、收货人或运单号明细。
+
+### 7. SOURCE_SYNC_BLOCKED（来源回传阻断）
+
+Issue #72 原五家族之后新增（`publicReady.ts` `REVIEW_FACT_GROUPS`）。
+
+| 事实组 | 字段（detail 键） | 展示标签 | 事实来源 |
+|---|---|---|---|
+| 来源回传处理依据 | `status` | 来源回传状态 | `sourceSyncStatusText(detail)`：来源回传模块生成的稳定处理结果 |
+| 来源回传处理依据 | `business_code` | 业务代码 | 来源回传模块的稳定业务码，原样展示 |
+| 来源回传处理依据 | `blocker_codes` | 阻断代码 | `sourceSyncBlockerCodesText(detail)`：阻断代码列表；`status=SYNCED` 且无阻断时显示「无阻断」 |
+| 来源回传处理依据 | `next_action` | 下一步 | `sourceSyncNextStep(detail)`：按阻断代码/状态派生的确定性下一步文案，非自由文本 |
+
+PII 边界：只读 `status` / `business_code` / `blocker_codes`（+ 派生的 `next_action`），
+**不读取** `message`、`check_hash`、平台原始载荷或 receiver PII。
+
 ## 测试覆盖
 
 前端（`frontend/test/`）：
 
-- `reviewFactGroups.test.ts`（10 条）：事实组定义完整性、逐字段占位、五家族关键事实、
+- `reviewFactGroups.test.ts`（13 条）：事实组定义完整性、逐字段占位、七家族关键事实
+  （含 WECOM_TRACKING_FILE_REVIEW 失败码/文案、SOURCE_SYNC_BLOCKED 阻断态与已解决态）、
   PII/未知键 fail-closed、候选零命中、cell 截断、数量家族共用、改动明细投影与过滤。
-- `reviewActionableDetail.test.ts`（8 条，routeHarness + ReviewCaseDrawer）：逐家族抽屉
-  渲染关键事实可见、PII/未知键不出现、缺字段显示「来源未提供」、已解决事项无白名单
-  字段时显示提示而非空表格。
+- `reviewActionableDetail.test.ts`（11 条，routeHarness + ReviewCaseDrawer）：逐家族抽屉
+  渲染关键事实可见（含 WECOM_TRACKING_FILE_REVIEW、SOURCE_SYNC_BLOCKED 阻断态与已解决态）、
+  PII/未知键不出现、缺字段显示「来源未提供」、已解决事项无白名单字段时显示提示而非空表格。
 
 后端（真实集成测试）：
 

@@ -8,6 +8,7 @@ import cn.zimu.fulfillment.order.OrderCreateService;
 import cn.zimu.fulfillment.order.dto.CanonicalOrderInput;
 import cn.zimu.fulfillment.order.dto.CustomerInput;
 import cn.zimu.fulfillment.order.dto.OrderDetailDto;
+import cn.zimu.fulfillment.order.dto.OrderItemInput;
 import cn.zimu.fulfillment.order.dto.OrderLineDto;
 import cn.zimu.fulfillment.order.dto.Receiver;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -16,9 +17,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,6 +47,59 @@ class SourceOrderCandidateMaterializer {
         this.orders = orders;
         this.importedCustomers = importedCustomers;
         this.readinessGate = readinessGate;
+    }
+
+    /**
+     * 确认前的内部工作台安全预览。候选快照仍只保存在服务端；这里按 raw row 白名单投影，
+     * 不返回完整 CanonicalOrderInput，也不改写会进入企微证据链的 raw_cells。
+     *
+     * <p>结构化礼包在候选构造时已按履约方展开成多个 CanonicalOrderInput.items，
+     * candidate.rows 仍按来源原始商品行保存；因此必须用 CandidateRow.partitionCount
+     * 切出同一 raw row 对应的候选商品分片，不能按两个列表的下标直接一一配对。</p>
+     */
+    Map<Long, CandidateRowPreview> stagedPreviews(long batchId) {
+        List<String> details = jdbc.query(
+                """
+                SELECT error_detail::text
+                FROM app.import_batches
+                WHERE id=? AND batch_type='SOURCE_ORDER'
+                """,
+                (resultSet, rowNumber) -> resultSet.getString(1),
+                batchId);
+        if (details.isEmpty()) {
+            return Map.of();
+        }
+        StagedPayload payload = stagedPayload(details.getFirst());
+        if (payload == null || !"PENDING".equals(payload.status())) {
+            return Map.of();
+        }
+
+        Map<Long, CandidateRowPreview> previews = new LinkedHashMap<>();
+        for (SourceOrderCandidate candidate : payload.candidates()) {
+            CanonicalOrderInput order = candidate.order();
+            if (order == null) {
+                throw new IllegalStateException("来源候选缺少 CanonicalOrderInput");
+            }
+            List<OrderItemInput> items = order.items() == null ? List.of() : order.items();
+            int itemCursor = 0;
+            for (SourceOrderCandidate.CandidateRow row : candidate.rows()) {
+                int nextCursor = itemCursor + row.partitionCount();
+                if (nextCursor > items.size()) {
+                    throw new IllegalStateException("来源候选的分片数超过候选商品行数");
+                }
+                CandidateRowPreview previous = previews.put(
+                        row.rawImportRowId(),
+                        CandidateRowPreview.from(order.receiver(), items.subList(itemCursor, nextCursor)));
+                if (previous != null) {
+                    throw new IllegalStateException("来源候选重复关联 raw_import_row_id=" + row.rawImportRowId());
+                }
+                itemCursor = nextCursor;
+            }
+            if (itemCursor != items.size()) {
+                throw new IllegalStateException("来源候选的分片未覆盖全部候选商品行");
+            }
+        }
+        return Map.copyOf(previews);
     }
 
     /**
@@ -352,6 +408,89 @@ class SourceOrderCandidateMaterializer {
             return objectMapper.writeValueAsString(value);
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("来源订单候选无法序列化", exception);
+        }
+    }
+
+    /** 仅供受认证业务工作台 rows API 使用的候选白名单；不持久化、不进入批次公开详情。 */
+    record CandidateRowPreview(
+            String receiverName,
+            String receiverPhone,
+            String receiverAddress,
+            String productName,
+            String specification,
+            String sourceSkuRef) {
+
+        static CandidateRowPreview from(Receiver receiver, List<OrderItemInput> items) {
+            return new CandidateRowPreview(
+                    receiver == null ? null : receiver.name(),
+                    receiver == null ? null : receiver.phone(),
+                    fullAddress(receiver),
+                    joinedDistinct(items, OrderItemInput::productName),
+                    joinedDistinct(items, OrderItemInput::specification),
+                    unique(items, OrderItemInput::sourceSkuRef));
+        }
+
+        Map<String, Object> asParsedProjection() {
+            Map<String, Object> parsed = new LinkedHashMap<>();
+            putIfText(parsed, "receiver_name", receiverName);
+            putIfText(parsed, "receiver_phone", receiverPhone);
+            putIfText(parsed, "receiver_address", receiverAddress);
+            putIfText(parsed, "product_name", productName);
+            putIfText(parsed, "specification", specification);
+            putIfText(parsed, "source_sku_ref", sourceSkuRef);
+            return Map.copyOf(parsed);
+        }
+
+        private static String fullAddress(Receiver receiver) {
+            if (receiver == null) {
+                return null;
+            }
+            List<String> parts = new ArrayList<>();
+            addPart(parts, receiver.province());
+            addPart(parts, receiver.city());
+            addPart(parts, receiver.district());
+            addPart(parts, receiver.town());
+            addPart(parts, receiver.address());
+            return parts.isEmpty() ? null : String.join(" ", parts);
+        }
+
+        private static String joinedDistinct(
+                List<OrderItemInput> items, Function<OrderItemInput, String> reader) {
+            LinkedHashSet<String> values = values(items, reader);
+            return values.isEmpty() ? null : String.join(" / ", values);
+        }
+
+        private static String unique(
+                List<OrderItemInput> items, Function<OrderItemInput, String> reader) {
+            LinkedHashSet<String> values = values(items, reader);
+            return values.size() == 1 ? values.iterator().next() : null;
+        }
+
+        private static LinkedHashSet<String> values(
+                List<OrderItemInput> items, Function<OrderItemInput, String> reader) {
+            LinkedHashSet<String> values = new LinkedHashSet<>();
+            for (OrderItemInput item : items) {
+                if (item == null) {
+                    continue;
+                }
+                String value = reader.apply(item);
+                if (value != null && !value.isBlank()) {
+                    values.add(value.trim());
+                }
+            }
+            return values;
+        }
+
+        private static void addPart(List<String> parts, String value) {
+            if (value != null && !value.isBlank()) {
+                parts.add(value.trim());
+            }
+        }
+
+        private static void putIfText(Map<String, Object> target, String key, String value) {
+            if (value != null && !value.isBlank()) {
+                target.put(key, value.trim());
+            }
         }
     }
 

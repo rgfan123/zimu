@@ -8,6 +8,11 @@
 > **数据来源纪律**：本文所有「生产事实」一律来自 `ssh zimupc` → `docker exec zimu-fulfillment-postgres-1 psql`，
 > 时间点 2026-08-25。**未使用任何 MCP 工具取数**（`mcp__fulfillment-hub-mcp__*` 指向本机库，与生产不是同一份数据，
 > 本文不引用）。代码事实来自 worktree `~/zimu-work/main`，HEAD = `de9048e`。
+>
+> **精确行号为 2026-08-25 快照**：本文引用的文件路径与行号按当时 HEAD 固定，此后代码持续演进，行号会漂移——
+> 不追行号，仅在引用的类/方法本身被删除或替代（会造成死链接而非单纯行号偏差）时才更新，见 §4.2/§5.1/§5.3
+> 对 `TrackingResultWorkbookService`/`TrackingResultReplyService`（已随 c9829238 删除并被
+> `SourceReturnWecomDeliveryService`/`RouteResolver`/`Scanner` 取代）的更新记录。
 
 ---
 
@@ -269,18 +274,34 @@ operator 固定 `system:platform-pull`（`connector/AbstractHttpPullConnector.ja
   O5 照常工作（生产 id=1 就是拉取来的批次 8）。
 - 对聚福宝（I4）：**成立**，但原因不是「在线拉取」，而是 `importStructured` 走了 `structured://` 占位 file_ref（见 §6 R1）。
 
-### 4.2 被漏掉的既有能力：两个已经写好但没接线的类
+### 4.2 【已解决，2026-08-25 同日】曾经漏掉的能力：两个写好但没接线的类，已删除并被真正接线的实现取代
 
-| 类 | 能力 | 状态 |
+> 本节记录的 `TrackingResultWorkbookService` / `TrackingResultReplyService` 在本报告完成
+> 审核的**同一天**（commit `c9829238`）就被作者本人判定为「方向错误」并删除——它们绕开了
+> 已有的 `SourceReturnPushService` 回填事务，且只覆盖「回原会话」这一种去处。下方两段按
+> 「历史状态 → 最终解法」分别记录，`TrackingResultWorkbookService`/`TrackingResultReplyService`
+> 引用的类名/文件已不存在于当前代码库，不要按原文路径去找。
+
+**历史状态（本报告原始发现，已不成立）**：
+
+| 类（已删除） | 能力 | 状态 |
 |---|---|---|
-| `file/TrackingResultWorkbookService`（commit `642727f`，2026-08-25 16:47） | 按 `shipmentId` 取 `trackings` + `shipment_items` 的落库事实，生成与 24 列发货清单**同表头**的回填结果 xlsx | **有单测（5 例），无生产调用方** |
-| `file/TrackingResultReplyService`（commit `de9048e`，2026-08-25 16:50，HEAD） | 上传该 xlsx 为企微临时素材并发回**原会话**（`originatingChatId:105` 由 `message_submissions` → `channel_messages` 反查） | **零调用方、零测试**。全仓 grep `replyForShipment` / `TrackingResultReplyService` 只有自引用 |
+| `file/TrackingResultWorkbookService`（commit `642727f`，2026-08-25 16:47） | 按 `shipmentId` 取 `trackings` + `shipment_items` 的落库事实，生成与 24 列发货清单**同表头**的回填结果 xlsx | 有单测（5 例），无生产调用方 |
+| `file/TrackingResultReplyService`（commit `de9048e`，2026-08-25 16:50） | 上传该 xlsx 为企微临时素材并发回**原会话**（`originatingChatId` 由 `message_submissions` → `channel_messages` 反查） | 零调用方、零测试 |
 
-**关键点**：`TrackingResultWorkbookService.rows(shipmentId)`（`:62-103`）的 SQL **不含任何履约方类型过滤**，
-`JOIN app.shipments s … LEFT JOIN app.trackings t`。也就是说**它对京东 shipment 一样能出结果**——
-生产 shipment 1（京东、运单 `JDVA46707982590`）就能出一张表。只是**没有人调用它**。
+**最终解法（当前代码，commit `c9829238`）**：飞象/大者/中汇这三个 `ConnectorCapabilities.onlinePush=false`
+渠道缺在线回传去处的缺口，改由以下三个类补齐，且**已真正接线**（非孤立类）：
 
-这是「补法」里成本最低的一块：它已经写完了。
+| 类 | 能力 |
+|---|---|
+| `file/SourceReturnWecomDeliveryService` | 把已生成的来源回填文件发到企微（人转交平台），与 `ShipmentJdTrackingBackfillService` 的回填事务**解耦**（回填是业务事实，送达回执失败不得反噬它）——不复用 `push_status`（那表达「平台已受理」，onlinePush=false 渠道永远走不到），V57 新增独立状态列区分「已发企微」与「平台已受理」两件不同的事 |
+| `file/SourceReturnWecomRouteResolver` | 解析该发到哪个会话（不再局限于「回原会话」这一种去处） |
+| `file/SourceReturnWecomScanner` | 异步扫描器领取待投递文件，与回填事务解耦的落点 |
+
+**已遵守 retryable 纪律**：企微 ack 超时与提交后断线都可能已送达（`WecomSendResult` 契约），
+因此只有 `retryable=true`（帧未提交）才回到可重试态，其余停在 `FAILED` 等人工判断——不像
+已删除的 `TrackingResultReplyService` 那样只判 `sent.status() == SUCCESS`（见原 §5.3 记录，
+现已随该类一并作废，本文档不再维护那段状态机描述）。
 
 ### 4.3 前端所有触发文件下载/上传的入口（穷尽）
 
@@ -337,7 +358,9 @@ operator 固定 `system:platform-pull`（`connector/AbstractHttpPullConnector.ja
 `connector/wecom/WecomMediaUploader.java:25`、
 `docs/agents/wecom-outbound-upload.md:24` 与 `:134`（「业务侧**不得**把它当永久引用缓存」）。
 
-代码里**没有 media_id 缓存**：`TrackingResultReplyService.replyForShipment` 每次都是「写临时文件 → upload → 立即 send → finally 删临时文件」（`file/TrackingResultReplyService.java:66-97`）。
+代码里**没有 media_id 缓存**：〔已随 c9829238 改由 `file/SourceReturnWecomDeliveryService` 接线，见 §4.2〕
+同一模式仍然成立——写临时文件 → `gateway.upload` → 立即 `gateway.send` → `finally` 删临时文件
+（`file/SourceReturnWecomDeliveryService.java` 约 `:153-178`；原引用的 `TrackingResultReplyService` 已删除，不存在于当前代码库）。
 审计层面 media_id 也被刻意排除：请求侧只落 `media_id_sha256`（`connector/wecom/WecomOutboundGateway.java:71-75`），
 响应侧「media_id 一律不落审计」（`:105-106`）。
 
@@ -414,11 +437,13 @@ chatType 判断（`:51-54`）→ `mediaEvidence.storeMedia` 下载解密并落 `
 这三种情况外部**可能已经送达**——重发会让履约方群里出现两份同样的发货清单，
 而第三方看到两份清单可能按两批发货。这就是「禁止盲目重发」在业务上的实际代价。
 
-**⚠️ `TrackingResultReplyService` 不在这套状态机里**：它直接 `gateway.upload` + `gateway.send`
-（`file/TrackingResultReplyService.java:69-74`），只判 `sent.status() == SUCCESS`，
-**不区分 TIMEOUT 与 FAILED、不看 retryable、失败只记日志返回 false**（`:78-89`）。
-类注释说明了取舍理由（`:25-27`「失败不回滚业务」）——但这意味着：一旦接线，
-它没有 §5.3 那套 UNKNOWN 纪律的保护。这是 §4.4 第二行标「中风险」的原因。
+**【已解决，2026-08-25 同日】原 `TrackingResultReplyService` 不在这套状态机里的风险已随该类删除而消失**：
+它当时直接 `gateway.upload` + `gateway.send`，只判 `sent.status() == SUCCESS`，不区分
+TIMEOUT 与 FAILED、不看 retryable、失败只记日志返回 false——一旦接线就没有本节这套
+UNKNOWN 纪律的保护（本报告原判"中风险"的依据）。commit `c9829238` 删除该类，改由
+`file/SourceReturnWecomDeliveryService` 补齐同一能力，且**遵守 retryable 纪律**：只有
+`retryable=true`（帧未提交）才回到可重试态，`SUCCESS`/`TIMEOUT`/`FAILED 且 retryable=false`
+一律停在终态等人工判断，不盲目重发（见 §4.2）。该风险点不再成立。
 
 ---
 

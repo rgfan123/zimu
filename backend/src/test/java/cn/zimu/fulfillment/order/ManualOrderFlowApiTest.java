@@ -71,7 +71,8 @@ class ManualOrderFlowApiTest {
         long version = ((Number) body.get("version")).longValue();
         assertThat(body).containsEntry("source_channel", "MANUAL");
         assertThat(body).containsEntry("order_status", "SKU_MAPPED");
-        assertThat(body.get("source_ref").toString()).startsWith("MAN-");
+        // 不声明来源时单号形状逐字不变（存量兼容）：MAN- + 12 位摘要，中间没有渠道段
+        assertThat(body.get("source_ref").toString()).matches("^MAN-[0-9A-F]{12}$");
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.customer_source_refs"
                         + " WHERE source_channel='MANUAL' AND source_customer_ref=?",
@@ -154,6 +155,80 @@ class ManualOrderFlowApiTest {
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.customers WHERE customer_code='MANUAL-PLATFORM'",
                 Integer.class)).isEqualTo(1);
+    }
+
+    /**
+     * 来源渠道声明（中汇/大者等经微信转发后手工录入）：只进来源单号前缀作存档，
+     * orders.source_channel 恒为 MANUAL——冒名会撞 orders_check2（那些渠道必须挂导入批次），
+     * 也会把回传/对账管线引到不存在的平台单上。
+     */
+    @Test
+    void declaredOriginChannelLandsInTheSourceRefPrefixButNeverInSourceChannel() {
+        Map<String, Object> request = new java.util.LinkedHashMap<>(manualRequest("ignored", 2));
+        request.remove("customer_code");
+        request.put("origin_channel", "ZHONGHUI");
+
+        ResponseEntity<Map> created = http.exchange(
+                "/api/v1/orders/manual",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders("manual-origin-001", "req-manual-origin-001")),
+                Map.class);
+
+        assertThat(created.getStatusCode())
+                .withFailMessage("origin create response: %s", created.getBody())
+                .isEqualTo(HttpStatus.CREATED);
+        String sourceRef = created.getBody().get("source_ref").toString();
+        assertThat(sourceRef).matches("^MAN-ZHONGHUI-[0-9A-F]{12}$");
+        assertThat(created.getBody()).containsEntry("source_channel", "MANUAL");
+        long orderId = Long.parseLong(created.getBody().get("id").toString());
+        assertThat(jdbc.queryForObject(
+                "SELECT source_channel FROM app.orders WHERE id=?", String.class, orderId))
+                .isEqualTo("MANUAL");
+
+        // 幂等重放：同键同载荷返回同一订单与逐字相同的来源单号
+        ResponseEntity<Map> replayed = http.exchange(
+                "/api/v1/orders/manual",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders("manual-origin-001", "req-manual-origin-001-replay")),
+                Map.class);
+        assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(replayed.getBody().get("id")).isEqualTo(created.getBody().get("id"));
+        assertThat(replayed.getBody().get("source_ref")).isEqualTo(sourceRef);
+
+        // 同幂等键换来源 = 不同单号：不会被误当成同一次录入而静默复用（载荷变了，按冲突拒绝）
+        Map<String, Object> otherOrigin = new java.util.LinkedHashMap<>(request);
+        otherOrigin.put("origin_channel", "DAZHE");
+        ResponseEntity<Map> conflict = http.exchange(
+                "/api/v1/orders/manual",
+                HttpMethod.POST,
+                new HttpEntity<>(otherOrigin, writeHeaders("manual-origin-001", "req-manual-origin-001-other")),
+                Map.class);
+        assertThat(conflict.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void unknownOriginChannelFailsClosed() {
+        Map<String, Object> request = new java.util.LinkedHashMap<>(manualRequest("ignored", 1));
+        request.remove("customer_code");
+        request.put("origin_channel", "TAOBAO");
+
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/orders/manual",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders("manual-origin-neg-001", "req-manual-origin-neg-001")),
+                Map.class);
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(rejected.getBody()).containsEntry("business_code", "INVALID_PARAMETERS");
+
+        // MANUAL 自身不是「来源」，同样拒绝
+        request.put("origin_channel", "MANUAL");
+        ResponseEntity<Map> manualAsOrigin = http.exchange(
+                "/api/v1/orders/manual",
+                HttpMethod.POST,
+                new HttpEntity<>(request, writeHeaders("manual-origin-neg-002", "req-manual-origin-neg-002")),
+                Map.class);
+        assertThat(manualAsOrigin.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     @Test

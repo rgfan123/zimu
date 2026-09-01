@@ -13,7 +13,7 @@
 ## 1. 设计结论
 
 - PostgreSQL 使用 `app` 业务 schema 与 `analytics` 分析 schema。
-- 当前权威快照共 81 张业务表、4 个分析视图和 2 个操作视图。
+- 当前权威快照共 87 张业务表、4 个分析视图和 2 个操作视图。
 - 有限且仍可能演进的状态值使用 `VARCHAR + CHECK`；可扩展的 OrderEvent 类型使用目录表。
 - 所有业务时间使用 `TIMESTAMPTZ`；Java 使用 `Instant`。来源 Excel 的无时区时间按 `Asia/Shanghai` 解释，分析视图也按上海自然日分桶。
 - 商品件数、来源份数、包装乘数、礼包/组件件数及请求、指令、实发、取消、剩余、库存观测等 `CountQuantity` 使用 `INTEGER`；V99 已迁移 23 个既有商品数量列，V105 补齐库存快照。两次迁移都失败关闭：任何小数或 int32 越界存量都会使迁移回滚，绝不截断或舍入。
@@ -132,7 +132,7 @@ erDiagram
 |---|---|---|
 | `review_cases` | 阻断自动流程的人工复核 | 同主体+原因只能有一条 OPEN case；禁止关联 Demo 订单 |
 | `operational_alerts` | 不阻断但要求知晓的黄/红提醒 | 活跃同类提醒幂等；禁止关联 Demo 订单 |
-| `connector_configs` | 来源渠道的 Client 与传输模式、承运商可选翻译覆盖、平台专用代码和最近拉取状态 | `mode=MOCK/REAL` 与 `transport_mode=EXCEL/API` 分轴；`config.carrier_mappings` 只是来源展示值/选项值的翻译覆盖，不是承运商白名单，缺失时回退内部标准名称或代码并由在线渠道字典校验；仅平台 API 明确要求的专用代码（如飞象 `carrier_api_codes`）缺失时阻断该渠道回传，不影响 Tracking 事实落库 |
+| `connector_configs` | 8 个来源渠道（V1 四渠道 + V31 中汇 + V40 网奇/WANGQI + V41 大者 + V42 万齐；`MANUAL` 无拉取/回传，不建行）的 Client 与传输模式、承运商可选翻译覆盖、平台专用代码和最近拉取状态 | `mode=MOCK/REAL` 与 `transport_mode=EXCEL/API` 分轴；`config.carrier_mappings` 只是来源展示值/选项值的翻译覆盖，不是承运商白名单，缺失时回退内部标准名称或代码并由在线渠道字典校验；仅平台 API 明确要求的专用代码（如飞象 `carrier_api_codes`）缺失时阻断该渠道回传，不影响 Tracking 事实落库 |
 | `channel_messages` | 企业微信原始文字证据 | `(企微主体, 连接, 消息 ID)` 唯一；只保存通道证据与受控原始载荷，不解释意图、不创建订单或运单 |
 | `audit_logs` | 接口、Agent 和人工操作审计 | BUSINESS/DEMO 分域；只追加 |
 | `demo_runs` | 隔离 Mock DemoScenario 运行 | 只能引用 DEMO order；不进入业务文件、复核、提醒或 analytics |

@@ -50,7 +50,7 @@ cd frontend && npm ci && npm run typecheck && npm test && npm run build
 
 Green bar:
 
-- Backend: `Tests run: ~771, Failures: 0, Errors: 0`（约 9 例环境依赖 skip 属正常：两个真实样表
+- Backend: `Tests run: ~2437, Failures: 0, Errors: 0`（约 10 例环境依赖 skip 属正常：两个真实样表
   解析用例与部分 JD 用例用 `assumeTrue` 守卫，CI 上无样表/无凭据时会正常跳过）。
 - Frontend: typecheck、`npm test` 和 build 全部通过（既有 chunk size 警告不算失败）。
 
