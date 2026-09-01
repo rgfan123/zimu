@@ -284,8 +284,7 @@ def main():
         if not hits and q:
             # 逐字找，帮用户定位真名（成本表名与档案名常有出入）
             loose = sorted({k for k, _ in DB["catalog"].items() if any(c in k for c in q)})
-            print(f"  ⚠ 没有商品名含「{q}」。档案名与成本表名常不一致"
-                  f"（成本表「原切牛腿肉」→ 档案「牛后腿肉」）。")
+            print(f"  ⚠ 没有商品名含「{q}」。档案名可能与你手上的叫法不同，看下面的候选。")
             if loose:
                 print("  含相同字的有：" + "、".join(loose[:10])
                       + (f" 等{len(loose)}个" if len(loose) > 10 else ""))
