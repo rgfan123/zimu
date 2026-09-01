@@ -60,7 +60,7 @@ class SchemaSnapshotMigrationEquivalenceTest {
                 .as("docs/schema.sql 应在空库上执行成功：%s", psql.getStderr())
                 .isZero();
 
-        // 路径 B：Flyway 全链 V1..V75（V74/V75 仅修数据，不新增结构）。
+        // 路径 B：Flyway 全链（包含只改数据的版本；结构应与当前快照等价）。
         Flyway.configure()
                 .dataSource(jdbcUrl(FLYWAY_DB), postgres.getUsername(), postgres.getPassword())
                 .load()

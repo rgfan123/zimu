@@ -13,7 +13,7 @@ test('continuation export request carries the visible version, quantity and brow
       '55',
       {
         expected_version: 7,
-        instructed_quantity: '2.500',
+        instructed_quantity: 2,
         remark: '采购到货后续发',
       },
       { 'Idempotency-Key': 'replay-key-55' },
@@ -24,7 +24,7 @@ test('continuation export request carries the visible version, quantity and brow
         method: 'POST',
         body: {
           expected_version: 7,
-          instructed_quantity: '2.500',
+          instructed_quantity: 2,
           remark: '采购到货后续发',
         },
         headers: { 'Idempotency-Key': 'replay-key-55' },
@@ -41,9 +41,9 @@ test('continuation entry is limited to partially shipped third-party business fu
 });
 
 test('continuation dialog submits the visible version and names the created batch in its result', () => {
-  assert.deepEqual(buildContinuationExportCommand(7, ' 2.500 ', ' 采购到货后续发 '), {
+  assert.deepEqual(buildContinuationExportCommand(7, ' 2 ', ' 采购到货后续发 '), {
     expected_version: 7,
-    instructed_quantity: '2.500',
+    instructed_quantity: 2,
     remark: '采购到货后续发',
   });
   assert.equal(
@@ -52,7 +52,7 @@ test('continuation dialog submits the visible version and names the created batc
       shipment_id: '88',
       shipment_sequence: 2,
       fulfillment_export_id: '99',
-      instructed_quantity: '2.500',
+      instructed_quantity: 2,
       fulfillment_version: 8,
     }),
     '已创建第 2 批续发：发货批次 88，履约导出 99',

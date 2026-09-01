@@ -8,9 +8,12 @@ import java.util.Map;
 /** 实时派生的 SKU 履约就绪结果；不会持久化回 SKU。 */
 public record SkuFulfillmentReadiness(
         List<SkuReadinessIssue> issues,
+        List<SkuReadinessWarning> warnings,
         List<SkuDataQualityFlagView> dataQualityFlags) {
 
     public record SkuReadinessIssue(String code, String message, String action) {}
+
+    public record SkuReadinessWarning(String code, String message, String action) {}
 
     public record SkuDataQualityFlagView(
             String flagCode,
@@ -40,6 +43,7 @@ public record SkuFulfillmentReadiness(
 
     public SkuFulfillmentReadiness {
         issues = List.copyOf(issues);
+        warnings = List.copyOf(warnings);
         dataQualityFlags = List.copyOf(dataQualityFlags);
     }
 
@@ -63,6 +67,10 @@ public record SkuFulfillmentReadiness(
                 "code", issue.code(),
                 "message", issue.message(),
                 "action", issue.action())).toList());
+        result.put("warnings", warnings.stream().map(warning -> Map.of(
+                "code", warning.code(),
+                "message", warning.message(),
+                "action", warning.action())).toList());
         result.put("data_quality_flags", dataQualityFlags.stream()
                 .map(SkuDataQualityFlagView::asMap)
                 .toList());

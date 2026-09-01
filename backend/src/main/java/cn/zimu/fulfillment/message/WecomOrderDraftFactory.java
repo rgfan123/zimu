@@ -14,7 +14,6 @@ import cn.zimu.fulfillment.order.ReviewCaseRepository;
 import cn.zimu.fulfillment.order.card.OrderDraftCardEnqueuer;
 import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
-import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -228,8 +227,7 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
                     candidate.put("unit", rs.getString("unit"));
                     candidate.put("provider_id", String.valueOf(rs.getLong("fulfillment_provider_id")));
                     candidate.put("source_sku_ref", rs.getString("source_sku_ref"));
-                    BigDecimal multiplier = rs.getBigDecimal("quantity_multiplier");
-                    candidate.put("quantity_multiplier", multiplier == null ? null : multiplier.toPlainString());
+                    candidate.put("quantity_multiplier", rs.getObject("quantity_multiplier", Integer.class));
                     return candidate;
                 },
                 ref,
@@ -462,14 +460,10 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
         return text.replaceAll("\\s+", " ").trim();
     }
 
-    /** 数量归一化：数值按去除尾零后的规范形式比较（"2"、"2.000"、BigDecimal 2.00 视为相同）。 */
+    /** 数量归一化：只接受整数 JSON 数值；非法原值保留作待复核指纹。 */
     private static String normalizeQuantity(Object value) {
-        String text = value == null ? "" : value.toString().trim();
-        try {
-            return new BigDecimal(text).stripTrailingZeros().toPlainString();
-        } catch (NumberFormatException ex) {
-            return normalize(value);
-        }
+        Integer quantity = quantity(value);
+        return quantity == null ? normalize(value) : quantity.toString();
     }
 
     /** 模型输出与数据库行共用同一字段归一化，保证两侧指纹可比。 */
@@ -493,7 +487,7 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
         row.put("product_name_raw", rs.getString("product_name_raw"));
         row.put("spec_raw", rs.getString("spec_raw"));
         row.put("unit_raw", rs.getString("unit_raw"));
-        row.put("quantity", rs.getBigDecimal("quantity"));
+        row.put("quantity", rs.getObject("quantity", Integer.class));
         return row;
     }
 
@@ -588,9 +582,16 @@ public class WecomOrderDraftFactory implements OrderDraftFactory {
         if (value == null) {
             return null;
         }
+        if (!(value instanceof Byte || value instanceof Short || value instanceof Integer
+                || value instanceof Long || value instanceof java.math.BigInteger)) {
+            return null;
+        }
+        java.math.BigInteger raw = value instanceof java.math.BigInteger bigInteger
+                ? bigInteger
+                : java.math.BigInteger.valueOf(((Number) value).longValue());
         try {
-            return new java.math.BigDecimal(value.toString().trim()).intValueExact();
-        } catch (ArithmeticException | NumberFormatException ex) {
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromPositiveJsonInteger(raw);
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException ex) {
             return null;
         }
     }

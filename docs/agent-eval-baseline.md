@@ -7,11 +7,11 @@
 
 | 评测集 | 版本 | 内容 | 真源位置 |
 |---|---|---|---|
-| 采购比价 | `procurement-eval-v2` | 12 例：正常比价、无候选、缺价格、低置信度、schema 负例、camelCase 兼容，以及不可比候选剔除 5 例 | `app.agent_eval_cases`（`metric_kind='INVARIANT'`，`status='CONFIRMED'`） |
+| 采购比价 | `procurement-eval-v3` | 12 例：正常比价、无候选、缺价格、低置信度、schema 负例、camelCase 兼容，以及不可比候选剔除 5 例；输入与输出中的件数均为整数 JSON 值 | `app.agent_eval_cases`（`metric_kind='INVARIANT'`，`status='CONFIRMED'`） |
 | 数据查询 | `data-query-eval-v1` | 7 条：歧义澄清 3（SKU-xxx / P-123 / 某履约方）、PII 拒绝 1、可答落地 3（7 天缺货数、SKU 价格、工单缺口） | 同上 |
 | 意图识别回归门禁 | —（不新建用例） | 直接复用既有 `MessageInterpretation*Test` 套件（07 票不变式，行为零变化） | `backend/src/test/java/cn/zimu/fulfillment/message/` |
 
-用例不可增删改：换例即换版本号（如 `procurement-eval-v2`）——新增/修改用例 = 修改 `agent_eval_cases`（走定义草稿确认流联动，07 决策 5），并同步更新基线门禁。`expected` 结构按 metric_kind 派生并读取时校验（INVARIANT → `requires_human` / `tool_sequence` / `missing_fields` / `expected_error`），非法用例拒跑并可见（`AgentEvalScorer.loadInvariantCases`）。
+用例不可增删改：换例即换版本号（如 `procurement-eval-v3`）——新增/修改用例 = 修改 `agent_eval_cases`（走定义草稿确认流联动，07 决策 5），并同步更新基线门禁。`expected` 结构按 metric_kind 派生并读取时校验（INVARIANT → `requires_human` / `tool_sequence` / `missing_fields` / `expected_error`），非法用例拒跑并可见（`AgentEvalScorer.loadInvariantCases`）。
 
 ## 跑分器与指标
 
@@ -67,5 +67,5 @@ mvn -q test
 
 1. 改 Agent 提示词 / 模型 / 阈值 / 评测集 → 必须复跑 `mvn -q test -Dtest='AgentEval*'`；
 2. 指标达标后提交归档文件哈希/数字到本文件（或票 Answer）；
-3. `AgentEvalBaselineTest` 钉死基线数字与版本标识（`procurement-eval-v2` / `data-query-eval-v1` / `agent-foundation-v1` / `data-query-v1` / `procurement-price-v2` / 低置信度阈值 0.6 / 离群倍数 2.0），改版本号/阈值/提示词版本必须同步更新该测试，防止静默回归；
+3. `AgentEvalBaselineTest` 钉死基线数字与版本标识（`procurement-eval-v3` / `data-query-eval-v1` / `agent-foundation-v1` / `data-query-v1` / `procurement-price-v3` / 低置信度阈值 0.6 / 离群倍数 2.0），改版本号/阈值/提示词版本必须同步更新该测试，防止静默回归；
 4. 提示词版本号随变更递增（版本即评测基线的一部分）。

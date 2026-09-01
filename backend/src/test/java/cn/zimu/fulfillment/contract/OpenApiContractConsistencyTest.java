@@ -175,6 +175,61 @@ class OpenApiContractConsistencyTest {
     }
 
     @Test
+    void providerSkuJdFactorRequiresAPositiveCount() {
+        Map<String, Object> handwritten = parse(readHandwrittenContract());
+        Map<String, Object> schemas = map(map(handwritten.get("components")).get("schemas"));
+        Map<String, Object> properties =
+                map(map(schemas.get("ProviderSkuJdFactorRow")).get("properties"));
+
+        assertThat(String.valueOf(map(properties.get("jdPiecesPerUnit")).get("$ref")))
+                .endsWith("/PositiveCountQuantity");
+    }
+
+    @Test
+    void productCountSchemasExposeJsonIntegersWithExplicitInt32AndInt64Widths() {
+        Map<String, Object> handwritten = parse(readHandwrittenContract());
+        Map<String, Object> schemas = map(map(handwritten.get("components")).get("schemas"));
+
+        Map<String, Object> bundleItem = map(map(schemas.get("BundleItemInput")).get("properties"));
+        assertThat(String.valueOf(map(bundleItem.get("quantity_per_bundle")).get("$ref")))
+                .endsWith("/PositiveCountQuantity");
+
+        Map<String, Object> sourceBundle = map(map(schemas.get("SourceBundleMappingWrite")).get("properties"));
+        assertThat(map(sourceBundle.get("quantity_multiplier")))
+                .containsEntry("type", "integer")
+                .containsEntry("format", "int32")
+                .containsEntry("maximum", 1);
+
+        Map<String, Object> orderLine = map(map(schemas.get("OrderLine")).get("properties"));
+        assertThat(String.valueOf(map(orderLine.get("requested_quantity")).get("$ref")))
+                .endsWith("/PositiveCountQuantity");
+
+        Map<String, Object> outboundItem =
+                map(map(schemas.get("ImportBatchJdOutboundSubmitItem")).get("properties"));
+        assertThat(String.valueOf(map(outboundItem.get("plan_quantity")).get("$ref")))
+                .endsWith("/CountQuantity64");
+
+        Map<String, Object> trackingDraft = map(map(schemas.get("TrackingDraftDetail")).get("properties"));
+        assertThat(String.valueOf(map(list(map(trackingDraft.get("actual_quantity")).get("allOf")).getFirst())
+                        .get("$ref")))
+                .endsWith("/CountQuantity64");
+
+        Map<String, Object> confirmDraft = map(map(schemas.get("ConfirmOrderDraftItem")).get("properties"));
+        assertThat(String.valueOf(map(confirmDraft.get("quantity")).get("$ref")))
+                .endsWith("/PositiveCountQuantity");
+
+        Map<String, Object> submitResult =
+                map(map(schemas.get("ShipmentJdOutboundSubmitResult")).get("properties"));
+        assertThat(map(submitResult.get("plan_quantity"))).containsEntry("format", "int64");
+        assertThat(map(submitResult.get("goods_count"))).containsEntry("format", "int64");
+
+        Map<String, Object> rawImportRow = map(map(schemas.get("RawImportRow")).get("properties"));
+        Map<String, Object> parsedProjection = map(map(rawImportRow.get("parsed")).get("properties"));
+        assertThat(String.valueOf(map(parsedProjection.get("quantity")).get("$ref")))
+                .endsWith("/PositiveCountQuantity");
+    }
+
+    @Test
     void businessFollowUpContractUsesSnakeCaseStringIdsAndRequiredWriteHeaders() {
         Map<String, Object> handwritten = parse(readHandwrittenContract());
         Map<String, Object> schemas = map(map(handwritten.get("components")).get("schemas"));

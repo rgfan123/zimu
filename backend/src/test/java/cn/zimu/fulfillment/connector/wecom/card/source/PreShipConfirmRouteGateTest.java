@@ -49,11 +49,8 @@ class PreShipConfirmRouteGateTest {
     }
 
     @Test
-    void 数量去掉无意义的小数位() {
-        assertThat(PreShipConfirmCardSource.trimQuantity(new java.math.BigDecimal("2.000")))
-                .isEqualTo("2");
-        assertThat(PreShipConfirmCardSource.trimQuantity(new java.math.BigDecimal("1.500")))
-                .isEqualTo("1.5");
-        assertThat(PreShipConfirmCardSource.trimQuantity(null)).isEqualTo("0");
+    void 整数数量只在卡片展示边界转成文本() {
+        assertThat(PreShipConfirmCardSource.countText(2L)).isEqualTo("2");
+        assertThat(PreShipConfirmCardSource.countText(0L)).isEqualTo("0");
     }
 }

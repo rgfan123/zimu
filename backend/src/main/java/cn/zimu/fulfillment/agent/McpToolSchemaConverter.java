@@ -6,6 +6,7 @@ import dev.langchain4j.model.chat.request.json.JsonBooleanSchema;
 import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
 import dev.langchain4j.model.chat.request.json.JsonNumberSchema;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonRawSchema;
 import dev.langchain4j.model.chat.request.json.JsonSchemaElement;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import java.util.Iterator;
@@ -53,9 +54,15 @@ public final class McpToolSchemaConverter {
                 return JsonStringSchema.builder().description(description).build();
             }
             case "integer" -> {
+                if (hasNumericBounds(node, context)) {
+                    return JsonRawSchema.from(node.toString());
+                }
                 return JsonIntegerSchema.builder().description(description).build();
             }
             case "number" -> {
+                if (hasNumericBounds(node, context)) {
+                    return JsonRawSchema.from(node.toString());
+                }
                 return JsonNumberSchema.builder().description(description).build();
             }
             case "boolean" -> {
@@ -106,5 +113,20 @@ public final class McpToolSchemaConverter {
             return null;
         }
         return value.asText();
+    }
+
+    private static boolean hasNumericBounds(JsonNode node, String context) {
+        boolean hasBounds = false;
+        for (String field : java.util.List.of("minimum", "maximum")) {
+            JsonNode value = node.get(field);
+            if (value == null) {
+                continue;
+            }
+            if (!value.isNumber()) {
+                throw new IllegalStateException(context + " 的 " + field + " 必须是数字: " + value);
+            }
+            hasBounds = true;
+        }
+        return hasBounds;
     }
 }

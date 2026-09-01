@@ -32,7 +32,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -313,9 +312,9 @@ class McpProtocolAcceptanceTest {
                 receiverName,
                 receiverPhone,
                 receiverAddress,
-                BigDecimal.ONE,
-                BigDecimal.ONE,
-                BigDecimal.TEN,
+                1L,
+                1L,
+                10L,
                 "FULLY_FULFILLED",
                 "SF",
                 "顺丰速运",
@@ -331,7 +330,7 @@ class McpProtocolAcceptanceTest {
                 receiverName,
                 receiverPhone,
                 receiverAddress,
-                BigDecimal.ONE,
+                1L,
                 true);
         when(sourceSync.check(eq(501L), any(), eq(AuditActorType.AGENT)))
                 .thenReturn(new SourceSyncCheck(
@@ -464,7 +463,7 @@ class McpProtocolAcceptanceTest {
                         "draft_id", draftId,
                         "expected_revision", String.valueOf(revision),
                         "idempotency_key", "mcp-suggestion-key-001",
-                        "items", List.of(Map.of("line_no", 1, "quantity", "2"))));
+                        "items", List.of(Map.of("line_no", 1, "quantity", 2))));
         assertThat(result.get("status").asText()).isEqualTo("OPEN");
         assertThat(result.get("lines").get(0).get("quantity").asText()).isEqualTo("2");
 
@@ -476,6 +475,50 @@ class McpProtocolAcceptanceTest {
         // 业务层审计同样携带 Agent 身份
         AuditLog serviceAudit = onlyAudit("order_draft.supplement");
         assertThat(serviceAudit.getOperator()).isEqualTo(AGENT);
+    }
+
+    @Test
+    void orderDraftWriteSchemasAdvertiseIntegerLineAndQuantityTokens() {
+        for (String toolName : List.of("submit_order_draft_suggestion", "confirm_order_draft")) {
+            JsonNode item = registry.findAgentTool(toolName).orElseThrow()
+                    .inputSchema()
+                    .path("properties")
+                    .path("items")
+                    .path("items")
+                    .path("properties");
+            for (String field : List.of("line_no", "quantity")) {
+                assertThat(item.path(field).path("type").asText()).as(toolName + "." + field)
+                        .isEqualTo("integer");
+                assertThat(item.path(field).path("minimum").asInt()).isEqualTo(1);
+                assertThat(item.path(field).path("maximum").asLong()).isEqualTo(Integer.MAX_VALUE);
+            }
+        }
+    }
+
+    @Test
+    void orderDraftWriteRejectsFloatingAndOverflowingLineNumbers() throws Exception {
+        long submissionId = submitAndInterpret("MCP-WRITE-LINE-NO-001", customerOrder());
+        JsonNode drafts = callResult(AGENT, "list_order_drafts",
+                Map.of("submission_id", String.valueOf(submissionId)));
+        String draftId = drafts.get("items").get(0).get("id").asText();
+        long revision = currentRevision(draftId);
+
+        List<Object> invalidLineNumbers = List.of(1.0d, 4_294_967_297L);
+        for (int index = 0; index < invalidLineNumbers.size(); index++) {
+            JsonNode error = agentWriteCall(
+                    AGENT,
+                    "submit_order_draft_suggestion",
+                    Map.of(
+                            "draft_id", draftId,
+                            "expected_revision", String.valueOf(revision),
+                            "idempotency_key", "mcp-line-no-invalid-00" + index,
+                            "items", List.of(Map.of(
+                                    "line_no", invalidLineNumbers.get(index),
+                                    "quantity", 1))));
+
+            assertThat(error.path("code").asText()).as(String.valueOf(invalidLineNumbers.get(index)))
+                    .isEqualTo("INVALID_PARAMETERS");
+        }
     }
     @Test
     void supplementaryMaterialUpdatesReceiverAndSettlement() throws Exception {
@@ -515,7 +558,7 @@ class McpProtocolAcceptanceTest {
                         "draft_id", draftId,
                         "expected_revision", String.valueOf(staleRevision),
                         "idempotency_key", "mcp-conflict-key-001",
-                        "items", List.of(Map.of("line_no", 1, "quantity", "2"))));
+                        "items", List.of(Map.of("line_no", 1, "quantity", 2))));
         assertThat(error.get("code").asText()).isEqualTo("VERSION_CONFLICT");
         assertThat(error.get("http_status").asInt()).isEqualTo(409);
         assertThat(error.toString()).doesNotContain(AGENT);
@@ -537,7 +580,7 @@ class McpProtocolAcceptanceTest {
                 "draft_id", draftId,
                 "expected_revision", String.valueOf(currentRevision(draftId)),
                 "idempotency_key", "mcp-replay-key-001",
-                "items", List.of(Map.of("line_no", 1, "quantity", "3")));
+                "items", List.of(Map.of("line_no", 1, "quantity", 3)));
         JsonNode first = agentWriteCall(AGENT, "submit_order_draft_suggestion", args);
         JsonNode second = agentWriteCall(AGENT, "submit_order_draft_suggestion", args);
         assertThat(second).as("重放必须返回与首次执行语义相同的结果").isEqualTo(first);
@@ -822,7 +865,7 @@ class McpProtocolAcceptanceTest {
                         "items", List.of(Map.of(
                                 "product", "test product",
                                 "unit", "piece",
-                                "quantity", "1"))),
+                                "quantity", 1))),
                 "test-provider",
                 "test-model",
                 "prompt-v1",

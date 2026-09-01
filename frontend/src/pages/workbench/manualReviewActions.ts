@@ -51,9 +51,12 @@ export function buildCustomerResolution(
 export function buildSkuResolution(
   item: ReviewCase,
   skuId: string,
-  quantityMultiplier: string,
+  quantityMultiplier: number,
   remark: string,
 ): ResolveSkuReviewCommand {
+  if (!isPositiveCountQuantity(quantityMultiplier)) {
+    throw new Error('数量换算必须为 1 至 2147483647 的整数');
+  }
   const refs = item.detail.missing_source_sku_refs;
   if (!Array.isArray(refs) || refs.length !== 1 || typeof refs[0] !== 'string' || !refs[0].trim()) {
     throw new Error('多组件或缺少来源 SKU 的事项必须先在主数据页处理映射');
@@ -66,6 +69,14 @@ export function buildSkuResolution(
     quantity_multiplier: quantityMultiplier,
     remark: remark.trim(),
   };
+}
+
+export function isPositiveCountQuantity(value: number | null | undefined): value is number {
+  return value !== null
+    && value !== undefined
+    && Number.isInteger(value)
+    && value > 0
+    && value <= 2_147_483_647;
 }
 
 export function buildSourceFollowupCompletion(item: ReviewCase, note: string): VersionedNoteCommand {

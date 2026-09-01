@@ -1,16 +1,16 @@
 package cn.zimu.fulfillment.demo;
 
 import cn.zimu.fulfillment.common.domain.SourceChannel;
+import cn.zimu.fulfillment.common.dto.PositiveCountQuantityDeserializer;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.AssertTrue;
-import jakarta.validation.constraints.DecimalMin;
-import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
-import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 
@@ -63,9 +63,9 @@ public record DemoExtractedOrderInput(
                     @Size(max = 255, message = "规格超长")
                     String specification,
             @NotNull(message = "数量不能为空")
-                    @DecimalMin(value = "0", inclusive = false, message = "数量必须大于 0")
-                    @Digits(integer = 15, fraction = 0, message = "数量必须为整数")
-                    BigDecimal quantity,
+                    @Positive(message = "数量必须为正整数")
+                    @JsonDeserialize(using = PositiveCountQuantityDeserializer.class)
+                    Integer quantity,
             @NotBlank(message = "单位不能为空") @Size(max = 32, message = "单位超长") String unit) {}
 
     public record Settlement(

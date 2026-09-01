@@ -27,7 +27,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
@@ -450,7 +449,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         detail.put("source_sheet_name", source.get("sheet_name"));
         detail.put("source_row_index", source.get("row_index"));
         SourceChannel channel = SourceChannel.valueOf(source.get("source_channel").toString());
-        Map<String, String> projection = projectionFor(channel, source.get("raw_cells").toString());
+        Map<String, Object> projection = projectionFor(channel, source.get("raw_cells").toString());
         copyIfPresent(detail, "source_sku_ref", projection.get("source_sku_ref"));
         copyIfPresent(detail, "source_product_name", projection.get("product_name"));
         copyIfPresent(detail, "source_specification", projection.get("specification"));
@@ -479,10 +478,11 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
         return "RC-IMPORT-CANDIDATE-" + rawImportRowId + "-" + suffix;
     }
 
-    private void copyIfPresent(Map<String, Object> target, String key, String value) {
-        if (value != null && !value.isBlank()) {
-            target.putIfAbsent(key, value);
+    private void copyIfPresent(Map<String, Object> target, String key, Object value) {
+        if (value == null || (value instanceof String text && text.isBlank())) {
+            return;
         }
+        target.putIfAbsent(key, value);
     }
 
     /** 批次收尾共享：counts → 状态（NEED_REVIEW 阻断 confirm 语义不变）→ SYSTEM/HUMAN 审计。 */
@@ -1023,7 +1023,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
     }
 
     /** 原始单元格（字符串值）→ 渠道模板解析投影；非对象/非字符串值一律跳过。 */
-    private Map<String, String> projectionFor(SourceChannel channel, String rawCellsJson) {
+    private Map<String, Object> projectionFor(SourceChannel channel, String rawCellsJson) {
         if (rawCellsJson == null || rawCellsJson.isBlank()) {
             return Map.of();
         }
@@ -1108,7 +1108,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                             row.productName(),
                             row.specification(),
                             row.unit(),
-                            quantity(row),
+                            row.quantity(),
                             Long.toString(decision.bundleId()),
                             providerComponents))
                     .toList();
@@ -1185,7 +1185,7 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 row.productName(),
                 row.specification(),
                 row.unit(),
-                quantity(row));
+                row.quantity());
     }
 
     private OrderItemInput unresolvedBundleItem(OrderItemInput item) {
@@ -1204,10 +1204,10 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
             String productName,
             String specification,
             String unit,
-            String quantity) {
+            Integer quantity) {
         String ref = "__BUNDLE_MAPPING_REQUIRED__:" + sourceSkuRef;
         BundleComponentInput unresolved =
-                new BundleComponentInput(null, ref, productName, specification, unit, "1");
+                new BundleComponentInput(null, ref, productName, specification, unit, 1);
         return new OrderItemInput(
                 sourceLineRef,
                 LineType.CUSTOM_BUNDLE,
@@ -1229,12 +1229,8 @@ public class SourceImportService implements cn.zimu.fulfillment.order.SourceBatc
                 row.productName(),
                 row.specification(),
                 row.unit(),
-                quantity(row),
+                row.quantity(),
                 null);
-    }
-
-    private String quantity(ParsedSourceRow row) {
-        return new BigDecimal(row.quantity()).setScale(3).toPlainString();
     }
 
     @Transactional

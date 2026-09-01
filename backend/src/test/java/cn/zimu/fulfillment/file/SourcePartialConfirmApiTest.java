@@ -211,7 +211,7 @@ class SourcePartialConfirmApiTest {
                         "sku_id", String.valueOf(skuId),
                         "source_channel", "DAZHE",
                         "source_sku_ref", sourceSkuRef,
-                        "quantity_multiplier", "1"),
+                        "quantity_multiplier", 1),
                         headers),
                 Map.class);
     }

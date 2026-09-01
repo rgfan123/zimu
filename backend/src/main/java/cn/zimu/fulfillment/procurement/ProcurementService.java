@@ -13,7 +13,6 @@ import cn.zimu.fulfillment.common.web.WriteCommands;
 import cn.zimu.fulfillment.fulfillment.FulfillmentReadService;
 import cn.zimu.fulfillment.fulfillment.SourceFollowupProgressService;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
@@ -104,14 +103,14 @@ public class ProcurementService {
                     SELECT ?, id, ? FROM app.procurement_ticket_items
                     WHERE id=? AND procurement_ticket_id=?
                     """,
-                    receiptId, new BigDecimal(item.availableQuantity()), itemId, ticketId);
+                    receiptId, item.availableQuantity(), itemId, ticketId);
             if (updated != 1) throw BusinessException.unprocessable("PROCUREMENT_ITEM_INVALID", "回执明细不属于当前采购工单");
         }
-        BigDecimal remaining = jdbc.queryForObject(
+        long remaining = jdbc.queryForObject(
                 "SELECT COALESCE(sum(remaining_quantity),0) FROM app.procurement_ticket_items WHERE procurement_ticket_id=?",
-                BigDecimal.class, ticketId);
+                Long.class, ticketId);
         String nextStatus;
-        if (remaining.signum() == 0) nextStatus = "SUCCESS";
+        if (remaining == 0) nextStatus = "SUCCESS";
         else if (input.result() == ProcurementReceiptInput.Result.FAILED) nextStatus = "FAILED";
         else nextStatus = "PARTIAL";
         jdbc.update(
@@ -166,21 +165,21 @@ public class ProcurementService {
         if (ticket.status().equals("SUCCESS") || ticket.status().equals("CANCELLED")) {
             throw BusinessException.conflict("PROCUREMENT_TERMINAL", "采购工单已终止");
         }
-        BigDecimal remaining = jdbc.queryForObject(
+        long remaining = jdbc.queryForObject(
                 "SELECT COALESCE(sum(remaining_quantity),0) FROM app.procurement_ticket_items WHERE procurement_ticket_id=?",
-                BigDecimal.class, ticketId);
-        if (remaining.signum() <= 0) throw BusinessException.conflict("NO_REMAINING_QUANTITY", "采购工单无剩余量");
+                Long.class, ticketId);
+        if (remaining <= 0) throw BusinessException.conflict("NO_REMAINING_QUANTITY", "采购工单无剩余量");
         jdbc.update(
                 "UPDATE app.procurement_tickets SET procurement_status='CANCELLED', lock_version=lock_version+1, remark=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 input.reason(), ticketId);
-        BigDecimal requested = jdbc.queryForObject(
+        int requested = jdbc.queryForObject(
                 "SELECT requested_quantity FROM app.fulfillments WHERE id=? FOR UPDATE",
-                BigDecimal.class, ticket.fulfillmentId());
-        BigDecimal shipped = jdbc.queryForObject(
+                Integer.class, ticket.fulfillmentId());
+        int shipped = jdbc.queryForObject(
                 "SELECT cumulative_shipped_quantity FROM app.fulfillments WHERE id=?",
-                BigDecimal.class, ticket.fulfillmentId());
-        BigDecimal cancelled = requested.subtract(shipped);
-        String outcome = shipped.signum() == 0 ? "CANCELLED" : "PARTIALLY_FULFILLED";
+                Integer.class, ticket.fulfillmentId());
+        int cancelled = requested - shipped;
+        String outcome = shipped == 0 ? "CANCELLED" : "PARTIALLY_FULFILLED";
         jdbc.update(
                 """
                 UPDATE app.fulfillments SET cancelled_quantity=?, outcome=?, exception_code='PROCUREMENT_CANCELLED',
@@ -216,11 +215,11 @@ public class ProcurementService {
 
     private void validateReceipt(ProcurementReceiptInput input) {
         if (input.result() == ProcurementReceiptInput.Result.SUCCESS
-                && input.items().stream().anyMatch(item -> new BigDecimal(item.availableQuantity()).signum() <= 0)) {
+                && input.items().stream().anyMatch(item -> item.availableQuantity() <= 0)) {
             throw BusinessException.unprocessable("SUCCESS_QUANTITY_REQUIRED", "SUCCESS 回执必须包含正数可用量");
         }
         if (input.result() == ProcurementReceiptInput.Result.FAILED
-                && input.items().stream().anyMatch(item -> new BigDecimal(item.availableQuantity()).signum() != 0)) {
+                && input.items().stream().anyMatch(item -> item.availableQuantity() != 0)) {
             throw BusinessException.unprocessable("FAILED_QUANTITY_MUST_BE_ZERO", "FAILED 回执可用量必须为 0");
         }
         long distinct = input.items().stream().map(ProcurementReceiptItemInput::ticketItemId).distinct().count();
@@ -232,20 +231,20 @@ public class ProcurementService {
     private void lockAndValidateReceiptItems(long ticketId, List<ProcurementReceiptItemInput> items) {
         for (ProcurementReceiptItemInput item : items) {
             long itemId = WriteCommands.parseIdentifier(item.ticketItemId());
-            BigDecimal remaining = jdbc.query(
+            Integer remaining = jdbc.query(
                     """
                     SELECT remaining_quantity FROM app.procurement_ticket_items
                     WHERE id=? AND procurement_ticket_id=? FOR UPDATE
                     """,
-                    rs -> rs.next() ? rs.getBigDecimal("remaining_quantity") : null,
+                    rs -> rs.next() ? rs.getInt("remaining_quantity") : null,
                     itemId,
                     ticketId);
             if (remaining == null) {
                 throw BusinessException.unprocessable(
                         "PROCUREMENT_ITEM_INVALID", "回执明细不属于当前采购工单");
             }
-            BigDecimal available = new BigDecimal(item.availableQuantity());
-            if (available.compareTo(remaining) > 0) {
+            int available = item.availableQuantity();
+            if (available > remaining) {
                 throw BusinessException.unprocessable(
                         "RECEIPT_QUANTITY_EXCEEDS_REMAINING", "回执可用量不得超过工单明细剩余量");
             }

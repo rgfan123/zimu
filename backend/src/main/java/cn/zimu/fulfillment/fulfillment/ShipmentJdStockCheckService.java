@@ -15,8 +15,6 @@ import cn.zimu.fulfillment.sku.ShipmentJdSkuMappingGateService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -350,7 +348,7 @@ public class ShipmentJdStockCheckService {
                 continue;
             }
             observations.add(observation);
-            if (observation.usable().compareTo(BigDecimal.valueOf(demand.requiredPieces())) < 0) {
+            if (observation.usable() < demand.requiredPieces()) {
                 // 不足的是哪个商品必须写进文案：运营看到「需要 2 件可用 0 件」却不知道
                 // 缺的是什么，补货无从下手（2026-08-26 用户实测反馈）。循环里本来就攥着
                 // demand.goodsNo()，此前只是没写进去。
@@ -360,7 +358,7 @@ public class ShipmentJdStockCheckService {
                         (productName.isEmpty() ? "" : "「" + productName + "」")
                                 + "（京东商品编码 " + demand.goodsNo() + "）目标仓可用库存不足："
                                 + "需要 " + demand.requiredPieces()
-                                + " 件，可用 " + decimal(observation.usable()) + " 件",
+                                + " 件，可用 " + observation.usable() + " 件",
                         demand, label, lineIds));
             }
         }
@@ -379,18 +377,15 @@ public class ShipmentJdStockCheckService {
                 || !"1".equals(text(row.get("stockType")))) {
             return null;
         }
-        BigDecimal stock = decimalValue(row.get("stockNum"));
-        BigDecimal usable = decimalValue(row.get("usableNum"));
-        if (stock == null || usable == null || stock.signum() < 0 || usable.signum() < 0
-                || usable.compareTo(stock) > 0
-                || !fitsSnapshotQuantity(stock)
-                || !fitsSnapshotQuantity(usable)) {
+        Integer stock = countValue(row.get("stockNum"));
+        Integer usable = countValue(row.get("usableNum"));
+        if (stock == null || usable == null || usable > stock) {
             return null;
         }
         return new StockObservation(
                 demand.skuId(), demand.goodsNo(), warehouse, demand.requiredPieces(),
                 stock, usable, true,
-                stock.signum() == 0 && usable.signum() == 0 ? "OBSERVED_ZERO" : "OBSERVED");
+                stock == 0 && usable == 0 ? "OBSERVED_ZERO" : "OBSERVED");
     }
 
     private List<Demand> aggregateDemands(List<JdShipmentSubmissionPlan.StockDemand> source) {
@@ -541,12 +536,12 @@ public class ShipmentJdStockCheckService {
         }
         value.put("goods_no", row.goodsNo());
         value.put("warehouse_code", row.warehouseCode());
-        value.put("required_quantity", String.valueOf(row.requiredPieces()));
+        value.put("required_quantity", row.requiredPieces());
         value.put("quantity_unit", QUANTITY_UNIT);
         value.put("observation_status", row.observationStatus());
         if (row.observed()) {
-            value.put("stock_quantity", decimal(row.stock()));
-            value.put("usable_quantity", decimal(row.usable()));
+            value.put("stock_quantity", row.stock());
+            value.put("usable_quantity", row.usable());
         }
         return value;
     }
@@ -695,26 +690,15 @@ public class ShipmentJdStockCheckService {
         }
     }
 
-    private static BigDecimal decimalValue(Object value) {
-        if (value == null) return null;
-        try {
-            return new BigDecimal(value.toString().trim());
-        } catch (NumberFormatException exception) {
+    private static Integer countValue(Object value) {
+        if (value == null) {
             return null;
         }
-    }
-
-    private static boolean fitsSnapshotQuantity(BigDecimal value) {
         try {
-            BigDecimal persisted = value.setScale(3, RoundingMode.UNNECESSARY);
-            return persisted.precision() <= 18;
-        } catch (ArithmeticException exception) {
-            return false;
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromNonNegativeFileValue(value.toString());
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
+            return null;
         }
-    }
-
-    private static String decimal(BigDecimal value) {
-        return value.stripTrailingZeros().toPlainString();
     }
 
     private String json(Object value) {
@@ -767,8 +751,8 @@ public class ShipmentJdStockCheckService {
             String goodsNo,
             String warehouseCode,
             int requiredPieces,
-            BigDecimal stock,
-            BigDecimal usable,
+            Integer stock,
+            Integer usable,
             boolean observed,
             String observationStatus) {
 

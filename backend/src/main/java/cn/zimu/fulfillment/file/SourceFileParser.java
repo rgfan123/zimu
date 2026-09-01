@@ -1,11 +1,12 @@
 package cn.zimu.fulfillment.file;
 
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.StringReader;
-import java.math.BigDecimal;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -60,6 +61,8 @@ class SourceFileParser {
             "物流信息", "crm 单号", "订单总金额", "skuid", "sku名称", "不含运毛利额", "不含运毛利率",
             "含运毛利额", "含运毛利率", "订单类型", "实物售后");
     private static final Set<String> WANQI_PENDING_STATUSES = Set.of("超时未发货", "待发货");
+    private static final Set<String> COUNT_HEADERS = Set.of(
+            "下单数量", "数量", "可发货数量", "商品数量", "件数", "购买数量");
     /**
      * 大者 v2：11 列「订单往返表」——渠道发订单给我们，我们发完货把后两列填回去还它。
      *
@@ -293,14 +296,16 @@ class SourceFileParser {
      * <p>复用 {@link #map} 整条解析管线（而非复制提取逻辑），保证确认明细展示的解析值
      * 与导入落单（canonical）时实际使用的值同源一致，模板列名变更时两处同步漂移。
      */
-    public Map<String, String> projection(SourceChannel channel, Map<String, String> cells) {
+    public Map<String, Object> projection(SourceChannel channel, Map<String, String> cells) {
         ParsedSourceRow parsed = map(channel, "", 0, 0, cells);
-        Map<String, String> projection = new LinkedHashMap<>();
+        Map<String, Object> projection = new LinkedHashMap<>();
         putIfPresent(projection, "receiver_name", parsed.receiverName());
         putIfPresent(projection, "receiver_phone", parsed.receiverPhone());
         putIfPresent(projection, "receiver_address", parsed.receiverAddress());
         putIfPresent(projection, "product_name", parsed.productName());
-        putIfPresent(projection, "quantity", parsed.quantity());
+        if (parsed.quantity() != null) {
+            projection.put("quantity", parsed.quantity());
+        }
         putIfPresent(projection, "specification", parsed.specification());
         putIfPresent(projection, "source_sku_ref", parsed.sourceSkuRef());
         if (channel == SourceChannel.WANQI) {
@@ -309,7 +314,7 @@ class SourceFileParser {
         return projection;
     }
 
-    private static void putIfPresent(Map<String, String> target, String key, String value) {
+    private static void putIfPresent(Map<String, Object> target, String key, String value) {
         if (value != null && !value.isBlank()) {
             target.put(key, value);
         }
@@ -543,28 +548,30 @@ class SourceFileParser {
             String sourceSkuRef, String productName, String specification, String unit,
             String quantity, Instant orderedAt, String settlementMethod, String remark, boolean orderRefRequired) {
         String error = null;
+        String errorCode = null;
+        Integer normalizedQuantity = null;
         if ((orderRefRequired && blank(orderRef)) || blank(receiverName) || blank(receiverPhone)
                 || blank(receiverAddress) || blank(sourceSkuRef) || blank(productName) || blank(quantity)) {
             error = "来源行缺少订单号、收货人、商品或数量必填值";
         } else {
             try {
-                BigDecimal parsed = new BigDecimal(quantity);
-                if (parsed.signum() <= 0) {
-                    error = "数量必须大于 0";
-                } else if (parsed.stripTrailingZeros().scale() > 0) {
-                    return build(sheet, sheetIndex, row, cells, orderRef, lineRef, customerRef, customerName,
-                            receiverName, receiverPhone, receiverAddress, province, city, district, sourceSkuRef,
-                            productName, specification, unit, quantity, orderedAt, settlementMethod, remark,
-                            "QUANTITY_SCALE", "商品数量必须为整数（不接受小数），如按重量销售请改用整数件数申报");
+                normalizedQuantity = CountQuantity.fromPositiveFileValue(quantity);
+            } catch (InvalidCountQuantityException exception) {
+                switch (exception.reason()) {
+                    case FRACTIONAL -> {
+                        errorCode = "QUANTITY_SCALE";
+                        error = "商品数量必须为整数（不接受小数），如按重量销售请改用整数件数申报";
+                    }
+                    case NON_POSITIVE -> error = "数量必须大于 0";
+                    case OUT_OF_RANGE -> error = "数量超出 int32 范围";
+                    case MISSING, MALFORMED -> error = "数量格式非法";
                 }
-            } catch (NumberFormatException exception) {
-                error = "数量格式非法";
             }
         }
         return build(sheet, sheetIndex, row, cells, orderRef, lineRef, customerRef, customerName,
                 receiverName, receiverPhone, receiverAddress, province, city, district, sourceSkuRef,
-                productName, specification, unit, quantity, orderedAt, settlementMethod, remark,
-                error == null ? null : "IMPORT_VALIDATION", error);
+                productName, specification, unit, normalizedQuantity, orderedAt, settlementMethod, remark,
+                error == null ? null : (errorCode == null ? "IMPORT_VALIDATION" : errorCode), error);
     }
 
     private ParsedSourceRow build(
@@ -573,7 +580,7 @@ class SourceFileParser {
             String receiverName, String receiverPhone, String receiverAddress,
             String province, String city, String district,
             String sourceSkuRef, String productName, String specification, String unit,
-            String quantity, Instant orderedAt, String settlementMethod, String remark,
+            Integer quantity, Instant orderedAt, String settlementMethod, String remark,
             String errorCode, String errorMessage) {
         return new ParsedSourceRow(
                 sheet, sheetIndex, row, java.util.Collections.unmodifiableMap(new LinkedHashMap<>(cells)),
@@ -598,7 +605,11 @@ class SourceFileParser {
     private Map<String, String> cells(List<String> headers, Row row) {
         Map<String, String> result = new LinkedHashMap<>();
         for (int index = 0; index < headers.size(); index++) {
-            result.put(headers.get(index), row == null ? "" : formatter.formatCellValue(row.getCell(index)));
+            String header = headers.get(index);
+            var cell = row == null ? null : row.getCell(index);
+            result.put(header, COUNT_HEADERS.contains(header)
+                    ? ExcelCellValues.exactCount(cell, formatter)
+                    : formatter.formatCellValue(cell));
         }
         return result;
     }

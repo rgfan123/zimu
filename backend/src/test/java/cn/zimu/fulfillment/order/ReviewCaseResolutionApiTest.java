@@ -142,7 +142,7 @@ class ReviewCaseResolutionApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "1")),
+                        "quantity", 1)),
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-12T10:00:00+08:00"));
@@ -178,7 +178,7 @@ class ReviewCaseResolutionApiTest {
                 "sku_id", skuId,
                 "source_channel", "WECOM",
                 "source_sku_ref", "WECOM-SKU-REVIEW-001",
-                "quantity_multiplier", "2",
+                "quantity_multiplier", 2,
                 "remark", "人工按已确认装箱规格选择既有 SKU");
 
         ResponseEntity<Map> resolved = http.exchange(
@@ -218,6 +218,81 @@ class ReviewCaseResolutionApiTest {
     }
 
     @Test
+    void skuResolutionKeepsTheReviewOpenWhenCountMultiplicationExceedsInt32() {
+        Map<String, Object> createdOrder = createOrderNeedingSkuReview(
+                "WECOM-ORDER-SKU-OVERFLOW-001", "WECOM-SKU-OVERFLOW-001", "review-sku-overflow-001");
+        Map<String, Object> createdCase = firstReviewCase(createdOrder);
+        String skuId = jdbc.queryForObject(
+                "SELECT id::text FROM app.skus WHERE active=true ORDER BY id LIMIT 1", String.class);
+        Map<String, Object> command = Map.of(
+                "expected_version", createdCase.get("version"),
+                "sku_id", skuId,
+                "source_channel", "WECOM",
+                "source_sku_ref", "WECOM-SKU-OVERFLOW-001",
+                "quantity_multiplier", Integer.MAX_VALUE,
+                "remark", "乘算结果超出 int32 时保持复核，不得返回 500");
+
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/review-cases/" + createdCase.get("id") + "/resolve-sku",
+                HttpMethod.POST,
+                new HttpEntity<>(command, writeHeaders("review-sku-overflow-001", "req-review-sku-overflow-001")),
+                Map.class);
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(rejected.getBody()).containsEntry("business_code", "QUANTITY_SCALE");
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM app.review_cases WHERE id=?",
+                        String.class,
+                        Long.parseLong(createdCase.get("id").toString())))
+                .isEqualTo("OPEN");
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM app.source_channel_skus "
+                                + "WHERE source_channel='WECOM' AND source_sku_ref='WECOM-SKU-OVERFLOW-001'",
+                        Long.class))
+                .as("溢出失败必须回滚同一事务内刚写入的来源映射")
+                .isZero();
+    }
+
+    @Test
+    void rejectsAnythingExceptPositiveIntegerJsonSkuMultipliersAtTheBoundary() {
+        assertInvalidSkuMultiplierRejected("3", "INTEGER-TEXT");
+        assertInvalidSkuMultiplierRejected("3.000", "DECIMAL-TEXT");
+        assertInvalidSkuMultiplierRejected(3.0, "DECIMAL-NUMBER");
+        assertInvalidSkuMultiplierRejected(3.5, "FRACTIONAL-NUMBER");
+        assertInvalidSkuMultiplierRejected(0, "ZERO");
+        assertInvalidSkuMultiplierRejected(-1, "NEGATIVE");
+    }
+
+    @Test
+    void jdTrackingResolutionRejectsAnOrderLevelCaseAtTheBusinessBoundary() {
+        Map<String, Object> createdOrder = createMappedOrder("WECOM-JD-WRONG-CASE-001");
+        long orderId = Long.parseLong(createdOrder.get("id").toString());
+        long caseId = insertBusinessReviewCase(
+                orderId,
+                "RC-JD-WRONG-CASE-001",
+                "CUSTOMER_MAPPING_REQUIRED");
+
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/review-cases/" + caseId + "/resolve-jd-tracking-conflict",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "expected_version", 0,
+                        "note", "错误事项类型不得触发服务端异常"),
+                        writeHeaders(
+                                "review-jd-wrong-case-001",
+                                "req-review-jd-wrong-case-001")),
+                Map.class);
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(rejected.getBody()).containsEntry("business_code", "REVIEW_ACTION_NOT_ALLOWED");
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM app.review_cases WHERE id=?",
+                String.class,
+                caseId))
+                .isEqualTo("OPEN");
+    }
+
+    @Test
     void skuReviewCannotPersistAOneTimeDraftReferenceAsGlobalProductMapping() {
         String oneTimeRef = "WECOM-DRAFT-777-L1";
         Map<String, Object> createdOrder = createOrderNeedingSkuReview(
@@ -231,7 +306,7 @@ class ReviewCaseResolutionApiTest {
                 "sku_id", skuId,
                 "source_channel", "WECOM",
                 "source_sku_ref", oneTimeRef,
-                "quantity_multiplier", "1",
+                "quantity_multiplier", 1,
                 "remark", "一次性草稿号不能固化为商品映射");
 
         ResponseEntity<Map> rejected = http.exchange(
@@ -553,7 +628,7 @@ class ReviewCaseResolutionApiTest {
                 "receiver", Map.of("name", "王五", "phone", "13700000000", "address", "上海市测试地址"),
                 "items", List.of(Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2")),
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", 2)),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-12T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST,
@@ -579,7 +654,7 @@ class ReviewCaseResolutionApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "1")),
+                        "quantity", 1)),
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-12T10:00:00+08:00"));
@@ -615,7 +690,7 @@ class ReviewCaseResolutionApiTest {
                         "product_name", "待映射商品",
                         "specification", "2盒/组",
                         "unit", "组",
-                        "quantity", "2")),
+                        "quantity", 2)),
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", "2026-08-12T10:00:00+08:00"));
@@ -626,6 +701,39 @@ class ReviewCaseResolutionApiTest {
                 Map.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         return response.getBody();
+    }
+
+    private void assertInvalidSkuMultiplierRejected(Object multiplier, String suffix) {
+        Map<String, Object> createdOrder = createOrderNeedingSkuReview(
+                "WECOM-ORDER-SKU-" + suffix,
+                "WECOM-SKU-" + suffix,
+                "review-sku-" + suffix.toLowerCase());
+        Map<String, Object> createdCase = firstReviewCase(createdOrder);
+        String skuId = jdbc.queryForObject(
+                "SELECT id::text FROM app.skus WHERE active=true ORDER BY id LIMIT 1", String.class);
+        Map<String, Object> command = Map.of(
+                "expected_version", createdCase.get("version"),
+                "sku_id", skuId,
+                "source_channel", "WECOM",
+                "source_sku_ref", "WECOM-SKU-" + suffix,
+                "quantity_multiplier", multiplier,
+                "remark", "字符串形态不得进入整数契约");
+
+        ResponseEntity<Map> rejected = http.exchange(
+                "/api/v1/review-cases/" + createdCase.get("id") + "/resolve-sku",
+                HttpMethod.POST,
+                new HttpEntity<>(command, writeHeaders(
+                        "review-sku-string-" + suffix.toLowerCase(),
+                        "req-review-sku-string-" + suffix.toLowerCase())),
+                Map.class);
+
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(rejected.getBody()).containsEntry("business_code", "MALFORMED_REQUEST");
+        assertThat(jdbc.queryForObject(
+                        "SELECT status FROM app.review_cases WHERE id=?",
+                        String.class,
+                        Long.parseLong(createdCase.get("id").toString())))
+                .isEqualTo("OPEN");
     }
 
     private SourceFollowupFixture sourceFollowupFixture() {
@@ -697,7 +805,7 @@ class ReviewCaseResolutionApiTest {
                 "receiver", Map.of("name", "王五", "phone", "13700000000", "address", "上海市测试地址"),
                 "items", List.of(Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2")),
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", 2)),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-12T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST,
@@ -714,7 +822,7 @@ class ReviewCaseResolutionApiTest {
                 "receiver", Map.of("name", "赵六", "phone", "13600000000", "address", "上海市测试地址"),
                 "items", List.of(Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "1")),
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", 1)),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-12T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST,

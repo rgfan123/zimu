@@ -6,7 +6,6 @@ import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
 import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -19,7 +18,7 @@ class SourceSyncPolicyTest {
     void ordinaryPhoneFormattingDoesNotHideAnExactReceiverAndQuantityMatch() {
         SourceSyncCheck check = policy.evaluate(
                 loaded(facts("138 0000-0000", "河南省 郑州市 1号")),
-                platform("13800000000", "河南省 郑州市 1号", BigDecimal.ONE),
+                platform("13800000000", "河南省 郑州市 1号", 1L),
                 SourceShipmentArtifact.empty());
 
         assertThat(check.ready()).isTrue();
@@ -31,7 +30,7 @@ class SourceSyncPolicyTest {
     void receiverOrSourceQuantityDifferenceIsDeterministicallyBlocking() {
         SourceSyncCheck check = policy.evaluate(
                 loaded(facts("13800000000", "河南省郑州市1号")),
-                platform("13900000000", "河南省郑州市2号", new BigDecimal("2")),
+                platform("13900000000", "河南省郑州市2号", 2L),
                 SourceShipmentArtifact.empty());
 
         assertThat(check.ready()).isFalse();
@@ -46,11 +45,11 @@ class SourceSyncPolicyTest {
     void changedUploadArtifactInvalidatesBothArtifactAndCheckHashes() {
         SourceSyncCheck first = policy.evaluate(
                 loaded(facts("13800000000", "河南省郑州市1号")),
-                platform("13800000000", "河南省郑州市1号", BigDecimal.ONE),
+                platform("13800000000", "河南省郑州市1号", 1L),
                 new SourceShipmentArtifact("a.xlsx", "application/xlsx", new byte[] {1}, "a".repeat(64)));
         SourceSyncCheck changed = policy.evaluate(
                 loaded(facts("13800000000", "河南省郑州市1号")),
-                platform("13800000000", "河南省郑州市1号", BigDecimal.ONE),
+                platform("13800000000", "河南省郑州市1号", 1L),
                 new SourceShipmentArtifact("a.xlsx", "application/xlsx", new byte[] {2}, "b".repeat(64)));
 
         assertThat(changed.artifactHash()).isNotEqualTo(first.artifactHash());
@@ -62,7 +61,7 @@ class SourceSyncPolicyTest {
         SourcePlatformCheckResult delivered = new SourcePlatformCheckResult(
                 true, "OK", "state", "DELIVERED", false,
                 SourcePlatformCheckResult.AddressStatus.CLEAR,
-                "张三", "13800000000", "河南省郑州市1号", BigDecimal.ONE, true);
+                "张三", "13800000000", "河南省郑州市1号", 1L, true);
 
         SourceSyncCheck check = policy.evaluate(
                 loaded(facts("13800000000", "河南省郑州市1号")),
@@ -77,7 +76,7 @@ class SourceSyncPolicyTest {
     private SourceSyncFacts facts(String phone, String address) {
         return new SourceSyncFacts(
                 7L, 8L, SourceChannel.JUFUBAO, "main-1", "sub-1", "张三", phone, address,
-                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, "FULLY_FULFILLED",
+                1L, 1L, 1L, "FULLY_FULFILLED",
                 "JD", "京东物流", "京东物流", "JDVA123");
     }
 
@@ -86,7 +85,7 @@ class SourceSyncPolicyTest {
                 facts, List.of(), new SourceSyncProjection(SourceSyncStatus.PENDING, 0, 0, null, null, null));
     }
 
-    private SourcePlatformCheckResult platform(String phone, String address, BigDecimal quantity) {
+    private SourcePlatformCheckResult platform(String phone, String address, Long quantity) {
         return new SourcePlatformCheckResult(
                 true, "OK", "ready", "NO_DELIVERY", false,
                 SourcePlatformCheckResult.AddressStatus.CLEAR,

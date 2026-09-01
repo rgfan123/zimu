@@ -6,6 +6,7 @@ import {
   buildManualResolution,
   buildSkuResolution,
   buildSourceFollowupCompletion,
+  isPositiveCountQuantity,
   reviewAction,
 } from '../src/pages/workbench/manualReviewActions.ts';
 import { REASON_LABELS } from '../src/pages/workbench/queuePresentation.ts';
@@ -52,14 +53,34 @@ test('review commands always carry the visible expected version and explicit exi
 
   const skuCase = reviewCase('SKU_MAPPING_REQUIRED', { source_channel: 'WECOM', missing_source_sku_refs: ['WECOM-SKU-9'] });
   assert.equal(reviewAction(skuCase), 'SKU');
-  assert.deepEqual(buildSkuResolution(skuCase, '7', '2.000', '核对装箱规格'), {
+  assert.deepEqual(buildSkuResolution(skuCase, '7', 2, '核对装箱规格'), {
     expected_version: 3,
     sku_id: '7',
     source_channel: 'WECOM',
     source_sku_ref: 'WECOM-SKU-9',
-    quantity_multiplier: '2.000',
+    quantity_multiplier: 2,
     remark: '核对装箱规格',
   });
+});
+
+test('数量换算守卫拒绝小数、非正数和超出 int32 的值，不做静默修正', () => {
+  assert.equal(isPositiveCountQuantity(3), true);
+  assert.equal(isPositiveCountQuantity(3.5), false);
+  assert.equal(isPositiveCountQuantity(0), false);
+  assert.equal(isPositiveCountQuantity(-1), false);
+  assert.equal(isPositiveCountQuantity(2_147_483_648), false);
+  assert.equal(isPositiveCountQuantity(null), false);
+
+  const skuCase = reviewCase('SKU_MAPPING_REQUIRED', {
+    source_channel: 'WECOM',
+    missing_source_sku_refs: ['WECOM-SKU-9'],
+  });
+  for (const invalid of [3.5, 0, -1, 2_147_483_648, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => buildSkuResolution(skuCase, '7', invalid, ''),
+      /1 至 2147483647 的整数/,
+    );
+  }
 });
 
 test('multi-shipment follow-up uses its dedicated guarded command instead of a generic close', () => {

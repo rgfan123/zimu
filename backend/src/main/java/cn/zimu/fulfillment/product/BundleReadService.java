@@ -130,7 +130,7 @@ public class BundleReadService implements BundleReadQuery {
                         resultSet.getString("product_name"),
                         resultSet.getString("specification"),
                         resultSet.getString("unit"),
-                        quantity(resultSet.getBigDecimal("quantity_per_bundle")),
+                        resultSet.getInt("quantity_per_bundle"),
                         price(resultSet.getBigDecimal("purchase_price")),
                         resultSet.getBoolean("active"),
                         provider(resultSet)),
@@ -325,8 +325,8 @@ public class BundleReadService implements BundleReadQuery {
                         .computeIfAbsent(id(resultSet.getLong("sku_id")), ignored -> new ArrayList<>())
                         .add(new InventoryObservation(
                                 resultSet.getString("warehouse_code"),
-                                quantity(resultSet.getBigDecimal("stock_num")),
-                                quantity(resultSet.getBigDecimal("usable_num")),
+                                resultSet.getObject("stock_num", Integer.class),
+                                resultSet.getObject("usable_num", Integer.class),
                                 resultSet.getString("quantity_unit"),
                                 instant(resultSet, "synced_at"),
                                 resultSet.getString("source_type"))),
@@ -363,10 +363,6 @@ public class BundleReadService implements BundleReadQuery {
     private static String nullableId(ResultSet resultSet, String column) throws SQLException {
         long value = resultSet.getLong(column);
         return resultSet.wasNull() ? null : id(value);
-    }
-
-    private static String quantity(BigDecimal value) {
-        return value == null ? null : value.stripTrailingZeros().toPlainString();
     }
 
     private static String price(BigDecimal value) {

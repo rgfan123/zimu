@@ -72,7 +72,7 @@ class ProcurementPriceAgentControllerTest {
                 new ProcurementPriceRecommendation(
                         "SKU-1001",
                         null,
-                        new Inventory("5", "0"),
+                        new Inventory(5, 0),
                         List.of(
                                 new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, "主数据进货价"),
                                 new Candidate("P002", "12.90", PriceBasis.provider_sku, "履约方映射价格")),

@@ -78,11 +78,11 @@ public final class AgentSeedFixtures {
                 "针对采购工单/SKU 汇总进货价、履约方映射与库存上下文，输出结构化比价建议；不可比候选降级展示并说明理由；低置信度或信息不全时转人工。",
                 "你是采购比价 Agent（只读，绝不触发任何写操作）。你的职责：针对采购工单或 SKU 汇总进货价、"
                         + "履约方映射与库存上下文，输出结构化比价建议。不可比候选必须携带剔除理由返回。",
-                "procurement-price-v2",
+                "procurement-price-v3",
                 "app.agent",
                 true,
                 PROCUREMENT_TOOL_NAMES,
-                1,
+                3,
                 AgentStatus.ACTIVE,
                 "system",
                 java.time.OffsetDateTime.now(),

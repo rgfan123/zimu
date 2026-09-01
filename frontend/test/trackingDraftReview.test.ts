@@ -37,9 +37,9 @@ function draft(): TrackingDraftDetail {
         order_line_id: '31',
         shipment_id: '55',
         receiver_name: '张三',
-        requested_quantity: '8.000',
-        shipped_quantity: '0.000',
-        instructed_quantity: '8.000',
+        requested_quantity: 8,
+        shipped_quantity: 0,
+        instructed_quantity: 8,
       },
     ],
     source: 'WECOM_MESSAGE',
@@ -76,13 +76,13 @@ test('file partial drafts carry the parsed quantity through an explicit human co
   current.source = 'WECOM_TRACKING_FILE';
   current.shipment_judgment = 'PARTIAL';
   current.default_full_shipment = false;
-  current.actual_quantity = '1.250';
+  current.actual_quantity = 1;
   current.carrier_candidates = [{ code: 'SF', name: '顺丰速运', source: 'FILE' }];
 
   const form = initialTrackingDraftReviewForm(current);
-  assert.equal(form.actual_quantity, '1.250');
+  assert.equal(form.actual_quantity, '1');
   assert.deepEqual(trackingDraftBlockingIssues(current, form), []);
-  assert.equal(buildTrackingDraftConfirmCommand(current, 7, form).actual_quantity, '1.250');
+  assert.equal(buildTrackingDraftConfirmCommand(current, 7, form).actual_quantity, 1);
   assert.deepEqual(
     trackingDraftBlockingIssues(current, { ...form, actual_quantity: '0' }),
     ['部分发货的实发数量无效'],
@@ -97,7 +97,7 @@ test('file atomic shipment drafts expose every required task without pretending 
   current.task_candidates.push({
     task_id: '45', fulfillment_no: 'FUL-20260813-0045', order_id: '12', order_no: 'ORD-20260813-0012',
     order_line_id: '32', shipment_id: '55', receiver_name: '张三',
-    requested_quantity: '2.000', shipped_quantity: '0.000', instructed_quantity: '2.000',
+    requested_quantity: 2, shipped_quantity: 0, instructed_quantity: 2,
   });
 
   assert.equal(isAtomicShipmentDraft(current), true);
@@ -123,7 +123,7 @@ test('single-task confirmation copy may show only its selected deterministic qua
   );
   assert.equal(
     trackingDraftFullShipmentDescription(current, current.task_candidates[0]),
-    '本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量 8.000。',
+    '本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量 8。',
   );
 });
 
@@ -154,12 +154,12 @@ test('ticket 08 blocks ambiguous, invalid, or non-full drafts instead of guessin
     {
       task_id: '44', fulfillment_no: 'FUL-A', order_id: '12', order_no: 'ORD-A',
       order_line_id: '31', shipment_id: '55', receiver_name: '张三',
-      requested_quantity: '8.000', shipped_quantity: '0.000', instructed_quantity: '8.000',
+      requested_quantity: 8, shipped_quantity: 0, instructed_quantity: 8,
     },
     {
       task_id: '45', fulfillment_no: 'FUL-B', order_id: '13', order_no: 'ORD-B',
       order_line_id: '32', shipment_id: '56', receiver_name: '张三',
-      requested_quantity: '8.000', shipped_quantity: '0.000', instructed_quantity: '8.000',
+      requested_quantity: 8, shipped_quantity: 0, instructed_quantity: 8,
     },
   ];
   invalid.carrier_code = null;
@@ -222,12 +222,12 @@ test('an operator can explicitly choose among masked-name task candidates but ca
     {
       task_id: '44', fulfillment_no: 'FUL-A', order_id: '12', order_no: 'ORD-A',
       order_line_id: '31', shipment_id: '55', receiver_name: '张三',
-      requested_quantity: '8.000', shipped_quantity: '0.000', instructed_quantity: '8.000',
+      requested_quantity: 8, shipped_quantity: 0, instructed_quantity: 8,
     },
     {
       task_id: '45', fulfillment_no: 'FUL-B', order_id: '13', order_no: 'ORD-B',
       order_line_id: '32', shipment_id: '56', receiver_name: '张四',
-      requested_quantity: '8.000', shipped_quantity: '0.000', instructed_quantity: '8.000',
+      requested_quantity: 8, shipped_quantity: 0, instructed_quantity: 8,
     },
   ];
   current.validation_issues = ['TASK_NAME_MULTI_MATCH'];

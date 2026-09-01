@@ -187,7 +187,7 @@ function orderDraft(status: 'OPEN' | 'CONFIRMED' = 'OPEN') {
       product_name_raw: '羊小腿原始描述',
       spec_raw: '500g/盒',
       unit_raw: '盒',
-      quantity: '2',
+      quantity: 2,
     }],
     review_case_id: status === 'OPEN' ? '99' : null,
     review_case_version: status === 'OPEN' ? 7 : null,
@@ -220,9 +220,9 @@ function trackingDraft(status: 'OPEN' | 'CONFIRMED' = 'OPEN') {
       order_line_id: '31',
       shipment_id: '55',
       receiver_name: '张三',
-      requested_quantity: '8.000',
-      shipped_quantity: '0.000',
-      instructed_quantity: '8.000',
+      requested_quantity: 8,
+      shipped_quantity: 0,
+      instructed_quantity: 8,
     }],
     source: 'WECOM_MESSAGE',
     confirmation_scope: 'SINGLE_TASK',
@@ -358,7 +358,7 @@ test('real review route loads the original WeCom evidence and confirms an order 
   assert.equal(command.expected_revision, 4);
   assert.equal(command.expected_case_version, 7);
   assert.equal(command.customer.customer_id, '12');
-  assert.deepEqual(command.items, [{ line_no: 1, sku_id: '44', quantity: '2' }]);
+  assert.deepEqual(command.items, [{ line_no: 1, sku_id: '44', quantity: 2 }]);
   assert.ok(typeof command.settlement.settlement_time === 'string' && command.settlement.settlement_time.length > 0);
   assert.ok((request.init?.headers as Record<string, string>)['Idempotency-Key']);
   assert.equal((request.init?.headers as Record<string, string>)['X-Operator'], undefined);

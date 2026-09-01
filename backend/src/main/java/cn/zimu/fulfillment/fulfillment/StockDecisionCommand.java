@@ -1,5 +1,9 @@
 package cn.zimu.fulfillment.fulfillment;
 
+import cn.zimu.fulfillment.common.dto.NonNegativeCountQuantityDeserializer;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.PositiveOrZero;
 import java.time.Instant;
 import java.util.List;
 
@@ -17,7 +21,9 @@ public record StockDecisionCommand(Decision decision, Instant observedAt, List<I
     public record Item(
             String skuId,
             String warehouseCode,
-            String stockQuantity,
-            String usableQuantity,
+            @NotNull @PositiveOrZero
+                    @JsonDeserialize(using = NonNegativeCountQuantityDeserializer.class) Integer stockQuantity,
+            @NotNull @PositiveOrZero
+                    @JsonDeserialize(using = NonNegativeCountQuantityDeserializer.class) Integer usableQuantity,
             String sourceRef) {}
 }

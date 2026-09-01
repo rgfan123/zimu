@@ -35,7 +35,7 @@ test('表单值装配成契约载荷：trim 一切字符串，空备注整个不
     {
       customer_code: 'C001',
       receiver: { name: '李四', phone: '13900000000', address: '贵阳市观山湖区 1 号' },
-      items: [{ sku_id: '15', quantity: '3' }],
+      items: [{ sku_id: '15', quantity: 3 }],
     },
   );
   assert.equal(
@@ -54,7 +54,7 @@ test('客户可选：不选（或全空白）整个不带 customer_code 字段�
   const items = [{ sku_id: '15', quantity: '3' }];
   for (const values of [{ receiver, items }, { customer_code: '  ', receiver, items }]) {
     const body = manualOrderCreateBody(values);
-    assert.deepEqual(body, { receiver, items });
+    assert.deepEqual(body, { receiver, items: [{ sku_id: '15', quantity: 3 }] });
     assert.equal(Object.prototype.hasOwnProperty.call(body, 'customer_code'), false, '空客户不得留下 customer_code 键');
   }
 });
@@ -87,7 +87,7 @@ test('建单幂等键：同草稿同内容重放，改内容或换草稿都换�
   assert.equal(key, manualOrderIdempotencyKey('draft-a', body), '同草稿同内容必须稳定重放');
   assert.notEqual(
     key,
-    manualOrderIdempotencyKey('draft-a', { ...body, items: [{ sku_id: '15', quantity: '4' }] }),
+    manualOrderIdempotencyKey('draft-a', { ...body, items: [{ sku_id: '15', quantity: 4 }] }),
     '内容变了必须换键——同键不同载荷会被服务端判 IDEMPOTENCY_CONFLICT',
   );
   assert.notEqual(
@@ -108,14 +108,28 @@ test('路由幂等键钉「订单 × 期望版本」，请求装配与契约一�
   assert.equal(manualOrderRoutingIdempotencyKey('901', 2), 'manual-order-routing-901-v2');
   assert.notEqual(manualOrderRoutingIdempotencyKey('901', 2), manualOrderRoutingIdempotencyKey('901', 5));
 
-  assert.deepEqual(manualOrderCreateRequest(
+  assert.deepEqual(
+    manualOrderCreateRequest(
+      {
+        customer_code: 'C001',
+        receiver: { name: '李四', phone: '139', address: '地址' },
+        items: [{ sku_id: '15', quantity: 3 }],
+      },
+      { 'Idempotency-Key': 'k1' },
+    ),
     {
-      customer_code: 'C001',
-      receiver: { name: '李四', phone: '139', address: '地址' },
-      items: [{ sku_id: '15', quantity: '3' }],
+      path: '/api/v1/orders/manual',
+      options: {
+        method: 'POST',
+        body: {
+          customer_code: 'C001',
+          receiver: { name: '李四', phone: '139', address: '地址' },
+          items: [{ sku_id: '15', quantity: 3 }],
+        },
+        headers: { 'Idempotency-Key': 'k1' },
+      },
     },
-    { 'Idempotency-Key': 'k1' },
-  ).path, '/api/v1/orders/manual');
+  );
 
   assert.deepEqual(manualOrderRoutingRequest('901', 2, { 'Idempotency-Key': 'k2' }), {
     path: '/api/v1/orders/901/fulfillment-routing',

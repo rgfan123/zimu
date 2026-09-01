@@ -183,7 +183,7 @@ public class BatchPreShipConfirmCardSource implements WecomBusinessCardSource {
                         rs.getString("source_channel"),
                         rs.getLong("batch_version"),
                         rs.getInt("order_count"),
-                        PreShipConfirmCardSource.trimQuantity(rs.getBigDecimal("total_quantity")),
+                        PreShipConfirmCardSource.countText(rs.getLong("total_quantity")),
                         receiverBrief(rs.getString("receivers"), rs.getInt("order_count"))),
                 batchId);
         return rows.isEmpty() ? Optional.empty() : Optional.of(rows.getFirst());
@@ -236,7 +236,7 @@ public class BatchPreShipConfirmCardSource implements WecomBusinessCardSource {
                         rs.getString("receiver_phone"),
                         rs.getString("receiver_address"),
                         rs.getString("jd_goods"),
-                        PreShipConfirmCardSource.trimQuantity(rs.getBigDecimal("total_quantity"))),
+                        PreShipConfirmCardSource.countText(rs.getLong("total_quantity"))),
                 batchId);
     }
 

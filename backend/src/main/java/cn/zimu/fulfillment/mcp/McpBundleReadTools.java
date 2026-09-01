@@ -92,7 +92,7 @@ public class McpBundleReadTools {
                                                 schema(
                                                         Map.of(
                                                                 "sku_id", stringProperty("系统 SKU ID"),
-                                                                "quantity", stringProperty("每份礼包所含数量，正整数")),
+                                                                "quantity", positiveCountProperty("每份礼包所含数量，int32 正整数")),
                                                         List.of("sku_id", "quantity"))),
                                         "expected_price", stringProperty("预期售价（元，最多两位小数）"),
                                         "freight_fee", stringProperty("每份运费（元，可选，默认 0）"),
@@ -353,8 +353,6 @@ public class McpBundleReadTools {
 
     private static final java.util.regex.Pattern MONEY =
             java.util.regex.Pattern.compile("^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$");
-    private static final java.util.regex.Pattern POSITIVE_INT =
-            java.util.regex.Pattern.compile("^[1-9][0-9]*$");
     private static final int MAX_ECONOMICS_COMPONENTS = 50;
 
     /**
@@ -377,14 +375,9 @@ public class McpBundleReadTools {
             if (!(item instanceof Map<?, ?> component)) {
                 throw BusinessException.badRequest("BUNDLE_ECONOMICS_COMPONENT_INVALID", "组件项必须是对象");
             }
-            String quantityText = component.get("quantity") == null
-                    ? "" : String.valueOf(component.get("quantity")).trim();
-            if (!POSITIVE_INT.matcher(quantityText).matches()) {
-                throw BusinessException.badRequest(
-                        "BUNDLE_ECONOMICS_QUANTITY_INVALID", "组件数量必须为正整数: " + quantityText);
-            }
+            int quantity = positiveCount(component.get("quantity"));
             skuIds.add(WriteCommands.parseIdentifier(String.valueOf(component.get("sku_id"))));
-            quantities.add(Integer.valueOf(quantityText));
+            quantities.add(quantity);
         }
         BigDecimal expectedPrice = money(args, "expected_price", null);
         BigDecimal freight = money(args, "freight_fee", BigDecimal.ZERO);
@@ -462,6 +455,23 @@ public class McpBundleReadTools {
         return result;
     }
 
+    private static int positiveCount(Object value) {
+        if (!(value instanceof Byte || value instanceof Short || value instanceof Integer
+                || value instanceof Long || value instanceof java.math.BigInteger)) {
+            throw BusinessException.badRequest(
+                    "BUNDLE_ECONOMICS_QUANTITY_INVALID", "组件数量必须是正整数 JSON 值");
+        }
+        java.math.BigInteger raw = value instanceof java.math.BigInteger bigInteger
+                ? bigInteger
+                : java.math.BigInteger.valueOf(((Number) value).longValue());
+        try {
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromPositiveJsonInteger(raw);
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
+            throw BusinessException.badRequest(
+                    "BUNDLE_ECONOMICS_QUANTITY_INVALID", "组件数量必须是 int32 正整数");
+        }
+    }
+
     private static BigDecimal money(Map<String, Object> args, String key, BigDecimal defaultValue) {
         Object raw = args.get(key);
         if (raw == null || String.valueOf(raw).isBlank()) {
@@ -492,5 +502,11 @@ public class McpBundleReadTools {
 
     private static ObjectNode integerProperty(String description) {
         return McpToolRegistry.integerProperty(description);
+    }
+
+    private static ObjectNode positiveCountProperty(String description) {
+        return integerProperty(description)
+                .put("minimum", 1)
+                .put("maximum", Integer.MAX_VALUE);
     }
 }

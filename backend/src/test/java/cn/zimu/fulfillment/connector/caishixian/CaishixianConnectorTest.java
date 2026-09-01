@@ -23,7 +23,6 @@ import cn.zimu.fulfillment.connector.PullCursor;
 import cn.zimu.fulfillment.connector.PullResult;
 import cn.zimu.fulfillment.file.SourceImportService;
 import java.time.OffsetDateTime;
-import java.math.BigDecimal;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.List;
 import java.util.Map;
@@ -114,7 +113,7 @@ class CaishixianConnectorTest {
                 new CaishixianShipmentGateway.PlatformOrderSnapshot(
                         true, "42", "main-1", "sub-1", 3, "待发货",
                         "张三", "13800000000", "河南省郑州市金水区1号",
-                        BigDecimal.ONE));
+                        1L));
         when(shipmentGateway.carrierOptions()).thenReturn(
                 List.of(new CaishixianShipmentGateway.CarrierOption("JD", "京东物流")));
         when(shipmentGateway.upload(any(SourceShipmentArtifact.class), any())).thenAnswer(invocation -> {
@@ -136,12 +135,47 @@ class CaishixianConnectorTest {
     }
 
     @Test
+    void liveCarrierDictionaryAcceptsCanonicalNameWithoutLocalTranslationWhitelist() {
+        when(shipmentGateway.inspect("main-1", "sub-1")).thenReturn(
+                new CaishixianShipmentGateway.PlatformOrderSnapshot(
+                        true, "42", "main-1", "sub-1", 3, "待发货",
+                        "张三", "13800000000", "河南省郑州市金水区1号",
+                        1L));
+        when(shipmentGateway.carrierOptions()).thenReturn(
+                List.of(new CaishixianShipmentGateway.CarrierOption("SF", "顺丰速运")));
+
+        var check = connector.checkShipmentResult(shipment("顺丰速运"));
+
+        assertThat(check.available()).isTrue();
+        assertThat(check.carrierMapped()).isTrue();
+    }
+
+    @Test
+    void equalSourceQuantitiesOutsideLongCacheDoNotLookLikeDrift() {
+        when(shipmentGateway.inspect("main-1", "sub-1")).thenReturn(
+                new CaishixianShipmentGateway.PlatformOrderSnapshot(
+                        true, "42", "main-1", "sub-1", 3, "待发货",
+                        "张三", "13800000000", "河南省郑州市金水区1号",
+                        200L));
+        when(shipmentGateway.carrierOptions()).thenReturn(
+                List.of(new CaishixianShipmentGateway.CarrierOption("JD", "京东物流")));
+        when(shipmentGateway.upload(any(SourceShipmentArtifact.class), any()))
+                .thenReturn(CaishixianShipmentGateway.UploadAck.accepted("200000"));
+        when(shipmentGateway.awaitVerified("42", "JD", "JDVA123"))
+                .thenReturn(CaishixianShipmentGateway.Verification.verified("42"));
+
+        SourceSyncResult result = connector.pushShipmentResult(shipment(200L, "JD"), () -> {});
+
+        assertThat(result.success()).isTrue();
+    }
+
+    @Test
     void anUnknownUploadAcknowledgementStillUsesQueryOnlyVerification() {
         when(shipmentGateway.inspect("main-1", "sub-1")).thenReturn(
                 new CaishixianShipmentGateway.PlatformOrderSnapshot(
                         true, "42", "main-1", "sub-1", 3, "待发货",
                         "张三", "13800000000", "河南省郑州市金水区1号",
-                        BigDecimal.ONE));
+                        1L));
         when(shipmentGateway.carrierOptions()).thenReturn(
                 List.of(new CaishixianShipmentGateway.CarrierOption("JD", "京东物流")));
         when(shipmentGateway.upload(any(SourceShipmentArtifact.class), any())).thenAnswer(invocation -> {
@@ -167,7 +201,7 @@ class CaishixianConnectorTest {
                 new CaishixianShipmentGateway.PlatformOrderSnapshot(
                         true, "42", "main-1", "sub-1", 3, "待发货",
                         "张三", "13800000000", "河南省郑州市金水区1号",
-                        BigDecimal.ONE));
+                        1L));
         when(shipmentGateway.carrierOptions()).thenReturn(
                 List.of(new CaishixianShipmentGateway.CarrierOption("JD", "京东物流")));
         when(shipmentGateway.upload(any(SourceShipmentArtifact.class), any())).thenAnswer(invocation -> {
@@ -429,13 +463,21 @@ class CaishixianConnectorTest {
     }
 
     private SourceShipmentResult shipment() {
+        return shipment("JD");
+    }
+
+    private SourceShipmentResult shipment(String carrierOutputValue) {
+        return shipment(1L, carrierOutputValue);
+    }
+
+    private SourceShipmentResult shipment(long sourceUnitQuantity, String carrierOutputValue) {
         return new SourceShipmentResult(
                 SourceChannel.CAISHIXIAN,
                 "main-1",
                 "sub-1",
-                BigDecimal.ONE,
+                sourceUnitQuantity,
                 "SHIPPED",
-                "JD",
+                carrierOutputValue,
                 "JDVA123",
                 null,
                 "张三",

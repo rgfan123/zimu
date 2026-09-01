@@ -495,6 +495,12 @@ class SourceBundleKeyUnificationApiTest {
     }
 
     private String importPull(String productId, String productName, String quantity) {
+        final int normalizedQuantity;
+        try {
+            normalizedQuantity = cn.zimu.fulfillment.common.domain.CountQuantity.fromPositiveFileValue(quantity);
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
+            throw BusinessException.unprocessable("BUNDLE_QUANTITY_NOT_INTEGER", "礼包行数量必须为整数");
+        }
         String orderRef = "JFB-PULL-" + productId;
         CanonicalOrderInput input = new CanonicalOrderInput(
                 SourceChannel.JUFUBAO,
@@ -504,7 +510,7 @@ class SourceBundleKeyUnificationApiTest {
                 new Receiver(RECEIVER_NAME, RECEIVER_PHONE, "河南省", "郑州市", "金水区", null, "测试路 1 号"),
                 List.of(new OrderItemInput(
                         orderRef + "-L1", LineType.SINGLE, null, productId,
-                        productName, "标准箱", "箱", quantity, null)),
+                        productName, "标准箱", "箱", normalizedQuantity, null)),
                 new Settlement(SettlementMethod.MONTHLY, Instant.now()),
                 null,
                 "bundle-key-unification-test",
@@ -704,9 +710,9 @@ class SourceBundleKeyUnificationApiTest {
                 new Receiver(RECEIVER_NAME, RECEIVER_PHONE, "河南省", "郑州市", "金水区", null, "测试路 1 号"),
                 List.of(
                         new OrderItemInput(orderRef + "-A", LineType.SINGLE, null, bundleRef,
-                                "混合履约礼包-" + bundleRef, "标准箱", "箱", "1", null),
+                                "混合履约礼包-" + bundleRef, "标准箱", "箱", 1, null),
                         new OrderItemInput(orderRef + "-B", LineType.SINGLE, null, singleRef,
-                                "普通商品-" + singleRef, "标准箱", "箱", "1", null)),
+                                "普通商品-" + singleRef, "标准箱", "箱", 1, null)),
                 new Settlement(SettlementMethod.MONTHLY, Instant.now()),
                 null,
                 "bundle-lineage-test",

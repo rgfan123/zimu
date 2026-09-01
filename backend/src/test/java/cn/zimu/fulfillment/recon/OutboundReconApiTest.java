@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.recon;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.when;
 
 import cn.zimu.fulfillment.connector.jd.JDWarehouseService;
@@ -48,7 +49,8 @@ class OutboundReconApiTest {
         jdbc.update(
                 """
                 UPDATE app.fulfillment_providers
-                SET config = ('{"warehouseNo":"WH-API-001"}')::jsonb
+                SET config = ('{"warehouseNo":"WH-API-001",'
+                              '"pin":"PIN-RECON-001","ownerNo":"OWNER-RECON-001"}')::jsonb
                 WHERE provider_code='JD'
                 """);
         jdbc.update(
@@ -108,7 +110,7 @@ class OutboundReconApiTest {
 
         List<Map<String, Object>> comparisons = castList(body.get("comparisons"));
         Map<String, Map<String, Object>> byKey = byKey(comparisons);
-        assertThat(byKey.get("outbound_order_no")).containsEntry("state", "MATCH");
+        assertThat(byKey.get("erp_delivery_no")).containsEntry("state", "MATCH");
         assertThat(byKey.get("jd_delivery_no")).containsEntry("state", "MATCH");
         assertThat(byKey.get("warehouse_no")).containsEntry("state", "MATCH");
         // 内部 CREATED（未出库）与京东 10020（已发货）语义不一致 → 高亮
@@ -134,6 +136,39 @@ class OutboundReconApiTest {
         assertThat(auditPayloads)
                 .contains(outboundOrderNo)
                 .doesNotContain("张三", "13800000000", "李四", "13900000000", "测试地址");
+    }
+
+    @Test
+    void localOutboundNumberAndJdMerchantReferenceRemainDistinctDuringReconciliation() {
+        Fact fact = createOrder("RECON-DECOUPLED");
+        long shipmentId = createShipment(fact);
+        String outboundOrderNo = jdbc.queryForObject(
+                "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
+        String erpDeliveryNo = "ZIMU-SO-20260831-000000000001-ABCDEF12";
+        insertJdOutbound(shipmentId, erpDeliveryNo, "JD-DELIVERY-DECOUPLED-001");
+        when(jdWarehouse.queryOutboundOrder(argThat(request ->
+                erpDeliveryNo.equals(request.get("erpDeliveryNo"))
+                        && "PIN-RECON-001".equals(request.get("pin"))
+                        && "OWNER-RECON-001".equals(request.get("ownerNo")))))
+                .thenReturn(jdOk(Map.of(
+                        "erpDeliveryNo", erpDeliveryNo,
+                        "deliveryNo", "JD-DELIVERY-DECOUPLED-001",
+                        "warehouseNo", "WH-API-001",
+                        "status", "10010",
+                        "deliveryItemList", List.of())));
+
+        ResponseEntity<Map> response = query(
+                "OUTBOUND_ORDER_NO", outboundOrderNo, "req-recon-decoupled-001");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Map<String, Object> internalSummary = castMap(castMap(
+                response.getBody().get("internal")).get("summary"));
+        assertThat(internalSummary).containsEntry("outbound_order_no", outboundOrderNo);
+        assertThat(castMap(castMap(response.getBody().get("jd")).get("summary")))
+                .containsEntry("erp_delivery_no", erpDeliveryNo);
+        assertThat(byKey(castList(response.getBody().get("comparisons"))).get("erp_delivery_no"))
+                .containsEntry("internal_value", erpDeliveryNo)
+                .containsEntry("state", "MATCH");
     }
 
     @Test
@@ -206,6 +241,29 @@ class OutboundReconApiTest {
         assertThat(castMap(body.get("jd"))).containsEntry("status", "NOT_FOUND");
         assertThat(castList(body.get("comparisons")))
                 .allSatisfy(row -> assertThat(row).containsEntry("state", "JD_NOT_FOUND"));
+    }
+
+    @Test
+    void officialJdOrderNotFoundCodeIsReportedAsNotFoundInsteadOfUnavailable() {
+        Fact fact = createOrder("RECON-JD-2342");
+        long shipmentId = createShipment(fact);
+        String outboundOrderNo = jdbc.queryForObject(
+                "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
+        when(jdWarehouse.queryOutboundOrder(anyMap())).thenReturn(new JdResult(
+                false, "2342", "该订单不存在，请检查单号是否正确", "jd-query-2342", null));
+
+        ResponseEntity<Map> response = query("OUTBOUND_ORDER_NO", outboundOrderNo, "req-recon-jd-2342");
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(castMap(response.getBody().get("jd")))
+                .containsEntry("status", "NOT_FOUND")
+                .containsEntry("business_code", "2342");
+        assertThat(castList(response.getBody().get("comparisons")))
+                .allSatisfy(row -> assertThat(row).containsEntry("state", "JD_NOT_FOUND"));
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.audit_logs WHERE operation='outbound.recon.query' "
+                        + "AND business_code='OUTBOUND_RECON_JD_NOT_FOUND' AND request_id='req-recon-jd-2342'",
+                Long.class)).isEqualTo(1L);
     }
 
     @Test
@@ -292,7 +350,7 @@ class OutboundReconApiTest {
                         "product_name", "子牧羊小腿",
                         "specification", "500g/盒",
                         "unit", "盒",
-                        "quantity", "1")),
+                        "quantity", 1)),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-13T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders",
@@ -349,8 +407,10 @@ class OutboundReconApiTest {
                 """
                 INSERT INTO app.shipment_jd_outbounds
                     (shipment_id, erp_delivery_no, jd_delivery_no, sync_status, submitted_at,
-                     submitted_warehouse_no, submitted_cargo_snapshot, client_mode)
-                VALUES (?, ?, ?, 'SUBMITTED', CURRENT_TIMESTAMP, 'WH-API-001', ?::jsonb, 'MOCK')
+                     submitted_warehouse_no, submitted_owner_no, submitted_pin,
+                     submitted_cargo_snapshot, client_mode)
+                VALUES (?, ?, ?, 'SUBMITTED', CURRENT_TIMESTAMP,
+                        'WH-API-001', 'OWNER-RECON-001', 'PIN-RECON-001', ?::jsonb, 'MOCK')
                 """,
                 shipmentId, erpDeliveryNo, jdDeliveryNo,
                 "[{\"orderLine\":\"1\",\"goodsNo\":\"JD-SKU-000001\",\"planQuantity\":1}]");

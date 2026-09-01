@@ -13,5 +13,5 @@ public record ProviderSkuDetail(
         String merchantSkuCode,
         boolean active,
         String providerSkuName,
-        String jdPiecesPerUnit) {
+        Integer jdPiecesPerUnit) {
 }

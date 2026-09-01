@@ -39,9 +39,9 @@ public class AnalyticsController {
         StringBuilder sql = new StringBuilder(
                 """
                 SELECT metric_date::text AS metric_date, source_channel, order_count, order_line_count,
-                       actual_shipped_quantity::text AS actual_shipped_quantity,
-                       actual_shipped_quantity::text AS canonical_quantity,
-                       actual_shipped_quantity::text AS shipped_quantity,
+                       actual_shipped_quantity AS actual_shipped_quantity,
+                       actual_shipped_quantity AS canonical_quantity,
+                       actual_shipped_quantity AS shipped_quantity,
                        shipment_count, exception_order_count, out_of_stock_order_count, sync_failed_count
                 FROM analytics.v_channel_daily
                 WHERE 1 = 1
@@ -72,9 +72,9 @@ public class AnalyticsController {
                        v.product_id::text AS product_id, v.product_code, v.product_name,
                        v.sku_id::text AS sku_id, v.sku_code, v.product_name AS sku_name,
                        v.order_count, v.shipment_count,
-                       v.actual_shipped_quantity::text AS actual_shipped_quantity,
-                       v.actual_shipped_quantity::text AS canonical_quantity,
-                       v.actual_shipped_quantity::text AS shipped_quantity,
+                       v.actual_shipped_quantity AS actual_shipped_quantity,
+                       v.actual_shipped_quantity AS canonical_quantity,
+                       v.actual_shipped_quantity AS shipped_quantity,
                        COALESCE(sm.source_mappings, '[]'::jsonb)::text AS source_mappings_json,
                        COALESCE(jd.jd_sku_codes, '[]'::jsonb)::text AS jd_sku_codes_json
                 FROM analytics.v_product_daily v
@@ -150,14 +150,14 @@ public class AnalyticsController {
                 SELECT v.metric_date::text AS metric_date, v.source_channel,
                        fp.id::text AS provider_id,
                        v.provider_code, v.provider_name, v.provider_type,
-                       v.fulfillment_count, v.fulfilled_quantity::text AS fulfilled_quantity,
+                       v.fulfillment_count, v.fulfilled_quantity AS fulfilled_quantity,
                        v.not_shipped_count, v.partially_shipped_count, v.fully_shipped_count,
                        v.procurement_ticket_count, v.out_of_stock_fulfillment_count,
                        v.awaiting_shipment_count, v.shipped_shipment_count,
                        v.awaiting_tracking_count, v.awaiting_sync_count, v.sync_failed_count,
                        v.synced_count,
                        v.shipped_shipment_count AS shipment_count,
-                       v.fulfilled_quantity::text AS shipped_quantity,
+                       v.fulfilled_quantity AS shipped_quantity,
                        COALESCE(tm.tracking_received_count, 0) AS tracking_received_count,
                        COALESCE(tm.average_tracking_hours, 0.0) AS average_tracking_hours
                 FROM analytics.v_fulfillment_channel_daily v

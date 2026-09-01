@@ -4,7 +4,6 @@ import {
   Button,
   Form,
   Input,
-  InputNumber,
   List,
   Modal,
   Select,
@@ -32,6 +31,7 @@ import type {
   ProductBundleStatus,
   SkuRecord,
 } from '@/api/types';
+import { positiveCountFormValue } from './countFormValue';
 import DataTable from '@/components/DataTable';
 import PageShell from '@/components/PageShell';
 import { ProductIdentity } from '@/pages/shared/ProductIdentity';
@@ -132,9 +132,9 @@ export default function BundlesPage() {
         barcode: values.barcode ? String(values.barcode).trim() : undefined,
         description: values.description ? String(values.description).trim() : undefined,
         status: values.status ?? 'DRAFT',
-        items: values.items.map((item: { sku_id: string; quantity_per_bundle: number; emg_code_snapshot?: string }) => ({
+        items: values.items.map((item: { sku_id: string; quantity_per_bundle: unknown; emg_code_snapshot?: string }) => ({
           sku_id: String(item.sku_id),
-          quantity_per_bundle: String(item.quantity_per_bundle),
+          quantity_per_bundle: positiveCountFormValue(item.quantity_per_bundle),
           emg_code_snapshot: item.emg_code_snapshot ? String(item.emg_code_snapshot).trim() : undefined,
         })),
       };
@@ -356,10 +356,22 @@ export default function BundlesPage() {
                       <Form.Item
                         {...fieldProps}
                         name={[field.name, 'quantity_per_bundle']}
-                        rules={[{ required: true, message: '请输入单份用量' }]}
+                        rules={[
+                          { required: true, message: '请输入单份用量' },
+                          {
+                            validator: (_, value) => {
+                              try {
+                                positiveCountFormValue(value);
+                                return Promise.resolve();
+                              } catch {
+                                return Promise.reject(new Error('单份用量必须为 int32 正整数'));
+                              }
+                            },
+                          },
+                        ]}
                         style={{ width: 130, marginBottom: 0 }}
                       >
-                        <InputNumber min={1} precision={0} style={{ width: '100%' }} placeholder="单份用量" />
+                        <Input inputMode="numeric" placeholder="单份用量" />
                       </Form.Item>
                       <Form.Item
                         {...fieldProps}

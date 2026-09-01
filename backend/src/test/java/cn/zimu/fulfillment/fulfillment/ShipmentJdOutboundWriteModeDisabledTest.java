@@ -155,7 +155,7 @@ class ShipmentJdOutboundWriteModeDisabledTest {
                 "receiver", Map.of("name", "张三", "phone", "13800000000", "address", "上海市浦东新区测试路1号"),
                 "items", List.of(Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "1")),
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", 1)),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-13T10:00:00+08:00"));
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);

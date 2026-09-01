@@ -4,7 +4,7 @@
 依据：`docs/prd-v0.1.md`、`CONTEXT.md`、`wayfinder/tickets/db-schema-design.md` Q1–Q55、`wayfinder/tickets/product-bundle-and-pack-mapping.md`、`docs/api-contract.md`
 空库权威快照：[`schema.sql`](schema.sql)。Flyway 使用已冻结的
 [`V1__baseline.sql`](../backend/src/main/resources/db/migration/V1__baseline.sql)
-和 `V2`–`V75` 增量迁移（V74/V75 仅执行带前置断言的数据修复）；两条路径必须得到等价的当前结构——
+和 `V2`–`V105` 增量迁移（数据修复迁移均带前置断言或显式跳过审计）；两条路径必须得到等价的当前结构——
 [`SchemaSnapshotMigrationEquivalenceTest`](../backend/src/test/java/cn/zimu/fulfillment/schema/SchemaSnapshotMigrationEquivalenceTest.java)
 用 Testcontainers 分别以空库快照与 Flyway 全链建库，从 `pg_catalog` 比对表/视图/列
 （类型/可空/默认/identity）/主键/唯一键/check 约束/外键/普通索引/触发器/显式序列/
@@ -16,7 +16,9 @@
 - 当前权威快照共 81 张业务表、4 个分析视图和 2 个操作视图。
 - 有限且仍可能演进的状态值使用 `VARCHAR + CHECK`；可扩展的 OrderEvent 类型使用目录表。
 - 所有业务时间使用 `TIMESTAMPTZ`；Java 使用 `Instant`。来源 Excel 的无时区时间按 `Asia/Shanghai` 解释，分析视图也按上海自然日分桶。
-- 所有数量使用 `NUMERIC(18,3)`；应用写入前必须拒绝超过三位小数的输入，不能依赖数据库隐式舍入。
+- 商品件数、来源份数、包装乘数、礼包/组件件数及请求、指令、实发、取消、剩余、库存观测等 `CountQuantity` 使用 `INTEGER`；V99 已迁移 23 个既有商品数量列，V105 补齐库存快照。两次迁移都失败关闭：任何小数或 int32 越界存量都会使迁移回滚，绝不截断或舍入。
+- 文件渠道来源回填的承运商展示名优先取 `connector_configs.carrier_mappings`；未维护专用翻译时，V102 回退到 `trackings.logistics_company_name` 的内部标准名称或代码，不把展示翻译缺失升级为运单事实门禁。
+- 重量、净含量、体积、金额和价格继续使用定点十进制。`provider_stock_snapshots.stock_num/usable_num` 只承载离散库存计数并使用 `INTEGER`；`quantity_unit=UNKNOWN` 表示单位语义尚未证实，不再意味着允许连续小数。
 - CanonicalOrder、原始 Excel 行、订单版本、业务事件、履约/回填文件版本长期保留。只追加表由数据库触发器禁止更新和删除。
 - Schema 由 Flyway 管理；Spring/Hibernate 只能使用 `ddl-auto=validate`，不得在启动时创建或修改表。
 - Demo 与业务数据共用领域代码但用 `data_scope` 强隔离；业务视图、文件、复核和提醒不接收 Demo 数据。
@@ -63,8 +65,8 @@ erDiagram
 | `categories` | 商品品类树 | code 唯一；禁止自指父级 |
 | `products` | 商品族 | 可保存品牌；规格、单位和履约方不放在 Product |
 | `fulfillment_providers` | 京东云仓或第三方履约方 | `provider_code` 生成后不可变；保存运单 SLA |
-| `skus` | 公司唯一可履约 SKU | `SKU-{provider_code}-{6位全局流水号}`；provider 不可变；净含量、计量单位、包装件数和包装单位须成组填写，库存计数单位独立保存；active 主条码与 active `BARCODE` 别名共享规范化唯一所有权 |
-| `sku_data_quality_flags` | SKU 审计与人工复核证据 | 保存显式事实与阻断原因，不保存可漂移的 ready 状态 |
+| `skus` | 公司唯一可履约 SKU | `SKU-{provider_code}-{6位全局流水号}`；provider 不可变；结构化净含量和包装四字段可全空，全空只产生警告；一旦提供必须成组完整且与可确定解析的展示规格一致；库存计数单位独立保存；active 主条码与 active `BARCODE` 别名共享规范化唯一所有权 |
+| `sku_data_quality_flags` | SKU 审计与人工复核证据 | 保存显式事实、警告或阻断原因，不保存可漂移的 ready 状态 |
 | `sku_aliases` | 人工检索候选别名 | 只用于建议，不自动建立业务映射 |
 | `source_channel_skus` | 来源平台商品到内部 SKU 的显式映射 | `(source_channel, source_sku_ref)` 唯一；`quantity_multiplier` 缺失时只能进入人工复核，正值时参与来源数量换算 |
 | `provider_skus` | 内部 SKU 到履约方商品编码或内部路由键的映射 | provider 必须与 SKU 归属一致；第三方自映射（`provider_sku_code = sku_code`）属于 `INTERNAL_ROUTING`，只供本系统确定性路由，不代表外部编码已核验；REAL 京东 `queryGoodsInfo` 成功核验可在 `external_codes.jd_goods_verification` 留下与当前 goodsNo 绑定的内部凭证，MOCK 结果不记为真实凭证 |
@@ -94,7 +96,7 @@ erDiagram
 | `fulfillments` | 一条 OrderLine 的履约单元 | OrderLine 1:1；provider 固定；累计实发和取消量守恒 |
 | `shipments` | 一个出库/发货批次 | `outbound_order_no` 是系统生成的 12 位上海业务日流水且同 provider 唯一；同订单/provider 的 `shipment_sequence` 唯一且不可变；Receiver 快照不可变 |
 | `shipment_items` | Shipment 与 Fulfillment 的数量分配 | 支持“一批多行”和“一行多批”；已实发量、取消量和所有 CREATED 批次的待出库量共同守恒；礼包只能按完整份数 |
-| `shipment_jd_outbounds` | Shipment 级京东出库集成记录 | `shipment_id` / `erp_delivery_no` 唯一；独立持久同步状态、请求指纹、外部引用、失败/对账事实和当次 `client_mode`，旧记录为 `UNKNOWN` |
+| `shipment_jd_outbounds` | Shipment 级京东出库集成记录与外部号保留 | `shipment_id` / `erp_delivery_no` 唯一；新号来自 `ZIMU-SO-*` 独占命名空间并与 12 位 `shipments.outbound_order_no` 分离；`NONE` 仅表示已保留、尚未产生京东写意图；`request_hash` 固定精确请求，`business_facts_hash` 固定剔除可替换外部号后的业务事实；进入 `SUBMITTING` 前冻结 `submitted_pin` / `submitted_owner_no` / `submitted_warehouse_no` / `submitted_cargo_snapshot`；独立持久同步状态、失败/对账事实和当次 `client_mode`，旧记录为 `UNKNOWN` |
 | `trackings` | Shipment 的物流公司与运单号 | P0 一个 Shipment 最多一个 Tracking；运单只追加，不覆盖冲突值 |
 | `shipment_syncs` | Shipment 向来源渠道回传的权威状态与 durable intent 投影 | `(shipment_id, source_channel)` 唯一；SYNCING 必须保存 intent/platform intent、check/artifact hash、来源行、承运商、运单、开始时间与累计尝试次数；`lock_version` 做 CAS；PENDING 必须清空旧确认事实；与文件 fallback 共享 Shipment 行锁 |
 | `source_sync_auto_states` | 在线自动回传的资格终态、领取租约与重试时钟 | `(shipment_id, source_channel)` 主键；`PENDING/RETRY_WAIT` 到期后以租约原子领取，确定性人工门禁以 `PENDING` 延后复查；`NOT_APPLICABLE` 表示渠道继续走文件回传且不再轮询；不替代 `shipment_syncs` 业务状态 |
@@ -130,12 +132,21 @@ erDiagram
 |---|---|---|
 | `review_cases` | 阻断自动流程的人工复核 | 同主体+原因只能有一条 OPEN case；禁止关联 Demo 订单 |
 | `operational_alerts` | 不阻断但要求知晓的黄/红提醒 | 活跃同类提醒幂等；禁止关联 Demo 订单 |
-| `connector_configs` | 四个来源渠道的 Client 与传输模式、快递公司显式映射和最近拉取状态 | `mode=MOCK/REAL` 与 `transport_mode=EXCEL/API` 分轴；`config.carrier_mappings` 首批维护京东物流到彩食鲜 `JD`、聚福宝/飞象 `京东物流` 的映射；缺映射进入人工复核 |
+| `connector_configs` | 来源渠道的 Client 与传输模式、承运商可选翻译覆盖、平台专用代码和最近拉取状态 | `mode=MOCK/REAL` 与 `transport_mode=EXCEL/API` 分轴；`config.carrier_mappings` 只是来源展示值/选项值的翻译覆盖，不是承运商白名单，缺失时回退内部标准名称或代码并由在线渠道字典校验；仅平台 API 明确要求的专用代码（如飞象 `carrier_api_codes`）缺失时阻断该渠道回传，不影响 Tracking 事实落库 |
 | `channel_messages` | 企业微信原始文字证据 | `(企微主体, 连接, 消息 ID)` 唯一；只保存通道证据与受控原始载荷，不解释意图、不创建订单或运单 |
 | `audit_logs` | 接口、Agent 和人工操作审计 | BUSINESS/DEMO 分域；只追加 |
 | `demo_runs` | 隔离 Mock DemoScenario 运行 | 只能引用 DEMO order；不进入业务文件、复核、提醒或 analytics |
 | `idempotency_registry` | 写操作抢占、租约、结果重放与崩溃恢复 | `(scope, idempotency_key)` 主键；scope 是服务端稳定用例码而非封闭枚举；同 key 不同 hash 由应用返回 409 |
 | `outbound_number_counters` | 系统出库单号的上海业务日流水 | 每日原子递增 1–9999；由 `next_outbound_order_no()` 生成 `yyyyMMdd` + 四位流水，禁止 `MAX + 1` |
+
+京东外部号由 `next_jd_erp_delivery_no()` 使用 `jd_erp_delivery_no_seq` 生成
+`ZIMU-SO-yyyyMMdd-12位全局流水-8位随机熵`。数据库唯一键负责本库并发，提交前再用履约方
+`pin` 对同一京东租户执行 querySoOrder；只有官方 `2342`（订单不存在）或成功空响应才可继续，
+命中历史订单就换号重查，查询异常则在 addSoOrder 前失败关闭。
+addSoOrder 成功响应本身不构成 `SUBMITTED`：系统立即按冻结的 `pin + ownerNo` 读回同一
+`erpDeliveryNo`，并严格比较京东引用、租户、仓库以及每条 `goodsNo + orderLine + planQuantity`。
+只有全部一致才提交 `SUBMITTED`；查询失败、响应缺字段或任一不一致都进入
+`RECONCILIATION_REQUIRED`，普通运单轮询与再次创建均不可达，只能沿相同事实核验对账。
 
 ### 3.6 事件时间线（2）
 
@@ -158,7 +169,7 @@ Timeline 按订单内 `sequence_no`/`created_at` 排序，不按事件类型字�
 | `order_drafts` | 客户订单草稿（复核对象） | `draft_no` 唯一；OPEN ⟺ `confirmed_by`/`confirmed_at` 均为空，CONFIRMED/REJECTED ⟺ 两者均非空；`revision >= 0`；`customer_candidates`/`missing_fields` 为 array；`settlement_time` 是确认必需事实 |
 | `order_draft_lines` | 订单草稿明细行 | `(order_draft_id, line_no)` 唯一；`line_no >= 1`；`quantity > 0`；`fulfilled_quantity >= 0`；`sku_candidates` 为 array |
 | `wecom_order_draft_cards` | 订单草稿确认卡片发送栅栏 | `order_draft_id`/`task_id` 各自唯一；`route_type + chat_id` 固化原 single/group 路由语义；外部提交中的 `SENDING` 崩溃恢复为 `UNKNOWN`，禁止盲目重发；草稿已关闭或 revision 已变化时在触网前进入 `SUPERSEDED`；`SENT` 必须有 `request_id`/`acknowledged_at` |
-| `provider_tracking_drafts` | 运单草稿（含批量确认） | `draft_no` 唯一；status 约束同 `order_drafts`；`shipment_judgment ∈ FULL/PARTIAL/SHORTAGE/EXCEPTION`；`carrier_candidates`/`task_candidates`/`validation_issues` 为 array |
+| `provider_tracking_drafts` | 运单草稿（含批量确认） | `draft_no` 唯一；status 约束同 `order_drafts`；`shipment_judgment ∈ FULL/PARTIAL/SHORTAGE/EXCEPTION`；`actual_quantity` 可聚合多个 int32 明细，使用 BIGINT；`carrier_candidates`/`task_candidates`/`validation_issues` 为 array |
 | `async_tasks` | Worker 后台任务队列 | `idempotency_key` 唯一（幂等收敛）；`task_type`/`payload_ref` 非空；`attempts >= 0`、`max_attempts >= 1`；status ∈ PENDING/RUNNING/FINALIZING/SUCCEEDED/FAILED |
 | `agent_runs` | Agent 运行记录 | `run_id` 形如 `run_[0-9a-f]{32}`；RUNNING ⟺ `finished_at IS NULL`；FAILED ⟺ `error_type IS NOT NULL`；`input_digest` 为 64 位 hex |
 | `agent_tool_calls` | Agent 工具调用轨迹 | `sequence_no > 0`；status ∈ SUCCESS/FAILED |
@@ -257,6 +268,8 @@ DDL 的 CHECK、UNIQUE、FK 和触发器覆盖以下高风险规则：
 | `analytics.v_product_daily` | 上海自然日×SourceChannel×Product×SKU | 订单数、Shipment 数、实际发货数量；与渠道视图同口径，礼包按组件数量展开；未提供实际发货时间的 Shipment 不归入任何“实际发货日” |
 | `analytics.v_fulfillment_daily` | 上海自然日×FulfillmentProvider | 履约量、未/部分/全部发货、采购、待出库、待运单、待回传、回传失败 |
 | `analytics.v_fulfillment_channel_daily` | 上海自然日×FulfillmentProvider×SourceChannel | 按履约方与来源渠道交叉分组的履约、Shipment 和回传指标 |
+
+四个分析视图里的数量合计统一为 `BIGINT`；单行数量仍为 `INTEGER`，聚合时先扩为 `BIGINT`，避免跨订单汇总溢出。
 
 所有视图只读取 `orders.data_scope='BUSINESS'`。Metabase 和 React/ECharts 必须复用这些口径，不另写一套指标 SQL。
 

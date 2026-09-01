@@ -47,9 +47,9 @@
         {
           "row": 2,
           "caishixian_name": "子牧澳洲谷饲上脑牛肉片1KG*1",
-          "caishixian_quantity": "1",
+          "caishixian_quantity": 1,
           "jufubao_name": "【京东配送】子牧澳洲谷饲上脑牛肉片1kg",
-          "jufubao_quantity": "1",
+          "jufubao_quantity": 1,
           "jd_name": "上脑肉片"
         }
       ],
@@ -70,9 +70,9 @@
         {
           "row": 3,
           "caishixian_name": "子牧羊小腿（羊腱子）500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧羊小腿（羊腱子）500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "羊小腿"
         }
       ],
@@ -93,9 +93,9 @@
         {
           "row": 4,
           "caishixian_name": "子牧带骨羊肉块500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧原切带骨羊肉块500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "带骨羊肉块"
         }
       ],
@@ -116,9 +116,9 @@
         {
           "row": 5,
           "caishixian_name": "子牧羊排块（羊寸排）500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧羊寸排块500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "羊排块（羊寸排）"
         }
       ],
@@ -139,9 +139,9 @@
         {
           "row": 6,
           "caishixian_name": "子牧羊蝎子500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧生鲜羊蝎子500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "羊蝎子"
         }
       ],
@@ -162,9 +162,9 @@
         {
           "row": 7,
           "caishixian_name": "子牧带骨羊后腿块500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧羊后腿块500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "带骨羊后腿块"
         }
       ],
@@ -185,9 +185,9 @@
         {
           "row": 8,
           "caishixian_name": "子牧羊腿小切500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧羊腿小切500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "羊腿小切"
         }
       ],
@@ -208,9 +208,9 @@
         {
           "row": 9,
           "caishixian_name": "子牧羊肉块500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧原切纯肉羊肉块500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "羊肉块"
         }
       ],
@@ -231,9 +231,9 @@
         {
           "row": 10,
           "caishixian_name": "子牧羊腿肉500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧原切纯肉羊腿肉500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "羊腿肉"
         }
       ],
@@ -254,9 +254,9 @@
         {
           "row": 11,
           "caishixian_name": "法式羊排400g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧法式羊排400g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "法式羊排"
         }
       ],
@@ -277,9 +277,9 @@
         {
           "row": 12,
           "caishixian_name": "子牧新西兰羔羊羊颈排1KG*1",
-          "caishixian_quantity": "1",
+          "caishixian_quantity": 1,
           "jufubao_name": "【京东配送】子牧新西兰羔羊羊颈排1kg",
-          "jufubao_quantity": "1",
+          "jufubao_quantity": 1,
           "jd_name": "新西兰羔羊羊颈排"
         }
       ],
@@ -299,7 +299,7 @@
         {
           "row": 13,
           "caishixian_name": "子牧新西兰羔羊肉卷200g*4",
-          "caishixian_quantity": "4",
+          "caishixian_quantity": 4,
           "jufubao_name": null,
           "jufubao_quantity": null,
           "jd_name": "新西兰羔羊肉卷"
@@ -324,9 +324,9 @@
         {
           "row": 14,
           "caishixian_name": "子牧羊肉馅500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧羊肉馅500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "羊肉馅"
         }
       ],
@@ -348,9 +348,9 @@
         {
           "row": 15,
           "caishixian_name": "小龙坎火锅拼盘（肉类6拼）1.2KG",
-          "caishixian_quantity": "1",
+          "caishixian_quantity": 1,
           "jufubao_name": "【京东配送】小龙坎火锅食材肉类6拼盘1.2kg",
-          "jufubao_quantity": "1",
+          "jufubao_quantity": 1,
           "jd_name": "小龙坎火锅拼盘（6拼）"
         },
         {
@@ -383,9 +383,9 @@
         {
           "row": 16,
           "caishixian_name": "子牧羊棒骨500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧羊棒骨500g*3袋",
-          "jufubao_quantity": "3",
+          "jufubao_quantity": 3,
           "jd_name": "羊棒骨"
         }
       ],
@@ -408,9 +408,9 @@
         {
           "row": 17,
           "caishixian_name": "子牧东乡贡羊羔羊羊腱子500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧东乡贡羊羔羊羊腱子500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "东乡贡羊羔羊羊腱子"
         }
       ],
@@ -430,7 +430,7 @@
         {
           "row": 18,
           "caishixian_name": "子牧东乡贡羊羔羊羊腿块500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": null,
           "jufubao_quantity": null,
           "jd_name": "东乡贡羊羔羊羊腿块"
@@ -454,7 +454,7 @@
         {
           "row": 19,
           "caishixian_name": "子牧东乡贡羊羔羊羊腿骨500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": null,
           "jufubao_quantity": null,
           "jd_name": "东乡贡羊羔羊羊腿骨"
@@ -502,9 +502,9 @@
         {
           "row": 21,
           "caishixian_name": "子牧澳洲原切谷饲上脑牛排150g*4",
-          "caishixian_quantity": "4",
+          "caishixian_quantity": 4,
           "jufubao_name": "【京东配送】子牧澳洲原切谷饲上脑牛排150g*4袋",
-          "jufubao_quantity": "4",
+          "jufubao_quantity": 4,
           "jd_name": "上脑牛排"
         }
       ],
@@ -525,9 +525,9 @@
         {
           "row": 22,
           "caishixian_name": "子牧牛肋条500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧牛肋条500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "牛肋条"
         }
       ],
@@ -548,9 +548,9 @@
         {
           "row": 23,
           "caishixian_name": "子牧牛腩块500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧牛腩块500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "牛腩块（500g）"
         }
       ],
@@ -571,9 +571,9 @@
         {
           "row": 24,
           "caishixian_name": "子牧牛肉块500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧牛肉块500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "牛肉块"
         }
       ],
@@ -594,9 +594,9 @@
         {
           "row": 25,
           "caishixian_name": "子牧进口谷饲牛肉饼1.2KG*1",
-          "caishixian_quantity": "1",
+          "caishixian_quantity": 1,
           "jufubao_name": "【京东配送】子牧进口生鲜谷饲牛肉饼1.2kg",
-          "jufubao_quantity": "1",
+          "jufubao_quantity": 1,
           "jd_name": "牛肉饼（1.2kg)"
         }
       ],
@@ -617,9 +617,9 @@
         {
           "row": 26,
           "caishixian_name": "子牧澳洲谷饲牛肋排400g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧澳洲谷饲牛肋排400g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "牛肋排"
         }
       ],
@@ -640,9 +640,9 @@
         {
           "row": 27,
           "caishixian_name": "子牧筋头巴脑（牛肉筋）500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧筋头巴脑500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "筋头巴脑（500g)"
         }
       ],
@@ -663,9 +663,9 @@
         {
           "row": 28,
           "caishixian_name": "子牧牛肉丝150g*4",
-          "caishixian_quantity": "4",
+          "caishixian_quantity": 4,
           "jufubao_name": "【京东配送】子牧生鲜牛肉丝150g*4袋",
-          "jufubao_quantity": "4",
+          "jufubao_quantity": 4,
           "jd_name": "牛肉丝"
         }
       ],
@@ -687,7 +687,7 @@
           "caishixian_name": null,
           "caishixian_quantity": null,
           "jufubao_name": "【京东配送】子牧澳洲谷饲牛蝎子400g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "卓宸澳洲谷饲牛蝎子"
         }
       ],
@@ -710,9 +710,9 @@
         {
           "row": 30,
           "caishixian_name": "子牧牛肉片150g*4",
-          "caishixian_quantity": "4",
+          "caishixian_quantity": 4,
           "jufubao_name": "【京东配送】子牧牛肉片150g*4",
-          "jufubao_quantity": "4",
+          "jufubao_quantity": 4,
           "jd_name": "牛肉片"
         }
       ],
@@ -733,9 +733,9 @@
         {
           "row": 31,
           "caishixian_name": "子牧牛肉馅500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧牛肉馅500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "牛肉馅"
         }
       ],
@@ -755,7 +755,7 @@
         {
           "row": 32,
           "caishixian_name": "子牧原切西冷牛排150g*4",
-          "caishixian_quantity": "4",
+          "caishixian_quantity": 4,
           "jufubao_name": null,
           "jufubao_quantity": null,
           "jd_name": "原切西冷牛排"
@@ -780,9 +780,9 @@
         {
           "row": 33,
           "caishixian_name": "子牧原切眼肉牛排150g*4",
-          "caishixian_quantity": "4",
+          "caishixian_quantity": 4,
           "jufubao_name": "【京东配送】子牧原切眼肉牛排150g*4袋",
-          "jufubao_quantity": "4",
+          "jufubao_quantity": 4,
           "jd_name": "原切眼肉牛排"
         }
       ],
@@ -803,9 +803,9 @@
         {
           "row": 34,
           "caishixian_name": "肩胛烤肉片120g*4",
-          "caishixian_quantity": "4",
+          "caishixian_quantity": 4,
           "jufubao_name": "【京东配送】子牧肩胛烤牛肉片120g*6",
-          "jufubao_quantity": "6",
+          "jufubao_quantity": 6,
           "jd_name": "肩胛烤肉片"
         }
       ],
@@ -828,9 +828,9 @@
         {
           "row": 35,
           "caishixian_name": "子牧M8-9和牛上脑烤肉片150*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧M8-9和牛上脑涮烤片150g*4",
-          "jufubao_quantity": "4",
+          "jufubao_quantity": 4,
           "jd_name": "M8-9和牛上脑片"
         }
       ],
@@ -853,9 +853,9 @@
         {
           "row": 36,
           "caishixian_name": "子牧牛腿肉500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧牛后腿肉500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "牛后腿肉"
         }
       ],
@@ -877,9 +877,9 @@
         {
           "row": 37,
           "caishixian_name": "小龙坎火锅拼盘（毛肚4拼）800g",
-          "caishixian_quantity": "1",
+          "caishixian_quantity": 1,
           "jufubao_name": "【京东配送】小龙坎火锅食材4拼盘800g",
-          "jufubao_quantity": "1",
+          "jufubao_quantity": 1,
           "jd_name": "小龙坎火锅拼盘（4拼）"
         },
         {
@@ -912,9 +912,9 @@
         {
           "row": 38,
           "caishixian_name": "子牧牛腱子(谷饲牛腱子)500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧谷饲安格斯牛腱子肉500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "牛腱子（谷饲牛腱子）"
         }
       ],
@@ -934,7 +934,7 @@
         {
           "row": 39,
           "caishixian_name": "子牧东乡贡羊羔羊羊肉卷500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": null,
           "jufubao_quantity": null,
           "jd_name": "东乡贡羊羔羊羊肉卷"
@@ -959,9 +959,9 @@
         {
           "row": 40,
           "caishixian_name": "子牧东乡贡羊羔羊羊排500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧东乡贡羊羔羊羊排500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "东乡贡羊羔羊羊排块"
         }
       ],
@@ -982,9 +982,9 @@
         {
           "row": 41,
           "caishixian_name": "子牧东乡贡羊羊蝎子（多肉）500g*2",
-          "caishixian_quantity": "2",
+          "caishixian_quantity": 2,
           "jufubao_name": "【京东配送】子牧东乡贡羊羔羊多肉羊蝎子500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "东乡贡羊羔羊羊蝎子"
         }
       ],
@@ -1098,7 +1098,7 @@
           "caishixian_name": null,
           "caishixian_quantity": null,
           "jufubao_name": "【京东配送】子牧朝鲜族家庭烤牛肉150g*4盒",
-          "jufubao_quantity": "4",
+          "jufubao_quantity": 4,
           "jd_name": "韩式家庭烤肉150g"
         }
       ],
@@ -1122,7 +1122,7 @@
           "caishixian_name": null,
           "caishixian_quantity": null,
           "jufubao_name": "【京东配送】子牧生鲜和牛肉饼100g*8片",
-          "jufubao_quantity": "8",
+          "jufubao_quantity": 8,
           "jd_name": "和牛肉饼100g"
         }
       ],
@@ -1215,7 +1215,7 @@
           "caishixian_name": null,
           "caishixian_quantity": null,
           "jufubao_name": "【京东配送】子牧东乡贡羊羔羊羊尾尖500g*2袋",
-          "jufubao_quantity": "2",
+          "jufubao_quantity": 2,
           "jd_name": "东乡贡羊羔羊羊尾尖"
         }
       ],

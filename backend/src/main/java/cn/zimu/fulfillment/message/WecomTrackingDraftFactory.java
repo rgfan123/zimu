@@ -159,9 +159,9 @@ public class WecomTrackingDraftFactory implements TrackingDraftFactory {
         map.put("order_line_id", String.valueOf(candidate.orderLineId()));
         map.put("shipment_id", String.valueOf(candidate.shipmentId()));
         map.put("receiver_name", candidate.receiverName());
-        map.put("requested_quantity", candidate.requestedQuantity().toPlainString());
-        map.put("shipped_quantity", candidate.shippedQuantity().toPlainString());
-        map.put("instructed_quantity", candidate.instructedQuantity().toPlainString());
+        map.put("requested_quantity", candidate.requestedQuantity());
+        map.put("shipped_quantity", candidate.shippedQuantity());
+        map.put("instructed_quantity", candidate.instructedQuantity());
         return map;
     }
 

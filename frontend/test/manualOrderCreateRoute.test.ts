@@ -217,7 +217,7 @@ test('两步成功：建单 → 自动路由 → 呈现订单号与发货单数�
   assert.match(body, /MAN-20260831-9F/, '来源单号（MAN-）必须可见');
   assert.match(body, /前往发货单提交京东出库/);
 
-  // 两个写请求按序发出，载荷与契约一致（quantity 是正整数字符串，V99）。
+  // 两个写请求按序发出，载荷与契约一致（quantity 是 JSON 正整数）。
   const writes = requests.filter((request) => request.method === 'POST');
   assert.deepEqual(writes.map(({ url }) => url), [
     '/api/v1/orders/manual',
@@ -226,7 +226,7 @@ test('两步成功：建单 → 自动路由 → 呈现订单号与发货单数�
   assert.deepEqual(writes[0].body, {
     customer_code: 'C001',
     receiver: { name: '张三', phone: '13900000000', address: '贵州省贵阳市观山湖区 长岭北路 1 号' },
-    items: [{ sku_id: '15', quantity: '3' }],
+    items: [{ sku_id: '15', quantity: 3 }],
   });
   assert.match(writes[0].headers['Idempotency-Key'] ?? '', /^manual-order-/, '幂等键由浏览器按草稿生成');
   assert.deepEqual(writes[1].body, { expected_order_version: 2 });
@@ -261,7 +261,7 @@ test('客户可选：不选客户提交成功，建单载荷不带 customer_code
   assert.ok(create, '必须发出建单请求');
   assert.deepEqual(create.body, {
     receiver: { name: '王五', phone: '13700000000', address: '贵州省贵阳市云岩区 中华北路 2 号' },
-    items: [{ sku_id: '15', quantity: '2' }],
+    items: [{ sku_id: '15', quantity: 2 }],
   });
   assert.equal(
     Object.prototype.hasOwnProperty.call(create.body as object, 'customer_code'),

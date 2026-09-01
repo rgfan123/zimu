@@ -92,12 +92,12 @@ const taskCandidates = [
   {
     task_id: '44', fulfillment_no: 'FUL-MASKED-A', order_id: '12', order_no: 'ORD-A',
     order_line_id: '31', shipment_id: '55', receiver_name: '张三',
-    requested_quantity: '8.000', shipped_quantity: '0.000', instructed_quantity: '8.000',
+    requested_quantity: 8, shipped_quantity: 0, instructed_quantity: 8,
   },
   {
     task_id: '45', fulfillment_no: 'FUL-MASKED-B', order_id: '13', order_no: 'ORD-B',
     order_line_id: '32', shipment_id: '56', receiver_name: '张四',
-    requested_quantity: '6.000', shipped_quantity: '0.000', instructed_quantity: '6.000',
+    requested_quantity: 6, shipped_quantity: 0, instructed_quantity: 6,
   },
 ];
 
@@ -133,7 +133,7 @@ function trackingDraft(kind: 'MULTI' | 'ZERO' | 'CONFIRMED' | 'ATOMIC' | 'PARTIA
     confirmation_scope: atomic ? 'ATOMIC_SHIPMENT' : 'SINGLE_TASK',
     shipment_judgment: partial ? 'PARTIAL' : 'FULL',
     default_full_shipment: !partial,
-    actual_quantity: partial ? '3.000' : null,
+    actual_quantity: partial ? 3 : null,
     validation_issues: file ? [] : multi
       ? ['TASK_NAME_MULTI_MATCH', 'CARRIER_MULTI_HIT']
       : ['TASK_NAME_NO_MATCH', 'CARRIER_PREFIX_UNMATCHED'],
@@ -374,7 +374,7 @@ test('file partial shipment shows and submits the parsed actual quantity', async
   await mountRoute();
   assert.match(bodyText(), /回传文件标记为部分发货/);
   const quantity = [...document.querySelectorAll<HTMLInputElement>('input')]
-    .find((input) => input.value === '3.000');
+    .find((input) => input.value === '3');
   assert.ok(quantity, '必须显示文件解析的实发数量');
   assert.equal(control('确认并记录运单').getAttribute('disabled'), null);
   await waitFor(() => {
@@ -388,7 +388,7 @@ test('file partial shipment shows and submits the parsed actual quantity', async
   assert.ok(request);
   const command = JSON.parse(String(request.init?.body));
   assert.equal(command.task_id, '44');
-  assert.equal(command.actual_quantity, '3.000');
+  assert.equal(command.actual_quantity, 3);
   assert.equal(requests.some(({ url }) => url.endsWith('/tracking-drafts/batch-confirm')), false);
 });
 
@@ -427,7 +427,7 @@ test('confirming a full sibling keeps the current file partial review open', asy
 
   assert.match(bodyText(), /回传文件标记为部分发货/);
   assert.ok([...document.querySelectorAll<HTMLInputElement>('input')]
-    .some((input) => input.value === '3.000'), '当前 PARTIAL 的实发数量和抽屉必须保留');
+    .some((input) => input.value === '3'), '当前 PARTIAL 的实发数量和抽屉必须保留');
   const batchRequest = requests.find(({ url, init }) => (
     url.endsWith('/tracking-drafts/batch-confirm') && init?.method === 'POST'
   ));

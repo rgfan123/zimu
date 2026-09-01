@@ -317,7 +317,7 @@ class MessageReinterpretationInvariantApiTest {
                         "items", List.of(Map.of(
                                 "product", "test product",
                                 "unit", "piece",
-                                "quantity", "1"))),
+                                "quantity", 1))),
                 "test-provider",
                 "test-model",
                 "prompt-v1",

@@ -4,9 +4,9 @@ import java.time.Instant;
 
 public record InventoryDetailObservation(
         String observationStatus,
-        String totalQuantity,
-        String availableQuantity,
-        String unavailableQuantity,
+        Integer totalQuantity,
+        Integer availableQuantity,
+        Integer unavailableQuantity,
         String quantityUnit,
         Instant observedAt,
         Long observationAgeSeconds,

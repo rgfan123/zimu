@@ -12,6 +12,8 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** 详情 JSON → 结构化导入行：标识符隔离、下单时间、已发货拦截、数量诚实化。 */
 class FeixiangOrderTransformTest {
@@ -45,7 +47,7 @@ class FeixiangOrderTransformTest {
         assertThat(item.sourceSkuRef()).isEqualTo("50001");
         assertThat(item.productName()).isEqualTo("子牧原切牛腱子500g*2");
         assertThat(item.specification()).isEqualTo("500g*2");
-        assertThat(item.quantity()).isEqualTo("2");
+        assertThat(item.quantity()).isEqualTo(2);
         assertThat(row.reviewRequired()).isNull();
         assertThat(row.canonicalInput().source()).isEqualTo(SourceChannel.FEIXIANG);
 
@@ -165,6 +167,33 @@ class FeixiangOrderTransformTest {
             assertThat(row.reviewRequired().code()).isEqualTo(FeixiangOrderTransform.QUANTITY_REVIEW_CODE);
             assertThat(row.canonicalInput().items()).isEmpty();
         });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"3", "3.000"})
+    void jsonCountAdapterNormalizesMathematicalIntegers(String rawQuantity) {
+        FeixiangOrderDetail detail = detail(
+                "D-COUNT-VALID", "S-COUNT-VALID", "88001", "77001", "2026-08-26 16:58:00",
+                product("60001", "50001", "羊棒骨", "500g", rawQuantity));
+
+        StructuredOrderRow row = transform.toRows(List.of(detail)).getFirst();
+
+        assertThat(row.reviewRequired()).isNull();
+        assertThat(row.canonicalInput().items()).singleElement()
+                .satisfies(item -> assertThat(item.quantity()).isEqualTo(3));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"3.5", "-1", "2147483648"})
+    void jsonCountAdapterRejectsFractionalNegativeAndOverflowCounts(String rawQuantity) {
+        FeixiangOrderDetail detail = detail(
+                "D-COUNT-INVALID", "S-COUNT-INVALID", "88002", "77002", "2026-08-26 16:58:00",
+                product("60002", "50001", "羊棒骨", "500g", rawQuantity));
+
+        StructuredOrderRow row = transform.toRows(List.of(detail)).getFirst();
+
+        assertThat(row.reviewRequired().code()).isEqualTo(FeixiangOrderTransform.QUANTITY_REVIEW_CODE);
+        assertThat(row.canonicalInput().items()).isEmpty();
     }
 
     @Test

@@ -1,6 +1,5 @@
 package cn.zimu.fulfillment.inventory;
 
-import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -139,8 +138,8 @@ public class InventoryOverviewService {
     }
 
     private static InventoryOverviewItem item(ResultSet resultSet, Duration freshnessThreshold) throws SQLException {
-        BigDecimal total = resultSet.getBigDecimal("stock_num");
-        BigDecimal available = resultSet.getBigDecimal("usable_num");
+        Integer total = resultSet.getObject("stock_num", Integer.class);
+        Integer available = resultSet.getObject("usable_num", Integer.class);
         Instant observedAt = instant(resultSet, "synced_at");
         boolean observed = observedAt != null;
         long ageSeconds = observed
@@ -159,9 +158,9 @@ public class InventoryOverviewService {
                 observed ? resultSet.getString("quantity_unit") : null,
                 resultSet.getString("warehouse_code"),
                 observed ? "OBSERVED" : "NOT_OBSERVED",
-                decimal(total),
-                decimal(available),
-                observed ? decimal(total.subtract(available)) : null,
+                total,
+                available,
+                observed ? total - available : null,
                 observedAt,
                 observed ? ageSeconds : null,
                 observed ? (ageSeconds <= freshnessThreshold.toSeconds() ? "CURRENT" : "STALE") : "NOT_OBSERVED",
@@ -193,10 +192,6 @@ public class InventoryOverviewService {
     private static Instant instant(ResultSet resultSet, String column) throws SQLException {
         OffsetDateTime value = resultSet.getObject(column, OffsetDateTime.class);
         return value == null ? null : value.toInstant();
-    }
-
-    private static String decimal(BigDecimal value) {
-        return value == null ? null : value.toPlainString();
     }
 
     private static String id(long value) {

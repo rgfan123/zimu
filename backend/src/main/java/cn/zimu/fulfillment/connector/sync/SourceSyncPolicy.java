@@ -3,7 +3,6 @@ package cn.zimu.fulfillment.connector.sync;
 import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
 import cn.zimu.fulfillment.connector.SourceReceiverNormalizer;
 import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.stereotype.Component;
@@ -41,7 +40,8 @@ public final class SourceSyncPolicy {
                         "平台地址确认状态未知，禁止执行回传");
             }
             if (!platform.carrierMapped()) {
-                block(blockers, "SOURCE_PLATFORM_CARRIER_UNMAPPED", "carrier", "正式物流公司未命中平台实时字典");
+                block(blockers, "SOURCE_PLATFORM_CARRIER_UNMAPPED", "carrier",
+                        "正式物流公司无法唯一解析为来源平台接口所需代码");
             }
             compareReceiver(blockers, internal, platform);
             compareQuantity(blockers, internal.shippedSourceQuantity(), platform.sendableQuantity());
@@ -82,8 +82,8 @@ public final class SourceSyncPolicy {
     }
 
     private static void compareQuantity(
-            List<SourceSyncBlocker> blockers, BigDecimal internal, BigDecimal platform) {
-        if (internal == null || platform == null || internal.compareTo(platform) != 0) {
+            List<SourceSyncBlocker> blockers, Long internal, Long platform) {
+        if (internal == null || platform == null || !internal.equals(platform)) {
             block(blockers, "SOURCE_PLATFORM_SENDABLE_QUANTITY_MISMATCH", "sendable_source_quantity",
                     "内部拟回传来源份数与平台当前可发数量不一致");
         }
@@ -120,7 +120,7 @@ public final class SourceSyncPolicy {
     private record StablePlatform(boolean available, String businessCode, String platformState,
             boolean acceptanceRequired, SourcePlatformCheckResult.AddressStatus addressStatus,
             String receiverName, String receiverPhone, String receiverAddress,
-            BigDecimal sendableQuantity, boolean carrierMapped, String effectHash) {}
+            Long sendableQuantity, boolean carrierMapped, String effectHash) {}
     private record CheckHashInput(String artifactHash, StablePlatform platform, List<SourceSyncBlocker> blockers,
             SourceSyncStatus status, int attemptCount, long version) {}
 }

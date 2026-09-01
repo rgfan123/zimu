@@ -1,5 +1,7 @@
 package cn.zimu.fulfillment.connector.feixiang;
 
+import cn.zimu.fulfillment.common.domain.CountQuantity;
+import cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.text.ReceiverFactsNormalizer;
 import cn.zimu.fulfillment.customer.ImportedCustomerIdentity;
@@ -195,7 +197,7 @@ public final class FeixiangOrderTransform {
     private List<OrderItemInput> itemsOf(List<FeixiangOrderDetail.ProductLine> lines) {
         List<OrderItemInput> items = new ArrayList<>();
         for (FeixiangOrderDetail.ProductLine line : lines) {
-            String quantity = positiveInteger(line.pronum());
+            Integer quantity = positiveInteger(line.pronum());
             if (quantity == null) {
                 // 不静默造数：数量非法的行不产生 item，整单转复核（见 toRow 的 items.size() 判据）。
                 continue;
@@ -220,16 +222,11 @@ public final class FeixiangOrderTransform {
         return List.copyOf(items);
     }
 
-    /** {@code pronum} 只接受正整数；缺失/0/负数/小数/非数字一律返回 null（原值留在快照里可追溯）。 */
-    private static String positiveInteger(String raw) {
-        String value = raw == null ? "" : raw.trim();
-        if (value.isEmpty() || !value.chars().allMatch(Character::isDigit)) {
-            return null;
-        }
+    /** {@code pronum} 接受正 int32 数学整数（兼容 3.000）；其余返回 null。 */
+    private static Integer positiveInteger(String raw) {
         try {
-            long parsed = Long.parseLong(value);
-            return parsed > 0 ? String.valueOf(parsed) : null;
-        } catch (NumberFormatException ignored) {
+            return CountQuantity.fromPositiveFileValue(raw);
+        } catch (InvalidCountQuantityException ignored) {
             return null;
         }
     }

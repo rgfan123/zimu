@@ -4,7 +4,6 @@ import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
 import cn.zimu.fulfillment.connector.ExternalWritePermit;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -242,19 +241,19 @@ public class CaishixianHttpShipmentGateway implements CaishixianShipmentGateway 
         String phone = firstText(detail, "receiverTelephone", "receiverPhone");
         if (phone == null) phone = firstText(order, "receiverTelephone", "receiverPhone");
         String address = joinAddress(detail);
-        BigDecimal sendable = BigDecimal.ZERO;
+        Long sendable = 0L;
         JsonNode products = detail.path("supplierOrderGoodsVo");
         if (!products.isArray()) {
             sendable = null;
         } else {
             for (JsonNode product : products) {
-                BigDecimal count = decimal(product.path("count"));
-                BigDecimal out = decimal(product.path("outCount"));
+                Integer count = count(product.path("count"));
+                Integer out = count(product.path("outCount"));
                 if (count == null) {
                     sendable = null;
                     break;
                 }
-                sendable = sendable.add(count.subtract(out == null ? BigDecimal.ZERO : out));
+                sendable = Math.addExact(sendable, (long) count - (out == null ? 0 : out));
             }
         }
         return new PlatformOrderSnapshot(
@@ -431,13 +430,13 @@ public class CaishixianHttpShipmentGateway implements CaishixianShipmentGateway 
         return value.isEmpty() ? null : value.toString();
     }
 
-    private static BigDecimal decimal(JsonNode value) {
+    private static Integer count(JsonNode value) {
         if (value == null || value.isMissingNode() || value.isNull() || value.asText().isBlank()) {
             return null;
         }
         try {
-            return value.isNumber() ? value.decimalValue() : new BigDecimal(value.asText());
-        } catch (NumberFormatException exception) {
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromNonNegativeFileValue(value.asText());
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
             return null;
         }
     }

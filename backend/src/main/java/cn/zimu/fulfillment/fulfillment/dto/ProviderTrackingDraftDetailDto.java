@@ -22,7 +22,7 @@ public record ProviderTrackingDraftDetailDto(
         String confirmationScope,
         String shipmentJudgment,
         boolean defaultFullShipment,
-        Integer actualQuantity,
+        Long actualQuantity,
         List<String> validationIssues,
         String status,
         long revision,

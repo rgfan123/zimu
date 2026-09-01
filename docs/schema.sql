@@ -194,8 +194,8 @@ CREATE TABLE app.provider_stock_snapshots (
     fulfillment_provider_id BIGINT NOT NULL REFERENCES app.fulfillment_providers(id) ON DELETE RESTRICT,
     sku_id              BIGINT NOT NULL REFERENCES app.skus(id) ON DELETE RESTRICT,
     warehouse_code      VARCHAR(128) NOT NULL,
-    stock_num           NUMERIC(18,3) NOT NULL CHECK (stock_num >= 0),
-    usable_num          NUMERIC(18,3) NOT NULL CHECK (usable_num >= 0 AND usable_num <= stock_num),
+    stock_num           INTEGER NOT NULL CHECK (stock_num >= 0),
+    usable_num          INTEGER NOT NULL CHECK (usable_num >= 0 AND usable_num <= stock_num),
     synced_at           TIMESTAMPTZ NOT NULL,
     source_ref          VARCHAR(255),
     raw_payload         JSONB NOT NULL DEFAULT '{}'::JSONB,
@@ -2419,7 +2419,7 @@ WITH order_metrics AS (
                     THEN si.shipped_quantity * olc.quantity_per_bundle
                 ELSE si.shipped_quantity
             END
-        ), 0)::NUMERIC(18,3) AS actual_shipped_quantity,
+        ), 0)::bigint AS actual_shipped_quantity,
         count(DISTINCT s.id) FILTER (WHERE si.shipped_quantity > 0)::BIGINT AS shipment_count
     FROM app.shipments s
     JOIN app.orders o ON o.id = s.order_id AND o.data_scope = 'BUSINESS'
@@ -2460,7 +2460,7 @@ SELECT
     k.source_channel,
     COALESCE(om.order_count, 0) AS order_count,
     COALESCE(om.order_line_count, 0) AS order_line_count,
-    COALESCE(sm.actual_shipped_quantity, 0)::NUMERIC(18,3) AS actual_shipped_quantity,
+    COALESCE(sm.actual_shipped_quantity, 0)::bigint AS actual_shipped_quantity,
     COALESCE(sm.shipment_count, 0) AS shipment_count,
     COALESCE(om.exception_order_count, 0) AS exception_order_count,
     COALESCE(pm.out_of_stock_order_count, 0) AS out_of_stock_order_count,
@@ -2537,7 +2537,7 @@ SELECT
     sku_code,
     count(DISTINCT order_id)::BIGINT AS order_count,
     count(DISTINCT shipment_id)::BIGINT AS shipment_count,
-    sum(shipped_quantity)::NUMERIC(18,3) AS actual_shipped_quantity
+    sum(shipped_quantity)::bigint AS actual_shipped_quantity
 FROM shipped_products
 GROUP BY
     metric_date, source_channel,
@@ -2551,7 +2551,7 @@ WITH fulfillment_metrics AS (
         (f.created_at AT TIME ZONE 'Asia/Shanghai')::DATE AS metric_date,
         f.fulfillment_provider_id,
         count(*)::BIGINT AS fulfillment_count,
-        COALESCE(sum(f.cumulative_shipped_quantity), 0)::NUMERIC(18,3) AS fulfilled_quantity,
+        COALESCE(sum(f.cumulative_shipped_quantity), 0)::bigint AS fulfilled_quantity,
         count(*) FILTER (WHERE f.shipping_progress = 'NOT_SHIPPED')::BIGINT AS not_shipped_count,
         count(*) FILTER (WHERE f.shipping_progress = 'PARTIALLY_SHIPPED')::BIGINT AS partially_shipped_count,
         count(*) FILTER (WHERE f.shipping_progress = 'SHIPPED')::BIGINT AS fully_shipped_count
@@ -2606,7 +2606,7 @@ SELECT
     fp.provider_name,
     fp.provider_type,
     COALESCE(fm.fulfillment_count, 0) AS fulfillment_count,
-    COALESCE(fm.fulfilled_quantity, 0)::NUMERIC(18,3) AS fulfilled_quantity,
+    COALESCE(fm.fulfilled_quantity, 0)::bigint AS fulfilled_quantity,
     COALESCE(fm.not_shipped_count, 0) AS not_shipped_count,
     COALESCE(fm.partially_shipped_count, 0) AS partially_shipped_count,
     COALESCE(fm.fully_shipped_count, 0) AS fully_shipped_count,
@@ -2634,7 +2634,7 @@ WITH fulfillment_metrics AS (
         o.source_channel,
         f.fulfillment_provider_id,
         count(DISTINCT f.id)::BIGINT AS fulfillment_count,
-        COALESCE(sum(f.cumulative_shipped_quantity), 0)::NUMERIC(18,3) AS fulfilled_quantity,
+        COALESCE(sum(f.cumulative_shipped_quantity), 0)::bigint AS fulfilled_quantity,
         count(DISTINCT f.id) FILTER (WHERE f.shipping_progress = 'NOT_SHIPPED')::BIGINT AS not_shipped_count,
         count(DISTINCT f.id) FILTER (WHERE f.shipping_progress = 'PARTIALLY_SHIPPED')::BIGINT AS partially_shipped_count,
         count(DISTINCT f.id) FILTER (WHERE f.shipping_progress = 'SHIPPED')::BIGINT AS fully_shipped_count
@@ -2692,7 +2692,7 @@ SELECT
     fp.provider_name,
     fp.provider_type,
     COALESCE(fm.fulfillment_count, 0) AS fulfillment_count,
-    COALESCE(fm.fulfilled_quantity, 0)::NUMERIC(18,3) AS fulfilled_quantity,
+    COALESCE(fm.fulfilled_quantity, 0)::bigint AS fulfilled_quantity,
     COALESCE(fm.not_shipped_count, 0) AS not_shipped_count,
     COALESCE(fm.partially_shipped_count, 0) AS partially_shipped_count,
     COALESCE(fm.fully_shipped_count, 0) AS fully_shipped_count,
@@ -2720,7 +2720,7 @@ WITH fulfillment_metrics AS (
         (f.created_at AT TIME ZONE 'Asia/Shanghai')::DATE AS metric_date,
         f.fulfillment_provider_id,
         count(*)::BIGINT AS fulfillment_count,
-        COALESCE(sum(f.cumulative_shipped_quantity), 0)::NUMERIC(18,3) AS fulfilled_quantity,
+        COALESCE(sum(f.cumulative_shipped_quantity), 0)::bigint AS fulfilled_quantity,
         count(*) FILTER (WHERE f.shipping_progress = 'NOT_SHIPPED')::BIGINT AS not_shipped_count,
         count(*) FILTER (WHERE f.shipping_progress = 'PARTIALLY_SHIPPED')::BIGINT AS partially_shipped_count,
         count(*) FILTER (WHERE f.shipping_progress = 'SHIPPED')::BIGINT AS fully_shipped_count
@@ -2775,7 +2775,7 @@ SELECT
     fp.provider_name,
     fp.provider_type,
     COALESCE(fm.fulfillment_count, 0) AS fulfillment_count,
-    COALESCE(fm.fulfilled_quantity, 0)::NUMERIC(18,3) AS fulfilled_quantity,
+    COALESCE(fm.fulfilled_quantity, 0)::bigint AS fulfilled_quantity,
     COALESCE(fm.not_shipped_count, 0) AS not_shipped_count,
     COALESCE(fm.partially_shipped_count, 0) AS partially_shipped_count,
     COALESCE(fm.fully_shipped_count, 0) AS fully_shipped_count,
@@ -2803,7 +2803,7 @@ WITH fulfillment_metrics AS (
         o.source_channel,
         f.fulfillment_provider_id,
         count(DISTINCT f.id)::BIGINT AS fulfillment_count,
-        COALESCE(sum(f.cumulative_shipped_quantity), 0)::NUMERIC(18,3) AS fulfilled_quantity,
+        COALESCE(sum(f.cumulative_shipped_quantity), 0)::bigint AS fulfilled_quantity,
         count(DISTINCT f.id) FILTER (WHERE f.shipping_progress = 'NOT_SHIPPED')::BIGINT AS not_shipped_count,
         count(DISTINCT f.id) FILTER (WHERE f.shipping_progress = 'PARTIALLY_SHIPPED')::BIGINT AS partially_shipped_count,
         count(DISTINCT f.id) FILTER (WHERE f.shipping_progress = 'SHIPPED')::BIGINT AS fully_shipped_count
@@ -2862,7 +2862,7 @@ SELECT
     fp.provider_name,
     fp.provider_type,
     COALESCE(fm.fulfillment_count, 0) AS fulfillment_count,
-    COALESCE(fm.fulfilled_quantity, 0)::NUMERIC(18,3) AS fulfilled_quantity,
+    COALESCE(fm.fulfilled_quantity, 0)::bigint AS fulfilled_quantity,
     COALESCE(fm.not_shipped_count, 0) AS not_shipped_count,
     COALESCE(fm.partially_shipped_count, 0) AS partially_shipped_count,
     COALESCE(fm.fully_shipped_count, 0) AS fully_shipped_count,
@@ -2950,7 +2950,7 @@ WITH order_metrics AS (
                     THEN si.shipped_quantity * olc.quantity_per_bundle
                 ELSE si.shipped_quantity
             END
-        ), 0)::NUMERIC(18,3) AS actual_shipped_quantity,
+        ), 0)::bigint AS actual_shipped_quantity,
         count(DISTINCT s.id) FILTER (WHERE si.shipped_quantity > 0)::BIGINT AS shipment_count
     FROM app.shipments s
     JOIN app.orders o ON o.id = s.order_id AND o.data_scope = 'BUSINESS'
@@ -2992,7 +2992,7 @@ SELECT
     k.source_channel,
     COALESCE(om.order_count, 0) AS order_count,
     COALESCE(om.order_line_count, 0) AS order_line_count,
-    COALESCE(sm.actual_shipped_quantity, 0)::NUMERIC(18,3) AS actual_shipped_quantity,
+    COALESCE(sm.actual_shipped_quantity, 0)::bigint AS actual_shipped_quantity,
     COALESCE(sm.shipment_count, 0) AS shipment_count,
     COALESCE(om.exception_order_count, 0) AS exception_order_count,
     COALESCE(pm.out_of_stock_order_count, 0) AS out_of_stock_order_count,
@@ -3071,7 +3071,7 @@ SELECT
     sku_code,
     count(DISTINCT order_id)::BIGINT AS order_count,
     count(DISTINCT shipment_id)::BIGINT AS shipment_count,
-    sum(shipped_quantity)::NUMERIC(18,3) AS actual_shipped_quantity
+    sum(shipped_quantity)::bigint AS actual_shipped_quantity
 FROM shipped_products
 GROUP BY
     metric_date, source_channel,
@@ -8251,7 +8251,7 @@ WITH order_metrics AS (
                 CASE
                     WHEN ol.line_type::text = 'CUSTOM_BUNDLE'::text THEN si.shipped_quantity * olc.quantity_per_bundle
                     ELSE si.shipped_quantity
-                END), 0::numeric)::numeric(18,3) AS actual_shipped_quantity,
+                END), 0::numeric)::bigint AS actual_shipped_quantity,
             count(DISTINCT s.id) FILTER (WHERE si.shipped_quantity > 0::numeric) AS shipment_count
            FROM app.shipments s
              JOIN app.orders o ON o.id = s.order_id AND o.data_scope::text = 'BUSINESS'::text
@@ -8299,7 +8299,7 @@ WITH order_metrics AS (
     k.source_channel,
     COALESCE(om.order_count, 0::bigint) AS order_count,
     COALESCE(om.order_line_count, 0::bigint) AS order_line_count,
-    COALESCE(sm.actual_shipped_quantity, 0::numeric)::numeric(18,3) AS actual_shipped_quantity,
+    COALESCE(sm.actual_shipped_quantity, 0::numeric)::bigint AS actual_shipped_quantity,
     COALESCE(sm.shipment_count, 0::bigint) AS shipment_count,
     COALESCE(om.exception_order_count, 0::bigint) AS exception_order_count,
     COALESCE(pm.out_of_stock_order_count, 0::bigint) AS out_of_stock_order_count,
@@ -8316,7 +8316,7 @@ WITH fulfillment_metrics AS (
             o.source_channel,
             f.fulfillment_provider_id,
             count(DISTINCT f.id) AS fulfillment_count,
-            COALESCE(sum(f.cumulative_shipped_quantity), 0::numeric)::numeric(18,3) AS fulfilled_quantity,
+            COALESCE(sum(f.cumulative_shipped_quantity), 0::numeric)::bigint AS fulfilled_quantity,
             count(DISTINCT f.id) FILTER (WHERE f.shipping_progress::text = 'NOT_SHIPPED'::text) AS not_shipped_count,
             count(DISTINCT f.id) FILTER (WHERE f.shipping_progress::text = 'PARTIALLY_SHIPPED'::text) AS partially_shipped_count,
             count(DISTINCT f.id) FILTER (WHERE f.shipping_progress::text = 'SHIPPED'::text) AS fully_shipped_count
@@ -8384,7 +8384,7 @@ WITH fulfillment_metrics AS (
     fp.provider_name,
     fp.provider_type,
     COALESCE(fm.fulfillment_count, 0::bigint) AS fulfillment_count,
-    COALESCE(fm.fulfilled_quantity, 0::numeric)::numeric(18,3) AS fulfilled_quantity,
+    COALESCE(fm.fulfilled_quantity, 0::numeric)::bigint AS fulfilled_quantity,
     COALESCE(fm.not_shipped_count, 0::bigint) AS not_shipped_count,
     COALESCE(fm.partially_shipped_count, 0::bigint) AS partially_shipped_count,
     COALESCE(fm.fully_shipped_count, 0::bigint) AS fully_shipped_count,
@@ -8408,7 +8408,7 @@ WITH fulfillment_metrics AS (
          SELECT (f.created_at AT TIME ZONE 'Asia/Shanghai'::text)::date AS metric_date,
             f.fulfillment_provider_id,
             count(*) AS fulfillment_count,
-            COALESCE(sum(f.cumulative_shipped_quantity), 0::numeric)::numeric(18,3) AS fulfilled_quantity,
+            COALESCE(sum(f.cumulative_shipped_quantity), 0::numeric)::bigint AS fulfilled_quantity,
             count(*) FILTER (WHERE f.shipping_progress::text = 'NOT_SHIPPED'::text) AS not_shipped_count,
             count(*) FILTER (WHERE f.shipping_progress::text = 'PARTIALLY_SHIPPED'::text) AS partially_shipped_count,
             count(*) FILTER (WHERE f.shipping_progress::text = 'SHIPPED'::text) AS fully_shipped_count
@@ -8468,7 +8468,7 @@ WITH fulfillment_metrics AS (
     fp.provider_name,
     fp.provider_type,
     COALESCE(fm.fulfillment_count, 0::bigint) AS fulfillment_count,
-    COALESCE(fm.fulfilled_quantity, 0::numeric)::numeric(18,3) AS fulfilled_quantity,
+    COALESCE(fm.fulfilled_quantity, 0::numeric)::bigint AS fulfilled_quantity,
     COALESCE(fm.not_shipped_count, 0::bigint) AS not_shipped_count,
     COALESCE(fm.partially_shipped_count, 0::bigint) AS partially_shipped_count,
     COALESCE(fm.fully_shipped_count, 0::bigint) AS fully_shipped_count,
@@ -8548,7 +8548,7 @@ WITH shipped_products AS (
     sku_code,
     count(DISTINCT order_id) AS order_count,
     count(DISTINCT shipment_id) AS shipment_count,
-    sum(shipped_quantity)::numeric(18,3) AS actual_shipped_quantity
+    sum(shipped_quantity)::bigint AS actual_shipped_quantity
    FROM shipped_products
   GROUP BY metric_date, source_channel, category_id, category_code, category_name, product_id, product_code, product_name, sku_id, sku_code;
 -- END V99__integer_goods_quantities.sql
@@ -8694,3 +8694,588 @@ VALUES (
     }$$,
     '["search_skus", "get_sku", "search_product_archive", "get_inventory_overview", "get_inventory_detail", "list_bundles", "get_bundle", "find_bundle_candidates", "estimate_bundle_economics"]'::jsonb);
 -- END V101__bundle_composer_agent.sql
+
+-- BEGIN V102__source_return_carrier_name_fallback.sql
+-- 来源文件回填优先使用渠道专用承运商翻译；未维护时回退到 Tracking 的内部标准名称。
+-- 这是 FILE 派生契约，不能阻断已经提交的 Tracking 事实。
+--
+-- 回滚：若需恢复严格门禁，新增后续 forward migration，重新定义本函数并恢复缺失映射异常；
+-- 不修改已应用的 V102。
+CREATE OR REPLACE FUNCTION app.validate_source_return_item() RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+DECLARE
+    export_batch_id BIGINT;
+    raw_batch_id BIGINT;
+    raw_order_id BIGINT;
+    raw_line_id BIGINT;
+    order_scope VARCHAR(16);
+    shipment_order_id BIGINT;
+    shipment_sequence_value INTEGER;
+    tracking_code VARCHAR(64);
+    tracking_name VARCHAR(128);
+    tracking_number_value VARCHAR(128);
+    source_channel_value VARCHAR(32);
+    mapped_logistics_company TEXT;
+    shipped_quantity_value INTEGER;
+    fulfillment_outcome_value VARCHAR(32);
+    cancelled_quantity_value INTEGER;
+BEGIN
+    SELECT sre.import_batch_id, source.effective_source_channel
+    INTO STRICT export_batch_id, source_channel_value
+    FROM app.source_return_exports sre
+    JOIN app.v_import_batch_effective_source source ON source.import_batch_id=sre.import_batch_id
+    WHERE sre.id = NEW.source_return_export_id;
+    SELECT import_batch_id, order_id, order_line_id
+    INTO STRICT raw_batch_id, raw_order_id, raw_line_id
+    FROM app.raw_import_rows WHERE id = NEW.raw_import_row_id;
+
+    IF raw_batch_id <> export_batch_id THEN
+        RAISE EXCEPTION 'source return raw row belongs to another import batch';
+    END IF;
+    IF NEW.order_line_id IS DISTINCT FROM raw_line_id THEN
+        RAISE EXCEPTION 'source return order line must equal the raw-row mapping';
+    END IF;
+
+    IF raw_order_id IS NOT NULL THEN
+        SELECT data_scope INTO STRICT order_scope FROM app.orders WHERE id = raw_order_id;
+        IF order_scope <> 'BUSINESS' THEN
+            RAISE EXCEPTION 'source return exports may contain only BUSINESS orders';
+        END IF;
+    END IF;
+    IF NEW.order_line_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM app.order_lines
+        WHERE id = NEW.order_line_id AND order_id = raw_order_id
+    ) THEN
+        RAISE EXCEPTION 'source return raw row and order line belong to different orders';
+    END IF;
+
+    IF NEW.item_result = 'FILLED' THEN
+        IF NEW.order_line_id IS NULL THEN
+            RAISE EXCEPTION 'filled source return item requires a mapped order line';
+        END IF;
+        SELECT s.order_id, s.shipment_sequence,
+               t.logistics_company_code, t.logistics_company_name, t.tracking_number,
+               si.shipped_quantity, f.outcome, f.cancelled_quantity
+        INTO STRICT shipment_order_id, shipment_sequence_value,
+                    tracking_code, tracking_name, tracking_number_value,
+                    shipped_quantity_value, fulfillment_outcome_value, cancelled_quantity_value
+        FROM app.shipments s
+        JOIN app.trackings t ON t.shipment_id = s.id
+        JOIN app.shipment_items si ON si.shipment_id = s.id
+        JOIN app.fulfillments f ON f.id = si.fulfillment_id
+        WHERE s.id = NEW.shipment_id
+          AND f.order_line_id = NEW.order_line_id;
+
+        SELECT COALESCE(
+                   NULLIF(btrim((config->'carrier_mappings')->>tracking_code), ''),
+                   NULLIF(btrim(tracking_name), ''),
+                   tracking_code)
+        INTO mapped_logistics_company
+        FROM app.connector_configs
+        WHERE source_channel = source_channel_value;
+
+        IF mapped_logistics_company IS NULL OR btrim(mapped_logistics_company) = '' THEN
+            RAISE EXCEPTION 'source return carrier fact is missing for channel % and carrier %',
+                source_channel_value, tracking_code;
+        END IF;
+
+        IF shipment_order_id <> raw_order_id
+           OR NEW.shipment_sequence <> shipment_sequence_value
+           OR NEW.tracking_number <> tracking_number_value
+           OR NEW.logistics_company <> mapped_logistics_company
+           OR NEW.shipped_quantity IS DISTINCT FROM shipped_quantity_value
+           OR NEW.fulfillment_outcome IS DISTINCT FROM fulfillment_outcome_value
+           OR NEW.cancelled_quantity IS DISTINCT FROM cancelled_quantity_value THEN
+            RAISE EXCEPTION 'source return shipment/tracking snapshot does not match its order line';
+        END IF;
+    ELSIF NEW.item_result = 'CANCELLED' THEN
+        SELECT outcome, cancelled_quantity
+        INTO STRICT fulfillment_outcome_value, cancelled_quantity_value
+        FROM app.fulfillments WHERE order_line_id = NEW.order_line_id;
+        IF fulfillment_outcome_value <> 'CANCELLED'
+           OR NEW.fulfillment_outcome <> fulfillment_outcome_value
+           OR NEW.cancelled_quantity IS DISTINCT FROM cancelled_quantity_value THEN
+            RAISE EXCEPTION 'cancelled source return item does not match terminal fulfillment';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+-- END V102__source_return_carrier_name_fallback.sql
+
+-- BEGIN V103__jd_erp_delivery_number_namespace.sql
+-- Reserve a Zimu-owned external namespace for every new JD addSoOrder writer.
+-- Historical submitted or uncertain erpDeliveryNo values are immutable; definite no-write failures
+-- may migrate only after their persisted request/business facts are proven unchanged.
+-- This prospectively supersedes V9's original equality contract with shipments.outbound_order_no.
+ALTER TABLE app.shipment_jd_outbounds
+    ADD COLUMN business_facts_hash CHAR(64),
+    ADD CONSTRAINT shipment_jd_outbounds_business_facts_hash_format CHECK (
+        business_facts_hash IS NULL OR business_facts_hash ~ '^[0-9a-f]{64}$');
+
+COMMENT ON COLUMN app.shipment_jd_outbounds.business_facts_hash IS
+    'SHA-256 of submitted JD business facts excluding replaceable erpDeliveryNo; NULL history is verified by the legacy exact request hash before reallocation';
+
+CREATE SEQUENCE app.jd_erp_delivery_no_seq AS BIGINT
+    MINVALUE 1
+    MAXVALUE 999999999999
+    NO CYCLE;
+
+CREATE FUNCTION app.next_jd_erp_delivery_no(
+    generated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+) RETURNS VARCHAR(64)
+LANGUAGE plpgsql AS $$
+BEGIN
+    RETURN 'ZIMU-SO-'
+        || to_char((generated_at AT TIME ZONE 'Asia/Shanghai')::DATE, 'YYYYMMDD')
+        || '-'
+        || lpad(nextval('app.jd_erp_delivery_no_seq')::TEXT, 12, '0')
+        || '-'
+        || upper(substr(replace(gen_random_uuid()::TEXT, '-', ''), 1, 8));
+END;
+$$;
+
+COMMENT ON FUNCTION app.next_jd_erp_delivery_no(TIMESTAMPTZ) IS
+    'Allocates a ZIMU-SO namespaced JD erpDeliveryNo; local uniqueness is enforced by shipment_jd_outbounds.erp_delivery_no';
+
+COMMENT ON COLUMN app.shipment_jd_outbounds.erp_delivery_no IS
+    'JD merchant outbound reference; new values use ZIMU-SO namespace and are independent from shipments.outbound_order_no';
+
+-- Rollback: drop the function, sequence, constraint and column. Existing allocated references must never be rewritten.
+-- END V103__jd_erp_delivery_number_namespace.sql
+
+-- BEGIN V104__freeze_jd_outbound_tenant_for_readback.sql
+-- Freeze the exact non-secret JD pin used by every outbound intent.  ownerNo,
+-- warehouseNo and cargo were introduced earlier; ticket 203-7 moves all four facts
+-- to the durable SUBMITTING boundary before addSoOrder and verifies them on readback.
+-- Historical rows remain NULL and therefore fail closed for tenant-sensitive queries.
+ALTER TABLE app.shipment_jd_outbounds
+    ADD COLUMN submitted_pin VARCHAR(128),
+    ADD CONSTRAINT shipment_jd_outbounds_submitted_pin_not_blank CHECK (
+        submitted_pin IS NULL OR btrim(submitted_pin) <> '');
+
+COMMENT ON COLUMN app.shipment_jd_outbounds.submitted_pin IS
+    'Exact non-secret JD pin frozen with the outbound submit intent; NULL history cannot perform tenant-sensitive automatic queries';
+-- END V104__freeze_jd_outbound_tenant_for_readback.sql
+
+-- BEGIN V105__finish_integer_count_contract.sql
+-- 收口 V99 漏项：库存快照仍是离散件数，analytics 数量聚合统一输出 BIGINT。
+-- 任一库存快照含小数或超出 int32 时整段失败，不截断、不舍入。
+DO $$
+DECLARE
+    bad INTEGER;
+BEGIN
+    SELECT count(*) INTO bad
+    FROM app.provider_stock_snapshots
+    WHERE stock_num <> trunc(stock_num)
+       OR usable_num <> trunc(usable_num)
+       OR stock_num > 2147483647
+       OR usable_num > 2147483647;
+    IF bad > 0 THEN
+        RAISE EXCEPTION
+            'V105 预检失败: app.provider_stock_snapshots 存在 % 行非 int32 库存件数，必须先人工裁决', bad
+            USING ERRCODE = '23514';
+    END IF;
+END $$;
+
+DO $$
+DECLARE
+    constraint_row RECORD;
+BEGIN
+    FOR constraint_row IN
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'app.provider_stock_snapshots'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) ~ '(stock_num|usable_num)'
+    LOOP
+        EXECUTE format(
+            'ALTER TABLE app.provider_stock_snapshots DROP CONSTRAINT %I',
+            constraint_row.conname);
+    END LOOP;
+END $$;
+
+ALTER TABLE app.provider_stock_snapshots
+    ALTER COLUMN stock_num TYPE INTEGER USING stock_num::integer,
+    ALTER COLUMN usable_num TYPE INTEGER USING usable_num::integer;
+
+-- 单条运单明细仍为 int32；草稿可汇总多个明细，聚合字段必须使用 int64。
+ALTER TABLE app.provider_tracking_drafts
+    ALTER COLUMN actual_quantity TYPE BIGINT USING actual_quantity::bigint;
+
+ALTER TABLE app.provider_stock_snapshots
+    ADD CONSTRAINT provider_stock_snapshots_stock_num_check CHECK (stock_num >= 0),
+    ADD CONSTRAINT provider_stock_snapshots_usable_num_check CHECK (
+        usable_num >= 0 AND usable_num <= stock_num);
+
+DROP VIEW analytics.v_channel_daily;
+DROP VIEW analytics.v_fulfillment_channel_daily;
+DROP VIEW analytics.v_fulfillment_daily;
+DROP VIEW analytics.v_product_daily;
+
+CREATE VIEW analytics.v_channel_daily AS
+WITH order_metrics AS (
+    SELECT (o.created_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           count(DISTINCT o.id) AS order_count,
+           count(ol.id) AS order_line_count,
+           count(DISTINCT o.id) FILTER (
+               WHERE o.order_status IN ('NEED_REVIEW', 'FULFILLMENT_EXCEPTION', 'SYNC_FAILED')
+                  OR ol.processing_stage = 'EXCEPTION') AS exception_order_count
+    FROM app.orders o
+    LEFT JOIN app.order_lines ol ON ol.order_id=o.id
+    WHERE o.data_scope='BUSINESS'
+    GROUP BY (o.created_at AT TIME ZONE 'Asia/Shanghai')::date, o.source_channel
+), shipment_metrics AS (
+    SELECT (s.shipped_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           COALESCE(sum(CASE
+               WHEN ol.line_type='CUSTOM_BUNDLE'
+                   THEN si.shipped_quantity::bigint * olc.quantity_per_bundle
+               ELSE si.shipped_quantity::bigint
+           END), 0::numeric)::bigint AS actual_shipped_quantity,
+           count(DISTINCT s.id) FILTER (WHERE si.shipped_quantity > 0) AS shipment_count
+    FROM app.shipments s
+    JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
+    JOIN app.shipment_items si ON si.shipment_id=s.id
+    JOIN app.fulfillments f ON f.id=si.fulfillment_id
+    JOIN app.order_lines ol ON ol.id=f.order_line_id
+    LEFT JOIN app.order_line_components olc
+      ON olc.order_line_id=ol.id AND ol.line_type='CUSTOM_BUNDLE'
+    WHERE s.shipment_status IN ('SHIPPED','DELIVERED') AND s.shipped_at IS NOT NULL
+    GROUP BY (s.shipped_at AT TIME ZONE 'Asia/Shanghai')::date, o.source_channel
+), procurement_metrics AS (
+    SELECT (pt.created_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           count(DISTINCT o.id) AS out_of_stock_order_count
+    FROM app.procurement_tickets pt
+    JOIN app.fulfillments f ON f.id=pt.fulfillment_id
+    JOIN app.order_lines ol ON ol.id=f.order_line_id
+    JOIN app.orders o ON o.id=ol.order_id AND o.data_scope='BUSINESS'
+    GROUP BY (pt.created_at AT TIME ZONE 'Asia/Shanghai')::date, o.source_channel
+), sync_metrics AS (
+    SELECT (ss.updated_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           count(*) FILTER (WHERE ss.sync_status='SYNC_FAILED') AS sync_failed_count
+    FROM app.shipment_syncs ss
+    JOIN app.shipments s ON s.id=ss.shipment_id
+    JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
+    GROUP BY (ss.updated_at AT TIME ZONE 'Asia/Shanghai')::date, o.source_channel
+), metric_keys AS (
+    SELECT metric_date, source_channel FROM order_metrics
+    UNION SELECT metric_date, source_channel FROM shipment_metrics
+    UNION SELECT metric_date, source_channel FROM procurement_metrics
+    UNION SELECT metric_date, source_channel FROM sync_metrics
+)
+SELECT k.metric_date,
+       k.source_channel,
+       COALESCE(om.order_count, 0::bigint) AS order_count,
+       COALESCE(om.order_line_count, 0::bigint) AS order_line_count,
+       COALESCE(sm.actual_shipped_quantity, 0::bigint) AS actual_shipped_quantity,
+       COALESCE(sm.shipment_count, 0::bigint) AS shipment_count,
+       COALESCE(om.exception_order_count, 0::bigint) AS exception_order_count,
+       COALESCE(pm.out_of_stock_order_count, 0::bigint) AS out_of_stock_order_count,
+       COALESCE(sym.sync_failed_count, 0::bigint) AS sync_failed_count
+FROM metric_keys k
+LEFT JOIN order_metrics om USING (metric_date, source_channel)
+LEFT JOIN shipment_metrics sm USING (metric_date, source_channel)
+LEFT JOIN procurement_metrics pm USING (metric_date, source_channel)
+LEFT JOIN sync_metrics sym USING (metric_date, source_channel);
+
+CREATE VIEW analytics.v_fulfillment_channel_daily AS
+WITH fulfillment_metrics AS (
+    SELECT (f.created_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           f.fulfillment_provider_id,
+           count(DISTINCT f.id) AS fulfillment_count,
+           COALESCE(sum(f.cumulative_shipped_quantity), 0::bigint) AS fulfilled_quantity,
+           count(DISTINCT f.id) FILTER (WHERE f.shipping_progress='NOT_SHIPPED') AS not_shipped_count,
+           count(DISTINCT f.id) FILTER (WHERE f.shipping_progress='PARTIALLY_SHIPPED') AS partially_shipped_count,
+           count(DISTINCT f.id) FILTER (WHERE f.shipping_progress='SHIPPED') AS fully_shipped_count
+    FROM app.fulfillments f
+    JOIN app.order_lines ol ON ol.id=f.order_line_id
+    JOIN app.orders o ON o.id=ol.order_id AND o.data_scope='BUSINESS'
+    GROUP BY (f.created_at AT TIME ZONE 'Asia/Shanghai')::date,
+             o.source_channel, f.fulfillment_provider_id
+), shipment_metrics AS (
+    SELECT (s.created_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           s.fulfillment_provider_id,
+           count(DISTINCT s.id) FILTER (WHERE s.shipment_status='CREATED') AS awaiting_shipment_count,
+           count(DISTINCT s.id) FILTER (WHERE s.shipment_status IN ('SHIPPED','DELIVERED')) AS shipped_shipment_count,
+           count(DISTINCT s.id) FILTER (
+               WHERE s.shipment_status IN ('SHIPPED','DELIVERED') AND t.id IS NULL) AS awaiting_tracking_count
+    FROM app.shipments s
+    JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
+    LEFT JOIN app.trackings t ON t.shipment_id=s.id
+    GROUP BY (s.created_at AT TIME ZONE 'Asia/Shanghai')::date,
+             o.source_channel, s.fulfillment_provider_id
+), procurement_metrics AS (
+    SELECT (pt.created_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           f.fulfillment_provider_id,
+           count(DISTINCT pt.id) AS procurement_ticket_count,
+           count(DISTINCT f.id) AS out_of_stock_fulfillment_count
+    FROM app.procurement_tickets pt
+    JOIN app.fulfillments f ON f.id=pt.fulfillment_id
+    JOIN app.order_lines ol ON ol.id=f.order_line_id
+    JOIN app.orders o ON o.id=ol.order_id AND o.data_scope='BUSINESS'
+    GROUP BY (pt.created_at AT TIME ZONE 'Asia/Shanghai')::date,
+             o.source_channel, f.fulfillment_provider_id
+), sync_metrics AS (
+    SELECT (ss.updated_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           s.fulfillment_provider_id,
+           count(*) FILTER (WHERE ss.sync_status='SYNC_FAILED') AS sync_failed_count,
+           count(*) FILTER (WHERE ss.sync_status='PENDING') AS awaiting_sync_count,
+           count(*) FILTER (WHERE ss.sync_status='SYNCED') AS synced_count
+    FROM app.shipment_syncs ss
+    JOIN app.shipments s ON s.id=ss.shipment_id
+    JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
+    GROUP BY (ss.updated_at AT TIME ZONE 'Asia/Shanghai')::date,
+             o.source_channel, s.fulfillment_provider_id
+), metric_keys AS (
+    SELECT metric_date, source_channel, fulfillment_provider_id FROM fulfillment_metrics
+    UNION SELECT metric_date, source_channel, fulfillment_provider_id FROM shipment_metrics
+    UNION SELECT metric_date, source_channel, fulfillment_provider_id FROM procurement_metrics
+    UNION SELECT metric_date, source_channel, fulfillment_provider_id FROM sync_metrics
+)
+SELECT k.metric_date,
+       k.source_channel,
+       fp.provider_code,
+       fp.provider_name,
+       fp.provider_type,
+       COALESCE(fm.fulfillment_count, 0::bigint) AS fulfillment_count,
+       COALESCE(fm.fulfilled_quantity, 0::bigint) AS fulfilled_quantity,
+       COALESCE(fm.not_shipped_count, 0::bigint) AS not_shipped_count,
+       COALESCE(fm.partially_shipped_count, 0::bigint) AS partially_shipped_count,
+       COALESCE(fm.fully_shipped_count, 0::bigint) AS fully_shipped_count,
+       COALESCE(pm.procurement_ticket_count, 0::bigint) AS procurement_ticket_count,
+       COALESCE(pm.out_of_stock_fulfillment_count, 0::bigint) AS out_of_stock_fulfillment_count,
+       COALESCE(sm.awaiting_shipment_count, 0::bigint) AS awaiting_shipment_count,
+       COALESCE(sm.shipped_shipment_count, 0::bigint) AS shipped_shipment_count,
+       COALESCE(sm.awaiting_tracking_count, 0::bigint) AS awaiting_tracking_count,
+       COALESCE(sym.awaiting_sync_count, 0::bigint) AS awaiting_sync_count,
+       COALESCE(sym.sync_failed_count, 0::bigint) AS sync_failed_count,
+       COALESCE(sym.synced_count, 0::bigint) AS synced_count
+FROM metric_keys k
+JOIN app.fulfillment_providers fp ON fp.id=k.fulfillment_provider_id
+LEFT JOIN fulfillment_metrics fm USING (metric_date, source_channel, fulfillment_provider_id)
+LEFT JOIN shipment_metrics sm USING (metric_date, source_channel, fulfillment_provider_id)
+LEFT JOIN procurement_metrics pm USING (metric_date, source_channel, fulfillment_provider_id)
+LEFT JOIN sync_metrics sym USING (metric_date, source_channel, fulfillment_provider_id);
+
+CREATE VIEW analytics.v_fulfillment_daily AS
+WITH fulfillment_metrics AS (
+    SELECT (f.created_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           f.fulfillment_provider_id,
+           count(*) AS fulfillment_count,
+           COALESCE(sum(f.cumulative_shipped_quantity), 0::bigint) AS fulfilled_quantity,
+           count(*) FILTER (WHERE f.shipping_progress='NOT_SHIPPED') AS not_shipped_count,
+           count(*) FILTER (WHERE f.shipping_progress='PARTIALLY_SHIPPED') AS partially_shipped_count,
+           count(*) FILTER (WHERE f.shipping_progress='SHIPPED') AS fully_shipped_count
+    FROM app.fulfillments f
+    JOIN app.order_lines ol ON ol.id=f.order_line_id
+    JOIN app.orders o ON o.id=ol.order_id AND o.data_scope='BUSINESS'
+    GROUP BY (f.created_at AT TIME ZONE 'Asia/Shanghai')::date, f.fulfillment_provider_id
+), shipment_metrics AS (
+    SELECT (s.created_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           s.fulfillment_provider_id,
+           count(*) FILTER (WHERE s.shipment_status='CREATED') AS awaiting_shipment_count,
+           count(*) FILTER (WHERE s.shipment_status IN ('SHIPPED','DELIVERED')) AS shipped_shipment_count,
+           count(*) FILTER (
+               WHERE s.shipment_status IN ('SHIPPED','DELIVERED') AND t.id IS NULL) AS awaiting_tracking_count
+    FROM app.shipments s
+    JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
+    LEFT JOIN app.trackings t ON t.shipment_id=s.id
+    GROUP BY (s.created_at AT TIME ZONE 'Asia/Shanghai')::date, s.fulfillment_provider_id
+), procurement_metrics AS (
+    SELECT (pt.created_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           f.fulfillment_provider_id,
+           count(*) AS procurement_ticket_count,
+           count(DISTINCT f.id) AS out_of_stock_fulfillment_count
+    FROM app.procurement_tickets pt
+    JOIN app.fulfillments f ON f.id=pt.fulfillment_id
+    JOIN app.order_lines ol ON ol.id=f.order_line_id
+    JOIN app.orders o ON o.id=ol.order_id AND o.data_scope='BUSINESS'
+    GROUP BY (pt.created_at AT TIME ZONE 'Asia/Shanghai')::date, f.fulfillment_provider_id
+), sync_metrics AS (
+    SELECT (ss.updated_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           s.fulfillment_provider_id,
+           count(*) FILTER (WHERE ss.sync_status='SYNC_FAILED') AS sync_failed_count,
+           count(*) FILTER (WHERE ss.sync_status='PENDING') AS awaiting_sync_count,
+           count(*) FILTER (WHERE ss.sync_status='SYNCED') AS synced_count
+    FROM app.shipment_syncs ss
+    JOIN app.shipments s ON s.id=ss.shipment_id
+    JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
+    GROUP BY (ss.updated_at AT TIME ZONE 'Asia/Shanghai')::date, s.fulfillment_provider_id
+), metric_keys AS (
+    SELECT metric_date, fulfillment_provider_id FROM fulfillment_metrics
+    UNION SELECT metric_date, fulfillment_provider_id FROM shipment_metrics
+    UNION SELECT metric_date, fulfillment_provider_id FROM procurement_metrics
+    UNION SELECT metric_date, fulfillment_provider_id FROM sync_metrics
+)
+SELECT k.metric_date,
+       fp.provider_code,
+       fp.provider_name,
+       fp.provider_type,
+       COALESCE(fm.fulfillment_count, 0::bigint) AS fulfillment_count,
+       COALESCE(fm.fulfilled_quantity, 0::bigint) AS fulfilled_quantity,
+       COALESCE(fm.not_shipped_count, 0::bigint) AS not_shipped_count,
+       COALESCE(fm.partially_shipped_count, 0::bigint) AS partially_shipped_count,
+       COALESCE(fm.fully_shipped_count, 0::bigint) AS fully_shipped_count,
+       COALESCE(pm.procurement_ticket_count, 0::bigint) AS procurement_ticket_count,
+       COALESCE(pm.out_of_stock_fulfillment_count, 0::bigint) AS out_of_stock_fulfillment_count,
+       COALESCE(sm.awaiting_shipment_count, 0::bigint) AS awaiting_shipment_count,
+       COALESCE(sm.shipped_shipment_count, 0::bigint) AS shipped_shipment_count,
+       COALESCE(sm.awaiting_tracking_count, 0::bigint) AS awaiting_tracking_count,
+       COALESCE(sym.awaiting_sync_count, 0::bigint) AS awaiting_sync_count,
+       COALESCE(sym.sync_failed_count, 0::bigint) AS sync_failed_count,
+       COALESCE(sym.synced_count, 0::bigint) AS synced_count
+FROM metric_keys k
+JOIN app.fulfillment_providers fp ON fp.id=k.fulfillment_provider_id
+LEFT JOIN fulfillment_metrics fm USING (metric_date, fulfillment_provider_id)
+LEFT JOIN shipment_metrics sm USING (metric_date, fulfillment_provider_id)
+LEFT JOIN procurement_metrics pm USING (metric_date, fulfillment_provider_id)
+LEFT JOIN sync_metrics sym USING (metric_date, fulfillment_provider_id);
+
+CREATE VIEW analytics.v_product_daily AS
+WITH shipped_products AS (
+    SELECT (s.shipped_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           o.id AS order_id,
+           s.id AS shipment_id,
+           sku.id AS sku_id,
+           sku.sku_code,
+           p.id AS product_id,
+           p.product_code,
+           p.product_name,
+           c.id AS category_id,
+           c.category_code,
+           c.category_name,
+           si.shipped_quantity::bigint AS shipped_quantity
+    FROM app.shipment_items si
+    JOIN app.shipments s ON s.id=si.shipment_id AND s.shipment_status IN ('SHIPPED','DELIVERED')
+    JOIN app.fulfillments f ON f.id=si.fulfillment_id
+    JOIN app.order_lines ol ON ol.id=f.order_line_id AND ol.line_type='SINGLE'
+    JOIN app.orders o ON o.id=ol.order_id AND o.data_scope='BUSINESS'
+    JOIN app.skus sku ON sku.id=ol.sku_id
+    JOIN app.products p ON p.id=sku.product_id
+    LEFT JOIN app.categories c ON c.id=p.category_id
+    WHERE si.shipped_quantity > 0 AND s.shipped_at IS NOT NULL
+    UNION ALL
+    SELECT (s.shipped_at AT TIME ZONE 'Asia/Shanghai')::date AS metric_date,
+           o.source_channel,
+           o.id AS order_id,
+           s.id AS shipment_id,
+           sku.id AS sku_id,
+           sku.sku_code,
+           p.id AS product_id,
+           p.product_code,
+           p.product_name,
+           c.id AS category_id,
+           c.category_code,
+           c.category_name,
+           si.shipped_quantity::bigint * olc.quantity_per_bundle AS shipped_quantity
+    FROM app.shipment_items si
+    JOIN app.shipments s ON s.id=si.shipment_id AND s.shipment_status IN ('SHIPPED','DELIVERED')
+    JOIN app.fulfillments f ON f.id=si.fulfillment_id
+    JOIN app.order_lines ol ON ol.id=f.order_line_id AND ol.line_type='CUSTOM_BUNDLE'
+    JOIN app.orders o ON o.id=ol.order_id AND o.data_scope='BUSINESS'
+    JOIN app.order_line_components olc ON olc.order_line_id=ol.id
+    JOIN app.skus sku ON sku.id=olc.sku_id
+    JOIN app.products p ON p.id=sku.product_id
+    LEFT JOIN app.categories c ON c.id=p.category_id
+    WHERE si.shipped_quantity > 0 AND s.shipped_at IS NOT NULL
+)
+SELECT metric_date,
+       source_channel,
+       category_id,
+       category_code,
+       category_name,
+       product_id,
+       product_code,
+       product_name,
+       sku_id,
+       sku_code,
+       count(DISTINCT order_id) AS order_count,
+       count(DISTINCT shipment_id) AS shipment_count,
+       sum(shipped_quantity)::bigint AS actual_shipped_quantity
+FROM shipped_products
+GROUP BY metric_date, source_channel, category_id, category_code, category_name,
+         product_id, product_code, product_name, sku_id, sku_code;
+
+-- 采购比价 Agent 的输入、输出和评测样本也是公开 JSON 契约，不能继续把件数伪装成
+-- decimal-string。定义表是 append-only 全快照，因此新建 v3 并冻结一份 v3 评测集，
+-- 保留 v1/v2 作为可复现的历史证据。
+UPDATE app.agent_definitions
+SET status = 'retired'
+WHERE agent_slug = 'procurement-price-agent'
+  AND version = 2
+  AND status = 'active';
+
+INSERT INTO app.agent_definitions (
+    agent_slug, version, name, description, system_prompt, prompt_version, model_ref, input_format,
+    enabled, tool_whitelist, output_schema, allow_write, guard_exemptions,
+    status, activated_by, activated_at)
+SELECT agent_slug,
+       3,
+       name,
+       description,
+       replace(
+           replace(
+               replace(
+                   system_prompt,
+                   '{"quantity": "..."}',
+                   '{"quantity": 2}（quantity 是 int32 正整数 JSON 值）'),
+               'requested_quantity 填输入数量 （decimal-string，输入未提供可为空）',
+               'requested_quantity 填输入整数件数（输入未提供可为空）'),
+           'inventory.available / inventory.shortage 为 decimal-string',
+           'inventory.available / inventory.shortage 为非负整数件数'),
+       'procurement-price-v3',
+       model_ref,
+       input_format,
+       enabled,
+       tool_whitelist,
+       jsonb_set(
+           jsonb_set(
+               jsonb_set(
+                   output_schema,
+                   '{properties,requested_quantity}',
+                   '{"type":["integer","null"],"minimum":1,"maximum":2147483647,"description":"int32 正整数件数"}'::jsonb),
+               '{properties,inventory,properties,available}',
+               '{"type":["integer","null"],"minimum":0,"maximum":2147483647,"description":"int32 非负整数件数"}'::jsonb),
+           '{properties,inventory,properties,shortage}',
+           '{"type":["integer","null"],"minimum":0,"maximum":2147483647,"description":"int32 非负整数件数"}'::jsonb),
+       allow_write,
+       guard_exemptions,
+       'active',
+       'system:v105-count-contract',
+       CURRENT_TIMESTAMP
+FROM app.agent_definitions
+WHERE agent_slug = 'procurement-price-agent'
+  AND version = 2;
+
+INSERT INTO app.agent_eval_cases (
+    agent_slug, agent_version, metric_kind, input, expected, status,
+    created_by, confirmed_by, confirmed_at)
+SELECT agent_slug,
+       3,
+       metric_kind,
+       CASE
+           WHEN input ? 'quantity' AND jsonb_typeof(input->'quantity') = 'string'
+               THEN jsonb_set(input, '{quantity}', to_jsonb((input->>'quantity')::integer), false)
+           ELSE input
+       END,
+       expected,
+       status,
+       'system:v105-count-contract',
+       'system:v105-count-contract',
+       CURRENT_TIMESTAMP
+FROM app.agent_eval_cases
+WHERE agent_slug = 'procurement-price-agent'
+  AND agent_version = 2
+  AND metric_kind = 'INVARIANT'
+  AND status = 'CONFIRMED';
+-- END V105__finish_integer_count_contract.sql

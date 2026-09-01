@@ -82,9 +82,9 @@ class InventoryDetailsApiTest {
         Map<String, Object> observation = object(body, "observation");
         assertThat(observation)
                 .containsEntry("observation_status", "OBSERVED")
-                .containsEntry("total_quantity", "8.000")
-                .containsEntry("available_quantity", "5.000")
-                .containsEntry("unavailable_quantity", "3.000")
+                .containsEntry("total_quantity", 8)
+                .containsEntry("available_quantity", 5)
+                .containsEntry("unavailable_quantity", 3)
                 .containsEntry("quantity_unit", "JD_PIECE")
                 .containsEntry("source_type", "JD_ISC_QUERY_STOCK")
                 .containsEntry("data_mode", "CACHED_SNAPSHOT")

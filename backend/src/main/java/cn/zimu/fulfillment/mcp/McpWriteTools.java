@@ -506,10 +506,9 @@ public class McpWriteTools {
             }
             Map<String, Object> entry = (Map<String, Object>) map;
             int lineNo = positiveLineNo(entry.get("line_no"));
-            String quantity = optionalString(entry, "quantity");
-            if (quantity != null && !quantity.matches(Patterns.POSITIVE_INTEGER_QUANTITY)) {
-                throw BusinessException.badRequest("INVALID_PARAMETERS", "quantity 必须为正整数");
-            }
+            Integer quantity = entry.get("quantity") == null
+                    ? null
+                    : positiveCount(entry.get("quantity"), "quantity");
             String skuId = optionalString(entry, "sku_id");
             if (skuId != null && !skuId.matches(Patterns.IDENTIFIER)) {
                 throw BusinessException.badRequest("INVALID_PARAMETERS", "sku_id 必须是正整数标识符");
@@ -606,10 +605,7 @@ public class McpWriteTools {
             if (skuId == null || !skuId.matches(Patterns.IDENTIFIER)) {
                 throw BusinessException.badRequest("INVALID_PARAMETERS", "sku_id 必须是正整数标识符");
             }
-            String quantity = optionalString(entry, "quantity");
-            if (quantity == null || !quantity.matches(Patterns.POSITIVE_INTEGER_QUANTITY)) {
-                throw BusinessException.badRequest("INVALID_PARAMETERS", "quantity 必须为正整数");
-            }
+            int quantity = positiveCount(entry.get("quantity"), "quantity");
             result.add(new ConfirmOrderDraftCommand.ConfirmItem(lineNo, skuId, quantity));
         }
         return result;
@@ -651,14 +647,24 @@ public class McpWriteTools {
         return value;
     }
 
-    /** 行号必须是正整数；拒绝 1.5 这类会被 intValue 静默截断的值。 */
+    /** 行号与件数共享精确 JSON integer/int32 门禁，禁止浮点 token 与 intValue 溢出。 */
     private static int positiveLineNo(Object lineNo) {
-        if (!(lineNo instanceof Number number)
-                || number.doubleValue() != Math.floor(number.doubleValue())
-                || number.intValue() < 1) {
-            throw BusinessException.badRequest("INVALID_PARAMETERS", "line_no 必须是正整数");
+        return positiveCount(lineNo, "line_no");
+    }
+
+    private static int positiveCount(Object value, String field) {
+        if (!(value instanceof Byte || value instanceof Short || value instanceof Integer
+                || value instanceof Long || value instanceof java.math.BigInteger)) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", field + " 必须是正整数 JSON 值");
         }
-        return number.intValue();
+        java.math.BigInteger raw = value instanceof java.math.BigInteger bigInteger
+                ? bigInteger
+                : java.math.BigInteger.valueOf(((Number) value).longValue());
+        try {
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromPositiveJsonInteger(raw);
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
+            throw BusinessException.badRequest("INVALID_PARAMETERS", field + " 必须是 int32 正整数");
+        }
     }
 
     private static SettlementMethod parseSettlementMethod(String method, String errorMessage) {
@@ -704,8 +710,8 @@ public class McpWriteTools {
     private static ObjectNode lineSupplementSchema() {
         ObjectNode item = McpToolRegistry.objectProperty("行级建议");
         ObjectNode props = item.putObject("properties");
-        props.set("line_no", stringProperty("正整数行号"));
-        props.set("quantity", stringProperty("正整数数量字符串（件数，不带小数点）"));
+        props.set("line_no", positiveCountProperty("正整数行号"));
+        props.set("quantity", positiveCountProperty("int32 正整数数量（JSON integer）"));
         props.set("sku_id", stringProperty("候选 SKU 标识符"));
         return item;
     }
@@ -742,9 +748,15 @@ public class McpWriteTools {
     private static ObjectNode confirmItemSchema() {
         ObjectNode item = McpToolRegistry.objectProperty("逐行人工确认");
         ObjectNode props = item.putObject("properties");
-        props.set("line_no", stringProperty("正整数行号"));
+        props.set("line_no", positiveCountProperty("正整数行号"));
         props.set("sku_id", stringProperty("SKU 标识符"));
-        props.set("quantity", stringProperty("正整数数量字符串（件数，不带小数点）"));
+        props.set("quantity", positiveCountProperty("int32 正整数数量（JSON integer）"));
         return item;
+    }
+
+    private static ObjectNode positiveCountProperty(String description) {
+        return McpToolRegistry.integerProperty(description)
+                .put("minimum", 1)
+                .put("maximum", Integer.MAX_VALUE);
     }
 }

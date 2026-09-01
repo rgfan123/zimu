@@ -1,6 +1,5 @@
 package cn.zimu.fulfillment.fulfillment;
 
-import java.math.BigDecimal;
 import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -34,9 +33,9 @@ public class SourceFollowupProgressService {
                 FOR UPDATE OF f, ol, o
                 """,
                 rs -> rs.next() ? new Context(
-                        rs.getBigDecimal("requested_quantity"),
-                        rs.getBigDecimal("cumulative_shipped_quantity"),
-                        rs.getBigDecimal("cancelled_quantity"),
+                        rs.getInt("requested_quantity"),
+                        rs.getInt("cumulative_shipped_quantity"),
+                        rs.getInt("cancelled_quantity"),
                         rs.getLong("order_line_id"),
                         rs.getLong("order_id")) : null,
                 fulfillmentId);
@@ -58,7 +57,7 @@ public class SourceFollowupProgressService {
                 fulfillmentId);
         long actual = ((Number) shipments.get("actual")).longValue();
         long ready = ((Number) shipments.get("ready")).longValue();
-        boolean terminalQuantity = context.shipped().add(context.cancelled()).compareTo(context.requested()) == 0;
+        boolean terminalQuantity = context.shipped() + context.cancelled() == context.requested();
         boolean followupReady = terminalQuantity && actual > 0 && ready == actual;
         if (followupReady) {
             jdbc.update(
@@ -87,9 +86,9 @@ public class SourceFollowupProgressService {
     }
 
     private record Context(
-            BigDecimal requested,
-            BigDecimal shipped,
-            BigDecimal cancelled,
+            int requested,
+            int shipped,
+            int cancelled,
             long orderLineId,
             long orderId) {
     }

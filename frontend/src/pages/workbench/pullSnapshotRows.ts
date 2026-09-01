@@ -43,7 +43,7 @@ export interface SnapshotImportRow {
   receiverPhone: string;
   receiverAddress: string;
   productName: string;
-  quantity: string;
+  quantity: string | number;
   specification: string;
 }
 
@@ -105,9 +105,10 @@ export interface SnapshotReviewCase {
 }
 
 /** 空串、全空白与 `presentImportRow` 的 '—' 占位一律视为「没有」。 */
-function realOrNull(value: string | null | undefined): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
+function realOrNull(value: unknown): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  if (typeof value === 'number' && !Number.isFinite(value)) return null;
+  const trimmed = String(value).trim();
   if (trimmed.length === 0 || trimmed === EMPTY_MARK) return null;
   return trimmed;
 }

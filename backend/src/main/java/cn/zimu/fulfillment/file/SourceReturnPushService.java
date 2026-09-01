@@ -8,7 +8,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -509,7 +508,9 @@ public class SourceReturnPushService {
                 Map<String, String> cells = new LinkedHashMap<>();
                 headers.forEach((index, name) -> {
                     Cell cell = row.getCell(index);
-                    cells.put(name, cell == null ? "" : formatter.formatCellValue(cell).trim());
+                    cells.put(name, "发货数量".equals(name)
+                            ? ExcelCellValues.exactCount(cell, formatter).trim()
+                            : cell == null ? "" : formatter.formatCellValue(cell).trim());
                 });
                 if (cells.values().stream().allMatch(String::isBlank)) {
                     continue;
@@ -536,7 +537,7 @@ public class SourceReturnPushService {
     }
 
     /** A7：发货数量必须为正整数（无小数）；缺失/非法拒绝推送，不静默回退或置 0。 */
-    private String validateShippedQuantity(String raw, String orderRef) {
+    private int validateShippedQuantity(String raw, String orderRef) {
         String trimmed = raw == null ? "" : raw.trim();
         if (trimmed.isEmpty()) {
             throw BusinessException.badRequest("PUSH_QUANTITY_INVALID",
@@ -545,16 +546,10 @@ public class SourceReturnPushService {
         String reject = "「发货数量」必须为正整数（>0，无小数），实际为 '" + trimmed + "'（订单 "
                 + (orderRef.isEmpty() ? "?" : orderRef) + "），拒绝推送";
         try {
-            BigDecimal value = new BigDecimal(trimmed);
-            if (value.signum() <= 0 || value.stripTrailingZeros().scale() > 0
-                    || value.compareTo(BigDecimal.valueOf(Long.MAX_VALUE)) > 0) {
-                throw BusinessException.badRequest("PUSH_QUANTITY_INVALID", reject);
-            }
-            value.longValueExact();
-        } catch (NumberFormatException ex) {
+            return cn.zimu.fulfillment.common.domain.CountQuantity.fromPositiveFileValue(trimmed);
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException ex) {
             throw BusinessException.badRequest("PUSH_QUANTITY_INVALID", reject);
         }
-        return trimmed;
     }
 
     private static String first(Map<String, String> cells, String... keys) {

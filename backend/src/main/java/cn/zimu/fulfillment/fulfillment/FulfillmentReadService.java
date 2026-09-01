@@ -252,8 +252,8 @@ public class FulfillmentReadService {
                         "fulfillment_id", id(rs.getLong("fulfillment_id")),
                         "order_line_id", id(rs.getLong("order_line_id")),
                         "product_name", rs.getString("product_name_snapshot"),
-                        "instructed_quantity", decimal(rs, "instructed_quantity"),
-                        "shipped_quantity", decimal(rs, "shipped_quantity"),
+                        "instructed_quantity", countValue(rs, "instructed_quantity"),
+                        "shipped_quantity", countValue(rs, "shipped_quantity"),
                         "unit", rs.getString("unit_snapshot")), shipmentId));
         Map<String, Object> tracking = jdbc.query(
                 "SELECT * FROM app.trackings WHERE shipment_id=?",
@@ -274,7 +274,7 @@ public class FulfillmentReadService {
                         + "       tracking_query_status, tracking_query_attempt_count,\n"
                         + "       tracking_last_query_at, tracking_last_error_code,\n"
                         + "       tracking_last_error_message, tracking_last_request_id, updated_at\n"
-                        + "FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                        + "FROM app.shipment_jd_outbounds WHERE shipment_id=? AND sync_status <> 'NONE'",
                 rs -> {
                     if (!rs.next()) {
                         return null;
@@ -313,9 +313,9 @@ public class FulfillmentReadService {
                         "id", id(rs.getLong("id")),
                         "sku_id", id(rs.getLong("sku_id")),
                         "component_sku_id", nullableComponentSku(rs.getObject("order_line_component_id", Long.class)),
-                        "requested_quantity", decimal(rs, "requested_quantity"),
-                        "fulfilled_quantity", decimal(rs, "fulfilled_quantity"),
-                        "remaining_quantity", decimal(rs, "remaining_quantity")), ticketId));
+                        "requested_quantity", countValue(rs, "requested_quantity"),
+                        "fulfilled_quantity", countValue(rs, "fulfilled_quantity"),
+                        "remaining_quantity", countValue(rs, "remaining_quantity")), ticketId));
         List<Map<String, Object>> receipts = jdbc.query(
                 "SELECT * FROM app.procurement_receipts WHERE procurement_ticket_id=? ORDER BY received_at, id",
                 (rs, row) -> receipt(rs), ticketId);
@@ -331,7 +331,7 @@ public class FulfillmentReadService {
                 """,
                 (rs, row) -> map(
                         "ticket_item_id", id(rs.getLong("procurement_ticket_item_id")),
-                        "available_quantity", decimal(rs, "available_quantity")), receiptId);
+                        "available_quantity", countValue(rs, "available_quantity")), receiptId);
     }
 
     private Map<String, Object> fulfillment(ResultSet rs) throws SQLException {
@@ -343,9 +343,9 @@ public class FulfillmentReadService {
                 "customer_name", rs.getString("customer_name"),
                 "receiver_name", rs.getString("receiver_name"),
                 "provider_id", id(rs.getLong("fulfillment_provider_id")),
-                "requested_quantity", decimal(rs, "requested_quantity"),
-                "cumulative_shipped_quantity", decimal(rs, "cumulative_shipped_quantity"),
-                "cancelled_quantity", decimal(rs, "cancelled_quantity"),
+                "requested_quantity", countValue(rs, "requested_quantity"),
+                "cumulative_shipped_quantity", countValue(rs, "cumulative_shipped_quantity"),
+                "cancelled_quantity", countValue(rs, "cancelled_quantity"),
                 "shipping_progress", rs.getString("shipping_progress"),
                 "outcome", rs.getString("outcome"),
                 "exception_code", rs.getString("exception_code"),
@@ -418,9 +418,9 @@ public class FulfillmentReadService {
                 "fulfillment_id", id(rs.getLong("fulfillment_id")),
                 "retry_of_ticket_id", nullableId(rs, "retry_of_ticket_id"),
                 "status", rs.getString("procurement_status"),
-                "requested_quantity", decimal(totals.get("requested")),
-                "fulfilled_quantity", decimal(totals.get("fulfilled")),
-                "remaining_quantity", decimal(totals.get("remaining")),
+                "requested_quantity", aggregateQuantity(totals.get("requested")),
+                "fulfilled_quantity", aggregateQuantity(totals.get("fulfilled")),
+                "remaining_quantity", aggregateQuantity(totals.get("remaining")),
                 "version", rs.getLong("lock_version"),
                 "created_at", instant(rs, "created_at"));
     }
@@ -472,12 +472,12 @@ public class FulfillmentReadService {
         return new PageResponse<>(items, page, size, total, (int) Math.ceil((double) total / size));
     }
 
-    private static String decimal(ResultSet rs, String column) throws SQLException {
-        return decimal(rs.getBigDecimal(column));
+    private static Integer countValue(ResultSet rs, String column) throws SQLException {
+        return rs.getObject(column, Integer.class);
     }
 
-    private static String decimal(Object value) {
-        return value == null ? null : new java.math.BigDecimal(value.toString()).toPlainString();
+    private static Long aggregateQuantity(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {

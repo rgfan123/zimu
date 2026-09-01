@@ -10,7 +10,6 @@ import cn.zimu.fulfillment.connector.jufubao.JufubaoShipmentAttemptStore.Decisio
 import cn.zimu.fulfillment.connector.jufubao.JufubaoShipmentAttemptStore.ShipmentAttemptPayload;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -226,14 +225,14 @@ class JufubaoShipmentAttemptStoreIntegrationTest {
         ClaimResult claim = store.claim(original);
 
         // 未完成时同 key 不同 payload：CONFLICT。
-        ClaimResult whileRunning = store.claim(payload("sub-4", "JDVA004", BigDecimal.TWO, "顺丰速运"));
+        ClaimResult whileRunning = store.claim(payload("sub-4", "JDVA004", 2L, "顺丰速运"));
         assertThat(whileRunning.decision()).isEqualTo(Decision.CONFLICT);
 
         store.markEffectStarted("sub-4", "JDVA004", claim.ownerToken());
         store.completeSuccess("sub-4", "JDVA004", claim.ownerToken(), SourceSyncResult.ok("req-1"));
 
         // 完成后同 key 不同 payload：仍然 CONFLICT，且行状态不被污染。
-        ClaimResult afterCompletion = freshStore().claim(payload("sub-4", "JDVA004", BigDecimal.TWO, "顺丰速运"));
+        ClaimResult afterCompletion = freshStore().claim(payload("sub-4", "JDVA004", 2L, "顺丰速运"));
         assertThat(afterCompletion.decision()).isEqualTo(Decision.CONFLICT);
         assertThat(jdbc().queryForMap(
                 "SELECT status FROM app.idempotency_registry WHERE scope = ? AND idempotency_key = ?",
@@ -328,7 +327,7 @@ class JufubaoShipmentAttemptStoreIntegrationTest {
                 .containsEntry("status", "RECONCILIATION_REQUIRED");
 
         // 同 key 不同 payload 也只会 CONFLICT，同样不会得到 PROCEED。
-        assertThat(freshStore().claim(payload("sub-6", "JDVA006", BigDecimal.TWO, "顺丰速运")).decision())
+        assertThat(freshStore().claim(payload("sub-6", "JDVA006", 2L, "顺丰速运")).decision())
                 .isEqualTo(Decision.CONFLICT);
     }
 
@@ -428,10 +427,10 @@ class JufubaoShipmentAttemptStoreIntegrationTest {
     }
 
     private ShipmentAttemptPayload payload(String subOrderId, String trackingNo) {
-        return new ShipmentAttemptPayload("main-1", subOrderId, BigDecimal.ONE, "京东物流", trackingNo);
+        return new ShipmentAttemptPayload("main-1", subOrderId, 1L, "京东物流", trackingNo);
     }
 
-    private ShipmentAttemptPayload payload(String subOrderId, String trackingNo, BigDecimal quantity, String carrier) {
+    private ShipmentAttemptPayload payload(String subOrderId, String trackingNo, long quantity, String carrier) {
         return new ShipmentAttemptPayload("main-1", subOrderId, quantity, carrier, trackingNo);
     }
 

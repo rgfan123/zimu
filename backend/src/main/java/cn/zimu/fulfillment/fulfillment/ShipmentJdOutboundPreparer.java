@@ -7,7 +7,6 @@ import cn.zimu.fulfillment.fulfillment.JdShipmentSubmissionPlan.Validation;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -30,8 +29,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  * （addSoOrder payload），产出不可变 {@link JdShipmentSubmissionPlan}。
  *
  * <p>预览 HTTP、库存判定和真实建单都必须消费本单元产出的这一份计划，不得另建
- * SKU/数量/地址映射逻辑。本单元只做加锁读取与请求构造：不触发京东写操作、不写审计、
- * 不编排业务事务（独立事务由调用方/编排单元决定），因此出库编排与库存校验都可以
+ * SKU/数量/地址映射逻辑。本单元做加锁读取与请求构造；唯一允许的本地写是首次为京东
+ * Shipment 保留一个 {@code sync_status=NONE} 的外部号，不触发京东调用、不写审计、
+ * 不推进业务阶段。独立事务仍由调用方/编排单元决定，因此出库编排与库存校验都可以
  * 单向依赖它，双方不再互相依赖。
  */
 @Service
@@ -75,14 +75,17 @@ public class ShipmentJdOutboundPreparer {
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
+    private final JdErpDeliveryNoAllocator erpDeliveryNos;
     private final TransactionTemplate requiresNew;
 
     public ShipmentJdOutboundPreparer(
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
+            JdErpDeliveryNoAllocator erpDeliveryNos,
             PlatformTransactionManager transactionManager) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
+        this.erpDeliveryNos = erpDeliveryNos;
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -114,8 +117,8 @@ public class ShipmentJdOutboundPreparer {
 
         validateShipmentEligibility(state, validations, blockers);
         putRequiredConfig(request, "sourceNo", state, CONFIG_SOURCE_NO, "sourceNo", false, validations, blockers);
-        request.put("erpDeliveryNo", state.outboundOrderNo());
-        pass(validations, "erpDeliveryNo", "shipments.outbound_order_no");
+        request.put("erpDeliveryNo", state.erpDeliveryNo());
+        pass(validations, "erpDeliveryNo", "shipment_jd_outbounds.erp_delivery_no");
         putRequiredConfig(request, "warehouseNo", state, CONFIG_WAREHOUSE_NO, "warehouseNo", false, validations, blockers);
 
         // 订单类型留空（模板：订单类型不传，京东默认 B2C=1），不再显式下发。
@@ -198,11 +201,14 @@ public class ShipmentJdOutboundPreparer {
                 state.providerId(),
                 state.providerType(),
                 state.outboundOrderNo(),
+                state.erpDeliveryNo(),
                 state.jdOutbound() == null
                         ? null
                         : new JdShipmentSubmissionPlan.PriorSubmission(
                                 state.jdOutbound().syncStatus(),
+                                state.jdOutbound().failurePhase(),
                                 state.jdOutbound().requestHash(),
+                                state.jdOutbound().businessFactsHash(),
                                 state.jdOutbound().retryCount(),
                                 state.jdOutbound().lastErrorCode(),
                                 state.jdOutbound().clientMode()),
@@ -212,6 +218,7 @@ public class ShipmentJdOutboundPreparer {
                         .toList(),
                 request,
                 sha256(json(request)),
+                businessFactsHash(request),
                 stockDemands,
                 validations,
                 blockers,
@@ -361,7 +368,7 @@ public class ShipmentJdOutboundPreparer {
             String orderLine,
             String goodsName,
             String unit,
-            BigDecimal quantity,
+            long quantity,
             String quantitySource,
             int cargoIndex,
             List<Validation> validations,
@@ -523,6 +530,24 @@ public class ShipmentJdOutboundPreparer {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("JD outbound preview lock requires an active database transaction");
         }
+        String providerType = jdbc.query(
+                """
+                SELECT fp.provider_type
+                FROM app.shipments s
+                JOIN app.orders o ON o.id=s.order_id AND o.data_scope='BUSINESS'
+                JOIN app.fulfillment_providers fp ON fp.id=s.fulfillment_provider_id
+                WHERE s.id=?
+                FOR NO KEY UPDATE OF s
+                """,
+                rs -> rs.next() ? rs.getString(1) : null,
+                shipmentId);
+        if (providerType == null) {
+            throw BusinessException.notFound("BUSINESS 发货批次不存在");
+        }
+        if (JD_WAREHOUSE.equals(providerType)) {
+            erpDeliveryNos.reserveInCurrentTransaction(shipmentId);
+        }
+
         Context value = jdbc.query(
                 """
                 SELECT s.id, s.shipment_no, s.outbound_order_no, s.shipment_status, s.shipment_sequence,
@@ -538,7 +563,10 @@ public class ShipmentJdOutboundPreparer {
                        c.customer_code AS order_customer_code,
                        c.customer_name AS order_customer_name,
                        c.profile->>'jd_customer_code' AS jd_customer_code,
-                       j.sync_status jd_sync_status, j.request_hash jd_request_hash,
+                       j.erp_delivery_no jd_erp_delivery_no,
+                       j.sync_status jd_sync_status, j.failure_phase jd_failure_phase,
+                       j.request_hash jd_request_hash,
+                       j.business_facts_hash jd_business_facts_hash,
                        j.retry_count jd_retry_count, j.last_error_code jd_last_error_code,
                        j.client_mode jd_client_mode
                 FROM app.shipments s
@@ -570,7 +598,7 @@ public class ShipmentJdOutboundPreparer {
                             """,
                             (resultSet, rowNum) -> new Item(
                                     resultSet.getLong("fulfillment_id"),
-                                    resultSet.getBigDecimal("instructed_quantity"),
+                                    resultSet.getInt("instructed_quantity"),
                                     resultSet.getLong("order_line_id"),
                                     resultSet.getString("line_type"),
                                     resultSet.getObject("sku_id", Long.class),
@@ -598,8 +626,11 @@ public class ShipmentJdOutboundPreparer {
                             rs.getString("jd_sync_status") == null
                                     ? null
                                     : new JdOutbound(
+                                            rs.getString("jd_erp_delivery_no"),
                                             rs.getString("jd_sync_status"),
+                                            rs.getString("jd_failure_phase"),
                                             rs.getString("jd_request_hash"),
+                                            rs.getString("jd_business_facts_hash"),
                                             rs.getInt("jd_retry_count"),
                                             rs.getString("jd_last_error_code"),
                                             rs.getString("jd_client_mode")),
@@ -632,7 +663,7 @@ public class ShipmentJdOutboundPreparer {
                         rs.getLong("order_line_id"),
                         rs.getInt("component_no"),
                         rs.getLong("sku_id"),
-                        rs.getBigDecimal("quantity_per_bundle"),
+                        rs.getInt("quantity_per_bundle"),
                         rs.getString("product_name_snapshot"),
                         rs.getString("unit_snapshot")),
                 shipmentId);
@@ -702,6 +733,13 @@ public class ShipmentJdOutboundPreparer {
         }
     }
 
+    /** Stable local-fact hash that deliberately excludes the replaceable JD external reference. */
+    private String businessFactsHash(Map<String, Object> request) {
+        Map<String, Object> facts = new LinkedHashMap<>(request);
+        facts.put("erpDeliveryNo", "<JD_EXTERNAL_REFERENCE>");
+        return sha256(json(facts));
+    }
+
     /** 稳定请求哈希/幂等键散列；对外保持原实现。 */
     static String sha256(String value) {
         try {
@@ -730,7 +768,7 @@ public class ShipmentJdOutboundPreparer {
 
     private record Item(
             long fulfillmentId,
-            BigDecimal instructedQuantity,
+            int instructedQuantity,
             long orderLineId,
             String lineType,
             Long skuId,
@@ -744,14 +782,17 @@ public class ShipmentJdOutboundPreparer {
             long orderLineId,
             int componentNo,
             long skuId,
-            BigDecimal quantityPerBundle,
+            int quantityPerBundle,
             String productName,
             String unit) {
     }
 
     private record JdOutbound(
+            String erpDeliveryNo,
             String syncStatus,
+            String failurePhase,
             String requestHash,
+            String businessFactsHash,
             int retryCount,
             String lastErrorCode,
             String clientMode) {
@@ -785,6 +826,10 @@ public class ShipmentJdOutboundPreparer {
             List<Item> items,
             Map<Long, List<Component>> componentsByOrderLine,
             Map<Long, JdCargoPlanner.Goods> goodsBySku) {
+
+        String erpDeliveryNo() {
+            return jdOutbound == null ? outboundOrderNo : jdOutbound.erpDeliveryNo();
+        }
     }
 
     /** provider_skus 行（含 sku_id 键）与共享 {@link JdCargoPlanner.Goods} 事实的装载记录。 */

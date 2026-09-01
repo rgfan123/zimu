@@ -3,12 +3,14 @@ package cn.zimu.fulfillment.file;
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
 import cn.zimu.fulfillment.common.domain.DataScope;
+import cn.zimu.fulfillment.common.domain.CountQuantity;
 import cn.zimu.fulfillment.common.domain.SourceChannelDisplayNames;
 import cn.zimu.fulfillment.common.error.BusinessException;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingAcceptance;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingBatchCommand;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingCommand;
+import cn.zimu.fulfillment.fulfillment.CarrierPrefixMatcher;
 import cn.zimu.fulfillment.fulfillment.ShipmentTrackingService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -18,7 +20,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -55,6 +56,8 @@ public class TrackingFileService {
     private final AuditLogService auditLogService;
     private final ShipmentTrackingService shipmentTrackingService;
     private final FulfillmentExportWecomService wecomExportService;
+    private final CarrierPrefixMatcher carrierMatcher;
+    private final SourceReturnDerivationQueue sourceReturnDerivations;
     private final DataFormatter formatter = new DataFormatter(java.util.Locale.ROOT);
 
     TrackingFileService(
@@ -64,7 +67,9 @@ public class TrackingFileService {
             SourceFileParser sourceFileParser,
             AuditLogService auditLogService,
             ShipmentTrackingService shipmentTrackingService,
-            FulfillmentExportWecomService wecomExportService) {
+            FulfillmentExportWecomService wecomExportService,
+            CarrierPrefixMatcher carrierMatcher,
+            SourceReturnDerivationQueue sourceReturnDerivations) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
         this.fileStore = fileStore;
@@ -72,6 +77,8 @@ public class TrackingFileService {
         this.auditLogService = auditLogService;
         this.shipmentTrackingService = shipmentTrackingService;
         this.wecomExportService = wecomExportService;
+        this.carrierMatcher = carrierMatcher;
+        this.sourceReturnDerivations = sourceReturnDerivations;
     }
 
     /**
@@ -92,7 +99,7 @@ public class TrackingFileService {
                         row.cells().get("收件人"),
                         row.result(),
                         row.shippedQuantity(),
-                        row.carrier() == null ? null : internalCarrierCode(row.carrier()),
+                        row.carrier() == null ? null : internalCarrier(row.carrier()).code(),
                         row.carrier(),
                         row.trackingNo(),
                         row.failureReason(),
@@ -103,7 +110,7 @@ public class TrackingFileService {
     }
 
     @Transactional
-    Map<String, Object> upload(
+    TrackingUploadResult upload(
             long exportId,
             byte[] bytes,
             String originalFilename,
@@ -123,7 +130,18 @@ public class TrackingFileService {
         String hash = fileStore.sha256(bytes);
         Long replay = existing(exportId, hash);
         if (replay != null) {
-            return get(replay);
+            List<Long> shipmentIds = jdbc.queryForList(
+                    """
+                    SELECT DISTINCT shipment_id FROM app.trackings
+                    WHERE provider_tracking_batch_id=? ORDER BY shipment_id
+                    """,
+                    Long.class,
+                    replay);
+            List<Long> taskIds = shipmentIds.stream()
+                    .map(shipmentId -> sourceReturnDerivations.enqueue(
+                            shipmentId, replay, context.operator()))
+                    .toList();
+            return new TrackingUploadResult(get(replay), taskIds);
         }
 
         List<TrackingRow> rows = parseAndValidate(export, bytes);
@@ -181,21 +199,12 @@ public class TrackingFileService {
             }
         }
 
-        List<Long> sourceBatches = jdbc.query(
-                """
-                SELECT DISTINCT rir.import_batch_id
-                FROM app.fulfillment_export_items fei
-                JOIN app.raw_import_rows rir ON rir.id=fei.raw_import_row_id
-                WHERE fei.fulfillment_export_id=?
-                """,
-                (resultSet, rowNum) -> resultSet.getLong(1), exportId);
-        List<Long> sourceReturnIds = new ArrayList<>();
-        for (long sourceBatchId : sourceBatches) {
-            Long sourceReturnId = generateSourceReturn(sourceBatchId, batchId, context.operator());
-            if (sourceReturnId != null) {
-                sourceReturnIds.add(sourceReturnId);
-            }
-        }
+        List<Long> sourceReturnTaskIds = acceptedRows.stream()
+                .map(TrackingRow::shipmentId)
+                .distinct()
+                .map(shipmentId -> sourceReturnDerivations.enqueue(
+                        shipmentId, batchId, context.operator()))
+                .toList();
         jdbc.update(
                 "UPDATE app.import_batches SET status='COMPLETED', processed_at=CURRENT_TIMESTAMP WHERE id=?",
                 batchId);
@@ -203,14 +212,14 @@ public class TrackingFileService {
         wecomExportService.markTrackingReceived(exportId);
         Map<String, Object> result = get(batchId);
         result.put("business_results", Map.of("shipped", shipped, "partial", partial, "failed", failed));
-        result.put("generated_source_return_export_ids", sourceReturnIds.stream().map(Object::toString).toList());
+        result.put("generated_source_return_export_ids", List.of());
         auditLogService.record(new AuditLogService.AuditCommand()
                 .dataScope(DataScope.BUSINESS)
                 .requestId(context.requestId()).traceId(context.traceId()).operator(context.operator())
                 .actorType(AuditActorType.HUMAN).service("provider-tracking").operation("file.upload")
                 .requestPayload(Map.of("export_id", exportId, "content_sha256", hash, "idempotency_key", idempotencyKey))
                 .responsePayload(result).httpStatus(201).businessCode("TRACKING_BATCH_ACCEPTED"));
-        return result;
+        return new TrackingUploadResult(result, sourceReturnTaskIds);
     }
 
     /**
@@ -304,6 +313,7 @@ public class TrackingFileService {
                         "TRACKING_MULTI_ITEM_SHIPMENT_MISMATCH",
                         "同一 Shipment 的多履约明细必须完整发货并使用同一运单");
             }
+            CarrierPrefixMatcher.Carrier carrier = internalCarrier(first.carrier());
             ShipmentTrackingAcceptance acceptance = shipmentTrackingService.acceptShipment(
                     new ShipmentTrackingBatchCommand(
                             batchId,
@@ -313,8 +323,8 @@ public class TrackingFileService {
                                     .map(row -> new ShipmentTrackingBatchCommand.Item(
                                             row.fulfillmentId(), row.orderLineId(), row.shippedQuantity()))
                                     .toList(),
-                            internalCarrierCode(first.carrier()),
-                            first.carrier(),
+                            carrier.code(),
+                            carrier.name(),
                             first.trackingNo(),
                             first.shippedAt(),
                             Map.of("rows", shipmentRows.stream().map(TrackingRow::cells).toList()),
@@ -327,10 +337,11 @@ public class TrackingFileService {
     }
 
     private void acceptTrackingRow(long batchId, TrackingRow row, CommandContext context) {
+        CarrierPrefixMatcher.Carrier carrier = row.carrier() == null ? null : internalCarrier(row.carrier());
         shipmentTrackingService.accept(new ShipmentTrackingCommand(
                 batchId, row.shipmentId(), row.fulfillmentId(), row.orderLineId(), row.orderId(), row.result(),
-                row.shippedQuantity(), row.carrier() == null ? null : internalCarrierCode(row.carrier()),
-                row.carrier(), row.trackingNo(), row.shippedAt(), row.failureReason(), row.cells()), context);
+                row.shippedQuantity(), carrier == null ? null : carrier.code(),
+                carrier == null ? null : carrier.name(), row.trackingNo(), row.shippedAt(), row.failureReason(), row.cells()), context);
     }
 
     /**
@@ -445,8 +456,10 @@ public class TrackingFileService {
                 if (row == null) continue;
                 Map<String, String> cells = new LinkedHashMap<>();
                 for (int column = 0; column < ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.size(); column++) {
-                    cells.put(ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.get(column),
-                            formatter.formatCellValue(row.getCell(column)).strip());
+                    String header = ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.get(column);
+                    cells.put(header, "数量".equals(header)
+                            ? ExcelCellValues.exactCount(row.getCell(column), formatter).strip()
+                            : formatter.formatCellValue(row.getCell(column)).strip());
                 }
                 if (cells.values().stream().allMatch(String::isEmpty)) continue;
                 if (row.getLastCellNum() > ProviderFileService.HUMAN_THIRD_PARTY_HEADERS.size()) {
@@ -474,20 +487,19 @@ public class TrackingFileService {
                 }
                 // 数量列在人读格式里承载「实发」：与指令相等 = 全部发出；改小 = 部分发货
                 //（履约方少发时的自然写法就是把数量改成实发数）；改大或非法直接拒绝。
-                BigDecimal shipped;
+                int shipped;
                 try {
-                    shipped = new BigDecimal(cells.get("数量"));
-                } catch (NumberFormatException exception) {
+                    shipped = CountQuantity.fromPositiveFileValue(cells.get("数量"));
+                } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
                     throw BusinessException.unprocessable(
                             "TRACKING_QUANTITY_INVALID", "第 " + (index + 1) + " 行数量不是有效数字");
                 }
-                if (shipped.signum() <= 0 || shipped.stripTrailingZeros().scale() > 0
-                        || shipped.compareTo(line.instructedQuantity()) > 0) {
+                if (shipped > line.instructedQuantity()) {
                     throw BusinessException.unprocessable(
                             "TRACKING_QUANTITY_INVALID",
                             "第 " + (index + 1) + " 行实发数量必须为不超过请求数量的正整数");
                 }
-                String rowResult = shipped.compareTo(line.instructedQuantity()) == 0 ? "SHIPPED" : "PARTIAL";
+                String rowResult = shipped == line.instructedQuantity() ? "SHIPPED" : "PARTIAL";
                 // 兼容下游既有键位：收件人 / 礼包分组标识 取导出指令原值；「结果」是人读八列
                 // 没有的列，把解析推导值一并落进 raw_cells——business_results 读模型
                 // （raw_cells->>'结果' 聚合）才能与上传响应的内存计数保持同一口径。
@@ -496,7 +508,7 @@ public class TrackingFileService {
                 cells.put("结果", rowResult);
                 result.add(new TrackingRow(
                         index + 1, cells, rowResult, line,
-                        shipped.intValueExact(), carrier, trackingNo, null, null));
+                        shipped, carrier, trackingNo, null, null));
             }
             if (dataRows != expected.size()) {
                 throw BusinessException.unprocessable(
@@ -563,8 +575,11 @@ public class TrackingFileService {
                 }
                 Map<String, String> cells = new LinkedHashMap<>();
                 for (int column = 0; column < ProviderFileService.THIRD_PARTY_HEADERS.size(); column++) {
-                    cells.put(ProviderFileService.THIRD_PARTY_HEADERS.get(column),
-                            formatter.formatCellValue(row.getCell(column)).strip());
+                    String header = ProviderFileService.THIRD_PARTY_HEADERS.get(column);
+                    boolean count = "请求发货数量".equals(header) || "实际发货数量".equals(header);
+                    cells.put(header, count
+                            ? ExcelCellValues.exactCount(row.getCell(column), formatter).strip()
+                            : formatter.formatCellValue(row.getCell(column)).strip());
                 }
                 ExpectedExportLine line = expected.get(index);
                 for (int immutable = 0; immutable < 18; immutable++) {
@@ -670,18 +685,17 @@ public class TrackingFileService {
             }
             return new TrackingRow(rowIndex, cells, result, line, null, null, null, null, cells.get("异常原因"));
         }
-        BigDecimal quantity;
+        int quantity;
         try {
-            quantity = new BigDecimal(cells.get("实际发货数量"));
-        } catch (NumberFormatException exception) {
+            quantity = CountQuantity.fromPositiveFileValue(cells.get("实际发货数量"));
+        } catch (cn.zimu.fulfillment.common.domain.CountQuantity.InvalidCountQuantityException exception) {
             throw BusinessException.unprocessable("TRACKING_QUANTITY_INVALID", "实际发货数量非法");
         }
-        if (quantity.signum() <= 0 || quantity.stripTrailingZeros().scale() > 0
-                || quantity.compareTo(line.instructedQuantity()) > 0) {
+        if (quantity > line.instructedQuantity()) {
             throw BusinessException.unprocessable("TRACKING_QUANTITY_INVALID", "实际数量必须为正整数且不超过指令数");
         }
-        if (("SHIPPED".equals(result) && quantity.compareTo(line.instructedQuantity()) != 0)
-                || ("PARTIAL".equals(result) && quantity.compareTo(line.instructedQuantity()) >= 0)) {
+        if (("SHIPPED".equals(result) && quantity != line.instructedQuantity())
+                || ("PARTIAL".equals(result) && quantity >= line.instructedQuantity())) {
             throw BusinessException.unprocessable("TRACKING_RESULT_QUANTITY_MISMATCH", "结果与实发数量不一致");
         }
         String carrier = cells.get("快递公司");
@@ -692,7 +706,7 @@ public class TrackingFileService {
         Instant shippedAt = cells.get("发货时间").isBlank()
                 ? null
                 : parseShippedAt(cells.get("发货时间"));
-        return new TrackingRow(rowIndex, cells, result, line, quantity.intValueExact(), carrier, trackingNo, shippedAt, null);
+        return new TrackingRow(rowIndex, cells, result, line, quantity, carrier, trackingNo, shippedAt, null);
     }
 
     private Instant parseShippedAt(String value) {
@@ -831,16 +845,17 @@ public class TrackingFileService {
                 return row;
             }
             Map<String, String> cells = new LinkedHashMap<>(row.rawCells());
+            normalizeSourceCount(source.channel(), row, cells);
             switch (source.channel()) {
                 case "CAISHIXIAN" -> {
-                    cells.put("发货数量", sourceQuantityCell(fill));
+                    cells.put("发货数量", Integer.toString(sourceQuantityCell(fill)));
                     cells.put("物流公司代码", fill.sourceCarrier());
                     cells.put("物流单号", fill.trackingNo());
                     cells.put("错误原因", "");
                 }
                 case "JUFUBAO" -> {
                     cells.put("是否发完", "是");
-                    cells.put("发货数量", sourceQuantityCell(fill));
+                    cells.put("发货数量", Integer.toString(sourceQuantityCell(fill)));
                     cells.put("快递公司", fill.sourceCarrier());
                     cells.put("快递单号", fill.trackingNo());
                 }
@@ -882,6 +897,9 @@ public class TrackingFileService {
                     .filter(cell -> !java.util.Objects.equals(cell.getValue(), row.rawCells().get(cell.getKey())))
                     .map(Map.Entry::getKey)
                     .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+            sourceCountColumns(source.channel()).stream()
+                    .filter(cells::containsKey)
+                    .forEach(changed::add);
             changedByCoordinate.put(row.sheetIndex() + ":" + row.rowIndex(), changed);
             return copyWithCells(row, cells);
         }).toList();
@@ -1009,9 +1027,49 @@ public class TrackingFileService {
     /** 京东运单回填后，尝试为 Shipment 所属来源批次生成唯一最终原格式文件。 */
     @Transactional
     public List<Long> finalizeReadySourceReturnsForShipment(long shipmentId, String operator) {
+        return finalizeReadySourceReturnsForShipment(shipmentId, null, operator);
+    }
+
+    /** 派生任务入口；与 Tracking 事实使用不同事务。 */
+    @Transactional
+    public List<Long> finalizeReadySourceReturnsForShipment(
+            long shipmentId, Long trackingBatchId, String operator) {
+        List<Long> sourceBatchIds = sourceBatchIdsForShipment(shipmentId);
+        List<Long> result = new ArrayList<>();
+        for (long sourceBatchId : sourceBatchIds) {
+            Long returnId = generateSourceReturn(sourceBatchId, trackingBatchId, operator);
+            if (returnId != null) result.add(returnId);
+        }
+        return List.copyOf(result);
+    }
+
+    public List<String> sourceReturnIdsForShipment(long shipmentId) {
+        List<String> result = new ArrayList<>();
+        for (long sourceBatchId : sourceBatchIdsForShipment(shipmentId)) {
+            result.addAll(jdbc.query(
+                    """
+                    SELECT sre.id
+                    FROM app.source_return_exports sre
+                    WHERE sre.import_batch_id=? AND sre.is_final
+                      AND NOT EXISTS (
+                          SELECT 1 FROM app.source_return_export_invalidations invalidation
+                          WHERE invalidation.source_return_export_id=sre.id)
+                    ORDER BY sre.id
+                    """,
+                    (resultSet, rowNum) -> resultSet.getString(1),
+                    sourceBatchId));
+        }
+        return List.copyOf(result);
+    }
+
+    List<String> generatedSourceReturnIdsForTrackingBatch(long trackingBatchId) {
+        return generatedSourceReturnIds(trackingBatchId);
+    }
+
+    private List<Long> sourceBatchIdsForShipment(long shipmentId) {
         // jd-real-sdk-switch 06：SDK 直连路由（05）的 shipment 没有 fulfillment_export_items，
         // 通过 shipment_items → fulfillments → raw_import_rows 反查来源批次；文件路由保持原路径。
-        List<Long> sourceBatchIds = jdbc.query(
+        return jdbc.query(
                 """
                 SELECT DISTINCT import_batch_id FROM (
                     SELECT rir.import_batch_id
@@ -1032,12 +1090,6 @@ public class TrackingFileService {
                 (resultSet, rowNum) -> resultSet.getLong(1),
                 shipmentId,
                 shipmentId);
-        List<Long> result = new ArrayList<>();
-        for (long sourceBatchId : sourceBatchIds) {
-            Long returnId = generateSourceReturn(sourceBatchId, null, operator);
-            if (returnId != null) result.add(returnId);
-        }
-        return List.copyOf(result);
     }
 
     private byte[] trueCsv(SourceBatch source, List<ParsedSourceRow> rows) {
@@ -1096,7 +1148,12 @@ public class TrackingFileService {
                         header.getCell(column).setCellValue(name);
                     }
                     if (data.getCell(column) == null) data.createCell(column);
-                    data.getCell(column).setCellValue(parsed.rawCells().get(name));
+                    if (isSourceCountColumn(source.channel(), name)) {
+                        data.getCell(column).setCellValue(CountQuantity.fromPositiveFileValue(
+                                parsed.rawCells().get(name)));
+                    } else {
+                        data.getCell(column).setCellValue(parsed.rawCells().get(name));
+                    }
                 }
             }
             workbook.write(output);
@@ -1213,7 +1270,7 @@ public class TrackingFileService {
                         resultSet.getLong("fulfillment_id"), resultSet.getLong("order_line_id"),
                         (Long) resultSet.getObject("order_line_component_id"),
                         resultSet.getLong("order_id"), resultSet.getString("outbound_order_no"),
-                        resultSet.getBigDecimal("instructed_quantity"),
+                        resultSet.getInt("instructed_quantity"),
                         (Integer) resultSet.getObject("component_quantity_per_bundle"),
                         jsonMap(resultSet.getString("output_cells"))),
                 exportId);
@@ -1279,7 +1336,10 @@ public class TrackingFileService {
                        s.id shipment_id, s.shipment_sequence, si.shipped_quantity,
                        ol.mapping_multiplier_snapshot,
                        t.tracking_number, f.outcome, f.cancelled_quantity,
-                       cc.config #>> ARRAY['carrier_mappings', t.logistics_company_code] source_carrier
+                       COALESCE(
+                           NULLIF(btrim((cc.config->'carrier_mappings')->>t.logistics_company_code), ''),
+                           NULLIF(btrim(t.logistics_company_name), ''),
+                           t.logistics_company_code) source_carrier
                 FROM app.raw_import_rows rir
                 JOIN raw_line_links rll ON rll.raw_row_id=rir.id
                 JOIN app.order_lines ol ON ol.id=rll.order_line_id
@@ -1297,17 +1357,14 @@ public class TrackingFileService {
                 """,
                 (resultSet, rowNum) -> {
                     String carrier = resultSet.getString("source_carrier");
-                    if (carrier == null || carrier.isBlank()) {
-                        throw BusinessException.unprocessable("CARRIER_MAPPING", "来源渠道快递映射缺失");
-                    }
                     return new ReturnRow(
                             resultSet.getLong("raw_row_id"), resultSet.getInt("sheet_index"),
                             resultSet.getInt("row_index"), resultSet.getLong("order_line_id"),
                             resultSet.getLong("shipment_id"), resultSet.getInt("shipment_sequence"),
-                            resultSet.getBigDecimal("shipped_quantity"),
-                            resultSet.getBigDecimal("mapping_multiplier_snapshot"), carrier,
+                            resultSet.getInt("shipped_quantity"),
+                            resultSet.getObject("mapping_multiplier_snapshot", Integer.class), carrier,
                             resultSet.getString("tracking_number"), resultSet.getString("outcome"),
-                            resultSet.getBigDecimal("cancelled_quantity"));
+                            resultSet.getObject("cancelled_quantity", Integer.class));
                 }, sourceBatchId, sourceBatchId, sourceBatchId);
     }
 
@@ -1320,9 +1377,9 @@ public class TrackingFileService {
                 row.errorCode(), row.errorMessage());
     }
 
-    private String internalCarrierCode(String providerCarrier) {
-        if ("京东物流".equals(providerCarrier) || "JD".equals(providerCarrier)) return "JD";
-        throw BusinessException.unprocessable("CARRIER_MAPPING", "未配置内部快递映射: " + providerCarrier);
+    private CarrierPrefixMatcher.Carrier internalCarrier(String providerCarrier) {
+        return carrierMatcher.resolveStated(providerCarrier).orElseThrow(() ->
+                BusinessException.unprocessable("CARRIER_MAPPING", "未配置内部快递映射: " + providerCarrier));
     }
 
     private Long existing(long exportId, String hash) {
@@ -1406,7 +1463,7 @@ public class TrackingFileService {
     private record ExportHeader(long id, long providerId, String batchNo, String exportKind) {}
     private record ExpectedExportLine(
             int lineNo, long shipmentId, long fulfillmentId, long orderLineId, Long orderLineComponentId,
-            long orderId, String outboundOrderNo, BigDecimal instructedQuantity,
+            long orderId, String outboundOrderNo, int instructedQuantity,
             Integer componentQuantityPerBundle, Map<String, Object> outputCells) {}
     private record TrackingRow(
             int rowIndex, Map<String, String> cells, String result, ExpectedExportLine line,
@@ -1422,6 +1479,11 @@ public class TrackingFileService {
             rows = List.copyOf(rows);
         }
     }
+    record TrackingUploadResult(Map<String, Object> body, List<Long> sourceReturnTaskIds) {
+        TrackingUploadResult {
+            sourceReturnTaskIds = List.copyOf(sourceReturnTaskIds);
+        }
+    }
     record ParsedTrackingRow(
             int rowIndex,
             long shipmentId,
@@ -1435,7 +1497,7 @@ public class TrackingFileService {
             String carrierName,
             String trackingNo,
             String failureReason,
-            BigDecimal instructedQuantity,
+            int instructedQuantity,
             Map<String, String> cells) {
         ParsedTrackingRow {
             cells = Map.copyOf(cells);
@@ -1453,26 +1515,48 @@ public class TrackingFileService {
      * <p>除不尽意味着实发件数不足整份来源销售单位，来源表格无法表达该状态。
      * 此时失败关闭：向合作平台少报或多报发货量都是实质错误，不做四舍五入。
      */
-    private static String sourceQuantityCell(ReturnRow row) {
-        BigDecimal internal = row.shippedQuantity();
-        if (internal == null) {
-            return "";
-        }
-        BigDecimal factor = row.mappingMultiplier() == null || row.mappingMultiplier().signum() <= 0
-                ? BigDecimal.ONE
+    private static int sourceQuantityCell(ReturnRow row) {
+        int internal = row.shippedQuantity();
+        int factor = row.mappingMultiplier() == null || row.mappingMultiplier() <= 0
+                ? 1
                 : row.mappingMultiplier();
-        try {
-            return internal.divide(factor, 0, RoundingMode.UNNECESSARY).stripTrailingZeros().toPlainString();
-        } catch (ArithmeticException exception) {
+        if (internal <= 0 || internal % factor != 0) {
             throw BusinessException.unprocessable(
                     "SOURCE_RETURN_QUANTITY_NOT_SOURCE_UNIT",
-                    "实发 " + internal.toPlainString() + " 件无法按渠道乘数 " + factor.toPlainString()
+                    "实发 " + internal + " 件无法按渠道乘数 " + factor
                             + " 还原为来源整数份数，来源回传表格无法表达该部分发货状态");
         }
+        return internal / factor;
+    }
+
+    private static void normalizeSourceCount(
+            String channel, ParsedSourceRow row, Map<String, String> cells) {
+        for (String column : sourceCountColumns(channel)) {
+            if (cells.containsKey(column) && !"发货数量".equals(column)) {
+                cells.put(column, row.quantity().toString());
+                return;
+            }
+        }
+    }
+
+    private static boolean isSourceCountColumn(String channel, String column) {
+        return sourceCountColumns(channel).contains(column);
+    }
+
+    private static List<String> sourceCountColumns(String channel) {
+        return switch (channel) {
+            case "CAISHIXIAN" -> List.of("下单数量", "发货数量");
+            case "JUFUBAO" -> List.of("数量", "发货数量");
+            case "FEIXIANG" -> List.of("可发货数量", "商品数量");
+            case "ZHONGHUI" -> List.of("件数");
+            case "WANGQI", "DAZHE" -> List.of("数量", "商品数量");
+            case "WANQI" -> List.of("购买数量");
+            default -> List.of();
+        };
     }
 
     private record ReturnRow(
             long rawRowId, int sheetIndex, int rowIndex, long orderLineId, long shipmentId, int shipmentSequence,
-            BigDecimal shippedQuantity, BigDecimal mappingMultiplier, String sourceCarrier, String trackingNo,
-            String fulfillmentOutcome, BigDecimal cancelledQuantity) {}
+            int shippedQuantity, Integer mappingMultiplier, String sourceCarrier, String trackingNo,
+            String fulfillmentOutcome, Integer cancelledQuantity) {}
 }

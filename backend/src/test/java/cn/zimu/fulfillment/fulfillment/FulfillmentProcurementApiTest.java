@@ -69,7 +69,7 @@ class FulfillmentProcurementApiTest {
                         "result", "SUCCESS",
                         "items", List.of(Map.of(
                                 "ticket_item_id", ticketItemId,
-                                "available_quantity", "2"))),
+                                "available_quantity", 2))),
                         writeHeaders("procurement-receipt-excessive-001", "req-procurement-receipt-excessive-001")),
                 Map.class);
         assertThat(excessive.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
@@ -79,7 +79,7 @@ class FulfillmentProcurementApiTest {
         Map<String, Object> receiptInput = Map.of(
                 "result", "SUCCESS",
                 "source_ref", "PURCHASE-RESULT-001",
-                "items", List.of(Map.of("ticket_item_id", ticketItemId, "available_quantity", "1")));
+                "items", List.of(Map.of("ticket_item_id", ticketItemId, "available_quantity", 1)));
         ResponseEntity<Map> created = http.exchange(
                 "/internal/v1/procurement/tickets/" + ticketId + "/receipts",
                 HttpMethod.POST,
@@ -110,7 +110,7 @@ class FulfillmentProcurementApiTest {
                 "receiver", Map.of("name", "张三", "phone", "13800000000", "address", "上海市浦东新区测试路 1 号"),
                 "items", List.of(Map.of(
                         "line_type", "SINGLE", "source_sku_ref", "WECOM-SKU-JD-001",
-                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", "2")),
+                        "product_name", "子牧羊小腿", "specification", "500g/盒", "unit", "盒", "quantity", 2)),
                 "settlement", Map.of("method", "MONTHLY", "settlement_time", "2026-08-11T10:00:00+08:00"));
         ResponseEntity<Map> response = http.exchange(
                 "/internal/v1/orders", HttpMethod.POST,

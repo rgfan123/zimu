@@ -38,6 +38,21 @@ class McpBundleReadToolsUnitTest {
     }
 
     @Test
+    void bundleEconomicsSchemaAdvertisesAnInt32JsonCount() {
+        JsonNode quantity = tool("estimate_bundle_economics")
+                .inputSchema()
+                .path("properties")
+                .path("components")
+                .path("items")
+                .path("properties")
+                .path("quantity");
+
+        assertThat(quantity.path("type").asText()).isEqualTo("integer");
+        assertThat(quantity.path("minimum").asInt()).isEqualTo(1);
+        assertThat(quantity.path("maximum").asLong()).isEqualTo(Integer.MAX_VALUE);
+    }
+
+    @Test
     void mixedProviderBundleHasExplicitShipmentSplitProjection() {
         ProviderSummary jd = new ProviderSummary("1", "JD", "京东仓", "JD_WAREHOUSE");
         ProviderSummary thirdParty = new ProviderSummary("2", "TP", "冷链仓", "THIRD_PARTY");
@@ -52,9 +67,9 @@ class McpBundleReadToolsUnitTest {
                 "ACTIVE",
                 List.of(
                         new BundleComponent(
-                                1, "11", "SKU-JD-000011", "21", "P-21", "牛腩", "500g", "袋", "2", "30.00", true, jd),
+                                1, "11", "SKU-JD-000011", "21", "P-21", "牛腩", "500g", "袋", 2, "30.00", true, jd),
                         new BundleComponent(
-                                2, "12", "SKU-TP-000012", "22", "P-22", "羊排", "400g", "盒", "1", "40.00", true, thirdParty)),
+                                2, "12", "SKU-TP-000012", "22", "P-22", "羊排", "400g", "盒", 1, "40.00", true, thirdParty)),
                 true,
                 List.of(jd, thirdParty));
 
@@ -124,7 +139,7 @@ class McpBundleReadToolsUnitTest {
                         providerSummary,
                         "TP-BEEF-51",
                         List.of(new InventoryObservation(
-                                "WH-A", "100", "36", "INTERNAL_UNIT", Instant.parse("2026-08-28T00:00:00Z"), "CACHE")))),
+                                "WH-A", 100, 36, "INTERNAL_UNIT", Instant.parse("2026-08-28T00:00:00Z"), "CACHE")))),
                 0,
                 20,
                 1,
@@ -167,8 +182,8 @@ class McpBundleReadToolsUnitTest {
 
         JsonNode result = tool("estimate_bundle_economics").invoke(context, Map.of(
                 "components", List.of(
-                        Map.of("sku_id", "11", "quantity", "2"),
-                        Map.of("sku_id", "12", "quantity", "1")),
+                        Map.of("sku_id", "11", "quantity", 2),
+                        Map.of("sku_id", "12", "quantity", 1)),
                 "expected_price", "199",
                 "freight_fee", "12",
                 "storage_fee", "3"));
@@ -193,8 +208,8 @@ class McpBundleReadToolsUnitTest {
 
         JsonNode result = tool("estimate_bundle_economics").invoke(context, Map.of(
                 "components", List.of(
-                        Map.of("sku_id", "11", "quantity", "1"),
-                        Map.of("sku_id", "13", "quantity", "1")),
+                        Map.of("sku_id", "11", "quantity", 1),
+                        Map.of("sku_id", "13", "quantity", 1)),
                 "expected_price", "99"));
 
         assertThat(result.path("economics").path("computable").asBoolean()).isFalse();
@@ -213,11 +228,11 @@ class McpBundleReadToolsUnitTest {
                 "expected_price", "99")))
                 .hasMessageContaining("正整数");
         assertThatThrownBy(() -> tool("estimate_bundle_economics").invoke(context, Map.of(
-                "components", List.of(Map.of("sku_id", "11", "quantity", "1")),
+                "components", List.of(Map.of("sku_id", "11", "quantity", 1)),
                 "expected_price", "99.999")))
                 .hasMessageContaining("两位小数");
         assertThatThrownBy(() -> tool("estimate_bundle_economics").invoke(context, Map.of(
-                "components", List.of(Map.of("sku_id", "11", "quantity", "1")),
+                "components", List.of(Map.of("sku_id", "11", "quantity", 1)),
                 "expected_price", "99")))
                 .hasMessageContaining("SKU 不存在");
     }

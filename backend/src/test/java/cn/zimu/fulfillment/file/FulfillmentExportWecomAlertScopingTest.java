@@ -555,7 +555,7 @@ class FulfillmentExportWecomAlertScopingTest {
                 HttpMethod.POST,
                 new HttpEntity<>(Map.of(
                         "expected_version", version,
-                        "instructed_quantity", "2",
+                        "instructed_quantity", 2,
                         "remark", "续发"),
                         writeHeaders(idempotencyKey)),
                 Map.class);

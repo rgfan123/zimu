@@ -28,6 +28,16 @@ class FeixiangCarrierCodeResolverTest {
     }
 
     @Test
+    void resolvesCanonicalCarrierCodeWithoutRequiringDisplayTranslation() {
+        FeixiangCarrierCodeResolver.Resolution resolution = FeixiangCarrierCodeResolver.resolveFrom(
+                config("{\"carrier_api_codes\":{\"SF\":\"shunfeng\"}}"),
+                "SF");
+
+        assertThat(resolution.resolved()).isTrue();
+        assertThat(resolution.expressCode()).isEqualTo("shunfeng");
+    }
+
+    @Test
     void missingApiCodeTableBlocksInsteadOfFallingBackToDisplayName() {
         FeixiangCarrierCodeResolver.Resolution resolution = FeixiangCarrierCodeResolver.resolveFrom(
                 config("{\"carrier_mappings\":{\"JD\":\"京东物流\"}}"), "京东物流");

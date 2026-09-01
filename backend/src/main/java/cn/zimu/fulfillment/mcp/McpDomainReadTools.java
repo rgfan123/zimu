@@ -628,6 +628,13 @@ public class McpDomainReadTools {
             value.put("message", issue.message());
             value.put("action", issue.action());
         });
+        var warnings = readiness.putArray("warnings");
+        detail.readiness().warnings().forEach(warning -> {
+            ObjectNode value = warnings.addObject();
+            value.put("code", warning.code());
+            value.put("message", warning.message());
+            value.put("action", warning.action());
+        });
         item.put("created_at", detail.createdAt() == null ? null : detail.createdAt().toString());
         item.put("updated_at", detail.updatedAt() == null ? null : detail.updatedAt().toString());
         return item;

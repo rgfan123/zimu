@@ -2,6 +2,7 @@ package cn.zimu.fulfillment.fulfillment;
 
 import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.audit.AuditLogService;
+import cn.zimu.fulfillment.common.domain.CountQuantity;
 import cn.zimu.fulfillment.common.domain.DataScope;
 import cn.zimu.fulfillment.common.dto.PageResponse;
 import cn.zimu.fulfillment.common.error.BusinessException;
@@ -20,7 +21,6 @@ import cn.zimu.fulfillment.order.ReviewCaseRepository;
 import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
 import jakarta.persistence.EntityManager;
-import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -393,7 +393,7 @@ public class TrackingDraftService {
 
         draft.setTaskId(task.taskId());
         draft.setCarrierCode(carrier.code());
-        draft.setActualQuantity(shippedQuantity);
+        draft.setActualQuantity((long) shippedQuantity);
         draft.setStatus(ProviderTrackingDraft.Status.CONFIRMED);
         draft.setConfirmedBy(context.operator());
         draft.setConfirmedAt(Instant.now());
@@ -486,8 +486,8 @@ public class TrackingDraftService {
 
         markWecomTrackingReceived(fileShipment.shipmentId());
 
-        int total = fileShipment.items().stream()
-                .mapToInt(ShipmentTrackingBatchCommand.Item::shippedQuantity)
+        long total = fileShipment.items().stream()
+                .mapToLong(ShipmentTrackingBatchCommand.Item::shippedQuantity)
                 .sum();
         draft.setCarrierCode(carrier.code());
         draft.setActualQuantity(total);
@@ -558,7 +558,7 @@ public class TrackingDraftService {
                 return new ShipmentTrackingBatchCommand.Item(
                         Long.parseLong(String.valueOf(row.get("fulfillment_id"))),
                         Long.parseLong(String.valueOf(row.get("order_line_id"))),
-                        new BigDecimal(String.valueOf(row.get("shipped_quantity"))).intValueExact());
+                        CountQuantity.fromPositiveFileValue(String.valueOf(row.get("shipped_quantity"))));
             }).toList();
             return new FileShipment(shipmentId, orderId, commands);
         } catch (RuntimeException exception) {
@@ -613,7 +613,7 @@ public class TrackingDraftService {
         payload.put("task_choice_present", hasText(command.taskId()));
         payload.put("task_no_choice_present", hasText(command.taskNo()));
         payload.put("carrier_choice_present", hasText(command.carrierCode()));
-        payload.put("actual_quantity_present", hasText(command.actualQuantity()));
+        payload.put("actual_quantity_present", command.actualQuantity() != null);
         payload.put("remark_present", hasText(command.remark()));
         return payload;
     }
@@ -762,30 +762,23 @@ public class TrackingDraftService {
 
     private int resolveShippedQuantity(
             ProviderTrackingDraft draft, TrackingDraftConfirmCommand command, TrackingTaskResolver.TaskCandidate task) {
-        BigDecimal instructed = task.instructedQuantity();
-        if (instructed.signum() <= 0) {
+        int instructed = task.instructedQuantity();
+        if (instructed <= 0) {
             throw BusinessException.unprocessable("TASK_INVALID", "该发货批次没有可确认的指令数量");
         }
         if (draft.getShipmentJudgment() == ProviderTrackingDraft.ShipmentJudgment.FULL) {
-            return instructed.intValueExact();
+            return instructed;
         }
-        String raw = command.actualQuantity();
-        if (raw == null || raw.isBlank()) {
+        Integer quantity = command.actualQuantity();
+        if (quantity == null) {
             throw BusinessException.unprocessable(
                     "ACTUAL_QUANTITY_REQUIRED", "部分/缺货/异常行必须人工录入实际数量");
         }
-        BigDecimal quantity;
-        try {
-            quantity = new BigDecimal(raw.trim());
-        } catch (NumberFormatException ex) {
-            throw BusinessException.unprocessable("ACTUAL_QUANTITY_INVALID", "实际数量非法");
-        }
-        if (quantity.signum() <= 0 || quantity.stripTrailingZeros().scale() > 0
-                || quantity.compareTo(instructed) > 0) {
+        if (quantity <= 0 || quantity > instructed) {
             throw BusinessException.unprocessable(
                     "ACTUAL_QUANTITY_INVALID", "实际数量必须为正整数且不超过该发货批次指令数量");
         }
-        return quantity.intValueExact();
+        return quantity;
     }
 
     private void requireNoDuplicateTracking(String carrierCode, String trackingNo) {
@@ -877,7 +870,7 @@ public class TrackingDraftService {
                         })
                         .toList(),
                 draft.getTaskId() == null ? null : String.valueOf(draft.getTaskId()),
-                draft.getTaskCandidates(),
+                normalizedTaskCandidates(draft.getTaskCandidates()),
                 draft.getDraftNo().startsWith("TD-FILE-") ? "WECOM_TRACKING_FILE" : "WECOM_MESSAGE",
                 draft.getDraftNo().startsWith("TD-FILE-") && draft.getTaskCandidates().size() > 1
                         ? "ATOMIC_SHIPMENT"
@@ -894,6 +887,37 @@ public class TrackingDraftService {
                 openCase == null ? null : String.valueOf(openCase.getId()),
                 openCase == null ? null : openCase.getResolutionVersion(),
                 draft.getCreatedAt());
+    }
+
+    private static List<Map<String, Object>> normalizedTaskCandidates(
+            List<Map<String, Object>> candidates) {
+        if (candidates == null) {
+            return List.of();
+        }
+        return candidates.stream().map(candidate -> {
+            Map<String, Object> normalized = new LinkedHashMap<>(candidate);
+            normalizeCandidateCount(normalized, "requested_quantity", false);
+            normalizeCandidateCount(normalized, "shipped_quantity", false);
+            normalizeCandidateCount(normalized, "instructed_quantity", true);
+            return normalized;
+        }).toList();
+    }
+
+    private static void normalizeCandidateCount(
+            Map<String, Object> candidate, String key, boolean positive) {
+        Object raw = candidate.get(key);
+        if (raw == null) {
+            return;
+        }
+        try {
+            int value = positive
+                    ? CountQuantity.fromPositiveFileValue(String.valueOf(raw))
+                    : CountQuantity.fromNonNegativeFileValue(String.valueOf(raw));
+            candidate.put(key, value);
+        } catch (CountQuantity.InvalidCountQuantityException exception) {
+            throw BusinessException.unprocessable(
+                    "TRACKING_DRAFT_EVIDENCE_INVALID", "运单草稿的历史数量证据不是有效整数，请重新生成草稿");
+        }
     }
 
     private static ProviderTrackingDraft.Status parseStatus(String status) {

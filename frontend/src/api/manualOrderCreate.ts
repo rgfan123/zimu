@@ -9,11 +9,13 @@ import type { ManualOrderCreateInput, ManualOrderItemInput } from './types.ts';
  * 本模块只做纯函数装配，供页面与 node:test 直跑共用（相对 .ts 导入，不经 @/ 别名）。
  */
 
-/** V99 整数纪律：数量是正整数字符串，禁止前导零/小数/空白。 */
+/** 数量表单边界：只接受 int32 正整数文本，发往后端时转换为 JSON integer。 */
 export const MANUAL_QUANTITY_PATTERN = /^[1-9][0-9]*$/;
 
 export function isValidManualQuantity(value: string): boolean {
-  return MANUAL_QUANTITY_PATTERN.test(value);
+  if (!MANUAL_QUANTITY_PATTERN.test(value)) return false;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= 2_147_483_647;
 }
 
 /** FNV-1a 32-bit hash，输出 8 位小写 hex（与 zhonghuiPmsIdempotency 同实现）。 */
@@ -85,7 +87,7 @@ export function manualOrderCreateBody(values: ManualOrderFormValues): ManualOrde
     const quantity = item.quantity?.trim() ?? '';
     if (!skuId) throw new Error(`第 ${index + 1} 行商品未选择`);
     if (!isValidManualQuantity(quantity)) throw new Error(`第 ${index + 1} 行数量必须为正整数`);
-    return { sku_id: skuId, quantity };
+    return { sku_id: skuId, quantity: Number(quantity) };
   });
   if (items.length === 0) throw new Error('至少需要一行商品');
   const remark = values.remark?.trim();

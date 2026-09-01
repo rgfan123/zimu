@@ -66,9 +66,9 @@ class InventoryOverviewApiTest {
                 .containsEntry("sku_id", String.valueOf(observedSkuId))
                 .containsEntry("warehouse_code", "WH-ZERO")
                 .containsEntry("observation_status", "OBSERVED")
-                .containsEntry("total_quantity", "0.000")
-                .containsEntry("available_quantity", "0.000")
-                .containsEntry("unavailable_quantity", "0.000")
+                .containsEntry("total_quantity", 0)
+                .containsEntry("available_quantity", 0)
+                .containsEntry("unavailable_quantity", 0)
                 .containsEntry("quantity_unit", "INTERNAL_UNIT")
                 .containsEntry("source_type", "NORMALIZED_PROVIDER_SNAPSHOT")
                 .containsEntry("freshness_status", "STALE");
@@ -136,9 +136,9 @@ class InventoryOverviewApiTest {
         assertThat(filtered).containsEntry("total_elements", 1);
         assertThat(firstItem(filtered))
                 .containsEntry("warehouse_code", "WH-OLDER")
-                .containsEntry("total_quantity", "5.000")
-                .containsEntry("available_quantity", "3.000")
-                .containsEntry("unavailable_quantity", "2.000")
+                .containsEntry("total_quantity", 5)
+                .containsEntry("available_quantity", 3)
+                .containsEntry("unavailable_quantity", 2)
                 .containsEntry("observed_at", "2026-08-13T01:00:00Z");
 
         Map<String, Object> missingTargetWarehouse = http.getForObject(

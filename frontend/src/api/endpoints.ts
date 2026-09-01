@@ -463,10 +463,10 @@ export const sourceSkuMappingsApi = {
     source_sku_ref: string;
     source_sku_name?: string;
     sku_id: string;
-    quantity_multiplier: string;
+    quantity_multiplier: number;
     active?: boolean;
   }) => apiRequest<MasterDataRecord>('/api/v1/source-sku-mappings', { method: 'POST', body, headers: writeHeaders() }),
-  update: (id: string, body: { expected_version: number; sku_id?: string; quantity_multiplier?: string; active?: boolean }) =>
+  update: (id: string, body: { expected_version: number; sku_id?: string; quantity_multiplier?: number; active?: boolean }) =>
     apiRequest<MasterDataRecord>(`/api/v1/source-sku-mappings/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
 };
 
@@ -499,7 +499,7 @@ export const providerSkuMappingsApi = {
     provider_sku_code: string;
     provider_sku_name?: string;
     merchant_sku_code?: string;
-    jd_pieces_per_unit?: string;
+    jd_pieces_per_unit?: number;
     active?: boolean;
   }) =>
     apiRequest<MasterDataRecord>('/api/v1/provider-sku-mappings', { method: 'POST', body, headers: writeHeaders() }),
@@ -508,13 +508,13 @@ export const providerSkuMappingsApi = {
     provider_sku_code?: string;
     provider_sku_name?: string;
     merchant_sku_code?: string;
-    jd_pieces_per_unit?: string;
+    jd_pieces_per_unit?: number;
     active?: boolean;
   }) =>
     apiRequest<MasterDataRecord>(`/api/v1/provider-sku-mappings/${id}`, { method: 'PATCH', body, headers: writeHeaders() }),
   jdPiecesCandidates: () =>
     apiRequest<JdPiecesCandidate[]>('/api/v1/provider-sku-mappings/jd-pieces-candidates'),
-  importJdPiecesPerUnit: (body: { rows: Array<{ provider_sku_code: string; jd_pieces_per_unit: string }> }) =>
+  importJdPiecesPerUnit: (body: { rows: Array<{ provider_sku_code: string; jd_pieces_per_unit: number }> }) =>
     apiRequest<JdPiecesImportResult>('/api/v1/provider-sku-mappings/jd-pieces-per-unit-imports', {
       method: 'POST',
       body,

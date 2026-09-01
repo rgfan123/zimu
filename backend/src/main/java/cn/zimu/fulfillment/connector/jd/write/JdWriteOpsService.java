@@ -65,9 +65,6 @@ public interface JdWriteOpsService {
     /** 订单：退货入库单新增（addRtwOrder）。 */
     JdResult orderReturntowarehouseCreate(Map<String, Object> request);
 
-    /** 订单：出库单新增（addSoOrder，LOP 路径 /integratedsupplychain/order/delivery/create/v1）。 */
-    JdResult orderSoCreate(Map<String, Object> request);
-
     /** 库存：店铺库存固定值设置（setShopStockFixed）。 */
     JdResult stockShopstockfixedSet(Map<String, Object> request);
 }

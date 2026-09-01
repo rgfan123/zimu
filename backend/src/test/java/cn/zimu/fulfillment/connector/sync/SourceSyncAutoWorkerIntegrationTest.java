@@ -134,7 +134,7 @@ class SourceSyncAutoWorkerIntegrationTest {
         long shipmentId = seedCandidate(SourceChannel.JUFUBAO);
         AtomicInteger checks = new AtomicInteger();
         SourceSyncAutoWorker worker = worker(
-                serviceThrowing(checks, "SOURCE_SYNC_CARRIER_MAPPING_REQUIRED"),
+                serviceThrowing(checks, "SOURCE_PLATFORM_CARRIER_UNMAPPED"),
                 new PlatformConnectorRegistry(List.of(onlinePushConnector(SourceChannel.JUFUBAO))));
 
         worker.poll();
@@ -143,7 +143,7 @@ class SourceSyncAutoWorkerIntegrationTest {
         assertThat(checks).hasValue(1);
         assertThat(states.find(shipmentId, SourceChannel.JUFUBAO)).get().satisfies(state -> {
             assertThat(state.disposition()).isEqualTo(SourceSyncAutoStateStore.Disposition.PENDING);
-            assertThat(state.reasonCode()).isEqualTo("SOURCE_SYNC_CARRIER_MAPPING_REQUIRED");
+            assertThat(state.reasonCode()).isEqualTo("SOURCE_PLATFORM_CARRIER_UNMAPPED");
             assertThat(state.attemptCount()).isZero();
             assertThat(state.nextAttemptAt()).isAfter(state.updatedAt().plusMinutes(9));
         });

@@ -13,7 +13,6 @@ import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
 import cn.zimu.fulfillment.file.SourceImportService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -181,7 +180,7 @@ class JufubaoConnectorTest {
         assertThat(result.receiverName()).isEqualTo(RECEIVER_NAME);
         assertThat(result.receiverPhone()).isEqualTo(RECEIVER_PHONE);
         assertThat(result.receiverAddress()).isEqualTo(RECEIVER_ADDRESS);
-        assertThat(result.sendableQuantity()).isEqualByComparingTo(BigDecimal.ONE);
+        assertThat(result.sendableQuantity()).isEqualTo(1L);
         assertThat(result.carrierMapped()).isTrue();
         assertThat(result.effectHash()).matches("[0-9a-f]{64}");
         assertThat(gateway.receiveCount).isZero();
@@ -223,7 +222,7 @@ class JufubaoConnectorTest {
                 SourceChannel.JUFUBAO,
                 "main-phone-format",
                 "sub-phone-format",
-                BigDecimal.ONE,
+                1L,
                 "SHIPPED",
                 "京东物流",
                 "JDVA-PHONE-FORMAT",
@@ -297,8 +296,8 @@ class JufubaoConnectorTest {
                 SourceChannel.JUFUBAO,
                 "main-1",
                 "sub-1",
-                BigDecimal.TEN,
-                BigDecimal.ONE,
+                10L,
+                1L,
                 "SHIPPED",
                 "京东物流",
                 "JDVA123",
@@ -424,7 +423,7 @@ class JufubaoConnectorTest {
                 SourceChannel.JUFUBAO,
                 "different-main",
                 "sub-1",
-                BigDecimal.ONE,
+                1L,
                 "SHIPPED",
                 "17",
                 "JDVA123",
@@ -441,13 +440,13 @@ class JufubaoConnectorTest {
     }
 
     @Test
-    void acceptsAWholeQuantityEvenWhenBigDecimalHasTrailingZeroes() {
+    void acceptsAWholeIntegerQuantity() {
         FakeGateway gateway = successfulGateway();
         SourceShipmentResult command = new SourceShipmentResult(
                 SourceChannel.JUFUBAO,
                 "main-1",
                 "sub-1",
-                new BigDecimal("1.0"),
+                1L,
                 "SHIPPED",
                 "京东物流",
                 "JDVA123",
@@ -510,7 +509,7 @@ class JufubaoConnectorTest {
                 SourceChannel.JUFUBAO,
                 "main-1",
                 "sub-1",
-                BigDecimal.ONE,
+                1L,
                 "FAILED",
                 "京东物流",
                 "JDVA123",
@@ -595,7 +594,7 @@ class JufubaoConnectorTest {
                 SourceChannel.JUFUBAO,
                 "main-1",
                 subOrderId,
-                BigDecimal.ONE,
+                1L,
                 "SHIPPED",
                 carrier,
                 trackingNo,

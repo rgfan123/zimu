@@ -475,7 +475,7 @@ class WecomTrackingFileIntegrationTest {
                 submissionId);
         assertThat(draft)
                 .containsEntry("shipment_judgment", "PARTIAL")
-                .containsEntry("actual_quantity", 1);
+                .containsEntry("actual_quantity", 1L);
         ResponseEntity<Map> detail = http.exchange(
                 "/api/v1/tracking-drafts/" + draft.get("id"),
                 HttpMethod.GET,
@@ -556,8 +556,31 @@ class WecomTrackingFileIntegrationTest {
         assertThat(detail.getBody())
                 .containsEntry("source", "WECOM_TRACKING_FILE")
                 .containsEntry("confirmation_scope", "ATOMIC_SHIPMENT");
+        // 升级前的 OPEN 事项把数量保存在 JSON 字符串里；确认链必须继续兼容这些草稿。
+        jdbc.update(
+                """
+                UPDATE app.review_cases
+                SET detail=jsonb_set(
+                    detail,
+                    '{file_shipment_items}',
+                    (SELECT jsonb_agg(
+                                jsonb_set(item, '{shipped_quantity}', to_jsonb(item->>'shipped_quantity'))
+                                ORDER BY ordinal)
+                     FROM jsonb_array_elements(detail->'file_shipment_items')
+                          WITH ORDINALITY AS legacy(item, ordinal)))
+                WHERE provider_tracking_draft_id=?
+                """,
+                ((Number) draft.get("id")).longValue());
+        assertThat(jdbc.queryForObject(
+                        "SELECT jsonb_typeof(detail #> '{file_shipment_items,0,shipped_quantity}') "
+                                + "FROM app.review_cases WHERE provider_tracking_draft_id=?",
+                        String.class,
+                        ((Number) draft.get("id")).longValue()))
+                .isEqualTo("string");
         ResponseEntity<Map> confirmed = batchConfirm(draft);
-        assertThat(((Number) confirmed.getBody().get("success_count")).intValue()).isEqualTo(1);
+        assertThat(((Number) confirmed.getBody().get("success_count")).intValue())
+                .withFailMessage("batch confirm body: %s", confirmed.getBody())
+                .isEqualTo(1);
         long shipmentId = jdbc.queryForObject(
                 "SELECT min(shipment_id) FROM app.fulfillment_export_items WHERE fulfillment_export_id=?",
                 Long.class,
@@ -708,7 +731,7 @@ class WecomTrackingFileIntegrationTest {
         line.put("task_id", draft.get("task_id").toString());
         line.put("carrier_code", draft.get("carrier_code").toString());
         if (draft.get("actual_quantity") != null) {
-            line.put("actual_quantity", draft.get("actual_quantity").toString());
+            line.put("actual_quantity", ((Number) draft.get("actual_quantity")).intValue());
         }
         line.put("remark", "企微文件人工确认");
         HttpHeaders headers = writeHeaders("wecom-file-batch-confirm-" + suffix);

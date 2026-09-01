@@ -1,19 +1,21 @@
+import { positiveCountFormValue } from './countFormValue.ts';
+
 /**
  * 履约方 SKU 的显式单位换算。
  *
  * 该值表示“1 个内部 SKU 销售单位 = 多少个京东库存件”；
  * 空值代表尚未确认，不能被默认成 1。
  */
-export const JD_PIECES_PER_UNIT_PATTERN = /^(?!0(?:\.0{1,3})?$)(0|[1-9][0-9]*)(\.[0-9]{1,3})?$/;
+export const JD_PIECES_PER_UNIT_PATTERN = /^[1-9][0-9]*$/;
 
-export function optionalJdPiecesPerUnit(value: unknown): string | undefined {
+export function optionalJdPiecesPerUnit(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined;
   const normalized = String(value).trim();
   if (!normalized) return undefined;
   if (!JD_PIECES_PER_UNIT_PATTERN.test(normalized)) {
-    throw new Error('京东件数换算必须是正数，且最多三位小数');
+    throw new Error('京东件数换算必须是 int32 正整数');
   }
-  return normalized;
+  return positiveCountFormValue(normalized);
 }
 
 export function jdPiecesPerUnitLabel(value: unknown): string {

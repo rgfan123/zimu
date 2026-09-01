@@ -1,6 +1,5 @@
 package cn.zimu.fulfillment.fulfillment;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -67,7 +66,7 @@ public final class JdCargoPlanner {
             Long skuId,
             String goodsName,
             String unit,
-            BigDecimal quantityPerBundle) {
+            int quantityPerBundle) {
     }
 
     /** 展开输入：一条订单行（SINGLE 行或礼包行）的事实及其有序组件。 */
@@ -77,7 +76,7 @@ public final class JdCargoPlanner {
             Long skuId,
             String goodsName,
             String unit,
-            BigDecimal systemQuantity,
+            int systemQuantity,
             List<ComponentCandidate> components) {
     }
 
@@ -87,7 +86,7 @@ public final class JdCargoPlanner {
             Long skuId,
             String goodsName,
             String unit,
-            BigDecimal systemQuantity,
+            long systemQuantity,
             String quantitySource) {
     }
 
@@ -114,7 +113,7 @@ public final class JdCargoPlanner {
                     component.skuId(),
                     component.goodsName(),
                     component.unit(),
-                    line.systemQuantity().multiply(component.quantityPerBundle()),
+                    Math.multiplyExact((long) line.systemQuantity(), component.quantityPerBundle()),
                     QUANTITY_SOURCE_BUNDLE));
         }
         return List.copyOf(candidates);
@@ -133,7 +132,7 @@ public final class JdCargoPlanner {
             String orderLine,
             String goodsName,
             String unit,
-            BigDecimal quantity,
+            Long quantity,
             String quantitySource,
             String pathPrefix,
             Goods goods) {
@@ -163,10 +162,10 @@ public final class JdCargoPlanner {
                     422, "JD_SHIPMENT_OUTBOUND_UNIT_CONFIG_INVALID",
                     base + ".planQuantity", quantitySource, "provider SKU unit conversion",
                     "SKU " + skuId + " 的京东件数换算必须是正整数件数（当前 "
-                            + conversion.factor().toPlainString() + "）");
+                            + String.valueOf(conversion.factor()) + "）");
         }
-        BigDecimal factor = conversion.factor();
-        BigDecimal exact = JdStockUnitConverter.exactPiecesOrNull(quantity, factor);
+        Integer factor = conversion.factor();
+        Long exact = JdStockUnitConverter.exactPiecesOrNull(quantity, factor);
         if (exact == null) {
             return new Failure(
                     422, "JD_SHIPMENT_OUTBOUND_NON_INTEGRAL_QUANTITY",
@@ -178,7 +177,7 @@ public final class JdCargoPlanner {
         try {
             return new Cargo(
                     orderLine, goodsName, unit, goods.goodsNo(), goods.merchantSkuCode(),
-                    skuId, exact.intValueExact());
+                    skuId, Math.toIntExact(exact));
         } catch (ArithmeticException exception) {
             return new Failure(
                     422, "JD_SHIPMENT_OUTBOUND_QUANTITY_OUT_OF_RANGE",

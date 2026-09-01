@@ -52,7 +52,7 @@ const lineColumns: ColumnsType<OrderLine> = [
   { title: '规格', dataIndex: 'specification', width: 130, ellipsis: true, render: (v?: string) => v ?? '—' },
   { title: '单位', dataIndex: 'unit', width: 70, render: (v?: string) => v ?? '—' },
   { title: '来源数量', dataIndex: 'source_quantity', width: 90 },
-  { title: '乘数', dataIndex: 'mapping_multiplier', width: 70, render: (v?: string) => v ?? '—' },
+  { title: '乘数', dataIndex: 'mapping_multiplier', width: 70, render: (v?: number) => v ?? '—' },
   { title: '请求数量', dataIndex: 'requested_quantity', width: 90 },
   {
     title: '处理阶段',

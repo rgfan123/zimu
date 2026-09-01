@@ -152,7 +152,7 @@ public class DemoScenarioService {
                 receiverAddress,
                 remark);
         if (extractedOrder == null) {
-            insertLine(orderId, 1, "子牧羊小腿", null, "500g/盒", java.math.BigDecimal.valueOf(2), "盒");
+            insertLine(orderId, 1, "子牧羊小腿", null, "500g/盒", 2, "盒");
         } else {
             for (int index = 0; index < extractedOrder.items().size(); index++) {
                 DemoExtractedOrderInput.Item item = extractedOrder.items().get(index);
@@ -219,7 +219,7 @@ public class DemoScenarioService {
             String productName,
             String skuCode,
             String specification,
-            java.math.BigDecimal quantity,
+            int quantity,
             String unit) {
         jdbc.update(
                 """

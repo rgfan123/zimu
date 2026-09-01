@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
  *
  * <p>基线数字（2026-08-19 重钉，01 票：不可比候选三规则）：
  * <ul>
- *   <li>procurement-eval-v2（12 例）：schema 通过率 100%（合法 11/11 解析 + 负例稳定拒绝）、
+ *   <li>procurement-eval-v3（12 例）：schema 通过率 100%（合法 11/11 解析 + 负例稳定拒绝）、
  *       requires_human 召回 100%（6/6，含新增离群/映射失效/缺价/推荐落被剔除候选）、
  *       happy 路径零误转人工、写工具零调用；</li>
  *   <li>data-query-eval-v1（7 条）：工具选择准确率 100%（3/3）、答案数字正确率 100%（3/3）、
@@ -33,14 +33,14 @@ class AgentEvalBaselineTest extends AgentTestcontainersBase {
     }
 
     // ------------------------------------------------------------------
-    // 采购比价基线（procurement-eval-v2，01 票重钉）
+    // 采购比价基线（procurement-eval-v3，整数计数契约重钉）
     // ------------------------------------------------------------------
 
     @Test
     void procurementSchemaPassRateIsHundredPercentWithNegativeCaseRejected() {
         AgentEvalScorer.ProcurementMetrics m = AgentEvalScorer.compute(cases()).procurement();
 
-        assertThat(m.evalSetVersion()).isEqualTo("procurement-eval-v2");
+        assertThat(m.evalSetVersion()).isEqualTo("procurement-eval-v3");
         assertThat(m.totalCases()).isEqualTo(12);
         // 合法用例 11/11 全部解析成功，负例 1 例稳定拒绝（AGENT_OUTPUT_INVALID）
         assertThat(m.schemaPassRate()).isEqualTo(1.0);
@@ -108,9 +108,9 @@ class AgentEvalBaselineTest extends AgentTestcontainersBase {
     @Test
     void evalSetAndPromptVersionsArePinnedToBaseline() {
         AgentEvalScorer.Metrics metrics = AgentEvalScorer.compute(cases());
-        assertThat(metrics.procurement().evalSetVersion()).isEqualTo("procurement-eval-v2");
+        assertThat(metrics.procurement().evalSetVersion()).isEqualTo("procurement-eval-v3");
         assertThat(metrics.dataQuery().evalSetVersion()).isEqualTo("data-query-eval-v1");
-        assertThat(AgentSeedFixtures.procurementDefinition().promptVersion()).isEqualTo("procurement-price-v2");
+        assertThat(AgentSeedFixtures.procurementDefinition().promptVersion()).isEqualTo("procurement-price-v3");
         assertThat(AgentSeedFixtures.dataQueryDefinition().promptVersion()).isEqualTo("data-query-v1");
     }
 

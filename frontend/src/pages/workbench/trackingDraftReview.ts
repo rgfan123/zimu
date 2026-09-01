@@ -17,9 +17,9 @@ export interface TrackingDraftTaskCandidate {
   order_line_id: string;
   shipment_id: string;
   receiver_name: string;
-  requested_quantity: string;
-  shipped_quantity: string;
-  instructed_quantity: string;
+  requested_quantity: number;
+  shipped_quantity: number;
+  instructed_quantity: number;
 }
 
 export interface TrackingDraftDetail {
@@ -39,7 +39,7 @@ export interface TrackingDraftDetail {
   confirmation_scope: 'SINGLE_TASK' | 'ATOMIC_SHIPMENT';
   shipment_judgment: 'FULL' | 'PARTIAL' | 'SHORTAGE' | 'EXCEPTION';
   default_full_shipment: boolean;
-  actual_quantity: string | null;
+  actual_quantity: number | null;
   validation_issues: string[];
   status: 'OPEN' | 'CONFIRMED' | 'REJECTED';
   revision: number;
@@ -64,7 +64,7 @@ export interface ConfirmTrackingDraftCommand {
   task_id: string | null;
   task_no: string | null;
   carrier_code: string;
-  actual_quantity: string | null;
+  actual_quantity: number | null;
   remark: string;
 }
 
@@ -115,7 +115,7 @@ export function initialTrackingDraftReviewForm(
     carrier_code: text(draft.carrier_code)
       || (draft.carrier_candidates.length === 1 ? text(draft.carrier_candidates[0]?.code) : ''),
     actual_quantity: draft.source === 'WECOM_TRACKING_FILE' && draft.shipment_judgment === 'PARTIAL'
-      ? text(draft.actual_quantity)
+      ? (draft.actual_quantity == null ? '' : String(draft.actual_quantity))
       : '',
     remark: '',
   };
@@ -179,7 +179,7 @@ export function buildTrackingDraftConfirmCommand(
     task_no: text(form.task_no) || null,
     carrier_code: text(form.carrier_code),
     actual_quantity: draft.source === 'WECOM_TRACKING_FILE' && draft.shipment_judgment === 'PARTIAL'
-      ? text(form.actual_quantity)
+      ? Number(text(form.actual_quantity))
       : null,
     remark: text(form.remark),
   };
@@ -207,7 +207,9 @@ export function trackingDraftFullShipmentDescription(
   if (isAtomicShipmentDraft(draft)) {
     return `本文件行未明示部分发货或异常，确认时将使用上表全部 ${draft.task_candidates.length} 条必选明细各自的指令数量，不会只取其中一条。`;
   }
-  const quantity = text(selectedTask?.instructed_quantity);
+  const quantity = selectedTask?.instructed_quantity == null
+    ? ''
+    : String(selectedTask.instructed_quantity);
   return `本行未明示部分发货或异常，确认时将使用该发货批次的全部指令数量${quantity ? ` ${quantity}` : ''}。`;
 }
 
@@ -221,5 +223,8 @@ export function trackingDraftCarrierSourceLabel(
 
 function validPositiveQuantity(value: string): boolean {
   const normalized = text(value);
-  return /^\d+(?:\.\d{1,3})?$/.test(normalized) && Number(normalized) > 0;
+  const parsed = Number(normalized);
+  return /^[1-9][0-9]*$/.test(normalized)
+    && Number.isSafeInteger(parsed)
+    && parsed <= 2_147_483_647;
 }

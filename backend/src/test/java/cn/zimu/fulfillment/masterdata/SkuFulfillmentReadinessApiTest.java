@@ -147,9 +147,22 @@ class SkuFulfillmentReadinessApiTest {
         long blockedSkuId = insertSku(productId, providerId, "1kg", "件", null, true);
 
         // 结构化包装身份（净含量/包装件数）缺省不再阻断就绪：真实规格 + 有效映射即就绪。
+        Map<String, Object> missingStructuredIdentity =
+                http.getForObject("/api/v1/skus/" + readySkuId, Map.class);
+        assertThat(readiness(missingStructuredIdentity)).containsEntry("ready", true);
+        assertThat(reasonCodes(missingStructuredIdentity)).isEmpty();
+        assertThat(warningCodes(missingStructuredIdentity)).containsExactly("PACKAGING_METADATA_INCOMPLETE");
+        assertThat(warning(missingStructuredIdentity, "PACKAGING_METADATA_INCOMPLETE")
+                        .get("action").toString())
+                .contains("可选", "净含量", "包装件数");
+
+        completePackagingIdentity(readySkuId, "500", "g", 1, "件");
+        completePackagingIdentity(blockedSkuId, "1", "kg", 1, "件");
+
         Map<String, Object> readyDetail = http.getForObject("/api/v1/skus/" + readySkuId, Map.class);
         assertThat(readiness(readyDetail)).containsEntry("ready", true);
         assertThat(reasonCodes(readyDetail)).isEmpty();
+        assertThat(warningCodes(readyDetail)).isEmpty();
 
         Map<String, Object> page = page(
                 "/api/v1/skus?query=第三方就绪筛选样本&readiness_reason=PROVIDER_MAPPING_REQUIRED&page=0&size=20");
@@ -445,8 +458,24 @@ class SkuFulfillmentReadinessApiTest {
         return (List<Map<String, Object>>) readiness(record).get("issues");
     }
 
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> warnings(Map<String, Object> record) {
+        return (List<Map<String, Object>>) readiness(record).get("warnings");
+    }
+
+    private static List<String> warningCodes(Map<String, Object> record) {
+        return warnings(record).stream().map(value -> value.get("code").toString()).toList();
+    }
+
     private static Map<String, Object> issue(Map<String, Object> record, String code) {
         return issues(record).stream()
+                .filter(value -> code.equals(value.get("code")))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private static Map<String, Object> warning(Map<String, Object> record, String code) {
+        return warnings(record).stream()
                 .filter(value -> code.equals(value.get("code")))
                 .findFirst()
                 .orElseThrow();

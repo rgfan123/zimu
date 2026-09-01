@@ -652,7 +652,7 @@ class OrderDraftApiTest {
         command.put("settlement", Map.of(
                 "method", "MONTHLY",
                 "settlement_time", Instant.parse("2026-08-31T16:00:00Z").toString()));
-        command.put("items", List.of(Map.of("line_no", 1, "sku_id", "1", "quantity", "1")));
+        command.put("items", List.of(Map.of("line_no", 1, "sku_id", "1", "quantity", 1)));
 
         ResponseEntity<Map> response = postCommand(
                 "/api/v1/order-drafts/" + draft.get("id") + "/confirm",
@@ -805,6 +805,10 @@ class OrderDraftApiTest {
         Map<String, Object> draft = awaitDraftForMessage(messageId);
         Map<String, Object> reviewCase = onlyOrderDraftReviewCase(draft.get("id").toString());
         TestSku selectedSku = insertTestTpSku("CONFIRM", true);
+        jdbc.update(
+                "UPDATE app.skus SET net_content_value=NULL, net_content_unit=NULL, "
+                        + "package_count=NULL, package_unit=NULL WHERE id=?",
+                selectedSku.skuId());
         long pseudoMappingsBefore = pseudoSourceSkuCount();
 
         String customerId = castMapList(draft.get("customer_candidates"))
@@ -827,7 +831,7 @@ class OrderDraftApiTest {
                 "settlement", Map.of(
                         "method", "MONTHLY",
                         "settlement_time", Instant.parse("2026-08-31T16:00:00Z").toString()),
-                "items", List.of(Map.of("line_no", 1, "sku_id", skuId, "quantity", "3")),
+                "items", List.of(Map.of("line_no", 1, "sku_id", skuId, "quantity", 3)),
                 "remark", "已对照企微原始消息和主数据");
         String idempotencyKey = "ticket-04-confirm-once-0001";
         String requestId = "req-ticket-04-confirm-once-0001";
@@ -937,11 +941,11 @@ class OrderDraftApiTest {
                 Map.of(
                         "line_no", 1,
                         "sku_id", String.valueOf(unreadySku.skuId()),
-                        "quantity", "3"),
+                        "quantity", 3),
                 Map.of(
                         "line_no", 2,
                         "sku_id", String.valueOf(inactiveSku.skuId()),
-                        "quantity", "2")));
+                        "quantity", 2)));
         long sourceMappingsBefore = jdbc.queryForObject(
                 "SELECT count(*) FROM app.source_channel_skus", Long.class);
 
@@ -1002,7 +1006,7 @@ class OrderDraftApiTest {
                             "source_sku_ref", sourceSkuRef,
                             "source_sku_name", "一次性编号不得入主数据",
                             "sku_id", String.valueOf(sku.skuId()),
-                            "quantity_multiplier", "1",
+                            "quantity_multiplier", 1,
                             "active", true),
                     "ticket-03-source-ref-reject-" + index,
                     "req-ticket-03-source-ref-reject-" + index);
@@ -1023,7 +1027,7 @@ class OrderDraftApiTest {
                         "source_sku_ref", "WECOM-PRODUCT-STABLE-001",
                         "source_sku_name", "可跨订单复用的真实来源商品",
                         "sku_id", String.valueOf(sku.skuId()),
-                        "quantity_multiplier", "1",
+                        "quantity_multiplier", 1,
                         "active", true),
                 "ticket-03-source-ref-accept-0001",
                 "req-ticket-03-source-ref-accept-0001");
@@ -1205,7 +1209,7 @@ class OrderDraftApiTest {
                         "product", "子牧羊小腿",
                         "spec", "500g/盒",
                         "unit", "盒",
-                        "quantity", "2",
+                        "quantity", 2,
                         "source_sku_ref", "WECOM-SKU-JD-001",
                         "sku_id", "999999992",
                         "fulfillment_provider_id", "999999993")));
@@ -1239,13 +1243,13 @@ class OrderDraftApiTest {
                         "product", "待确认商品一",
                         "spec", "500g/袋",
                         "unit", "袋",
-                        "quantity", "3",
+                        "quantity", 3,
                         "source_sku_ref", "WECOM-UNREADY-LINE-1"),
                 Map.of(
                         "product", "待确认商品二",
                         "spec", "500g/袋",
                         "unit", "袋",
-                        "quantity", "2",
+                        "quantity", 2,
                         "source_sku_ref", "WECOM-UNREADY-LINE-2")));
         return new InterpretationResult(
                 base.intent(),
@@ -1263,7 +1267,7 @@ class OrderDraftApiTest {
                 .get("sku_id")
                 .toString();
         Map<String, Object> command = confirmationCommandHeader(draft);
-        command.put("items", List.of(Map.of("line_no", 1, "sku_id", skuId, "quantity", "3")));
+        command.put("items", List.of(Map.of("line_no", 1, "sku_id", skuId, "quantity", 3)));
         return command;
     }
 

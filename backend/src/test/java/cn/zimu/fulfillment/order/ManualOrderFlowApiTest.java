@@ -60,7 +60,7 @@ class ManualOrderFlowApiTest {
         ResponseEntity<Map> created = http.exchange(
                 "/api/v1/orders/manual",
                 HttpMethod.POST,
-                new HttpEntity<>(manualRequest(customerCode, "3"),
+                new HttpEntity<>(manualRequest(customerCode, 3),
                         writeHeaders("manual-create-001", "req-manual-create-001")),
                 Map.class);
         assertThat(created.getStatusCode())
@@ -87,7 +87,7 @@ class ManualOrderFlowApiTest {
         ResponseEntity<Map> replayed = http.exchange(
                 "/api/v1/orders/manual",
                 HttpMethod.POST,
-                new HttpEntity<>(manualRequest(customerCode, "3"),
+                new HttpEntity<>(manualRequest(customerCode, 3),
                         writeHeaders("manual-create-001", "req-manual-create-001-replay")),
                 Map.class);
         assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -111,7 +111,7 @@ class ManualOrderFlowApiTest {
         ResponseEntity<Map> second = http.exchange(
                 "/api/v1/orders/manual",
                 HttpMethod.POST,
-                new HttpEntity<>(manualRequest(customerCode, "1"),
+                new HttpEntity<>(manualRequest(customerCode, 1),
                         writeHeaders("manual-create-002", "req-manual-create-002")),
                 Map.class);
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -124,7 +124,7 @@ class ManualOrderFlowApiTest {
     /** 用户 2026-08-31 裁定：不传客户编码 → 自动归属专用「手工平台客户」（幂等自建）。 */
     @Test
     void manualOrderWithoutCustomerCodeBindsToThePlatformCustomer() {
-        Map<String, Object> request = new java.util.LinkedHashMap<>(manualRequest("ignored", "2"));
+        Map<String, Object> request = new java.util.LinkedHashMap<>(manualRequest("ignored", 2));
         request.remove("customer_code");
 
         ResponseEntity<Map> created = http.exchange(
@@ -143,7 +143,7 @@ class ManualOrderFlowApiTest {
                 Integer.class)).isEqualTo(1);
 
         // 第二单仍归同一平台档案，不重复建档
-        Map<String, Object> second = new java.util.LinkedHashMap<>(manualRequest("ignored", "1"));
+        Map<String, Object> second = new java.util.LinkedHashMap<>(manualRequest("ignored", 1));
         second.remove("customer_code");
         ResponseEntity<Map> again = http.exchange(
                 "/api/v1/orders/manual",
@@ -161,7 +161,7 @@ class ManualOrderFlowApiTest {
         ResponseEntity<Map> unknownCustomer = http.exchange(
                 "/api/v1/orders/manual",
                 HttpMethod.POST,
-                new HttpEntity<>(manualRequest("NO-SUCH-CUSTOMER", "1"),
+                new HttpEntity<>(manualRequest("NO-SUCH-CUSTOMER", 1),
                         writeHeaders("manual-neg-001", "req-manual-neg-001")),
                 Map.class);
         assertThat(unknownCustomer.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
@@ -172,11 +172,19 @@ class ManualOrderFlowApiTest {
         ResponseEntity<Map> decimalQuantity = http.exchange(
                 "/api/v1/orders/manual",
                 HttpMethod.POST,
-                new HttpEntity<>(manualRequest(customerCode, "2.000"),
+                new HttpEntity<>(manualRequest(customerCode, 2.000),
                         writeHeaders("manual-neg-002", "req-manual-neg-002")),
                 Map.class);
         // V99 数量整数化：小数在 DTO 校验就地 400，不允许穿透到服务层
         assertThat(decimalQuantity.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+
+        ResponseEntity<Map> stringQuantity = http.exchange(
+                "/api/v1/orders/manual",
+                HttpMethod.POST,
+                new HttpEntity<>(manualRequest(customerCode, "2"),
+                        writeHeaders("manual-neg-003", "req-manual-neg-003")),
+                Map.class);
+        assertThat(stringQuantity.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     private String createCustomer(String code, String name) {
@@ -193,7 +201,7 @@ class ManualOrderFlowApiTest {
         return created.getBody().get("code").toString();
     }
 
-    private Map<String, Object> manualRequest(String customerCode, String quantity) {
+    private Map<String, Object> manualRequest(String customerCode, Object quantity) {
         return Map.of(
                 "customer_code", customerCode,
                 "receiver", Map.of(

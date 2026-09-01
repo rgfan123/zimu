@@ -1,10 +1,13 @@
 package cn.zimu.fulfillment.order.dto;
 
 import cn.zimu.fulfillment.common.dto.Patterns;
+import cn.zimu.fulfillment.common.dto.PositiveCountQuantityDeserializer;
 import cn.zimu.fulfillment.order.domain.SettlementMethod;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import java.time.Instant;
 import java.util.List;
@@ -33,7 +36,7 @@ public record OrderDraftSupplementCommand(
     /** 草稿行补充：数量为正数时修订；sku_id 仅限候选内选择，不作为主数据确认。 */
     public record LineSupplement(
             @NotNull(message = "行号不能为空") Integer lineNo,
-            @Pattern(regexp = Patterns.POSITIVE_INTEGER_QUANTITY, message = "数量必须为正整数")
-                    String quantity,
+            @Positive(message = "数量必须为正整数")
+                    @JsonDeserialize(using = PositiveCountQuantityDeserializer.class) Integer quantity,
             @Pattern(regexp = Patterns.IDENTIFIER, message = "SKU 标识符无效") String skuId) {}
 }

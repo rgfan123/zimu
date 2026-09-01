@@ -199,7 +199,7 @@ class JdWarehouseClientRequestMappingTest {
                 .containsOnlyKeys(
                         "success", "business_code", "request_id", "data_item_count", "data_field_count")
                 .containsEntry("success", false)
-                .containsEntry("business_code", "CREDENTIALS_REQUIRED");
+                .containsEntry("business_code", "JD_SO_CREATE_REQUIRES_SHIPMENT_WORKFLOW");
         String persisted = contractMapper.writeValueAsString(Map.of(
                 "request", audit.getRequestPayload(),
                 "response", audit.getResponsePayload()));

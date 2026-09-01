@@ -49,7 +49,7 @@ class ContinuationExportServiceLockOrderTest {
 
         assertThatThrownBy(() -> service.create(
                         7L,
-                        new ContinuationExportCommand(0, "1", "续发"),
+                        new ContinuationExportCommand(0, 1, "续发"),
                         "continuation-lock-order-001",
                         new CommandContext("req-lock-order", "trace-lock-order", "ops")))
                 .isSameAs(stopAfterFirstQuery);

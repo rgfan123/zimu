@@ -106,7 +106,7 @@ public class OrderDraftCardConfirmationService {
             }
             if (!blank(skuId) && line.quantity() != null) {
                 items.add(new ConfirmOrderDraftCommand.ConfirmItem(
-                        line.lineNo(), skuId, String.valueOf(line.quantity())));
+                        line.lineNo(), skuId, line.quantity()));
             }
         }
         if (!missing.isEmpty()) {

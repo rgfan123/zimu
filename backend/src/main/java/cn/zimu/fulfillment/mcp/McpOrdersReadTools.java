@@ -262,6 +262,7 @@ public class McpOrdersReadTools {
             case "MULTIPLE_TRACKINGS_FOR_OUTBOUND" -> "同一出库单出现多个运单号冲突，需要人工确认";
             case "JD_TRACKING_CARRIER_MAPPING_REQUIRED" -> "京东运单承运商映射缺失，需要人工处理";
             case "JD_TRACKING_TERMINAL_EXCEPTION" -> "京东运单出现终态异常，需要人工处理";
+            case "JD_TRACKING_CARGO_MISMATCH" -> "京东返回货品与建单快照不一致，需要人工核对归属";
             case "MULTI_SHIPMENT_SOURCE_FOLLOWUP" -> "多批次发货需要来源侧跟进确认";
             case "WECOM_ORDER_DRAFT" -> "企微订单草稿待确认";
             case "WECOM_TRACKING_DRAFT" -> "企微运单草稿待确认";

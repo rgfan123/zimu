@@ -25,7 +25,7 @@ final class AuthoritativeSkuCatalogManifestLoader {
     static final String PRICE_SOURCE_SHA256 =
             "7fc1d34e2217207abe108b97e3d02c21c4263558448c8352626f087656e45160";
     static final String MANIFEST_SHA256 =
-            "f9d47bf4ee5b1766e7539762bb79593f44820de9a8e56c4679d3ae4551cc1a4b";
+            "ed1fa111b955086ef3081fd6ab3c19384d0178e123f7ca924dbc38e1dba66201";
 
     private static final Set<String> DIFFERENCE_CODES = Set.of(
             "DUPLICATE_JD_CODE",
@@ -196,9 +196,9 @@ final class AuthoritativeSkuCatalogManifestLoader {
         return value == null || value.isBlank();
     }
 
-    private static boolean validOptionalChannelPair(String name, String quantity) {
+    private static boolean validOptionalChannelPair(String name, Integer quantity) {
         return (name == null && quantity == null)
-                || (!blank(name) && quantity != null && quantity.matches("[1-9][0-9]*"));
+                || (!blank(name) && quantity != null && quantity > 0);
     }
 
     private static BusinessException invalid(String message) {

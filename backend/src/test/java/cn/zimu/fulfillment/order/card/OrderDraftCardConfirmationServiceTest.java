@@ -56,7 +56,7 @@ class OrderDraftCardConfirmationServiceTest {
         assertThat(command.getValue().customer().customerId()).isEqualTo("9");
         assertThat(command.getValue().items()).singleElement().satisfies(item -> {
             assertThat(item.skuId()).isEqualTo("17");
-            assertThat(item.quantity()).isEqualTo("2");
+            assertThat(item.quantity()).isEqualTo(2);
         });
         assertThat(command.getValue().settlement().settlementTime())
                 .isEqualTo(Instant.parse("2026-08-31T16:00:00Z"));

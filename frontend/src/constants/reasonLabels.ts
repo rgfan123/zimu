@@ -49,6 +49,7 @@ export const REASON_LABELS: Record<string, string> = {
   JD_TRACKING_CONFLICT: '京东运单冲突',
   JD_TRACKING_CARRIER_MAPPING_REQUIRED: '京东承运商映射待确认',
   JD_TRACKING_TERMINAL_EXCEPTION: '京东运单终态异常待复核',
+  JD_TRACKING_CARGO_MISMATCH: '京东货品与建单不一致',
   MULTIPLE_TRACKINGS_FOR_OUTBOUND: '京东多运单待确认',
   SOURCE_SYNC_BLOCKED: '来源同步阻断待处理',
   // 京东库存/映射阻断码（review_cases.detail.blockers[].code，见 ShipmentJdStockCheckService

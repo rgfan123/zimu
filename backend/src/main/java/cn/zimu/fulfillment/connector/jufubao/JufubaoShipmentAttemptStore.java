@@ -161,7 +161,7 @@ public interface JufubaoShipmentAttemptStore {
     record ShipmentAttemptPayload(
             String sourceRef,
             String subOrderId,
-            BigDecimal actualShippedQuantity,
+            long actualShippedQuantity,
             String carrierOutputValue,
             String trackingNo,
             String expectedPlatformEffectHash) {
@@ -169,7 +169,7 @@ public interface JufubaoShipmentAttemptStore {
         public ShipmentAttemptPayload(
                 String sourceRef,
                 String subOrderId,
-                BigDecimal actualShippedQuantity,
+                long actualShippedQuantity,
                 String carrierOutputValue,
                 String trackingNo) {
             this(sourceRef, subOrderId, actualShippedQuantity, carrierOutputValue, trackingNo, "");
@@ -179,7 +179,7 @@ public interface JufubaoShipmentAttemptStore {
             sourceRef = sourceRef == null ? "" : sourceRef;
             subOrderId = requireNonBlank(subOrderId, "subOrderId");
             trackingNo = requireNonBlank(trackingNo, "trackingNo");
-            actualShippedQuantity = Objects.requireNonNull(actualShippedQuantity, "actualShippedQuantity");
+            if (actualShippedQuantity <= 0) throw new IllegalArgumentException("actualShippedQuantity 必须为正整数");
             carrierOutputValue = requireNonBlank(carrierOutputValue, "carrierOutputValue");
             expectedPlatformEffectHash = expectedPlatformEffectHash == null ? "" : expectedPlatformEffectHash;
         }

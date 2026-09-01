@@ -13,7 +13,7 @@ import java.util.List;
  * 映射失效（保留可比候选自动决策）、价格缺失候选剔除（整体转人工）、推荐落在被剔除候选
  * 上转人工。
  *
- * <p>评测集不可增删改（换例即换版本号）：新增场景请另立 {@code procurement-eval-v3}，
+ * <p>评测集不可增删改（换例即换版本号）：新增场景请另立 {@code procurement-eval-v4}，
  * 并同步 {@code AgentEvalBaselineTest} 基线数字。
  */
 public final class ProcurementPriceEvalFixture {
@@ -21,7 +21,7 @@ public final class ProcurementPriceEvalFixture {
     private ProcurementPriceEvalFixture() {}
 
     /** 评测集版本标识（09 票基线门禁断言该版本）。 */
-    public static final String VERSION = "procurement-eval-v2";
+    public static final String VERSION = "procurement-eval-v3";
 
     public record EvalCase(
             String id,
@@ -33,9 +33,9 @@ public final class ProcurementPriceEvalFixture {
     public static final List<EvalCase> CASES = List.of(
             new EvalCase(
                     "happy-path-ticket",
-                    "{\"procurement_ticket_id\":\"9001\",\"quantity\":\"2\"}",
-                    "{\"target_sku\":\"SKU-1001\",\"requested_quantity\":\"2\","
-                            + "\"inventory\":{\"available\":\"0\",\"shortage\":\"2\"},"
+                    "{\"procurement_ticket_id\":\"9001\",\"quantity\":2}",
+                    "{\"target_sku\":\"SKU-1001\",\"requested_quantity\":2,"
+                            + "\"inventory\":{\"available\":0,\"shortage\":2},"
                             + "\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\","
                             + "\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"},"
                             + "{\"provider_code\":\"P002\",\"price\":\"12.90\","
@@ -50,7 +50,7 @@ public final class ProcurementPriceEvalFixture {
                     "happy-path-sku-no-quantity",
                     "{\"sku_id\":\"1001\"}",
                     "{\"target_sku\":\"SKU-1001\",\"requested_quantity\":null,"
-                            + "\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},"
+                            + "\"inventory\":{\"available\":5,\"shortage\":0},"
                             + "\"candidates\":[{\"provider_code\":\"P003\",\"price\":\"8.50\","
                             + "\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"}],"
                             + "\"excluded_candidates\":[],"
@@ -60,9 +60,9 @@ public final class ProcurementPriceEvalFixture {
                     null),
             new EvalCase(
                     "no-candidates",
-                    "{\"procurement_ticket_id\":\"9002\",\"quantity\":\"1\"}",
-                    "{\"target_sku\":\"SKU-2001\",\"requested_quantity\":\"1\","
-                            + "\"inventory\":{\"available\":\"0\",\"shortage\":\"1\"},"
+                    "{\"procurement_ticket_id\":\"9002\",\"quantity\":1}",
+                    "{\"target_sku\":\"SKU-2001\",\"requested_quantity\":1,"
+                            + "\"inventory\":{\"available\":0,\"shortage\":1},"
                             + "\"candidates\":[],"
                             + "\"excluded_candidates\":[],"
                             + "\"recommendation\":null,"
@@ -73,7 +73,7 @@ public final class ProcurementPriceEvalFixture {
                     "missing-price",
                     "{\"procurement_ticket_id\":\"9003\"}",
                     "{\"target_sku\":\"SKU-3001\",\"requested_quantity\":null,"
-                            + "\"inventory\":{\"available\":\"0\",\"shortage\":\"3\"},"
+                            + "\"inventory\":{\"available\":0,\"shortage\":3},"
                             + "\"candidates\":[{\"provider_code\":\"P001\",\"price\":null,"
                             + "\"price_basis\":\"sku_commercial_price\",\"note\":\"未定价\"}],"
                             + "\"excluded_candidates\":[],"
@@ -83,9 +83,9 @@ public final class ProcurementPriceEvalFixture {
                     "price"),
             new EvalCase(
                     "low-confidence-and-missing-fields",
-                    "{\"procurement_ticket_id\":\"9004\",\"quantity\":\"4\"}",
-                    "{\"target_sku\":\"SKU-4001\",\"requested_quantity\":\"4\","
-                            + "\"inventory\":{\"available\":\"0\",\"shortage\":\"4\"},"
+                    "{\"procurement_ticket_id\":\"9004\",\"quantity\":4}",
+                    "{\"target_sku\":\"SKU-4001\",\"requested_quantity\":4,"
+                            + "\"inventory\":{\"available\":0,\"shortage\":4},"
                             + "\"candidates\":[{\"provider_code\":\"P002\",\"price\":\"20.10\","
                             + "\"price_basis\":\"provider_sku\",\"note\":\"外部映射无本地名\"}],"
                             + "\"excluded_candidates\":[],"
@@ -98,7 +98,7 @@ public final class ProcurementPriceEvalFixture {
                     "happy-path-camelcase-model-output",
                     "{\"sku_id\":\"1001\"}",
                     "{\"targetSku\":\"SKU-1001\",\"requestedQuantity\":null,"
-                            + "\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},"
+                            + "\"inventory\":{\"available\":5,\"shortage\":0},"
                             + "\"candidates\":[{\"providerCode\":\"P003\",\"price\":\"8.50\","
                             + "\"priceBasis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"}],"
                             + "\"excludedCandidates\":[],"
@@ -117,7 +117,7 @@ public final class ProcurementPriceEvalFixture {
                     "outlier-candidate-excluded",
                     "{\"sku_id\":\"1001\"}",
                     "{\"target_sku\":\"SKU-5001\",\"requested_quantity\":null,"
-                            + "\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},"
+                            + "\"inventory\":{\"available\":5,\"shortage\":0},"
                             + "\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\","
                             + "\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"},"
                             + "{\"provider_code\":\"P002\",\"price\":\"12.90\","
@@ -133,7 +133,7 @@ public final class ProcurementPriceEvalFixture {
                     "all-mapping-stale-forces-human",
                     "{\"sku_id\":\"1003\"}",
                     "{\"target_sku\":\"SKU-6001\",\"requested_quantity\":null,"
-                            + "\"inventory\":{\"available\":\"0\",\"shortage\":\"6\"},"
+                            + "\"inventory\":{\"available\":0,\"shortage\":6},"
                             + "\"candidates\":[],"
                             + "\"excluded_candidates\":["
                             + "{\"provider_code\":\"P001\",\"price\":\"12.34\","
@@ -150,7 +150,7 @@ public final class ProcurementPriceEvalFixture {
                     "mapping-stale-candidate-excluded",
                     "{\"sku_id\":\"1001\"}",
                     "{\"target_sku\":\"SKU-1001\",\"requested_quantity\":null,"
-                            + "\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},"
+                            + "\"inventory\":{\"available\":5,\"shortage\":0},"
                             + "\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\","
                             + "\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"}],"
                             + "\"excluded_candidates\":["
@@ -165,7 +165,7 @@ public final class ProcurementPriceEvalFixture {
                     "price-missing-candidate-excluded-forces-human",
                     "{\"sku_id\":\"1004\"}",
                     "{\"target_sku\":\"SKU-7001\",\"requested_quantity\":null,"
-                            + "\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},"
+                            + "\"inventory\":{\"available\":5,\"shortage\":0},"
                             + "\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\","
                             + "\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"},"
                             + "{\"provider_code\":\"P002\",\"price\":\"12.90\","
@@ -182,7 +182,7 @@ public final class ProcurementPriceEvalFixture {
                     "recommendation-on-excluded-candidate-forces-human",
                     "{\"sku_id\":\"1005\"}",
                     "{\"target_sku\":\"SKU-8001\",\"requested_quantity\":null,"
-                            + "\"inventory\":{\"available\":\"5\",\"shortage\":\"0\"},"
+                            + "\"inventory\":{\"available\":5,\"shortage\":0},"
                             + "\"candidates\":[{\"provider_code\":\"P001\",\"price\":\"12.34\","
                             + "\"price_basis\":\"sku_commercial_price\",\"note\":\"主数据进货价\"},"
                             + "{\"provider_code\":\"P002\",\"price\":\"12.90\","

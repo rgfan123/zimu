@@ -49,6 +49,7 @@ final class ReviewCaseLabels {
             Map.entry("JD_STOCK_BLOCKED", "京东库存不足，建单被拦"),
             Map.entry("JD_SHIPMENT_OUTBOUND_PREVIEW_BLOCKED", "京东建单预检未通过"),
             Map.entry("JD_TRACKING_TERMINAL_EXCEPTION", "京东出库单进入取消/拉回/拒收等异常终态"),
+            Map.entry("JD_TRACKING_CARGO_MISMATCH", "京东货品与建单快照不一致，需人工核对"),
             Map.entry("JD_TRACKING_BACKFILLED_PENDING_REVIEW", "运单已回填但需人工确认"));
 
     private ReviewCaseLabels() {}

@@ -490,7 +490,7 @@ public class SourceShipmentSyncService {
     private SourceSyncCheck checkAfterSuccess(SourceSyncIntent intent) {
         SourceSyncFacts facts = new SourceSyncFacts(
                 intent.shipmentId(), intent.orderId(), intent.result().channel(), intent.result().sourceRef(),
-                intent.sourceLineRef(), null, null, null, null, null, null, "FULLY_FULFILLED",
+                intent.sourceLineRef(), null, null, null, null, null, 0, "FULLY_FULFILLED",
                 intent.carrierCode(), null, null, intent.trackingNumber());
         return new SourceSyncCheck(
                 intent.shipmentId(), true, intent.checkHash(), intent.artifactHash(), facts,

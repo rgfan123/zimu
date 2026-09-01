@@ -11,7 +11,6 @@ import cn.zimu.fulfillment.message.WecomTrackingFileFailureCode;
 import cn.zimu.fulfillment.order.ReviewCaseRepository;
 import cn.zimu.fulfillment.order.domain.ReviewCase;
 import cn.zimu.fulfillment.order.domain.ReviewCaseStatus;
-import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -172,11 +171,7 @@ public class WecomTrackingFileDraftService {
                         "name", row.carrierName(),
                         "source", "FILE")));
         draft.setShipmentJudgment(judgment(row.result()));
-        draft.setActualQuantity(shipmentRows.stream()
-                .map(TrackingFileService.ParsedTrackingRow::shippedQuantity)
-                .filter(java.util.Objects::nonNull)
-                .mapToInt(Integer::intValue)
-                .sum());
+        draft.setActualQuantity(totalShippedQuantity(shipmentRows));
         List<String> issues = new ArrayList<>();
         if (row.trackingNo() == null || row.trackingNo().isBlank()) {
             issues.add("TRACKING_NO_MISSING");
@@ -206,12 +201,8 @@ public class WecomTrackingFileDraftService {
         detail.put("file_row_index", row.rowIndex());
         detail.put("shipment_id", String.valueOf(row.shipmentId()));
         detail.put("order_id", String.valueOf(row.orderId()));
-        detail.put("file_shipment_items", shipmentRows.stream().map(item -> Map.of(
-                        "fulfillment_id", String.valueOf(item.fulfillmentId()),
-                        "order_line_id", String.valueOf(item.orderLineId()),
-                        "shipped_quantity", item.shippedQuantity() == null
-                                ? ""
-                                : String.valueOf(item.shippedQuantity())))
+        detail.put("file_shipment_items", shipmentRows.stream()
+                .map(this::fileShipmentItem)
                 .toList());
         detail.put("result", row.result());
         detail.put("shipment_judgment", saved.getShipmentJudgment().name());
@@ -221,6 +212,22 @@ public class WecomTrackingFileDraftService {
         }
         review.setDetail(detail);
         reviewCases.save(review);
+    }
+
+    static long totalShippedQuantity(List<TrackingFileService.ParsedTrackingRow> rows) {
+        return rows.stream()
+                .map(TrackingFileService.ParsedTrackingRow::shippedQuantity)
+                .filter(java.util.Objects::nonNull)
+                .mapToLong(Integer::longValue)
+                .sum();
+    }
+
+    private Map<String, Object> fileShipmentItem(TrackingFileService.ParsedTrackingRow row) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("fulfillment_id", String.valueOf(row.fulfillmentId()));
+        item.put("order_line_id", String.valueOf(row.orderLineId()));
+        item.put("shipped_quantity", row.shippedQuantity());
+        return item;
     }
 
     private Map<String, Object> taskCandidate(TrackingFileService.ParsedTrackingRow row) {
@@ -244,9 +251,9 @@ public class WecomTrackingFileDraftService {
         candidate.put("order_line_id", String.valueOf(row.orderLineId()));
         candidate.put("shipment_id", String.valueOf(row.shipmentId()));
         candidate.put("receiver_name", row.receiverName());
-        candidate.put("requested_quantity", decimal(values.get("requested_quantity")));
-        candidate.put("shipped_quantity", decimal(values.get("cumulative_shipped_quantity")));
-        candidate.put("instructed_quantity", row.instructedQuantity().toPlainString());
+        candidate.put("requested_quantity", count(values.get("requested_quantity")));
+        candidate.put("shipped_quantity", count(values.get("cumulative_shipped_quantity")));
+        candidate.put("instructed_quantity", row.instructedQuantity());
         return candidate;
     }
 
@@ -290,8 +297,8 @@ public class WecomTrackingFileDraftService {
         };
     }
 
-    private static String decimal(Object value) {
-        return value instanceof BigDecimal decimal ? decimal.toPlainString() : String.valueOf(value);
+    private static Integer count(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
     }
 
     private static WecomTrackingFileFailureCode failureCode(String value) {

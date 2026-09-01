@@ -71,7 +71,7 @@ public final class AgentEvalScorer {
             Set.of("requires_human", "tool_sequence", "missing_fields", "expected_error");
 
     /** 评测集版本标签（07：用例集按 (agent_slug, agent_version) 冻结；标签沿用 fixture 时代版本名）。 */
-    private static final String PROCUREMENT_EVAL_SET_VERSION = "procurement-eval-v2";
+    private static final String PROCUREMENT_EVAL_SET_VERSION = "procurement-eval-v3";
     private static final String DATA_QUERY_EVAL_SET_VERSION = "data-query-eval-v1";
 
     /** 跑分器当前支持的 agent（其余 slug 的 INVARIANT/CONFIRMED 用例属配置漂移，拒跑可见）。 */
@@ -360,7 +360,7 @@ public final class AgentEvalScorer {
     }
 
     // ------------------------------------------------------------------
-    // 采购比价（procurement-eval-v2，12 例，单帧 stub 模型；用例来自 DB）
+    // 采购比价（procurement-eval-v3，12 例，单帧 stub 模型；用例来自 DB）
     // ------------------------------------------------------------------
 
     private static ProcurementMetrics procurementMetrics(List<AgentEvalCase> cases) throws IOException {

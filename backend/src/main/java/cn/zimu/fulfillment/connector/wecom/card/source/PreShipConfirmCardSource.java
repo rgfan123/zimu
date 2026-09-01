@@ -128,7 +128,7 @@ public class PreShipConfirmCardSource implements WecomBusinessCardSource {
                         rs.getString("receiver_phone"),
                         rs.getString("receiver_address"),
                         rs.getInt("line_count"),
-                        trimQuantity(rs.getBigDecimal("total_quantity")),
+                        countText(rs.getLong("total_quantity")),
                         rs.getString("channel_goods"),
                         rs.getString("jd_goods"),
                         rs.getString("jd_goods_code"),
@@ -166,8 +166,7 @@ public class PreShipConfirmCardSource implements WecomBusinessCardSource {
                 limit);
     }
 
-    /** 数量在库里是 numeric(x,3)：卡面上「2 件」比「2.000 件」可读，去掉无意义的小数位。 */
-    static String trimQuantity(java.math.BigDecimal value) {
-        return value == null ? "0" : value.stripTrailingZeros().toPlainString();
+    static String countText(long value) {
+        return Long.toString(value);
     }
 }

@@ -48,7 +48,7 @@ class ProviderSkuFactorImportApiTest {
     void batchImportSetsFactorsIdempotentlyAndNeverOverwritesConfiguredValues() {
         ResponseEntity<Map> imported = importRows(
                 writeHeaders("provider-sku-factor-001", "req-provider-sku-factor-001"),
-                row("JD-SKU-000001", "2"));
+                row("JD-SKU-000001", 2));
         assertThat(imported.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(imported.getBody()).containsEntry("accepted_count", 1).containsEntry("skipped_count", 0);
         assertThat(factorOf("JD-SKU-000001")).isEqualTo("2");
@@ -56,7 +56,7 @@ class ProviderSkuFactorImportApiTest {
         // 同一份档案重复导入:不翻转已维护的值
         ResponseEntity<Map> replayed = importRows(
                 writeHeaders("provider-sku-factor-001", "req-provider-sku-factor-001"),
-                row("JD-SKU-000001", "2"));
+                row("JD-SKU-000001", 2));
         assertThat(replayed.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(replayed.getBody()).isEqualTo(imported.getBody());
         assertThat(factorOf("JD-SKU-000001")).isEqualTo("2");
@@ -64,7 +64,7 @@ class ProviderSkuFactorImportApiTest {
         // 已有不同值:显式报错,不静默覆盖
         ResponseEntity<Map> conflict = importRows(
                 writeHeaders("provider-sku-factor-002", "req-provider-sku-factor-002"),
-                row("JD-SKU-000001", "3"));
+                row("JD-SKU-000001", 3));
         assertThat(conflict.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(conflict.getBody()).containsEntry("business_code", "PROVIDER_SKU_FACTOR_IMPORT_CONFLICT");
         assertThat(factorOf("JD-SKU-000001")).isEqualTo("2");
@@ -72,31 +72,31 @@ class ProviderSkuFactorImportApiTest {
         // 文件内重复行:显式报错
         ResponseEntity<Map> duplicateRow = importRows(
                 writeHeaders("provider-sku-factor-003", "req-provider-sku-factor-003"),
-                row("JD-SKU-000001", "2"), row("JD-SKU-000001", "2"));
+                row("JD-SKU-000001", 2), row("JD-SKU-000001", 2));
         assertThat(duplicateRow.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(duplicateRow.getBody()).containsEntry("business_code", "PROVIDER_SKU_FACTOR_IMPORT_DUPLICATE_ROW");
 
         // 未知履约方 SKU 编码:显式报错
         ResponseEntity<Map> unknown = importRows(
                 writeHeaders("provider-sku-factor-004", "req-provider-sku-factor-004"),
-                row("JD-SKU-NOPE-" + token(), "2"));
+                row("JD-SKU-NOPE-" + token(), 2));
         assertThat(unknown.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(unknown.getBody()).containsEntry("business_code", "PROVIDER_SKU_FACTOR_IMPORT_PROVIDER_SKU_UNKNOWN");
 
-        // 非正整数件数(小数/零/负数/空):一律显式报错
-        for (String invalid : new String[] {"0.5", "0", "-1", ""}) {
+        // 非正整数 token（小数/零/负数/字符串）在 JSON 边界一律拒绝。
+        for (Object invalid : new Object[] {0.5, 0, -1, "2"}) {
             ResponseEntity<Map> invalidRow = importRows(
                     writeHeaders("provider-sku-factor-invalid-" + invalid.hashCode(),
                             "req-provider-sku-factor-invalid-" + invalid.hashCode()),
                     row("JD-SKU-000001", invalid));
-            assertThat(invalidRow.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
-            assertThat(invalidRow.getBody()).containsEntry("business_code", "PROVIDER_SKU_FACTOR_IMPORT_INVALID_ROW");
+            assertThat(invalidRow.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(invalidRow.getBody()).containsEntry("business_code", "MALFORMED_REQUEST");
         }
 
         // 只作用于京东履约方:第三方 SKU 编码不被匹配
         ResponseEntity<Map> thirdParty = importRows(
                 writeHeaders("provider-sku-factor-005", "req-provider-sku-factor-005"),
-                row("TP-SKU-000001", "2"));
+                row("TP-SKU-000001", 2));
         assertThat(thirdParty.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
         assertThat(thirdParty.getBody()).containsEntry("business_code", "PROVIDER_SKU_FACTOR_IMPORT_PROVIDER_SKU_UNKNOWN");
         assertThat(factorOf("TP-SKU-000001")).isNull();
@@ -158,7 +158,7 @@ class ProviderSkuFactorImportApiTest {
                 Map.class);
     }
 
-    private Map<String, Object> row(String providerSkuCode, String jdPiecesPerUnit) {
+    private Map<String, Object> row(String providerSkuCode, Object jdPiecesPerUnit) {
         return Map.of("provider_sku_code", providerSkuCode, "jd_pieces_per_unit", jdPiecesPerUnit);
     }
 

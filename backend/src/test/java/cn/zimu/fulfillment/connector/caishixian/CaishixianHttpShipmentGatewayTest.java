@@ -62,7 +62,7 @@ class CaishixianHttpShipmentGatewayTest {
         assertThat(before.receiverName()).isEqualTo("张三");
         assertThat(before.receiverPhone()).isEqualTo("13800000000");
         assertThat(before.receiverAddress()).isEqualTo("河南省郑州市金水区1号");
-        assertThat(before.sendableQuantity()).isEqualByComparingTo("1");
+        assertThat(before.sendableQuantity()).isEqualTo(1L);
         JsonNode query = mapper.readTree(orderListBody.get());
         assertThat(query.path("orderKey").asText()).isEqualTo("sub-1");
         assertThat(query.path("orderStatus").asText()).isEqualTo("3");

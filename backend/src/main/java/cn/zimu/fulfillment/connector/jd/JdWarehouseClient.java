@@ -12,7 +12,6 @@ import com.lop.open.api.sdk.request.IntegratedSupplyChain.IntegratedsupplychainB
 import com.lop.open.api.sdk.request.IntegratedSupplyChain.IntegratedsupplychainBasicinfoGoodsQueryV1LopRequest;
 import com.lop.open.api.sdk.request.IntegratedSupplyChain.IntegratedsupplychainBasicinfoWarehouseQueryV1LopRequest;
 import com.lop.open.api.sdk.request.IntegratedSupplyChain.IntegratedsupplychainOrderCancelV1LopRequest;
-import com.lop.open.api.sdk.request.IntegratedSupplyChain.IntegratedsupplychainOrderDeliveryCreateV1LopRequest;
 import com.lop.open.api.sdk.request.IntegratedSupplyChain.IntegratedsupplychainOrderDeliveryQueryV1LopRequest;
 import com.lop.open.api.sdk.request.IntegratedSupplyChain.IntegratedsupplychainOrderTraceQueryV2LopRequest;
 import com.lop.open.api.sdk.request.IntegratedSupplyChain.IntegratedsupplychainStockQueryV1LopRequest;
@@ -114,13 +113,14 @@ public class JdWarehouseClient implements JDWarehouseService {
 
     @Override
     public JdResult createOutboundOrder(Map<String, Object> command) {
-        var request = new IntegratedsupplychainOrderDeliveryCreateV1LopRequest();
-        request.setRequest(sdkMapper.convertValue(withDefaults(command,
-                        com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformSoService
-                                .addSoOrder.SoCreateOrderRequest.class),
-                com.lop.open.api.sdk.domain.IntegratedSupplyChain.JdlOpenPlatformSoService
-                        .addSoOrder.SoCreateOrderRequest.class));
-        return execute("createOutboundOrder", command, request, response -> response.getResponse());
+        JdResult blocked = new JdResult(
+                false,
+                "JD_SO_CREATE_REQUIRES_SHIPMENT_WORKFLOW",
+                "销售出库单只能通过受控 Shipment 建单流程创建",
+                null,
+                null);
+        audit("createOutboundOrder", command, blocked, Instant.now());
+        return blocked;
     }
 
     @Override

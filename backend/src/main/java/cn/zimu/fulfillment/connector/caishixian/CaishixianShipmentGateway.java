@@ -2,7 +2,6 @@ package cn.zimu.fulfillment.connector.caishixian;
 
 import cn.zimu.fulfillment.connector.SourceShipmentArtifact;
 import cn.zimu.fulfillment.connector.ExternalWritePermit;
-import java.math.BigDecimal;
 import java.util.List;
 
 /** 彩食鲜 Shipment 发货的真实外部端口。 */
@@ -26,7 +25,7 @@ public interface CaishixianShipmentGateway {
             String receiverName,
             String receiverPhone,
             String receiverAddress,
-            BigDecimal sendableQuantity) {}
+            Long sendableQuantity) {}
 
     record CarrierOption(String code, String name) {}
 

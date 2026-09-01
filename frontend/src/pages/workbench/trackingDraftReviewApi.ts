@@ -12,7 +12,7 @@ export interface TrackingDraftBatchLine {
   expected_case_version: number;
   task_id?: string | null;
   carrier_code?: string | null;
-  actual_quantity?: string | null;
+  actual_quantity?: number | null;
   remark?: string;
 }
 

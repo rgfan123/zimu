@@ -15,6 +15,8 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * 彩食鲜 JSON → StructuredOrderRow 转换测试：ID 纪律、source_ordered_at 取 orderTime、
@@ -105,14 +107,14 @@ class CaishixianOrderTransformTest {
         assertThat(items).hasSize(2);
         assertThat(items.get(0).sourceSkuRef()).isEqualTo("G-001");
         assertThat(items.get(0).productName()).isEqualTo("羊小腿");
-        assertThat(items.get(0).quantity()).isEqualTo("3");
+        assertThat(items.get(0).quantity()).isEqualTo(3);
         assertThat(items.get(0).specification()).isEqualTo("2kg/箱");
         assertThat(items.get(0).unit()).isEqualTo("箱");
         assertThat(items.get(0).sourceLineRef()).isEqualTo("2608260617658411-01");
         // 平台未给规格/单位时的缺省口径与 Excel 解析器 build() 的 fallback 一致
         assertThat(items.get(1).specification()).isEqualTo(CaishixianOrderTransform.SPEC_MISSING);
         assertThat(items.get(1).unit()).isEqualTo(CaishixianOrderTransform.UNIT_MISSING);
-        assertThat(items.get(1).quantity()).isEqualTo("2");
+        assertThat(items.get(1).quantity()).isEqualTo(2);
         // 客户身份 = 收货人姓名+电话二元组（与聚福宝结构化拉取同规）
         assertThat(row.canonicalInput().customer().sourceCustomerRef())
                 .isEqualTo(ImportedCustomerIdentity.from("谭华勇", "13800000000").sourceCustomerRef());
@@ -168,6 +170,25 @@ class CaishixianOrderTransformTest {
         // 合法行照常保留在 canonical items（复核修数后可用），非法行绝不造数
         assertThat(row.canonicalInput().items()).hasSize(1);
         assertThat(row.canonicalInput().items().getFirst().sourceSkuRef()).isEqualTo("G-002");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"3", "3.000"})
+    void jsonCountAdapterNormalizesMathematicalIntegers(String rawQuantity) {
+        StructuredOrderRow row = transform.toRow(listItem(), detailWithCount(rawQuantity));
+
+        assertThat(row.reviewRequired()).isNull();
+        assertThat(row.canonicalInput().items()).singleElement()
+                .satisfies(item -> assertThat(item.quantity()).isEqualTo(3));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"3.5", "-1", "2147483648"})
+    void jsonCountAdapterRejectsFractionalNegativeAndOverflowCounts(String rawQuantity) {
+        StructuredOrderRow row = transform.toRow(listItem(), detailWithCount(rawQuantity));
+
+        assertThat(row.reviewRequired().code()).isEqualTo(CaishixianOrderTransform.QUANTITY_REVIEW_CODE);
+        assertThat(row.canonicalInput().items()).isEmpty();
     }
 
     @Test
@@ -233,5 +254,16 @@ class CaishixianOrderTransformTest {
                 .isEqualTo(Instant.ofEpochMilli(1787040725000L));
         assertThat(CaishixianOrderTransform.parseTime("")).isNull();
         assertThat(CaishixianOrderTransform.parseTime("不是时间")).isNull();
+    }
+
+    private JsonNode detailWithCount(String rawQuantity) {
+        return json("""
+                {"receiverProvince": "河南省", "receiverCity": "郑州市",
+                 "receiverDistrict": "金水区", "receiverAddress": "测试路 1 号",
+                 "supplierOrderGoodsVo": [
+                   {"goodsCode": "G-COUNT", "goodsName": "羊棒骨", "count": %s,
+                    "spec": "500g", "unit": "份"}
+                 ]}
+                """.formatted(rawQuantity));
     }
 }

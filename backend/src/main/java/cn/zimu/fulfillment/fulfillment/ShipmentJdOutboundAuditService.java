@@ -33,6 +33,7 @@ public class ShipmentJdOutboundAuditService {
     public static final String PREVIEW_SCOPE = "shipment.jd_outbound.preview";
     public static final String PREVIEW_BLOCKED_REASON = "JD_SHIPMENT_OUTBOUND_PREVIEW_BLOCKED";
     public static final String RECONCILE_SCOPE = "shipment.jd_outbound.reconcile";
+    public static final String READBACK_SCOPE = "shipment.jd_outbound.readback";
 
     private final AuditLogService audits;
     private final JdbcTemplate jdbc;
@@ -129,6 +130,42 @@ public class ShipmentJdOutboundAuditService {
                             "delivery_no_present", deliveryNoPresent,
                             "erp_delivery_no_matches", erpDeliveryNoMatches))
                     .httpStatus(result != null && result.success() ? 200 : 502)
+                    .businessCode(businessCode));
+        });
+    }
+
+    /**
+     * addSoOrder 成功后的强制读回核验留痕。审计只保留匹配维度，不写 pin、ownerNo、货品值或
+     * querySoOrder 原始响应，避免租户标识和收件信息从远端响应泄漏到日志。
+     */
+    public void recordPostCreateReadback(
+            long shipmentId,
+            long orderId,
+            CommandContext context,
+            JdResult result,
+            JdOutboundReadbackVerifier.Verification verification) {
+        requiresNew.executeWithoutResult(status -> {
+            jdbc.update(
+                    "UPDATE app.shipment_jd_outbounds SET last_query_at=CURRENT_TIMESTAMP, "
+                            + "updated_at=CURRENT_TIMESTAMP WHERE shipment_id=?",
+                    shipmentId);
+            String businessCode = switch (verification.status()) {
+                case MATCHED -> "JD_OUTBOUND_READBACK_MATCHED";
+                case MISMATCHED -> "JD_OUTBOUND_READBACK_MISMATCH";
+                case MALFORMED -> "JD_OUTBOUND_READBACK_MALFORMED";
+                case QUERY_FAILED -> "JD_OUTBOUND_READBACK_QUERY_FAILED";
+            };
+            audits.record(new AuditLogService.AuditCommand()
+                    .dataScope(DataScope.BUSINESS).orderId(orderId)
+                    .requestId(context.requestId()).traceId(context.traceId()).operator(context.operator())
+                    .actorType(AuditActorType.SYSTEM).service("fulfillment").operation(READBACK_SCOPE)
+                    .requestPayload(Map.of("shipment_id", String.valueOf(shipmentId)))
+                    .responsePayload(Map.of(
+                            "query_success", result != null && result.success(),
+                            "verification_status", verification.status().name(),
+                            "mismatch_fields", verification.mismatchFields(),
+                            "delivery_no_present", verification.deliveryNo() != null))
+                    .httpStatus(verification.matched() ? 200 : 409)
                     .businessCode(businessCode));
         });
     }

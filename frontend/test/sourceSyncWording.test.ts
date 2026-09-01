@@ -71,6 +71,19 @@ test('各渠道的平台读不到收敛成同一句人话', () => {
   }
 });
 
+test('平台承运商无法解析时说明平台代码问题，不把本地翻译误称为白名单', () => {
+  const view = presentSourceSync(check({
+    blockers: [{
+      code: 'SOURCE_PLATFORM_CARRIER_UNMAPPED',
+      field: 'carrier',
+      message: '正式物流公司无法唯一解析为来源平台接口所需代码',
+    }],
+  }));
+
+  assert.match(view.reasons[0].text, /平台/);
+  assert.doesNotMatch(view.reasons[0].text, /白名单|先配好映射/);
+});
+
 test('翻译不到的码原样端出服务端原文，不编', () => {
   const view = presentSourceSync(check({
     blockers: [{ code: 'SOME_FUTURE_CODE', field: null, message: '服务端自己的说法' }],

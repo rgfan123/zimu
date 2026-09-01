@@ -15,6 +15,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.FillPatternType;
 import org.apache.poi.ss.usermodel.IndexedColors;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -23,13 +25,35 @@ import org.junit.jupiter.api.Test;
 class CaishixianShipmentArtifactFactoryTest {
 
     @Test
+    void renderRejectsNumericSourceCountWhenDisplayFormatHidesFraction() throws Exception {
+        byte[] original;
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(workbook()));
+                var output = new ByteArrayOutputStream()) {
+            var count = workbook.getSheetAt(0).getRow(2).getCell(15);
+            count.setCellValue(2.5);
+            var style = workbook.createCellStyle();
+            style.setDataFormat(workbook.createDataFormat().getFormat("0"));
+            count.setCellStyle(style);
+            assertThat(new DataFormatter().formatCellValue(count)).isEqualTo("3");
+            workbook.write(output);
+            original = output.toByteArray();
+        }
+
+        assertThatThrownBy(() -> CaishixianShipmentArtifactFactory.render(
+                        original,
+                        List.of(new CaishixianShipmentArtifactFactory.RowFill(
+                                0, 3, 2, "JD", "JDVA123"))))
+                .hasMessageContaining("正整数");
+    }
+
+    @Test
     void renderKeepsOnlyTargetShipmentRowsAndFillsTheCapturedReturnColumns() throws Exception {
         byte[] original = workbook();
 
         byte[] rendered = CaishixianShipmentArtifactFactory.render(
                 original,
                 List.of(new CaishixianShipmentArtifactFactory.RowFill(
-                        0, 3, "2", "JD", "JDVA123")));
+                        0, 3, 2, "JD", "JDVA123")));
 
         try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(rendered))) {
             assertThat(workbook.getNumberOfSheets()).isEqualTo(1);
@@ -37,7 +61,10 @@ class CaishixianShipmentArtifactFactoryTest {
             assertThat(sheet.getLastRowNum()).isEqualTo(1);
             assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).isEqualTo("main-target");
             assertThat(sheet.getRow(1).getCell(1).getStringCellValue()).isEqualTo("sub-target");
-            assertThat(sheet.getRow(1).getCell(17).getStringCellValue()).isEqualTo("2");
+            assertThat(sheet.getRow(1).getCell(15).getCellType()).isEqualTo(CellType.NUMERIC);
+            assertThat(sheet.getRow(1).getCell(15).getNumericCellValue()).isEqualTo(2);
+            assertThat(sheet.getRow(1).getCell(17).getCellType()).isEqualTo(CellType.NUMERIC);
+            assertThat(sheet.getRow(1).getCell(17).getNumericCellValue()).isEqualTo(2);
             assertThat(sheet.getRow(1).getCell(18).getStringCellValue()).isEqualTo("JD");
             assertThat(sheet.getRow(1).getCell(19).getStringCellValue()).isEqualTo("JDVA123");
             assertThat(sheet.getRow(1).getCell(21).getStringCellValue()).isEmpty();
@@ -64,7 +91,7 @@ class CaishixianShipmentArtifactFactoryTest {
         assertThatThrownBy(() -> CaishixianShipmentArtifactFactory.render(
                         original,
                         List.of(new CaishixianShipmentArtifactFactory.RowFill(
-                                0, 3, "2", "JD", "JDVA123"))))
+                                0, 3, 2, "JD", "JDVA123"))))
                 .hasMessageContaining("公式");
     }
 
@@ -72,7 +99,7 @@ class CaishixianShipmentArtifactFactoryTest {
     void rendersByteIdenticalArtifactForTheSameShipmentFacts() throws Exception {
         byte[] original = workbook();
         var fills = List.of(new CaishixianShipmentArtifactFactory.RowFill(
-                0, 3, "2", "JD", "JDVA123"));
+                0, 3, 2, "JD", "JDVA123"));
 
         byte[] first = CaishixianShipmentArtifactFactory.render(original, fills);
         Thread.sleep(2_200);
@@ -108,7 +135,7 @@ class CaishixianShipmentArtifactFactoryTest {
             assertThatThrownBy(() -> CaishixianShipmentArtifactFactory.render(
                             original,
                             List.of(new CaishixianShipmentArtifactFactory.RowFill(
-                                    0, 3, "2", "JD", "JDVA123"))))
+                                    0, 3, 2, "JD", "JDVA123"))))
                     .hasMessageContaining("精确 22 列");
         }
     }
@@ -126,7 +153,7 @@ class CaishixianShipmentArtifactFactoryTest {
         byte[] rendered = CaishixianShipmentArtifactFactory.render(
                 original,
                 List.of(new CaishixianShipmentArtifactFactory.RowFill(
-                        0, 3, "2", "JD", "JDVA123")));
+                        0, 3, 2, "JD", "JDVA123")));
 
         try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(rendered))) {
             assertThat(workbook.getSheetAt(0).getRow(1).getLastCellNum()).isEqualTo((short) 22);
@@ -172,7 +199,10 @@ class CaishixianShipmentArtifactFactoryTest {
             assertThat((int) sheet.getRow(0).getLastCellNum()).isEqualTo(22);
             assertThat(sheet.getRow(1).getCell(0).getStringCellValue()).isEqualTo("main-1");
             assertThat(sheet.getRow(1).getCell(4).getStringCellValue()).isEmpty(); // 站点编码已知缺失
-            assertThat(sheet.getRow(1).getCell(17).getStringCellValue()).isEqualTo("2");
+            assertThat(sheet.getRow(1).getCell(15).getCellType()).isEqualTo(CellType.NUMERIC);
+            assertThat(sheet.getRow(1).getCell(15).getNumericCellValue()).isEqualTo(2);
+            assertThat(sheet.getRow(1).getCell(17).getCellType()).isEqualTo(CellType.NUMERIC);
+            assertThat(sheet.getRow(1).getCell(17).getNumericCellValue()).isEqualTo(2);
             assertThat(sheet.getRow(1).getCell(19).getStringCellValue()).isEqualTo("JDVA123");
             assertThat(sheet.getLastRowNum()).isEqualTo(1);
         }

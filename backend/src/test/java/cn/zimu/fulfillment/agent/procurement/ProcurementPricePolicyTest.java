@@ -25,8 +25,8 @@ class ProcurementPricePolicyTest {
     void happyPathKeepsRequiresHumanFalseAndNormalizesPrices() {
         ProcurementPriceRecommendation raw = raw(
                 "SKU-1001",
-                "2",
-                new Inventory("0", "2"),
+                2,
+                new Inventory(0, 2),
                 List.of(
                         new Candidate("P001", "12.3", PriceBasis.sku_commercial_price, "主数据进货价"),
                         new Candidate("P002", "12.90", PriceBasis.provider_sku, "履约方映射")),
@@ -49,7 +49,7 @@ class ProcurementPricePolicyTest {
     @Test
     void noCandidatesForcesRequiresHumanAndDropsRecommendation() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "2", new Inventory("0", "2"), List.of(), new Recommendation("P001", "x"), 0.9, false, List.of()));
+                raw("SKU-1001", 2, new Inventory(0, 2), List.of(), new Recommendation("P001", "x"), 0.9, false, List.of()));
 
         assertThat(enforced.requiresHuman()).isTrue();
         assertThat(enforced.missingFields()).contains("candidates");
@@ -61,7 +61,7 @@ class ProcurementPricePolicyTest {
     @Test
     void missingPriceForcesRequiresHumanAndMovesCandidateToExcluded() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "2", new Inventory("0", "2"),
+                raw("SKU-1001", 2, new Inventory(0, 2),
                         List.of(new Candidate("P001", null, PriceBasis.sku_commercial_price, null)),
                         new Recommendation("P001", "x"), 0.9, false, List.of()));
 
@@ -79,7 +79,7 @@ class ProcurementPricePolicyTest {
     @Test
     void invalidPriceScaleForcesRequiresHumanAsMissingPrice() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "2", new Inventory("0", "2"),
+                raw("SKU-1001", 2, new Inventory(0, 2),
                         List.of(new Candidate("P001", "12.345", PriceBasis.sku_commercial_price, null)),
                         new Recommendation("P001", "x"), 0.9, false, List.of()));
 
@@ -95,7 +95,7 @@ class ProcurementPricePolicyTest {
     @Test
     void missingPriceBasisForcesRequiresHuman() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "2", new Inventory("0", "2"),
+                raw("SKU-1001", 2, new Inventory(0, 2),
                         List.of(new Candidate("P001", "12.34", null, null)),
                         new Recommendation("P001", "x"), 0.9, false, List.of()));
 
@@ -106,7 +106,7 @@ class ProcurementPricePolicyTest {
     @Test
     void lowConfidenceForcesRequiresHumanAndDropsRecommendation() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "2", new Inventory("0", "2"),
+                raw("SKU-1001", 2, new Inventory(0, 2),
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null)),
                         new Recommendation("P001", "x"), 0.3, false, List.of()));
 
@@ -118,7 +118,7 @@ class ProcurementPricePolicyTest {
     @Test
     void modelClaimedMissingFieldsForceRequiresHuman() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "2", new Inventory("0", "2"),
+                raw("SKU-1001", 2, new Inventory(0, 2),
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null)),
                         new Recommendation("P001", "x"), 0.9, false, List.of("provider_sku_name")));
 
@@ -130,7 +130,7 @@ class ProcurementPricePolicyTest {
     @Test
     void missingTargetSkuForcesRequiresHuman() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw(null, "2", new Inventory("0", "2"),
+                raw(null,  2, new Inventory(0, 2),
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null)),
                         new Recommendation("P001", "x"), 0.9, false, List.of()));
 
@@ -141,7 +141,7 @@ class ProcurementPricePolicyTest {
     @Test
     void missingInventoryForcesRequiresHuman() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "2", null,
+                raw("SKU-1001", 2, null,
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null)),
                         new Recommendation("P001", "x"), 0.9, false, List.of()));
 
@@ -152,7 +152,7 @@ class ProcurementPricePolicyTest {
     @Test
     void modelClaimedNoHumanButNoRecommendationForcesHumanWithMissingField() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "2", new Inventory("0", "2"),
+                raw("SKU-1001", 2, new Inventory(0, 2),
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null)),
                         null, 0.9, false, List.of()));
 
@@ -164,7 +164,7 @@ class ProcurementPricePolicyTest {
     @Test
     void modelClaimedRequiresHumanStripsRecommendationButKeepsFacts() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "2", new Inventory("0", "2"),
+                raw("SKU-1001", 2, new Inventory(0, 2),
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null)),
                         new Recommendation("P001", "x"), 0.9, true, List.of()));
 
@@ -190,14 +190,14 @@ class ProcurementPricePolicyTest {
     void thresholdBoundaryIsInclusiveForAutoDecision() {
         // confidence == threshold 不视为低置信度（>= 阈值可自动决策）
         ProcurementPriceRecommendation ok = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null)),
                         new Recommendation("P001", "x"), ProcurementPricePolicy.LOW_CONFIDENCE_THRESHOLD, false, List.of()));
         assertThat(ok.requiresHuman()).isFalse();
 
         // 低于阈值 0.01 转人工
         ProcurementPriceRecommendation human = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null)),
                         new Recommendation("P001", "x"), ProcurementPricePolicy.LOW_CONFIDENCE_THRESHOLD - 0.01, false, List.of()));
         assertThat(human.requiresHuman()).isTrue();
@@ -210,7 +210,7 @@ class ProcurementPricePolicyTest {
     @Test
     void priceOutlierCandidateIsExcludedAndRecommendationOnlyAmongComparable() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(
                                 new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, "主数据进货价"),
                                 new Candidate("P002", "12.90", PriceBasis.provider_sku, "履约方映射"),
@@ -235,7 +235,7 @@ class ProcurementPricePolicyTest {
     @Test
     void lowSidedPriceOutlierIsExcludedToo() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(
                                 new Candidate("P001", "5.00", PriceBasis.sku_commercial_price, null),
                                 new Candidate("P002", "12.90", PriceBasis.provider_sku, null),
@@ -257,7 +257,7 @@ class ProcurementPricePolicyTest {
     void outlierDetectionNeedsAtLeastThreePricedCandidates() {
         // 只有 2 例有价格：无中位数统计意义，全部保留可比，不做离群剔除
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(
                                 new Candidate("P001", "10.00", PriceBasis.sku_commercial_price, null),
                                 new Candidate("P002", "50.00", PriceBasis.provider_sku, null)),
@@ -274,7 +274,7 @@ class ProcurementPricePolicyTest {
     @Test
     void mappingStaleCandidateIsExcludedAndKeptVisible() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, "主数据进货价")),
                         List.of(new ExcludedCandidate(
                                 "P002", "12.90", PriceBasis.provider_sku, "履约方映射已停用",
@@ -297,7 +297,7 @@ class ProcurementPricePolicyTest {
     @Test
     void allCandidatesMappingStaleForcesRequiresHumanWithoutHardRecommendation() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("0", "1"),
+                raw("SKU-1001", 1, new Inventory(0, 1),
                         List.of(),
                         List.of(
                                 new ExcludedCandidate(
@@ -322,7 +322,7 @@ class ProcurementPricePolicyTest {
     @Test
     void priceMissingCandidateForcesRequiresHumanEvenWhenComparableExists() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(
                                 new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null),
                                 new Candidate("P002", "12.90", PriceBasis.provider_sku, null)),
@@ -349,7 +349,7 @@ class ProcurementPricePolicyTest {
         // 模型把 P003 声明为 price_outlier；策略重算：三例 [12.34, 12.90, 45.67] 的中位数
         // 12.90，45.67 > 12.90×2 → 维持剔除（策略是确定性真源，声明与重算一致）
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(
                                 new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null),
                                 new Candidate("P002", "12.90", PriceBasis.provider_sku, null)),
@@ -373,7 +373,7 @@ class ProcurementPricePolicyTest {
     @Test
     void recommendationOnExcludedCandidateForcesRequiresHuman() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(
                                 new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null),
                                 new Candidate("P002", "12.90", PriceBasis.provider_sku, null)),
@@ -396,8 +396,8 @@ class ProcurementPricePolicyTest {
         // 3 例价格 [12.34, 12.90, 45.67]，中位数 12.90
         ProcurementPriceRecommendation raw = raw(
                 "SKU-1001",
-                "1",
-                new Inventory("5", "0"),
+                1,
+                new Inventory(5, 0),
                 List.of(
                         new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null),
                         new Candidate("P002", "12.90", PriceBasis.provider_sku, null),
@@ -421,7 +421,7 @@ class ProcurementPricePolicyTest {
     @Test
     void excludedCandidatesAreNormalizedToScaleTwoPrices() {
         ProcurementPriceRecommendation enforced = ProcurementPricePolicy.enforce(
-                raw("SKU-1001", "1", new Inventory("5", "0"),
+                raw("SKU-1001", 1, new Inventory(5, 0),
                         List.of(new Candidate("P001", "12.34", PriceBasis.sku_commercial_price, null)),
                         List.of(new ExcludedCandidate(
                                 "P002", "12.9", PriceBasis.provider_sku, null,
@@ -436,7 +436,7 @@ class ProcurementPricePolicyTest {
 
     private static ProcurementPriceRecommendation raw(
             String targetSku,
-            String requestedQuantity,
+            Integer requestedQuantity,
             Inventory inventory,
             List<Candidate> candidates,
             Recommendation recommendation,
@@ -448,7 +448,7 @@ class ProcurementPricePolicyTest {
 
     private static ProcurementPriceRecommendation raw(
             String targetSku,
-            String requestedQuantity,
+            Integer requestedQuantity,
             Inventory inventory,
             List<Candidate> candidates,
             List<ExcludedCandidate> excludedCandidates,

@@ -50,6 +50,7 @@ import {
 } from './skuMappingMatrix';
 import BundleMappingsPanel from './BundleMappingsPanel';
 import './skuMappings.css';
+import { editablePositiveCountFormValue, positiveCountFormValue } from './countFormValue';
 
 function ReferencePreviewPanel() {
   const { message: messageApi } = AntApp.useApp();
@@ -80,6 +81,8 @@ function ReferencePreviewPanel() {
 
   const confirmMapping = async () => {
     if (!selected || !skuId || !canConfirmReferenceRow(selected)) return;
+    const quantityMultiplier = selected.quantity_multiplier;
+    if (!Number.isInteger(quantityMultiplier) || quantityMultiplier! <= 0) return;
     setConfirming(true);
     try {
       const [providers, providerMappings, sourceMappings] = await Promise.all([
@@ -127,7 +130,7 @@ function ReferencePreviewPanel() {
         source_sku_ref: selected.source_sku_ref,
         source_sku_name: selected.source_product_name,
         sku_id: skuId,
-        quantity_multiplier: String(selected.quantity_multiplier),
+        quantity_multiplier: quantityMultiplier!,
         active: true,
       });
       messageApi.success('来源与京东 SKU 映射已确认');
@@ -154,7 +157,7 @@ function ReferencePreviewPanel() {
       width: 250,
       render: (_, row) => <ProductIdentity name={row.provider_sku_name} code={row.provider_sku_code} />,
     },
-    { title: '包装乘数', dataIndex: 'quantity_multiplier', width: 90, align: 'right', render: (value?: string | number) => value ?? '—' },
+    { title: '包装乘数', dataIndex: 'quantity_multiplier', width: 90, align: 'right', render: (value?: number) => value ?? '—' },
     {
       title: '核对结果',
       dataIndex: 'match_status',
@@ -290,11 +293,15 @@ function JdPiecesPanel() {
   const importSelected = async () => {
     const rows = candidates
       .filter((row) => selectedRowKeys.includes(row.provider_sku_code))
-      .map((row) => ({
-        provider_sku_code: row.provider_sku_code,
-        jd_pieces_per_unit: values[row.provider_sku_code]?.trim() || row.candidate || '',
-      }))
-      .filter((row) => row.jd_pieces_per_unit.length > 0);
+      .map((row) => {
+        const typed = values[row.provider_sku_code]?.trim();
+        const factor = typed ? Number(typed) : row.candidate;
+        return { provider_sku_code: row.provider_sku_code, jd_pieces_per_unit: factor };
+      })
+      .filter((row): row is { provider_sku_code: string; jd_pieces_per_unit: number } =>
+        Number.isInteger(row.jd_pieces_per_unit)
+          && row.jd_pieces_per_unit! > 0
+          && row.jd_pieces_per_unit! <= 2_147_483_647);
     if (rows.length === 0) {
       messageApi.warning('请先勾选要导入的 SKU，并确保有候选或已填写确认值');
       return;
@@ -320,8 +327,8 @@ function JdPiecesPanel() {
     { title: '内部规格', dataIndex: 'specification', width: 140, ellipsis: true, render: (value?: string | null) => value || '—' },
     { title: '来源规格', dataIndex: 'source_specification', width: 140, ellipsis: true, render: (value?: string | null) => value || '—' },
     { title: '来源商品', dataIndex: 'source_product_name', width: 180, ellipsis: true, render: (value?: string | null) => value || '—' },
-    { title: '候选件数', dataIndex: 'candidate', width: 90, render: (value?: string | null) => value ?? '—' },
-    { title: '已配置', dataIndex: 'configured', width: 90, render: (value?: string | null) => value ?? '—' },
+    { title: '候选件数', dataIndex: 'candidate', width: 90, render: (value?: number | null) => value ?? '—' },
+    { title: '已配置', dataIndex: 'configured', width: 90, render: (value?: number | null) => value ?? '—' },
     {
       title: '确认值',
       key: 'confirm_value',
@@ -329,7 +336,7 @@ function JdPiecesPanel() {
       render: (_, row) => (
         <Input
           aria-label={`确认 ${row.provider_sku_code} 的京东件数换算`}
-          placeholder={row.candidate ?? '需人工填写'}
+          placeholder={row.candidate == null ? '需人工填写' : String(row.candidate)}
           value={values[row.provider_sku_code] ?? ''}
           onChange={(event) => setValues((prev) => ({ ...prev, [row.provider_sku_code]: event.target.value }))}
         />
@@ -425,23 +432,24 @@ function SourceSkuMatrix() {
       ? {
           source_sku_ref: attr(cell.mapping, 'source_sku_ref'),
           source_sku_name: cell.mapping.name,
-          quantity_multiplier: attr(cell.mapping, 'quantity_multiplier'),
+          quantity_multiplier: editablePositiveCountFormValue(attr(cell.mapping, 'quantity_multiplier')),
           active: cell.mapping.active,
         }
-      : { quantity_multiplier: '1', active: true });
+      : { quantity_multiplier: 1, active: true });
   };
 
   const saveCell = async () => {
     if (!editingCell) return;
     try {
       const values = await form.validateFields();
+      const quantityMultiplier = positiveCountFormValue(values.quantity_multiplier);
       setSubmitting(true);
       if (editingCell.mapping) {
         await sourceSkuMappingsApi.update(
           editingCell.mapping.id,
           {
             expected_version: editingCell.mapping.version,
-            quantity_multiplier: values.quantity_multiplier,
+            quantity_multiplier: quantityMultiplier,
             active: values.active,
           },
         );
@@ -452,7 +460,7 @@ function SourceSkuMatrix() {
           source_sku_ref: values.source_sku_ref,
           source_sku_name: values.source_sku_name,
           sku_id: editingCell.sku.id,
-          quantity_multiplier: values.quantity_multiplier,
+          quantity_multiplier: quantityMultiplier,
           active: values.active,
         });
         messageApi.success('映射已创建');
@@ -604,11 +612,19 @@ function SourceSkuMatrix() {
             label="数量乘数"
             rules={[
               { required: true, message: '请填写数量乘数' },
-              // V99 数量整数化：与后端 SourceSkuMappingWrite 的正整数契约同款
-              { pattern: /^[1-9][0-9]*$/, message: '数量乘数必须为正整数' },
+              {
+                validator: (_, value) => {
+                  try {
+                    positiveCountFormValue(value);
+                    return Promise.resolve();
+                  } catch {
+                    return Promise.reject(new Error('数量乘数必须为 int32 正整数'));
+                  }
+                },
+              },
             ]}
           >
-            <Input placeholder="例如 1 或 2" />
+            <Input inputMode="numeric" placeholder="例如 1 或 2" />
           </Form.Item>
           <Form.Item name="active" label="启用" valuePropName="checked">
             <Switch />

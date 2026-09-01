@@ -10,7 +10,6 @@ import cn.zimu.fulfillment.common.audit.AuditActorType;
 import cn.zimu.fulfillment.common.domain.SourceChannel;
 import cn.zimu.fulfillment.common.web.RequestContext;
 import cn.zimu.fulfillment.connector.SourcePlatformCheckResult;
-import java.math.BigDecimal;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -60,14 +59,14 @@ class SourceShipmentSyncControllerTest {
     private SourceSyncCheck check() {
         SourceSyncFacts facts = new SourceSyncFacts(
                 7, 8, SourceChannel.JUFUBAO, "main", "sub", "张三", "13800000000", "地址",
-                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, "FULLY_FULFILLED",
+                1L, 1L, 1L, "FULLY_FULFILLED",
                 "JD", "京东物流", "京东物流", "JDVA1");
         return new SourceSyncCheck(
                 7, true, "a".repeat(64), "b".repeat(64), facts,
                 new SourcePlatformCheckResult(
                         true, "OK", "ok", "NO_DELIVERY", false,
                         SourcePlatformCheckResult.AddressStatus.CLEAR,
-                        "张三", "13800000000", "地址", BigDecimal.ONE, true),
+                        "张三", "13800000000", "地址", 1L, true),
                 List.of(),
                 new SourceSyncProjection(SourceSyncStatus.PENDING, 0, 0, null, null, null));
     }

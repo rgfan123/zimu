@@ -78,7 +78,7 @@ public interface BundleReadQuery {
             String productName,
             String specification,
             String unit,
-            String quantityPerBundle,
+            int quantityPerBundle,
             String purchasePrice,
             boolean active,
             ProviderSummary provider) {}
@@ -103,8 +103,8 @@ public interface BundleReadQuery {
 
     record InventoryObservation(
             String warehouseCode,
-            String totalQuantity,
-            String availableQuantity,
+            Integer totalQuantity,
+            Integer availableQuantity,
             String quantityUnit,
             Instant observedAt,
             String sourceType) {}

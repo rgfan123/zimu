@@ -16,6 +16,9 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,6 +38,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -84,16 +88,37 @@ class ShipmentJdOutboundSubmitTest {
 
         @Bean
         @Primary
-        ControlledJdWarehouseClient controlledJdWarehouseClient() {
-            return new ControlledJdWarehouseClient();
+        ControlledJdWarehouseClient controlledJdWarehouseClient(JdbcTemplate jdbc) {
+            return new ControlledJdWarehouseClient(jdbc);
         }
     }
 
     static class ControlledJdWarehouseClient extends MockJdWarehouseClient {
         private final AtomicBoolean failNextStockQuery = new AtomicBoolean();
         private final AtomicBoolean returnOverlongCodeNextOutboundQuery = new AtomicBoolean();
+        private final AtomicBoolean collideNextAvailabilityQuery = new AtomicBoolean();
+        private final AtomicBoolean failNextAvailabilityQuery = new AtomicBoolean();
+        private final AtomicBoolean malformedNextAvailabilityQuery = new AtomicBoolean();
+        private final AtomicBoolean returnOldCargoOnOutboundQuery = new AtomicBoolean();
+        private final AtomicBoolean expireClaimDuringNextStockQuery = new AtomicBoolean();
+        private final AtomicBoolean expireClaimDuringNextAvailabilityQuery = new AtomicBoolean();
+        private final AtomicBoolean pauseNextOutboundQuery = new AtomicBoolean();
+        private final AtomicBoolean outboundPauseClaimed = new AtomicBoolean();
         private final AtomicInteger stockQueries = new AtomicInteger();
         private final AtomicInteger outboundQueries = new AtomicInteger();
+        private final AtomicInteger availabilityQueries = new AtomicInteger();
+        private final List<String> availabilityCandidates = new CopyOnWriteArrayList<>();
+        private final List<String> availabilityPins = new CopyOnWriteArrayList<>();
+        private final List<String> availabilityOwnerNos = new CopyOnWriteArrayList<>();
+        private final List<String> outboundPins = new CopyOnWriteArrayList<>();
+        private final List<String> outboundOwnerNos = new CopyOnWriteArrayList<>();
+        private final JdbcTemplate jdbc;
+        private volatile CountDownLatch outboundQueryEntered;
+        private volatile CountDownLatch releaseOutboundQuery;
+
+        ControlledJdWarehouseClient(JdbcTemplate jdbc) {
+            this.jdbc = jdbc;
+        }
 
         void failNextStockQuery() {
             failNextStockQuery.set(true);
@@ -103,16 +128,84 @@ class ShipmentJdOutboundSubmitTest {
             returnOverlongCodeNextOutboundQuery.set(true);
         }
 
+        void collideNextAvailabilityQuery() {
+            collideNextAvailabilityQuery.set(true);
+        }
+
+        void failNextAvailabilityQuery() {
+            failNextAvailabilityQuery.set(true);
+        }
+
+        void malformedNextAvailabilityQuery() {
+            malformedNextAvailabilityQuery.set(true);
+        }
+
+        void returnOldCargoOnOutboundQuery() {
+            returnOldCargoOnOutboundQuery.set(true);
+        }
+
+        void expireClaimDuringNextStockQuery() {
+            expireClaimDuringNextStockQuery.set(true);
+        }
+
+        void expireClaimDuringNextAvailabilityQuery() {
+            expireClaimDuringNextAvailabilityQuery.set(true);
+        }
+
+        void pauseNextOutboundQuery() {
+            pauseNextOutboundQuery.set(true);
+            outboundPauseClaimed.set(false);
+            outboundQueryEntered = new CountDownLatch(1);
+            releaseOutboundQuery = new CountDownLatch(1);
+        }
+
+        boolean awaitOutboundQueryEntered() throws InterruptedException {
+            return outboundQueryEntered != null && outboundQueryEntered.await(30, java.util.concurrent.TimeUnit.SECONDS);
+        }
+
+        void releaseOutboundQuery() {
+            CountDownLatch release = releaseOutboundQuery;
+            if (release != null) {
+                release.countDown();
+            }
+        }
+
         void reset() {
             failNextStockQuery.set(false);
             returnOverlongCodeNextOutboundQuery.set(false);
+            collideNextAvailabilityQuery.set(false);
+            failNextAvailabilityQuery.set(false);
+            malformedNextAvailabilityQuery.set(false);
+            returnOldCargoOnOutboundQuery.set(false);
+            expireClaimDuringNextStockQuery.set(false);
+            expireClaimDuringNextAvailabilityQuery.set(false);
+            pauseNextOutboundQuery.set(false);
+            outboundPauseClaimed.set(false);
+            releaseOutboundQuery();
+            outboundQueryEntered = null;
+            releaseOutboundQuery = null;
             stockQueries.set(0);
             outboundQueries.set(0);
+            availabilityQueries.set(0);
+            availabilityCandidates.clear();
+            availabilityPins.clear();
+            availabilityOwnerNos.clear();
+            outboundPins.clear();
+            outboundOwnerNos.clear();
         }
 
         @Override
         public JdResult queryStock(Map<String, Object> request) {
             stockQueries.incrementAndGet();
+            if (expireClaimDuringNextStockQuery.getAndSet(false)) {
+                jdbc.update(
+                        """
+                        UPDATE app.idempotency_registry
+                        SET lease_expires_at=CURRENT_TIMESTAMP - INTERVAL '1 second'
+                        WHERE scope=? AND status='IN_PROGRESS'
+                        """,
+                        ShipmentJdOutboundAuditService.SCOPE);
+            }
             if (failNextStockQuery.getAndSet(false)) {
                 return new JdResult(false, "CLIENT_EXCEPTION", "synthetic stock failure", null, null);
             }
@@ -121,11 +214,114 @@ class ShipmentJdOutboundSubmitTest {
 
         @Override
         public JdResult queryOutboundOrder(Map<String, Object> request) {
+            if (Integer.valueOf(0).equals(request.get("deliveryItemFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryPackageFlag"))
+                    && Integer.valueOf(0).equals(request.get("deliveryStatusFlag"))) {
+                availabilityQueries.incrementAndGet();
+                String candidate = String.valueOf(request.get("erpDeliveryNo"));
+                availabilityCandidates.add(candidate);
+                availabilityPins.add(String.valueOf(request.get("pin")));
+                availabilityOwnerNos.add(String.valueOf(request.get("ownerNo")));
+                if (expireClaimDuringNextAvailabilityQuery.getAndSet(false)) {
+                    jdbc.update(
+                            """
+                            UPDATE app.idempotency_registry
+                            SET lease_expires_at=CURRENT_TIMESTAMP - INTERVAL '1 second'
+                            WHERE scope=? AND status='IN_PROGRESS'
+                            """,
+                            ShipmentJdOutboundAuditService.SCOPE);
+                }
+                if (malformedNextAvailabilityQuery.getAndSet(false)) {
+                    return new JdResult(
+                            true,
+                            "MOCK_SUCCESS",
+                            "synthetic malformed availability response",
+                            "mock-availability-malformed",
+                            Map.of("status", "10010"));
+                }
+                if (collideNextAvailabilityQuery.getAndSet(false)) {
+                    return new JdResult(
+                            true,
+                            "MOCK_SUCCESS",
+                            "synthetic historical collision",
+                            "mock-availability-collision",
+                            Map.of("deliveryNo", "JD-HISTORICAL-001", "erpDeliveryNo", candidate));
+                }
+                if (failNextAvailabilityQuery.getAndSet(false)) {
+                    return new JdResult(
+                            false,
+                            "4000",
+                            "synthetic JD availability failure",
+                            "mock-availability-failure",
+                            null);
+                }
+                return new JdResult(
+                        false,
+                        "2342",
+                        "该订单不存在，请检查单号是否正确",
+                        "mock-availability-free",
+                        null);
+            }
             outboundQueries.incrementAndGet();
+            outboundPins.add(String.valueOf(request.get("pin")));
+            outboundOwnerNos.add(String.valueOf(request.get("ownerNo")));
+            if (pauseNextOutboundQuery.get()
+                    && outboundPauseClaimed.compareAndSet(false, true)) {
+                outboundQueryEntered.countDown();
+                try {
+                    if (!releaseOutboundQuery.await(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("timed out waiting to release outbound query");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(exception);
+                }
+            }
             if (returnOverlongCodeNextOutboundQuery.getAndSet(false)) {
                 return new JdResult(false, "X".repeat(80), "synthetic malformed audit code", null, null);
             }
-            return super.queryOutboundOrder(request);
+            String erpDeliveryNo = String.valueOf(request.get("erpDeliveryNo"));
+            Map<String, Object> frozen = jdbc.queryForMap(
+                    """
+                    SELECT submitted_pin, submitted_owner_no, submitted_warehouse_no
+                    FROM app.shipment_jd_outbounds WHERE erp_delivery_no=?
+                    """,
+                    erpDeliveryNo);
+            List<Map<String, Object>> cargos = jdbc.query(
+                    """
+                    SELECT item->>'orderLine' AS "orderLine",
+                           item->>'goodsNo' AS "goodsNo",
+                           (item->>'planQuantity')::integer AS "planQuantity"
+                    FROM app.shipment_jd_outbounds j
+                    CROSS JOIN LATERAL jsonb_array_elements(j.submitted_cargo_snapshot) item
+                    WHERE j.erp_delivery_no=?
+                    ORDER BY item->>'orderLine', item->>'goodsNo'
+                    """,
+                    (rs, row) -> Map.of(
+                            "orderLine", rs.getString("orderLine"),
+                            "goodsNo", rs.getString("goodsNo"),
+                            "planQuantity", rs.getInt("planQuantity")),
+                    erpDeliveryNo);
+            if (returnOldCargoOnOutboundQuery.get()) {
+                cargos = List.of(Map.of(
+                        "orderLine", "1",
+                        "goodsNo", "JD-M5-MARBLED-BEEF-ROLL-OLD",
+                        "planQuantity", 1));
+            }
+            return new JdResult(
+                    true,
+                    "MOCK_SUCCESS",
+                    "synthetic full query response",
+                    "mock-queryOutboundOrder-full",
+                    Map.of(
+                            "erpDeliveryNo", erpDeliveryNo,
+                            "deliveryNo", String.valueOf(request.getOrDefault("deliveryNo", "MOCK-DELIVERY-001")),
+                            "customerInfo", Map.of("ownerNo", frozen.get("submitted_owner_no")),
+                            "pinAccount", frozen.get("submitted_pin"),
+                            "warehouseNo", frozen.get("submitted_warehouse_no"),
+                            "status", "10010",
+                            "isSplit", "0",
+                            "deliveryItemList", cargos));
         }
     }
 
@@ -136,10 +332,14 @@ class ShipmentJdOutboundSubmitTest {
         private final AtomicBoolean mismatchErpDeliveryNoNextOrder = new AtomicBoolean();
         private final AtomicBoolean uncertainBusinessFailureNextOrder = new AtomicBoolean();
         private final AtomicBoolean invalidateEligibilityAfterCreate = new AtomicBoolean();
+        private final AtomicBoolean poisonSuccessResultAfterCreate = new AtomicBoolean();
         private final AtomicInteger orderAttempts = new AtomicInteger();
+        private final List<String> attemptedErpDeliveryNos = new CopyOnWriteArrayList<>();
         private final JdbcTemplate jdbc;
         private boolean transactionActiveDuringWrite;
         private String durableIntentStatusDuringWrite;
+        private String durableTenantAndWarehouseDuringWrite;
+        private String durableCargoDuringWrite;
 
         ControlledJdWriteOpsClient(AuditLogService audits, JdbcTemplate jdbc) {
             super(audits, "ON");
@@ -170,6 +370,10 @@ class ShipmentJdOutboundSubmitTest {
             invalidateEligibilityAfterCreate.set(true);
         }
 
+        void poisonSuccessResultAfterCreate() {
+            poisonSuccessResultAfterCreate.set(true);
+        }
+
         void reset() {
             failNextOrder.set(false);
             rejectNextOrder.set(false);
@@ -177,17 +381,32 @@ class ShipmentJdOutboundSubmitTest {
             mismatchErpDeliveryNoNextOrder.set(false);
             uncertainBusinessFailureNextOrder.set(false);
             invalidateEligibilityAfterCreate.set(false);
+            poisonSuccessResultAfterCreate.set(false);
             orderAttempts.set(0);
+            attemptedErpDeliveryNos.clear();
             transactionActiveDuringWrite = false;
             durableIntentStatusDuringWrite = null;
+            durableTenantAndWarehouseDuringWrite = null;
+            durableCargoDuringWrite = null;
         }
 
         @Override
-        public JdResult orderSoCreate(Map<String, Object> request) {
+        public JdResult create(PreparedJdSalesOutbound outbound) {
+            Map<String, Object> request = outbound.request();
             orderAttempts.incrementAndGet();
+            attemptedErpDeliveryNos.add(String.valueOf(request.get("erpDeliveryNo")));
             transactionActiveDuringWrite = TransactionSynchronizationManager.isActualTransactionActive();
             durableIntentStatusDuringWrite = jdbc.queryForObject(
                     "SELECT sync_status FROM app.shipment_jd_outbounds WHERE erp_delivery_no=?",
+                    String.class,
+                    request.get("erpDeliveryNo"));
+            durableTenantAndWarehouseDuringWrite = jdbc.queryForObject(
+                    "SELECT submitted_pin || ':' || submitted_owner_no || ':' || submitted_warehouse_no "
+                            + "FROM app.shipment_jd_outbounds WHERE erp_delivery_no=?",
+                    String.class,
+                    request.get("erpDeliveryNo"));
+            durableCargoDuringWrite = jdbc.queryForObject(
+                    "SELECT submitted_cargo_snapshot::text FROM app.shipment_jd_outbounds WHERE erp_delivery_no=?",
                     String.class,
                     request.get("erpDeliveryNo"));
             if (failNextOrder.getAndSet(false)) {
@@ -220,10 +439,34 @@ class ShipmentJdOutboundSubmitTest {
                         null,
                         null);
             }
-            JdResult result = super.orderSoCreate(request);
+            JdResult result = super.create(outbound);
+            if (poisonSuccessResultAfterCreate.getAndSet(false)) {
+                Map<String, Object> poisoned = new java.util.AbstractMap<>() {
+                    @Override
+                    public java.util.Set<Entry<String, Object>> entrySet() {
+                        return java.util.Set.of();
+                    }
+
+                    @Override
+                    public Object get(Object key) {
+                        throw new IllegalStateException("synthetic post-add result read failure");
+                    }
+                };
+                return new JdResult(
+                        true,
+                        "MOCK_SUCCESS",
+                        "synthetic successful create with unreadable result",
+                        "jd-request-poisoned-success",
+                        poisoned);
+            }
             if (invalidateEligibilityAfterCreate.getAndSet(false)) {
                 Long shipmentId = jdbc.queryForObject(
-                        "SELECT id FROM app.shipments WHERE outbound_order_no=?",
+                        """
+                        SELECT s.id
+                        FROM app.shipments s
+                        JOIN app.shipment_jd_outbounds j ON j.shipment_id=s.id
+                        WHERE j.erp_delivery_no=?
+                        """,
                         Long.class,
                         request.get("erpDeliveryNo"));
                 jdbc.update(
@@ -274,8 +517,8 @@ class ShipmentJdOutboundSubmitTest {
     @Test
     void multiLineShipmentProducesSingleJdOutboundAggregateAndSharedRecord() {
         Fact fact = createOrder("MULTI", List.of(
-                singleItem("WECOM-SKU-JD-001", "1"),
-                singleItem("WECOM-SKU-JD-001", "2")));
+                singleItem("WECOM-SKU-JD-001", 1),
+                singleItem("WECOM-SKU-JD-001", 2)));
         long shipmentId = createShipment(fact);
         JdShipmentSubmissionPlan preview = planner.plan(shipmentId);
         assertThat(preview.submittable()).isTrue();
@@ -290,8 +533,9 @@ class ShipmentJdOutboundSubmitTest {
         Map<String, Object> body = response.getBody();
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
+        String erpDeliveryNo = preview.erpDeliveryNo();
         assertThat(body.get("shipment_id")).isEqualTo(String.valueOf(shipmentId));
-        assertThat(body.get("erp_delivery_no")).isEqualTo(outboundOrderNo);
+        assertThat(body.get("erp_delivery_no")).isEqualTo(erpDeliveryNo);
         assertThat(body.get("outbound_order_no")).isEqualTo(outboundOrderNo);
         assertThat(body.get("jd_delivery_no")).isEqualTo("MOCK-DELIVERY-001");
         assertThat(body.get("sync_status")).isEqualTo("SUBMITTED");
@@ -302,26 +546,34 @@ class ShipmentJdOutboundSubmitTest {
         // 外部写发生前必须已有可恢复的本地意图，且调用期间不得持有业务事务或行锁。
         assertThat(controlledJdWrite.transactionActiveDuringWrite).isFalse();
         assertThat(controlledJdWrite.durableIntentStatusDuringWrite).isEqualTo("SUBMITTING");
+        assertThat(controlledJdWrite.durableTenantAndWarehouseDuringWrite)
+                .isEqualTo("PIN-API-001:OWNER-API-001:WH-API-001");
+        assertThat(controlledJdWrite.durableCargoDuringWrite)
+                .contains("JD-SKU-000001", "\"planQuantity\": 1", "\"planQuantity\": 2");
+        assertThat(controlledJdWarehouse.outboundQueries).hasValue(1);
+        assertThat(controlledJdWarehouse.outboundPins).containsExactly("PIN-API-001");
+        assertThat(controlledJdWarehouse.outboundOwnerNos).containsExactly("OWNER-API-001");
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.audit_logs WHERE request_id='req-shipment-jd-multi-001' "
                         + "AND operation='shipment.jd_stock.check' AND business_code='JD_STOCK_CHECK_PASSED'",
                 Long.class)).isEqualTo(1L);
 
         // 只产生一次 addSoOrder 调用（seam 审计行 = 该 Shipment 的请求次数，按 erpDeliveryNo 限定）
-        assertThat(seamCallCount(outboundOrderNo)).isEqualTo(1L);
+        assertThat(seamCallCount(erpDeliveryNo)).isEqualTo(1L);
 
         // 一个 Shipment 最多一条京东出库集成记录，同批次两个 Fulfillment 共享
         List<Map<String, Object>> records = jdbc.queryForList(
-                "SELECT erp_delivery_no, jd_delivery_no, sync_status, retry_count, request_hash, "
+                "SELECT erp_delivery_no, jd_delivery_no, sync_status, retry_count, request_hash, business_facts_hash, "
                         + "submitted_at, client_mode "
                         + "FROM app.shipment_jd_outbounds WHERE shipment_id=?", shipmentId);
         assertThat(records).hasSize(1);
         Map<String, Object> record = records.getFirst();
-        assertThat(record.get("erp_delivery_no")).isEqualTo(outboundOrderNo);
+        assertThat(record.get("erp_delivery_no")).isEqualTo(erpDeliveryNo);
         assertThat(record.get("jd_delivery_no")).isEqualTo("MOCK-DELIVERY-001");
         assertThat(record.get("sync_status")).isEqualTo("SUBMITTED");
         assertThat(record.get("retry_count")).isEqualTo(1);
         assertThat(record.get("request_hash")).isEqualTo(preview.requestHash());
+        assertThat(record.get("business_facts_hash")).isEqualTo(preview.businessFactsHash());
         assertThat(record.get("submitted_at")).isNotNull();
         assertThat(record.get("client_mode")).isEqualTo("MOCK");
         assertThat(jdbc.queryForObject(
@@ -368,12 +620,17 @@ class ShipmentJdOutboundSubmitTest {
                         + "AND operation='shipment.jd_outbound.submit' "
                         + "AND business_code='JD_SHIPMENT_OUTBOUND_SUBMITTED'",
                 Long.class)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.audit_logs WHERE request_id='req-shipment-jd-multi-001' "
+                        + "AND operation='shipment.jd_outbound.readback' "
+                        + "AND business_code='JD_OUTBOUND_READBACK_MATCHED'",
+                Long.class)).isEqualTo(1L);
 
         // seam 审计保留非 PII 请求结构：receiverInfo 整容器脱敏，商品明细完整
-        Map<String, Object> seamPayload = seamAuditPayload(outboundOrderNo);
+        Map<String, Object> seamPayload = seamAuditPayload(erpDeliveryNo);
         assertThat(seamPayload.get("warehouseNo")).isEqualTo("WH-API-001");
         assertThat(seamPayload.get("sourceNo")).isEqualTo("ISV-API-001");
-        assertThat(seamPayload.get("erpDeliveryNo")).isEqualTo(outboundOrderNo);
+        assertThat(seamPayload.get("erpDeliveryNo")).isEqualTo(erpDeliveryNo);
         assertThat(seamPayload.get("receiverInfo")).isEqualTo("***");
         List<?> cargos = (List<?>) seamPayload.get("cargoInfos");
         assertThat(cargos).hasSize(2);
@@ -389,7 +646,7 @@ class ShipmentJdOutboundSubmitTest {
         assertThat(detail.getStatusCode()).isEqualTo(HttpStatus.OK);
         Map<?, ?> jdOutbound = (Map<?, ?>) detail.getBody().get("jd_outbound");
         assertThat(jdOutbound).isNotNull();
-        assertThat(jdOutbound.get("erp_delivery_no")).isEqualTo(outboundOrderNo);
+        assertThat(jdOutbound.get("erp_delivery_no")).isEqualTo(erpDeliveryNo);
         assertThat(jdOutbound.get("jd_delivery_no")).isEqualTo("MOCK-DELIVERY-001");
         assertThat(jdOutbound.get("sync_status")).isEqualTo("SUBMITTED");
         assertThat(jdOutbound.get("retry_count")).isEqualTo(1);
@@ -403,8 +660,260 @@ class ShipmentJdOutboundSubmitTest {
     }
 
     @Test
+    void historicalExternalNumberCollisionIsReallocatedBeforeAnyCreateCall() {
+        Fact fact = createOrder("HISTORICAL-COLLISION", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        String outboundOrderNo = jdbc.queryForObject(
+                "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
+        String firstCandidate = planner.plan(shipmentId).erpDeliveryNo();
+        controlledJdWarehouse.collideNextAvailabilityQuery();
+
+        IdempotentResult<Map<String, Object>> result = service.submit(
+                shipmentId,
+                new ShipmentJdOutboundCommand(),
+                "shipment-jd-history-collision-001",
+                CONTEXT);
+
+        String acceptedCandidate = String.valueOf(result.result().get("erp_delivery_no"));
+        assertThat(firstCandidate).startsWith("ZIMU-SO-");
+        assertThat(acceptedCandidate).startsWith("ZIMU-SO-").isNotEqualTo(firstCandidate);
+        assertThat(result.result().get("outbound_order_no")).isEqualTo(outboundOrderNo);
+        assertThat(controlledJdWarehouse.availabilityCandidates)
+                .containsExactly(firstCandidate, acceptedCandidate);
+        assertThat(controlledJdWarehouse.availabilityPins)
+                .containsExactly("PIN-API-001", "PIN-API-001");
+        assertThat(controlledJdWarehouse.availabilityOwnerNos)
+                .containsExactly("OWNER-API-001", "OWNER-API-001");
+        assertThat(controlledJdWrite.attemptedErpDeliveryNos).containsExactly(acceptedCandidate);
+        assertThat(controlledJdWrite.attemptedErpDeliveryNos).doesNotContain(firstCandidate);
+        assertThat(jdbc.queryForObject(
+                "SELECT erp_delivery_no FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                String.class,
+                shipmentId)).isEqualTo(acceptedCandidate);
+    }
+
+    @Test
+    void deterministicFailedCandidateWithRequestHashIsReallocatedAfterExternalCollision() {
+        Fact fact = createOrder("FAILED-COLLISION", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        JdShipmentSubmissionPlan failedPlan = planner.plan(shipmentId);
+        String firstCandidate = failedPlan.erpDeliveryNo();
+        jdbc.update(
+                """
+                UPDATE app.shipment_jd_outbounds
+                SET sync_status='SYNC_FAILED', failure_phase='SUBMIT', retry_count=1,
+                    last_error_code='WRITE_MODE_DISABLED', last_error_message='写模式未启用',
+                    request_hash=?, business_facts_hash=?, client_mode='MOCK'
+                WHERE shipment_id=?
+                """,
+                failedPlan.requestHash(), failedPlan.businessFactsHash(), shipmentId);
+        controlledJdWarehouse.collideNextAvailabilityQuery();
+
+        IdempotentResult<Map<String, Object>> result = service.submit(
+                shipmentId,
+                new ShipmentJdOutboundCommand(),
+                "shipment-jd-failed-collision-001",
+                CONTEXT);
+
+        String acceptedCandidate = String.valueOf(result.result().get("erp_delivery_no"));
+        assertThat(acceptedCandidate).startsWith("ZIMU-SO-").isNotEqualTo(firstCandidate);
+        assertThat(controlledJdWarehouse.availabilityCandidates)
+                .containsExactly(firstCandidate, acceptedCandidate);
+        assertThat(controlledJdWrite.attemptedErpDeliveryNos).containsExactly(acceptedCandidate);
+        assertThat(controlledJdWrite.attemptedErpDeliveryNos).doesNotContain(firstCandidate);
+        assertThat(jdbc.queryForMap(
+                "SELECT erp_delivery_no, sync_status, business_facts_hash "
+                        + "FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                shipmentId))
+                .containsEntry("erp_delivery_no", acceptedCandidate)
+                .containsEntry("sync_status", "SUBMITTED")
+                .containsEntry("business_facts_hash", failedPlan.businessFactsHash());
+    }
+
+    @Test
+    void businessFactDriftAfterCollisionAndNewCandidateQueryFailureIsRejectedOnRetry() {
+        Fact fact = createOrder("FAILED-COLLISION-DRIFT", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        JdShipmentSubmissionPlan failedPlan = planner.plan(shipmentId);
+        jdbc.update(
+                """
+                UPDATE app.shipment_jd_outbounds
+                SET sync_status='SYNC_FAILED', failure_phase='SUBMIT', retry_count=1,
+                    last_error_code='WRITE_MODE_DISABLED', last_error_message='写模式未启用',
+                    request_hash=?, business_facts_hash=?, client_mode='MOCK'
+                WHERE shipment_id=?
+                """,
+                failedPlan.requestHash(), failedPlan.businessFactsHash(), shipmentId);
+        controlledJdWarehouse.collideNextAvailabilityQuery();
+        controlledJdWarehouse.failNextAvailabilityQuery();
+
+        assertThatThrownBy(() -> service.submit(
+                shipmentId,
+                new ShipmentJdOutboundCommand(),
+                "shipment-jd-failed-collision-drift-001",
+                CONTEXT))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> assertThat(exception.getBusinessCode())
+                        .isEqualTo("JD_ERP_DELIVERY_NO_PREFLIGHT_UNAVAILABLE"));
+        String replacement = jdbc.queryForObject(
+                "SELECT erp_delivery_no FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                String.class,
+                shipmentId);
+        assertThat(replacement).startsWith("ZIMU-SO-").isNotEqualTo(failedPlan.erpDeliveryNo());
+        assertThat(jdbc.queryForMap(
+                "SELECT request_hash, business_facts_hash FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                shipmentId))
+                .containsEntry("request_hash", null)
+                .containsEntry("business_facts_hash", failedPlan.businessFactsHash());
+
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config=jsonb_set(config, '{warehouseNo}', '"WH-DRIFT-001"'::jsonb)
+                WHERE provider_code='JD'
+                """);
+
+        assertThatThrownBy(() -> service.submit(
+                shipmentId,
+                new ShipmentJdOutboundCommand(),
+                "shipment-jd-failed-collision-drift-001",
+                CONTEXT))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getHttpStatus()).isEqualTo(409);
+                    assertThat(exception.getBusinessCode()).isEqualTo("JD_SHIPMENT_OUTBOUND_REQUEST_CHANGED");
+                });
+        assertThat(controlledJdWrite.attemptedErpDeliveryNos).isEmpty();
+        assertThat(jdbc.queryForObject(
+                "SELECT business_facts_hash FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                String.class,
+                shipmentId)).isEqualTo(failedPlan.businessFactsHash());
+    }
+
+    @Test
+    void availabilityQueryFailureFailsClosedBeforeAnyCreateCall() {
+        Fact fact = createOrder("PREFLIGHT-FAIL", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        controlledJdWarehouse.failNextAvailabilityQuery();
+
+        assertThatThrownBy(() -> service.submit(
+                shipmentId,
+                new ShipmentJdOutboundCommand(),
+                "shipment-jd-preflight-fail-001",
+                CONTEXT))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getHttpStatus()).isEqualTo(502);
+                    assertThat(exception.getBusinessCode())
+                            .isEqualTo("JD_ERP_DELIVERY_NO_PREFLIGHT_UNAVAILABLE");
+                });
+
+        assertThat(controlledJdWrite.attemptedErpDeliveryNos).isEmpty();
+        assertThat(jdbc.queryForMap(
+                "SELECT sync_status, retry_count, request_hash FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                shipmentId))
+                .containsEntry("sync_status", "NONE")
+                .containsEntry("retry_count", 0)
+                .containsEntry("request_hash", null);
+    }
+
+    @Test
+    void claimLostDuringAvailabilityPreflightCannotPersistSubmittingIntent() {
+        Fact fact = createOrder("PREFLIGHT-CLAIM-LOST", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        controlledJdWarehouse.expireClaimDuringNextAvailabilityQuery();
+
+        assertThatThrownBy(() -> service.submit(
+                shipmentId,
+                new ShipmentJdOutboundCommand(),
+                "shipment-jd-preflight-claim-lost-001",
+                CONTEXT))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getHttpStatus()).isEqualTo(409);
+                    assertThat(exception.getBusinessCode()).isEqualTo("IDEMPOTENCY_CLAIM_LOST");
+                });
+
+        assertThat(controlledJdWrite.attemptedErpDeliveryNos).isEmpty();
+        assertThat(jdbc.queryForMap(
+                "SELECT sync_status, retry_count, request_hash, business_facts_hash "
+                        + "FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                shipmentId))
+                .containsEntry("sync_status", "NONE")
+                .containsEntry("retry_count", 0)
+                .containsEntry("request_hash", null)
+                .containsEntry("business_facts_hash", null);
+    }
+
+    @Test
+    void malformedSuccessfulAvailabilityResponseFailsClosedBeforeAnyCreateCall() {
+        Fact fact = createOrder("PREFLIGHT-MALFORMED", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        controlledJdWarehouse.malformedNextAvailabilityQuery();
+
+        assertThatThrownBy(() -> service.submit(
+                shipmentId,
+                new ShipmentJdOutboundCommand(),
+                "shipment-jd-preflight-malformed-001",
+                CONTEXT))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getHttpStatus()).isEqualTo(502);
+                    assertThat(exception.getBusinessCode())
+                            .isEqualTo("JD_ERP_DELIVERY_NO_PREFLIGHT_INCONSISTENT");
+                });
+        assertThat(controlledJdWrite.attemptedErpDeliveryNos).isEmpty();
+        assertThat(jdbc.queryForObject(
+                "SELECT sync_status FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                String.class,
+                shipmentId)).isEqualTo("NONE");
+    }
+
+    @Test
+    void concurrentPlanningOfOneShipmentConvergesOnOneReservedNumber() throws Exception {
+        Fact fact = createOrder("CONCURRENT-RESERVE", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (var executorService = Executors.newFixedThreadPool(2)) {
+            var first = executorService.submit(() -> {
+                start.await();
+                return planner.plan(shipmentId).erpDeliveryNo();
+            });
+            var second = executorService.submit(() -> {
+                start.await();
+                return planner.plan(shipmentId).erpDeliveryNo();
+            });
+            start.countDown();
+
+            assertThat(first.get()).isEqualTo(second.get()).startsWith("ZIMU-SO-");
+        }
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                Long.class,
+                shipmentId)).isEqualTo(1L);
+    }
+
+    @Test
+    void databaseUniqueConstraintRejectsAReservedNumberUsedByAnotherShipment() {
+        long firstShipmentId = createShipment(createOrder(
+                "LOCAL-UNIQUE-A", List.of(singleItem("WECOM-SKU-JD-001", 1))));
+        long secondShipmentId = createShipment(createOrder(
+                "LOCAL-UNIQUE-B", List.of(singleItem("WECOM-SKU-JD-001", 1))));
+        String firstCandidate = planner.plan(firstShipmentId).erpDeliveryNo();
+        planner.plan(secondShipmentId);
+
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE app.shipment_jd_outbounds SET erp_delivery_no=? WHERE shipment_id=?",
+                firstCandidate,
+                secondShipmentId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(DISTINCT erp_delivery_no) FROM app.shipment_jd_outbounds "
+                        + "WHERE shipment_id IN (?, ?)",
+                Long.class,
+                firstShipmentId,
+                secondShipmentId)).isEqualTo(2L);
+    }
+
+    @Test
     void sameIdempotencyKeyReplaysOriginalResultWithoutSecondCall() {
-        Fact fact = createOrder("REPLAY", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("REPLAY", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -419,7 +928,7 @@ class ShipmentJdOutboundSubmitTest {
         // 重放返回注册表快照（replayedBody），不重新执行业务工作
         assertThat(replay.replayedBody().get("erp_delivery_no").asText())
                 .isEqualTo(first.result().get("erp_delivery_no"));
-        assertThat(seamCallCount(outboundOrderNo)).isEqualTo(1L);
+        assertThat(seamCallCount(String.valueOf(first.result().get("erp_delivery_no")))).isEqualTo(1L);
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.audit_logs WHERE operation='shipment.jd_outbound.submit' "
                         + "AND business_code='JD_SHIPMENT_OUTBOUND_IDEMPOTENT_REPLAY' "
@@ -433,7 +942,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void secondSubmissionWithNewKeyIsRejected() {
-        Fact fact = createOrder("DUP", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("DUP", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -445,7 +954,10 @@ class ShipmentJdOutboundSubmitTest {
                     assertThat(ex.getHttpStatus()).isEqualTo(409);
                     assertThat(ex.getBusinessCode()).isEqualTo("JD_SHIPMENT_OUTBOUND_ALREADY_SUBMITTED");
                 });
-        assertThat(seamCallCount(outboundOrderNo)).isEqualTo(1L);
+        assertThat(seamCallCount(jdbc.queryForObject(
+                "SELECT erp_delivery_no FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                String.class,
+                shipmentId))).isEqualTo(1L);
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.shipment_jd_outbounds WHERE shipment_id=?", Long.class, shipmentId))
                 .isEqualTo(1L);
@@ -453,19 +965,29 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void retryAfterFailureUpdatesSameRecordAndRecovers() {
-        Fact fact = createOrder("RETRY", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("RETRY", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
-        // 模拟上一次提交失败（例如写模式未开启或 JD 拒绝）留下的集成记录
+        planner.plan(shipmentId);
         jdbc.update(
                 """
-                INSERT INTO app.shipment_jd_outbounds
-                    (shipment_id, erp_delivery_no, sync_status, failure_phase, retry_count,
-                     last_error_code, last_error_message, request_hash, client_mode)
-                VALUES (?, ?, 'SYNC_FAILED', 'SUBMIT', 1, 'WRITE_MODE_DISABLED', '写模式未启用', NULL, 'MOCK')
+                UPDATE app.shipment_jd_outbounds
+                SET erp_delivery_no=?
+                WHERE shipment_id=?
                 """,
-                shipmentId, outboundOrderNo);
+                outboundOrderNo, shipmentId);
+        JdShipmentSubmissionPlan legacyPlan = planner.plan(shipmentId);
+        // 模拟 V103 前写模式未开启留下的确定失败：旧 12 位外部号和非空精确请求哈希都必须安全迁移。
+        jdbc.update(
+                """
+                UPDATE app.shipment_jd_outbounds
+                SET sync_status='SYNC_FAILED', failure_phase='SUBMIT', retry_count=1,
+                    last_error_code='WRITE_MODE_DISABLED', last_error_message='写模式未启用',
+                    request_hash=?, client_mode='MOCK'
+                WHERE shipment_id=?
+                """,
+                legacyPlan.requestHash(), shipmentId);
         long recordId = jdbc.queryForObject(
                 "SELECT id FROM app.shipment_jd_outbounds WHERE shipment_id=?", Long.class, shipmentId);
 
@@ -490,24 +1012,27 @@ class ShipmentJdOutboundSubmitTest {
         assertThat(record.get("last_error_code")).isNull();
         assertThat(record.get("last_error_message")).isNull();
         assertThat(record.get("request_hash")).asString().matches("^[0-9a-f]{64}$");
+        assertThat(jdbc.queryForObject(
+                "SELECT erp_delivery_no FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                String.class,
+                shipmentId)).startsWith("ZIMU-SO-").isNotEqualTo(outboundOrderNo);
     }
 
     @Test
     void unresolvedRealAttemptCannotBeReconciledOrRelabeledByMockRuntime() {
-        Fact fact = createOrder("CROSS-MODE", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("CROSS-MODE", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
-        String outboundOrderNo = jdbc.queryForObject(
-                "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
-        String requestHash = planner.plan(shipmentId).requestHash();
+        JdShipmentSubmissionPlan existing = planner.plan(shipmentId);
+        String requestHash = existing.requestHash();
         jdbc.update(
                 """
-                INSERT INTO app.shipment_jd_outbounds
-                    (shipment_id, erp_delivery_no, sync_status, failure_phase, retry_count,
-                     last_error_code, last_error_message, request_hash, client_mode)
-                VALUES (?, ?, 'SYNC_FAILED', 'SUBMIT', 1, 'SDK_CALL_FAILED',
-                        '真实调用结果未决', ?, 'REAL')
+                UPDATE app.shipment_jd_outbounds
+                SET sync_status='SYNC_FAILED', failure_phase='SUBMIT', retry_count=1,
+                    last_error_code='SDK_CALL_FAILED', last_error_message='真实调用结果未决',
+                    request_hash=?, client_mode='REAL'
+                WHERE shipment_id=?
                 """,
-                shipmentId, outboundOrderNo, requestHash);
+                requestHash, shipmentId);
 
         assertThatThrownBy(() -> service.submit(
                 shipmentId,
@@ -538,7 +1063,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void adapterRuntimeFailurePersistsSafeDurableFailureFacts() {
-        Fact fact = createOrder("ADAPTER-FAIL", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("ADAPTER-FAIL", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         controlledJdWrite.failNextOrderSoCreate();
 
@@ -605,8 +1130,31 @@ class ShipmentJdOutboundSubmitTest {
     }
 
     @Test
+    void lostIdempotencyClaimBeforeAdapterCallIsAValidationFailureNotAnUncertainWrite() {
+        Fact fact = createOrder("CLAIM-LOST", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        controlledJdWarehouse.expireClaimDuringNextStockQuery();
+
+        assertThatThrownBy(() -> service.submit(
+                shipmentId,
+                new ShipmentJdOutboundCommand(),
+                "shipment-jd-claim-lost-001",
+                CONTEXT))
+                .isInstanceOf(BusinessException.class);
+
+        assertThat(controlledJdWrite.orderAttempts).hasValue(0);
+        assertThat(jdbc.queryForMap(
+                "SELECT sync_status, failure_phase, last_error_code "
+                        + "FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                shipmentId))
+                .containsEntry("sync_status", "SYNC_FAILED")
+                .containsEntry("failure_phase", "VALIDATION")
+                .containsEntry("last_error_code", "IDEMPOTENCY_CLAIM_LOST");
+    }
+
+    @Test
     void jdBusinessRejectionIsDurableAndRetryableWithoutAdvancingShipment() {
-        Fact fact = createOrder("JD-REJECT", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("JD-REJECT", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         controlledJdWrite.rejectNextOrderSoCreate();
 
@@ -635,7 +1183,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void successfulResponseWithoutDeliveryNumberIsQuarantinedInsteadOfMarkedSubmitted() {
-        Fact fact = createOrder("MISSING-DELIVERY", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("MISSING-DELIVERY", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         controlledJdWrite.omitDeliveryNoNextOrderSoCreate();
 
@@ -662,7 +1210,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void successfulResponseForAnotherMerchantReferenceIsQuarantined() {
-        Fact fact = createOrder("MISMATCHED-ERP", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("MISMATCHED-ERP", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         controlledJdWrite.mismatchErpDeliveryNoNextOrderSoCreate();
 
@@ -684,8 +1232,269 @@ class ShipmentJdOutboundSubmitTest {
     }
 
     @Test
+    void successfulCreateWhoseImmediateReadbackContainsOldCargoIsQuarantinedWithoutRecreate() {
+        Fact fact = createOrder("READBACK-OLD-CARGO", List.of(
+                singleItem("WECOM-SKU-JD-001", 2),
+                singleItem("WECOM-SKU-JD-001", 4)));
+        long shipmentId = createShipment(fact);
+        JdShipmentSubmissionPlan preview = planner.plan(shipmentId);
+        controlledJdWarehouse.returnOldCargoOnOutboundQuery();
+
+        ResponseEntity<Map> first = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "shipment-jd-readback-old-cargo-001",
+                        "req-shipment-jd-readback-old-cargo-001")),
+                Map.class);
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(first.getBody()).containsEntry("business_code", "RECONCILIATION_REQUIRED");
+        assertThat(controlledJdWrite.orderAttempts).hasValue(1);
+        assertThat(controlledJdWarehouse.outboundQueries).hasValue(1);
+        assertThat(jdbc.queryForMap(
+                """
+                SELECT sync_status, failure_phase, last_error_code, jd_delivery_no,
+                       submitted_pin, submitted_owner_no, submitted_warehouse_no,
+                       submitted_cargo_snapshot::text AS cargo_snapshot
+                FROM app.shipment_jd_outbounds WHERE shipment_id=?
+                """,
+                shipmentId))
+                .containsEntry("sync_status", "SYNC_FAILED")
+                .containsEntry("failure_phase", "SUBMIT")
+                .containsEntry("last_error_code", "RECONCILIATION_REQUIRED")
+                .containsEntry("jd_delivery_no", null)
+                .containsEntry("submitted_pin", "PIN-API-001")
+                .containsEntry("submitted_owner_no", "OWNER-API-001")
+                .containsEntry("submitted_warehouse_no", "WH-API-001");
+        String frozenCargo = jdbc.queryForObject(
+                "SELECT submitted_cargo_snapshot::text FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                String.class,
+                shipmentId);
+        assertThat(frozenCargo)
+                .contains("JD-SKU-000001", "\"orderLine\": \"1\"", "\"orderLine\": \"2\"")
+                .doesNotContain("JD-M5-MARBLED-BEEF-ROLL-OLD");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.order_events WHERE order_id=? AND shipment_id=? "
+                        + "AND event_type_code='JD_OUTBOUND_SUBMITTED'",
+                Long.class,
+                fact.orderId(),
+                shipmentId)).isZero();
+        String readbackAudit = jdbc.queryForObject(
+                """
+                SELECT request_payload::text || ' ' || response_payload::text
+                FROM app.audit_logs
+                WHERE request_id='req-shipment-jd-readback-old-cargo-001'
+                  AND operation='shipment.jd_outbound.readback'
+                """,
+                String.class);
+        assertThat(readbackAudit)
+                .contains("MISMATCHED", "cargo")
+                .doesNotContain(
+                        "JD-M5-MARBLED-BEEF-ROLL-OLD",
+                        "PIN-API-001",
+                        "OWNER-API-001",
+                        "张三",
+                        "13800000000");
+
+        ResponseEntity<Map> retry = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "shipment-jd-readback-old-cargo-002",
+                        "req-shipment-jd-readback-old-cargo-002")),
+                Map.class);
+
+        assertThat(retry.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(retry.getBody()).containsEntry("business_code", "RECONCILIATION_REQUIRED");
+        assertThat(controlledJdWrite.orderAttempts).hasValue(1);
+        assertThat(controlledJdWarehouse.outboundQueries).hasValue(2);
+        assertThat(controlledJdWrite.attemptedErpDeliveryNos).containsExactly(preview.erpDeliveryNo());
+
+        ResponseEntity<Map> tracking = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-tracking-backfill",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "shipment-jd-readback-old-cargo-tracking-001",
+                        "req-shipment-jd-readback-old-cargo-tracking-001")),
+                Map.class);
+        assertThat(tracking.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(tracking.getBody()).containsEntry("business_code", "JD_TRACKING_OUTBOUND_NOT_SUBMITTED");
+        assertThat(controlledJdWarehouse.outboundQueries).hasValue(2);
+    }
+
+    @Test
+    void unexpectedFailureAfterSuccessfulAddIsReconciliationOnlyAndCannotReachSecondCreate() {
+        Fact fact = createOrder("POST-ADD-RUNTIME", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        controlledJdWrite.poisonSuccessResultAfterCreate();
+
+        ResponseEntity<Map> first = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "shipment-jd-post-add-runtime-001",
+                        "req-shipment-jd-post-add-runtime-001")),
+                Map.class);
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(first.getBody()).containsEntry("business_code", "RECONCILIATION_REQUIRED");
+        assertThat(jdbc.queryForMap(
+                "SELECT sync_status, failure_phase, last_error_code "
+                        + "FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                shipmentId))
+                .containsEntry("sync_status", "SYNC_FAILED")
+                .containsEntry("failure_phase", "SUBMIT")
+                .containsEntry("last_error_code", "RECONCILIATION_REQUIRED");
+
+        ResponseEntity<Map> recovered = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "shipment-jd-post-add-runtime-002",
+                        "req-shipment-jd-post-add-runtime-002")),
+                Map.class);
+
+        assertThat(recovered.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(recovered.getBody()).containsEntry("sync_status", "SUBMITTED");
+        assertThat(controlledJdWrite.orderAttempts).hasValue(1);
+    }
+
+    @Test
+    void unresolvedRetryQueriesOnlyOriginalFrozenTenantAndWarehouseAfterConfigDrift() {
+        Fact fact = createOrder("FROZEN-RETRY", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        controlledJdWrite.failNextOrderSoCreate();
+
+        ResponseEntity<Map> failed = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "shipment-jd-frozen-retry-001",
+                        "req-shipment-jd-frozen-retry-001")),
+                Map.class);
+        assertThat(failed.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY);
+
+        jdbc.update(
+                """
+                UPDATE app.fulfillment_providers
+                SET config=jsonb_set(
+                    jsonb_set(
+                        jsonb_set(config, '{pin}', '"PIN-CONFIG-DRIFT"'::jsonb),
+                        '{ownerNo}', '"OWNER-CONFIG-DRIFT"'::jsonb),
+                    '{warehouseNo}', '"WH-CONFIG-DRIFT"'::jsonb)
+                WHERE provider_code='JD'
+                """);
+
+        ResponseEntity<Map> recovered = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "shipment-jd-frozen-retry-001",
+                        "req-shipment-jd-frozen-retry-002")),
+                Map.class);
+
+        assertThat(recovered.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(recovered.getBody()).containsEntry("sync_status", "SUBMITTED");
+        assertThat(controlledJdWrite.orderAttempts).hasValue(1);
+        assertThat(controlledJdWarehouse.outboundPins).containsExactly("PIN-API-001");
+        assertThat(controlledJdWarehouse.outboundOwnerNos).containsExactly("OWNER-API-001");
+        assertThat(jdbc.queryForMap(
+                "SELECT submitted_pin, submitted_owner_no, submitted_warehouse_no "
+                        + "FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                shipmentId))
+                .containsEntry("submitted_pin", "PIN-API-001")
+                .containsEntry("submitted_owner_no", "OWNER-API-001")
+                .containsEntry("submitted_warehouse_no", "WH-API-001");
+    }
+
+    @Test
+    void historicalUnresolvedAttemptWithoutFrozenPinFailsClosedBeforeAnyQuery() {
+        Fact fact = createOrder("HISTORY-NO-FROZEN-PIN", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        controlledJdWrite.failNextOrderSoCreate();
+        ResponseEntity<Map> failed = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "shipment-jd-history-pin-001",
+                        "req-shipment-jd-history-pin-001")),
+                Map.class);
+        assertThat(failed.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY);
+        jdbc.update(
+                "UPDATE app.shipment_jd_outbounds SET submitted_pin=NULL WHERE shipment_id=?",
+                shipmentId);
+
+        ResponseEntity<Map> retry = http.exchange(
+                "/api/v1/shipments/" + shipmentId + "/jd-so-order",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of(), writeHeaders(
+                        "shipment-jd-history-pin-002",
+                        "req-shipment-jd-history-pin-002")),
+                Map.class);
+
+        assertThat(retry.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(retry.getBody()).containsEntry(
+                "business_code", "JD_SHIPMENT_OUTBOUND_FROZEN_FACTS_MISSING");
+        assertThat(controlledJdWarehouse.outboundQueries).hasValue(0);
+        assertThat(controlledJdWrite.orderAttempts).hasValue(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT submitted_pin FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                String.class,
+                shipmentId)).isNull();
+    }
+
+    @Test
+    void concurrentDifferentKeysCannotDowngradeVerifiedSubmittedState() throws Exception {
+        Fact fact = createOrder("CONCURRENT-COMPLETION", List.of(singleItem("WECOM-SKU-JD-001", 1)));
+        long shipmentId = createShipment(fact);
+        controlledJdWarehouse.pauseNextOutboundQuery();
+
+        try (var executorService = Executors.newFixedThreadPool(2)) {
+            var first = executorService.submit(() -> service.submit(
+                    shipmentId,
+                    new ShipmentJdOutboundCommand(),
+                    "shipment-jd-concurrent-completion-001",
+                    CONTEXT));
+            assertThat(controlledJdWarehouse.awaitOutboundQueryEntered()).isTrue();
+
+            IdempotentResult<Map<String, Object>> second = service.submit(
+                    shipmentId,
+                    new ShipmentJdOutboundCommand(),
+                    "shipment-jd-concurrent-completion-002",
+                    CONTEXT);
+            assertThat(second.result()).containsEntry("sync_status", "SUBMITTED");
+
+            controlledJdWarehouse.releaseOutboundQuery();
+            IdempotentResult<Map<String, Object>> late = first.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(late.result()).containsEntry("sync_status", "SUBMITTED");
+        } finally {
+            controlledJdWarehouse.releaseOutboundQuery();
+        }
+
+        assertThat(controlledJdWrite.orderAttempts).hasValue(1);
+        assertThat(jdbc.queryForMap(
+                "SELECT sync_status, last_error_code FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                shipmentId))
+                .containsEntry("sync_status", "SUBMITTED")
+                .containsEntry("last_error_code", null);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.order_events WHERE order_id=? AND shipment_id=? "
+                        + "AND event_type_code='JD_OUTBOUND_SUBMITTED'",
+                Long.class,
+                fact.orderId(),
+                shipmentId)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM app.order_events WHERE order_id=? AND shipment_id=? "
+                        + "AND event_type_code='JD_OUTBOUND_FAILED'",
+                Long.class,
+                fact.orderId(),
+                shipmentId)).isZero();
+    }
+
+    @Test
     void uncertainWriteRetryReconcilesOriginalErpReferenceBeforeAnySecondCreate() {
-        Fact fact = createOrder("UNCERTAIN", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("UNCERTAIN", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         controlledJdWrite.failNextOrderSoCreate();
 
@@ -706,6 +1515,8 @@ class ShipmentJdOutboundSubmitTest {
         assertThat(recovered.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(recovered.getBody()).containsEntry("sync_status", "SUBMITTED").containsEntry("retry_count", 2);
         assertThat(controlledJdWrite.orderAttempts).hasValue(1);
+        assertThat(controlledJdWarehouse.outboundPins).containsExactly("PIN-API-001");
+        assertThat(controlledJdWarehouse.outboundOwnerNos).containsExactly("OWNER-API-001");
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.shipment_jd_outbounds WHERE shipment_id=?",
                 Long.class,
@@ -714,7 +1525,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void uncertainWriteIsReconciledBeforeAStockFailureCanEraseTheUnresolvedIntent() {
-        Fact fact = createOrder("UNCERTAIN-STOCK", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("UNCERTAIN-STOCK", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         controlledJdWrite.failNextOrderSoCreate();
 
@@ -747,7 +1558,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void reconciliationAuditFailureCannotMakeAnotherOutboundCreateReachable() {
-        Fact fact = createOrder("UNCERTAIN-AUDIT", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("UNCERTAIN-AUDIT", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         controlledJdWrite.failNextOrderSoCreate();
 
@@ -786,7 +1597,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void indeterminateBusinessResponseRetryReconcilesBeforeAnySecondCreate() {
-        Fact fact = createOrder("INDETERMINATE", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("INDETERMINATE", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         controlledJdWrite.uncertainBusinessFailureNextOrderSoCreate();
 
@@ -819,7 +1630,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void unauthorizedOperatorCannotRecordIntentOrReachJdWrite() {
-        Fact fact = createOrder("UNAUTHORIZED", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("UNAUTHORIZED", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         HttpHeaders headers = writeHeaders("shipment-jd-unauthorized-001", "req-shipment-jd-unauthorized-001");
         headers.set("X-Operator", "not-authorized");
@@ -847,7 +1658,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void spoofedAllowlistedOperatorWithoutAuthenticatedGatewayCredentialsIsRejectedAndAudited() {
-        Fact fact = createOrder("SPOOFED-IDENTITY", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("SPOOFED-IDENTITY", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         HttpHeaders headers = writeHeaders(
                 "shipment-jd-spoofed-identity-001", "req-shipment-jd-spoofed-identity-001");
@@ -878,7 +1689,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void authenticatedPrincipalMustMatchGatewayOperatorHeader() {
-        Fact fact = createOrder("IDENTITY-MISMATCH", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("IDENTITY-MISMATCH", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         HttpHeaders headers = writeHeaders(
                 "shipment-jd-identity-mismatch-001", "req-shipment-jd-identity-mismatch-001");
@@ -926,7 +1737,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void successfulExternalCreateWithEligibilityDriftIsQuarantinedForReconciliation() {
-        Fact fact = createOrder("ELIGIBILITY-DRIFT", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("ELIGIBILITY-DRIFT", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         controlledJdWrite.invalidateEligibilityAfterCreate();
 
@@ -956,7 +1767,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void changedRequestUnderSameShipmentIsRejected() {
-        Fact fact = createOrder("DRIFT", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("DRIFT", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -989,20 +1800,20 @@ class ShipmentJdOutboundSubmitTest {
                 "product_name", "子牧定制礼包",
                 "specification", "礼包",
                 "unit", "份",
-                "quantity", "1",
+                "quantity", 1,
                 "components", List.of(
                         Map.of(
                                 "source_sku_ref", "WECOM-SKU-JD-001",
                                 "product_name", "子牧羊小腿",
                                 "specification", "500g/盒",
                                 "unit", "盒",
-                                "quantity_per_bundle", "1"),
+                                "quantity_per_bundle", 1),
                         Map.of(
                                 "source_sku_ref", "WECOM-SKU-JD-002",
                                 "product_name", "子牧羊腿肉",
                                 "specification", "200g/盒",
                                 "unit", "盒",
-                                "quantity_per_bundle", "2")))));
+                                "quantity_per_bundle", 2)))));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -1011,12 +1822,13 @@ class ShipmentJdOutboundSubmitTest {
                 shipmentId, new ShipmentJdOutboundCommand(), "shipment-jd-bundle-001", CONTEXT);
 
         assertThat(result.result().get("goods_count")).isEqualTo(2);
-        assertThat(result.result().get("plan_quantity")).isEqualTo(3);
-        assertThat(seamCallCount(outboundOrderNo)).isEqualTo(1L);
+        assertThat(result.result().get("plan_quantity")).isEqualTo(3L);
+        String erpDeliveryNo = String.valueOf(result.result().get("erp_delivery_no"));
+        assertThat(seamCallCount(erpDeliveryNo)).isEqualTo(1L);
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.shipment_jd_outbounds WHERE shipment_id=?", Long.class, shipmentId))
                 .isEqualTo(1L);
-        Map<String, Object> seamPayload = seamAuditPayload(outboundOrderNo);
+        Map<String, Object> seamPayload = seamAuditPayload(erpDeliveryNo);
         List<?> cargos = (List<?>) seamPayload.get("cargoInfos");
         assertThat(cargos).hasSize(2);
         assertThat(((Map<?, ?>) cargos.get(0)).get("goodsNo")).isEqualTo("JD-SKU-000001");
@@ -1027,7 +1839,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void rejectsWhenAnyLineStageAlreadyAdvanced() {
-        Fact fact = createOrder("STAGE", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("STAGE", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -1045,9 +1857,14 @@ class ShipmentJdOutboundSubmitTest {
                     assertThat(ex.getBusinessCode()).isEqualTo("JD_SHIPMENT_OUTBOUND_STAGE_INVALID");
                 });
         assertThat(seamCallCount(outboundOrderNo)).isZero();
-        assertThat(jdbc.queryForObject(
-                "SELECT count(*) FROM app.shipment_jd_outbounds WHERE shipment_id=?", Long.class, shipmentId))
-                .isZero();
+        assertThat(jdbc.queryForMap(
+                "SELECT sync_status, retry_count FROM app.shipment_jd_outbounds WHERE shipment_id=?",
+                shipmentId))
+                .containsEntry("sync_status", "NONE")
+                .containsEntry("retry_count", 0);
+        ResponseEntity<Map> detail = http.exchange(
+                "/api/v1/shipments/" + shipmentId, HttpMethod.GET, null, Map.class);
+        assertThat(detail.getBody().get("jd_outbound")).isNull();
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM app.audit_logs WHERE request_id='req-shipment-jd-stage-001' "
                         + "AND operation='shipment.jd_outbound.submit' "
@@ -1059,7 +1876,7 @@ class ShipmentJdOutboundSubmitTest {
     void rejectsThirdPartyProviderShipment() {
         jdbc.update(
                 "UPDATE app.source_channel_skus SET quantity_multiplier=1.000 WHERE source_sku_ref='WECOM-SKU-TP-001'");
-        Fact fact = createOrder("TP", List.of(singleItem("WECOM-SKU-TP-001", "1")));
+        Fact fact = createOrder("TP", List.of(singleItem("WECOM-SKU-TP-001", 1)));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -1075,7 +1892,7 @@ class ShipmentJdOutboundSubmitTest {
 
     @Test
     void rejectsShippedShipment() {
-        Fact fact = createOrder("SHIPPED", List.of(singleItem("WECOM-SKU-JD-001", "1")));
+        Fact fact = createOrder("SHIPPED", List.of(singleItem("WECOM-SKU-JD-001", 1)));
         long shipmentId = createShipment(fact);
         String outboundOrderNo = jdbc.queryForObject(
                 "SELECT outbound_order_no FROM app.shipments WHERE id=?", String.class, shipmentId);
@@ -1111,9 +1928,9 @@ class ShipmentJdOutboundSubmitTest {
                 WHERE table_schema='app' AND table_name='shipment_jd_outbounds'
                   AND column_name IN ('shipment_id', 'erp_delivery_no', 'sync_status', 'failure_phase',
                                       'retry_count', 'last_error_code', 'last_error_message', 'request_hash',
-                                      'client_mode')
+                                      'business_facts_hash', 'client_mode')
                 """,
-                Long.class)).isEqualTo(9L);
+                Long.class)).isEqualTo(10L);
     }
 
     private Fact createOrder(String suffix, List<Map<String, Object>> items) {
@@ -1144,7 +1961,7 @@ class ShipmentJdOutboundSubmitTest {
                 lines.stream().map(row -> ((Number) row.get("order_line_id")).longValue()).toList());
     }
 
-    private Map<String, Object> singleItem(String sourceSkuRef, String quantity) {
+    private Map<String, Object> singleItem(String sourceSkuRef, int quantity) {
         return Map.of(
                 "line_type", "SINGLE",
                 "source_sku_ref", sourceSkuRef,
