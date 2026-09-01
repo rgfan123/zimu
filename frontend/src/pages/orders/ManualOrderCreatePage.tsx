@@ -24,6 +24,12 @@ import {
   manualOrderIdempotencyKey,
   type ManualOrderFormValues,
 } from '@/api/manualOrderCreate';
+import {
+  clearManualOrderDraft,
+  loadManualOrderDraft,
+  saveManualOrderDraft,
+  type ManualOrderDraftEnvelope,
+} from '@/pages/orders/manualOrderDraft';
 import { useAsync } from '@/hooks/useAsync';
 
 /** 建单成功后随流程携带的订单身份：路由重试与成功指路都只需要这三样 + 版本。 */
@@ -100,6 +106,32 @@ export default function ManualOrderCreatePage() {
   // 草稿指纹：同一草稿重复点击是重放，重开一单换新指纹（见 manualOrderIdempotencyKey）。
   const [draftNonce, setDraftNonce] = useState(() => newRequestId());
   const [customerQuery, setCustomerQuery] = useState('');
+  // 本机浏览器草稿：进页面读一次；恢复/丢弃/成功建单后置空提示。
+  const [pendingDraft, setPendingDraft] = useState<ManualOrderDraftEnvelope | null>(
+    () => loadManualOrderDraft(window.localStorage),
+  );
+
+  const saveDraft = () => {
+    const values = form.getFieldsValue(true) as ManualOrderFormValues;
+    const savedAt = new Date().toISOString();
+    if (saveManualOrderDraft(window.localStorage, values, savedAt)) {
+      message.success('草稿已保存在本机浏览器（成功建单后自动清除）');
+    } else {
+      message.warning('草稿保存失败：浏览器不允许本地存储（隐私模式或空间已满）');
+    }
+  };
+
+  const restoreDraft = () => {
+    if (!pendingDraft) return;
+    form.setFieldsValue(pendingDraft.values);
+    setPendingDraft(null);
+    message.success('草稿已恢复，可继续编辑');
+  };
+
+  const discardDraft = () => {
+    clearManualOrderDraft(window.localStorage);
+    setPendingDraft(null);
+  };
 
   // 客户主数据支持服务端分页搜索（GET /api/v1/customers?query=），这里直接接 query；
   // 首页 50 条 + 按需检索，不做全量拉取。
@@ -146,6 +178,9 @@ export default function ManualOrderCreatePage() {
         idempotencyKey: manualOrderIdempotencyKey(draftNonce, body),
       });
       order = { id: detail.id, orderNo: detail.order_no, sourceRef: detail.source_ref, version: detail.version };
+      // 订单已真实落库，本机草稿的使命完成；路由失败也不该再用旧草稿重建一单。
+      clearManualOrderDraft(window.localStorage);
+      setPendingDraft(null);
     } catch (err) {
       setFlow({ phase: 'IDLE' });
       message.error(manualOrderErrorText(err));
@@ -271,6 +306,21 @@ export default function ManualOrderCreatePage() {
         </Card>
       ) : null}
 
+      {pendingDraft && flow.phase === 'IDLE' ? (
+        <Alert
+          type="info"
+          showIcon
+          message={`发现未完成的草稿（保存于 ${new Date(pendingDraft.saved_at).toLocaleString()}）`}
+          description="草稿保存在本机浏览器；恢复后会覆盖当前表单内容。"
+          action={(
+            <Space direction="vertical" size={4}>
+              <Button size="small" type="primary" onClick={restoreDraft}>恢复草稿</Button>
+              <Button size="small" onClick={discardDraft}>丢弃</Button>
+            </Space>
+          )}
+        />
+      ) : null}
+
       {flow.phase === 'DONE' || flow.phase === 'ROUTE_FAILED' ? null : (
         <Form<ManualOrderFormValues>
           form={form}
@@ -382,8 +432,9 @@ export default function ManualOrderCreatePage() {
               <Button type="primary" htmlType="submit" loading={submitting}>
                 {flow.phase === 'ROUTING' ? '正在生成发货单…' : flow.phase === 'CREATING' ? '正在建单…' : '建单并生成发货单'}
               </Button>
+              <Button onClick={saveDraft} disabled={submitting}>保存草稿</Button>
               <Typography.Text type="secondary">
-                提交后依次执行：创建订单 → 生成发货单；重复点击不会重复建单。
+                提交后依次执行：创建订单 → 生成发货单；重复点击不会重复建单。草稿存本机浏览器，成功建单后自动清除。
               </Typography.Text>
             </Space>
           </Space>
