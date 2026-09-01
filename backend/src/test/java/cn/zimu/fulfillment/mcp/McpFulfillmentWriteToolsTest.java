@@ -20,6 +20,7 @@ import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.CommandContext;
 import cn.zimu.fulfillment.connector.PlatformOrderRefreshService;
 import cn.zimu.fulfillment.file.OrderFulfillmentRoutingService;
+import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundCancelService;
 import cn.zimu.fulfillment.order.ManualOrderCreateService;
 import cn.zimu.fulfillment.order.ManualOrderCreateWrite;
 import cn.zimu.fulfillment.order.dto.OrderDetailDto;
@@ -39,16 +40,21 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
- * 履约域三个 MCP 写工具（hermes 触发平台拉取 / 手工建单 / 履约路由）的注册与行为验收。
+ * 履约域四个 MCP 写工具（hermes 触发平台拉取 / 手工建单 / 履约路由 / 京东出库取消）
+ * 的注册与行为验收。
  *
  * <p>每个工具钉四类：成功路径、幂等重放、参数校验先于任何服务调用、协议面投影为「不存在」。
  * 另钉住 refresh 的幂等取舍——真实外呼不可重放，只做幂等键格式校验、不入幂等注册表
- * （与 REST 面 A1 取舍同一判据），以及手工单出参只投影四个字段（不回吐收货人 PII）。
+ * （与 REST 面 A1 取舍同一判据），手工单出参只投影四个字段（不回吐收货人 PII），
+ * 以及 cancel_jd_outbound 的人类确认闸（真实动货的逆操作，与 submit_jd_outbound 同级）。
  */
 class McpFulfillmentWriteToolsTest {
 
-    private static final Set<String> TOOL_NAMES =
-            Set.of("refresh_platform_orders", "create_manual_order", "route_order_fulfillment");
+    private static final Set<String> TOOL_NAMES = Set.of(
+            "refresh_platform_orders",
+            "create_manual_order",
+            "route_order_fulfillment",
+            "cancel_jd_outbound");
 
     /** 生产 ObjectMapper 是全局 SNAKE_CASE（JacksonConfig），投影读的就是这套键名。 */
     private final ObjectMapper mapper =
@@ -57,6 +63,8 @@ class McpFulfillmentWriteToolsTest {
     private final PlatformOrderRefreshService refreshService = mock(PlatformOrderRefreshService.class);
     private final ManualOrderCreateService manualOrderService = mock(ManualOrderCreateService.class);
     private final OrderFulfillmentRoutingService routingService = mock(OrderFulfillmentRoutingService.class);
+    private final ShipmentJdOutboundCancelService cancelService =
+            mock(ShipmentJdOutboundCancelService.class);
     private final IdempotencyService idempotency = mock(IdempotencyService.class);
     private final AuditLogService audits = mock(AuditLogService.class);
     private final PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
@@ -66,7 +74,7 @@ class McpFulfillmentWriteToolsTest {
     @BeforeEach
     void setUp() {
         provider = new McpFulfillmentWriteTools(
-                refreshService, manualOrderService, routingService, idempotency, audits,
+                refreshService, manualOrderService, routingService, cancelService, idempotency, audits,
                 mapper, transactionManager);
     }
 
@@ -75,10 +83,10 @@ class McpFulfillmentWriteToolsTest {
     // ------------------------------------------------------------------
 
     @Test
-    void declaresThreeWriteToolsInTheWriteModule() {
+    void declaresFourWriteToolsInTheWriteModule() {
         List<McpTool> tools = provider.tools();
 
-        assertThat(tools).hasSize(3);
+        assertThat(tools).hasSize(4);
         assertThat(tools.stream().map(McpTool::name)).containsExactlyInAnyOrderElementsOf(TOOL_NAMES);
         assertThat(tools).allSatisfy(tool -> {
             assertThat(tool.module()).isEqualTo(McpFulfillmentWriteTools.MODULE);
@@ -99,7 +107,7 @@ class McpFulfillmentWriteToolsTest {
     // ------------------------------------------------------------------
 
     @Test
-    void protocolSurfaceProjectsAllThreeWriteToolsAsNonexistent() {
+    void protocolSurfaceProjectsAllWriteToolsAsNonexistent() {
         McpToolRegistry registry = registry("write", "write");
         McpServer server = new McpServer(registry, new McpAgentIdentity("protocol-test"), mapper);
 
@@ -121,7 +129,7 @@ class McpFulfillmentWriteToolsTest {
     }
 
     @Test
-    void agentSurfaceBindsAllThreeWriteToolsByModuleSwitch() {
+    void agentSurfaceBindsAllWriteToolsByModuleSwitch() {
         McpToolRegistry registry = registry("write", "");
 
         assertThat(registry.agentWriteToolNames()).containsAll(TOOL_NAMES);
@@ -512,8 +520,221 @@ class McpFulfillmentWriteToolsTest {
     }
 
     // ------------------------------------------------------------------
+    // cancel_jd_outbound：真实动货的逆操作，受人类确认闸保护
+    // ------------------------------------------------------------------
+
+    @Test
+    void cancelDeclaresTheConfirmationGateAndTellsTheModelWhatItUndoes() {
+        McpTool tool = toolByName("cancel_jd_outbound");
+
+        assertThat(tool.inputSchema().path("required").toString())
+                .contains("shipment_id")
+                .contains("idempotency_key")
+                .contains(McpHumanConfirmation.PARAMETER)
+                // 单据类型可缺省：不传即服务层默认 XSCK
+                .doesNotContain("order_type");
+        assertThat(tool.inputSchema().path("properties").path(McpHumanConfirmation.PARAMETER)
+                        .path("description").asText())
+                .contains("人类确认闸")
+                .contains("『确认』")
+                .contains("不得代填");
+        // 描述必须写清「真实调用京东」「只在未出库前有效」「本地记录删除后可重新提交」
+        assertThat(tool.description())
+                .contains("真实")
+                .contains("京东")
+                .contains("出库前")
+                .contains("删除")
+                .contains("重新提交")
+                .contains("人类确认闸");
+        // 字典值写进 order_type 描述，模型不必去猜助记码
+        String orderType = tool.inputSchema().path("properties").path("order_type")
+                .path("description").asText();
+        for (String code : List.of("XSCK", "CGRK", "THRK", "TGCK", "ZKTZ", "ZTJG", "BFCK")) {
+            assertThat(orderType).as("单据类型字典 %s", code).contains(code);
+        }
+    }
+
+    @Test
+    void cancelWithTheExactWordReachesTheCancelServiceAndAuditsTheAgent() {
+        when(cancelService.cancel(
+                        eq(31L), eq((String) null), eq("hermes-cancel-0001"), any(CommandContext.class)))
+                .thenReturn(IdempotentResult.executed(cancelResult(), 200));
+
+        JsonNode result = toolByName("cancel_jd_outbound").invoke(context(), Map.of(
+                "shipment_id", "31",
+                "idempotency_key", "hermes-cancel-0001",
+                McpHumanConfirmation.PARAMETER, "确认"));
+
+        assertThat(result.path("cancelled").asBoolean()).isTrue();
+        assertThat(result.path("jd_delivery_no").asText()).isEqualTo("JD202609010001");
+        assertThat(result.path("submission_record_deleted").asBoolean()).isTrue();
+
+        // 不传 order_type 时必须传 null 下去，由服务层落到 XSCK 默认
+        verify(cancelService).cancel(
+                eq(31L), eq((String) null), eq("hermes-cancel-0001"), any(CommandContext.class));
+
+        ArgumentCaptor<AuditLogService.AuditCommand> audit =
+                ArgumentCaptor.forClass(AuditLogService.AuditCommand.class);
+        verify(audits).record(audit.capture());
+        assertThat(audit.getValue()).extracting("operation").isEqualTo("mcp.cancel_jd_outbound");
+        assertThat(audit.getValue()).extracting("businessCode").isEqualTo("JD_OUTBOUND_CANCELLED");
+        assertThat(audit.getValue()).extracting("operator").isEqualTo("hermes");
+    }
+
+    @Test
+    void cancelForwardsTheDeclaredOrderTypeNormalisedToUpperCase() {
+        when(cancelService.cancel(anyLong(), anyString(), anyString(), any(CommandContext.class)))
+                .thenReturn(IdempotentResult.executed(cancelResult(), 200));
+
+        toolByName("cancel_jd_outbound").invoke(context(), Map.of(
+                "shipment_id", "31",
+                "order_type", "bfck",
+                "idempotency_key", "hermes-cancel-0002",
+                McpHumanConfirmation.PARAMETER, "确认"));
+
+        verify(cancelService).cancel(
+                eq(31L), eq("BFCK"), eq("hermes-cancel-0002"), any(CommandContext.class));
+    }
+
+    @Test
+    void cancelWithoutConfirmationIsRejectedBeforeTouchingTheCancelService() {
+        assertThatThrownBy(() -> toolByName("cancel_jd_outbound").invoke(
+                        context(), Map.of("shipment_id", "31", "idempotency_key", "hermes-cancel-0003")))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(failure -> {
+                    BusinessException ex = (BusinessException) failure;
+                    assertThat(ex.getBusinessCode()).isEqualTo("HUMAN_CONFIRMATION_REQUIRED");
+                    assertThat(ex.getHttpStatus()).isEqualTo(422);
+                    assertThat(ex.getMessage()).contains("确认");
+                });
+        verify(cancelService, never()).cancel(anyLong(), any(), anyString(), any());
+    }
+
+    @Test
+    void cancelRejectsEveryValueThatIsNotTheExactWord() {
+        for (String wrong : List.of("ok", "yes", "确认。", "确认了", "已确认", "同意", "true", " ")) {
+            assertThatThrownBy(() -> toolByName("cancel_jd_outbound").invoke(context(), Map.of(
+                            "shipment_id", "31",
+                            "idempotency_key", "hermes-cancel-0004",
+                            McpHumanConfirmation.PARAMETER, wrong)))
+                    .as("值 %s 必须被拒", wrong)
+                    .isInstanceOf(BusinessException.class)
+                    .extracting(e -> ((BusinessException) e).getBusinessCode())
+                    .isEqualTo("HUMAN_CONFIRMATION_REQUIRED");
+        }
+        verify(cancelService, never()).cancel(anyLong(), any(), anyString(), any());
+    }
+
+    /**
+     * 鉴权先于确认闸：未认证调用连确认词都没带，看到的仍必须是鉴权错误——
+     * 不得从错误码里探知「这个工具背后还有一道确认闸」。
+     */
+    @Test
+    void cancelWithoutAgentIdentitySeesTheAuthErrorRatherThanTheGate() {
+        assertThatThrownBy(() -> toolByName("cancel_jd_outbound").invoke(
+                        new McpRequestContext("run_x", "run_x", ""),
+                        Map.of("shipment_id", "31", "idempotency_key", "hermes-cancel-0005")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getBusinessCode())
+                .isEqualTo("MCP_AUTH_REQUIRED");
+        verify(cancelService, never()).cancel(anyLong(), any(), anyString(), any());
+    }
+
+    @Test
+    void cancelRejectsBadIdentifiersAndShortKeysBeforeTouchingTheService() {
+        assertThatThrownBy(() -> toolByName("cancel_jd_outbound").invoke(context(), Map.of(
+                        "shipment_id", "0",
+                        "idempotency_key", "hermes-cancel-0006",
+                        McpHumanConfirmation.PARAMETER, "确认")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getBusinessCode())
+                .isEqualTo("INVALID_PARAMETERS");
+        assertThatThrownBy(() -> toolByName("cancel_jd_outbound").invoke(context(), Map.of(
+                        "shipment_id", "SHIP-31",
+                        "idempotency_key", "hermes-cancel-0007",
+                        McpHumanConfirmation.PARAMETER, "确认")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getBusinessCode())
+                .isEqualTo("INVALID_PARAMETERS");
+        assertThatThrownBy(() -> toolByName("cancel_jd_outbound").invoke(context(), Map.of(
+                        "shipment_id", "31",
+                        "idempotency_key", "short",
+                        McpHumanConfirmation.PARAMETER, "确认")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getBusinessCode())
+                .isEqualTo("IDEMPOTENCY_KEY_INVALID");
+        verify(cancelService, never()).cancel(anyLong(), any(), anyString(), any());
+    }
+
+    /** 用户输入不进下游命令，也不进审计明文：审计只留 human_confirmed=true。 */
+    @Test
+    void cancelConfirmationNeverReachesTheAuditPayloadInPlaintext() {
+        when(cancelService.cancel(anyLong(), any(), anyString(), any(CommandContext.class)))
+                .thenReturn(IdempotentResult.executed(cancelResult(), 200));
+
+        toolByName("cancel_jd_outbound").invoke(context(), Map.of(
+                "shipment_id", "31",
+                "idempotency_key", "hermes-cancel-0008",
+                McpHumanConfirmation.PARAMETER, "  确认  "));
+
+        ArgumentCaptor<AuditLogService.AuditCommand> audit =
+                ArgumentCaptor.forClass(AuditLogService.AuditCommand.class);
+        verify(audits).record(audit.capture());
+        assertThat(audit.getValue())
+                .extracting("requestPayload")
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .doesNotContainKey(McpHumanConfirmation.PARAMETER)
+                .containsEntry(McpHumanConfirmation.AUDIT_FIELD, true)
+                .containsEntry("shipment_id", 31L);
+        assertThat(audit.getValue()).extracting("requestPayload").asString().doesNotContain("确认");
+    }
+
+    @Test
+    void cancelReplayReturnsTheRegistrySnapshotAndAuditsTheReplay() {
+        when(cancelService.cancel(anyLong(), any(), anyString(), any(CommandContext.class)))
+                .thenReturn(IdempotentResult.replayed(200, mapper.valueToTree(cancelResult())));
+
+        JsonNode result = toolByName("cancel_jd_outbound").invoke(context(), Map.of(
+                "shipment_id", "31",
+                "idempotency_key", "hermes-cancel-0008",
+                McpHumanConfirmation.PARAMETER, "确认"));
+
+        assertThat(result.path("cancelled").asBoolean()).isTrue();
+        ArgumentCaptor<AuditLogService.AuditCommand> audit =
+                ArgumentCaptor.forClass(AuditLogService.AuditCommand.class);
+        verify(audits).record(audit.capture());
+        assertThat(audit.getValue()).extracting("businessCode").isEqualTo("IDEMPOTENT_REPLAY");
+    }
+
+    /** 服务层错误码原样透传：出库单不是 SUBMITTED、京东拒绝、操作人未授权都不该被改写。 */
+    @Test
+    void cancelPropagatesTheServiceBusinessCode() {
+        when(cancelService.cancel(anyLong(), any(), anyString(), any(CommandContext.class)))
+                .thenThrow(BusinessException.conflict(
+                        "JD_OUTBOUND_NOT_SUBMITTED", "该发货批次没有已提交的京东出库单，无可取消"));
+
+        assertThatThrownBy(() -> toolByName("cancel_jd_outbound").invoke(context(), Map.of(
+                        "shipment_id", "31",
+                        "idempotency_key", "hermes-cancel-0009",
+                        McpHumanConfirmation.PARAMETER, "确认")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(e -> ((BusinessException) e).getBusinessCode())
+                .isEqualTo("JD_OUTBOUND_NOT_SUBMITTED");
+    }
+
+    // ------------------------------------------------------------------
     // 装配助手
     // ------------------------------------------------------------------
+
+    private static Map<String, Object> cancelResult() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("shipment_id", "31");
+        result.put("erp_delivery_no", "ERP20260901001");
+        result.put("jd_delivery_no", "JD202609010001");
+        result.put("cancelled", true);
+        result.put("submission_record_deleted", true);
+        return result;
+    }
 
     private McpTool toolByName(String name) {
         return provider.tools().stream()

@@ -10,6 +10,7 @@ import cn.zimu.fulfillment.common.idempotency.IdempotentResult;
 import cn.zimu.fulfillment.common.web.WriteCommands;
 import cn.zimu.fulfillment.connector.PlatformOrderRefreshService;
 import cn.zimu.fulfillment.file.OrderFulfillmentRoutingService;
+import cn.zimu.fulfillment.fulfillment.ShipmentJdOutboundCancelService;
 import cn.zimu.fulfillment.order.ManualOrderCreateService;
 import cn.zimu.fulfillment.order.ManualOrderCreateWrite;
 import cn.zimu.fulfillment.order.dto.OrderDetailDto;
@@ -28,10 +29,12 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * 履约域 MCP 写工具：平台拉取、手工建单、履约路由——内部 AI 工具 hermes 经 stdio 特权面
- * 触发这三件事，覆盖「把一单从进系统到有发货单」的最短闭环。
+ * 触发这三件事，覆盖「把一单从进系统到有发货单」的最短闭环——外加京东出库取消，
+ * 即 {@code submit_jd_outbound} 的逆操作（2026-09-01 重复发货事故催生，issue #213）。
  *
  * <p>每个工具只包一层既有应用用例（{@link PlatformOrderRefreshService} /
- * {@link ManualOrderCreateService} / {@link OrderFulfillmentRoutingService}），不复制业务判据；
+ * {@link ManualOrderCreateService} / {@link OrderFulfillmentRoutingService} /
+ * {@link ShipmentJdOutboundCancelService}），不复制业务判据；
  * 操作人来自启动时注入的 Agent 身份（工具参数中不存在 operator），全部走 AGENT 审计
  * （成功/重放/失败），错误码原样透传服务层 {@link BusinessException}。
  *
@@ -52,9 +55,19 @@ public class McpFulfillmentWriteTools {
 
     private static final int MAX_ITEMS = 200;
 
+    /**
+     * 京东取消出库单的单据类型助记码字典（JDL 开放平台 API#1552，文档快照见
+     * {@code docs/research/jd-warehouse-openapi-docs/json/1552-cancelOrder.json}）。
+     * 只用于把可选值写进工具描述让模型不必猜；**不做白名单拦截**——服务层的入参本就是
+     * 用来兜住字典演化的，在这里硬拦会让新增助记码必须先改代码才能用。
+     */
+    private static final List<String> JD_CANCEL_ORDER_TYPES =
+            List.of("XSCK", "CGRK", "THRK", "TGCK", "ZKTZ", "ZTJG", "BFCK");
+
     private final PlatformOrderRefreshService refreshService;
     private final ManualOrderCreateService manualOrderService;
     private final OrderFulfillmentRoutingService routingService;
+    private final ShipmentJdOutboundCancelService cancelService;
     private final IdempotencyService idempotency;
     private final AuditLogService audits;
     private final ObjectMapper objectMapper;
@@ -65,6 +78,7 @@ public class McpFulfillmentWriteTools {
             PlatformOrderRefreshService refreshService,
             ManualOrderCreateService manualOrderService,
             OrderFulfillmentRoutingService routingService,
+            ShipmentJdOutboundCancelService cancelService,
             IdempotencyService idempotency,
             AuditLogService audits,
             ObjectMapper objectMapper,
@@ -72,6 +86,7 @@ public class McpFulfillmentWriteTools {
         this.refreshService = refreshService;
         this.manualOrderService = manualOrderService;
         this.routingService = routingService;
+        this.cancelService = cancelService;
         this.idempotency = idempotency;
         this.audits = audits;
         this.objectMapper = objectMapper;
@@ -137,6 +152,36 @@ public class McpFulfillmentWriteTools {
                                         "idempotency_key", stringProperty("幂等键，至少 8 个字符")),
                                 List.of("order_id", "expected_version", "idempotency_key")),
                         this::routeOrderFulfillment,
+                        false,
+                        MODULE),
+                new McpToolRegistry.SimpleTool(
+                        "cancel_jd_outbound",
+                        "取消已提交的京东出库单（submit_jd_outbound 的逆操作）："
+                                + "**这是对京东的真实调用**，不是本地撤回——只在货还没出库前有效，"
+                                + "京东一旦已拣货/已出库就会拒绝，此时只能走售后退货，不要反复重试。"
+                                + "京东确认取消后，本地那条京东提交记录会被**删除**，"
+                                + "Shipment 因此回到未提交态、可以重新提交（整个过程由审计日志留痕）；"
+                                + "运单与发货单自身的状态不在本工具范围，需要回退请转人工。"
+                                + "受人类确认闸保护：必须先向用户复述本次要取消哪一单（发货批次与京东单号），"
+                                + "拿到用户亲自输入的『确认』二字才可调用。"
+                                + "操作人须在京东出库授权白名单内（与提交同一份名单），否则拒绝且不触网。"
+                                + "幂等：相同 idempotency_key 重放返回首次结果，不重复调用京东。",
+                        schema(
+                                Map.of(
+                                        "shipment_id", stringProperty("发货批次（Shipment）ID，正整数字符串"),
+                                        "order_type", stringProperty(
+                                                "京东单据类型助记码，可选；不传即销售出库 XSCK（生产实测取消成功）。"
+                                                        + "字典（JDL API#1552）："
+                                                        + String.join("/", JD_CANCEL_ORDER_TYPES)
+                                                        + "，依次为 销售出库/采购入库/退货入库/退供出库/"
+                                                        + "在库调整/组套加工/报废出库"),
+                                        "idempotency_key", stringProperty("幂等键，至少 8 个字符"),
+                                        McpHumanConfirmation.PARAMETER, McpHumanConfirmation.property()),
+                                List.of(
+                                        "shipment_id",
+                                        "idempotency_key",
+                                        McpHumanConfirmation.PARAMETER)),
+                        this::cancelJdOutbound,
                         false,
                         MODULE));
     }
@@ -206,6 +251,37 @@ public class McpFulfillmentWriteTools {
                 context,
                 () -> routingService.route(
                         orderId, expectedVersion, idempotencyKey, context.requireCommandContext()));
+    }
+
+    /**
+     * 京东出库取消：与 REST 面 {@code POST /api/v1/shipments/{id}/jd-so-order-cancel}
+     * 共用同一个 {@link ShipmentJdOutboundCancelService}——可取消判据（只对 SUBMITTED 的
+     * 出库单）、操作人白名单、幂等注册表、删除提交记录，全部由服务层一份实现负责，
+     * 这里只做参数形状校验、确认闸与 AGENT 审计。
+     */
+    private JsonNode cancelJdOutbound(McpRequestContext context, Map<String, Object> args) {
+        // 鉴权先于确认闸：未认证调用只该看到鉴权错误，不该探知闸的存在。
+        context.requireCommandContext();
+        // 人类确认闸：这是对京东的真实调用、货的去向真的会变，用户没亲口说「确认」就不许往下走。
+        // confirmed 是剥掉确认参数后的入参，后续解析一律用它——用户输入不进下游命令与幂等载荷。
+        Map<String, Object> confirmed = McpHumanConfirmation.requireConfirmed(args);
+        long shipmentId = identifier(confirmed, "shipment_id");
+        String orderType = optionalUpperCase(confirmed, "order_type");
+        String idempotencyKey = requireIdempotencyKey(confirmed);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("shipment_id", shipmentId);
+        payload.put("order_type", orderType);
+        // 审计只留「人类确认过」这一事实，不落用户输入明文。
+        payload.put(McpHumanConfirmation.AUDIT_FIELD, true);
+        // 幂等与请求载荷由 ShipmentJdOutboundCancelService.cancel 负责（与 REST 共用同一 scope），
+        // 这里只审计摘要。
+        return executeWrite(
+                "cancel_jd_outbound",
+                payload,
+                "JD_OUTBOUND_CANCELLED",
+                context,
+                () -> cancelService.cancel(
+                        shipmentId, orderType, idempotencyKey, context.requireCommandContext()));
     }
 
     // ------------------------------------------------------------------
@@ -402,6 +478,12 @@ public class McpFulfillmentWriteTools {
             throw BusinessException.badRequest("INVALID_PARAMETERS", "参数 " + key + " 超长");
         }
         return value;
+    }
+
+    /** 可选枚举串的大小写归一：助记码字典全大写，模型写 {@code xsck} 不该因此发错。 */
+    private static String optionalUpperCase(Map<String, Object> args, String key) {
+        String value = optionalString(args, key);
+        return value == null ? null : value.toUpperCase(Locale.ROOT);
     }
 
     private static String optionalString(Map<String, Object> args, String key) {

@@ -114,12 +114,13 @@ docker exec -i \
 
 ## 6. 写操作的两道闸
 
-1. **人类确认闸**：`submit_jd_outbound`、`approve_raw_inbound_order`、`approve_raw_scrap_order` 三个真实动货/动账的
-   工具必填 `human_confirmation` 参数，值必须精确等于「确认」二字（`strip()` 后比较，`确认。`/`ok` 一律拒），
-   否则 422 `HUMAN_CONFIRMATION_REQUIRED`。Agent 必须先向用户复述动作、由用户亲自输入，不得代填。
-   建单/成单/路由/拉取不受闸（系统内单据，可改可删）。
+1. **人类确认闸**：`submit_jd_outbound`、`cancel_jd_outbound`、`approve_raw_inbound_order`、
+   `approve_raw_scrap_order` 四个真实动货/动账的工具必填 `human_confirmation` 参数，值必须精确等于
+   「确认」二字（`strip()` 后比较，`确认。`/`ok` 一律拒），否则 422 `HUMAN_CONFIRMATION_REQUIRED`。
+   Agent 必须先向用户复述动作、由用户亲自输入，不得代填。判定次序是**先鉴权再过闸**：未认证调用
+   只看到鉴权错误，不得从错误码探知闸的存在。建单/成单/路由/拉取不受闸（系统内单据，可改可删）。
 2. **京东出库操作人白名单**：`JD_OUTBOUND_AUTHORIZED_OPERATORS`（生产含 `zimu-admin,wecom:jry,hermes`）——
-   身份不在名单里，`submit_jd_outbound` 即使可见也会被拒。
+   身份不在名单里，`submit_jd_outbound` / `cancel_jd_outbound` 即使可见也会被拒（提交与取消同一份名单）。
 
 ## 7. 排障速查
 
