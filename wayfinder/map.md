@@ -15,7 +15,7 @@ tracker: local-markdown
 ## Notes
 
 **领域**：B 端生鲜食材订单履约与仓储物流；渠道：彩食鲜 / 聚福宝 / 飞象 / 企业微信。
-**固定输入**：`docs/prd-v0.1.md`（PRD V0.1，所有范围与契约以此为准）；领域词汇见 `CONTEXT.md`。
+**固定输入**：PRD V0.1（已于 2026-09-01 删除，内容全面过时，历史见 git）；现状权威与领域词汇见 `CONTEXT.md`。
 **技能**：grilling（任何 HITL 票）、domain-modeling（词汇变化时更新 `CONTEXT.md`）、research（外部知识票）、prototype（前端页面形态票可选）、tdd（构建票可选）。
 **HITL 原则**：时间类型、时区、精度、索引等常规工程默认由 Agent 直接按稳健方案裁决并记录，不询问用户；只把会改变业务行为、人工流程、交付范围或不可逆取舍的问题交给用户。
 **当前业务优先级（不改变 Destination）**：「数据库 Schema 设计」、[P0 Excel 接入、履约导出与运单回填闭环](tickets/p0-excel-closed-loop.md)、礼包/包装换算口径与 API 契约均已关闭；实现顺序先完成[后端骨架与订单域实现](tickets/backend-core-implementation.md)及其履约/Connector 依赖，再优先执行 [P0 Excel 接入与履约回填闭环构建](tickets/p0-excel-closed-loop-build.md)。完整后端模块、全部前端页面、数据中台、Metabase 与七条最终验收仍保留在本 effort。

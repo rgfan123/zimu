@@ -141,7 +141,7 @@ content-type: application/json   (仅 POST)
 
 ### 4.2 中期：契约存档（本文档）作为 API 模式 Connector 起点
 
-- `docs/prd-v0.1.md` 已规划 `transport_mode=API`；本文档补齐登录 + 导出闭环契约。
+- PRD V0.1（已删除，历史见 git）曾规划 `transport_mode=API`；本文档补齐登录 + 导出闭环契约。
 - 2026-08-18 抓包发现的**订单 JSON 接口**（API 模式关键素材，待细化契约）：
   - `POST /scc/bbc/order/orderList` —— 订单分页列表（JSON）【已实测通过，见 4.4】
   - `POST /scc/bbc/order/orderStatistics` / `homeStatistics` —— 订单统计

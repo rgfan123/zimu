@@ -2,7 +2,7 @@
 
 > 日期：2026-08-11  
 > 一手来源：京东物流开放平台「仓配一体」业务单元 `367`的62份官方 API 文档，以及本地 SDK jar 字节码。  
-> 业务依据：`docs/prd-v0.1.md`、`docs/excel-closed-loop-spec.md`、`wayfinder/tickets/p0-excel-closed-loop.md`。
+> 业务依据：`docs/api-contract.md`、`docs/excel-closed-loop-spec.md`、`wayfinder/tickets/p0-excel-closed-loop.md`。
 
 ## 1. 结论
 
