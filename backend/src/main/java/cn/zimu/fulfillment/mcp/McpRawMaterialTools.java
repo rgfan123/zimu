@@ -271,7 +271,9 @@ public class McpRawMaterialTools {
     }
 
     private JsonNode approveRawInboundOrder(McpRequestContext context, Map<String, Object> args) {
-        // 人类确认闸先于一切：审批即入账、不可逆，用户没亲口说「确认」就不许往下走一步。
+        // 鉴权先于确认闸：未认证调用只该看到鉴权错误，不该探知闸的存在。
+        context.requireCommandContext();
+        // 人类确认闸：审批即入账、不可逆，用户没亲口说「确认」就不许往下走一步。
         Map<String, Object> confirmed = McpHumanConfirmation.requireConfirmed(args);
         long orderId = identifier(confirmed, "order_id");
         String idempotencyKey = requireIdempotencyKey(confirmed);
@@ -313,7 +315,9 @@ public class McpRawMaterialTools {
     }
 
     private JsonNode approveRawScrapOrder(McpRequestContext context, Map<String, Object> args) {
-        // 人类确认闸先于一切：审批即出账、不可逆，用户没亲口说「确认」就不许往下走一步。
+        // 鉴权先于确认闸：未认证调用只该看到鉴权错误，不该探知闸的存在。
+        context.requireCommandContext();
+        // 人类确认闸：审批即出账、不可逆，用户没亲口说「确认」就不许往下走一步。
         Map<String, Object> confirmed = McpHumanConfirmation.requireConfirmed(args);
         long orderId = identifier(confirmed, "order_id");
         String idempotencyKey = requireIdempotencyKey(confirmed);

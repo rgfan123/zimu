@@ -276,7 +276,9 @@ public class McpWriteTools {
     }
 
     private JsonNode submitJdOutbound(McpRequestContext context, Map<String, Object> args) {
-        // 人类确认闸先于一切：货真的会出仓，用户没亲口说「确认」就不许往下走一步。
+        // 鉴权先于确认闸：未认证调用只该看到鉴权错误，不该探知闸的存在。
+        context.requireCommandContext();
+        // 人类确认闸：货真的会出仓，用户没亲口说「确认」就不许往下走一步。
         // confirmed 是剥掉确认参数后的入参，后续解析一律用它——用户输入不进下游命令与幂等载荷。
         Map<String, Object> confirmed = McpHumanConfirmation.requireConfirmed(args);
         long shipmentId = identifier(confirmed, "shipment_id");
