@@ -1,0 +1,158 @@
+<meta charset="utf-8">
+<title>京东快递运费公式</title>
+<style>
+  @page { size: A4; margin: 11mm 12mm 9mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #fff; color: #1a1a1a;
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 10pt; line-height: 1.5;
+  }
+  .mono { font-family: "SF Mono", Menlo, Consolas, monospace; }
+
+  h1 { font-size: 17pt; margin: 0 0 3px; font-weight: 700; letter-spacing: .5px; }
+  .sub { font-size: 8.5pt; color: #666; margin-bottom: 10px; }
+  .rule { height: 2px; background: #1a1a1a; margin-bottom: 11px; }
+
+  .callout {
+    border: 1px solid #cfcfcf; background: #f7f7f5;
+    padding: 8px 12px; margin-bottom: 12px;
+    display: flex; align-items: baseline; gap: 14px;
+  }
+  .callout .big { font-family:"SF Mono",Menlo,monospace; font-size: 17pt; white-space:nowrap; font-weight: 700; color: #0a7d0a; }
+  .callout .txt { font-size: 9.5pt; line-height:1.5; }
+  .callout .txt b { font-weight: 600; }
+
+  h2 { font-size: 11pt; margin: 0 0 6px; font-weight: 700; }
+  .sec { margin-bottom: 12px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+  th { text-align: left; padding: 5px 7px; border-bottom: 1.5px solid #1a1a1a; font-weight: 600; font-size: 9pt; }
+  td { padding: 4.5px 7px; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
+  td.f { font-family:"SF Mono",Menlo,monospace; font-weight: 600; white-space: nowrap; }
+  td.n { text-align: right; font-family:"SF Mono",Menlo,monospace; }
+  td.reg { color: #444; font-size: 9pt; line-height: 1.45; }
+  tr.faint td { color: #777; }
+  .tag { font-size: 7.5pt; border: 1px solid #c98500; color: #a06a00; padding: 0 3px; border-radius: 2px; margin-left: 4px; white-space: nowrap; }
+
+  .chartbox { border: 1px solid #d8d8d8; padding: 7px 10px 4px; }
+  svg { display: block; width: 100%; height: auto; }
+  .grid { stroke: #e8e8e8; stroke-width: 1; }
+  .axis { stroke: #999; stroke-width: 1; }
+  .ax { font-family:"SF Mono",Menlo,monospace; font-size: 8px; fill: #888; }
+  .ln { stroke-width: 1.8; fill: none; }
+  .ln.d { stroke-dasharray: 4 3; stroke-width: 1.3; }
+  .lbl { font-family:"SF Mono",Menlo,monospace; font-size: 8.5px; font-weight: 600; }
+  .band { fill: #2a78d6; opacity: .08; }
+  .bandlbl { font-family:"SF Mono",Menlo,monospace; font-size: 7.5px; fill: #777; }
+  .axt { font-size: 8.5px; fill: #666; }
+  .c1 { stroke:#2a78d6 } text.c1 { fill:#2a78d6; stroke:none }
+  .c2 { stroke:#0f8f63 } text.c2 { fill:#0f8f63; stroke:none }
+  .c3 { stroke:#d4551f } text.c3 { fill:#d4551f; stroke:none }
+  .c4 { stroke:#888 }    text.c4 { fill:#888; stroke:none }
+
+  .notes { font-size: 8.3pt; color: #555; line-height: 1.55; }
+  .notes ul { margin: 4px 0 0; padding-left: 15px; }
+  .notes li { margin-bottom: 2px; }
+  .foot { margin-top: 9px; padding-top: 6px; border-top: 1px solid #ddd; font-size: 8pt; color: #888; }
+</style>
+
+<h1>京东快递运费计算公式</h1>
+<div class="sub">依据 2026 年 5–7 月三个月真实结算账单反推 · 共 753 单 · 石家庄仓发出</div>
+<div class="rule"></div>
+
+<div class="callout">
+  <div class="big">741 / 741</div>
+  <div class="txt">
+    <b>15kg 以内的订单，公式算出来的运费和实际付的钱完全一样，一分不差。</b><br>
+    仅 3 单超过 30kg 的大件对不上（实付比公式高 12–15 元），礼包重量 3–6kg 不受影响。
+  </div>
+</div>
+
+<div class="sec">
+  <h2>一、各地区运费公式</h2>
+  <table>
+    <thead>
+      <tr><th style="width:20%">地区</th><th style="width:31%">运费公式</th><th style="width:37%">覆盖省份</th><th style="width:6%;text-align:right">城市</th><th style="width:6%;text-align:right">订单</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>北京</td><td class="f">12 + 2 × 重量</td><td class="reg">北京全部城区</td><td class="n">16</td><td class="n">303</td></tr>
+      <tr><td>天津 · 河北北部</td><td class="f">11 + 2 × 重量</td><td class="reg">天津、河北（唐山/张家口/承德）</td><td class="n">8</td><td class="n">14</td></tr>
+      <tr><td>河北（近京）</td><td class="f">10 + 2 × 重量</td><td class="reg">河北（保定/廊坊/沧州/邢台等）</td><td class="n">6</td><td class="n">14</td></tr>
+      <tr><td>中程</td><td class="f">10 + 5 × 重量</td><td class="reg">山东、山西、河南、内蒙古、辽宁、安徽、江苏（北部）、湖北、陕西、宁夏</td><td class="n">41</td><td class="n">91</td></tr>
+      <tr><td>远程</td><td class="f">10 + 6 × 重量</td><td class="reg">上海、浙江、福建、广东、重庆、四川、湖南、江西、贵州、甘肃、青海、黑龙江、吉林、江苏（南部）</td><td class="n">60</td><td class="n">296</td></tr>
+      <tr class="faint"><td>远程（个别市）<span class="tag">样本少</span></td><td class="f">11 + 6 × 重量</td><td class="reg">广西南宁、四川德阳等</td><td class="n">3</td><td class="n">9</td></tr>
+      <tr class="faint"><td>新疆<span class="tag">样本少</span></td><td class="f">10 + 8 × 重量</td><td class="reg">新疆乌鲁木齐</td><td class="n">1</td><td class="n">4</td></tr>
+    </tbody>
+  </table>
+  <div class="notes" style="margin-top:8px;">
+    公式里的「重量」是<b>计费重量</b>，不是实际称重：<span class="mono">计费重量 = 实重与体积重取大，再向上取整到 0.5kg</span>，其中<span class="mono">体积重 = 体积(cm³) ÷ 8000</span>。算出的金额四舍五入到整元。
+  </div>
+</div>
+
+<div class="sec">
+  <h2>二、公式对比图</h2>
+  <div class="chartbox">
+    <svg viewBox="0 0 700 246" role="img" aria-label="各地区运费公式对比，横轴计费重量0到15公斤，纵轴运费0到135元">
+      <rect class="band" x="176" y="14" width="72" height="196"/>
+      <text class="bandlbl" x="212" y="11" text-anchor="middle">礼包 3–6kg</text>
+
+      <line class="grid" x1="44" y1="210" x2="620" y2="210"/>
+      <line class="grid" x1="44" y1="181" x2="620" y2="181"/>
+      <line class="grid" x1="44" y1="152" x2="620" y2="152"/>
+      <line class="grid" x1="44" y1="123" x2="620" y2="123"/>
+      <line class="grid" x1="44" y1="94"  x2="620" y2="94"/>
+      <line class="grid" x1="44" y1="65"  x2="620" y2="65"/>
+      <line class="grid" x1="44" y1="36"  x2="620" y2="36"/>
+      <text class="ax" x="38" y="213" text-anchor="end">0</text>
+      <text class="ax" x="38" y="184" text-anchor="end">20</text>
+      <text class="ax" x="38" y="155" text-anchor="end">40</text>
+      <text class="ax" x="38" y="126" text-anchor="end">60</text>
+      <text class="ax" x="38" y="97"  text-anchor="end">80</text>
+      <text class="ax" x="38" y="68"  text-anchor="end">100</text>
+      <text class="ax" x="38" y="39"  text-anchor="end">120</text>
+      <text class="ax" x="30" y="22">元</text>
+
+      <line class="axis" x1="44" y1="210" x2="620" y2="210"/>
+      <text class="ax" x="44"  y="224" text-anchor="middle">0</text>
+      <text class="ax" x="176" y="224" text-anchor="middle">3</text>
+      <text class="ax" x="236" y="224" text-anchor="middle">5</text>
+      <text class="ax" x="428" y="224" text-anchor="middle">10</text>
+      <text class="ax" x="620" y="224" text-anchor="middle">15</text>
+      <text class="axt" x="332" y="240" text-anchor="middle">计费重量（kg）</text>
+
+      <!-- 2元/kg：三条 常数10/11/12 -->
+      <line class="ln c1" x1="44" y1="195.5" x2="620" y2="152"/>
+      <line class="ln c1" x1="44" y1="194"   x2="620" y2="150.5"/>
+      <line class="ln c1" x1="44" y1="192.6" x2="620" y2="149.1"/>
+      <text class="lbl c1" x="626" y="153">北京·津冀 2元/kg</text>
+
+      <!-- 5元/kg -->
+      <line class="ln c2" x1="44" y1="195.5" x2="620" y2="86.8"/>
+      <text class="lbl c2" x="626" y="90">中程 5元/kg</text>
+
+      <!-- 6元/kg：常数10/11 -->
+      <line class="ln c3" x1="44" y1="195.5" x2="620" y2="65"/>
+      <line class="ln c3" x1="44" y1="194"   x2="620" y2="63.5"/>
+      <text class="lbl c3" x="626" y="67">远程 6元/kg</text>
+
+      <!-- 8元/kg 新疆 -->
+      <line class="ln c4 d" x1="44" y1="195.5" x2="620" y2="21.5"/>
+      <text class="lbl c4" x="626" y="25">新疆 8元/kg</text>
+    </svg>
+  </div>
+</div>
+
+<div class="sec">
+  <h2>三、几点说明</h2>
+  <div class="notes">
+    <ul>
+      <li><b>这套公式和我们手上那张「5 分区运费表」对不上。</b>那张表是「首重＋分段续重」的阶梯算法，实际账单里没有阶梯，就是一条直线；分区方式也不同（表里山东和北京同价，实际山东贵一档；表里青海云南单独高价档，实际和福建四川同价）。建议拿这份公式去和京东确认，哪个是当前执行口径。</li>
+      <li><b>档位是按目的城市定的，不是按省。</b>同一个省不同城市可能不同价，例如江苏南京走 5 元档、无锡走 6 元档；河北保定 10 元起、唐山 11 元起。</li>
+      <li><b>覆盖范围有限。</b>只有这三个月实际发过货的 144 个城市有数据，没发过的城市无从判断；海南、西藏、港澳台三个月内没有订单。</li>
+      <li><b>超过 15kg 的规则没摸清。</b>15kg 以上仅 10 单，其中 30kg 以上的 3 单实付明显高于公式，说明大件另有加价规则，但样本不够定位。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="foot">数据来源：京诚乾元（北京）供应链管理有限公司 京东物流结算账单，2026-05-01 至 2026-07-31，收派服务费（生鲜特惠运费）明细 753 行</div>
