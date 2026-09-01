@@ -68,7 +68,8 @@ public class McpDomainReadTools {
             Set.of("PENDING", "SUCCESS", "PARTIAL", "FAILED", "CANCELLED");
     private static final Set<String> ARCHIVE_STATUSES = Set.of("在产", "停产", "研发", "新品");
     private static final Set<String> SKU_SEARCH_ARGUMENTS = Set.of(
-            "query", "provider_id", "barcode", "sku_code", "category_id", "tag", "active", "page", "size");
+            "query", "provider_id", "barcode", "sku_code", "category_id", "tag", "active",
+            "include_inactive", "page", "size");
 
     private final FulfillmentReadService reads;
     private final InventoryOverviewService inventoryOverview;
@@ -127,8 +128,9 @@ public class McpDomainReadTools {
                         "多条件检索 SKU 主数据（含进货价与零售价、履约方归属），可分页。"
                                 + "query 对商品名/规格/SKU 编码/条码做模糊检索；barcode 与 sku_code 精确匹配；"
                                 + "tag 按商品标签精确匹配单个元素；category_id 按品类收窄。"
-                                + "多个条件之间是‘与’。active 不传时返回全部、含停用 SKU；"
-                                + "只有显式传 JSON true/false 才按启用位筛选。",
+                                + "多个条件之间是‘与’。**默认只返回在售（active=true）的 SKU**——"
+                                + "active 是主数据权威启用位；要只看停用传 active=false，"
+                                + "要在售与停用一并返回传 include_inactive=true。",
                         schema(
                                 Map.of(
                                         "query", stringProperty("模糊查询词（商品名/规格/SKU 编码/条码）"),
@@ -137,7 +139,10 @@ public class McpDomainReadTools {
                                         "sku_code", stringProperty("SKU 编码，精确匹配"),
                                         "category_id", stringProperty("按商品品类过滤"),
                                         "tag", stringProperty("商品标签，精确匹配单个标签"),
-                                        "active", booleanProperty("按启用位过滤；不传则启用与停用一并返回"),
+                                        "active", booleanProperty(
+                                                "按启用位精确过滤；不传默认只回在售（true）"),
+                                        "include_inactive", booleanProperty(
+                                                "true 时在售与停用一并返回；显式传 active 时以 active 为准"),
                                         "page", integerProperty("页码，从 0 开始"),
                                         "size", integerProperty("每页条数，1-200")),
                                 List.of()),
@@ -165,11 +170,12 @@ public class McpDomainReadTools {
                         "search_product_archive",
                         "组合查询商品成本档案：商品名模糊，69 码精确，或按品牌/肉类/状态/SKU 挂接状态过滤。"
                                 + "重复 69 码返回全部命中行；不返回文件名、指纹、行号或列字母。"
-                                + "默认只列在售商品（剔除产品状态 停产/断货），且成本列只给关键 4 项："
-                                + "核算成本/份、含耗材成本/份、线下供货成本/份、售价——"
-                                + "线下供货成本即礼包核算用的供货成本，售价即零售价。"
-                                + "要看停产/断货商品传 include_discontinued=true（或直接传 status 指定状态）；"
-                                + "要全部成本列（人工费/扣点/物流/毛利率等 40 列）传 full_costing=true。",
+                                + "成本列默认只给关键 4 项：核算成本/份、含耗材成本/份、线下供货成本/份、售价"
+                                + "——线下供货成本即礼包核算用的供货成本，售价即零售价；"
+                                + "要全部成本列（人工费/扣点/物流/毛利率等 40 列）传 full_costing=true。"
+                                + "注意：本档案是一次性导入的成本快照、导入后不再更新，其中的『产品状态』列"
+                                + "与主数据严重不符（标停产的行里多数对应的 SKU 实际在售），"
+                                + "不可用于判断在售；判在售请用 search_skus（active 为权威启用位）。",
                         schema(
                                 Map.of(
                                         "query", stringProperty("商品名模糊查询词"),
@@ -177,11 +183,9 @@ public class McpDomainReadTools {
                                         "brand", stringProperty("品牌精确匹配"),
                                         "meat_type", stringProperty("肉类精确匹配"),
                                         "status", stringProperty(
-                                                "产品状态精确匹配：在产/停产/研发/新品/断货；"
-                                                        + "显式传入时不再叠加默认的在售过滤"),
+                                                "档案『产品状态』列精确匹配（在产/停产/研发/新品/断货）；"
+                                                        + "该列是冻结快照，不代表当前是否在售"),
                                         "linked", booleanProperty("是否已挂接 SKU（true/false）"),
-                                        "include_discontinued", booleanProperty(
-                                                "true 时连停产/断货商品一并返回，默认 false 只看在售"),
                                         "full_costing", booleanProperty(
                                                 "true 时返回全部成本列，默认 false 只给关键 4 项"),
                                         "page", integerProperty("页码，从 0 开始"),
@@ -351,6 +355,18 @@ public class McpDomainReadTools {
     // SKU / 价格
     // ------------------------------------------------------------------
 
+    /**
+     * 在售默认口径：active 是主数据权威启用位，不传时只回在售——Agent 拿商品做建单/报价时
+     * 默认不该看见停用品。显式传 active 以它为准；include_inactive=true 放开为全量（null）。
+     */
+    private static Boolean effectiveActiveFilter(Map<String, Object> args) {
+        Boolean active = optionalBoolean(args, "active");
+        if (active != null) {
+            return active;
+        }
+        return Boolean.TRUE.equals(optionalBoolean(args, "include_inactive")) ? null : Boolean.TRUE;
+    }
+
     private JsonNode searchSkus(McpRequestContext context, Map<String, Object> args) {
         rejectUnsupportedArguments(args, SKU_SEARCH_ARGUMENTS);
         SkuSearchFilter filter = new SkuSearchFilter(
@@ -360,7 +376,7 @@ public class McpDomainReadTools {
                 optionalQuery(args, "sku_code"),
                 optionalIdentifier(args, "category_id"),
                 optionalQuery(args, "tag"),
-                optionalBoolean(args, "active"));
+                effectiveActiveFilter(args));
         PageResponse<SkuDetail> result =
                 masterData.searchSkus(page(args, 0), pageSize(args, 20), filter);
         return pageNode(result, McpDomainReadTools::skuNode);
@@ -385,12 +401,9 @@ public class McpDomainReadTools {
         String meatType = optionalQuery(args, "meat_type");
         String status = optionalArchiveStatus(args);
         Boolean linked = optionalBoolean(args, "linked");
-        Boolean includeDiscontinued = optionalBoolean(args, "include_discontinued");
         Boolean fullCosting = optionalBoolean(args, "full_costing");
         PageResponse<ProductArchiveSummary> result = productArchive.search(
-                query, barcode, brand, meatType, status, linked,
-                Boolean.TRUE.equals(includeDiscontinued),
-                page(args, 0), pageSize(args, 20));
+                query, barcode, brand, meatType, status, linked, page(args, 0), pageSize(args, 20));
         boolean allCostingColumns = Boolean.TRUE.equals(fullCosting);
         return pageNode(result, summary -> archiveSummaryNode(summary, allCostingColumns));
     }

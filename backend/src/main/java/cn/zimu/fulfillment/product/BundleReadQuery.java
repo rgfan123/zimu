@@ -26,13 +26,18 @@ public interface BundleReadQuery {
     List<ComponentSkuFact> componentSkuFacts(List<Long> skuIds);
 
     /** purchasePrice 为 decimal-string（分位两位），无价时 null——缺价必须显式呈现。 */
+    /**
+     * 组包核算的价格事实一律取主数据 app.skus：purchasePrice 即「线下供货成本/份」、
+     * retailPrice 即「售价」（与成本档案表同源，但档案是冻结快照、主数据才在维护）。
+     */
     record ComponentSkuFact(
             String id,
             String skuCode,
             String productName,
             String specification,
             boolean active,
-            String purchasePrice) {}
+            String purchasePrice,
+            String retailPrice) {}
 
     record ProviderSummary(String id, String code, String name, String type) {}
 

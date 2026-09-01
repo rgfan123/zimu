@@ -82,7 +82,11 @@ public class McpBundleReadTools {
                 new McpToolRegistry.SimpleTool(
                         "estimate_bundle_economics",
                         "组包经济核算（组包师 Agent 的算账底座）：给定组件清单与预期售价、运费、仓储费、"
-                                + "其他费用，按 SKU 供货价精确核算组件成本、总成本、毛利与毛利率。"
+                                + "其他费用，按 SKU 主数据的供货价精确核算组件成本、总成本、毛利与毛利率，"
+                                + "并按零售价给出单品零售合计 components_retail_total 与 "
+                                + "price_vs_retail（预期售价÷单买合计，看折扣力度）。"
+                                + "价格一律取 app.skus（purchase_price=线下供货成本/份、retail_price=售价），"
+                                + "不取成本档案快照。"
                                 + "全部算术由本工具完成，调用方不得自行心算；组件缺供货价时 computable=false "
                                 + "并逐项列出缺价 SKU，绝不带缺口硬算。金额均为 decimal-string。",
                         schema(
@@ -400,6 +404,9 @@ public class McpBundleReadTools {
         ArrayNode missing = result.putArray("missing_prices");
         ArrayNode warnings = result.putArray("warnings");
         BigDecimal componentCost = BigDecimal.ZERO;
+        // 单品零售合计：组包定价的对照锚（礼包价 vs 拆开单买），价格同源 app.skus.retail_price
+        BigDecimal componentRetail = BigDecimal.ZERO;
+        boolean retailComputable = true;
         boolean computable = true;
         for (int i = 0; i < skuIds.size(); i++) {
             BundleReadQuery.ComponentSkuFact fact = facts.get(String.valueOf(skuIds.get(i)));
@@ -413,6 +420,17 @@ public class McpBundleReadTools {
             node.put("active", fact.active());
             if (!fact.active()) {
                 warnings.add("SKU 已停用: " + fact.skuCode() + "（" + fact.productName() + "）");
+            }
+            if (fact.retailPrice() == null) {
+                node.putNull("unit_retail_price");
+                node.putNull("line_retail_value");
+                retailComputable = false;
+            } else {
+                BigDecimal unitRetail = new BigDecimal(fact.retailPrice());
+                BigDecimal lineRetail = unitRetail.multiply(BigDecimal.valueOf(quantity));
+                node.put("unit_retail_price", scale2(unitRetail));
+                node.put("line_retail_value", scale2(lineRetail));
+                componentRetail = componentRetail.add(lineRetail);
             }
             if (fact.purchasePrice() == null) {
                 node.putNull("unit_purchase_price");
@@ -437,6 +455,16 @@ public class McpBundleReadTools {
         economics.put("freight_fee", scale2(freight));
         economics.put("storage_fee", scale2(storage));
         economics.put("other_fee", scale2(other));
+        if (retailComputable) {
+            economics.put("components_retail_total", scale2(componentRetail));
+            economics.put("price_vs_retail", componentRetail.signum() == 0
+                    ? null
+                    : expectedPrice.divide(componentRetail, 4, java.math.RoundingMode.HALF_UP)
+                            .toPlainString());
+        } else {
+            economics.putNull("components_retail_total");
+            economics.putNull("price_vs_retail");
+        }
         if (computable) {
             BigDecimal totalCost = componentCost.add(freight).add(storage).add(other);
             BigDecimal margin = expectedPrice.subtract(totalCost);

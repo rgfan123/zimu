@@ -177,8 +177,8 @@ class McpBundleReadToolsUnitTest {
     @Test
     void bundleEconomicsComputesExactMarginFromToolNotModel() throws Exception {
         reads.componentFacts = List.of(
-                new BundleReadQuery.ComponentSkuFact("11", "SKU-A", "羊腿肉 500g", "500g/袋", true, "36.50"),
-                new BundleReadQuery.ComponentSkuFact("12", "SKU-B", "黑猪排骨 450g", "450g/盒", true, "41.00"));
+                new BundleReadQuery.ComponentSkuFact("11", "SKU-A", "羊腿肉 500g", "500g/袋", true, "36.50", "58.00"),
+                new BundleReadQuery.ComponentSkuFact("12", "SKU-B", "黑猪排骨 450g", "450g/盒", true, "41.00", "69.00"));
 
         JsonNode result = tool("estimate_bundle_economics").invoke(context, Map.of(
                 "components", List.of(
@@ -203,8 +203,8 @@ class McpBundleReadToolsUnitTest {
     @Test
     void bundleEconomicsFailsExplicitlyOnMissingPurchasePrice() throws Exception {
         reads.componentFacts = List.of(
-                new BundleReadQuery.ComponentSkuFact("11", "SKU-A", "羊腿肉 500g", "500g/袋", true, "36.50"),
-                new BundleReadQuery.ComponentSkuFact("13", "SKU-C", "新品无价", "1kg", false, null));
+                new BundleReadQuery.ComponentSkuFact("11", "SKU-A", "羊腿肉 500g", "500g/袋", true, "36.50", "58.00"),
+                new BundleReadQuery.ComponentSkuFact("13", "SKU-C", "新品无价", "1kg", false, null, null));
 
         JsonNode result = tool("estimate_bundle_economics").invoke(context, Map.of(
                 "components", List.of(

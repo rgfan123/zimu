@@ -412,7 +412,8 @@ public class BundleReadService implements BundleReadQuery {
         String placeholders = String.join(",", java.util.Collections.nCopies(skuIds.size(), "?"));
         var byId = new java.util.HashMap<String, ComponentSkuFact>();
         jdbc.query(
-                "SELECT s.id, s.sku_code, p.product_name, s.specification, s.active, s.purchase_price "
+                "SELECT s.id, s.sku_code, p.product_name, s.specification, s.active, "
+                        + "s.purchase_price, s.retail_price "
                         + "FROM app.skus s JOIN app.products p ON p.id = s.product_id "
                         + "WHERE s.id IN (" + placeholders + ")",
                 resultSet -> {
@@ -422,7 +423,8 @@ public class BundleReadService implements BundleReadQuery {
                             resultSet.getString("product_name"),
                             resultSet.getString("specification"),
                             resultSet.getBoolean("active"),
-                            price(resultSet.getBigDecimal("purchase_price"))));
+                            price(resultSet.getBigDecimal("purchase_price")),
+                            price(resultSet.getBigDecimal("retail_price"))));
                 },
                 skuIds.toArray());
         // 按入参顺序回，缺失项如实缺席（调用方 fail-fast）

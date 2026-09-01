@@ -139,9 +139,10 @@ class McpDomainReadToolsTest {
                         "category_id",
                         "tag",
                         "active",
+                        "include_inactive",
                         "page",
                         "size");
-        assertThat(searchSkus.description()).contains("含停用");
+        assertThat(searchSkus.description()).contains("默认只返回在售").contains("include_inactive");
         assertThat(registry.findProtocolTool("search_skus")).isPresent();
     }
 
@@ -417,16 +418,20 @@ class McpDomainReadToolsTest {
                 .get("items"))
                 .isEmpty();
 
-        assertThat(ids(callResult(AGENT, "search_skus", Map.of("tag", "preorder"))))
+        assertThat(ids(callResult(AGENT, "search_skus",
+                        Map.of("tag", "preorder", "include_inactive", true))))
                 .containsExactly(taggedSkuId, taggedInactiveSkuId);
+        // 默认在售口径下同一标签只回在售那条
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("tag", "preorder"))))
+                .containsExactly(taggedSkuId);
         assertThat(callResult(AGENT, "search_skus", Map.of("tag", "pre")).get("items"))
                 .isEmpty();
 
         assertThat(ids(callResult(
                         AGENT, "search_skus", Map.of("category_id", String.valueOf(categoryB)))))
                 .containsExactly(plainSkuId);
-        assertThat(ids(callResult(
-                        AGENT, "search_skus", Map.of("category_id", String.valueOf(categoryA)))))
+        assertThat(ids(callResult(AGENT, "search_skus",
+                        Map.of("category_id", String.valueOf(categoryA), "include_inactive", true))))
                 .containsExactlyElementsOf(skuIdsOfCategory(categoryA));
 
         assertThat(ids(callResult(AGENT, "search_skus", Map.of("active", false))))
@@ -451,20 +456,28 @@ class McpDomainReadToolsTest {
     }
 
     @Test
-    void searchSkusWithoutFiltersOrActiveKeepsExistingAllSkuSemantics() throws Exception {
+    void searchSkusWithoutActiveArgumentReturnsOnlyInSaleSkus() throws Exception {
+        // 契约变更（用户 2026-09-01）：不传 active 从「全部」改为「只在售」——
+        // Agent 拿商品做建单/报价，默认不该看见停用品；停用品仍可显式查到。
         long providerId = createProvider("MCPDEF", "默认口径履约方");
         long productId = createProduct(createCategory(), "MCP-PROD-DEF", "默认口径商品");
         long activeSkuId = createSkuWithBarcode(providerId, productId, "500g/盒", "6902000000001", true);
         long inactiveSkuId = createSkuWithBarcode(providerId, productId, "1kg/袋", "6902000000018", false);
 
-        JsonNode all = callResult(AGENT, "search_skus", Map.of());
-        assertThat(all.get("total_elements").asLong()).isEqualTo(2);
-        assertThat(ids(all)).containsExactly(activeSkuId, inactiveSkuId);
+        JsonNode defaults = callResult(AGENT, "search_skus", Map.of());
+        assertThat(defaults.get("total_elements").asLong()).isEqualTo(1);
+        assertThat(ids(defaults)).containsExactly(activeSkuId);
         assertThat(ids(callResult(AGENT, "search_skus", Map.of("query", "默认口径商品"))))
-                .containsExactly(activeSkuId, inactiveSkuId);
+                .containsExactly(activeSkuId);
         assertThat(ids(callResult(
                         AGENT, "search_skus", Map.of("provider_id", String.valueOf(providerId)))))
+                .containsExactly(activeSkuId);
+
+        // 显式全量与显式只看停用都还在
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("include_inactive", true))))
                 .containsExactly(activeSkuId, inactiveSkuId);
+        assertThat(ids(callResult(AGENT, "search_skus", Map.of("active", false))))
+                .containsExactly(inactiveSkuId);
     }
 
     // ------------------------------------------------------------------
@@ -582,7 +595,7 @@ class McpDomainReadToolsTest {
         assertThat(exactBarcode.at("/items/0/specification_g").asText()).isEqualTo("300g");
 
         JsonNode duplicateBarcode = callResult(AGENT, "search_product_archive",
-                Map.of("barcode", "06977872890135", "include_discontinued", true));
+                Map.of("barcode", "06977872890135"));
         assertThat(duplicateBarcode.get("items")).hasSize(2);
         assertThat(duplicateBarcode.get("items")).extracting(item -> item.get("specification_g").asText())
                 .containsExactly("500g", "750g");
@@ -602,8 +615,7 @@ class McpDomainReadToolsTest {
         assertThat(linked.at("/items/0/linked").asBoolean()).isTrue();
         assertThat(linked.at("/items/0/sku_id").asText()).isEqualTo(String.valueOf(linkedSkuId));
         assertThat(linked.at("/items/0/sku_code").asText()).isEqualTo(linkedSkuCode);
-        JsonNode unlinked = callResult(AGENT, "search_product_archive",
-                Map.of("linked", false, "include_discontinued", true));
+        JsonNode unlinked = callResult(AGENT, "search_product_archive", Map.of("linked", false));
         assertThat(unlinked.get("items")).hasSize(3);
         assertThat(unlinked.get("items")).allSatisfy(item -> {
             assertThat(item.get("linked").asBoolean()).isFalse();
@@ -623,7 +635,7 @@ class McpDomainReadToolsTest {
         assertThat(item.toString()).doesNotContain(
                 "source_file_name", "source_file_sha256", "sheet_name", "row_no", "\"column\"", "extra_cells");
 
-        JsonNode all = callResult(AGENT, "search_product_archive", Map.of("include_discontinued", true));
+        JsonNode all = callResult(AGENT, "search_product_archive", Map.of());
         assertThat(all.get("total_elements").asLong()).isEqualTo(4);
 
         JsonNode noMatch = callResult(AGENT, "search_product_archive", Map.of("query", "不存在的商品名"));
@@ -631,15 +643,14 @@ class McpDomainReadToolsTest {
         assertThat(noMatch.get("total_elements").asLong()).isZero();
 
         JsonNode paged = callResult(AGENT, "search_product_archive",
-                Map.of("barcode", "06977872890135", "page", 1, "size", 1, "include_discontinued", true));
+                Map.of("barcode", "06977872890135", "page", 1, "size", 1));
         assertThat(paged.get("items")).hasSize(1);
         assertThat(paged.at("/items/0/specification_g").asText()).isEqualTo("750g");
         assertThat(paged.get("total_pages").asInt()).isEqualTo(2);
     }
 
     @Test
-    void productArchiveDefaultsToInSaleRowsAndKeyCostingColumnsButStaysQueryableOnDemand()
-            throws Exception {
+    void productArchiveKeepsEveryRowAndTrimsCostingToKeyColumnsByDefault() throws Exception {
         long categoryId = createCategory();
         long providerId = createProvider("MCPARCHDEF", "档案默认口径履约方");
         long productId = createProduct(categoryId, "MCP-PROD-ARCH-DEF", "默认口径商品");
@@ -649,37 +660,48 @@ class McpDomainReadToolsTest {
                 "子牧", "牛肉", "牛腩", skuId, productId);
         insertArchiveRow(ARCHIVE_SHA, 82, "默认口径停产品", "停产", "500g", "06977872891002",
                 "子牧", "牛肉", "牛腩", null, null);
-        insertArchiveRow(ARCHIVE_SHA, 83, "默认口径断货品", "断货", "500g", "06977872891003",
-                "子牧", "牛肉", "牛腩", null, null);
-        insertArchiveRow(ARCHIVE_SHA, 84, "默认口径空状态品", "", "500g", "06977872891004",
-                "子牧", "牛肉", "牛腩", null, null);
 
-        // 默认：只在售——停产/断货被剔除，状态为空的一律保留（档案里大量行没写状态）
+        // 档案『产品状态』是冻结快照、与主数据 active 不符（生产实测：标停产的 42 行里 23 行
+        // 对应 SKU 实际在售），故档案工具不按它过滤——一行都不能凭这个字段私自藏起来。
         JsonNode defaults = callResult(AGENT, "search_product_archive", Map.of("query", "默认口径"));
         assertThat(defaults.get("items")).extracting(item -> item.get("product_name").asText())
-                .containsExactlyInAnyOrder("默认口径在售品", "默认口径空状态品");
+                .containsExactlyInAnyOrder("默认口径在售品", "默认口径停产品");
 
-        // 默认：成本列只给关键 4 项，且顺序与业务阅读顺序一致
+        // 默认成本列只给关键 4 项，顺序即业务阅读顺序
         JsonNode item = defaults.get("items").get(0);
         assertThat(item.get("costing")).hasSize(4);
         assertThat(item.findValuesAsText("name"))
                 .containsExactly("核算成本 /份", "含耗材 成本/份", "线下供货成本/份", "售价");
 
-        // 显式要全量成本列：40 列全回
         JsonNode full = callResult(AGENT, "search_product_archive",
                 Map.of("query", "默认口径在售", "full_costing", true));
         assertThat(full.at("/items/0/costing")).hasSize(40);
+    }
 
-        // 显式要停产/断货：查得到
-        JsonNode withDiscontinued = callResult(AGENT, "search_product_archive",
-                Map.of("query", "默认口径", "include_discontinued", true));
-        assertThat(withDiscontinued.get("items")).hasSize(4);
+    @Test
+    void searchSkusDefaultsToActiveOnlyButInactiveStaysQueryable() throws Exception {
+        long categoryId = createCategory();
+        long providerId = createProvider("MCPACTIVE", "在售默认履约方");
+        long productId = createProduct(categoryId, "MCP-PROD-ACTIVE", "在售默认商品");
+        long activeSkuId = createSku(providerId, productId, "500g");
+        long inactiveSkuId = createSku(providerId, productId, "1kg");
+        jdbc.update("UPDATE app.skus SET active=FALSE WHERE id=?", inactiveSkuId);
 
-        // 显式点名状态：默认在售过滤让位，「我就要看停产的」必须查得到
-        JsonNode discontinuedOnly = callResult(AGENT, "search_product_archive",
-                Map.of("query", "默认口径", "status", "停产"));
-        assertThat(discontinuedOnly.get("items")).hasSize(1);
-        assertThat(discontinuedOnly.at("/items/0/product_name").asText()).isEqualTo("默认口径停产品");
+        // 默认：只回在售——Agent 建单/报价时不该看见停用品
+        JsonNode defaults = callResult(AGENT, "search_skus", Map.of("query", "在售默认商品"));
+        assertThat(defaults.get("items")).hasSize(1);
+        assertThat(defaults.at("/items/0/id").asText()).isEqualTo(String.valueOf(activeSkuId));
+
+        // 显式只看停用
+        JsonNode inactiveOnly = callResult(AGENT, "search_skus",
+                Map.of("query", "在售默认商品", "active", false));
+        assertThat(inactiveOnly.get("items")).hasSize(1);
+        assertThat(inactiveOnly.at("/items/0/id").asText()).isEqualTo(String.valueOf(inactiveSkuId));
+
+        // 显式要全量
+        JsonNode both = callResult(AGENT, "search_skus",
+                Map.of("query", "在售默认商品", "include_inactive", true));
+        assertThat(both.get("items")).hasSize(2);
     }
 
     @Test
